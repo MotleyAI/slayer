@@ -21,6 +21,7 @@ from slayer.core.models import (
     SlayerModel,
     SourceModelOrigin,
 )
+from slayer.core.warnings import NormalizationWarning
 from slayer.core.query import (
     ColumnRef,
     SlayerQuery,
@@ -31,11 +32,29 @@ from slayer.engine.enriched import (
     CrossModelMeasure,
     EnrichedMeasure,
     EnrichedQuery,
-    public_projection_aliases,
 )
 from slayer.engine.enrichment import enrich_query
+from slayer.engine.normalization import normalize_model, normalize_query
+from slayer.engine.path_resolution import NoJoinError as _NoJoinError
+from slayer.engine.path_resolution import walk_join_chain
+from slayer.engine.planned import PlannedQuery
+from slayer.engine.response_meta import (
+    FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
+    ResponseAttributes,
+    _infer_aggregated_format,
+    build_response_metadata,
+)
+from slayer.engine.source_bundle import (
+    ResolvedSourceBundle,
+    build_resolved_source_bundle,
+    expand_query_backed_models_in_bundle,
+)
+from slayer.engine.stage_ordering import topologically_order_stages
+from slayer.engine.stage_planner import plan_stages
+from slayer.engine.variables import apply_variables_to_query
 from slayer.sql.client import SlayerSQLClient
-from slayer.sql.generator import SQLGenerator
+from slayer.sql.generator import SQLGenerator, generate_planned_stages
+from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -61,16 +80,6 @@ _join_target_resolving_var: ContextVar[Optional[set]] = ContextVar(
 _forbidden_sibling_refs_var: ContextVar[Optional[Dict[str, str]]] = ContextVar(
     "_forbidden_sibling_refs", default=None
 )
-
-
-class _NoJoinError(Exception):
-    """Internal sentinel raised by ``_walk_join_chain`` when
-    ``strict_missing_join=False`` and a hop has no matching join. Lets
-    callers like ``_resolve_dimension_with_terminal`` map a missing
-    join to a ``None`` return without re-walking the path."""
-    def __init__(self, hop_name: str) -> None:
-        super().__init__(f"no join target named {hop_name!r}")
-        self.hop_name = hop_name
 
 
 _EXPLAIN_PREFIX = {
@@ -140,24 +149,6 @@ def _build_explain_sql(dialect: str, sql: str) -> str:
     return f"{prefix} {sql}{suffix}"
 
 
-class FieldMetadata(BaseModel):
-    """Metadata for a single field in the query response."""
-
-    label: Optional[str] = None
-    format: Optional[NumberFormat] = None
-
-
-class ResponseAttributes(BaseModel):
-    """Field metadata for a query response, split by type."""
-
-    dimensions: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
-    measures: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
-
-    def get(self, column: str) -> Optional[FieldMetadata]:
-        """Look up metadata for a column across both dicts."""
-        return self.dimensions.get(column) or self.measures.get(column)
-
-
 class SlayerResponse(BaseModel):
     """Response from a SLayer query."""
 
@@ -165,6 +156,13 @@ class SlayerResponse(BaseModel):
     columns: List[str] = PydanticField(default_factory=list)
     sql: Optional[str] = None
     attributes: ResponseAttributes = PydanticField(default_factory=ResponseAttributes)
+    # DEV-1450 stage 6 — slack-normalization warnings.
+    # Structured payload for each slack rewrite the normalization layer
+    # performed on the input (function-style aggs, misplaced measures,
+    # AST-resolvable dotted refs in raw SQL). Empty for queries that
+    # arrived in canonical form. Surfaced alongside the result so
+    # REST / MCP / CLI consumers can echo the rewrites back to authors.
+    warnings: List[NormalizationWarning] = PydanticField(default_factory=list)
 
     @model_validator(mode="after")
     def _populate_columns(self) -> "SlayerResponse":
@@ -196,36 +194,6 @@ class SlayerResponse(BaseModel):
             cells = [self._format_value(column=c, value=row.get(c, "")) for c in self.columns]
             body_lines.append("| " + " | ".join(cells) + " |")
         return "\n".join([header, separator] + body_lines)
-
-
-def _infer_aggregated_format(
-    model: SlayerModel,
-    measure_name: str,
-    aggregation: str,
-) -> Optional[NumberFormat]:
-    """Infer NumberFormat for an aggregated measure based on aggregation type and source measure format.
-
-    Rules:
-    - count, count_distinct: always INTEGER
-    - avg, weighted_avg, median: always FLOAT
-    - sum, min, max, first, last: inherit from source measure
-    - *:count (measure_name="*"): INTEGER
-    """
-    if measure_name == "*":
-        return NumberFormat(type=NumberFormatType.INTEGER)
-
-    if aggregation in ("count", "count_distinct"):
-        return NumberFormat(type=NumberFormatType.INTEGER)
-
-    if aggregation in ("avg", "weighted_avg", "median"):
-        return NumberFormat(type=NumberFormatType.FLOAT)
-
-    # sum, min, max, first, last: inherit from source column's format
-    source_col = model.get_column(measure_name)
-    if source_col and source_col.format:
-        return source_col.format
-
-    return None
 
 
 class SlayerQueryEngine:
@@ -279,191 +247,18 @@ class SlayerQueryEngine:
             out[k] = v
         return out
 
-    @staticmethod
-    def _extract_sibling_refs(query: "SlayerQuery", against: set) -> set:
-        """Names from ``query.source_model`` / inline joins that match ``against``.
-
-        Walks the three shapes ``source_model`` can take — plain string,
-        dict (``ModelExtension`` or inline ``SlayerModel``), or typed
-        instance — and collects every name that resolves against the
-        ``against`` set. Used by both the dependency-graph builder and
-        the self-reference / root-as-sink validators.
-        """
-        out: set = set()
-        sm = query.source_model
-        if isinstance(sm, str):
-            if sm in against:
-                out.add(sm)
-            return out
-        # Dict shape — disambiguate ModelExtension vs inline SlayerModel
-        # by presence of ``source_name``.
-        if isinstance(sm, dict):
-            src = sm.get("source_name")
-            if isinstance(src, str) and src in against:
-                out.add(src)
-            for j in sm.get("joins") or []:
-                tgt = j.get("target_model") if isinstance(j, dict) else getattr(j, "target_model", None)
-                if isinstance(tgt, str) and tgt in against:
-                    out.add(tgt)
-            return out
-        # Typed ModelExtension / SlayerModel: source_name lives on
-        # ModelExtension only; SlayerModel.name is the inline model's
-        # own identifier, not a reference.
-        src = getattr(sm, "source_name", None)
-        if isinstance(src, str) and src in against:
-            out.add(src)
-        for j in getattr(sm, "joins", None) or []:
-            tgt = getattr(j, "target_model", None)
-            if isinstance(tgt, str) and tgt in against:
-                out.add(tgt)
-        return out
-
-    @staticmethod
-    def _index_query_list_by_name(
-        rest: List["SlayerQuery"], root: "SlayerQuery",
-    ) -> Dict[str, "SlayerQuery"]:
-        """Build ``{name: query}`` for non-final entries, validating that
-        every non-final entry has a unique name and that the root's
-        name (if any) doesn't collide.
-        """
-        rest_by_name: Dict[str, "SlayerQuery"] = {}
-        for q in rest:
-            if not q.name:
-                raise ValueError(
-                    "Every non-final entry in a query list must have a "
-                    "'name' (siblings reference each other by name)."
-                )
-            if q.name in rest_by_name:
-                raise ValueError(f"Duplicate stage name '{q.name}' in query list.")
-            rest_by_name[q.name] = q
-        if root.name and root.name in rest_by_name:
-            raise ValueError(
-                f"Stage name '{root.name}' is duplicated: the final entry "
-                f"shares a name with an earlier entry."
-            )
-        return rest_by_name
-
-    @classmethod
-    def _validate_query_list_invariants(
-        cls,
-        queries: List["SlayerQuery"],
-        rest: List["SlayerQuery"],
-        root: "SlayerQuery",
-        sibling_names: set,
-    ) -> None:
-        """Reject self-references and any sibling that depends on the root.
-
-        Self-references are caught for every entry (including the root).
-        Root-as-sink: no non-final stage may reference the root by name.
-        """
-        for q in queries:
-            if q.name and q.name in cls._extract_sibling_refs(q, {q.name} | sibling_names):
-                raise ValueError(
-                    f"Stage '{q.name}' references itself — self-references "
-                    f"are not allowed."
-                )
-        if root.name:
-            referrers = sorted(
-                q.name for q in rest if root.name in cls._extract_sibling_refs(q, {root.name})
-            )
-            if referrers:
-                raise ValueError(
-                    f"The final entry '{root.name}' is the DAG root and must "
-                    f"not be referenced by other stages. Referenced by: "
-                    f"{referrers}."
-                )
-
-    @classmethod
-    def _build_dependency_graph(
-        cls,
-        rest_by_name: Dict[str, "SlayerQuery"],
-        sibling_names: set,
-    ) -> tuple:
-        """Build the (in_degree, dependents) adjacency for Kahn's.
-
-        Edge direction: prerequisite → dependent. ``in_degree[X]`` is
-        the count of siblings ``X`` depends on; ``dependents[X]`` is the
-        list of siblings that depend on ``X``.
-        """
-        in_degree: Dict[str, int] = dict.fromkeys(rest_by_name, 0)
-        dependents: Dict[str, List[str]] = {name: [] for name in rest_by_name}
-        for name, q in rest_by_name.items():
-            for prereq in cls._extract_sibling_refs(q, sibling_names):
-                dependents[prereq].append(name)
-                in_degree[name] += 1
-        return in_degree, dependents
-
-    @staticmethod
-    def _kahn_sort(
-        in_degree: Dict[str, int],
-        dependents: Dict[str, List[str]],
-    ) -> List[str]:
-        """Topologically sort by Kahn's algorithm. Cycle → ValueError.
-
-        Mutates ``in_degree`` in place; callers shouldn't reuse it.
-        The frontier is kept sorted for deterministic output order across
-        runs.
-        """
-        frontier: List[str] = sorted(n for n, d in in_degree.items() if d == 0)
-        sorted_names: List[str] = []
-        while frontier:
-            n = frontier.pop(0)
-            sorted_names.append(n)
-            unlocked: List[str] = []
-            for dep in dependents[n]:
-                in_degree[dep] -= 1
-                if in_degree[dep] == 0:
-                    unlocked.append(dep)
-            frontier.extend(sorted(unlocked))
-        if len(sorted_names) < len(in_degree):
-            cycle = sorted(set(in_degree) - set(sorted_names))
-            raise ValueError(
-                f"Cycle in query list: stages {cycle} form a cyclic "
-                f"dependency. The reference graph must be acyclic."
-            )
-        return sorted_names
-
     @classmethod
     def _topologically_order_queries(
         cls,
         queries: List["SlayerQuery"],
     ) -> List["SlayerQuery"]:
-        """Re-order a runtime query list so every stage appears after the
-        siblings it references via ``source_model`` or
-        ``joins.target_model``. Lets callers submit a DAG in any order —
-        cycles and self-references are rejected; the input order itself
-        no longer needs to be a valid topological order.
-
-        The last entry of the input is the entry point / DAG root: its
-        result is what ``execute`` returns. It stays last; only the
-        non-final entries are reordered. Stages that aren't reachable
-        from the root are accepted as utility sub-queries — they flow
-        through the sort like any other node and remain in the
-        ``named_queries`` dict (the SQL generator emits them only if
-        something references them).
-
-        Hand-rolled Kahn's algorithm; no ``graphlib`` dependency. The
-        actual work is delegated to four single-purpose helpers
-        (:meth:`_index_query_list_by_name`,
-        :meth:`_validate_query_list_invariants`,
-        :meth:`_build_dependency_graph`, :meth:`_kahn_sort`) so this
-        orchestrator stays under the cognitive-complexity gate.
-
-        Raises ``ValueError`` on: missing ``name`` on any non-final
-        entry; duplicate stage names; self-references; the root being
-        depended on by any other stage; or a cycle among non-final
-        stages.
+        """Thin classmethod shim — delegates to
+        :func:`slayer.engine.stage_ordering.topologically_order_stages`
+        (DEV-1452 Stage B decision #1). Existing callers continue to use
+        the engine-method surface; the migrated paths import the helper
+        directly.
         """
-        if len(queries) <= 1:
-            return list(queries)
-        rest = list(queries[:-1])
-        root = queries[-1]
-        rest_by_name = cls._index_query_list_by_name(rest, root)
-        sibling_names: set = set(rest_by_name)
-        cls._validate_query_list_invariants(queries, rest, root, sibling_names)
-        in_degree, dependents = cls._build_dependency_graph(rest_by_name, sibling_names)
-        sorted_names = cls._kahn_sort(in_degree, dependents)
-        return [rest_by_name[n] for n in sorted_names] + [root]
+        return topologically_order_stages(queries)
 
     async def execute(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
         self,
@@ -542,7 +337,13 @@ class SlayerQueryEngine:
                 f"with source_model='{name}'."
             )
 
-        stages = list(model.source_queries)
+        # Codex: stored ``source_queries`` may be in non-topological order
+        # for ``joins[].target_model`` deps (the save path's
+        # ``_expand_query_backed_model`` calls ``topologically_order_stages``
+        # so it accepts that; ``plan_stages._topo_sort`` only handles
+        # ``source_model`` deps). Re-use the engine-wide topo-sort here so
+        # run-by-name matches save-time semantics.
+        stages = topologically_order_stages(list(model.source_queries))
         main_query = stages[-1]
         named_queries: Dict[str, SlayerQuery] = {}
         for q in stages[:-1]:
@@ -601,97 +402,116 @@ class SlayerQueryEngine:
         if query.whole_periods_only:
             query = query.snap_to_whole_periods()
 
-        # Resolve model from query.source_model (str, SlayerModel, or ModelExtension).
-        # Pass query.variables as the outer-vars context for any nested
-        # query-backed model resolution; runtime_kwarg threads through unchanged.
-        resolving: set = set()
-        model = await self._resolve_query_model(
-            query_model=query.source_model,
+        # P11 — build the resolved source bundle once. Storage is consulted
+        # here and only here; the binder then reads from the bundle purely.
+        bundle = await build_resolved_source_bundle(
+            query=query,
+            storage=self.storage,
+            data_source=prefer_data_source,
+            runtime_variables=runtime_kwarg,
             named_queries=named_queries,
-            _resolving=resolving,
-            outer_vars=query.variables,
-            runtime_kwarg=runtime_kwarg,
-            prefer_data_source=prefer_data_source,
         )
 
-        # Auto-correct: move bare field names to dimensions if they match
-        query = await self._auto_move_fields_to_dimensions(query, model, named_queries)
+        # Expand every query-backed model in the bundle (source + referenced
+        # + stage_source) and re-apply root inline_extensions. Shared with
+        # the migrated ``_expand_query_backed_model`` path (DEV-1452 Stage B
+        # decision F) so both surfaces consume the identical expansion
+        # contract — divergence between them silently broke nested
+        # query-backed targets in the legacy stack.
+        original_source_model = bundle.source_model
+        bundle = await expand_query_backed_models_in_bundle(
+            bundle=bundle,
+            outer_vars=query.variables,
+            runtime_kwarg=runtime_kwarg,
+            dry_run_placeholders=False,
+            expander=self._expand_query_backed_model,
+        )
+        # ``build_resolved_source_bundle`` raises if the source model can't be
+        # resolved, so ``source_model`` is always populated here.
+        model = bundle.source_model
+        assert model is not None
+
+        # P0 — slack-normalization pass. Rewrites slack-but-unambiguous agent
+        # input (function-style aggs, misplaced bare measures) to canonical
+        # form before the typed parser sees it. Each stage normalizes against
+        # its own resolved model; warnings surface on the response.
+        sibling_names = set(named_queries)
+        query, slack_warnings = self._normalize_stage(
+            query=query, bundle=bundle, sibling_names=sibling_names,
+        )
+        normed_named: Dict[str, SlayerQuery] = {}
+        for nm, nq in named_queries.items():
+            nq2, nq_warnings = self._normalize_stage(
+                query=nq, bundle=bundle, sibling_names=sibling_names,
+            )
+            normed_named[nm] = nq2
+            slack_warnings.extend(nq_warnings)
+
+        # Variable substitution into filters (the only field legacy
+        # substituted). Root uses the bundle's merged variables; each sibling
+        # re-merges with its own stage layer (precedence runtime > stage >
+        # outer > model defaults).
+        query = apply_variables_to_query(
+            query=query, variables=bundle.query_variables,
+        )
+        root_vars = query.variables
+        normed_named = {
+            nm: apply_variables_to_query(
+                query=nq,
+                variables={
+                    # Lowest layer: the stage's OWN source-model defaults (a
+                    # sibling-sourced stage has no resolved model here, so fall
+                    # back to the root model's defaults).
+                    **(
+                        (
+                            bundle.stage_source_models[nm].query_variables
+                            if nm in bundle.stage_source_models
+                            else (model.query_variables if model else None)
+                        )
+                        or {}
+                    ),
+                    **(root_vars or {}),
+                    **(nq.variables or {}),
+                    **(runtime_kwarg or {}),
+                },
+            )
+            for nm, nq in normed_named.items()
+        }
+
+        # Plan the DAG (root last) and render the whole chain to one SQL string.
+        stages = [*normed_named.values(), query]
+        planned_list = plan_stages(queries=stages, bundle=bundle)
+        root_planned = planned_list[-1]
 
         datasource = await self._resolve_datasource(model=model)
-
-        # Enrich: SlayerQuery + model → EnrichedQuery
-        enriched = await self._enrich(query=query, model=model, named_queries=named_queries)
-
-        # Generate SQL from EnrichedQuery
         dialect = self._dialect_for_type(datasource.type)
-        generator = SQLGenerator(dialect=dialect)
-        # DEV-1444: this is the final-stage SQL that gets executed and
-        # shown to the user — pin ``outer`` mode so the projection is
-        # trimmed to public_projection_aliases(enriched).
-        sql = generator.generate(enriched=enriched, render_mode="outer")
+        sql = generate_planned_stages(
+            planned_list, bundle=bundle, dialect=dialect,
+        )
         logger.debug("Generated SQL:\n%s", sql)
 
-        # DEV-1444: the response's attributes + expected_columns must mirror
-        # the trimmed outer projection — never include hoisted intermediates.
-        public_aliases = set(public_projection_aliases(enriched))
+        # Response metadata (attributes + expected_columns) from the typed
+        # plan + rendered SQL. expected_columns reads the outer SELECT's
+        # result keys straight from the SQL; attributes classify each public
+        # slot dimension-vs-measure with its label / format.
+        attributes, expected_columns = build_response_metadata(
+            root_planned=root_planned, bundle=bundle, sql=sql, dialect=dialect,
+        )
 
-        # Collect field metadata from enriched query, split by type. Each
-        # entry is included only if its alias is part of the public
-        # projection (filter-extracted hidden transforms, ORDER-BY
-        # aggregates, and window-arg hoists are silently dropped).
-        dim_meta: Dict[str, FieldMetadata] = {}
-        measure_meta: Dict[str, FieldMetadata] = {}
-        for d in enriched.dimensions:
-            if d.alias in public_aliases and (d.label or d.format):
-                dim_meta[d.alias] = FieldMetadata(label=d.label, format=d.format)
-        for td in enriched.time_dimensions:
-            if td.alias in public_aliases and td.label:
-                dim_meta[td.alias] = FieldMetadata(label=td.label)
-        for m in enriched.measures:
-            if m.alias not in public_aliases:
-                continue
-            measure_fmt = _infer_aggregated_format(
-                model=model,
-                measure_name=m.source_measure_name or m.name,
-                aggregation=m.aggregation,
-            )
-            if m.label or measure_fmt:
-                measure_meta[m.alias] = FieldMetadata(label=m.label, format=measure_fmt)
-        for e in enriched.expressions:
-            if e.alias not in public_aliases:
-                continue
-            measure_meta[e.alias] = FieldMetadata(
-                label=e.label,
-                format=NumberFormat(type=NumberFormatType.FLOAT),
-            )
-        for t in enriched.transforms:
-            if t.alias not in public_aliases:
-                continue
-            measure_meta[t.alias] = FieldMetadata(
-                label=t.label,
-                format=NumberFormat(type=NumberFormatType.FLOAT),
-            )
-        for cm in enriched.cross_model_measures:
-            if cm.alias in public_aliases and (cm.label or cm.format):
-                measure_meta[cm.alias] = FieldMetadata(label=cm.label, format=cm.format)
-        attributes = ResponseAttributes(dimensions=dim_meta, measures=measure_meta)
-
-        # DEV-1444: expected_columns matches the outer SELECT projection
-        # exactly (helper-driven). Fall back to the legacy bucket-union if
-        # ``public_projection`` is empty (e.g. enrichment paths that don't
-        # yet populate ``user_projection``).
-        expected_columns = list(public_projection_aliases(enriched)) or (
-            [d.alias for d in enriched.dimensions]
-            + [td.alias for td in enriched.time_dimensions]
-            + [m.alias for m in enriched.measures if not m.name.startswith(("_inner_", "_ft"))]
-            + [e.alias for e in enriched.expressions]
-            + [t.alias for t in enriched.transforms if not t.name.startswith(("_inner_", "_ft"))]
-            + [cm.alias for cm in enriched.cross_model_measures]
+        # Models whose live schema a query-time DBAPI error could be attributed
+        # to (the typed-plan equivalent of the legacy enriched-derived set).
+        touched = self._touched_models_for_plan(
+            bundle=bundle,
+            planned_list=planned_list,
+            original_source_model=original_source_model,
         )
 
         # dry_run: return SQL without executing
         if dry_run:
-            return SlayerResponse(data=[], columns=expected_columns, sql=sql, attributes=attributes)
+            return SlayerResponse(
+                data=[], columns=expected_columns, sql=sql,
+                attributes=attributes, warnings=slack_warnings,
+            )
 
         # Execute — reuse SQL client (and its connection pool) per datasource
         ds_key = datasource.get_connection_string()
@@ -706,20 +526,91 @@ class SlayerQueryEngine:
                 rows = await client.execute(sql=explain_sql)
             except Exception as exc:
                 await self._maybe_raise_schema_drift(
-                    err=exc, model=model, enriched=enriched
+                    err=exc, model=model, touched_models=touched
                 )
                 raise
-            return SlayerResponse(data=rows, sql=sql, attributes=attributes)
+            return SlayerResponse(
+                data=rows, sql=sql, attributes=attributes,
+                warnings=slack_warnings,
+            )
 
         try:
             rows = await client.execute(sql=sql)
         except Exception as exc:
             await self._maybe_raise_schema_drift(
-                err=exc, model=model, enriched=enriched
+                err=exc, model=model, touched_models=touched
             )
             raise
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
-        return SlayerResponse(data=rows, columns=columns, sql=sql, attributes=attributes)
+        return SlayerResponse(
+            data=rows, columns=columns, sql=sql, attributes=attributes,
+            warnings=slack_warnings,
+        )
+
+    def _normalize_stage(
+        self,
+        *,
+        query: SlayerQuery,
+        bundle: ResolvedSourceBundle,
+        sibling_names: "set[str]",
+    ) -> "tuple[SlayerQuery, list[NormalizationWarning]]":
+        """Slack-normalize one stage against its resolved model (P0).
+
+        Resolves the stage's source model from the bundle so MISPLACED_MEASURE
+        and custom-aggregation-aware FUNC_STYLE_AGG see the right column /
+        aggregation names. A stage sourced from a sibling (a flat StageSchema)
+        has no ``SlayerModel`` — it normalizes with ``model=None`` (FUNC_STYLE_
+        AGG still applies; MISPLACED_MEASURE is a no-op without column names).
+        """
+        sm = query.source_model
+        model: Optional[SlayerModel] = None
+        if query.name and query.name in bundle.stage_source_models:
+            # A named non-root stage resolves to its OWN source model
+            # (string-concrete or inline) — normalize against that, not the
+            # root, so MISPLACED_MEASURE / custom-agg rewrites see the right
+            # columns/aggregations (CR). Sibling-sourced stages are absent
+            # from stage_source_models, so they fall through to model=None.
+            model = bundle.stage_source_models[query.name]
+        elif isinstance(sm, str):
+            if sm not in sibling_names:
+                model = bundle.get_referenced_model(sm)
+                if model is None and (
+                    bundle.source_model is not None
+                    and bundle.source_model.name == sm
+                ):
+                    model = bundle.source_model
+        else:
+            model = bundle.source_model
+        custom_aggs: Optional[frozenset[str]] = None
+        if model is not None and model.aggregations:
+            custom_aggs = frozenset(a.name for a in model.aggregations)
+        norm = normalize_query(query, model=model, custom_agg_names=custom_aggs)
+        out = norm.query if norm.query is not None else query
+        return out, list(norm.warnings)
+
+    def _touched_models_for_plan(
+        self,
+        *,
+        bundle: ResolvedSourceBundle,
+        planned_list: "list[PlannedQuery]",
+        original_source_model: Optional[SlayerModel],
+    ) -> "set[str]":
+        """Names of every model this query touched, for schema-drift attribution.
+
+        The bundle's ``referenced_models`` already hold the transitive join
+        walk plus every sibling-stage base; cross-model aggregate targets come
+        off each planned stage; query-backed base names are recovered from the
+        pre-expansion source model. ``_maybe_raise_schema_drift`` widens this
+        further via ``_expand_join_graph``.
+        """
+        touched: set[str] = {m.name for m in bundle.referenced_models}
+        for pq in planned_list:
+            for cmp in pq.cross_model_aggregate_plans:
+                touched.add(cmp.target_model)
+        if original_source_model is not None and original_source_model.source_queries:
+            touched.add(original_source_model.name)
+            touched |= self._collect_query_backed_base_names(original_source_model)
+        return touched
 
     @staticmethod
     def _collect_query_backed_base_names(model: SlayerModel) -> "set[str]":
@@ -815,12 +706,18 @@ class SlayerQueryEngine:
         *,
         err: BaseException,
         model: SlayerModel,
-        enriched: "EnrichedQuery",
+        enriched: "Optional[EnrichedQuery]" = None,
+        touched_models: "Optional[set[str]]" = None,
     ) -> None:
         """Attribute a query-time exception to schema drift via
         ``validate_models``. If drift is found in the touched models, raise
         ``SchemaDriftError`` (with ``err`` as ``__cause__``); otherwise
         return so the caller re-raises the original exception untouched.
+
+        The typed pipeline passes ``touched_models`` directly (computed from
+        the resolved bundle / plan); the legacy path passes ``enriched`` and
+        the set is derived from it. Either way the join graph is widened via
+        ``_expand_join_graph`` before attribution.
 
         Any error from ``validate_models`` itself is swallowed so the
         original exception is never masked.
@@ -828,7 +725,15 @@ class SlayerQueryEngine:
         from slayer.core.errors import SchemaDriftError
 
         try:
-            touched = await self._collect_models_touched(model=model, enriched=enriched)
+            if touched_models is not None:
+                touched = set(touched_models)
+                await self._expand_join_graph(
+                    touched=touched, data_source=model.data_source or None
+                )
+            else:
+                touched = await self._collect_models_touched(
+                    model=model, enriched=enriched
+                )
             # Cross-model measure source models share the parent's DS in
             # validated queries (cross-DS joins are rejected at resolve
             # time), so attribution only needs the parent's data_source.
@@ -886,7 +791,7 @@ class SlayerQueryEngine:
             measures.append(ModelMeasure(formula=f"{c.name}:{agg}"))
         return SlayerQuery(source_model=model.name, measures=measures)
 
-    async def get_column_types(
+    async def get_column_types(  # NOSONAR(S3776) — linear probe pipeline: query-backed prelude → bundle → expand-nested → plan → render → execute → result-key map-back. Splitting hides the order; each step is its own try/except + early-return so flatness is the easier read.
         self,
         model_name: str,
         data_source: Optional[str] = None,
@@ -943,29 +848,68 @@ class SlayerQueryEngine:
         client = self._sql_clients[ds_key]
 
         probe_query = self._build_type_probe_query(model=model)
+        # If the model was expanded by the prelude above (query-backed
+        # case), it's a virtual sql-mode model — pass it INLINE so the
+        # bundle resolves against the expanded shape rather than re-
+        # consulting storage (which still holds the un-expanded source
+        # plus a potentially stale ``data_source``).
+        if not model.source_queries:
+            probe_query = probe_query.model_copy(update={"source_model": model})
         try:
-            enriched = await self._enrich(query=probe_query, model=model)
+            bundle = await build_resolved_source_bundle(
+                query=probe_query,
+                storage=self.storage,
+                data_source=model.data_source or None,
+                runtime_variables={},
+                named_queries={},
+            )
+            # Expand any nested query-backed models (join targets, etc.)
+            # so the planner / generator sees ``sql``-mode shapes.
+            bundle = await expand_query_backed_models_in_bundle(
+                bundle=bundle,
+                outer_vars=None,
+                runtime_kwarg=None,
+                dry_run_placeholders=True,
+                expander=self._expand_query_backed_model,
+            )
+            planned = plan_stages(queries=[probe_query], bundle=bundle)
+            root = planned[-1]
             dialect = self._dialect_for_type(datasource.type)
-            generator = SQLGenerator(dialect=dialect)
-            # DEV-1444: type probing is a user-visible call site; pin
-            # ``outer`` mode explicitly so a future default-change cannot
-            # silently shift type-probe behaviour.
-            sql = generator.generate(enriched=enriched, render_mode="outer")
+            sql = generate_planned_stages(planned, bundle=bundle, dialect=dialect)
         except Exception:
-            logger.warning("get_column_types enrich/generate failed for model '%s'", model_name)
+            logger.warning(
+                "get_column_types plan/generate failed for model '%s'",
+                model_name,
+            )
             return {}
 
         try:
             raw_types = await client.get_column_types(sql=sql)
         except Exception:
-            logger.warning("get_column_types probe failed for model '%s'", model_name)
+            logger.warning(
+                "get_column_types probe failed for model '%s'", model_name,
+            )
             return {}
 
-        # Map qualified aliases (e.g., "orders.revenue_max") back to bare measure names
+        # Map qualified aliases (e.g., "orders.revenue_max") back to bare
+        # measure names. Probe sources can be ColumnKey (.leaf) or
+        # ColumnSqlKey (.column_name) per DEV-1369 derived columns.
         result: Dict[str, str] = {}
-        for em in enriched.measures:
-            if em.alias in raw_types:
-                result[em.source_measure_name or em.name] = raw_types[em.alias]
+        source_relation = root.source_relation
+        for slot in root.aggregate_slots:
+            if slot.hidden:
+                continue
+            src = getattr(slot.key, "source", None)
+            bare = (
+                getattr(src, "leaf", None)
+                or getattr(src, "column_name", None)
+            )
+            if bare is None:
+                continue
+            public = slot.public_name or slot.declared_name
+            full = f"{source_relation}.{public}"
+            if full in raw_types:
+                result[bare] = raw_types[full]
         return result
 
     def execute_sync(
@@ -1215,7 +1159,7 @@ class SlayerQueryEngine:
             )
         )
 
-    async def _expand_query_backed_model(
+    async def _expand_query_backed_model(  # NOSONAR S3776 — linear render pipeline (topo-sort → bundle → expand-nested → normalize → variables → plan → render → wrap); splitting hides the order of operations
         self,
         model: SlayerModel,
         outer_vars: Optional[Dict[str, Any]],
@@ -1223,26 +1167,181 @@ class SlayerQueryEngine:
         dry_run_placeholders: bool,
         _resolving: Optional[set],
     ) -> SlayerModel:
-        """If ``model`` is query-backed, expand its ``source_queries`` into a
-        virtual model (with rendered SQL). Otherwise return ``model`` unchanged.
+        """Expand a query-backed ``model`` into a virtual ``sql``-mode model
+        through the typed pipeline (DEV-1452 Stage B).
 
-        Read-only — never writes to storage. The persisted cache
-        (``columns`` / ``backing_query_sql`` / ``data_source``) is populated
-        only by ``engine.save_model`` / ``create_model_from_query(save=True)``.
+        Mirrors ``_execute_pipeline``'s mid-section (bundle → expand-nested
+        → normalize → variables → ``plan_stages`` → ``generate_planned_stages``)
+        and wraps the rendered backing SQL in a flat-rename SELECT so the
+        virtual model exposes downstream-bindable flat columns. Read-only —
+        never writes to storage; the persisted cache (``columns`` /
+        ``backing_query_sql`` / ``data_source``) is populated only by
+        ``engine.save_model`` / ``create_model_from_query(save=True)``.
+
+        ``_resolving`` is preserved for caller signature parity but the
+        recursion guard moves out of the migrated path. Forward / self /
+        cycle references in stored ``source_queries`` are caught by
+        ``topologically_order_stages`` up front; nested query-backed
+        targets / stage sources are handled by
+        ``expand_query_backed_models_in_bundle`` (which re-enters this
+        method recursively via the ``expander`` callback). The two legacy
+        ContextVars (``_join_target_resolving_var`` /
+        ``_forbidden_sibling_refs_var``) are not set or read on this path.
         """
         if not model.source_queries:
             return model
-        stages = list(model.source_queries)
-        merged_outer = {**model.query_variables, **(outer_vars or {})}
+
+        # 1. Topo-sort + validate (root-as-sink, joins.target_model
+        # awareness, inline-nested ``SlayerModel.source_queries``
+        # recursion per decision E).
+        stages = topologically_order_stages(list(model.source_queries))
+        final_stage = stages[-1]
         named_q = {q.name: q for q in stages[:-1] if q.name}
-        return await self._query_as_model(
-            inner_query=stages[-1],
+
+        # 2. Build resolved source bundle for the final stage. Stage B
+        # mirrors the legacy ``_query_as_model`` data_source behaviour: the
+        # bundle is built WITHOUT a DS hint, so the inner resolution falls
+        # back to the unique-match / priority-list resolver. This lets
+        # ``get_column_types`` recover from a stale persisted
+        # ``model.data_source`` (the cache populator may not have refreshed
+        # yet); join-target lookups still scope to whichever DS the
+        # resolved base model actually lives in.
+        bundle = await build_resolved_source_bundle(
+            query=final_stage,
+            storage=self.storage,
+            data_source=None,
+            runtime_variables=runtime_kwarg,
+            outer_variables={**model.query_variables, **(outer_vars or {})},
             named_queries=named_q,
-            override_name=model.name,
-            _resolving=_resolving,
-            outer_vars=merged_outer,
+        )
+
+        # 3. Expand every query-backed model in the bundle and re-apply
+        # root inline_extensions. Shared with ``_execute_pipeline``. The
+        # ``_resolving`` set propagates the in-flight expansion names so
+        # a query-backed join target that transitively references its
+        # parent short-circuits via cached ``backing_query_sql`` rather
+        # than recursing forever.
+        #
+        # Codex: pass the bundle's MERGED variables (which already include
+        # ``{model.query_variables, outer_vars, stage, runtime}`` per
+        # precedence) rather than the bare stage-level ``final_stage.
+        # variables``. Otherwise nested expansions / sibling stages lose
+        # the outer model's ``query_variables`` layer and substitution
+        # diverges between execute and save-time dry-run.
+        bundle = await expand_query_backed_models_in_bundle(
+            bundle=bundle,
+            outer_vars=bundle.query_variables,
             runtime_kwarg=runtime_kwarg,
             dry_run_placeholders=dry_run_placeholders,
+            expander=self._expand_query_backed_model,
+            _resolving=(_resolving or set()) | {model.name},
+        )
+
+        # 4. Per-stage normalize + variable substitution. Mirrors
+        # ``_execute_pipeline:486-535``.
+        sibling_names = set(named_q)
+        final_stage, _slack = self._normalize_stage(
+            query=final_stage, bundle=bundle, sibling_names=sibling_names,
+        )
+        normed_named: Dict[str, SlayerQuery] = {}
+        for nm, nq in named_q.items():
+            nq2, _ = self._normalize_stage(
+                query=nq, bundle=bundle, sibling_names=sibling_names,
+            )
+            normed_named[nm] = nq2
+        final_stage = apply_variables_to_query(
+            query=final_stage,
+            variables=bundle.query_variables,
+            dry_run_placeholders=dry_run_placeholders,
+        )
+        # Codex: ``final_stage.variables`` is the user-supplied stage-level
+        # dict; ``apply_variables_to_query`` substitutes into filters but
+        # does not promote merged layers onto ``.variables``. Sibling
+        # substitution therefore needs ``bundle.query_variables`` (the
+        # merged ``{runtime > final_stage.variables > model.query_variables
+        # > outer_vars > source_model_defaults}`` set) — using the bare
+        # stage dict drops ``model.query_variables`` and dry-run save
+        # fills sibling filters' ``{var}`` placeholders with ``0``.
+        normed_named = {
+            nm: apply_variables_to_query(
+                query=nq,
+                variables={
+                    **(
+                        (
+                            bundle.stage_source_models[nm].query_variables
+                            if nm in bundle.stage_source_models
+                            else (
+                                bundle.source_model.query_variables
+                                if bundle.source_model else None
+                            )
+                        )
+                        or {}
+                    ),
+                    **(bundle.query_variables or {}),
+                    **(nq.variables or {}),
+                    **(runtime_kwarg or {}),
+                },
+                dry_run_placeholders=dry_run_placeholders,
+            )
+            for nm, nq in normed_named.items()
+        }
+
+        # 5. Plan + render the DAG.
+        plan_input = [*normed_named.values(), final_stage]
+        planned_list = plan_stages(queries=plan_input, bundle=bundle)
+        root_planned = planned_list[-1]
+        inner_source_model = bundle.source_model
+        assert inner_source_model is not None
+        datasource = await self._resolve_datasource(model=inner_source_model)
+        dialect = self._dialect_for_type(datasource.type)
+        rendered = generate_planned_stages(
+            planned_list, bundle=bundle, dialect=dialect,
+        )
+
+        # 6. Wrap with flat-renamed SELECT. Public StageColumn entries
+        # only — hoisted hidden slots are planner-synthesized
+        # intermediates the user never declared and must not surface as
+        # virtual-model columns (P4 closure / decision #3).
+        public_cols = [
+            c for c in (
+                root_planned.stage_schema.columns
+                if root_planned.stage_schema is not None else []
+            )
+            if c.public_alias is not None
+        ]
+        expected = [c.name for c in public_cols]
+        wrapped_ast = build_flat_rename_wrapper(
+            source_relation=root_planned.source_relation,
+            stage_sql=rendered,
+            expected_columns=expected,
+            dialect=dialect,
+        )
+        wrapped_sql = wrapped_ast.sql(dialect=dialect, pretty=True)
+
+        # 7. Build virtual model from public StageColumn entries.
+        # Slot types drive Column.type (decision #2) so ``*:count`` →
+        # ``INT``, declared ``ModelMeasure.type`` is honored, and source
+        # column types propagate through ``sum`` / ``min`` / ``max``.
+        cols = [
+            Column(
+                name=sc.name,
+                sql=sc.name,
+                type=sc.type or DataType.DOUBLE,
+                label=sc.label,
+                description=sc.description,
+                format=sc.format,
+            )
+            for sc in public_cols
+        ]
+        return SlayerModel(
+            name=model.name,
+            sql=wrapped_sql,
+            data_source=inner_source_model.data_source,
+            columns=cols,
+            default_time_dimension=inner_source_model.default_time_dimension,
+            # source_model_origin intentionally NOT set (decision D):
+            # the typed pipeline answers DEV-1449 through the flat
+            # ``StageSchema`` namespace, not via the legacy lineage walk.
         )
 
     async def _resolve_query_model(  # NOSONAR S3776 — type-dispatch on str/SlayerModel/ModelExtension/dict; flat is clearer than per-shape helpers here
@@ -1482,7 +1581,15 @@ class SlayerQueryEngine:
         For query-backed models, rejects user-supplied cache fields and runs
         save-time dry-run validation before populating the cache. For non-
         query-backed models, persists as-is.
+
+        DEV-1450 stage 6 — runs the slack-normalization layer over the
+        incoming model so persisted formulas land in canonical form. The
+        legacy in-tree rewriters still fire during enrichment for callers
+        that load and re-execute persisted models.
         """
+        norm_model = normalize_model(model)
+        if norm_model.model is not None:
+            model = norm_model.model
         # Capture the *previous* data_source for this name so we can clean
         # up the old storage entry when a query-backed model's resolved
         # data_source changes (e.g. its backing query now points at a
@@ -1527,18 +1634,20 @@ class SlayerQueryEngine:
         """Run save-time dry-run validation on a query-backed model and
         return a copy with ``columns``, ``backing_query_sql``, and
         ``data_source`` populated from the virtual model.
+
+        DEV-1452 Stage B — pure delegate to the migrated
+        ``_expand_query_backed_model`` with ``dry_run_placeholders=True``
+        so any required-but-undefaulted ``{var}`` placeholder is filled
+        with the legacy ``"0"`` sentinel rather than raising at SQL-gen.
         """
-        stages = list(model.source_queries or [])
-        if not stages:
+        if not (model.source_queries or []):
             return model
-        virtual = await self._query_as_model(
-            inner_query=stages[-1],
-            named_queries={q.name: q for q in stages[:-1] if q.name},
-            override_name=model.name,
-            _resolving=set(),
+        virtual = await self._expand_query_backed_model(
+            model=model,
             outer_vars=dict(model.query_variables),
             runtime_kwarg={},
             dry_run_placeholders=True,
+            _resolving=set(),
         )
         return model.model_copy(update={
             "columns": list(virtual.columns),
@@ -2009,54 +2118,19 @@ class SlayerQueryEngine:
         named_queries: dict = None,
         strict_missing_join: bool = True,
     ) -> "tuple[SlayerModel, ModelJoin | None]":
-        """Walk the join graph from ``source_model`` through ``hop_names``,
-        returning ``(terminal_model, first_join)``. Single source of
-        truth for both dimension and cross-model-measure resolution
-        (DEV-1369 — consolidates two prior near-duplicate walkers).
+        """Thin shim — delegates to ``slayer.engine.path_resolution.walk_join_chain``.
 
-        Cycle detection: a hop name that already appears on the visited
-        stack (including ``source_model.name``) raises ``ValueError`` with
-        the offending path.
-
-        Missing-join behaviour:
-
-        * ``strict_missing_join=True`` (cross-model-measure callers) —
-          raise ``ValueError`` listing the available joins.
-        * ``strict_missing_join=False`` (dimension callers) — raise the
-          internal :class:`_NoJoinError` sentinel so the caller can map
-          to a ``None`` return.
+        Kept as an instance method so existing call sites
+        (``self._walk_join_chain(...)``) continue to work unchanged
+        after the DEV-1450 stage-3 extraction.
         """
-        current_model = source_model
-        visited = {source_model.name}
-        first_join: "ModelJoin | None" = None
-        for i, hop_name in enumerate(hop_names):
-            if hop_name in visited:
-                raise ValueError(
-                    f"Circular join detected while resolving "
-                    f"'{'.'.join(hop_names)}': '{hop_name}' already visited "
-                    f"({' → '.join(visited)} → {hop_name})"
-                )
-            join = next(
-                (j for j in current_model.joins if j.target_model == hop_name),
-                None,
-            )
-            if join is None:
-                if strict_missing_join:
-                    raise ValueError(
-                        f"Model '{current_model.name}' has no join to "
-                        f"'{hop_name}'. Available joins: "
-                        f"{[j.target_model for j in current_model.joins]}"
-                    )
-                raise _NoJoinError(hop_name)
-            if i == 0:
-                first_join = join
-            current_model = await self._resolve_model(
-                model_name=hop_name,
-                named_queries=named_queries or {},
-                prefer_data_source=current_model.data_source or None,
-            )
-            visited.add(hop_name)
-        return current_model, first_join
+        return await walk_join_chain(
+            source_model=source_model,
+            hop_names=hop_names,
+            resolve_model=self._resolve_model,
+            named_queries=named_queries,
+            strict_missing_join=strict_missing_join,
+        )
 
     async def _auto_move_fields_to_dimensions(
         self,

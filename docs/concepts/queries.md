@@ -119,10 +119,15 @@ Filter formulas define conditions for the query. They go in the `filters` parame
 | `<` | `"amount < 1000"` |
 | `<=` | `"amount <= 1000"` |
 | `in` | `"status in ('active', 'pending')"` |
+| `not in` | `"status not in ('cancelled', 'expired')"` |
 | `IS NULL` | `"discount IS NULL"` |
 | `IS NOT NULL` | `"discount IS NOT NULL"` |
 | `like` | `"name like '%acme%'"` |
 | `not like` | `"name not like '%test%'"` |
+
+The right-hand side of `in` / `not in` must be a non-empty tuple of literal
+values (strings, numbers, or booleans) — references and expressions on the
+RHS are not supported. Both `(...)` and `[...]` syntax are accepted.
 
 ### Boolean Logic
 
@@ -393,6 +398,21 @@ When models have [joins](models.md#joins), you can reference measures from joine
 ```
 
 This generates a sub-query for the joined measure, scoped to shared dimensions, and LEFT JOINs it to the main query — avoiding aggregation errors from row multiplication.
+
+A cross-model **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target column do not collide:
+
+```json
+{
+  "source_model": "orders",
+  "dimensions": ["customers.region"],
+  "measures": [
+    "customers.revenue:percentile(p=0.5)",
+    "customers.revenue:percentile(p=0.95)"
+  ]
+}
+```
+
+surfaces two distinct result keys — `orders.customers.revenue_percentile_p_0_5` and `orders.customers.revenue_percentile_p_0_95`. (A non-parametric `customers.revenue:sum` surfaces as `orders.customers.revenue_sum`.)
 
 ### Query lists
 

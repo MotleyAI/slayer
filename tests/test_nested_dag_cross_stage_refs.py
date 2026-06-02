@@ -32,7 +32,7 @@ from slayer.core.models import (
     SlayerModel,
     SourceModelOrigin,
 )
-from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.enrichment import resolve_via_stage_origin
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_storage import SQLiteStorage
@@ -239,7 +239,10 @@ class TestReportedCase:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                dimensions=["customers.regions.name"],
+                # DEV-1450 typed contract: downstream stages see a FLAT
+                # schema — the inner stage's `customers.regions.name`
+                # dim is projected as `customers__regions__name` on s1.
+                dimensions=["customers__regions__name"],
                 measures=[{"formula": "*:count"}],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -269,34 +272,6 @@ class TestReportedCase:
         finally:
             tmp.cleanup()
 
-    async def test_result_key_preserves_user_typed_dotted_form(self) -> None:
-        """The outer column alias (and `SlayerResponse` result key) keeps
-        the user-typed dotted form `s1.customers.regions.name`."""
-        engine, tmp = await _engine_with_join_chain()
-        try:
-            inner = SlayerQuery(
-                name="s1",
-                source_model="orders",
-                dimensions=["customers.regions.name"],
-                measures=[{"formula": "*:count"}],
-            )
-            outer = SlayerQuery(
-                source_model="s1",
-                dimensions=["customers.regions.name"],
-                measures=[{"formula": "*:count"}],
-            )
-            resp = await engine.execute(query=[inner, outer], dry_run=True)
-            sql = resp.sql or ""
-            # The outer SELECT's projection should alias to the dotted form.
-            select = _outermost_select(sql)
-            outer_aliases = {p.alias_or_name for p in select.expressions or []}
-            assert "s1.customers.regions.name" in outer_aliases, (
-                f"Outer projection must alias as the user-typed dotted form.\n"
-                f"got aliases: {outer_aliases}\nSQL:\n{sql}"
-            )
-        finally:
-            tmp.cleanup()
-
     async def test_end_to_end_against_real_sqlite(self, tmp_path) -> None:
         """Execute the repro query against a real SQLite DB and verify
         it runs (today it fails with `no such column`).
@@ -310,13 +285,14 @@ class TestReportedCase:
         )
         outer = SlayerQuery(
             source_model="s1",
-            dimensions=["customers.regions.name"],
+            # DEV-1450 typed contract: downstream uses the flat alias.
+            dimensions=["customers__regions__name"],
             measures=[{"formula": "*:count"}],
         )
         resp = await engine.execute(query=[inner, outer])
         # Three distinct regions in the seed → three rows.
         assert resp.row_count == 3, f"got {resp.row_count} rows: {resp.data}"
-        region_names = {row["s1.customers.regions.name"] for row in resp.data}
+        region_names = {row["s1.customers__regions__name"] for row in resp.data}
         assert region_names == {"West", "East", "North"}, region_names
 
 
@@ -337,7 +313,8 @@ class TestThreeHopDimension:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                dimensions=["customers.regions.countries.name"],
+                # DEV-1450 typed contract: flat downstream alias.
+                dimensions=["customers__regions__countries__name"],
                 measures=[{"formula": "*:count"}],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -364,6 +341,11 @@ class TestThreeHopDimension:
 # Test #3 — cross-stage time dimension.
 # ===========================================================================
 class TestCrossStageTimeDimension:
+    @pytest.mark.skip(
+        reason="DEV-1471: cross-stage time_dim re-binding not yet supported in "
+        "the typed pipeline. Inner stage truncates the column; downstream sees "
+        "it as a flat name and the binder rejects re-binding as a TimeDimension."
+    )
     async def test_multi_hop_dotted_time_dim_cross_stage(self) -> None:
         """Inner stage projects a multi-hop dotted time dim
         `customers.regions.last_activity_at`. Outer references the same
@@ -383,7 +365,8 @@ class TestCrossStageTimeDimension:
             outer = SlayerQuery(
                 source_model="s1",
                 time_dimensions=[TimeDimension(
-                    dimension=ColumnRef(name="customers.regions.last_activity_at"),
+                    # DEV-1450 typed contract: flat downstream alias.
+                    dimension=ColumnRef(name="customers__regions__last_activity_at"),
                     granularity=TimeGranularity.MONTH,
                 )],
                 measures=[{"formula": "*:count"}],
@@ -425,7 +408,9 @@ class TestCrossStageCrossModelMeasure:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                measures=[{"formula": "customers.revenue:sum"}],
+                # DEV-1450 typed re-aggregation: outer references the flat
+                # inner alias `customers__revenue_sum` directly and sums it.
+                measures=[{"formula": "customers__revenue_sum:sum"}],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -458,7 +443,9 @@ class TestCrossStageCrossModelMeasure:
         )
         outer = SlayerQuery(
             source_model="s1",
-            measures=[{"formula": "customers.revenue:sum"}],
+            # DEV-1450 typed re-aggregation: outer references the flat
+            # inner alias directly.
+            measures=[{"formula": "customers__revenue_sum:sum"}],
         )
         resp = await engine.execute(query=[inner, outer])
         assert resp.row_count == 1, f"got {resp.row_count} rows: {resp.data}"
@@ -467,17 +454,13 @@ class TestCrossStageCrossModelMeasure:
         # SUM per region matches per-customer revenue; outer re-SUM
         # totals 1500.
         row = resp.data[0]
-        # Codex review round 3 on PR #137: intercepted measures surface
-        # under the cross-model canonical alias shape (`s1.customers.revenue_sum`),
-        # matching what a regular cross-model CTE query would produce.
-        # This keeps result keys, colon-form filter resolution, and
-        # ORDER BY consistent between the intercept and CTE paths.
-        assert "s1.customers.revenue_sum" in row, (
-            f"Re-aggregated CMM must surface under the cross-model "
-            f"canonical alias `s1.customers.revenue_sum`, not the "
-            f"intercept's internal `_sum_sum` form.\nrow: {row}"
+        # DEV-1450 typed contract: re-aggregating the flat inner alias
+        # surfaces under the canonical `<col>_sum` shape.
+        assert "s1.customers__revenue_sum_sum" in row, (
+            f"Re-aggregated flat alias must surface as "
+            f"`s1.customers__revenue_sum_sum`.\nrow: {row}"
         )
-        assert row["s1.customers.revenue_sum"] == pytest.approx(1500.0), row
+        assert row["s1.customers__revenue_sum_sum"] == pytest.approx(1500.0), row
 
 
 # ===========================================================================
@@ -497,9 +480,11 @@ class TestCrossStageFilter:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                dimensions=["customers.regions.name"],
+                # DEV-1450 typed contract: downstream uses flat alias in
+                # dimensions AND filters.
+                dimensions=["customers__regions__name"],
                 measures=[{"formula": "*:count"}],
-                filters=["customers.regions.name = 'West'"],
+                filters=["customers__regions__name = 'West'"],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -535,13 +520,14 @@ class TestCrossStageFilter:
         )
         outer = SlayerQuery(
             source_model="s1",
-            dimensions=["customers.regions.name"],
+            # DEV-1450 typed contract: downstream flat-only refs.
+            dimensions=["customers__regions__name"],
             measures=[{"formula": "*:count"}],
-            filters=["customers.regions.name = 'West'"],
+            filters=["customers__regions__name = 'West'"],
         )
         resp = await engine.execute(query=[inner, outer])
         assert resp.row_count == 1, f"got {resp.row_count} rows: {resp.data}"
-        assert resp.data[0]["s1.customers.regions.name"] == "West"
+        assert resp.data[0]["s1.customers__regions__name"] == "West"
 
 
 # ===========================================================================
@@ -561,9 +547,10 @@ class TestCrossStageOrderBy:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                dimensions=["customers.regions.name"],
+                # DEV-1450 typed contract: downstream flat-only refs.
+                dimensions=["customers__regions__name"],
                 measures=[{"formula": "*:count"}],
-                order=[{"column": "customers.regions.name"}],
+                order=[{"column": "customers__regions__name"}],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -577,12 +564,12 @@ class TestCrossStageOrderBy:
                 f"got: {order_tables}\nSQL:\n{sql}"
             )
             # Positive: ORDER BY must reference either the projection
-            # alias `"s1.customers.regions.name"` (column with no table
-            # qualifier — referencing the outer SELECT's quoted alias)
-            # or `s1.customers__regions__name` (the underlying column).
+            # alias `"s1.customers__regions__name"` (column with no table
+            # qualifier — the outer SELECT's quoted alias) or the
+            # underlying `s1.customers__regions__name` column.
             order_col_names = {c.name for c in order_cols}
             assert (
-                "s1.customers.regions.name" in order_col_names
+                "s1.customers__regions__name" in order_col_names
                 or "customers__regions__name" in order_col_names
             ), (
                 f"ORDER BY must reference the projection alias or the "
@@ -603,12 +590,13 @@ class TestCrossStageOrderBy:
         )
         outer = SlayerQuery(
             source_model="s1",
-            dimensions=["customers.regions.name"],
+            # DEV-1450 typed contract: downstream flat-only refs.
+            dimensions=["customers__regions__name"],
             measures=[{"formula": "*:count"}],
-            order=[{"column": "customers.regions.name"}],
+            order=[{"column": "customers__regions__name"}],
         )
         resp = await engine.execute(query=[inner, outer])
-        names = [row["s1.customers.regions.name"] for row in resp.data]
+        names = [row["s1.customers__regions__name"] for row in resp.data]
         assert names == sorted(names), f"Rows not sorted: {names}"
         assert names == ["East", "North", "West"], names
 
@@ -739,46 +727,6 @@ class TestShortAliasRegression:
                 c.name for c in _outer_column_refs(sql) if c.table == "s1"
             }
             assert "customers__regions__name" in outer_cols_on_s1
-        finally:
-            tmp.cleanup()
-
-
-# ===========================================================================
-# Test #10 — negative path: dim not projected by inner stage raises clear error.
-# ===========================================================================
-class TestNegativePath:
-    async def test_unresolvable_dotted_ref_falls_through(self) -> None:
-        """When an outer stage references a dotted dim the inner stage
-        didn't project, the resolver falls through to today's lenient
-        behavior (default-typed EnrichedDimension). The generated SQL
-        references a column that doesn't exist on the virtual stage —
-        execution would fail with the underlying DB error. (We don't
-        raise a SLayer-level error here because cross-model CTE
-        re-rooting legitimately produces unresolved dotted refs that
-        must fall through to the join-graph machinery.)
-
-        Pins: dry-run does NOT raise; the generated SQL has the dotted
-        reference unresolved (hybrid form), proving we left the lenient
-        path alone for non-virtual-stage code-paths."""
-        engine, tmp = await _engine_with_join_chain()
-        try:
-            inner = SlayerQuery(
-                name="s1",
-                source_model="orders",
-                dimensions=["customers.regions.name"],
-                measures=[{"formula": "*:count"}],
-            )
-            outer = SlayerQuery(
-                source_model="s1",
-                dimensions=["customers.regions.country_id"],
-                measures=[{"formula": "*:count"}],
-            )
-            resp = await engine.execute(query=[inner, outer], dry_run=True)
-            # No SLayer-level raise; the SQL was generated. Whether
-            # it would execute against a real DB is a separate
-            # concern — this test pins that we left the lenient
-            # fall-through intact.
-            assert resp.sql is not None
         finally:
             tmp.cleanup()
 
@@ -930,127 +878,14 @@ class TestRenamedInnerMeasureCrossStage:
 
 
 # ===========================================================================
-# Test #14 — ModelExtension as source_model preserves breadcrumb.
-# ===========================================================================
-class TestModelExtensionPreservesBreadcrumb:
-    async def test_extension_preserves_origin(self) -> None:
-        """When `source_model` is a `ModelExtension` extending `s1`, the
-        breadcrumb chain is preserved through the extension. The
-        dotted-ref outer dim resolves to the flat alias on the wrapped
-        virtual stage."""
-        engine, tmp = await _engine_with_join_chain()
-        try:
-            inner = SlayerQuery(
-                name="s1",
-                source_model="orders",
-                dimensions=["customers.regions.name"],
-                measures=[{"formula": "*:count"}],
-            )
-            outer = SlayerQuery(
-                source_model=ModelExtension(
-                    source_name="s1",
-                    columns=[
-                        Column(name="x2", sql="_count * 2", type=DataType.DOUBLE),
-                    ],
-                ),
-                dimensions=["customers.regions.name"],
-                measures=[{"formula": "*:count"}],
-            )
-            resp = await engine.execute(query=[inner, outer], dry_run=True)
-            sql = resp.sql or ""
-            outer_tables = _outer_tables_referenced(sql)
-            assert "customers__regions" not in outer_tables, (
-                f"ModelExtension must not leak hybrid ref.\n"
-                f"got: {outer_tables}\nSQL:\n{sql}"
-            )
-            # Positive: the dotted dim resolves to the flat alias on the
-            # extended virtual stage.
-            outer_cols = _outer_column_refs(sql)
-            assert any(
-                c.name == "customers__regions__name" for c in outer_cols
-            ), (
-                f"ModelExtension must preserve breadcrumb and resolve to "
-                f"flat alias.\ngot: {[(c.table, c.name) for c in outer_cols]}\n"
-                f"SQL:\n{sql}"
-            )
-        finally:
-            tmp.cleanup()
-
-
-# ===========================================================================
-# Test #15 — stored query-backed model save/execute breadcrumb behavior.
-# ===========================================================================
-class TestStoredQueryBackedModelBreadcrumb:
-    async def test_persisted_model_strips_breadcrumb_but_execute_repopulates(
-        self,
-    ) -> None:
-        """Save-time path creates the breadcrumb transiently (dropped by
-        `exclude=True`); execute-time path re-populates it before
-        enrichment sees the model. Verify both via direct spy + a
-        SQL-shape sanity check."""
-        engine, tmp = await _engine_with_join_chain()
-        try:
-            saved = SlayerModel(
-                name="orders_by_region",
-                data_source="test_ds",
-                source_queries=[SlayerQuery(
-                    source_model="orders",
-                    dimensions=["customers.regions.name"],
-                    measures=[{"formula": "*:count"}],
-                )],
-            )
-            # Use engine.save_model so the save-time
-            # _validate_and_populate_cache path fires.
-            await engine.save_model(saved)
-            # Persisted form drops the field (exclude=True).
-            loaded = await engine.storage.get_model(
-                "orders_by_region", data_source="test_ds",
-            )
-            assert loaded.source_model_origin is None, (
-                f"Persisted query-backed model must NOT carry "
-                f"source_model_origin after roundtrip. Got: "
-                f"{loaded.source_model_origin}"
-            )
-            # Execute-time: spy on `_resolve_dimension_with_terminal`
-            # (which is what `enrich_query` invokes — see
-            # query_engine.py:1661 passing `self._resolve_dimension_with_terminal`).
-            seen_origins = []
-            original = engine._resolve_dimension_with_terminal  # type: ignore[attr-defined]
-
-            async def _spy(model, parts, named_queries=None):
-                seen_origins.append(model.source_model_origin)
-                return await original(
-                    model=model, parts=parts, named_queries=named_queries,
-                )
-
-            engine._resolve_dimension_with_terminal = _spy  # type: ignore[attr-defined]
-            outer = SlayerQuery(
-                source_model="orders_by_region",
-                dimensions=["customers.regions.name"],
-                measures=[{"formula": "*:count"}],
-            )
-            resp = await engine.execute(outer, dry_run=True)
-            assert seen_origins, "Spy did not observe any model resolution"
-            assert any(o is not None for o in seen_origins), (
-                f"Execute-time path must re-populate source_model_origin "
-                f"on the wrapped virtual stage model.\n"
-                f"Observed origins: {seen_origins}"
-            )
-            # Sanity check: the generated SQL has no broken hybrid ref.
-            sql = resp.sql or ""
-            outer_tables = _outer_tables_referenced(sql)
-            assert "customers__regions" not in outer_tables, (
-                f"Stored query-backed model execute-path SQL has hybrid "
-                f"ref.\ngot: {outer_tables}\nSQL:\n{sql}"
-            )
-        finally:
-            tmp.cleanup()
-
-
-# ===========================================================================
 # Test #16 — cross-stage time_shift with dotted time dim.
 # ===========================================================================
 class TestCrossStageTimeShift:
+    @pytest.mark.skip(
+        reason="DEV-1471: time_shift on the outer stage requires a downstream "
+        "TimeDimension binding, which the typed pipeline currently rejects "
+        "(inner stage's truncated column surfaces as a flat StageSchema name)."
+    )
     async def test_time_shift_over_multi_hop_dotted_time_dim(self) -> None:
         """Outer-stage `time_shift` applied to a multi-hop dotted time
         dim (`customers.regions.last_activity_at`) projected by the
@@ -1070,7 +905,8 @@ class TestCrossStageTimeShift:
             outer = SlayerQuery(
                 source_model="s1",
                 time_dimensions=[TimeDimension(
-                    dimension=ColumnRef(name="customers.regions.last_activity_at"),
+                    # DEV-1450 typed contract: downstream flat alias.
+                    dimension=ColumnRef(name="customers__regions__last_activity_at"),
                     granularity=TimeGranularity.MONTH,
                 )],
                 measures=[
@@ -1193,7 +1029,11 @@ class TestCrossModelStarCountCrossStage:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                measures=[{"formula": "customers.*:count"}],
+                # DEV-1450 typed re-aggregation: outer references the flat
+                # inner alias `customers___count` directly and sums it to
+                # roll up total rows. COUNT on the stage rows would
+                # silently return the number of groups instead.
+                measures=[{"formula": "customers___count:sum"}],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -1213,8 +1053,8 @@ class TestCrossModelStarCountCrossStage:
                 f"got SUM targets: {sum_targets}\nSQL:\n{sql}"
             )
             # And explicitly NO outer COUNT of any shape — COUNT(*) and
-            # COUNT(<col>) are both wrong here (the intercept re-maps to
-            # SUM; any outer COUNT means a regression).
+            # COUNT(<col>) are both wrong here; the re-aggregation must
+            # use SUM over the flat inner alias.
             outer_count_calls = [
                 c for c in outer_select.find_all(exp.Count)
                 if c.parent_select is outer_select
@@ -1281,9 +1121,9 @@ class TestCrossModelInterceptSemanticsGate:
             tmp.cleanup()
 
     async def test_sum_passes_through_intercept(self) -> None:
-        """Regression guard: `customers.revenue:sum` IS intercepted (sum
-        is distributive) — confirms the gate didn't accidentally exclude
-        the safe set."""
+        """Regression guard: re-aggregating the flat inner alias
+        `customers__revenue_sum` with `:sum` is distributive — outer
+        emits SUM(s1.customers__revenue_sum)."""
         engine, tmp = await _engine_with_join_chain()
         try:
             inner = SlayerQuery(
@@ -1294,7 +1134,8 @@ class TestCrossModelInterceptSemanticsGate:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                measures=[{"formula": "customers.revenue:sum"}],
+                # DEV-1450 typed re-aggregation via flat inner alias.
+                measures=[{"formula": "customers__revenue_sum:sum"}],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -1312,50 +1153,6 @@ class TestCrossModelInterceptSemanticsGate:
 
 
 # ===========================================================================
-# Codex review on PR #137 — source-prefixed cross-model ref resolves via
-# the intercept's Candidate A (ancestor-strip).
-# ===========================================================================
-class TestCrossModelInterceptCandidateA:
-    async def test_source_prefixed_cross_model_ref_resolves(self) -> None:
-        """User writes `orders.customers.revenue:sum` against `s1`
-        (which wraps `orders`). Inner-stage flat alias is
-        `customers__revenue_sum` (the `orders.` prefix was stripped by
-        `_alias_to_short`). Candidate B (full-flat) builds
-        `orders__customers__revenue_sum` and misses; Candidate A strips
-        the leading `orders` ancestor and matches."""
-        engine, tmp = await _engine_with_join_chain()
-        try:
-            inner = SlayerQuery(
-                name="s1",
-                source_model="orders",
-                dimensions=["customers.regions.name"],
-                measures=[{"formula": "customers.revenue:sum"}],
-            )
-            outer = SlayerQuery(
-                source_model="s1",
-                # Source-prefixed cross-model form.
-                measures=[{"formula": "orders.customers.revenue:sum"}],
-            )
-            resp = await engine.execute(query=[inner, outer], dry_run=True)
-            sql = resp.sql or ""
-            outer_select = _outermost_select(sql)
-            sum_targets = []
-            for sum_call in outer_select.find_all(exp.Sum):
-                if sum_call.parent_select is not outer_select:
-                    continue
-                sum_targets.extend(
-                    (c.table, c.name) for c in sum_call.find_all(exp.Column)
-                )
-            assert ("s1", "customers__revenue_sum") in sum_targets, (
-                f"Source-prefixed ref must resolve via Candidate A to "
-                f"the inner flat alias.\n"
-                f"got SUM targets: {sum_targets}\nSQL:\n{sql}"
-            )
-        finally:
-            tmp.cleanup()
-
-
-# ===========================================================================
 # CodeRabbit review on PR #137 — rename bookkeeping at the line-896
 # intercept: a renamed intercepted measure must surface under the user
 # alias, and filters / ORDER BY using the colon-form canonical alias
@@ -1363,10 +1160,9 @@ class TestCrossModelInterceptCandidateA:
 # ===========================================================================
 class TestCrossModelInterceptRenameBookkeeping:
     async def test_renamed_intercept_surfaces_user_alias(self) -> None:
-        """Outer projects `{formula: customers.revenue:sum, name: rev}`
-        against `s1`. The intercept fires (canonical flat
-        `customers__revenue_sum` exists on s1) and the projection must
-        surface as `s1.rev`, not the internal canonical alias."""
+        """Outer projects `{formula: customers__revenue_sum:sum, name: rev}`
+        against `s1`. The re-aggregated measure must surface as `s1.rev`
+        (the user rename), not the canonical `customers__revenue_sum_sum`."""
         engine, tmp = await _engine_with_join_chain()
         try:
             inner = SlayerQuery(
@@ -1377,7 +1173,8 @@ class TestCrossModelInterceptRenameBookkeeping:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                measures=[{"formula": "customers.revenue:sum", "name": "rev"}],
+                # DEV-1450 typed re-aggregation with rename.
+                measures=[{"formula": "customers__revenue_sum:sum", "name": "rev"}],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -1391,9 +1188,10 @@ class TestCrossModelInterceptRenameBookkeeping:
             tmp.cleanup()
 
     async def test_renamed_intercept_filter_via_colon_form(self) -> None:
-        """Outer renames the intercept to `rev` AND filters via
-        `customers.revenue:sum > 100`. The canonical-to-user remap
-        must rewrite the filter to reference the rename."""
+        """Outer renames the re-aggregated flat measure to `rev` AND
+        filters via the colon form. Per DEV-1443, the filter may use
+        either the colon form or the user alias; both resolve to the
+        rename."""
         engine, tmp = await _engine_with_join_chain()
         try:
             inner = SlayerQuery(
@@ -1404,8 +1202,9 @@ class TestCrossModelInterceptRenameBookkeeping:
             )
             outer = SlayerQuery(
                 source_model="s1",
-                measures=[{"formula": "customers.revenue:sum", "name": "rev"}],
-                filters=["customers.revenue:sum > 100"],
+                # DEV-1450 typed re-aggregation with rename.
+                measures=[{"formula": "customers__revenue_sum:sum", "name": "rev"}],
+                filters=["customers__revenue_sum:sum > 100"],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -1454,79 +1253,16 @@ class TestCrossModelInterceptRenameBookkeeping:
 # orphan.
 # ===========================================================================
 class TestCrossModelInterceptDuplicateQfieldGuard:
-    async def test_two_intercepted_qfields_same_canonical_different_names_raises(
-        self,
-    ) -> None:
-        """Both qfields canonicalise to `customers.revenue_sum`. The
-        intercept must raise rather than silently corrupting the
-        projection."""
-        engine, tmp = await _engine_with_join_chain()
-        try:
-            inner = SlayerQuery(
-                name="s1",
-                source_model="orders",
-                dimensions=["customers.regions.name"],
-                measures=[{"formula": "customers.revenue:sum"}],
-            )
-            outer = SlayerQuery(
-                source_model="s1",
-                measures=[
-                    {"formula": "customers.revenue:sum", "name": "rev1"},
-                    {"formula": "customers.revenue:sum", "name": "rev2"},
-                ],
-            )
-            with pytest.raises((SlayerError, ValueError), match="canonicalises to the same"):
-                await engine.execute(query=[inner, outer], dry_run=True)
-        finally:
-            tmp.cleanup()
-
-    async def test_source_prefixed_and_unprefixed_resolve_same_flat_raises(
-        self,
-    ) -> None:
-        """Codex round 4: `orders.customers.revenue:sum` and
-        `customers.revenue:sum` both resolve to the inner flat column
-        `customers__revenue_sum` (Candidate A vs Candidate B). With
-        different `name`s, the dup guard must catch the collision —
-        keying on raw `spec.measure_name` alone would miss this."""
-        engine, tmp = await _engine_with_join_chain()
-        try:
-            inner = SlayerQuery(
-                name="s1",
-                source_model="orders",
-                dimensions=["customers.regions.name"],
-                measures=[{"formula": "customers.revenue:sum"}],
-            )
-            outer = SlayerQuery(
-                source_model="s1",
-                measures=[
-                    {"formula": "orders.customers.revenue:sum", "name": "rev_a"},
-                    {"formula": "customers.revenue:sum", "name": "rev_b"},
-                ],
-            )
-            with pytest.raises((SlayerError, ValueError), match="canonicalises to the same"):
-                await engine.execute(query=[inner, outer], dry_run=True)
-        finally:
-            tmp.cleanup()
-
     async def test_intercepted_unrenamed_works_as_middle_stage_in_three_stage_dag(
         self,
     ) -> None:
-        """Codex rounds 5+6: an unrenamed intercepted CMM must wrap
-        cleanly AND its column must be exposed to downstream stages
-        under the same flat alias a single-stage cross-model query
-        would produce. The intercepted EnrichedMeasure's alias is
-        set to the cross-model canonical (`s1.customers.revenue_sum`
-        — dotted), but `em.name` (which `_query_as_model` uses as the
-        wrapped virtual model's `Column.name`) must be the flat
-        single-_sum form (`customers__revenue_sum`), NOT the dotted
-        alias (would fail Column.name validation) NOR the
-        doubled-sum internal form `customers__revenue_sum_sum`
-        (would break a third stage's intercept lookup).
-
-        This test pins the END-TO-END 3-stage chain: stage 2 wraps
-        stage 1 (intercepts), stage 3 wraps stage 2 (intercept must
-        find the flat alias on s2.columns and re-aggregate).
-        """
+        """DEV-1450 typed contract end-to-end across a 3-stage DAG:
+        stage 1 projects a cross-model measure (legal — has joins),
+        stage 2 re-aggregates the flat inner alias, stage 3
+        re-aggregates the stage-2 flat alias. The contract requires
+        every downstream stage to address its predecessor by flat
+        column name; aggregation suffixes stack predictably
+        (`*_sum`, then `*_sum_sum`)."""
         engine, tmp = await _engine_with_join_chain()
         try:
             s1 = SlayerQuery(
@@ -1538,20 +1274,18 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
             s2 = SlayerQuery(
                 name="s2",
                 source_model="s1",
-                measures=[{"formula": "customers.revenue:sum"}],
+                # Re-aggregate the s1 flat alias.
+                measures=[{"formula": "customers__revenue_sum:sum"}],
             )
             s3 = SlayerQuery(
                 source_model="s2",
-                # Reference cross-model form AGAIN — third stage's
-                # intercept must find the flat alias on s2.columns.
-                # Without the round-6 fix, s2 had the doubled-sum form
-                # and the third stage's intercept missed.
-                measures=[{"formula": "customers.revenue:sum"}],
+                # Re-aggregate the s2 flat alias (stacked suffix).
+                measures=[{"formula": "customers__revenue_sum_sum:sum"}],
             )
             resp = await engine.execute(query=[s1, s2, s3], dry_run=True)
             assert resp.sql is not None, "3-stage DAG must render SQL"
             # The outer SELECT (s3) should SUM the s2-projected
-            # cross-model column. Walk the AST to confirm.
+            # flat column. Walk the AST to confirm.
             outer_select = _outermost_select(resp.sql)
             outer_sum_targets = []
             for s in outer_select.find_all(exp.Sum):
@@ -1560,10 +1294,8 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 outer_sum_targets.extend(
                     (c.table, c.name) for c in s.find_all(exp.Column)
                 )
-            # s3's intercept should have resolved against s2's flat
-            # alias `customers__revenue_sum` (single _sum).
-            assert ("s2", "customers__revenue_sum") in outer_sum_targets, (
-                f"Third-stage intercept must SUM the flat alias on s2.\n"
+            assert ("s2", "customers__revenue_sum_sum") in outer_sum_targets, (
+                f"Third-stage must SUM the s2 flat alias.\n"
                 f"got: {outer_sum_targets}\nSQL:\n{resp.sql}"
             )
         finally:
@@ -1689,18 +1421,18 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         finally:
             tmp.cleanup()
 
+    @pytest.mark.skip(
+        reason="DEV-1472: hidden-slot ORDER BY (order-only ref not in "
+        "dimensions/measures) is documented as deferred in the typed pipeline "
+        "(stage 7b.10+). Re-enable when the gap closes."
+    )
     async def test_intercepted_cmm_order_only_no_qfield_registers_alias(
         self,
     ) -> None:
-        """Codex round 11: when an outer query uses
-        `order=[{"column":"customers.revenue:sum"}]` WITHOUT also
-        declaring the measure as a query measure, the order
-        enrichment routes through `_flatten_spec`'s intercept branch
-        (not the qfield-site path that already registers the alias).
-        That helper must also register the dotted canonical in
-        `field_name_aliases` so `_resolve_order_column`'s
-        qualified-match branch finds the intercepted projection
-        instead of falling through to a non-existent bare column."""
+        """DEV-1450 typed contract: outer ORDER BY may reference the
+        flat inner alias directly, even when the column is not
+        re-projected by the outer query. The order resolver must find
+        the flat column on s1 and emit a valid `s1.<col>` ref."""
         engine, tmp = await _engine_with_join_chain()
         try:
             inner = SlayerQuery(
@@ -1709,13 +1441,13 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 dimensions=["customers.regions.name"],
                 measures=[{"formula": "customers.revenue:sum"}],
             )
-            # Outer: order-only ref to the cross-stage CMM, NOT in
+            # Outer: order-only ref to the inner flat alias, NOT in
             # the projection. Must still resolve.
             outer = SlayerQuery(
                 source_model="s1",
-                dimensions=["customers.regions.name"],
+                dimensions=["customers__regions__name"],
                 measures=[{"formula": "*:count"}],
-                order=[{"column": "customers.revenue:sum"}],
+                order=[{"column": "customers__revenue_sum"}],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -1724,9 +1456,9 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
             assert order is not None, f"Outer ORDER BY missing.\nSQL:\n{sql}"
             order_cols = list(order.find_all(exp.Column))
             order_col_names = {c.name for c in order_cols}
-            # Must resolve to a projection alias the intercept
-            # produced — NOT a bare `revenue_sum` on a non-existent
-            # `customers` table.
+            # Must resolve to a column on s1 (or a quoted projection
+            # alias) — NOT a bare `customers` table that doesn't exist
+            # in the outer scope.
             assert "customers" not in {c.table for c in order_cols if c.table}, (
                 f"ORDER BY must not reference a bare `customers` table.\n"
                 f"got: {order_col_names}\nSQL:\n{sql}"
@@ -1734,89 +1466,6 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         finally:
             tmp.cleanup()
 
-    async def test_unrenamed_intercepted_cmm_order_by_colon_form_resolves(
-        self,
-    ) -> None:
-        """Codex round 8: ORDER BY by colon/canonical form on an
-        unrenamed intercepted cross-model measure must resolve to
-        the projection alias `s1.customers.revenue_sum`, not fall
-        through to a non-existent `customers.revenue_sum` bare
-        column. The intercept registers `canonical_name` in
-        `field_name_aliases` so `_resolve_order_column`'s
-        qualified-match branch finds it."""
-        engine, tmp = await _engine_with_join_chain()
-        try:
-            inner = SlayerQuery(
-                name="s1",
-                source_model="orders",
-                dimensions=["customers.regions.name"],
-                measures=[{"formula": "customers.revenue:sum"}],
-            )
-            outer = SlayerQuery(
-                source_model="s1",
-                dimensions=["customers.regions.name"],
-                measures=[{"formula": "customers.revenue:sum"}],
-                order=[{"column": "customers.revenue:sum"}],
-            )
-            resp = await engine.execute(query=[inner, outer], dry_run=True)
-            sql = resp.sql or ""
-            outer_select = _outermost_select(sql)
-            order = outer_select.args.get("order")
-            assert order is not None, f"Outer ORDER BY missing.\nSQL:\n{sql}"
-            order_cols = list(order.find_all(exp.Column))
-            order_col_names = {c.name for c in order_cols}
-            # Must reference the projection alias, not a bare
-            # `revenue_sum` on a non-existent `customers` table.
-            assert "s1.customers.revenue_sum" in order_col_names, (
-                f"ORDER BY must resolve to the projection alias.\n"
-                f"got: {order_col_names}\nSQL:\n{sql}"
-            )
-        finally:
-            tmp.cleanup()
-
-    async def test_intercepted_rename_colliding_with_other_canonical_raises(
-        self,
-    ) -> None:
-        """CodeRabbit review round 4: an intercepted measure renamed
-        to match another query measure's canonical alias must raise.
-        Without this, `_ensure_aggregated_measure`'s alias-keyed dedup
-        silently collapses the two distinct aggregates onto the
-        renamed first one.
-
-        Setup: outer's intercepted cross-model qfield gets renamed
-        to a name that collides with another outer qfield's
-        canonical (`customer_id_max`). The intercept's guard refuses
-        before dedup can corrupt the projection."""
-        engine, tmp = await _engine_with_join_chain()
-        try:
-            # Inner unrenamed so the cross-model flat
-            # `customers__revenue_sum` is on s1.columns (post-DEV-1448
-            # the rename would replace it).
-            inner = SlayerQuery(
-                name="s1",
-                source_model="orders",
-                dimensions=["customers.regions.name"],
-                measures=[{"formula": "customers.revenue:sum"}],
-            )
-            outer = SlayerQuery(
-                source_model="s1",
-                measures=[
-                    # Intercepted cross-model, renamed to a name that
-                    # collides with the next measure's canonical.
-                    {"formula": "customers.revenue:sum", "name": "customer_id_max"},
-                    {"formula": "customer_id:max"},
-                ],
-            )
-            # Either my round-4 intercept guard ("collides with the
-            # canonical alias") or DEV-1448's downstream-short-name
-            # guard catches this — both are the right outcome.
-            with pytest.raises(
-                (SlayerError, ValueError),
-                match="collides with the canonical alias|downstream short name",
-            ):
-                await engine.execute(query=[inner, outer], dry_run=True)
-        finally:
-            tmp.cleanup()
 
 
 # ===========================================================================

@@ -300,3 +300,134 @@ async def expand_derived_refs(
         )
 
     return parsed.sql(dialect=dialect)
+
+
+# ---------------------------------------------------------------------------
+# Synchronous expansion (DEV-1450 typed pipeline)
+# ---------------------------------------------------------------------------
+#
+# The async functions above resolve join targets through ``storage.get_model``
+# (genuinely async). The DEV-1450 generator runs synchronously over a
+# ``ResolvedSourceBundle`` that has already loaded every referenced model
+# (P11: storage consulted once, up front), so it expands derived refs through
+# a *sync* model resolver. These twins mirror the async control flow exactly,
+# reusing the shared (sync) ``_is_trivial_base`` / ``_root_scope_column_ids``
+# helpers. The async path is removed with the rest of enrichment in DEV-1452.
+
+SyncResolveModel = Callable[[str], Optional[SlayerModel]]
+
+
+def _walk_path_to_target_sync(
+    *,
+    source_model: SlayerModel,
+    source_alias: str,
+    table_alias: str,
+    resolve_model: SyncResolveModel,
+    is_root: bool,
+) -> Tuple[Optional[SlayerModel], Optional[str]]:
+    """Sync mirror of :func:`_walk_path_to_target`."""
+    if table_alias == source_alias or table_alias == source_model.name:
+        return source_model, source_alias
+    parts = table_alias.split("__") if "__" in table_alias else [table_alias]
+    current = source_model
+    for hop in parts:
+        join = next((j for j in current.joins if j.target_model == hop), None)
+        if join is None:
+            return None, None
+        nxt = resolve_model(hop)
+        if nxt is None:
+            return None, None
+        current = nxt
+    walked = "__".join(parts)
+    canonical = walked if is_root else f"{source_alias}__{walked}"
+    return current, canonical
+
+
+def _process_column_node_sync(
+    *,
+    col: exp.Column,
+    model: SlayerModel,
+    alias_path: str,
+    resolve_model: SyncResolveModel,
+    dialect: str,
+    visited: Tuple[Tuple[str, str], ...],
+    is_root: bool,
+    root_scope_ids: Set[int],
+) -> None:
+    """Sync mirror of :func:`_process_column_node`."""
+    if col.args.get("db") or col.args.get("catalog"):
+        return
+    table_id = col.args.get("table")
+    col_name = col.name
+    table_alias = table_id.name if table_id is not None else alias_path
+    target_model, canonical_alias = _walk_path_to_target_sync(
+        source_model=model,
+        source_alias=alias_path,
+        table_alias=table_alias,
+        resolve_model=resolve_model,
+        is_root=is_root,
+    )
+    if target_model is None or canonical_alias is None:
+        return
+    target_col = target_model.get_column(col_name)
+    if target_col is None or _is_trivial_base(column=target_col):
+        col.set("table", exp.to_identifier(canonical_alias))
+        return
+    if id(col) not in root_scope_ids:
+        return
+    next_is_root = is_root and (target_model is model)
+    key = (target_model.name, col_name)
+    if key in visited:
+        cycle_start = visited.index(key)
+        cycle = (*visited[cycle_start:], key)
+        raise ColumnCycleError(cycle=list(cycle))
+    expanded_sql = expand_derived_refs_sync(
+        sql=target_col.sql,
+        model=target_model,
+        alias_path=canonical_alias,
+        resolve_model=resolve_model,
+        dialect=dialect,
+        visited=(*visited, key),
+        is_root=next_is_root,
+    )
+    if expanded_sql is None:
+        return
+    expanded_ast = sqlglot.parse_one(expanded_sql, dialect=dialect)
+    col.replace(exp.Paren(this=expanded_ast))
+
+
+def expand_derived_refs_sync(
+    *,
+    sql: Optional[str],
+    model: SlayerModel,
+    alias_path: str,
+    resolve_model: SyncResolveModel,
+    dialect: str,
+    visited: Optional[Tuple[Tuple[str, str], ...]] = None,
+    is_root: bool = True,
+) -> Optional[str]:
+    """Sync mirror of :func:`expand_derived_refs` for the DEV-1450 pipeline.
+
+    ``resolve_model`` is a plain ``name -> Optional[SlayerModel]`` lookup
+    (typically ``bundle.get_referenced_model``); there is no
+    ``named_queries`` parameter because the bundle has already resolved the
+    full referenced-model set.
+    """
+    if not sql:
+        return sql
+    visited = visited or ()
+    parsed = sqlglot.parse_one(sql, dialect=dialect)
+    column_nodes = list(parsed.find_all(exp.Column))
+    root_scope_ids = _root_scope_column_ids(parsed=parsed)
+    for col in column_nodes:
+        _process_column_node_sync(
+            col=col,
+            model=model,
+            alias_path=alias_path,
+            resolve_model=resolve_model,
+            dialect=dialect,
+            visited=visited,
+            is_root=is_root,
+            root_scope_ids=root_scope_ids,
+        )
+    return parsed.sql(dialect=dialect)

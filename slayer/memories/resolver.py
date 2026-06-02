@@ -33,19 +33,22 @@ from typing import Iterable, List, Optional, Set, Tuple
 
 from pydantic import BaseModel
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS
-from slayer.core.errors import EntityResolutionError
-from slayer.core.formula import (
-    AggregatedMeasureRef,
-    ArithmeticField,
-    FieldSpec,
-    MixedArithmeticField,
-    TransformField,
-    parse_formula,
+from slayer.core.errors import (
+    EntityResolutionError,
+    UnknownFunctionError,
 )
 from slayer.core.models import SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.core.refs import strip_agg_suffix as _strip_agg_suffix
+from slayer.engine.normalization import func_style_agg_to_colon
+from slayer.engine.syntax import (
+    AggCall,
+    ParsedExpr,
+    Ref,
+    StarSource,
+    parse_expr,
+    walk_parsed_refs,
+)
 from slayer.memories.models import (
     MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX,
     _validate_memory_id_charset,
@@ -412,17 +415,34 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
 # ---------------------------------------------------------------------------
 
 
-def _formula_aggregated_refs(field: FieldSpec) -> Iterable[AggregatedMeasureRef]:
-    """Yield every ``AggregatedMeasureRef`` reachable inside ``field``."""
-    if isinstance(field, AggregatedMeasureRef):
-        yield field
-    elif isinstance(field, TransformField):
-        yield from _formula_aggregated_refs(field.inner)
-    elif isinstance(field, (ArithmeticField, MixedArithmeticField)):
-        yield from field.agg_refs.values()
-        if isinstance(field, MixedArithmeticField):
-            for _ph, sub in field.sub_transforms:
-                yield from _formula_aggregated_refs(sub)
+def _formula_entity_tokens(parsed: ParsedExpr) -> Iterable[str]:
+    """Yield every entity *token* referenced by a parsed Mode-B formula.
+
+    Colon-syntax aggregations surface as ``"<source>:<agg>"`` (``*:count``
+    included verbatim), bare and dotted refs surface as their textual form.
+    Each token is fed one-by-one into ``resolve_entity`` downstream, which
+    canonicalises it (stripping the agg suffix, collapsing ``*:count`` to the
+    model, walking dotted join paths). No binding — the resolver does its own
+    resolution.
+
+    Aggregation args / kwargs (e.g. ``weighted_avg(weight=quantity)``) and
+    transform partition columns are opaque (legacy parity) — only the
+    aggregated source / inner value surfaces.
+    """
+    for node in walk_parsed_refs(parsed):
+        if isinstance(node, AggCall):
+            source = node.source
+            if isinstance(source, StarSource):
+                src_name = "*"
+            elif isinstance(source, Ref):
+                src_name = source.name
+            else:  # DottedRef
+                src_name = ".".join(source.parts)
+            yield f"{src_name}:{node.agg}"
+        elif isinstance(node, Ref):
+            yield node.name
+        else:  # DottedRef
+            yield ".".join(node.parts)
 
 
 _FILTER_AGG_SUFFIX_RE = re.compile(r":\w+(?:\([^)]*\))?")
@@ -528,28 +548,24 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
         _add(result.canonical_forms)
         warnings.extend(result.warnings)
 
-    # 4. measures — parse each formula and walk for AggregatedMeasureRef.
-    named_measures = {
-        m.name: m.formula
-        for m in source_model.measures
-        if m.name is not None
-    }
-    extra_agg_names = frozenset(
-        a.name for a in source_model.aggregations
-    ) | BUILTIN_AGGREGATIONS
+    # 4. measures — parse each formula (Mode-B DSL) and resolve each
+    # referenced entity token. Function-style aggregations are rewritten to
+    # colon syntax first (quiet FUNC_STYLE_AGG slack helper), including the
+    # source model's custom aggregations — matching the legacy parse path.
+    custom_agg_names = frozenset(a.name for a in source_model.aggregations)
     for m in query.measures or []:
         if m.formula is None:
             continue
         try:
-            parsed = parse_formula(
-                m.formula,
-                extra_agg_names=extra_agg_names,
-                named_measures=named_measures or None,
+            parsed = parse_expr(
+                func_style_agg_to_colon(
+                    m.formula, custom_agg_names=custom_agg_names
+                )
             )
-        except ValueError:
-            # Formula didn't parse as colon syntax — fall back to
-            # treating the bare formula text as an entity reference
-            # (handles ``formula="aov"``-style refs to named measures).
+        # IllegalWindowInFilterError is-a ValueError, so ValueError covers it.
+        except (ValueError, UnknownFunctionError):
+            # Not parseable as Mode-B DSL — fall back to treating the whole
+            # formula text as a single entity reference.
             result = await resolve_entity(
                 m.formula,
                 storage=storage,
@@ -558,14 +574,9 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
             _add(result.canonical_forms)
             warnings.extend(result.warnings)
             continue
-        for ref in _formula_aggregated_refs(parsed):
-            agg_token = (
-                f"{ref.measure_name}:{ref.aggregation_name}"
-                if ref.aggregation_name
-                else ref.measure_name
-            )
+        for token in _formula_entity_tokens(parsed):
             result = await resolve_entity(
-                agg_token,
+                token,
                 storage=storage,
                 source_model=source_model,
             )

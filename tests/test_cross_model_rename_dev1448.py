@@ -233,9 +233,12 @@ class TestCrossModelRenameSingleStage:
     async def test_cross_model_rename_propagates_to_dry_run_columns(
         self, orders_customers_engine,
     ) -> None:
-        """The dry-run ``SlayerResponse.columns`` (driven by
-        ``cm.alias``) must contain the hop-preserved renamed key, not
-        the canonical leaf form."""
+        """The dry-run ``SlayerResponse.columns`` must contain the
+        renamed measure key. DEV-1450 typed pipeline surfaces the
+        rename under the source-model-prefixed user alias
+        ``orders.cust_rev`` (no hop) — `cm.alias` retains the
+        hop-preserved form for join bookkeeping, but the actual
+        emitted column header reflects the user-visible flat key."""
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             source_model="orders",
@@ -243,11 +246,13 @@ class TestCrossModelRenameSingleStage:
             measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
         )
         resp = await engine.execute(query=query, dry_run=True)
-        assert "orders.customers.cust_rev" in resp.columns, (
-            f"renamed alias (hop-preserved) must appear in dry-run "
-            f"columns; got {resp.columns!r}"
+        assert "orders.cust_rev" in resp.columns, (
+            f"renamed alias must appear in dry-run columns; got "
+            f"{resp.columns!r}"
         )
+        # Canonical leaf form must NOT surface — only the rename does.
         assert "orders.customers.revenue_sum" not in resp.columns
+        assert "orders.customers.cust_rev" not in resp.columns
 
 
 # ---------------------------------------------------------------------------

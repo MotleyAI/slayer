@@ -17,7 +17,6 @@ import asyncio
 import logging
 from typing import (
     Annotated,
-    Any,
     Dict,
     List,
     Literal,
@@ -33,14 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.formula import (
-    AggregatedMeasureRef,
-    ArithmeticField,
-    MixedArithmeticField,
-    TransformField,
-    parse_filter,
-    parse_formula,
-)
+from slayer.core.formula import parse_filter
 from slayer.core.models import (
     Column,
     DatasourceConfig,
@@ -53,6 +45,15 @@ from slayer.engine.ingestion import (
     _safe_get_pk_constraint,
     _sa_type_is_float,
     _sa_type_to_data_type,
+)
+from slayer.engine.normalization import func_style_agg_to_colon
+from slayer.engine.syntax import (
+    AggCall,
+    DottedRef,
+    Ref,
+    StarSource,
+    parse_expr,
+    walk_parsed_refs,
 )
 from slayer.sql.client import SlayerSQLClient
 
@@ -482,70 +483,63 @@ def _extract_column_refs_from_sql(sql: str) -> List[Tuple[Optional[str], str]]:
     return refs
 
 
-def _agg_ref_names(agg_refs: Dict[str, AggregatedMeasureRef]) -> Set[str]:
-    """Names from a ``measure:agg`` placeholder map, excluding ``*``."""
-    return {ref.measure_name for ref in agg_refs.values() if ref.measure_name != "*"}
+def _parsed_ref_name(node: Union[Ref, DottedRef, AggCall]) -> Optional[str]:
+    """Textual name of a reference-bearing parse node.
 
-
-def _bare_measure_names(
-    measure_names: List[str],
-    agg_refs: Dict[str, AggregatedMeasureRef],
-    *,
-    skip_placeholder_prefix: Optional[str] = None,
-) -> Set[str]:
-    """Filter raw ``measure_names`` to the ones that are not colon-syntax
-    placeholders, optionally also stripping sub-transform placeholders.
+    ``AggCall`` collapses to its aggregated source name — the agg itself is
+    not a column reference, and ``*:count`` (``StarSource`` source) yields
+    ``None`` because ``*`` is not a real column. Args / kwargs of the
+    aggregation are opaque (legacy parity). Bare ``Ref`` / ``DottedRef``
+    surface as their dotted textual form.
     """
-    out: Set[str] = set()
-    for n in measure_names:
-        if n in agg_refs:
-            continue
-        if skip_placeholder_prefix and n.startswith(skip_placeholder_prefix):
-            continue
-        out.add(n)
-    return out
-
-
-def _walk_field_spec_measure_refs(spec: Any) -> Set[str]:
-    """Walk a ``FieldSpec`` (parse_formula output) and return the set of
-    measure_name strings (which may be dotted: ``"customers.revenue"``).
-    """
-    if isinstance(spec, AggregatedMeasureRef):
-        return _agg_ref_names({"_": spec})
-    if isinstance(spec, ArithmeticField):
-        return _agg_ref_names(spec.agg_refs) | _bare_measure_names(
-            spec.measure_names, spec.agg_refs
-        )
-    if isinstance(spec, MixedArithmeticField):
-        out = _agg_ref_names(spec.agg_refs) | _bare_measure_names(
-            spec.measure_names, spec.agg_refs, skip_placeholder_prefix="_t"
-        )
-        for _, t in spec.sub_transforms:
-            out.update(_walk_field_spec_measure_refs(t))
-        return out
-    if isinstance(spec, TransformField):
-        return _walk_field_spec_measure_refs(spec.inner)
-    return set()
+    if isinstance(node, AggCall):
+        source = node.source
+        if isinstance(source, StarSource):
+            return None
+        node = source
+    if isinstance(node, Ref):
+        return node.name
+    return ".".join(node.parts)
 
 
 def _measure_formula_refs(
-    formula: str,
-    *,
-    named_measures: Optional[Dict[str, str]] = None,
+    formula: str, *, custom_agg_names: Optional[Set[str]] = None,
 ) -> Set[str]:
-    """Best-effort: parse ``formula`` and return the set of column / measure
-    names it references. Returns the empty set on any parse failure.
+    """Best-effort: parse ``formula`` (Mode-B DSL) and return the set of
+    column / measure names it references (dotted for cross-model refs, e.g.
+    ``"customers.revenue"``). Returns the empty set on any parse failure.
 
-    ``named_measures`` is the map ``{measure_name: formula_text}`` for the
-    enclosing model — required for bare measure references like
-    ``aov / *:count`` (where ``aov`` is itself a saved measure on the
-    model) to parse cleanly.
+    Textual extraction only — no scope binding. The cascade attribution
+    checks each returned name against the dropped-column / dropped-measure
+    sets itself, so bare named-measure refs surface by name (``aov``) rather
+    than being inline-expanded; the cascade reaches the underlying column
+    through the dropped-measure set in a later fixed-point pass.
+
+    Function-style aggregations on legacy / un-normalized persisted formulas
+    (``sum(amount)``) are rewritten to colon syntax first via the quiet
+    ``FUNC_STYLE_AGG`` slack helper — matching the legacy ``parse_formula``
+    path. ``custom_agg_names`` lets model-level custom aggregations
+    (``weighted_avg(amount, weight=qty)``) rewrite too (CR); without them
+    the call parses as an unknown function and the refs are lost, leaving
+    the drift cascade incomplete.
     """
     try:
-        spec = parse_formula(formula, named_measures=named_measures)
+        parsed = parse_expr(
+            func_style_agg_to_colon(
+                formula,
+                custom_agg_names=(
+                    frozenset(custom_agg_names) if custom_agg_names else None
+                ),
+            )
+        )
     except Exception:
         return set()
-    return _walk_field_spec_measure_refs(spec)
+    out: Set[str] = set()
+    for node in walk_parsed_refs(parsed):
+        name = _parsed_ref_name(node)
+        if name is not None:
+            out.add(name)
+    return out
 
 
 def _filter_refs(filter_str: str) -> List[str]:
@@ -867,11 +861,23 @@ def _measure_refs_on_base(
     stage: SlayerQuery, base_name: str, graph: _StageGraph
 ) -> Set[str]:
     out: Set[str] = set()
+    # Custom aggregations on models REACHABLE from the stage source so
+    # function-style custom aggs in a stage measure rewrite to colon form
+    # before ref extraction. Scoped to ``graph.reachable`` (not every model
+    # in the registry) so unrelated custom-agg names can't normalize a
+    # coincidental function call and produce a false cascade hit (CR).
+    custom_agg_names: Set[str] = set()
+    for model_name in graph.reachable:
+        model = graph.models_by_name.get(model_name)
+        if model is not None:
+            custom_agg_names.update(a.name for a in (model.aggregations or []))
     for m in stage.measures or []:
         formula = getattr(m, "formula", None)
         if not formula:
             continue
-        for ref in _measure_formula_refs(formula):
+        for ref in _measure_formula_refs(
+            formula, custom_agg_names=custom_agg_names,
+        ):
             attributed = _attribute_ref_to_base(
                 ref=ref, base_name=base_name, graph=graph
             )
@@ -1307,13 +1313,13 @@ def _cascade_measures(*, model: SlayerModel, state: _CascadeState) -> bool:
     """Rule 2: ``ModelMeasure.formula`` referencing a dropped column or
     dropped measure."""
     changed = False
-    named_measures = {m.name: m.formula for m in model.measures if m.name}
     dropped_set = state.dropped_measures.get(model.name, set())
+    custom_agg_names = {a.name for a in (model.aggregations or [])}
     for measure in model.measures:
         if measure.name is None or measure.name in dropped_set:
             continue
         refs = _measure_formula_refs(
-            measure.formula, named_measures=named_measures
+            measure.formula, custom_agg_names=custom_agg_names,
         )
         cause = _first_dropped_cause(refs=refs, model=model, state=state)
         if cause is None:
