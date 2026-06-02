@@ -16,18 +16,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-COPY pyproject.toml poetry.lock* README.md LICENSE ./
+COPY pyproject.toml poetry.lock README.md LICENSE ./
 RUN pip install --no-cache-dir poetry && \
     poetry config virtualenvs.create false && \
     poetry install -E all --no-root --no-interaction --no-ansi && \
-    pip install --no-cache-dir psycopg2-binary pymysql clickhouse-sqlalchemy pyodbc && \
+    pip install --no-cache-dir psycopg2-binary pymysql clickhouse-sqlalchemy && \
     pip uninstall -y poetry
 
 # Copy application code and install project
 COPY slayer/ slayer/
-RUN pip install --no-deps .
-
-RUN useradd --create-home slayer
+RUN pip install --no-deps . && \
+    useradd --create-home slayer
 USER slayer
 
 ENV SLAYER_MODELS_DIR=/data
