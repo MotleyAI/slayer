@@ -871,6 +871,23 @@ class TestDatasourceConfig:
         cs = ds.get_connection_string()
         assert "1433" in cs
 
+    def test_sqlserver_special_chars_in_password_are_url_encoded(self) -> None:
+        """Passwords with '@' must not break URL parsing (the Docker example uses 'YourStrong@Passw0rd')."""
+        ds = DatasourceConfig(
+            name="test",
+            type="mssql",
+            host="sqlserver",
+            port=1433,
+            database="slayer_demo",
+            username="sa",
+            password="YourStrong@Passw0rd",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        cs = ds.get_connection_string()
+        assert "@Passw0rd" not in cs, "raw '@' in password must be percent-encoded"
+        assert "%40" in cs, "the '@' in password must appear as %40"
+        assert "sqlserver" in cs
+        assert "slayer_demo" in cs
+
 
 class TestTimeGranularity:
     def test_period_start_week(self) -> None:

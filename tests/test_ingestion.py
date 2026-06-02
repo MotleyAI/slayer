@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.dialects.mssql import (
+    BIT,
     DATETIME2,
     DATETIMEOFFSET,
     MONEY,
@@ -379,6 +380,9 @@ class TestSaTypeToDataTypeIntDouble:
 
     def test_tsql_smallmoney_maps_to_double(self) -> None:
         assert _sa_type_to_data_type(SMALLMONEY()) is DataType.DOUBLE
+
+    def test_tsql_bit_maps_to_boolean(self) -> None:
+        assert _sa_type_to_data_type(BIT()) is DataType.BOOLEAN
 
 
 class TestSqliteIngestionRoundTrip:

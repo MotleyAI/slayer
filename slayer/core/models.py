@@ -6,6 +6,7 @@ import re
 from typing import Annotated, Any, Dict, List, Optional
 
 from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
+from sqlalchemy.engine import URL as _SA_URL
 
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
@@ -748,18 +749,18 @@ class DatasourceConfig(BaseModel):
         return v
 
     def _get_tsql_connection_string(self) -> str:
-        auth = ""
-        if self.username:
-            auth = self.username
-            if self.password:
-                auth += f":{self.password}"
-            auth += "@"
-        host_port = self.host or "localhost"
-        if self.port:
-            host_port += f":{self.port}"
-        db = self.database or ""
-        params = "driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
-        return f"mssql+pyodbc://{auth}{host_port}/{db}?{params}"
+        return _SA_URL.create(
+            "mssql+pyodbc",
+            username=self.username or None,
+            password=self.password or None,
+            host=self.host or "localhost",
+            port=self.port,
+            database=self.database or "",
+            query={
+                "driver": "ODBC Driver 18 for SQL Server",
+                "TrustServerCertificate": "yes",
+            },
+        ).render_as_string(hide_password=False)
 
     def get_connection_string(self) -> str:
         if self.connection_string:

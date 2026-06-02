@@ -70,6 +70,7 @@ _SA_TYPE_MAP = {
     # Boolean
     "BOOLEAN": DataType.BOOLEAN,
     "BOOL": DataType.BOOLEAN,
+    "BIT": DataType.BOOLEAN,  # T-SQL (SQL Server) boolean type
     # Temporal
     "TIMESTAMP": DataType.TIMESTAMP,
     "DATETIME": DataType.TIMESTAMP,

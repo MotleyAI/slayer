@@ -37,7 +37,7 @@ services:
       dockerfile: examples/sqlserver/Dockerfile
     command: >
       python /examples/seed.py
-      "mssql+pyodbc://sa:YourStrong@Passw0rd@sqlserver:1433/slayer_demo?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+      "mssql+pyodbc://sa:YourStrong%40Passw0rd@sqlserver:1433/slayer_demo?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
     volumes:
       - ../seed.py:/examples/seed.py:ro
     depends_on:
