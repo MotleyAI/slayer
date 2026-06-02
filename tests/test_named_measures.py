@@ -194,3 +194,43 @@ class TestNamedMeasureSQL:
 
         with pytest.raises(ValueError, match="Duplicate saved measure name"):
             await _generate(query, model)
+
+
+class TestBareNamedMeasureAliasing:
+    """Regression: bare named-measure ref must surface the measure NAME as
+    the SELECT alias (not the formula-derived canonical), so ORDER BY by
+    that name and downstream result-key lookups stay consistent.
+    """
+
+    async def test_select_alias_uses_measure_name(self) -> None:
+        model = _orders_model(
+            measures=[ModelMeasure(name="rev_total", formula="revenue:sum")]
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=["rev_total"],
+        )
+        sql = await _generate(query, model)
+        assert '"orders.rev_total"' in sql
+        # The formula-derived canonical alias must NOT leak into SELECT.
+        assert '"orders.revenue_sum"' not in sql
+
+    async def test_order_by_resolves_against_measure_name(self) -> None:
+        """The original bug: SELECT aliased by formula, ORDER BY by name."""
+        model = _orders_model(
+            measures=[
+                ModelMeasure(name="companies_count", formula="revenue:count_distinct"),
+            ]
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=["status"],
+            measures=["companies_count"],
+            order=[{"column": "companies_count", "direction": "desc"}],
+        )
+        sql = await _generate(query, model)
+        # The ORDER BY reference must point at the alias we actually emitted.
+        assert '"orders.companies_count"' in sql
+        assert "ORDER BY" in sql
+        # And the canonical formula-derived alias must NOT appear at all.
+        assert "revenue_count_distinct" not in sql
