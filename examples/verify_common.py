@@ -317,9 +317,9 @@ def check_stddev_var(measure="quantity"):
 def check_corr_covar(measure="quantity", other="customer_id"):
     """2-arg stat aggregates: corr, covar_samp, covar_pop.
 
-    Do NOT call from MySQL examples — SLayer raises ``NotImplementedError``
-    for these on MySQL (no native function, no Python-UDF mechanism).
-    Use MariaDB or compute client-side as a workaround.
+    Safe to call for all Tier-1 dialects including MySQL and T-SQL (SQL Server):
+    those use a variance-decomposition formula instead of native functions.
+    MariaDB and all others use native CORR/COVAR_*.
     """
     print("\nCorrelation / covariance:")
 

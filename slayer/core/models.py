@@ -752,6 +752,19 @@ class DatasourceConfig(BaseModel):
             return self.connection_string
         if self.type in ("sqlite", "duckdb"):
             return f"{self.type}:///{self.database}"
+        if self.type in ("mssql", "sqlserver", "tsql"):
+            auth = ""
+            if self.username:
+                auth = self.username
+                if self.password:
+                    auth += f":{self.password}"
+                auth += "@"
+            host_port = self.host or "localhost"
+            if self.port:
+                host_port += f":{self.port}"
+            db = self.database or ""
+            params = "driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+            return f"mssql+pyodbc://{auth}{host_port}/{db}?{params}"
         driver_map = {
             "postgres": "postgresql",
             "postgresql": "postgresql",

@@ -95,6 +95,16 @@ _SA_TYPE_MAP = {
     "FLOAT64": DataType.DOUBLE,
     "DATETIME64": DataType.TIMESTAMP,
     "DATE32": DataType.DATE,
+    # T-SQL (SQL Server) specific types
+    "TINYINT": DataType.INT,
+    "DATETIME2": DataType.TIMESTAMP,
+    "SMALLDATETIME": DataType.TIMESTAMP,
+    "DATETIMEOFFSET": DataType.TIMESTAMP,
+    "NVARCHAR": DataType.TEXT,
+    "NCHAR": DataType.TEXT,
+    "NTEXT": DataType.TEXT,
+    "MONEY": DataType.DOUBLE,
+    "SMALLMONEY": DataType.DOUBLE,
 }
 
 _NUMERIC_TYPES = {DataType.INT, DataType.DOUBLE}

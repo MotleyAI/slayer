@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from verify_common import (
     run_common_checks,
     check_rollup,
+    check_corr_covar,
     check_stddev_var,
     check,
     summary,
@@ -35,9 +36,9 @@ if __name__ == "__main__":
         check("4 models without rollup", len(models) == 4)
 
     # MySQL has native STDDEV_SAMP/STDDEV_POP/VAR_SAMP/VAR_POP. DEV-1317 smoke.
-    # corr / covar_samp / covar_pop are NOT supported on MySQL — SLayer
-    # raises NotImplementedError there, so we deliberately don't call
-    # check_corr_covar() from this script. Use MariaDB for those.
     check_stddev_var()
+
+    # MySQL corr/covar_samp/covar_pop now use a variance-decomposition formula.
+    check_corr_covar()
 
     summary()
