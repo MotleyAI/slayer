@@ -44,13 +44,6 @@ from slayer.engine.column_expansion import (
 from slayer.engine.source_bundle import ResolvedSourceBundle
 
 
-# Planner-side default dialect for parsing column filter SQL. The path
-# discovery is dialect-agnostic (AST walking, no SQL emission); the dialect
-# matters only for the initial parse, and Postgres parses the supported
-# Mode-A predicate shapes cleanly. The dialect-aware re-parse for emission
-# still happens on the generator side.
-_PLANNER_PARSE_DIALECT = "postgres"
-
 # Fallback dialect chain (Codex round 7) — the planner doesn't carry the
 # datasource's dialect, so a user-configured backend with dialect-specific
 # syntax in ``Column.filter`` (MySQL backticks, T-SQL square brackets,
@@ -58,7 +51,9 @@ _PLANNER_PARSE_DIALECT = "postgres"
 # silently return no referenced join paths. The DEV-1503 trigger would
 # then miss and the generator would render the filter inline in ``_base``,
 # pulling the cross-model join into the host rowset. Try each dialect in
-# order; only return ``()`` if ALL fail.
+# order; only return ``()`` if ALL fail. The path discovery itself is
+# dialect-agnostic (AST walking, no SQL emission); the dialect-aware
+# re-parse for emission still happens on the generator side.
 _PLANNER_PARSE_DIALECT_CHAIN: Tuple[Optional[str], ...] = (
     "postgres",
     None,        # sqlglot's permissive default — accepts ANSI SQL broadly
@@ -82,6 +77,43 @@ def _parse_filter_sql_any_dialect(sql: str) -> Optional[exp.Expression]:
             return sqlglot.parse_one(sql, dialect=dialect)
         except Exception:
             continue
+    return None
+
+
+def _expand_derived_refs_any_dialect(
+    *,
+    sql: str,
+    model: SlayerModel,
+    alias_path: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[str]:
+    """Run ``expand_derived_refs_sync`` against each dialect in the chain.
+
+    ``expand_derived_refs_sync`` parses ``sql`` (and the derived columns'
+    own ``sql`` fields) internally with the supplied dialect. If a
+    derived column whose ``Column.sql`` uses dialect-specific syntax
+    (MySQL backticks, BigQuery struct literals, etc.) tips over the
+    Postgres parser, the expansion would silently drop join paths the
+    DEV-1503 trigger needs (Codex round 9). Try the same chain
+    ``_parse_filter_sql_any_dialect`` uses; return the first
+    successful expansion or ``None`` if every dialect fails.
+    """
+    for dialect in _PLANNER_PARSE_DIALECT_CHAIN:
+        if dialect is None:
+            # ``expand_derived_refs_sync`` requires a dialect string.
+            continue
+        try:
+            expanded = expand_derived_refs_sync(
+                sql=sql,
+                model=model,
+                alias_path=alias_path,
+                resolve_model=bundle.get_referenced_model,
+                dialect=dialect,
+            )
+        except Exception:
+            continue
+        if expanded:
+            return expanded
     return None
 
 
@@ -162,12 +194,11 @@ def _expand_filter_sql_if_anchor_derived(
     else:
         sql_to_expand = canonical_sql
 
-    expanded = expand_derived_refs_sync(
+    expanded = _expand_derived_refs_any_dialect(
         sql=sql_to_expand,
         model=anchor_model,
         alias_path=anchor_relation,
-        resolve_model=bundle.get_referenced_model,
-        dialect=_PLANNER_PARSE_DIALECT,
+        bundle=bundle,
     )
     if not expanded:
         return parsed

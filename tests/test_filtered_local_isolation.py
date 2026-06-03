@@ -210,6 +210,59 @@ class TestSqlExprKeyReferencedJoinPaths:
             f"backtick-quoted filter; got {paths!r}"
         )
 
+    def test_dialect_fallback_chain_recovers_derived_ref_with_backticks(self):
+        """A derived column whose ``Column.sql`` uses MySQL backtick
+        syntax must still expand correctly when referenced from a
+        ``Column.filter`` — the round-7 outer fallback chain didn't
+        cover ``expand_derived_refs_sync`` itself, so a derived expansion
+        on backtick SQL would silently fail under hard-coded Postgres,
+        dropping the join path (Codex round 9).
+        """
+        from slayer.engine.column_filter_paths import (
+            compute_column_filter_join_paths,
+        )
+        host = SlayerModel(
+            name="orders", data_source="test", sql_table="Orders",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="customer_id", type=DataType.INT),
+                Column(name="amount", type=DataType.DOUBLE),
+                # Derived column whose sql uses MySQL backtick syntax —
+                # Postgres can't parse this.
+                Column(
+                    name="is_eu", type=DataType.DOUBLE,
+                    sql="CASE WHEN `customers`.`region` = 'EU' THEN 1 ELSE 0 END",
+                ),
+                Column(
+                    name="eu_amount", sql="amount", filter="is_eu = 1",
+                    type=DataType.DOUBLE,
+                ),
+            ],
+            joins=[ModelJoin(
+                target_model="customers", join_pairs=[["customer_id", "id"]],
+            )],
+        )
+        customers = SlayerModel(
+            name="customers", data_source="test", sql_table="Customers",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="region", type=DataType.TEXT),
+            ],
+        )
+        bundle = ResolvedSourceBundle(
+            source_model=host, referenced_models=[customers],
+        )
+        paths = compute_column_filter_join_paths(
+            canonical_sql="is_eu = 1",
+            anchor_model=host,
+            anchor_relation="orders",
+            bundle=bundle,
+        )
+        assert ("customers",) in paths, (
+            f"Dialect fallback must cover the derived-expansion path; "
+            f"got {paths!r}"
+        )
+
     def test_same_model_filter_has_no_referenced_paths(self):
         host = _claim_amount()
         q = SlayerQuery(
