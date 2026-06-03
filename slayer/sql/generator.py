@@ -2473,13 +2473,18 @@ class SQLGenerator:
                 f"Aggregation 'percentile' parameter 'p' must be in [0, 1]; got {p_float}."
             )
 
-        if self.dialect in ("mysql", "tsql"):
-            dialect_label = "MySQL" if self.dialect == "mysql" else "T-SQL (SQL Server)"
+        if self.dialect == "mysql":
             raise NotImplementedError(
-                f"Aggregation 'percentile' is not supported on {dialect_label}: "
-                "PERCENTILE_CONT requires a window function OVER clause in T-SQL, "
-                "and MySQL has no native PERCENTILE_CONT. "
+                "Aggregation 'percentile' is not supported on MySQL: "
+                "MySQL has no native PERCENTILE_CONT. "
                 "Use MariaDB or compute the value client-side."
+            )
+        if self.dialect == "tsql":
+            raise NotImplementedError(
+                "Aggregation 'percentile' is not supported on T-SQL (SQL Server): "
+                "PERCENTILE_CONT requires a window function OVER clause in T-SQL "
+                "and is not valid as a GROUP BY aggregate. "
+                "Compute the value client-side or restructure as a window query."
             )
 
         col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)

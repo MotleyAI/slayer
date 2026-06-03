@@ -103,27 +103,27 @@ class TestMapTypeCode:
 
     @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
     def test_tsql_integer_odbc_code_is_number(self, db_type: str) -> None:
-        # SQL_INTEGER = 4
+        # SQL_INTEGER
         assert _map_type_code(4, db_type=db_type) == "number"
 
     @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
     def test_tsql_bigint_odbc_code_is_number(self, db_type: str) -> None:
-        # SQL_BIGINT = -5
+        # SQL_BIGINT
         assert _map_type_code(-5, db_type=db_type) == "number"
 
     @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
     def test_tsql_varchar_odbc_code_is_string(self, db_type: str) -> None:
-        # SQL_VARCHAR = 12
+        # SQL_VARCHAR
         assert _map_type_code(12, db_type=db_type) == "string"
 
     @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
     def test_tsql_timestamp_odbc_code_is_time(self, db_type: str) -> None:
-        # SQL_TYPE_TIMESTAMP = 93
+        # SQL_TYPE_TIMESTAMP
         assert _map_type_code(93, db_type=db_type) == "time"
 
     @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
     def test_tsql_bit_odbc_code_is_boolean(self, db_type: str) -> None:
-        # SQL_BIT = -7
+        # SQL_BIT
         assert _map_type_code(-7, db_type=db_type) == "boolean"
 
     def test_tsql_does_not_fall_through_to_pg_oid_map(self) -> None:
