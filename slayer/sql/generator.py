@@ -71,10 +71,10 @@ _AGG_FUNCTION_MAP: dict[str, str] = {
 # DEV-1317: statistical aggregations routed through _build_stat_agg.
 # stddev_samp/_pop and var_samp/_pop are 1-arg; corr / covar_samp /
 # covar_pop are 2-arg via the `other=` kwarg. SQLite gets these through
-# registered Python UDFs; Postgres/DuckDB/MySQL/ClickHouse use the
-# native function emitted via sqlglot transpilation. MySQL has no
-# native CORR / COVAR_SAMP / COVAR_POP — _build_stat_agg raises
-# NotImplementedError there, mirroring _build_median.
+# registered Python UDFs; Postgres/DuckDB/ClickHouse use the native
+# function emitted via sqlglot transpilation. MySQL and T-SQL have no
+# native CORR / COVAR_SAMP / COVAR_POP — these use the
+# variance-decomposition formula in _build_covar_formula instead.
 _STAT_AGG_NAMES: frozenset[str] = frozenset({
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
     "corr", "covar_samp", "covar_pop",
