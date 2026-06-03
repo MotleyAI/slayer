@@ -436,9 +436,12 @@ _locks: dict[str, asyncio.Lock] = {}
 
 def _storage_key(storage: StorageBackend) -> str:
     """Stable path key for cache lookups."""
+    from slayer.storage.join_sync import JoinSyncStorage
     from slayer.storage.sqlite_storage import SQLiteStorage
     from slayer.storage.yaml_storage import YAMLStorage
 
+    if isinstance(storage, JoinSyncStorage):
+        return _storage_key(storage._inner)
     if isinstance(storage, YAMLStorage):
         return os.path.abspath(storage.base_dir)
     if isinstance(storage, SQLiteStorage):
@@ -527,6 +530,11 @@ async def get_filtered_ids(
     try:
         result = conn.execute(cypher)
         col_names: list[str] = result.get_column_names()
+        if "id" not in col_names:
+            raise ValueError(
+                "cypher_filter must return a column named 'id'; "
+                f"got columns: {col_names!r}."
+            )
         id_idx = col_names.index("id")
     except ValueError:
         raise

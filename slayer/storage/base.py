@@ -1,5 +1,6 @@
 """Abstract storage protocol and factory."""
 
+import asyncio
 import os
 import sys
 from abc import ABC, abstractmethod
@@ -716,6 +717,7 @@ class StorageBackend(ABC):
         Implementations may raise ``OSError`` when the underlying files
         are inaccessible; callers treat that as a forced rebuild.
         """
+        await asyncio.sleep(0)
         return "0"
 
     # ---- embeddings sidecar (DEV-1386) ------------------------------------

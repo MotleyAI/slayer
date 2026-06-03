@@ -35,6 +35,7 @@ from slayer.search.graph import (
     is_available,
 )
 from slayer.search.service import SearchResponse, SearchService
+from slayer.storage.join_sync import JoinSyncStorage
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -259,6 +260,28 @@ async def test_sqlite_storage_fingerprint_changes_after_write() -> None:
         assert fp_after != fp_before
     finally:
         os.unlink(db_path)
+
+
+@pytest.mark.asyncio
+async def test_join_sync_storage_fingerprint_delegates(
+    shop_only_storage: YAMLStorage,
+) -> None:
+    wrapped = JoinSyncStorage(inner=shop_only_storage)
+    assert await wrapped.graph_fingerprint() == await shop_only_storage.graph_fingerprint()
+
+
+@pytest.mark.skipif(not is_available(), reason="ladybug not installed")
+@pytest.mark.asyncio
+async def test_cypher_missing_id_column_friendly_error(
+    rich_storage: YAMLStorage,
+) -> None:
+    # Query passes _validate_cypher (AS id appears in WITH clause)
+    # but the final RETURN exposes 'name' instead of 'id'.
+    with pytest.raises(ValueError, match="must return a column named 'id'"):
+        await get_filtered_ids(
+            "MATCH (m:Memory) WITH m.id AS id RETURN m.learning AS name",
+            rich_storage,
+        )
 
 
 # ---------------------------------------------------------------------------
