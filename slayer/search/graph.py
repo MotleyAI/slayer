@@ -479,8 +479,8 @@ async def _get_or_rebuild(storage: StorageBackend) -> tuple[Any, Any]:
     key = _storage_key(storage)
 
     try:
-        current_fp: Optional[str] = storage.graph_fingerprint()
-    except Exception:
+        current_fp: Optional[str] = await storage.graph_fingerprint()
+    except OSError:
         current_fp = None
 
     # Fast path: no lock needed when cache is warm and fingerprint matches.
@@ -524,9 +524,14 @@ async def get_filtered_ids(
         )
     _validate_cypher(cypher)
     _db, conn = await _get_or_rebuild(storage)
-    result = conn.execute(cypher)
-    col_names: list[str] = result.get_column_names()
-    id_idx = col_names.index("id")
+    try:
+        result = conn.execute(cypher)
+        col_names: list[str] = result.get_column_names()
+        id_idx = col_names.index("id")
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"cypher_filter execution failed: {exc}") from exc
     ids: set[str] = set()
     while result.has_next():
         row = result.get_next()

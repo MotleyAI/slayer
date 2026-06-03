@@ -171,7 +171,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     # ---- graph fingerprint -------------------------------------------------
 
-    def graph_fingerprint(self) -> str:
+    async def graph_fingerprint(self) -> str:
         """mtime of the SQLite database file as a string.
 
         Any write to the database changes the file's mtime, so this is

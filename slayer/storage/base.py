@@ -703,7 +703,7 @@ class StorageBackend(ABC):
 
     # ---- graph fingerprint (DEV-1464) -------------------------------------
 
-    def graph_fingerprint(self) -> str:
+    async def graph_fingerprint(self) -> str:
         """Return a string that changes whenever storage content changes.
 
         Used by ``slayer.search.graph`` to decide whether to rebuild the

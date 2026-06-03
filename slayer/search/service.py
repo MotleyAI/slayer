@@ -482,6 +482,20 @@ def _fuse_entity_hits(
 # ---------------------------------------------------------------------------
 
 
+def _memory_id_cypher_filter_warnings(
+    *,
+    canonical_input_entities: List[str],
+    candidate_ids: FrozenSet[str],
+) -> List[str]:
+    """Emit one warning per user-supplied ``memory:<id>`` ref that was
+    excluded by the cypher_filter allowlist."""
+    return [
+        f"{c!r} excluded by cypher_filter."
+        for c in canonical_input_entities
+        if c.startswith(_MEMORY_PREFIX) and c not in candidate_ids
+    ]
+
+
 def _memory_id_off_datasource_warnings(
     *,
     canonical_input_entities: List[str],
@@ -748,6 +762,14 @@ class SearchService:
                 datasource=datasource,
             )
         )
+        # DEV-1464: detect named ``memory:<id>`` refs excluded by cypher_filter.
+        if candidate_ids is not None:
+            warnings = _dedup(
+                warnings + _memory_id_cypher_filter_warnings(
+                    canonical_input_entities=canonical_input_entities,
+                    candidate_ids=candidate_ids,
+                )
+            )
         (
             channel_1_entity_ranking,
             named_kind_text,

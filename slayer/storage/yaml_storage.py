@@ -47,8 +47,8 @@ from slayer.storage.sidecar_embedding_store import (
 from slayer.storage.v4_migration import migrate_yaml_layout
 
 
-_LEGACY_RENAMES = ("embeddings.yaml", "counters.yaml")  # NOSONAR(S1192) — full filenames, not the extension constant
-_YAML_EXTS = (".yaml", ".yml")
+_LEGACY_RENAMES = ("embeddings.yaml", "counters.yaml")
+_YAML_EXTS = (".yaml", ".yml")  # NOSONAR(S1192) — full filenames in _LEGACY_RENAMES are semantically distinct from this extension tuple
 
 
 class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
@@ -77,26 +77,24 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     # ---- graph fingerprint -------------------------------------------------
 
-    def graph_fingerprint(self) -> str:
+    async def graph_fingerprint(self) -> str:
         """(file_count, max_mtime) across all YAML files under base_dir.
 
         Including the file count ensures that deleting a YAML file (which
         doesn't change the max mtime of the remaining files) still invalidates
-        the graph cache.
+        the graph cache.  OSError propagates to the caller (treated as a
+        forced rebuild by ``slayer.search.graph._get_or_rebuild``).
         """
         file_count = 0
         max_mtime = 0.0
         for root, _dirs, files in os.walk(self.base_dir):
             for fname in files:
                 if fname.endswith(_YAML_EXTS):
-                    try:
-                        file_count += 1
-                        max_mtime = max(
-                            max_mtime,
-                            os.path.getmtime(os.path.join(root, fname)),
-                        )
-                    except OSError:
-                        pass
+                    max_mtime = max(
+                        max_mtime,
+                        os.path.getmtime(os.path.join(root, fname)),
+                    )
+                    file_count += 1
         return f"{file_count}:{max_mtime}"
 
     # ---- internal helpers --------------------------------------------------

@@ -192,7 +192,7 @@ def test_is_available_returns_bool() -> None:
 async def test_yaml_storage_graph_fingerprint_returns_str(
     shop_only_storage: YAMLStorage,
 ) -> None:
-    fp = shop_only_storage.graph_fingerprint()
+    fp = await shop_only_storage.graph_fingerprint()
     assert isinstance(fp, str)
     assert fp != ""
 
@@ -201,12 +201,12 @@ async def test_yaml_storage_graph_fingerprint_returns_str(
 async def test_yaml_storage_fingerprint_changes_after_write(
     shop_only_storage: YAMLStorage,
 ) -> None:
-    fp_before = shop_only_storage.graph_fingerprint()
+    fp_before = await shop_only_storage.graph_fingerprint()
     await shop_only_storage.save_memory(
         learning="A new memory changes the fingerprint.",
         entities=[],
     )
-    fp_after = shop_only_storage.graph_fingerprint()
+    fp_after = await shop_only_storage.graph_fingerprint()
     assert fp_after != fp_before
 
 
@@ -214,9 +214,9 @@ async def test_yaml_storage_fingerprint_changes_after_write(
 async def test_yaml_storage_fingerprint_changes_after_delete(
     shop_only_storage: YAMLStorage,
 ) -> None:
-    fp_before = shop_only_storage.graph_fingerprint()
+    fp_before = await shop_only_storage.graph_fingerprint()
     await shop_only_storage.delete_model("orders", data_source="shop")
-    fp_after = shop_only_storage.graph_fingerprint()
+    fp_after = await shop_only_storage.graph_fingerprint()
     assert fp_after != fp_before
 
 
@@ -229,7 +229,7 @@ async def test_sqlite_storage_graph_fingerprint_returns_str() -> None:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:")
         )
-        fp = storage.graph_fingerprint()
+        fp = await storage.graph_fingerprint()
         assert isinstance(fp, str)
         assert fp != ""
     finally:
@@ -253,9 +253,9 @@ async def test_sqlite_storage_fingerprint_changes_after_write() -> None:
                 columns=[Column(name="id", type=DataType.INT, primary_key=True)],
             )
         )
-        fp_before = storage.graph_fingerprint()
+        fp_before = await storage.graph_fingerprint()
         await storage.save_memory(learning="new memory", entities=[])
-        fp_after = storage.graph_fingerprint()
+        fp_after = await storage.graph_fingerprint()
         assert fp_after != fp_before
     finally:
         os.unlink(db_path)
