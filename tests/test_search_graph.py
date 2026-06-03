@@ -211,6 +211,16 @@ async def test_yaml_storage_fingerprint_changes_after_write(
 
 
 @pytest.mark.asyncio
+async def test_yaml_storage_fingerprint_changes_after_delete(
+    shop_only_storage: YAMLStorage,
+) -> None:
+    fp_before = shop_only_storage.graph_fingerprint()
+    await shop_only_storage.delete_model("orders", data_source="shop")
+    fp_after = shop_only_storage.graph_fingerprint()
+    assert fp_after != fp_before
+
+
+@pytest.mark.asyncio
 async def test_sqlite_storage_graph_fingerprint_returns_str() -> None:
     fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)

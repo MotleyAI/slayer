@@ -80,6 +80,7 @@ flight = ["pyarrow"]
 # `pip install motley-slayer[pg_facade]` install path consistent.
 pg_facade = []
 advanced_search = ["litellm", "numpy", "ladybug"]
+embedding_search = ["litellm", "numpy"]  # legacy alias for advanced_search without graph support
 all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "dbt-core", "pyarrow", "litellm", "numpy", "ladybug"]
 
 [project.scripts]

@@ -341,15 +341,11 @@ def _connect_entity_mention(
         )
 
 
-def _insert_mentions_edges(
-    conn: Any,
-    memories: list,
+def _build_valid_entity_sets(
     visible_models: dict,
-    datasource_names: list[str],
-) -> None:
-    """Insert MENTIONS edges: Memory → {Datasource, Model, Column, Measure, Agg, Memory}."""
-    ds_set = set(datasource_names)
-    valid_models: set[str] = set(visible_models)
+    memories: list,
+) -> tuple[set[str], set[str], set[str], set[str]]:
+    """Build (valid_columns, valid_measures, valid_aggs, valid_memory_canonicals)."""
     valid_columns: set[str] = set()
     valid_measures: set[str] = set()
     valid_aggs: set[str] = set()
@@ -363,6 +359,21 @@ def _insert_mentions_edges(
         for agg in model.aggregations:
             valid_aggs.add(f"{canonical_model}.{agg.name}")
     valid_memory_canonicals = {f"{_MEMORY_PREFIX}{m.id}" for m in memories}
+    return valid_columns, valid_measures, valid_aggs, valid_memory_canonicals
+
+
+def _insert_mentions_edges(
+    conn: Any,
+    memories: list,
+    visible_models: dict,
+    datasource_names: list[str],
+) -> None:
+    """Insert MENTIONS edges: Memory → {Datasource, Model, Column, Measure, Agg, Memory}."""
+    ds_set = set(datasource_names)
+    valid_models: set[str] = set(visible_models)
+    valid_columns, valid_measures, valid_aggs, valid_memory_canonicals = (
+        _build_valid_entity_sets(visible_models, memories)
+    )
 
     for mem in memories:
         src = f"{_MEMORY_PREFIX}{mem.id}"
