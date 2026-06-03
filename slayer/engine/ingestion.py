@@ -14,6 +14,7 @@ from collections import defaultdict, deque
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, TextIO, Tuple
 
 import sqlalchemy as sa
+import sqlalchemy.dialects.mssql as _sqla_mssql
 from pydantic import BaseModel, Field
 
 from slayer.core.enums import DataType
@@ -96,7 +97,7 @@ _SA_TYPE_MAP = {
     "FLOAT64": DataType.DOUBLE,
     "DATETIME64": DataType.TIMESTAMP,
     "DATE32": DataType.DATE,
-    # T-SQL (SQL Server) specific types
+    # T-SQL (SQL Server) types; TINYINT also covers MySQL/MariaDB
     "TINYINT": DataType.INT,
     "DATETIME2": DataType.TIMESTAMP,
     "SMALLDATETIME": DataType.TIMESTAMP,
@@ -106,6 +107,8 @@ _SA_TYPE_MAP = {
     "NTEXT": DataType.TEXT,
     "MONEY": DataType.DOUBLE,
     "SMALLMONEY": DataType.DOUBLE,
+    # SQL Server rowversion — 8-byte binary counter, not temporal
+    "ROWVERSION": DataType.TEXT,
 }
 
 _NUMERIC_TYPES = {DataType.INT, DataType.DOUBLE}
@@ -198,6 +201,11 @@ def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEn
 
 def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
     sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    # mssql.TIMESTAMP is SQL Server's rowversion (8-byte binary counter), not
+    # a temporal type. Its class name collides with sa.TIMESTAMP, so we must
+    # check isinstance before the generic name-based _SA_TYPE_MAP lookup.
+    if isinstance(sa_type, _sqla_mssql.TIMESTAMP):
+        return DataType.TEXT
     type_name = type(sa_type).__name__.upper()
     type_str = str(sa_type).split("(")[0].upper().strip()
     # DEV-1361: NUMERIC/DECIMAL with scale=0 are integer-shaped → INT.

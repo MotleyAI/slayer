@@ -16,6 +16,7 @@ from sqlalchemy.dialects.mssql import (
     NVARCHAR,
     SMALLDATETIME,
     SMALLMONEY,
+    TIMESTAMP as MSSQL_TIMESTAMP,
     TINYINT,
 )
 
@@ -383,6 +384,13 @@ class TestSaTypeToDataTypeIntDouble:
 
     def test_tsql_bit_maps_to_boolean(self) -> None:
         assert _sa_type_to_data_type(BIT()) is DataType.BOOLEAN
+
+    def test_tsql_mssql_timestamp_rowversion_maps_to_text(self) -> None:
+        # mssql.TIMESTAMP is SQL Server's rowversion (8-byte binary counter),
+        # not a temporal type. Its class name is "TIMESTAMP", same as
+        # sa.TIMESTAMP, so without the isinstance guard it would incorrectly
+        # land on DataType.TIMESTAMP.
+        assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
 
 
 class TestSqliteIngestionRoundTrip:

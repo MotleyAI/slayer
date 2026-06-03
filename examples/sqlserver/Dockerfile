@@ -29,7 +29,7 @@ RUN pip install --no-deps . && \
     useradd --create-home slayer
 USER slayer
 
-ENV SLAYER_MODELS_DIR=/data
+ENV SLAYER_STORAGE=/data
 EXPOSE 5143
 
-CMD ["slayer", "serve", "--host", "0.0.0.0", "--port", "5143", "--models-dir", "/data"]
+CMD ["slayer", "serve", "--host", "0.0.0.0", "--port", "5143", "--storage", "/data"]

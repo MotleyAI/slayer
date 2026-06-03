@@ -1877,7 +1877,7 @@ class TestMultiDialectGeneration:
         sql_upper = sql.upper()
         assert any(fn in sql_upper for fn in ["DATE_TRUNC", "STRFTIME", "TRUNC", "STR_TO_DATE", "DATETRUNC"])
 
-    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "bigquery", "duckdb", "snowflake"])
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "bigquery", "duckdb", "snowflake", "tsql"])
     async def test_date_trunc_casts_unknown_typed_time_dim(self, dialect: str) -> None:
         """A time-dimension whose ``sql`` is a bare literal (or any expression
         whose live type is ``unknown``) must be wrapped in ``CAST(... AS

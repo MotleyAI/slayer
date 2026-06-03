@@ -1109,6 +1109,7 @@ class SQLGenerator:
             # extract unit name and amount, negate when sign < 0.
             result = expr
             for iv in intervals:
+                assert isinstance(iv, exp.Interval), type(iv)
                 unit_str = iv.unit.name.upper()
                 amount = exp.Neg(this=iv.this) if sign < 0 else iv.this
                 result = exp.Anonymous(

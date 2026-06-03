@@ -20,9 +20,7 @@ services:
       start_period: 30s
 
   createdb:
-    build:
-      context: ../..
-      dockerfile: examples/sqlserver/Dockerfile
+    image: mcr.microsoft.com/mssql/server:2022-latest
     command: >
       /opt/mssql-tools18/bin/sqlcmd
       -S sqlserver -U sa -P 'YourStrong@Passw0rd'

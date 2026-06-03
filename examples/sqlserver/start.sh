@@ -20,4 +20,4 @@ for m in models:
 print(f'Ingested {len(models)} models')
 "
 
-exec slayer serve --host 0.0.0.0 --port 5143 --models-dir /data
+exec slayer serve --host 0.0.0.0 --port 5143 --storage /data
