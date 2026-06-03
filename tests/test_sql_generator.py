@@ -63,6 +63,36 @@ def _extract_src_body(sql: str) -> str:
     return sql[start:end]
 
 
+def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:
+    """Extract one CTE body by matching ``<cte_name> AS (`` and walking balanced
+    parentheses to its closing ``)``.
+
+    Robust against nested subqueries inside the CTE body (e.g. the ranked
+    ``FROM (SELECT ... ROW_NUMBER() …) AS …`` that first/last isolated CTEs
+    contain). ``cte_name_pattern`` is a regex matched against the CTE name —
+    typical use: ``r"_cm_\\w*loss_payment_amt\\w*"``. Raises ``AssertionError``
+    if no matching CTE is found.
+    """
+    name_match = _re.search(rf"({cte_name_pattern})\s+AS\s*\(", sql)
+    assert name_match, f"No CTE matching {cte_name_pattern!r} in:\n{sql}"
+    # Position just after the opening paren of ``<name> AS (``.
+    body_start = sql.index("(", name_match.start()) + 1
+    depth = 1
+    i = body_start
+    while i < len(sql) and depth > 0:
+        ch = sql[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return sql[body_start:i]
+        i += 1
+    raise AssertionError(
+        f"Unbalanced parens — no closing ) for CTE {name_match.group(1)!r}:\n{sql}"
+    )
+
+
 _SQLGLOT_TYPEERROR_DIALECTS = {"bigquery"}
 
 
@@ -194,21 +224,6 @@ _XFAIL_WINDOWED = pytest.mark.xfail(
         "implemented on the typed pipeline — the window kwarg is dropped and "
         "the measure degrades to a plain grouped aggregate. Auto-promotes when "
         "the range-join primitive is reimplemented."
-    ),
-)
-
-
-_XFAIL_FM_ISOLATION = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEV-1503: the typed pipeline has no isolated-CTE handling for "
-        "cross-model-FILTERED local measures (the legacy `_fm_` feature). The "
-        "filter joins ARE now discovered (DEV-1494), but the measure is not "
-        "isolated — it emits an inline CASE WHEN, and these tests assert the "
-        "legacy `_fm_`/`_base`/ROW_NUMBER structure that the typed shape won't "
-        "reproduce. Stage-D blocker: the legacy generate(enriched=) path is "
-        "the only working implementation. These assertions will need updating "
-        "when the feature is reimplemented (they do not cleanly auto-promote)."
     ),
 )
 
@@ -3533,29 +3548,19 @@ class TestFilteredMeasures:
         # resolution) and potentially in the isolated-measure CTE.
         assert "LEFT JOIN public.customers" in sql
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1503: the filter join is now discovered (DEV-1494), but the "
-            "typed pipeline does not isolate a cross-model-FILTERED first/last "
-            "measure into its own `_fm_`/`_last_rn` ranked CTE — this test "
-            "asserts that legacy isolated-CTE structure, which the typed shape "
-            "won't reproduce until the feature is reimplemented."
-        ),
-    )
     async def test_filtered_last_cross_model_isolates_to_cte_with_ranked_subquery(
         self, generator: SQLGenerator,
     ) -> None:
         """Regression for CodeRabbit B6-4 — when a filtered first/last measure's
         filter references a JOINED table (e.g. customers.status), the measure
-        is isolated into its own CTE with a ranked subquery. The join is placed
+        is isolated into its own _cm_ CTE with a ranked subquery. The join lives
         inside the ranked subquery so the filter resolves, and the final SELECT
         does not reference the joined table directly."""
 
         sql = await self._filtered_last_cross_model_sql(generator)
 
-        # The outermost SELECT (after all CTEs) should not reference
-        # 'customers.' directly — it pulls pre-computed values from CTEs.
+        # The outermost SELECT (after all CTEs) should not reference 'customers.'
+        # directly — it pulls pre-computed values from CTEs.
         final_select_idx = sql.rfind("\nSELECT ")
         if final_select_idx == -1:
             final_select_idx = sql.rfind("SELECT ")
@@ -3566,17 +3571,14 @@ class TestFilteredMeasures:
             f"not in scope — should use CTE column references. "
             f"Final SELECT:\n{final_select}\n\nFull SQL:\n{sql}"
         )
-        # The isolated CTE should contain a ranked subquery with _last_rn
-        assert "_fm_" in sql, f"Expected isolated _fm_ CTE:\n{sql}"
+        # The isolated _cm_ CTE should contain a ranked subquery with _last_rn.
+        assert "_cm_" in sql, f"Expected isolated _cm_ CTE:\n{sql}"
         assert "_last_rn" in sql, f"Expected _last_rn in isolated CTE:\n{sql}"
-        # The customers JOIN should be inside the _fm_ CTE's ranked subquery
-        fm_match = _re.search(r"(_fm_\w+)\s+AS\s*\(", sql)
-        assert fm_match, f"No _fm_ CTE found:\n{sql}"
-        fm_start = fm_match.start()
-        fm_end = sql.index("\n)", fm_start)
-        fm_body = sql[fm_start:fm_end]
-        assert "public.customers" in fm_body, (
-            f"Expected customers JOIN inside _fm_ CTE:\n{fm_body}"
+        # The customers JOIN should be inside the _cm_ CTE's ranked subquery.
+        # Balanced-paren walker — the body wraps a nested ranked subquery.
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "public.customers" in cm_body, (
+            f"Expected customers JOIN inside _cm_ CTE:\n{cm_body}"
         )
 
     async def test_filter_with_dotted_string_literal_does_not_pull_spurious_join(
@@ -4296,14 +4298,6 @@ class TestDimensionAggregation:
         assert "SUM(" in sql
         assert "/" in sql
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1499: typed pipeline rejects a cross-model aggregate inside "
-            "an AGGREGATE-phase composite (NotImplementedError). Auto-promotes "
-            "when supported."
-        ),
-    )
     async def test_cross_model_dimension_count_distinct_in_formula(self, generator: SQLGenerator) -> None:
         """cross-model dimension:count_distinct in a formula (e.g., policies.id:count_distinct)."""
 
@@ -6274,13 +6268,6 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
             assert "effective_date" in cte_section.lower()
             assert "GROUP BY" in cte_section
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1499: typed pipeline rejects a cross-model aggregate inside "
-            "an AGGREGATE-phase composite. Auto-promotes when supported."
-        ),
-    )
     async def test_rerooted_cross_model_in_formula(self, generator, _models):
         """Formula mixing local + cross-model measure uses re-rooted CTE."""
         policy, policy_amount, premium, agreement_party_role = _models
@@ -6844,11 +6831,10 @@ class TestIsolatedFilteredMeasureCTEs:
             validate=False,
         )
 
-    @_XFAIL_FM_ISOLATION
     async def test_two_filtered_measures_get_separate_ctes(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
-        """Two measures with different cross-model filters → separate CTEs, not intersecting JOINs."""
+        """Two measures with different cross-model filters → separate _cm_ CTEs, not intersecting JOINs."""
         query = SlayerQuery(
             source_model="claim_amount",
             measures=[ModelMeasure(formula="loss_payment_amt:sum"), ModelMeasure(formula="loss_reserve_amt:sum")],
@@ -6856,18 +6842,34 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model, related_models, query)
 
-        # Each filtered measure should have its own CTE
-        assert "_fm_" in sql and "loss_payment_amt" in sql
+        # Each filtered measure should get its own _cm_ CTE
+        assert "loss_payment_amt" in sql
         assert "loss_reserve_amt" in sql
-        # Base query should NOT have both INNER JOINs (would intersect to zero rows)
-        base_section = sql.split("_fm_")[0]
-        assert "Loss_Payment" not in base_section or "Loss_Reserve" not in base_section
+        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        assert len(cm_cte_names) >= 2, (
+            f"Expected ≥ 2 _cm_ CTEs (one per filtered measure), got {len(cm_cte_names)}: {cm_cte_names}\n{sql}"
+        )
+        # The host _base CTE must NOT have both INNER filter-target JOINs
+        # (legacy bug: intersecting to zero rows). Inspect the _base body.
+        base_match = _re.search(r"_base\s+AS\s*\(", sql)
+        assert base_match, f"Expected host _base CTE in:\n{sql}"
+        base_start = base_match.start()
+        base_body = sql[base_start:sql.index("\n)", base_start)]
+        assert not ("Loss_Payment" in base_body and "Loss_Reserve" in base_body), (
+            f"Host _base CTE has both INNER filter-target JOINs — would intersect:\n{base_body}"
+        )
 
-    @_XFAIL_FM_ISOLATION
     async def test_formula_over_isolated_measures(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
-        """Formula referencing isolated measures evaluates in the outer query."""
+        """Formula referencing isolated measures evaluates against the
+        joined-back ``_cm_*`` columns at the combined SELECT — NOT inline
+        in ``_base`` (which would pull both filter-target INNER joins back
+        into the host CTE and intersect to rows present in BOTH targets,
+        silently corrupting both aggregates).
+
+        Pins Codex round 2 finding #1.
+        """
         query = SlayerQuery(
             source_model="claim_amount",
             measures=[
@@ -6881,15 +6883,46 @@ class TestIsolatedFilteredMeasureCTEs:
 
         # Formula should be evaluated (contains + operator)
         assert "+" in sql
-        # Both CTE names present
-        assert "_fm_" in sql and "loss_payment_amt" in sql
+        # Both isolated measures present in the SQL
+        assert "loss_payment_amt" in sql
         assert "loss_reserve_amt" in sql
+        # Each isolated filtered measure gets its own _cm_ CTE.
+        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        assert len(cm_cte_names) >= 2, (
+            f"Expected ≥ 2 _cm_ CTEs, got {len(cm_cte_names)}: {cm_cte_names}\n{sql}"
+        )
+        # Both filter-target INNER joins must live INSIDE the per-measure
+        # ``_cm_*`` CTEs, NEVER in the host ``_base`` body. Inline
+        # rendering of the composite would re-introduce them and the
+        # intersection bug DEV-1503 set out to eliminate.
+        base_body = _extract_cte_body(sql, r"_base")
+        assert "Loss_Payment" not in base_body, (
+            f"Composite over isolated aggregates leaked Loss_Payment join "
+            f"into _base — DEV-1503 isolation regressed:\n{base_body}"
+        )
+        assert "Loss_Reserve" not in base_body, (
+            f"Composite over isolated aggregates leaked Loss_Reserve join "
+            f"into _base — DEV-1503 isolation regressed:\n{base_body}"
+        )
+        # The composite alias must appear in the OUTER combined SELECT
+        # (after all CTEs), referencing both ``_cm_*`` joined-back columns.
+        last_cte_close = sql.rfind("\n)")
+        outer = sql[last_cte_close + 2:]
+        assert "total_loss" in outer, (
+            f"Composite alias 'total_loss' missing from outer combined SELECT:\n{outer}"
+        )
+        assert "loss_payment_amt_sum" in outer, (
+            f"Outer must reference loss_payment_amt_sum CTE column:\n{outer}"
+        )
+        assert "loss_reserve_amt_sum" in outer, (
+            f"Outer must reference loss_reserve_amt_sum CTE column:\n{outer}"
+        )
+        _assert_valid_sql(sql)
 
-    @_XFAIL_FM_ISOLATION
     async def test_mixed_isolated_and_local_measures(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
-        """Unfiltered measure stays in base, filtered goes to CTE."""
+        """Unfiltered measure stays in host base, filtered goes to its own _cm_ CTE."""
         query = SlayerQuery(
             source_model="claim_amount",
             measures=[ModelMeasure(formula="total_amount:sum"), ModelMeasure(formula="loss_payment_amt:sum")],
@@ -6897,17 +6930,23 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model, related_models, query)
 
-        # Unfiltered measure (total_amount) should be in the _base CTE
+        # Unfiltered measure (total_amount) should be in the host _base CTE
         assert "_base" in sql
         assert "total_amount_sum" in sql
-        # Filtered measure in its own CTE
-        assert "_fm_" in sql and "loss_payment_amt" in sql
+        base_match = _re.search(r"_base\s+AS\s*\(", sql)
+        assert base_match, f"Expected _base CTE in:\n{sql}"
+        base_start = base_match.start()
+        base_body = sql[base_start:sql.index("\n)", base_start)]
+        assert "total_amount" in base_body, (
+            f"unfiltered total_amount should be in host _base CTE:\n{base_body}"
+        )
+        # Filtered measure in its own _cm_ CTE.
+        assert "_cm_" in sql and "loss_payment_amt" in sql
 
-    @_XFAIL_FM_ISOLATION
     async def test_all_measures_isolated_produces_dimension_spine(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
-        """When all measures are isolated, base query is just a dimension spine."""
+        """When all measures are isolated, the host _base CTE is just a dimension spine."""
         query = SlayerQuery(
             source_model="claim_amount",
             measures=[ModelMeasure(formula="loss_payment_amt:sum")],
@@ -6915,25 +6954,37 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model, related_models, query)
 
-        # Base CTE should exist with dimensions but no SUM
+        # Host _base CTE exists; the filtered measure goes to its own _cm_ CTE.
         assert "_base" in sql
-        assert "_fm_" in sql and "loss_payment_amt" in sql
-        # The base should have GROUP BY for deduplication
-        base_cte = sql.split("_fm_")[0]
-        assert "GROUP BY" in base_cte
+        assert "_cm_" in sql and "loss_payment_amt" in sql
+        # Inspect the _base body: dim spine with GROUP BY, no filter-target join.
+        base_match = _re.search(r"_base\s+AS\s*\(", sql)
+        assert base_match, f"Expected _base CTE in:\n{sql}"
+        base_start = base_match.start()
+        base_body = sql[base_start:sql.index("\n)", base_start)]
+        assert "GROUP BY" in base_body, (
+            f"_base must group by dimensions for the spine:\n{base_body}"
+        )
+        # The filter-target join belongs in the _cm_ CTE, not the host _base spine.
+        assert "Loss_Payment" not in base_body, (
+            f"_base CTE wrongly includes the filter-target INNER join:\n{base_body}"
+        )
 
-    @_XFAIL_FM_ISOLATION
     async def test_combined_uses_cross_join_when_no_dimensions(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
-        """When no dimensions exist, measure CTEs are CROSS JOINed to base (Bug Q6)."""
+        """When no dimensions exist, isolated _cm_ CTEs are CROSS JOINed to base (Bug Q6)."""
         query = SlayerQuery(
             source_model="claim_amount",
             measures=[ModelMeasure(formula="loss_payment_amt:sum"), ModelMeasure(formula="loss_reserve_amt:sum")],
         )
         sql = await self._sql(claim_amount_model, related_models, query)
-        # Both isolated CTEs should be present
-        assert "_fm_" in sql and "loss_payment_amt" in sql
+        # Both isolated _cm_ CTEs should be present
+        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        assert len(cm_cte_names) >= 2, (
+            f"Expected ≥ 2 _cm_ CTEs (one per filtered measure), got {len(cm_cte_names)}: {cm_cte_names}\n{sql}"
+        )
+        assert "loss_payment_amt" in sql
         assert "loss_reserve_amt" in sql
         # With no dimensions, CROSS JOIN is needed (not LEFT JOIN with no ON)
         assert "CROSS JOIN" in sql
@@ -6941,33 +6992,40 @@ class TestIsolatedFilteredMeasureCTEs:
     async def test_filter_join_preserved_when_skip_isolated(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
-        """Cross-model filter joins survive skip_isolated join stripping (Bug Q9).
+        """Cross-model filter joins survive measure isolation (Bug Q9).
 
-        When an isolated measure triggers skip_isolated, the base query strips
-        non-dimension joins. But query-level filters that reference cross-model
-        paths still need their joins.
+        When a measure is isolated into its own _cm_ CTE, a query-level row
+        filter that references a different cross-model path (here ``claim``)
+        must still apply somewhere — and the ``claim`` join must be present
+        wherever the filter lands so the ref resolves. Under DEV-1503 the
+        sub-plan receives the row filter, so the join + filter both land
+        inside the _cm_ CTE; the no-dim host _base becomes a placeholder
+        spine (the aggregate join-back is via CROSS JOIN).
         """
         query = SlayerQuery(
             source_model="claim_amount",
             measures=[ModelMeasure(formula="loss_payment_amt:sum")],
-            # No dimensions on claim — only the filter references the claim join
+            # No dimensions on claim — only the filter references the claim join.
             filters=["claim.claim_number = '12345'"],
         )
         sql = await self._sql(claim_amount_model, related_models, query)
-        # The base query WHERE clause references claim.claim_number
+        # The filter literal and the dotted column ref both survive.
         assert "claim_number" in sql
-        # The claim join must be present in the base query for the WHERE to work
-        base_section = sql.split("_fm_")[0]
-        assert "Claim" in base_section and "JOIN" in base_section
+        assert "12345" in sql
+        # The claim join must land somewhere (legacy: in _base; new: in _cm_).
+        # Either is correct as long as the filter can resolve.
+        assert "Claim" in sql and "JOIN" in sql, (
+            f"claim join missing entirely:\n{sql}"
+        )
+        _assert_valid_sql(sql)
 
-    @_XFAIL_FM_ISOLATION
     async def test_isolated_cte_qualifies_cross_model_dim_correctly(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
         """Isolated CTEs qualify cross-model dimensions with dim.model_name (Bug Q11).
 
         The dimension claim.claim_number is on the 'claim' model. The isolated
-        CTE must reference claim.claim_number, not claim_amount.claim_number.
+        _cm_ CTE must reference claim.claim_number, not claim_amount.claim_number.
         """
         query = SlayerQuery(
             source_model="claim_amount",
@@ -6975,15 +7033,15 @@ class TestIsolatedFilteredMeasureCTEs:
             dimensions=[ColumnRef(name="claim.claim_number")],
         )
         sql = await self._sql(claim_amount_model, related_models, query)
-        # Extract the _fm CTE body (between _fm_ name and the next CTE/combined)
-        fm_match = _re.search(r"_fm_\w*loss_payment_amt\w*", sql)
-        assert fm_match, f"No _fm_ CTE for loss_payment_amt in:\n{sql}"
-        fm_start = fm_match.start()
-        fm_body = sql[fm_start:sql.index("\n)", fm_start)]
-        # The dimension should use claim.claim_number, not claim_amount.claim_number
-        assert "claim.claim_number" in fm_body, f"Expected claim.claim_number in CTE:\n{fm_body}"
-        assert "claim_amount.claim_number" not in fm_body, (
-            f"Found wrong table qualification claim_amount.claim_number in CTE:\n{fm_body}"
+        # Extract the _cm CTE body for the filtered measure.
+        cm_match = _re.search(r"_cm_\w*loss_payment_amt\w*", sql)
+        assert cm_match, f"No _cm_ CTE for loss_payment_amt in:\n{sql}"
+        cm_start = cm_match.start()
+        cm_body = sql[cm_start:sql.index("\n)", cm_start)]
+        # The dimension should use claim.claim_number, not claim_amount.claim_number.
+        assert "claim.claim_number" in cm_body, f"Expected claim.claim_number in CTE:\n{cm_body}"
+        assert "claim_amount.claim_number" not in cm_body, (
+            f"Found wrong table qualification claim_amount.claim_number in CTE:\n{cm_body}"
         )
 
     async def test_cm_cte_skips_filters_on_unavailable_tables(self, generator: SQLGenerator) -> None:
@@ -7040,11 +7098,17 @@ class TestIsolatedFilteredMeasureCTEs:
         base_section = sql[:cm_start]
         assert "warehouse" in base_section.lower()
 
-    @_XFAIL_FM_ISOLATION
     async def test_base_not_empty_when_no_dims_all_measures_skipped(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
-        """Base SELECT must not be empty when all measures are isolated and there are no dims (Bug Q10)."""
+        """Base SELECT must not be empty when all measures are isolated and there are no dims (Bug Q10).
+
+        ALSO: the placeholder ``_base`` must NOT reference the host table.
+        A ``SELECT 1 AS _placeholder FROM <host>`` spine returns one row
+        per host row; CROSS JOINing that to a scalar ``_cm_*`` aggregate
+        duplicates the aggregate by host row count — a no-dim aggregate
+        query must return one row, not N (Codex round 2 #2).
+        """
         query = SlayerQuery(
             source_model="claim_amount",
             measures=[ModelMeasure(formula="loss_payment_amt:sum")],
@@ -7053,13 +7117,37 @@ class TestIsolatedFilteredMeasureCTEs:
         sql = await self._sql(claim_amount_model, related_models, query)
         # Must not have an empty SELECT clause
         assert "SELECT\nFROM" not in sql, f"Empty SELECT detected:\n{sql}"
-        # Should still produce valid SQL with the measure CTE
-        assert "_fm_" in sql and "loss_payment_amt" in sql
+        assert "SELECT FROM" not in sql, f"Empty SELECT detected:\n{sql}"
+        # Should still produce valid SQL with the isolated _cm_ CTE.
+        assert "_cm_" in sql and "loss_payment_amt" in sql
+        # ``_base`` must NOT reference the host table — that turns the
+        # one-row placeholder into N rows.
+        base_body = _extract_cte_body(sql, r"_base")
+        assert "Claim_Amount" not in base_body, (
+            f"_base placeholder must not reference host table when empty "
+            f"(would duplicate scalar aggregate by host row count):"
+            f"\n{base_body}"
+        )
+        assert "_placeholder" in base_body, (
+            f"Expected _base placeholder to use the literal 1 spine:"
+            f"\n{base_body}"
+        )
+        _assert_valid_sql(sql)
 
-    async def test_having_filter_on_isolated_measure_applied_in_base(
+    async def test_aggregate_filter_on_isolated_measure_applied_on_outer(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
-        """HAVING filter on an isolated measure is correctly applied in the base CTE."""
+        """Aggregate-phase filter referencing an isolated measure is applied on
+        the outer combined SELECT (as WHERE), not inside the _cm_ CTE.
+
+        Under isolation, the filtered aggregate lives in a _cm_ CTE that LEFT
+        JOINs back to _base. The host filter ``loss_payment_amt:sum > 1000``
+        must drop host rows where the aggregate fails the condition — matching
+        the inline-HAVING semantic. Since the outer combined SELECT is NOT
+        aggregating, the comparison renders as WHERE on the joined-back CTE
+        column, not HAVING-into-the-CTE (which would surface host rows as NULL
+        instead of dropping them).
+        """
         query = SlayerQuery(
             source_model="claim_amount",
             measures=[ModelMeasure(formula="loss_payment_amt:sum")],
@@ -7067,15 +7155,38 @@ class TestIsolatedFilteredMeasureCTEs:
             filters=["loss_payment_amt:sum > 1000"],
         )
         sql = await self._sql(claim_amount_model, related_models, query)
-        # HAVING must appear in the base CTE (not dropped)
-        assert "HAVING" in sql, f"HAVING filter dropped:\n{sql}"
-        assert "1000" in sql
+        # Filter literal must survive.
+        assert "1000" in sql, f"filter literal '1000' dropped:\n{sql}"
+        # A '> 1000' comparison must appear in the SQL.
+        assert "> 1000" in sql, f"Expected '> 1000' comparison in SQL:\n{sql}"
+        # The comparison applies on the OUTER combined SELECT (after all CTEs)
+        # — locate the position of the last CTE-close ``\n)`` and assert the
+        # filter literal appears after it.
+        cm_match = _re.search(r"_cm_\w+\s+AS\s*\(", sql)
+        assert cm_match, f"Expected _cm_ CTE in:\n{sql}"
+        # Find the last ``\n)`` that closes a top-level CTE — the segment AFTER
+        # it is the outer combined SELECT.
+        last_cte_close = sql.rfind("\n)")
+        assert last_cte_close > cm_match.start(), (
+            f"Could not locate end of CTE block:\n{sql}"
+        )
+        outer = sql[last_cte_close + 2:]
+        assert "1000" in outer, (
+            f"Filter literal must appear in the outer combined SELECT "
+            f"(after all CTEs), not just inside a _cm_ CTE body. Outer:\n{outer}\n\nFull SQL:\n{sql}"
+        )
+        # And that outer comparison must be a WHERE, not a HAVING (the outer
+        # SELECT is not aggregating; HAVING without GROUP BY is invalid SQL
+        # on every supported dialect).
+        outer_upper = outer.upper()
+        assert "WHERE" in outer_upper, (
+            f"Aggregate filter on isolated measure must route as outer WHERE:\n{outer}"
+        )
 
-    @_XFAIL_FM_ISOLATION
     async def test_same_filtered_measure_different_aggs_separate_ctes(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
-        """Same filtered measure with sum + avg must produce distinct CTEs, not collide."""
+        """Same filtered measure with sum + avg must produce distinct _cm_ CTEs, not collide."""
         loss_m = claim_amount_model.get_column("loss_payment_amt")
         loss_m.allowed_aggregations = ["sum", "avg"]
 
@@ -7089,15 +7200,15 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model, related_models, query)
 
-        # Both aliases must be present in the final SQL
+        # Both aliases must be present in the final SQL.
         assert "loss_payment_amt_sum" in sql, f"Missing loss_payment_amt_sum in:\n{sql}"
         assert "loss_payment_amt_avg" in sql, f"Missing loss_payment_amt_avg in:\n{sql}"
-        # The two filtered measures must have distinct CTE names (no duplicate _fm_ CTEs)
-        fm_cte_names = _re.findall(r"(_fm_\w+)\s+AS\s*\(", sql)
-        assert len(fm_cte_names) == len(set(fm_cte_names)), (
-            f"Duplicate _fm_ CTE names: {fm_cte_names}\n{sql}"
+        # The two filtered measures must have distinct _cm_ CTE names (no collision).
+        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        assert len(cm_cte_names) == len(set(cm_cte_names)), (
+            f"Duplicate _cm_ CTE names: {cm_cte_names}\n{sql}"
         )
-        assert len(fm_cte_names) == 2, f"Expected 2 _fm_ CTEs, got {len(fm_cte_names)}: {fm_cte_names}"
+        assert len(cm_cte_names) == 2, f"Expected 2 _cm_ CTEs, got {len(cm_cte_names)}: {cm_cte_names}"
 
     # --- Isolated first/last measures (Issue #40) ---
 
@@ -7113,12 +7224,12 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         return claim_amount_model
 
-    @_XFAIL_FM_ISOLATION
     async def test_isolated_last_no_ranked_subquery_in_base(
         self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
     ) -> None:
-        """Bug 1: When ALL first/last measures are isolated, base must NOT build
-        a ranked subquery — it should be a plain dimension spine."""
+        """When ALL first/last measures are isolated, the host _base CTE must NOT
+        build a ranked subquery — it should be a plain dimension spine. The ranked
+        subquery lives inside each filtered measure's own _cm_ CTE."""
         query = SlayerQuery(
             source_model="claim_amount",
             measures=[ModelMeasure(formula="latest_payment:last")],
@@ -7129,11 +7240,9 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
 
-        # Extract the _base CTE body
-        assert "_base" in sql, f"Expected _base CTE in:\n{sql}"
-        base_start = sql.index("_base AS")
-        base_end = sql.index("\n)", base_start)
-        base_body = sql[base_start:base_end]
+        # Extract the _base CTE body (balanced-paren walker — guards against
+        # nested ranked subqueries in mixed-isolation cases).
+        base_body = _extract_cte_body(sql, r"_base")
 
         # Base must NOT have ROW_NUMBER — no ranked subquery needed
         assert "ROW_NUMBER" not in base_body, (
@@ -7144,11 +7253,10 @@ class TestIsolatedFilteredMeasureCTEs:
             f"Redundant ranked subquery in _base:\n{base_body}"
         )
 
-    @_XFAIL_FM_ISOLATION
     async def test_isolated_last_cte_has_valid_ranked_subquery(
         self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
     ) -> None:
-        """Bug 2: The isolated CTE for a last measure must contain a ROW_NUMBER
+        """The isolated _cm_ CTE for a last measure must contain a ROW_NUMBER
         ranked subquery and produce valid SQL (not reference non-existent _last_rn)."""
         query = SlayerQuery(
             source_model="claim_amount",
@@ -7160,32 +7268,29 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
 
-        # The _fm_ CTE must exist and contain ROW_NUMBER
-        fm_match = _re.search(r"(_fm_\w*latest_payment\w*)\s+AS\s*\(", sql)
-        assert fm_match, f"No _fm_ CTE for latest_payment in:\n{sql}"
-        fm_start = fm_match.start()
-        fm_end = sql.index("\n)", fm_start)
-        fm_body = sql[fm_start:fm_end]
+        # The _cm_ CTE for the isolated measure must exist and contain ROW_NUMBER.
+        # Balanced-paren walker — the body carries a nested ranked subquery
+        # whose ``\n)`` closes the inner subquery, not the CTE.
+        cm_body = _extract_cte_body(sql, r"_cm_\w*latest_payment\w*")
 
-        assert "ROW_NUMBER" in fm_body, (
-            f"_fm_ CTE for latest_payment must contain ROW_NUMBER:\n{fm_body}"
+        assert "ROW_NUMBER" in cm_body, (
+            f"_cm_ CTE for latest_payment must contain ROW_NUMBER:\n{cm_body}"
         )
-        assert "_last_rn" in fm_body, (
-            f"_fm_ CTE must have _last_rn column:\n{fm_body}"
+        assert "_last_rn" in cm_body, (
+            f"_cm_ CTE must have _last_rn column:\n{cm_body}"
         )
         # The aggregate must use MAX(CASE WHEN _last_rn = 1 ...)
-        assert "MAX(CASE WHEN" in fm_body, (
-            f"_fm_ CTE must use MAX(CASE WHEN _last_rn = 1 ...):\n{fm_body}"
+        assert "MAX(CASE WHEN" in cm_body, (
+            f"_cm_ CTE must use MAX(CASE WHEN _last_rn = 1 ...):\n{cm_body}"
         )
         # Full SQL must parse as valid
         _assert_valid_sql(sql)
 
-    @_XFAIL_FM_ISOLATION
     async def test_mixed_isolated_and_local_first_last(
         self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
     ) -> None:
-        """Mixed case: one non-isolated last stays in base with ranked subquery,
-        one isolated last goes to its own CTE with its own ranked subquery."""
+        """Mixed case: one non-isolated last stays in host _base with ranked subquery,
+        one isolated last goes to its own _cm_ CTE with its own ranked subquery."""
         # total_amount has no cross-model filter → stays in base
         query = SlayerQuery(
             source_model="claim_amount",
@@ -7200,32 +7305,30 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
 
-        # Base query SHOULD have ROW_NUMBER (for the non-isolated total_amount:last)
-        base_start = sql.index("_base AS")
-        base_end = sql.index("\n)", base_start)
-        base_body = sql[base_start:base_end]
+        # Host _base SHOULD have ROW_NUMBER (for the non-isolated total_amount:last).
+        base_body = _extract_cte_body(sql, r"_base")
         assert "ROW_NUMBER" in base_body, (
-            f"Base must have ROW_NUMBER for non-isolated last measure:\n{base_body}"
+            f"_base must have ROW_NUMBER for non-isolated last measure:\n{base_body}"
         )
 
-        # Isolated measure should get its own _fm_ CTE
-        fm_match = _re.search(r"_fm_\w*latest_payment\w*", sql)
-        assert fm_match, f"No _fm_ CTE for latest_payment in:\n{sql}"
+        # Isolated measure should get its own _cm_ CTE with its own ranked subquery.
+        cm_body = _extract_cte_body(sql, r"_cm_\w*latest_payment\w*")
+        assert "ROW_NUMBER" in cm_body, (
+            f"isolated _cm_ CTE must contain its own ROW_NUMBER:\n{cm_body}"
+        )
 
-        # Non-isolated measure should be in the base
+        # Non-isolated measure should be in the base.
         assert "total_amount" in base_body, (
             f"Non-isolated total_amount should be in base:\n{base_body}"
         )
 
-        # Full SQL must be valid
         _assert_valid_sql(sql)
 
-    @_XFAIL_FM_ISOLATION
     async def test_isolated_first_with_explicit_time_column(
         self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
     ) -> None:
         """Isolated first measure with explicit time_column uses correct ordering."""
-        # Add a timestamp dimension and measure for the explicit time column
+        # Add a timestamp dimension and measure for the explicit time column.
         claim_amount_model_with_time.columns.append(
             Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
         )
@@ -7243,30 +7346,26 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
 
-        # The _fm_ CTE should use first (ASC ordering)
-        fm_match = _re.search(r"(_fm_\w*earliest_reserve\w*)\s+AS\s*\(", sql)
-        assert fm_match, f"No _fm_ CTE for earliest_reserve in:\n{sql}"
-        fm_start = fm_match.start()
-        fm_end = sql.index("\n)", fm_start)
-        fm_body = sql[fm_start:fm_end]
+        # The _cm_ CTE should use first (ASC ordering). Balanced-paren
+        # walker — body carries the nested ranked subquery.
+        cm_body = _extract_cte_body(sql, r"_cm_\w*earliest_reserve\w*")
 
-        assert "_first_rn" in fm_body, (
-            f"_fm_ CTE should use _first_rn for 'first' aggregation:\n{fm_body}"
+        assert "_first_rn" in cm_body, (
+            f"_cm_ CTE should use _first_rn for 'first' aggregation:\n{cm_body}"
         )
-        # ASC ordering for first
-        assert "ASC" in fm_body, f"Expected ASC ordering for first:\n{fm_body}"
-        # Should reference the explicit time column (updated_at), not default
-        assert "updated_at" in fm_body, (
-            f"Expected explicit time_column 'updated_at' in _fm_ CTE:\n{fm_body}"
+        # ASC ordering for first.
+        assert "ASC" in cm_body, f"Expected ASC ordering for first:\n{cm_body}"
+        # Should reference the explicit time column (updated_at), not the default TD.
+        assert "updated_at" in cm_body, (
+            f"Expected explicit time_column 'updated_at' in _cm_ CTE:\n{cm_body}"
         )
         _assert_valid_sql(sql)
 
-    @_XFAIL_FM_ISOLATION
     async def test_multiple_isolated_first_last_separate_ctes(
         self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
     ) -> None:
-        """Two isolated first/last measures produce separate CTEs, no ROW_NUMBER in base."""
-        # latest_payment already has cross-model filter; add another
+        """Two isolated first/last measures produce separate _cm_ CTEs, no ROW_NUMBER in base."""
+        # latest_payment already has cross-model filter; add another.
         claim_amount_model_with_time.columns.append(
             Column(name="latest_reserve", sql="amount", filter="loss_reserve.has_flag = 1", type=DataType.DOUBLE),
         )
@@ -7283,26 +7382,26 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
 
-        # No ROW_NUMBER in base
-        base_start = sql.index("_base AS")
-        base_end = sql.index("\n)", base_start)
-        base_body = sql[base_start:base_end]
+        # No ROW_NUMBER in host _base when all first/last are isolated.
+        base_body = _extract_cte_body(sql, r"_base")
         assert "ROW_NUMBER" not in base_body, (
             f"No ROW_NUMBER should be in base when all first/last are isolated:\n{base_body}"
         )
 
-        # Two separate _fm_ CTEs
-        fm_cte_names = _re.findall(r"(_fm_\w+)\s+AS\s*\(", sql)
-        assert len(fm_cte_names) == 2, (
-            f"Expected 2 _fm_ CTEs, got {len(fm_cte_names)}: {fm_cte_names}\n{sql}"
+        # Two separate _cm_ CTEs for the two filtered first/last measures.
+        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        filtered_names = [
+            n for n in cm_cte_names if "latest_payment" in n or "latest_reserve" in n
+        ]
+        assert len(filtered_names) == 2, (
+            f"Expected 2 filtered _cm_ CTEs, got {len(filtered_names)}: {filtered_names}\n{sql}"
         )
-        # Each should have ROW_NUMBER
-        for fm_name in fm_cte_names:
-            fm_start = sql.index(f"{fm_name} AS")
-            fm_end = sql.index("\n)", fm_start)
-            fm_body = sql[fm_start:fm_end]
-            assert "ROW_NUMBER" in fm_body, (
-                f"CTE {fm_name} must have ROW_NUMBER:\n{fm_body}"
+        # Each should have ROW_NUMBER. Balanced-paren walker because each
+        # ``_cm_*`` body wraps a ranked subquery.
+        for cm_name in filtered_names:
+            cm_body = _extract_cte_body(sql, _re.escape(cm_name))
+            assert "ROW_NUMBER" in cm_body, (
+                f"CTE {cm_name} must have ROW_NUMBER:\n{cm_body}"
             )
 
         _assert_valid_sql(sql)
@@ -7341,6 +7440,860 @@ class TestIsolatedFilteredMeasureCTEs:
         cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
         assert len(cm_cte_names) == 2, f"Expected 2 _cm_ CTEs, got {len(cm_cte_names)}: {cm_cte_names}\n{sql}"
         assert cm_cte_names[0] != cm_cte_names[1], f"CTE names collide: {cm_cte_names}\n{sql}"
+
+    # --- DEV-1503 new invariants (post-Codex review) ---
+
+    async def test_multi_hop_derived_filter_expands_inside_cm_cte(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A ``Column.filter`` referencing a host DERIVED column whose own
+        ``Column.sql`` crosses TWO join hops (``customers.regions.code``) must
+        expand inside the isolated _cm_ CTE — both join hops must appear in
+        the CTE body, never in the host _base spine.
+
+        Pins Codex review #11 (multi-hop derived filter coverage).
+        """
+        regions = SlayerModel(
+            name="regions", sql_table="Regions", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="code", sql="code", type=DataType.TEXT),
+            ],
+        )
+        customers = SlayerModel(
+            name="customers", sql_table="Customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="Orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                # Derived column reaching `customers__regions.code` via a
+                # 2-hop walk (Mode A uses ``__`` between hops + single dot
+                # before the leaf).
+                Column(name="region_code", sql="customers__regions.code", type=DataType.TEXT),
+                # Filtered local measure: filter references the derived column.
+                Column(
+                    name="eu_amount", sql="amount", filter="region_code = 'EU'",
+                    type=DataType.DOUBLE,
+                ),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="eu_amount:sum")],
+            dimensions=[ColumnRef(name="id")],
+        )
+        sql = await _generate(generator, query, orders, extra_models=[customers, regions])
+
+        # The _cm_ CTE must exist for the filtered measure — balanced-paren
+        # walker so a nested subquery doesn't truncate the body.
+        cm_body = _extract_cte_body(sql, r"_cm_\w*eu_amount\w*")
+        # Both join hops must be inside the _cm_ CTE — never in _base.
+        assert "Customers" in cm_body, (
+            f"Intermediate customers join missing from _cm_ CTE:\n{cm_body}"
+        )
+        assert "Regions" in cm_body, (
+            f"Deeper regions join missing from _cm_ CTE:\n{cm_body}"
+        )
+        # The host _base CTE must NOT include the filter-target joins.
+        base_body = _extract_cte_body(sql, r"_base")
+        assert "Customers" not in base_body, (
+            f"customers join leaked into host _base:\n{base_body}"
+        )
+        assert "Regions" not in base_body, (
+            f"regions join leaked into host _base:\n{base_body}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_aggregate_filter_outer_where_with_no_dimensions(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Aggregate filter on an isolated measure, with NO dimensions: the
+        host _base CROSS JOINs the _cm_ CTE, and the outer wrapper applies the
+        filter as WHERE on the joined-back aggregate column.
+
+        Pins Codex review #10 (no-dim outer-WHERE coverage).
+        """
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[ModelMeasure(formula="loss_payment_amt:sum")],
+            filters=["loss_payment_amt:sum > 1000"],
+            # No dimensions.
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        # CROSS JOIN must appear (no-dim case).
+        assert "CROSS JOIN" in sql, f"Expected CROSS JOIN in no-dim case:\n{sql}"
+        # Filter must apply via outer WHERE > 1000 — after all CTEs.
+        last_cte_close = sql.rfind("\n)")
+        assert last_cte_close > 0, f"No CTE block found:\n{sql}"
+        outer = sql[last_cte_close + 2:]
+        assert "1000" in outer, (
+            f"Filter literal '1000' must apply in the outer combined SELECT:\n{outer}"
+        )
+        assert "WHERE" in outer.upper(), (
+            f"Outer combined SELECT must carry a WHERE for the aggregate filter:\n{outer}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_mixed_operand_aggregate_filter_promotes_hidden_operand(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """A filter that references BOTH an isolated filtered-local aggregate
+        AND a non-isolated local aggregate must promote the non-isolated
+        operand to a hidden column in the host _base so the outer WHERE can
+        evaluate it. The non-isolated operand is NOT a public measure here —
+        it must stay hidden from the final projection.
+
+        Pins Codex review #4 (mixed filters need hidden operand projection)
+        and #5 (strengthen: outer WHERE references the hidden operand AND it
+        does not surface in public projection).
+        """
+        # total_amount is a non-isolated unfiltered local measure — referenced
+        # only by the filter, NOT projected as a public measure.
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[ModelMeasure(formula="loss_payment_amt:sum")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            filters=["loss_payment_amt:sum > 1000 and total_amount:sum > 10"],
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        # Filter literals must both apply.
+        assert "1000" in sql
+        assert "10" in sql
+        # An unfiltered SUM over the host amount column must appear in _base —
+        # the hidden promotion of the filter-only operand.
+        base_body = _extract_cte_body(sql, r"_base")
+        assert _re.search(r"SUM\(\s*claim_amount\.amount\s*\)", base_body), (
+            f"Expected hidden SUM(claim_amount.amount) for filter-only operand in _base:\n{base_body}"
+        )
+        # The outer combined SELECT (after all CTEs) must reference BOTH the
+        # isolated aggregate alias (joined-back from _cm_) AND the hidden
+        # operand alias from _base — that's the outer WHERE evaluating both.
+        last_cte_close = sql.rfind("\n)")
+        assert last_cte_close > 0
+        outer = sql[last_cte_close + 2:]
+        assert "loss_payment_amt_sum" in outer, (
+            f"Outer must reference the isolated aggregate alias:\n{outer}"
+        )
+        # The hidden operand alias must be REFERENCED in the outer WHERE...
+        assert "total_amount_sum" in outer, (
+            f"Outer must reference the hidden filter operand alias 'total_amount_sum':\n{outer}"
+        )
+        # ...but it must NOT surface in the OUTER public projection. Extract
+        # the public SELECT-list (between ``SELECT`` and ``FROM``) and assert
+        # the hidden alias is absent. Use sqlglot to parse robustly.
+        parsed = sqlglot.parse_one(sql, dialect="postgres")
+        named_aliases = {
+            sel.alias_or_name for sel in parsed.find(sqlglot.exp.Select).expressions
+        }
+        assert "claim_amount.total_amount_sum" not in named_aliases, (
+            f"Hidden operand leaked into public projection: {named_aliases}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_post_phase_filter_not_routed_to_outer_combined_where(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """A POST-phase filter (transform-wrapped, ``cumsum(...) > 0``) on an
+        isolated filtered-local measure stays in the existing post-transform
+        wrapper — it must NOT be re-routed to the outer combined WHERE.
+
+        Pins Codex review #5 (POST-phase non-routing).
+        """
+        # Need a time dimension for cumsum (which needs ordering).
+        claim_amount_model.default_time_dimension = "created_at"
+        claim_amount_model.columns.append(
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        )
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[
+                ModelMeasure(formula="loss_payment_amt:sum"),
+                ModelMeasure(formula="cumsum(loss_payment_amt:sum)", name="cum_loss"),
+            ],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            filters=["cumsum(loss_payment_amt:sum) > 0"],
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        # The filter must apply — '> 0' literal present.
+        assert "> 0" in sql, f"POST filter '> 0' missing:\n{sql}"
+        # Cumsum (window) must be present in the SQL.
+        assert "SUM" in sql.upper() and "OVER" in sql.upper(), (
+            f"Expected windowed SUM ... OVER (...) for cumsum:\n{sql}"
+        )
+        # Layer-boundary pin: the POST predicate lives in the ``_filtered``
+        # outer wrap AFTER every CTE — not inside the ``base`` CTE (the
+        # combined SELECT that feeds the transform step). Routing it into
+        # ``base.WHERE`` would filter rows BEFORE the cumsum window saw
+        # them, silently changing the cumulative semantics.
+        base_body = _extract_cte_body(sql, r"\bbase\b")
+        assert "> 0" not in base_body, (
+            f"POST filter '> 0' leaked into the combined ``base`` CTE — "
+            f"it must stay at the post-transform ``_filtered`` wrapper:"
+            f"\n{base_body}"
+        )
+        # And the POST predicate IS in the outer ``_filtered`` wrap.
+        filtered_match = _re.search(r"\)\s*AS\s+_filtered\s*WHERE\s+([^)]+)", sql)
+        assert filtered_match, (
+            f"Expected ``_filtered`` outer wrap with WHERE for POST filter:\n{sql}"
+        )
+        assert "> 0" in filtered_match.group(1), (
+            f"POST filter '> 0' must apply at the ``_filtered`` outer wrap:"
+            f"\n{filtered_match.group(0)}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_aggregate_and_post_filters_route_independently(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """A single query carrying BOTH an AGGREGATE-phase host filter
+        (``loss_payment_amt:sum > 1000``) AND a POST-phase host filter
+        (``cumsum(loss_payment_amt:sum) > 0``) routes each independently:
+        the aggregate filter to the outer combined WHERE wrapper; the POST
+        filter to the existing post-transform wrapper. The two predicates
+        live in DIFFERENT scopes — they must not collapse into one outer
+        WHERE that references the cumsum column, nor merge into one HAVING.
+
+        Pins Codex review #1 (POST vs AGGREGATE routing in same query).
+        """
+        claim_amount_model.default_time_dimension = "created_at"
+        claim_amount_model.columns.append(
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        )
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[
+                ModelMeasure(formula="loss_payment_amt:sum"),
+                ModelMeasure(formula="cumsum(loss_payment_amt:sum)", name="cum_loss"),
+            ],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            filters=[
+                "loss_payment_amt:sum > 1000",
+                "cumsum(loss_payment_amt:sum) > 0",
+            ],
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        # Both literals must survive.
+        assert "> 1000" in sql, f"AGGREGATE filter '> 1000' missing:\n{sql}"
+        assert "> 0" in sql, f"POST filter '> 0' missing:\n{sql}"
+        # Cumsum window must be present somewhere.
+        assert "OVER" in sql.upper(), f"Expected windowed SUM ... OVER (...) for cumsum:\n{sql}"
+        # Layer-boundary pin: AGGREGATE in the combined ``base`` CTE
+        # WHERE; POST in the outer ``_filtered`` wrap; neither leaks into
+        # the other layer.
+        base_body = _extract_cte_body(sql, r"\bbase\b")
+        assert "> 1000" in base_body, (
+            f"AGGREGATE filter '> 1000' must apply in the combined "
+            f"``base`` CTE WHERE:\n{base_body}"
+        )
+        assert "> 0" not in base_body, (
+            f"POST filter '> 0' leaked into the combined ``base`` CTE — "
+            f"it must stay at the post-transform ``_filtered`` wrapper:"
+            f"\n{base_body}"
+        )
+        filtered_match = _re.search(r"\)\s*AS\s+_filtered\s*WHERE\s+([^)]+)", sql)
+        assert filtered_match, (
+            f"Expected ``_filtered`` outer wrap with WHERE for POST filter:\n{sql}"
+        )
+        filtered_where = filtered_match.group(1)
+        assert "> 0" in filtered_where, (
+            f"POST filter '> 0' must apply at the ``_filtered`` outer wrap:"
+            f"\n{filtered_match.group(0)}"
+        )
+        assert "> 1000" not in filtered_where, (
+            f"AGGREGATE filter '> 1000' leaked into the ``_filtered`` "
+            f"outer wrap:\n{filtered_match.group(0)}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_filter_referencing_two_isolated_aggregates(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """An aggregate-phase filter referencing TWO isolated filtered-local
+        aggregates (``loss_payment_amt:sum + loss_reserve_amt:sum > 100``)
+        must produce two _cm_ CTEs (one per measure) and an outer WHERE
+        that references BOTH joined-back aliases.
+
+        Pins Codex review #4 (two-isolated-aggregate filter routing).
+        """
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[
+                ModelMeasure(formula="loss_payment_amt:sum"),
+                ModelMeasure(formula="loss_reserve_amt:sum"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            filters=["loss_payment_amt:sum + loss_reserve_amt:sum > 100"],
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        assert len(cm_cte_names) >= 2, (
+            f"Expected ≥ 2 _cm_ CTEs (one per filtered measure); got {cm_cte_names}\n{sql}"
+        )
+        # Outer must reference BOTH aggregate aliases in the filter predicate.
+        last_cte_close = sql.rfind("\n)")
+        outer = sql[last_cte_close + 2:]
+        assert "loss_payment_amt_sum" in outer, (
+            f"Outer must reference loss_payment_amt_sum:\n{outer}"
+        )
+        assert "loss_reserve_amt_sum" in outer, (
+            f"Outer must reference loss_reserve_amt_sum:\n{outer}"
+        )
+        assert "100" in outer, f"Filter literal '100' must apply in outer:\n{outer}"
+        assert "WHERE" in outer.upper(), (
+            f"Outer combined SELECT must carry a WHERE for the aggregate filter:\n{outer}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_filtered_local_parametric_last_in_order_by(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """A filtered-local PARAMETRIC ``last(updated_at)`` referenced from
+        ORDER BY must materialise its ranked _last_rn INSIDE the host-rooted
+        _cm_ sub-plan (where the measure is isolated), and the outer ORDER BY
+        resolves through the CTE's joined-back column.
+
+        Exercises the DEV-1501 × DEV-1503 interaction: parametric first/last
+        in ORDER BY adds hidden rank materialisation; for an ISOLATED
+        filtered-local measure that materialisation happens inside the _cm_
+        CTE, not the host base.
+
+        Pins Codex review #8 (parametric first/last filtered-local) — ORDER BY half.
+        """
+        claim_amount_model_with_time.columns.append(
+            Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+        )
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[
+                ModelMeasure(formula="*:count"),
+                ModelMeasure(formula="latest_payment:last(updated_at)", name="latest_pmt"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            order=[
+                OrderItem(column="latest_pmt", direction="desc"),
+            ],
+        )
+        sql = await self._sql(claim_amount_model_with_time, related_models, query)
+
+        # The isolated _cm_ CTE contains the ranked _last_rn machinery (the
+        # parametric last is materialised inside the sub-plan).
+        cm_body = _extract_cte_body(sql, r"_cm_\w*latest_payment\w*")
+        assert "_last_rn" in cm_body, (
+            f"Isolated _cm_ CTE must materialise _last_rn for parametric last:\n{cm_body}"
+        )
+        # The window's ORDER BY must use updated_at (the explicit time arg),
+        # not the default TD (created_at).
+        assert "updated_at" in cm_body, (
+            f"_cm_ CTE must reference the explicit time arg 'updated_at':\n{cm_body}"
+        )
+        # The outer ORDER BY references the joined-back aggregate alias —
+        # NOT _last_rn (which is scoped to the CTE).
+        terms = _outer_order_terms(sql)
+        assert any("latest_pmt" in expr or "latest_payment" in expr for expr, _ in terms), (
+            f"Outer ORDER BY must reference the filtered-local aggregate alias; got {terms}\nSQL:\n{sql}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_filtered_local_parametric_last_in_having(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """A filtered-local PARAMETRIC ``last(updated_at)`` referenced from a
+        host filter (HAVING-style) routes as an AGGREGATE-phase filter to the
+        outer combined WHERE wrapper. The ranked _last_rn materialisation
+        stays inside the _cm_ sub-plan; the outer wrapper applies the
+        comparison against the joined-back aggregate alias.
+
+        Pins Codex review #8 (parametric first/last filtered-local) — HAVING half.
+        """
+        claim_amount_model_with_time.columns.append(
+            Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+        )
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[ModelMeasure(formula="latest_payment:last(updated_at)", name="latest_pmt")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            filters=["latest_pmt > 500"],
+        )
+        sql = await self._sql(claim_amount_model_with_time, related_models, query)
+
+        # The _cm_ CTE materialises the ranked _last_rn.
+        cm_body = _extract_cte_body(sql, r"_cm_\w*latest_payment\w*")
+        assert "_last_rn" in cm_body, (
+            f"Isolated _cm_ CTE must contain _last_rn:\n{cm_body}"
+        )
+        assert "updated_at" in cm_body, (
+            f"_cm_ CTE must reference explicit time arg 'updated_at':\n{cm_body}"
+        )
+        # The aggregate-phase filter routes to the OUTER combined SELECT
+        # wrapper (WHERE on the joined-back column), not inside the CTE
+        # and not as HAVING.
+        last_cte_close = sql.rfind("\n)")
+        outer = sql[last_cte_close + 2:]
+        assert "500" in outer, f"Filter literal '500' must apply in outer:\n{outer}"
+        assert "WHERE" in outer.upper(), (
+            f"Filter on parametric last filtered-local must route to outer WHERE:\n{outer}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_outer_wrapper_resolves_forward_cross_model_agg_operand(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """A mixed AGGREGATE-phase filter referencing BOTH an isolated
+        filtered-local aggregate AND a forward cross-model aggregate
+        must resolve BOTH operands at the outer combined SELECT — the
+        filtered-local through the host-rooted ``_cm_`` CTE, the forward
+        cross-model through ITS own ``_cm_`` CTE.
+
+        Pins CodeRabbit thread 2: the outer wrapper's slot-to-CTE map must
+        cover EVERY cross-model aggregate plan (not just filtered-local
+        ones). Without this, the forward cross-model operand falls
+        through to the ``_base`` fallback and the renderer raises
+        ``NotImplementedError`` because the slot doesn't materialise in
+        ``_base``.
+        """
+        # ``loss_payment.has_flag:sum`` is a forward cross-model aggregate
+        # on the joined ``loss_payment`` target — no Column.filter, so it
+        # routes as a plain forward-path ``_cm_`` plan, not filtered-local.
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[
+                ModelMeasure(formula="loss_payment_amt:sum"),
+                ModelMeasure(formula="loss_payment.has_flag:sum"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            filters=[
+                "loss_payment_amt:sum + loss_payment.has_flag:sum > 100",
+            ],
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        # Two _cm_ CTEs: one filtered-local (host-rooted), one forward
+        # cross-model.
+        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        assert len(cm_cte_names) >= 2, (
+            f"Expected ≥ 2 _cm_ CTEs (filtered-local + forward); got {cm_cte_names}\n{sql}"
+        )
+        # Outer combined SELECT must carry the filter and reference both
+        # aggregate aliases.
+        last_cte_close = sql.rfind("\n)")
+        outer = sql[last_cte_close + 2:]
+        assert "100" in outer, (
+            f"Filter literal '100' must apply in outer combined SELECT:\n{outer}"
+        )
+        assert "WHERE" in outer.upper(), (
+            f"Outer combined SELECT must carry WHERE:\n{outer}"
+        )
+        assert "loss_payment_amt_sum" in outer, (
+            f"Outer must reference filtered-local aggregate alias:\n{outer}"
+        )
+        assert "has_flag_sum" in outer, (
+            f"Outer must reference forward cross-model aggregate alias:\n{outer}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_aggregate_filter_with_date_range_routes_correctly(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """A query carrying BOTH a date_range time dimension AND an
+        AGGREGATE-phase filter on the isolated aggregate must route each
+        independently: the date_range as ROW-phase WHERE (propagated into
+        the sub-plan / _cm_ CTE), the aggregate filter as outer WHERE on
+        the joined-back column.
+
+        Pins the Codex review finding: ``host_filter_routings`` is
+        ``[date_range_routings..., user_filter_routings...]`` in order, so
+        the planner must slice user routings as ``host_filters[-N:]`` —
+        not look them up by ``f"f{i}"`` against ``host_query.filters[i]``
+        (off-by-one when n_date_range > 0). Without the fix, the aggregate
+        filter would be classified against the leading date_range routing
+        (typically ROW phase) and double-applied (sub-plan HAVING +
+        outer WHERE).
+        """
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[ModelMeasure(formula="loss_payment_amt:sum")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                    date_range=("2020-01-01", "2021-01-01"),
+                ),
+            ],
+            filters=["loss_payment_amt:sum > 1000"],
+        )
+        sql = await self._sql(claim_amount_model_with_time, related_models, query)
+        # The date_range literal is a ROW-phase filter — must apply where
+        # the row-set forms (inside the _cm_ CTE for the isolated agg).
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "2020-01-01" in cm_body, (
+            f"date_range ROW filter must apply inside the _cm_ CTE:\n{cm_body}"
+        )
+        # The AGGREGATE filter must apply on the OUTER combined SELECT,
+        # not inside the CTE (which would surface host rows as NULL via
+        # LEFT JOIN instead of dropping them).
+        last_cte_close = sql.rfind("\n)")
+        outer = sql[last_cte_close + 2:]
+        assert "1000" in outer, (
+            f"Aggregate filter '> 1000' must apply in outer combined SELECT:\n{outer}"
+        )
+        assert "WHERE" in outer.upper(), (
+            f"Outer combined SELECT must carry a WHERE for the aggregate filter:\n{outer}"
+        )
+        # Double-application check: the '> 1000' literal must NOT also
+        # appear inside the _cm_ CTE body (which would mean the planner
+        # mis-routed the aggregate filter as ROW phase under the
+        # date_range off-by-one bug).
+        assert "1000" not in cm_body, (
+            f"Aggregate filter '> 1000' leaked into _cm_ CTE body "
+            f"(off-by-one with date_range):\n{cm_body}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_order_by_projected_composite_over_isolated_resolves_at_combined(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """A query whose ORDER BY references a PROJECTED composite over
+        isolated filtered-local aggregates must resolve the order alias at
+        the combined SELECT level — NOT ``_base."<alias>"`` (the alias is
+        no longer materialised in ``_base`` after DEV-1503 routing).
+
+        Pins Codex round 3 #2 (ORDER BY on projected outer-routed composite).
+        """
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[
+                ModelMeasure(formula="loss_payment_amt:sum"),
+                ModelMeasure(formula="loss_reserve_amt:sum"),
+                ModelMeasure(
+                    formula="loss_payment_amt:sum + loss_reserve_amt:sum",
+                    name="total_loss",
+                ),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            order=[OrderItem(column="total_loss", direction="desc")],
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        # The composite must NOT render in _base (G1.1 invariant).
+        base_body = _extract_cte_body(sql, r"_base")
+        assert "Loss_Payment" not in base_body
+        assert "Loss_Reserve" not in base_body
+        # ORDER BY must use the bare combined alias, NOT _base."<alias>".
+        order_match = _re.search(r"ORDER BY[^\n]+", sql)
+        assert order_match, f"Expected ORDER BY in:\n{sql}"
+        order_clause = order_match.group(0)
+        assert "total_loss" in order_clause, (
+            f"ORDER BY must reference total_loss:\n{order_clause}"
+        )
+        assert "_base." not in order_clause, (
+            f"ORDER BY must NOT reference _base alias for an outer-routed "
+            f"composite (alias not materialised in _base):\n{order_clause}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_outer_composite_with_multiple_user_aliases(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """The same composite formula declared under TWO user-aliases must
+        surface BOTH aliases in the combined SELECT. The C13 multi-alias
+        same-key consolidation collapses the two measures into ONE slot
+        with ``public_aliases=[a, b]``; the renderer must cycle through
+        them rather than emit ``public_aliases[0]`` twice.
+
+        Pins CodeRabbit thread on outer-composite alias cycling.
+        """
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[
+                ModelMeasure(formula="loss_payment_amt:sum"),
+                ModelMeasure(formula="loss_reserve_amt:sum"),
+                ModelMeasure(
+                    formula="loss_payment_amt:sum + loss_reserve_amt:sum",
+                    name="total_loss",
+                ),
+                ModelMeasure(
+                    formula="loss_payment_amt:sum + loss_reserve_amt:sum",
+                    name="grand_total",
+                ),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        # The isolation invariant still holds (neither join in _base).
+        base_body = _extract_cte_body(sql, r"_base")
+        assert "Loss_Payment" not in base_body
+        assert "Loss_Reserve" not in base_body
+        # Both user-declared aliases must surface in the outer SELECT.
+        last_cte_close = sql.rfind("\n)")
+        outer = sql[last_cte_close + 2:]
+        assert "total_loss" in outer, (
+            f"Outer must reference total_loss alias:\n{outer}"
+        )
+        assert "grand_total" in outer, (
+            f"Outer must reference grand_total alias (C13 cycling):\n{outer}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_local_first_last_with_routed_cross_model_filter(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """A query mixing a LOCAL first/last measure with a cross-model
+        aggregate carrying a routed filter must NOT apply the routed filter
+        inside the host ``_base`` ranked subquery — it belongs in the
+        ``_cm_*`` CTE only.
+
+        Pins Codex round 5 finding: ``_build_first_last_base_select`` must
+        thread ``skip_filter_ids`` so a filter classified as
+        ``PROPAGATE_HAVING`` on a forward cross-model plan doesn't also
+        render inside the host ranked subquery's WHERE — that would
+        double-apply (and, when the filter references the cross-model
+        join path not in ``_base``, emit invalid SQL).
+        """
+        # ``total_amount`` is an unfiltered local measure; first() forces
+        # _base into the ranked-subquery branch. ``loss_payment.has_flag``
+        # is a forward cross-model aggregate. The filter
+        # ``loss_payment.has_flag:sum > 0`` classifies as PROPAGATE_HAVING
+        # on the cross-model plan and is routed there.
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[
+                ModelMeasure(formula="total_amount:last"),
+                ModelMeasure(formula="loss_payment.has_flag:sum"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                ),
+            ],
+            filters=["loss_payment.has_flag:sum > 0"],
+        )
+        sql = await self._sql(
+            claim_amount_model_with_time, related_models, query,
+        )
+        # The routed filter literal must appear in the cross-model CTE's
+        # HAVING.
+        cm_body = _extract_cte_body(
+            sql, r"_cm_\w*has_flag\w*",
+        )
+        assert "> 0" in cm_body, (
+            f"Routed cross-model HAVING filter missing from _cm_ CTE:\n{cm_body}"
+        )
+        # And it must NOT appear inside the host ``_base`` ranked
+        # subquery (double-application bug).
+        base_body = _extract_cte_body(sql, r"_base")
+        assert "> 0" not in base_body, (
+            f"Routed cross-model filter leaked into host _base ranked subquery "
+            f"(skip_filter_ids not threaded into _build_first_last_base_select):"
+            f"\n{base_body}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_no_dim_query_with_host_row_filter_applies_in_base(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """A no-dimension query with cross-model aggregates AND a
+        host-local ROW filter must apply the filter at the placeholder
+        ``_base`` (via ``WHERE`` + ``LIMIT 1``). The round-2 fix that
+        dropped the host ``FROM`` to avoid N-row CROSS JOIN duplication
+        also bypassed ``_build_where_having_from_planned``, silently
+        ignoring host-local ROW filters (Codex round 4 / CodeRabbit).
+
+        With this fix: ``_base`` reintroduces ``FROM <host>`` when a
+        non-routed ROW filter exists; ``WHERE`` applies it; ``LIMIT 1``
+        keeps cardinality at 1. If the filter drops every host row, the
+        combined query returns 0 rows (correct semantics) — not the
+        unfiltered aggregate value (broken semantics).
+        """
+        # Add a host column the filter references.
+        claim_amount_model.columns.append(
+            Column(name="status", sql="status", type=DataType.TEXT),
+        )
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[ModelMeasure(formula="loss_payment_amt:sum")],
+            filters=["status = 'active'"],
+            # No dimensions — triggers the empty_base placeholder path.
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        # The filter literal MUST appear in the SQL.
+        assert "'active'" in sql, (
+            f"Host ROW filter literal silently dropped:\n{sql}"
+        )
+        # The ``_base`` placeholder must carry the filter as WHERE plus
+        # LIMIT 1 (the 1-row cardinality preservation from round 2).
+        base_body = _extract_cte_body(sql, r"_base")
+        assert "'active'" in base_body, (
+            f"Host ROW filter must apply at _base WHERE:\n{base_body}"
+        )
+        assert "LIMIT 1" in base_body.upper(), (
+            f"_base must LIMIT 1 to preserve no-dim cardinality:\n{base_body}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_no_dim_host_filter_referencing_joined_column_pulls_join(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """A no-dimension query with a host ROW filter that references a
+        JOINED column (``claim.claim_number = '...'``) must pull the
+        join into the placeholder ``_base`` FROM clause — the WHERE
+        otherwise references an undefined alias.
+
+        Pins Codex round 6: ``_collect_filter_join_paths`` +
+        ``_build_from_and_joins`` are wired through the empty_base
+        placeholder branch so joined filter aliases have their joins in
+        scope.
+        """
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[ModelMeasure(formula="loss_payment_amt:sum")],
+            filters=["claim.claim_number = '12345'"],
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        base_body = _extract_cte_body(sql, r"_base")
+        # The Claim join MUST appear in _base alongside the filter.
+        assert "Claim" in base_body, (
+            f"_base must include Claim join for the WHERE alias:\n{base_body}"
+        )
+        # WHERE still applies + LIMIT 1 still preserves cardinality.
+        assert "claim.claim_number" in base_body, (
+            f"_base WHERE must reference the joined alias:\n{base_body}"
+        )
+        assert "12345" in base_body
+        assert "LIMIT 1" in base_body.upper()
+        _assert_valid_sql(sql)
+
+    async def test_first_last_with_host_filter_not_reapplied_outside_ranked_subquery(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """A query mixing a LOCAL first/last measure and a host ROW
+        filter must apply the filter only INSIDE the ranked subquery
+        (pre-ranking), not again on the outer ``_base`` SELECT. The
+        first/last branch returns ``where_consumed=True``; the cross-
+        model orchestrator must honour that and skip the outer WHERE
+        application, otherwise the filter double-applies and changes
+        first/last semantics by filtering AFTER ranking.
+
+        Pins CodeRabbit thread on ``_base_where_consumed``.
+        """
+        claim_amount_model_with_time.columns.append(
+            Column(name="status", sql="status", type=DataType.TEXT),
+        )
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[
+                ModelMeasure(formula="total_amount:last"),
+                ModelMeasure(formula="loss_payment.has_flag:sum"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                ),
+            ],
+            filters=["status = 'active'"],
+        )
+        sql = await self._sql(
+            claim_amount_model_with_time, related_models, query,
+        )
+        # The filter literal must appear exactly ONCE in _base — inside
+        # the ranked subquery's WHERE. A second occurrence (outside the
+        # subquery on the wrapping _base SELECT) means base_where was
+        # re-applied even though where_consumed signalled otherwise.
+        base_body = _extract_cte_body(sql, r"_base")
+        assert base_body.count("'active'") == 1, (
+            f"Host filter literal must appear exactly once (inside the "
+            f"ranked subquery's WHERE); got {base_body.count(chr(39) + 'active' + chr(39))} occurrences:"
+            f"\n{base_body}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_filtered_local_in_source_queries_smoke(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A query-backed model containing a filtered-local measure must
+        compile cleanly — the host-rooted _cm_ CTE renders against the
+        virtual (sql-mode) host without tripping ``_build_from_clause_from_planned``.
+
+        Pins Codex review #12 (source_queries coverage).
+        """
+        loss_payment = SlayerModel(
+            name="loss_payment", sql_table="Loss_Payment", data_source="test",
+            columns=[
+                Column(name="claim_amount_id", sql="Claim_Amount_Identifier", type=DataType.DOUBLE, primary_key=True),
+                Column(name="has_flag", sql="1", type=DataType.DOUBLE),
+            ],
+        )
+        # Auxiliary base model the subquery host references; the
+        # filtered-local CTE root path must not trip on a non-sql_table
+        # host shape.
+        backing_raw = SlayerModel(
+            name="claim_amount_raw", sql_table="Claim_Amount", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+        # Use a model with `sql` (subquery) directly — simpler than source_queries
+        # plumbing, but still exercises the non-sql_table host-rooted CTE path.
+        host_via_subquery = SlayerModel(
+            name="claim_amount", sql="SELECT * FROM Claim_Amount", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(
+                    name="loss_payment_amt", sql="amount",
+                    filter="loss_payment.has_flag = 1", type=DataType.DOUBLE,
+                ),
+            ],
+            joins=[ModelJoin(
+                target_model="loss_payment",
+                join_pairs=[["id", "claim_amount_id"]],
+                join_type="inner",
+            )],
+        )
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[ModelMeasure(formula="loss_payment_amt:sum")],
+            dimensions=[ColumnRef(name="id")],
+        )
+        sql = await _engine_generate(
+            query, host_via_subquery,
+            extra_models=[loss_payment, backing_raw],
+            validate=False,
+        )
+        # Filtered measure isolated into its own _cm_ CTE; the subquery FROM
+        # for the host renders inside it.
+        assert "_cm_" in sql and "loss_payment_amt" in sql
+        # Host's ``sql=...`` subquery body renders verbatim somewhere in the
+        # SQL — sqlglot may pretty-print across multiple lines, so check
+        # whitespace-tolerantly (the host SELECT body is ``SELECT * FROM
+        # Claim_Amount`` regardless of formatting).
+        sql_collapsed = _re.sub(r"\s+", " ", sql)
+        assert "SELECT * FROM Claim_Amount" in sql_collapsed, (
+            f"host subquery FROM should render inside the _cm_ CTE:\n{sql}"
+        )
+        _assert_valid_sql(sql)
 
 
 class TestCteNameSanitization:

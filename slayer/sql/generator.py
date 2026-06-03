@@ -26,8 +26,8 @@ from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.engine.column_expansion import (
     _is_trivial_base,
-    _root_scope_column_ids,
     _walk_path_to_target_sync,
+    collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
@@ -3737,19 +3737,13 @@ class SQLGenerator:
         if self._has_first_last_aggregate(
             base_render_order=base_render_order, slots_by_id=slots_by_id,
         ):
-            if skip_cross_model_aggs:
-                # The cross-model orchestrator builds ``_base`` with
-                # ``skip_cross_model_aggs=True``; a local first/last there
-                # would need the ranked subquery wrapped around ``_base``
-                # while still deferring cross-model aggregates to their
-                # ``_cm_*`` CTEs. Raise loudly rather than emit a SELECT
-                # that references ROW_NUMBER columns it never projected.
-                raise NotImplementedError(
-                    "DEV-1450: local first/last aggregation combined with "
-                    "cross-model aggregates is not yet supported; factor the "
-                    "first/last measure into a multi-stage source_queries "
-                    "model."
-                )
+            # DEV-1503 — local first/last in ``_base`` alongside cross-model
+            # CTEs is supported: the ranked subquery wraps ``_base`` for the
+            # local measures; cross-model / filtered-local aggregates are
+            # deferred to their per-plan ``_cm_*`` CTEs (their slot ids are
+            # excluded from ``base_render_order`` by the caller, so
+            # ``_build_first_last_base_select`` never sees them and emits no
+            # dangling references).
             return self._build_first_last_base_select(
                 planned_query=planned_query,
                 bundle=bundle,
@@ -3759,6 +3753,7 @@ class SQLGenerator:
                 slots_by_id=slots_by_id,
                 from_clause=from_clause,
                 base_joins=base_joins,
+                skip_filter_ids=skip_filter_ids,
             )
 
         select_columns: list[exp.Expression] = []
@@ -4260,6 +4255,7 @@ class SQLGenerator:
         slots_by_id: Dict[str, Any],
         from_clause: exp.Expression,
         base_joins: List,
+        skip_filter_ids: Optional[Set[str]] = None,
     ):
         """Render the base SELECT for a query containing LOCAL first/last
         AGGREGATES (planned-native port of legacy ``_generate_base``'s
@@ -4485,11 +4481,15 @@ class SQLGenerator:
 
         # WHERE goes inside the ranked subquery (raw-row filtering before
         # ranking). HAVING is recomputed and applied by the caller.
+        # ``skip_filter_ids`` carries the cross-model-routed filter ids so
+        # filters applied inside a per-plan ``_cm_*`` CTE don't double-apply
+        # inside the host ranked subquery (Codex round 5).
         where_clause, _having = self._build_where_having_from_planned(
             planned_query=planned_query,
             source_relation=source_relation,
             source_model=source_model,
             bundle=bundle,
+            skip_filter_ids=skip_filter_ids,
         )
 
         (
@@ -4768,7 +4768,8 @@ class SQLGenerator:
         mode is loud. Most acceptance / parity tests don't exercise that
         combination.
         """
-        from slayer.core.keys import AggregateKey
+        from slayer.core.keys import AggregateKey, Phase
+        from slayer.engine.binding import walk_value_keys
 
         source_model = bundle.source_model
         source_relation = planned_query.source_relation
@@ -4789,8 +4790,88 @@ class SQLGenerator:
         cma_slot_ids = {
             p.aggregate_slot_id for p in planned_query.cross_model_aggregate_plans
         }
+
+        # DEV-1503 — outer combined-SELECT WHERE wrapper. Identify
+        # AGGREGATE-phase host filters whose value-key references any
+        # FILTERED-LOCAL ISOLATED aggregate (a plan with
+        # ``cte_root_model is not None``). The filtered aggregate lives in
+        # its ``_cm_*`` CTE that LEFT JOINs back to ``_base``; applying
+        # the comparison as HAVING in the CTE would drop CTE rows where
+        # the aggregate fails the test, but the LEFT JOIN would then
+        # surface the host row with a NULL aggregate (wrong semantic).
+        # Routing to the outer combined SELECT (non-aggregating) as
+        # plain WHERE on the joined-back column drops the row instead.
+        isolated_agg_slot_ids = {
+            p.aggregate_slot_id
+            for p in planned_query.cross_model_aggregate_plans
+            if p.cte_root_model is not None
+        }
+        slot_by_key = {s.key: s for s in slots_by_id.values()}
+        outer_where_filter_ids: Set[str] = set()
+        outer_where_filters: List = []
+        if isolated_agg_slot_ids:
+            for fp in planned_query.filters_by_phase:
+                if fp.phase != Phase.AGGREGATE or fp.expression is None:
+                    continue
+                refs_isolated = False
+                for k in walk_value_keys(fp.expression.value_key):
+                    if isinstance(k, AggregateKey):
+                        slot = slot_by_key.get(k)
+                        if slot is not None and slot.id in isolated_agg_slot_ids:
+                            refs_isolated = True
+                            break
+                if refs_isolated:
+                    outer_where_filter_ids.add(fp.id)
+                    outer_where_filters.append(fp)
+        # DEV-1503 (Codex round 2 #1) — composite projection slots whose
+        # value-key tree walks an ISOLATED cross-model aggregate must NOT
+        # render in ``_base``. Inline rendering pulls the filter-target
+        # joins back into the host CTE (``_collect_column_filter_join_paths``)
+        # and computes the formula against the host rowset — silently
+        # corrupting both aggregates when two filter-target INNER joins
+        # intersect to different rows. Route them to the outer combined
+        # SELECT where the joined-back ``_cm_*`` columns resolve.
+        #
+        # Composite (``ArithmeticKey`` / ``ScalarCallKey``) projection
+        # slots live in EITHER ``aggregate_slots`` (when the composite
+        # contains an aggregate and the planner buckets it as
+        # AGGREGATE-phase) OR ``combined_expression_slots`` (transform-
+        # adjacent composites). Walk both, but skip pure-leaf
+        # ``AggregateKey`` slots — those have their own routing via
+        # ``cma_slot_ids`` and ``_cm_*`` CTEs.
+        from slayer.core.keys import (
+            ArithmeticKey as _ArithKey,
+            ScalarCallKey as _ScalarKey,
+        )
+        composite_kinds = (_ArithKey, _ScalarKey)
+        outer_composite_slot_ids: Set[str] = set()
+        # A composite slot routes to the outer combined SELECT when it is
+        # referenced by EITHER the public projection OR an ORDER BY entry —
+        # a hidden ``ORDER BY <isolated_agg> + <other>`` composite would
+        # otherwise fall through to the local order-only path and render
+        # inline in ``_base``, re-pulling filter-target joins into the
+        # host spine (Codex round 3 #1).
+        composite_candidate_ids: Set[str] = set(planned_query.projection)
+        for order_entry in planned_query.order:
+            composite_candidate_ids.add(order_entry.slot_id)
+        for slot in (
+            list(planned_query.combined_expression_slots)
+            + list(planned_query.aggregate_slots)
+        ):
+            if slot.id not in composite_candidate_ids:
+                continue
+            if not isinstance(slot.key, composite_kinds):
+                continue
+            for k in walk_value_keys(slot.key):
+                if isinstance(k, AggregateKey):
+                    s = slot_by_key.get(k)
+                    if s is not None and s.id in cma_slot_ids:
+                        outer_composite_slot_ids.add(slot.id)
+                        break
         base_projection = [
-            sid for sid in planned_query.projection if sid not in cma_slot_ids
+            sid for sid in planned_query.projection
+            if sid not in cma_slot_ids
+            and sid not in outer_composite_slot_ids
         ]
 
         # Hidden ORDER-BY-only LOCAL slots (``ORDER BY revenue:sum`` with
@@ -4803,7 +4884,11 @@ class SQLGenerator:
         order_only_local_ids: List[str] = []
         for order_entry in planned_query.order:
             sid = order_entry.slot_id
-            if sid in cma_slot_ids or sid in seen_base_ids:
+            if (
+                sid in cma_slot_ids
+                or sid in outer_composite_slot_ids
+                or sid in seen_base_ids
+            ):
                 continue
             slot = slots_by_id.get(sid)
             if slot is None:
@@ -4853,6 +4938,29 @@ class SQLGenerator:
                 base_render_order.append(sid)
                 seen_base_ids.add(sid)
 
+        # DEV-1503 (Codex round 2 #1) — non-isolated local AggregateKey
+        # operands of an outer-rendered composite (e.g. ``total_amount:sum``
+        # in ``loss_payment_amt:sum + total_amount:sum``) must still
+        # materialise in ``_base`` so the outer combined SELECT can
+        # reference them via ``_base."<alias>"``. Walk each outer
+        # composite's key tree once, promote its non-isolated agg deps
+        # to ``base_render_order`` as hidden aux slots.
+        if outer_composite_slot_ids:
+            for cid in outer_composite_slot_ids:
+                cslot = slots_by_id.get(cid)
+                if cslot is None:
+                    continue
+                for k in walk_value_keys(cslot.key):
+                    if not isinstance(k, AggregateKey):
+                        continue
+                    dep = slot_by_key.get(k)
+                    if dep is None:
+                        continue
+                    if dep.id in cma_slot_ids or dep.id in seen_base_ids:
+                        continue
+                    base_render_order.append(dep.id)
+                    seen_base_ids.add(dep.id)
+
         if planned_query.transform_layers:
             _add_local_aux_slots(include_order=True, aggregates_only=False)
         # DEV-1501 (Codex round 6): host AGG-phase filter operand
@@ -4866,19 +4974,94 @@ class SQLGenerator:
 
         # Hidden grain materialisation: when the user query has neither
         # host row slots NOR local aggs (and no hidden order targets),
-        # ``base_render_order`` is empty and the ``_base`` CTE would be a
-        # bare ``FROM orders`` — legacy emits ``SELECT 1 AS _placeholder
-        # FROM orders`` so the combined CROSS JOIN has a left side to
-        # join against. Mirror that shape.
+        # ``base_render_order`` is empty. ``_base`` becomes a one-row
+        # placeholder so the combined CROSS JOIN to the scalar ``_cm_*``
+        # CTEs has a left side to join against.
+        #
+        # DEV-1503 (Codex round 2 #2): emit the placeholder WITHOUT the
+        # host FROM. With ``FROM <host>`` the placeholder is N rows (one
+        # per host row), and a CROSS JOIN to a 1-row ``_cm_*`` scalar
+        # aggregate duplicates the result N times — for a no-dim
+        # aggregate-only query the user expects ONE row, not one per
+        # host row. The host rowset doesn't contribute to the result
+        # here (every projected slot is a cross-model aggregate that
+        # owns its own ``FROM <host>`` inside the ``_cm_*`` CTE), so
+        # dropping the host FROM is safe.
         empty_base = not base_render_order
         if empty_base:
-            base_select = exp.Select().select(
-                exp.Alias(this=exp.Literal.number("1"), alias=exp.to_identifier("_placeholder")),
-            ).from_(
-                self._build_from_clause_from_planned(
-                    source_model=source_model, source_relation=source_relation,
-                ),
+            # Routed filter ids — filters applied inside per-plan ``_cm_*``
+            # CTEs (where/having) or at the outer combined WHERE wrapper.
+            # Host-local ROW filters NOT in this set fall through to the
+            # placeholder via ``DROP_HOST_LOCAL`` routing (forward cross-
+            # model classifier) or simply by being unrouted; they must
+            # apply HERE or the query silently aggregates across host
+            # rows the user filtered out (Codex round 4 / CodeRabbit).
+            routed_ids: Set[str] = set(outer_where_filter_ids)
+            for plan in planned_query.cross_model_aggregate_plans:
+                routed_ids.update(plan.where_filter_ids)
+                routed_ids.update(plan.having_filter_ids)
+            from slayer.core.keys import Phase as _Phase
+            has_host_local_filter = any(
+                fp.phase == _Phase.ROW
+                and fp.id not in routed_ids
+                and (fp.expression is not None or fp.text is not None)
+                for fp in planned_query.filters_by_phase
             )
+            if has_host_local_filter:
+                # Build the placeholder over the host with WHERE + LIMIT 1.
+                # LIMIT 1 collapses the host rowset to a single row so the
+                # combined CROSS JOIN to the scalar ``_cm_*`` does not
+                # duplicate aggregates (round 2 invariant), while WHERE
+                # still gates the entire result — if no host row matches,
+                # ``_base`` is empty and the combined query returns 0
+                # rows (correct host-filter semantics).
+                #
+                # Round 6 (Codex): walk the non-routed filters' join paths
+                # via ``_collect_filter_join_paths`` and pull them in via
+                # ``_build_from_and_joins`` — a filter like
+                # ``claim.claim_number = '...'`` references a joined alias
+                # that must be in scope; without the join, the WHERE
+                # references an undefined alias.
+                placeholder_join_paths = self._collect_filter_join_paths(
+                    planned_query=planned_query,
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    bundle=bundle,
+                    skip_filter_ids=routed_ids,
+                )
+                placeholder_from, placeholder_joins = self._build_from_and_joins(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    joined_paths=placeholder_join_paths,
+                    bundle=bundle,
+                )
+                base_select = exp.Select().select(
+                    exp.Alias(
+                        this=exp.Literal.number("1"),
+                        alias=exp.to_identifier("_placeholder"),
+                    ),
+                ).from_(placeholder_from)
+                for join_expr, on_expr, join_type in placeholder_joins:
+                    base_select = base_select.join(
+                        join_expr, on=on_expr, join_type=join_type,
+                    )
+                base_where, _base_having = self._build_where_having_from_planned(
+                    planned_query=planned_query,
+                    source_relation=source_relation,
+                    source_model=source_model,
+                    bundle=bundle,
+                    skip_filter_ids=routed_ids,
+                )
+                if base_where is not None:
+                    base_select = base_select.where(base_where)
+                base_select = base_select.limit(1)
+            else:
+                base_select = exp.Select().select(
+                    exp.Alias(
+                        this=exp.Literal.number("1"),
+                        alias=exp.to_identifier("_placeholder"),
+                    ),
+                )
             aliases_by_slot_id: Dict[str, List[str]] = {}
             base_has_agg = False
             base_group_by: Dict[str, exp.Expression] = {}
@@ -4888,7 +5071,13 @@ class SQLGenerator:
             # ``_base`` (the predicate runs in the ``_cm_*`` CTE).
             # ``applied_filter_ids`` is the audit union of where + having
             # on each plan.
-            routed_ids: Set[str] = set()
+            #
+            # DEV-1503: outer-WHERE filters (AGGREGATE-phase host filters
+            # referencing a filtered-local isolated aggregate) also go in
+            # here so ``_base`` does not double-apply them as HAVING on
+            # the bare local aggregate expression (which would reference
+            # an aggregate that no longer lives in ``_base``).
+            routed_ids: Set[str] = set(outer_where_filter_ids)
             for plan in planned_query.cross_model_aggregate_plans:
                 routed_ids.update(plan.where_filter_ids)
                 routed_ids.update(plan.having_filter_ids)
@@ -4919,7 +5108,13 @@ class SQLGenerator:
                 first_last_state=base_first_last_state,
                 aliases_by_slot_id=aliases_by_slot_id,
             )
-            if base_where is not None:
+            # CodeRabbit thread: the first/last ranked-subquery path
+            # consumes WHERE inside the ranked subquery and returns
+            # ``where_consumed=True``. Re-applying ``base_where`` to the
+            # outer SELECT here would double-filter (and change
+            # first/last semantics by filtering AFTER ranking) and can
+            # dangle joined-column aliases on the outer SELECT scope.
+            if base_where is not None and not _base_where_consumed:
                 base_select = base_select.where(base_where)
             base_dim_only_dedup = bool(base_group_by) and not base_has_agg
             if (base_has_agg or base_dim_only_dedup) and base_group_by:
@@ -5036,6 +5231,92 @@ class SQLGenerator:
                 combined_parts.append(f'_base."{full_alias}"')
             if aliases:
                 combined_aliases_by_slot_id[sid] = list(aliases)
+        # DEV-1503 (Codex round 2 #1) — composite slots routed to the outer
+        # combined SELECT. Render via the same substitution renderer the
+        # outer-WHERE wrapper uses: isolated AggregateKey → ``_cm_*."col"``,
+        # non-isolated local agg / ColumnKey → ``_base."<alias>"`` (already
+        # promoted as aux above). Wrap with ``AS "<public_alias>"`` so the
+        # composite surfaces under the user-declared name.
+        outer_composite_order_alias_by_sid: Dict[str, str] = {}
+        outer_composite_order_expressions: Dict[str, str] = {}
+        if outer_composite_slot_ids:
+            outer_composite_cm_map: Dict[str, Tuple[str, str]] = {}
+            for plan in planned_query.cross_model_aggregate_plans:
+                canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
+                cte_name = _cte_name_from_alias("_cm_", canonical_alias)
+                agg_col_alias = agg_col_alias_for_plan[plan.aggregate_slot_id]
+                outer_composite_cm_map[plan.aggregate_slot_id] = (
+                    cte_name, agg_col_alias,
+                )
+
+            def _render_outer_composite(cslot) -> str:
+                rendered = self._render_filter_for_outer_wrapper(
+                    key=cslot.key,
+                    slot_by_key=slot_by_key,
+                    cross_model_agg_slot_to_cm=outer_composite_cm_map,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                )
+                if cslot.type is not None:
+                    rendered = _wrap_cast_for_type(rendered, cslot.type)
+                return rendered.sql(dialect=self.dialect)
+
+            # Projected outer composites: cycle through ``public_aliases``
+            # for each occurrence in ``planned_query.projection``. C13 lets
+            # the same composite slot project under multiple user-declared
+            # names; emitting ``public_aliases[0]`` twice (and overwriting
+            # ``combined_aliases_by_slot_id[sid]``) would drop the second
+            # alias (CodeRabbit thread 2).
+            outer_emission_count: Dict[str, int] = {}
+            for sid in planned_query.projection:
+                if sid not in outer_composite_slot_ids:
+                    continue
+                cslot = slots_by_id.get(sid)
+                if cslot is None:
+                    continue
+                aliases_for_slot = list(cslot.public_aliases) or [
+                    cslot.declared_name,
+                ]
+                idx = outer_emission_count.get(sid, 0)
+                public_alias = (
+                    aliases_for_slot[idx]
+                    if idx < len(aliases_for_slot)
+                    else aliases_for_slot[-1]
+                )
+                outer_emission_count[sid] = idx + 1
+                full_alias = f"{source_relation}.{public_alias}"
+                combined_parts.append(
+                    f'{_render_outer_composite(cslot)} AS "{full_alias}"',
+                )
+                combined_aliases_by_slot_id.setdefault(sid, []).append(
+                    full_alias,
+                )
+                # The first emitted alias is the canonical handle the
+                # combined-level ORDER BY references.
+                outer_composite_order_alias_by_sid.setdefault(sid, full_alias)
+
+            # Order-only outer composites (Codex round 3 #1 / round 8):
+            # not in public projection but referenced by
+            # ``planned_query.order``. Rather than materialise as a
+            # hidden combined-SELECT column (which would leak as an
+            # extra public-result column on the no-transform path AND
+            # disappear from the cross-model transform chain's
+            # carry-forward dict), render the expression INLINE in the
+            # combined ORDER BY. ``outer_composite_order_expressions``
+            # carries the rendered SQL for each order-only slot; the
+            # order-by builder emits ``<expr> {direction}`` bare.
+            projection_set_for_outer = set(planned_query.projection)
+            for entry in planned_query.order:
+                sid = entry.slot_id
+                if sid not in outer_composite_slot_ids:
+                    continue
+                if sid in projection_set_for_outer:
+                    continue
+                cslot = slots_by_id.get(sid)
+                if cslot is None:
+                    continue
+                outer_composite_order_expressions[sid] = (
+                    _render_outer_composite(cslot)
+                )
         # Cross-model side: one entry per declared user alias, all
         # referencing the CTE's aggregate column (canonical for the forward
         # path; the sub-plan alias for the re-rooted path). When the public
@@ -5087,6 +5368,45 @@ class SQLGenerator:
             f"SELECT {', '.join(combined_parts)}\n{from_clause_str}"
         )
 
+        # DEV-1503 — outer combined-SELECT WHERE wrapper. AGGREGATE-phase
+        # host filters routed here in the classification pass above
+        # (``outer_where_filters``) render now against the joined-back
+        # ``_cm_*`` column for isolated-aggregate refs and ``_base.<alias>``
+        # for any local operand (which the ``_add_local_aux_slots`` pass
+        # has materialised in ``_base``).
+        if outer_where_filters:
+            # Map EVERY cross-model aggregate slot (filtered-local AND
+            # forward / re-rooted) to its ``_cm_*`` CTE column — a mixed
+            # AGGREGATE filter like ``loss_payment_amt:sum >
+            # customers.revenue:sum`` triggers the outer wrapper through
+            # the filtered-local operand but ALSO has to resolve the
+            # forward cross-model operand on the same outer scope. If
+            # only filtered-local plans were mapped, the forward operand
+            # would fall through to the ``_base`` fallback and the
+            # renderer would raise (CodeRabbit thread 2).
+            cross_model_agg_slot_to_cm: Dict[str, Tuple[str, str]] = {}
+            for plan in planned_query.cross_model_aggregate_plans:
+                canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
+                cte_name = _cte_name_from_alias("_cm_", canonical_alias)
+                agg_col_alias = agg_col_alias_for_plan[plan.aggregate_slot_id]
+                cross_model_agg_slot_to_cm[plan.aggregate_slot_id] = (
+                    cte_name, agg_col_alias,
+                )
+            outer_where_parts: List[str] = []
+            for fp in outer_where_filters:
+                rendered = self._render_filter_for_outer_wrapper(
+                    key=fp.expression.value_key,
+                    slot_by_key=slot_by_key,
+                    cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                )
+                if isinstance(rendered, (exp.And, exp.Or)):
+                    rendered = exp.Paren(this=rendered)
+                outer_where_parts.append(rendered.sql(dialect=self.dialect))
+            combined_select_sql += (
+                "\nWHERE " + _SQL_AND_JOINER.join(outer_where_parts)
+            )
+
         # DEV-1450 stage 7b.15e (C2): a transform layer over a cross-model
         # aggregate (``cumsum(customers.avg_score:avg)``) runs on TOP of the
         # combined cross-model result — the combined SELECT becomes the base
@@ -5118,6 +5438,8 @@ class SQLGenerator:
             cma_slot_ids=cma_slot_ids,
             cm_alias_for_plan=canonical_alias_for_plan,
             bare_order_slot_ids=set(order_only_local_ids),
+            outer_composite_aliases=outer_composite_order_alias_by_sid,
+            outer_composite_expressions=outer_composite_order_expressions,
         )
         if order_sql:
             sql += "\n" + order_sql
@@ -5365,8 +5687,15 @@ class SQLGenerator:
         from slayer.core.refs import canonical_agg_name
 
         path = getattr(key.source, "path", ())
+        # Handle ColumnKey (``leaf``), ColumnSqlKey (``column_name`` — derived
+        # column source, almost universal for filtered-local measures whose
+        # ``Column.sql`` differs from ``Column.name``), and StarKey (no
+        # ``leaf`` / ``column_name`` → collapse to ``*``). Mirrors
+        # ``_aggregate_alias`` in ``cross_model_planner.py``.
         measure_name = (
-            key.source.leaf if hasattr(key.source, "leaf") else "*"
+            getattr(key.source, "leaf", None)
+            or getattr(key.source, "column_name", None)
+            or "*"
         )
         # DEV-1450 stage 7b.13: include kwarg suffix in cross-model
         # alias so two distinct parametric aggs (``percentile(p=0.5)``
@@ -5432,15 +5761,32 @@ class SQLGenerator:
         * ``agg_col_alias`` — the sub-plan's emitted alias for the aggregate.
         """
         sub_plan = plan.rerooted_plan
-        target_model = bundle.get_referenced_model(plan.target_model)
-        if target_model is None:
-            raise ValueError(
-                f"Re-rooted CrossModelAggregatePlan target "
-                f"{plan.target_model!r} not in resolved source bundle.",
+        # DEV-1503 — filtered-local (host-rooted) plans don't change the
+        # source_model: the sub-plan is rooted at the SAME host the outer
+        # plan binds against, and ``bundle.source_model`` already IS the
+        # host. The existing cross-model re-rooted path swaps ``source_model``
+        # to the join target (which lives in ``referenced_models``); a
+        # filtered-local host name won't resolve there, so guard on
+        # ``cte_root_model`` first.
+        if plan.cte_root_model is not None:
+            host_model = bundle.source_model
+            if host_model is None or host_model.name != plan.cte_root_model:
+                raise ValueError(
+                    f"Filtered-local CrossModelAggregatePlan "
+                    f"cte_root_model={plan.cte_root_model!r} does not match "
+                    f"the bundle's source model — planner/renderer drift.",
+                )
+            rerooted_bundle = bundle
+        else:
+            target_model = bundle.get_referenced_model(plan.target_model)
+            if target_model is None:
+                raise ValueError(
+                    f"Re-rooted CrossModelAggregatePlan target "
+                    f"{plan.target_model!r} not in resolved source bundle.",
+                )
+            rerooted_bundle = bundle.model_copy(
+                update={"source_model": target_model},
             )
-        rerooted_bundle = bundle.model_copy(
-            update={"source_model": target_model},
-        )
         cte_sql = self.generate_from_planned(sub_plan, bundle=rerooted_bundle)
 
         sub_slots_by_id = {
@@ -6220,6 +6566,8 @@ class SQLGenerator:
         cma_slot_ids: Set[str],
         cm_alias_for_plan: Dict[str, str],
         bare_order_slot_ids: Optional[Set[str]] = None,
+        outer_composite_aliases: Optional[Dict[str, str]] = None,
+        outer_composite_expressions: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Build the ORDER BY clause for the combined SELECT.
 
@@ -6234,34 +6582,82 @@ class SQLGenerator:
         projection-trim wrapper (which exposes only the bare public
         aliases) is ever layered on top. The bare alias still resolves
         unambiguously against ``_base`` in the combined FROM.
+
+        DEV-1503 (Codex round 3 #2): outer-routed composite slots
+        (``outer_composite_aliases``) live ONLY in the combined SELECT's
+        projection — they are not materialised in ``_base``. Reference
+        them as bare aliases so the ORDER BY resolves against the outer
+        SELECT's own column list rather than ``_base.<alias>`` (which
+        would dangle).
         """
         if not planned_query.order:
             return None
         bare_ids = bare_order_slot_ids or set()
+        outer_aliases = outer_composite_aliases or {}
+        outer_expressions = outer_composite_expressions or {}
         parts: List[str] = []
         for entry in planned_query.order:
-            direction = "ASC" if entry.direction == "asc" else "DESC"
             slot = slots_by_id.get(entry.slot_id)
             if slot is None:
                 continue
-            if entry.slot_id in cma_slot_ids:
-                alias = cm_alias_for_plan.get(entry.slot_id)
-                if alias is None:
-                    continue
-                parts.append(f'"{alias}" {direction}')
-            else:
-                full_alias = self._full_alias_for_slot(
-                    slot=slot,
-                    source_relation=planned_query.source_relation,
-                    alias_index={},
-                )
-                if entry.slot_id in bare_ids:
-                    parts.append(f'"{full_alias}" {direction}')
-                else:
-                    parts.append(f'_base."{full_alias}" {direction}')
+            term = self._resolve_combined_order_term(
+                entry=entry,
+                slot=slot,
+                source_relation=planned_query.source_relation,
+                cma_slot_ids=cma_slot_ids,
+                cm_alias_for_plan=cm_alias_for_plan,
+                bare_ids=bare_ids,
+                outer_aliases=outer_aliases,
+                outer_expressions=outer_expressions,
+            )
+            if term is not None:
+                parts.append(term)
         if not parts:
             return None
         return "ORDER BY " + ", ".join(parts)
+
+    def _resolve_combined_order_term(
+        self,
+        *,
+        entry,
+        slot,
+        source_relation: str,
+        cma_slot_ids: Set[str],
+        cm_alias_for_plan: Dict[str, str],
+        bare_ids: Set[str],
+        outer_aliases: Dict[str, str],
+        outer_expressions: Optional[Dict[str, str]] = None,
+    ) -> Optional[str]:
+        """Resolve one ``OrderEntry`` to its ``"alias" <direction>`` term.
+
+        Cross-model agg slot → bare CTE alias; projected outer-composite
+        slot → bare combined-SELECT alias; order-only outer composite
+        (Codex round 8 / CodeRabbit) → inline ``<expression> <dir>`` so
+        no synthetic alias leaks into the combined projection and the
+        transform-chain carry-forward doesn't lose track; hidden
+        order-only local → bare ``_base`` alias; everything else →
+        qualified ``_base."<alias>"``. Returns ``None`` when the
+        cross-model alias map has no entry (the order slot can't be
+        rendered).
+        """
+        direction = "ASC" if entry.direction == "asc" else "DESC"
+        if entry.slot_id in cma_slot_ids:
+            alias = cm_alias_for_plan.get(entry.slot_id)
+            if alias is None:
+                return None
+            return f'"{alias}" {direction}'
+        if entry.slot_id in outer_aliases:
+            return f'"{outer_aliases[entry.slot_id]}" {direction}'
+        if outer_expressions and entry.slot_id in outer_expressions:
+            return f'{outer_expressions[entry.slot_id]} {direction}'
+        full_alias = self._full_alias_for_slot(
+            slot=slot,
+            source_relation=source_relation,
+            alias_index={},
+        )
+        if entry.slot_id in bare_ids:
+            return f'"{full_alias}" {direction}'
+        return f'_base."{full_alias}" {direction}'
 
     def _full_alias_for_slot(
         self,
@@ -8203,42 +8599,17 @@ class SQLGenerator:
         set-op branch) — those belong to the inner rowset, not the outer FROM.
         Prefixes are only emitted once the FULL alias path resolves, so a
         partially-matching alias never injects a spurious outer join.
+
+        Thin shim over the shared ``collect_root_scope_joined_paths`` helper
+        — see ``column_filter_paths._walk_root_scope_paths`` for the planner
+        side using the same primitive.
         """
-        root_ids = _root_scope_column_ids(parsed=sql_expr)
-        seen: set = set()
-        ordered: List[Tuple[str, ...]] = []
-        for col in sql_expr.find_all(exp.Column):
-            tbl = col.args.get("table")
-            if tbl is None or col.args.get("db") or col.args.get("catalog"):
-                continue
-            if id(col) not in root_ids:
-                continue
-            alias = tbl.name
-            if alias in (source_relation, source_model.name):
-                continue
-            segments = alias.split("__")
-            current = source_model
-            resolved = True
-            for seg in segments:
-                join = next(
-                    (j for j in current.joins if j.target_model == seg), None,
-                )
-                if join is None:
-                    resolved = False
-                    break
-                nxt = bundle.get_referenced_model(seg)
-                if nxt is None:
-                    resolved = False
-                    break
-                current = nxt
-            if not resolved:
-                continue
-            for i in range(1, len(segments) + 1):
-                prefix = tuple(segments[:i])
-                if prefix not in seen:
-                    seen.add(prefix)
-                    ordered.append(prefix)
-        return ordered
+        return collect_root_scope_joined_paths(
+            parsed=sql_expr,
+            source_model=source_model,
+            source_relation=source_relation,
+            bundle=bundle,
+        )
 
     def _collect_filter_join_paths(
         self, *, planned_query, source_model, source_relation: str, bundle,
@@ -9060,6 +9431,167 @@ class SQLGenerator:
             )
         raise NotImplementedError(
             f"Unsupported ValueKey type in filter: {type(key).__name__}",
+        )
+
+    def _render_filter_for_outer_wrapper(  # NOSONAR(S3776) — sequential isinstance dispatch over the closed filter-ValueKey union for the DEV-1503 outer-WHERE wrapper. Mirrors ``_render_value_key_for_filter`` shape but substitutes slot refs with the combined-SELECT's table-qualified columns (``_cm_*`` / ``_base``); per-branch helpers would scatter the substitution contract.
+        self,
+        *,
+        key,
+        slot_by_key: Dict[Any, Any],
+        cross_model_agg_slot_to_cm: Dict[str, Tuple[str, str]],
+        aliases_by_slot_id: Dict[str, List[str]],
+    ) -> exp.Expression:
+        """Render a ValueKey tree for the DEV-1503 outer combined-SELECT WHERE.
+
+        Used when an AGGREGATE-phase host filter references a filtered-local
+        isolated aggregate (``loss_payment_amt:sum > 1000`` where
+        ``loss_payment_amt`` has a join-crossing ``Column.filter``). The
+        filtered aggregate lives in a ``_cm_*`` CTE that LEFT JOINs back to
+        ``_base``; the outer combined SELECT is non-aggregating, so the
+        comparison renders as plain WHERE on the joined-back column rather
+        than HAVING-into-the-CTE (which would surface host rows as NULL
+        instead of dropping them).
+
+        Slot-bearing leaves resolve via:
+
+        * Isolated aggregate slot → ``<cte_name>."<agg_col_alias>"`` from
+          ``cross_model_agg_slot_to_cm`` (the CTE's emitted aggregate column).
+        * Any other slot (row column, joined dim, local aggregate operand)
+          → ``_base."<first_alias>"`` from ``aliases_by_slot_id``. The
+          generator's aux-slot pass (``_add_local_aux_slots(aggregates_only=
+          True)``) promotes non-isolated aggregate operands into
+          ``base_render_order`` so this lookup always succeeds.
+
+        Cross-model aggregates with ``path != ()`` (forward-path) are not
+        expected here — the planner routes those via plan-level
+        ``where_filter_ids`` / ``having_filter_ids`` instead.
+        """
+        from decimal import Decimal
+
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            BetweenKey,
+            ColumnKey,
+            ColumnSqlKey,
+            InKey,
+            LiteralKey,
+            ScalarCallKey,
+            StarKey,
+            TimeTruncKey,
+            TransformKey,
+        )
+
+        def _slot_alias_column(slot) -> Optional[exp.Expression]:
+            sid = slot.id
+            cm_entry = cross_model_agg_slot_to_cm.get(sid)
+            if cm_entry is not None:
+                cte_name, agg_col_alias = cm_entry
+                return exp.Column(
+                    this=exp.to_identifier(agg_col_alias, quoted=True),
+                    table=exp.to_identifier(cte_name),
+                )
+            aliases = aliases_by_slot_id.get(sid) or []
+            if not aliases:
+                return None
+            return exp.Column(
+                this=exp.to_identifier(aliases[0], quoted=True),
+                table=exp.to_identifier("_base"),
+            )
+
+        if isinstance(key, AggregateKey):
+            slot = slot_by_key.get(key)
+            if slot is not None:
+                resolved = _slot_alias_column(slot)
+                if resolved is not None:
+                    return resolved
+            raise NotImplementedError(
+                f"DEV-1503 outer-WHERE wrapper: AggregateKey "
+                f"{key!r} has no slot/alias resolution. "
+                f"Forward-path cross-model aggregates route via plan "
+                f"where/having ids instead.",
+            )
+        if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            slot = slot_by_key.get(key)
+            if slot is not None:
+                resolved = _slot_alias_column(slot)
+                if resolved is not None:
+                    return resolved
+            raise NotImplementedError(
+                f"DEV-1503 outer-WHERE wrapper: {type(key).__name__} "
+                f"{key!r} has no base alias — operand promotion did not "
+                f"materialise it in ``_base``.",
+            )
+        if isinstance(key, LiteralKey):
+            return self._scalar_to_sqlglot(key.value)
+        if isinstance(key, ArithmeticKey):
+            operands = [
+                self._render_filter_for_outer_wrapper(
+                    key=o,
+                    slot_by_key=slot_by_key,
+                    cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                )
+                for o in key.operands
+            ]
+            return self._build_arithmetic_for_filter(
+                op=key.op, operands=operands,
+            )
+        if isinstance(key, ScalarCallKey):
+            args = []
+            for a in key.args:
+                if isinstance(a, (Decimal, str, bool)) or a is None:
+                    args.append(self._scalar_to_sqlglot(a))
+                else:
+                    args.append(self._render_filter_for_outer_wrapper(
+                        key=a,
+                        slot_by_key=slot_by_key,
+                        cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
+                        aliases_by_slot_id=aliases_by_slot_id,
+                    ))
+            if key.name == "like":
+                return exp.Like(this=args[0], expression=args[1])
+            return exp.Anonymous(this=key.name.upper(), expressions=args)
+        if isinstance(key, BetweenKey):
+            col_expr = self._render_filter_for_outer_wrapper(
+                key=key.column,
+                slot_by_key=slot_by_key,
+                cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
+                aliases_by_slot_id=aliases_by_slot_id,
+            )
+            low_expr = self._render_filter_for_outer_wrapper(
+                key=key.low,
+                slot_by_key=slot_by_key,
+                cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
+                aliases_by_slot_id=aliases_by_slot_id,
+            )
+            high_expr = self._render_filter_for_outer_wrapper(
+                key=key.high,
+                slot_by_key=slot_by_key,
+                cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
+                aliases_by_slot_id=aliases_by_slot_id,
+            )
+            return exp.Between(this=col_expr, low=low_expr, high=high_expr)
+        if isinstance(key, InKey):
+            col_expr = self._render_filter_for_outer_wrapper(
+                key=key.column,
+                slot_by_key=slot_by_key,
+                cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
+                aliases_by_slot_id=aliases_by_slot_id,
+            )
+            value_exprs = [
+                self._scalar_to_sqlglot(lit.value) for lit in key.values
+            ]
+            in_expr = exp.In(this=col_expr, expressions=value_exprs)
+            return exp.Not(this=in_expr) if key.negated else in_expr
+        if isinstance(key, (TransformKey, StarKey)):
+            raise NotImplementedError(
+                f"DEV-1503 outer-WHERE wrapper: filter rendering for "
+                f"{type(key).__name__} not supported on outer wrapper.",
+            )
+        raise NotImplementedError(
+            f"DEV-1503 outer-WHERE wrapper: unsupported ValueKey type "
+            f"{type(key).__name__}",
         )
 
     @staticmethod

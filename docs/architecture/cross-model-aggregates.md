@@ -117,6 +117,72 @@ path for a permutation" the redesign set out to eliminate. It works and is
 tested, but it is the place a future reviewer should look first when reasoning
 about cross-model behavior.
 
+## Strategy 3: filtered-local isolation (DEV-1503)
+
+A **cross-model-FILTERED local measure** is a host aggregate whose `Column.filter`
+references a joined table — `loss_payment_amt:sum` where `loss_payment_amt` has
+`filter="loss_payment.has_flag = 1"`. The aggregate's `source.path` is empty
+(it's a local column), but its `column_filter_key.referenced_join_paths` is
+non-empty, so emitting it inline in the host base SELECT would pull the
+filter-target join into the host's FROM. With **two** such measures whose
+filter targets are different INNER joins, the host base would intersect to
+only the rows present in BOTH targets — silently corrupting both aggregates.
+
+The trigger predicate is structural:
+`agg_path` non-empty (forward cross-model) **OR**
+`column_filter_key.referenced_join_paths` non-empty (filtered-local). Both
+route through `IsolatedCteCrossModelPlanner.plan`; the filtered-local branch
+calls `_plan_filtered_local`, which builds a **host-rooted** nested
+`PlannedQuery` (same `source_model`, same dims/TDs, only the filtered measure
+as the single aggregate) and attaches it via the same
+`rerooted_plan` / `rerooted_grain_pairs` / `rerooted_agg_slot_id` slots the
+re-rooted path uses. The plan carries `cte_root_model = host_model.name` as
+the disambiguator the renderer reads; `_render_rerooted_cross_model_cte`
+short-circuits the source-model swap when `cte_root_model` is set.
+
+```mermaid
+flowchart TB
+    detect["column_filter_key.referenced_join_paths non-empty?"]
+    detect -->|yes| build["_plan_filtered_local builds host-rooted SlayerQuery"]
+    build --> replan["subplan_builder(rerooted_query, bundle)"]
+    replan --> attach["attach with cte_root_model = host.name"]
+    attach --> gen["generator: _render_rerooted_cross_model_cte (host-rooted branch)"]
+```
+
+`subplan_builder` always passes `disable_dev1503_isolation=True` so the
+recursive `plan_query` call inside the sub-plan does NOT re-trigger isolation
+on the same measure.
+
+### Filter routing for filtered-local
+
+| Host filter phase | Route |
+| --- | --- |
+| ROW | propagate into the host-rooted sub-plan (so a non-dim filter like `status = 'active'` affects the isolated aggregate's rowset) |
+| AGGREGATE | **outer combined-SELECT WHERE wrapper** (see below) |
+| POST | stay at the existing host post-transform wrapper |
+
+### Outer combined-SELECT WHERE wrapper
+
+An AGGREGATE-phase host filter referencing an isolated aggregate
+(`loss_payment_amt:sum > 1000`) cannot route as HAVING inside the `_cm_*` CTE:
+the LEFT JOIN back to `_base` would surface host rows whose filtered
+aggregate didn't meet the predicate with a NULL value instead of dropping
+them. The renderer (`_render_with_cross_model_plans`) classifies each
+AGGREGATE-phase filter; any that walks an `AggregateKey` matching an
+isolated slot is routed to an outer WHERE on the **combined SELECT** (which
+is non-aggregating — plain WHERE is legal). The renderer
+(`_render_filter_for_outer_wrapper`) substitutes:
+
+- isolated `AggregateKey` → `<cte_name>."<agg_col_alias>"` (the joined-back column),
+- any other slot → `_base."<first_alias>"` (the host base's projection).
+
+Non-isolated aggregate operands of a mixed filter (`loss_payment_amt:sum >
+1000 AND total_amount:sum > 10` where `total_amount:sum` isn't a public
+measure) are promoted to hidden aux slots in `base_render_order` by the
+existing `_add_local_aux_slots(aggregates_only=True)` pass — `_base`
+materialises them so the outer WHERE can reference them, and the combined
+public projection trims them out.
+
 ## Generator side
 
 `generate_from_planned` delegates to `_render_with_cross_model_plans` when
