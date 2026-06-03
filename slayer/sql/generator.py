@@ -5015,17 +5015,36 @@ class SQLGenerator:
                 # still gates the entire result — if no host row matches,
                 # ``_base`` is empty and the combined query returns 0
                 # rows (correct host-filter semantics).
+                #
+                # Round 6 (Codex): walk the non-routed filters' join paths
+                # via ``_collect_filter_join_paths`` and pull them in via
+                # ``_build_from_and_joins`` — a filter like
+                # ``claim.claim_number = '...'`` references a joined alias
+                # that must be in scope; without the join, the WHERE
+                # references an undefined alias.
+                placeholder_join_paths = self._collect_filter_join_paths(
+                    planned_query=planned_query,
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    bundle=bundle,
+                    skip_filter_ids=routed_ids,
+                )
+                placeholder_from, placeholder_joins = self._build_from_and_joins(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    joined_paths=placeholder_join_paths,
+                    bundle=bundle,
+                )
                 base_select = exp.Select().select(
                     exp.Alias(
                         this=exp.Literal.number("1"),
                         alias=exp.to_identifier("_placeholder"),
                     ),
-                ).from_(
-                    self._build_from_clause_from_planned(
-                        source_model=source_model,
-                        source_relation=source_relation,
-                    ),
-                )
+                ).from_(placeholder_from)
+                for join_expr, on_expr, join_type in placeholder_joins:
+                    base_select = base_select.join(
+                        join_expr, on=on_expr, join_type=join_type,
+                    )
                 base_where, _base_having = self._build_where_having_from_planned(
                     planned_query=planned_query,
                     source_relation=source_relation,

@@ -8150,6 +8150,38 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         _assert_valid_sql(sql)
 
+    async def test_no_dim_host_filter_referencing_joined_column_pulls_join(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """A no-dimension query with a host ROW filter that references a
+        JOINED column (``claim.claim_number = '...'``) must pull the
+        join into the placeholder ``_base`` FROM clause — the WHERE
+        otherwise references an undefined alias.
+
+        Pins Codex round 6: ``_collect_filter_join_paths`` +
+        ``_build_from_and_joins`` are wired through the empty_base
+        placeholder branch so joined filter aliases have their joins in
+        scope.
+        """
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[ModelMeasure(formula="loss_payment_amt:sum")],
+            filters=["claim.claim_number = '12345'"],
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        base_body = _extract_cte_body(sql, r"_base")
+        # The Claim join MUST appear in _base alongside the filter.
+        assert "Claim" in base_body, (
+            f"_base must include Claim join for the WHERE alias:\n{base_body}"
+        )
+        # WHERE still applies + LIMIT 1 still preserves cardinality.
+        assert "claim.claim_number" in base_body, (
+            f"_base WHERE must reference the joined alias:\n{base_body}"
+        )
+        assert "12345" in base_body
+        assert "LIMIT 1" in base_body.upper()
+        _assert_valid_sql(sql)
+
     async def test_filtered_local_in_source_queries_smoke(
         self, generator: SQLGenerator,
     ) -> None:
