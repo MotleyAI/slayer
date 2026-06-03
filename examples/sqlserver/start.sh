@@ -4,7 +4,7 @@
 python -c "
 from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.storage.yaml_storage import YAMLStorage
 
 storage = YAMLStorage(base_dir='/data')
@@ -14,10 +14,8 @@ ds = DatasourceConfig(
     database='slayer_demo', username='sa', password='YourStrong@Passw0rd',
 )
 run_sync(storage.save_datasource(ds))
-models = ingest_datasource(datasource=ds)
-for m in models:
-    run_sync(storage.save_model(m))
-print(f'Ingested {len(models)} models')
+result = run_sync(ingest_datasource_idempotent(datasource=ds, storage=storage))
+print(f'Ingested {len(result.additions)} models')
 "
 
 exec slayer serve --host 0.0.0.0 --port 5143 --storage /data
