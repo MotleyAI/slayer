@@ -3737,19 +3737,13 @@ class SQLGenerator:
         if self._has_first_last_aggregate(
             base_render_order=base_render_order, slots_by_id=slots_by_id,
         ):
-            if skip_cross_model_aggs:
-                # The cross-model orchestrator builds ``_base`` with
-                # ``skip_cross_model_aggs=True``; a local first/last there
-                # would need the ranked subquery wrapped around ``_base``
-                # while still deferring cross-model aggregates to their
-                # ``_cm_*`` CTEs. Raise loudly rather than emit a SELECT
-                # that references ROW_NUMBER columns it never projected.
-                raise NotImplementedError(
-                    "DEV-1450: local first/last aggregation combined with "
-                    "cross-model aggregates is not yet supported; factor the "
-                    "first/last measure into a multi-stage source_queries "
-                    "model."
-                )
+            # DEV-1503 — local first/last in ``_base`` alongside cross-model
+            # CTEs is supported: the ranked subquery wraps ``_base`` for the
+            # local measures; cross-model / filtered-local aggregates are
+            # deferred to their per-plan ``_cm_*`` CTEs (their slot ids are
+            # excluded from ``base_render_order`` by the caller, so
+            # ``_build_first_last_base_select`` never sees them and emits no
+            # dangling references).
             return self._build_first_last_base_select(
                 planned_query=planned_query,
                 bundle=bundle,
@@ -4768,7 +4762,8 @@ class SQLGenerator:
         mode is loud. Most acceptance / parity tests don't exercise that
         combination.
         """
-        from slayer.core.keys import AggregateKey
+        from slayer.core.keys import AggregateKey, Phase
+        from slayer.engine.binding import walk_value_keys
 
         source_model = bundle.source_model
         source_relation = planned_query.source_relation
@@ -4789,6 +4784,39 @@ class SQLGenerator:
         cma_slot_ids = {
             p.aggregate_slot_id for p in planned_query.cross_model_aggregate_plans
         }
+
+        # DEV-1503 — outer combined-SELECT WHERE wrapper. Identify
+        # AGGREGATE-phase host filters whose value-key references any
+        # FILTERED-LOCAL ISOLATED aggregate (a plan with
+        # ``cte_root_model is not None``). The filtered aggregate lives in
+        # its ``_cm_*`` CTE that LEFT JOINs back to ``_base``; applying
+        # the comparison as HAVING in the CTE would drop CTE rows where
+        # the aggregate fails the test, but the LEFT JOIN would then
+        # surface the host row with a NULL aggregate (wrong semantic).
+        # Routing to the outer combined SELECT (non-aggregating) as
+        # plain WHERE on the joined-back column drops the row instead.
+        isolated_agg_slot_ids = {
+            p.aggregate_slot_id
+            for p in planned_query.cross_model_aggregate_plans
+            if p.cte_root_model is not None
+        }
+        slot_by_key = {s.key: s for s in slots_by_id.values()}
+        outer_where_filter_ids: Set[str] = set()
+        outer_where_filters: List = []
+        if isolated_agg_slot_ids:
+            for fp in planned_query.filters_by_phase:
+                if fp.phase != Phase.AGGREGATE or fp.expression is None:
+                    continue
+                refs_isolated = False
+                for k in walk_value_keys(fp.expression.value_key):
+                    if isinstance(k, AggregateKey):
+                        slot = slot_by_key.get(k)
+                        if slot is not None and slot.id in isolated_agg_slot_ids:
+                            refs_isolated = True
+                            break
+                if refs_isolated:
+                    outer_where_filter_ids.add(fp.id)
+                    outer_where_filters.append(fp)
         base_projection = [
             sid for sid in planned_query.projection if sid not in cma_slot_ids
         ]
@@ -4888,7 +4916,13 @@ class SQLGenerator:
             # ``_base`` (the predicate runs in the ``_cm_*`` CTE).
             # ``applied_filter_ids`` is the audit union of where + having
             # on each plan.
-            routed_ids: Set[str] = set()
+            #
+            # DEV-1503: outer-WHERE filters (AGGREGATE-phase host filters
+            # referencing a filtered-local isolated aggregate) also go in
+            # here so ``_base`` does not double-apply them as HAVING on
+            # the bare local aggregate expression (which would reference
+            # an aggregate that no longer lives in ``_base``).
+            routed_ids: Set[str] = set(outer_where_filter_ids)
             for plan in planned_query.cross_model_aggregate_plans:
                 routed_ids.update(plan.where_filter_ids)
                 routed_ids.update(plan.having_filter_ids)
@@ -5086,6 +5120,38 @@ class SQLGenerator:
         combined_select_sql = (
             f"SELECT {', '.join(combined_parts)}\n{from_clause_str}"
         )
+
+        # DEV-1503 — outer combined-SELECT WHERE wrapper. AGGREGATE-phase
+        # host filters routed here in the classification pass above
+        # (``outer_where_filters``) render now against the joined-back
+        # ``_cm_*`` column for isolated-aggregate refs and ``_base.<alias>``
+        # for any local operand (which the ``_add_local_aux_slots`` pass
+        # has materialised in ``_base``).
+        if outer_where_filters:
+            isolated_agg_slot_to_cm: Dict[str, Tuple[str, str]] = {}
+            for plan in planned_query.cross_model_aggregate_plans:
+                if plan.cte_root_model is None:
+                    continue
+                canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
+                cte_name = _cte_name_from_alias("_cm_", canonical_alias)
+                agg_col_alias = agg_col_alias_for_plan[plan.aggregate_slot_id]
+                isolated_agg_slot_to_cm[plan.aggregate_slot_id] = (
+                    cte_name, agg_col_alias,
+                )
+            outer_where_parts: List[str] = []
+            for fp in outer_where_filters:
+                rendered = self._render_filter_for_outer_wrapper(
+                    key=fp.expression.value_key,
+                    slot_by_key=slot_by_key,
+                    isolated_agg_slot_to_cm=isolated_agg_slot_to_cm,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                )
+                if isinstance(rendered, (exp.And, exp.Or)):
+                    rendered = exp.Paren(this=rendered)
+                outer_where_parts.append(rendered.sql(dialect=self.dialect))
+            combined_select_sql += (
+                "\nWHERE " + _SQL_AND_JOINER.join(outer_where_parts)
+            )
 
         # DEV-1450 stage 7b.15e (C2): a transform layer over a cross-model
         # aggregate (``cumsum(customers.avg_score:avg)``) runs on TOP of the
@@ -5365,8 +5431,15 @@ class SQLGenerator:
         from slayer.core.refs import canonical_agg_name
 
         path = getattr(key.source, "path", ())
+        # Handle ColumnKey (``leaf``), ColumnSqlKey (``column_name`` — derived
+        # column source, almost universal for filtered-local measures whose
+        # ``Column.sql`` differs from ``Column.name``), and StarKey (no
+        # ``leaf`` / ``column_name`` → collapse to ``*``). Mirrors
+        # ``_aggregate_alias`` in ``cross_model_planner.py``.
         measure_name = (
-            key.source.leaf if hasattr(key.source, "leaf") else "*"
+            getattr(key.source, "leaf", None)
+            or getattr(key.source, "column_name", None)
+            or "*"
         )
         # DEV-1450 stage 7b.13: include kwarg suffix in cross-model
         # alias so two distinct parametric aggs (``percentile(p=0.5)``
@@ -5432,15 +5505,32 @@ class SQLGenerator:
         * ``agg_col_alias`` — the sub-plan's emitted alias for the aggregate.
         """
         sub_plan = plan.rerooted_plan
-        target_model = bundle.get_referenced_model(plan.target_model)
-        if target_model is None:
-            raise ValueError(
-                f"Re-rooted CrossModelAggregatePlan target "
-                f"{plan.target_model!r} not in resolved source bundle.",
+        # DEV-1503 — filtered-local (host-rooted) plans don't change the
+        # source_model: the sub-plan is rooted at the SAME host the outer
+        # plan binds against, and ``bundle.source_model`` already IS the
+        # host. The existing cross-model re-rooted path swaps ``source_model``
+        # to the join target (which lives in ``referenced_models``); a
+        # filtered-local host name won't resolve there, so guard on
+        # ``cte_root_model`` first.
+        if plan.cte_root_model is not None:
+            host_model = bundle.source_model
+            if host_model is None or host_model.name != plan.cte_root_model:
+                raise ValueError(
+                    f"Filtered-local CrossModelAggregatePlan "
+                    f"cte_root_model={plan.cte_root_model!r} does not match "
+                    f"the bundle's source model — planner/renderer drift.",
+                )
+            rerooted_bundle = bundle
+        else:
+            target_model = bundle.get_referenced_model(plan.target_model)
+            if target_model is None:
+                raise ValueError(
+                    f"Re-rooted CrossModelAggregatePlan target "
+                    f"{plan.target_model!r} not in resolved source bundle.",
+                )
+            rerooted_bundle = bundle.model_copy(
+                update={"source_model": target_model},
             )
-        rerooted_bundle = bundle.model_copy(
-            update={"source_model": target_model},
-        )
         cte_sql = self.generate_from_planned(sub_plan, bundle=rerooted_bundle)
 
         sub_slots_by_id = {
@@ -9060,6 +9150,167 @@ class SQLGenerator:
             )
         raise NotImplementedError(
             f"Unsupported ValueKey type in filter: {type(key).__name__}",
+        )
+
+    def _render_filter_for_outer_wrapper(  # NOSONAR(S3776) — sequential isinstance dispatch over the closed filter-ValueKey union for the DEV-1503 outer-WHERE wrapper. Mirrors ``_render_value_key_for_filter`` shape but substitutes slot refs with the combined-SELECT's table-qualified columns (``_cm_*`` / ``_base``); per-branch helpers would scatter the substitution contract.
+        self,
+        *,
+        key,
+        slot_by_key: Dict[Any, Any],
+        isolated_agg_slot_to_cm: Dict[str, Tuple[str, str]],
+        aliases_by_slot_id: Dict[str, List[str]],
+    ) -> exp.Expression:
+        """Render a ValueKey tree for the DEV-1503 outer combined-SELECT WHERE.
+
+        Used when an AGGREGATE-phase host filter references a filtered-local
+        isolated aggregate (``loss_payment_amt:sum > 1000`` where
+        ``loss_payment_amt`` has a join-crossing ``Column.filter``). The
+        filtered aggregate lives in a ``_cm_*`` CTE that LEFT JOINs back to
+        ``_base``; the outer combined SELECT is non-aggregating, so the
+        comparison renders as plain WHERE on the joined-back column rather
+        than HAVING-into-the-CTE (which would surface host rows as NULL
+        instead of dropping them).
+
+        Slot-bearing leaves resolve via:
+
+        * Isolated aggregate slot → ``<cte_name>."<agg_col_alias>"`` from
+          ``isolated_agg_slot_to_cm`` (the CTE's emitted aggregate column).
+        * Any other slot (row column, joined dim, local aggregate operand)
+          → ``_base."<first_alias>"`` from ``aliases_by_slot_id``. The
+          generator's aux-slot pass (``_add_local_aux_slots(aggregates_only=
+          True)``) promotes non-isolated aggregate operands into
+          ``base_render_order`` so this lookup always succeeds.
+
+        Cross-model aggregates with ``path != ()`` (forward-path) are not
+        expected here — the planner routes those via plan-level
+        ``where_filter_ids`` / ``having_filter_ids`` instead.
+        """
+        from decimal import Decimal
+
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            BetweenKey,
+            ColumnKey,
+            ColumnSqlKey,
+            InKey,
+            LiteralKey,
+            ScalarCallKey,
+            StarKey,
+            TimeTruncKey,
+            TransformKey,
+        )
+
+        def _slot_alias_column(slot) -> Optional[exp.Expression]:
+            sid = slot.id
+            cm_entry = isolated_agg_slot_to_cm.get(sid)
+            if cm_entry is not None:
+                cte_name, agg_col_alias = cm_entry
+                return exp.Column(
+                    this=exp.to_identifier(agg_col_alias, quoted=True),
+                    table=exp.to_identifier(cte_name),
+                )
+            aliases = aliases_by_slot_id.get(sid) or []
+            if not aliases:
+                return None
+            return exp.Column(
+                this=exp.to_identifier(aliases[0], quoted=True),
+                table=exp.to_identifier("_base"),
+            )
+
+        if isinstance(key, AggregateKey):
+            slot = slot_by_key.get(key)
+            if slot is not None:
+                resolved = _slot_alias_column(slot)
+                if resolved is not None:
+                    return resolved
+            raise NotImplementedError(
+                f"DEV-1503 outer-WHERE wrapper: AggregateKey "
+                f"{key!r} has no slot/alias resolution. "
+                f"Forward-path cross-model aggregates route via plan "
+                f"where/having ids instead.",
+            )
+        if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            slot = slot_by_key.get(key)
+            if slot is not None:
+                resolved = _slot_alias_column(slot)
+                if resolved is not None:
+                    return resolved
+            raise NotImplementedError(
+                f"DEV-1503 outer-WHERE wrapper: {type(key).__name__} "
+                f"{key!r} has no base alias — operand promotion did not "
+                f"materialise it in ``_base``.",
+            )
+        if isinstance(key, LiteralKey):
+            return self._scalar_to_sqlglot(key.value)
+        if isinstance(key, ArithmeticKey):
+            operands = [
+                self._render_filter_for_outer_wrapper(
+                    key=o,
+                    slot_by_key=slot_by_key,
+                    isolated_agg_slot_to_cm=isolated_agg_slot_to_cm,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                )
+                for o in key.operands
+            ]
+            return self._build_arithmetic_for_filter(
+                op=key.op, operands=operands,
+            )
+        if isinstance(key, ScalarCallKey):
+            args = []
+            for a in key.args:
+                if isinstance(a, (Decimal, str, bool)) or a is None:
+                    args.append(self._scalar_to_sqlglot(a))
+                else:
+                    args.append(self._render_filter_for_outer_wrapper(
+                        key=a,
+                        slot_by_key=slot_by_key,
+                        isolated_agg_slot_to_cm=isolated_agg_slot_to_cm,
+                        aliases_by_slot_id=aliases_by_slot_id,
+                    ))
+            if key.name == "like":
+                return exp.Like(this=args[0], expression=args[1])
+            return exp.Anonymous(this=key.name.upper(), expressions=args)
+        if isinstance(key, BetweenKey):
+            col_expr = self._render_filter_for_outer_wrapper(
+                key=key.column,
+                slot_by_key=slot_by_key,
+                isolated_agg_slot_to_cm=isolated_agg_slot_to_cm,
+                aliases_by_slot_id=aliases_by_slot_id,
+            )
+            low_expr = self._render_filter_for_outer_wrapper(
+                key=key.low,
+                slot_by_key=slot_by_key,
+                isolated_agg_slot_to_cm=isolated_agg_slot_to_cm,
+                aliases_by_slot_id=aliases_by_slot_id,
+            )
+            high_expr = self._render_filter_for_outer_wrapper(
+                key=key.high,
+                slot_by_key=slot_by_key,
+                isolated_agg_slot_to_cm=isolated_agg_slot_to_cm,
+                aliases_by_slot_id=aliases_by_slot_id,
+            )
+            return exp.Between(this=col_expr, low=low_expr, high=high_expr)
+        if isinstance(key, InKey):
+            col_expr = self._render_filter_for_outer_wrapper(
+                key=key.column,
+                slot_by_key=slot_by_key,
+                isolated_agg_slot_to_cm=isolated_agg_slot_to_cm,
+                aliases_by_slot_id=aliases_by_slot_id,
+            )
+            value_exprs = [
+                self._scalar_to_sqlglot(lit.value) for lit in key.values
+            ]
+            in_expr = exp.In(this=col_expr, expressions=value_exprs)
+            return exp.Not(this=in_expr) if key.negated else in_expr
+        if isinstance(key, (TransformKey, StarKey)):
+            raise NotImplementedError(
+                f"DEV-1503 outer-WHERE wrapper: filter rendering for "
+                f"{type(key).__name__} not supported on outer wrapper.",
+            )
+        raise NotImplementedError(
+            f"DEV-1503 outer-WHERE wrapper: unsupported ValueKey type "
+            f"{type(key).__name__}",
         )
 
     @staticmethod

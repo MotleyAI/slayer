@@ -223,6 +223,24 @@ class CrossModelAggregatePlan(BaseModel):
     rerooted_grain_pairs: List[Tuple[SlotId, SlotId]] = Field(default_factory=list)
     rerooted_agg_slot_id: Optional[SlotId] = None
 
+    # DEV-1503 — host-rooted CTE for a cross-model-FILTERED local measure.
+    # The cross-model planner has two distinct cases that produce a nested
+    # ``rerooted_plan``:
+    #
+    # * Cross-model aggregate re-rooting (``target_model`` is the join target,
+    #   the sub-plan is rooted at the target so the target's own join graph
+    #   reaches host dims that the forward-path CTE collapses): ``cte_root_model``
+    #   stays ``None`` and the renderer uses ``target_model`` for the FROM /
+    #   joins (existing pre-DEV-1503 behaviour).
+    # * Filtered-local isolation (``AggregateKey.source.path`` is empty but the
+    #   measure's ``Column.filter`` crosses a join, so the aggregate must
+    #   evaluate in its own CTE rooted at the HOST + the filter-target join):
+    #   ``cte_root_model`` is set to the HOST model name and the renderer uses
+    #   the sub-plan's own ``source_relation`` / ``render_source_model`` for
+    #   the FROM. ``target_model`` is conventionally set to the host name in
+    #   this case but the renderer reads ``cte_root_model`` to disambiguate.
+    cte_root_model: Optional[str] = None
+
 
 # ---------------------------------------------------------------------------
 # TransformLayer

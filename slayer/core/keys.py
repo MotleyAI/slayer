@@ -318,13 +318,37 @@ class SqlExprKey(_FrozenKey):
 
     ``canonical_sql`` is a sqlglot-normalized string (the binder is
     responsible for normalization — the key trusts the form it receives).
+
+    DEV-1503 — ``referenced_join_paths`` is the typed set of non-anchor
+    join-path prefixes the filter touches after derived-ref expansion.
+    Computed once at bind time via
+    ``slayer.engine.column_filter_paths.compute_column_filter_join_paths``;
+    the planner reads it to decide whether a filtered-local measure must
+    isolate (the DEV-1503 trigger predicate). ``()`` for same-model
+    filters; non-empty for cross-model column filters. The field
+    participates in structural identity — two filters with the same
+    canonical SQL but different referenced paths would be a bug, so
+    folding it into the key catches that invariant violation by
+    comparison.
     """
 
     canonical_sql: str
+    referenced_join_paths: Tuple[Tuple[str, ...], ...] = ()
 
     @property
     def phase(self) -> Phase:
         return Phase.ROW
+
+    def __hash__(self) -> int:
+        return hash(("SqlExprKey", self.canonical_sql, self.referenced_join_paths))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SqlExprKey):
+            return NotImplemented
+        return (
+            self.canonical_sql == other.canonical_sql
+            and self.referenced_join_paths == other.referenced_join_paths
+        )
 
 
 # ---------------------------------------------------------------------------

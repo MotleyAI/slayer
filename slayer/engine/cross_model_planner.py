@@ -43,7 +43,7 @@ Dormant in 7a — no engine code calls these yet. ProjectionPlanner
 from __future__ import annotations
 
 from enum import Enum
-from typing import Callable, List, Optional, Protocol, Tuple
+from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -441,11 +441,42 @@ class IsolatedCteCrossModelPlanner:
         agg_source = aggregate_key.source
         path = getattr(agg_source, "path", ())
         if not path:
-            raise ValueError(
-                f"AggregateKey on {agg_source!r} has empty source.path — "
-                f"this is a local aggregate, not cross-model. The cross-"
-                f"model planner should only be invoked for cross-model "
-                f"aggregates."
+            # DEV-1503 — filtered-local isolation: the aggregate is on a
+            # HOST column but its ``Column.filter`` crosses a join. Build a
+            # host-rooted nested sub-plan that aggregates the measure in its
+            # own ``_cm_*`` CTE (FROM host + the filter-target join), grouped
+            # at the host's shared grain, joined back to the host base.
+            cfk = aggregate_key.column_filter_key
+            if cfk is None or not cfk.referenced_join_paths:
+                raise ValueError(
+                    f"AggregateKey on {agg_source!r} has empty source.path "
+                    f"AND no cross-model column_filter_key — this is a plain "
+                    f"local aggregate. The cross-model planner should not "
+                    f"have been invoked."
+                )
+            if subplan_builder is None or host_query is None:
+                # The DEV-1503 strategy requires a sub-plan builder + the
+                # host query for grain-pair matching. Direct callers without
+                # these (legacy test doubles) can't trigger filtered-local —
+                # raise loudly so the call site is fixed rather than emitting
+                # silently wrong SQL.
+                raise ValueError(
+                    "DEV-1503 filtered-local isolation requires host_query "
+                    "and subplan_builder; received None for one or both. "
+                    "Confirm the stage_planner is wired to pass them."
+                )
+            return self._plan_filtered_local(
+                aggregate_slot_id=aggregate_slot_id,
+                aggregate_key=aggregate_key,
+                bundle=bundle,
+                host_model=host_model,
+                host_slots=host_slots,
+                host_filters=host_filters,
+                host_query=host_query,
+                public_alias=public_alias,
+                public_projection=public_projection or [],
+                hidden=hidden,
+                subplan_builder=subplan_builder,
             )
 
         terminal_model, join_chain = _walk_chain(
@@ -559,6 +590,180 @@ class IsolatedCteCrossModelPlanner:
                 subplan_builder=subplan_builder,
             )
         return forward_plan
+
+    # ----------------------------------------------------------------------
+    # DEV-1503 — filtered-local isolation
+    # ----------------------------------------------------------------------
+
+    def _plan_filtered_local(
+        self,
+        *,
+        aggregate_slot_id: SlotId,
+        aggregate_key: AggregateKey,
+        bundle: ResolvedSourceBundle,
+        host_model: SlayerModel,
+        host_slots: List[ValueSlot],
+        host_filters: List[HostFilterRouting],
+        host_query: SlayerQuery,
+        public_alias: Optional[str],
+        public_projection: List[SlotId],
+        hidden: bool,
+        subplan_builder: Callable[
+            [SlayerQuery, ResolvedSourceBundle], PlannedQuery,
+        ],
+    ) -> CrossModelAggregatePlan:
+        """Build a host-rooted nested sub-plan for a cross-model-FILTERED
+        local measure (DEV-1503).
+
+        The sub-plan is a ``SlayerQuery`` rooted at the SAME host model with
+        ``measures=[<the filtered measure>]`` and the host's dimensions /
+        time_dimensions. The sub-plan's ``plan_query`` recursion handles
+        the filter-target join (its ``Column.filter`` will pull in the
+        joined table at the generator's inline path), the host model's own
+        ``SlayerModel.filters``, and the per-dimension GROUP BY — producing a
+        per-grain aggregate that the host base LEFT JOINs back.
+
+        Host query filters are NOT propagated into the sub-plan here — the
+        host base CTE applies them. The generator's outer-WHERE wrapper
+        handles aggregate-referencing filters separately (DEV-1503 spec).
+        """
+        # Reconstruct the local measure formula from the AggregateKey. The
+        # source.path is empty so ``_local_agg_formula`` emits a bare
+        # ``leaf:agg`` shape (plus any args / kwargs). Carry the user-
+        # supplied alias through so a host filter referencing the rename
+        # (``latest_pmt > 500`` for a measure named ``latest_pmt``) binds
+        # against the same alias in the sub-plan rather than the canonical
+        # ``latest_payment_last_updated_at`` form.
+        formula = _local_agg_formula(aggregate_key)
+        measure_name_for_subplan = public_alias
+        # Classify host query filters per phase before passing to the
+        # sub-plan. ``host_filters`` carries routings for user query
+        # filters (ids ``f0``, ``f1``, ...) and model filters (ids
+        # ``mf0``, ...); user query filters indexed in ``host_query.filters``
+        # correspond to ``f{i}`` by position.
+        #
+        # ROW: pass through — the sub-plan applies them to the aggregate's
+        #   rowset (otherwise a non-dim filter like ``status = 'active'``
+        #   has no effect on the join-back aggregate value).
+        # AGGREGATE (any slot ref): SKIP. Pushing such a filter into the
+        #   sub-plan as HAVING would drop CTE rows where the aggregate
+        #   fails the test; the outer LEFT JOIN then surfaces the host
+        #   row with a NULL aggregate instead of dropping it — wrong
+        #   semantics. The generator's outer-WHERE wrapper applies the
+        #   filter on the joined-back column so the row is actually
+        #   dropped (DEV-1503 spec).
+        # POST: skip — stays at the existing host post-transform wrapper.
+        routing_by_id: Dict[str, HostFilterRouting] = {
+            r.filter_id: r for r in host_filters
+        }
+        sub_filter_texts: List[str] = []
+        for i, filt in enumerate(host_query.filters or []):
+            routing = routing_by_id.get(f"f{i}")
+            if routing is None:
+                # No routing — pass through (safest default).
+                sub_filter_texts.append(filt)
+                continue
+            if routing.phase is Phase.POST:
+                continue
+            if routing.phase is Phase.AGGREGATE:
+                continue
+            # ROW phase — propagate.
+            sub_filter_texts.append(filt)
+        sub_filters = sub_filter_texts or None
+        rerooted_query = SlayerQuery(
+            source_model=host_model.name,
+            measures=[ModelMeasure(
+                formula=formula, name=measure_name_for_subplan,
+            )],
+            dimensions=list(host_query.dimensions or []) or None,
+            time_dimensions=list(host_query.time_dimensions or []) or None,
+            filters=sub_filters,
+        )
+        sub_plan = subplan_builder(rerooted_query, bundle)
+
+        # Grain-pair matching: each host dimension / time-dimension slot
+        # binds against the SAME underlying column on the host model as the
+        # sub-plan's corresponding slot, so slot identity (the ValueKey)
+        # matches across plans. Build the (host_sid, sub_sid) pairs the
+        # generator joins back on.
+        sub_row_by_key: Dict[ValueKey, SlotId] = {
+            s.key: s.id for s in sub_plan.row_slots
+        }
+        grain_pairs: List[Tuple[SlotId, SlotId]] = []
+        for host_sid in public_projection:
+            host_slot = next(
+                (s for s in host_slots if s.id == host_sid), None,
+            )
+            if host_slot is None:
+                continue
+            sub_sid = sub_row_by_key.get(host_slot.key)
+            if sub_sid is not None:
+                grain_pairs.append((host_sid, sub_sid))
+
+        # The sub-plan must contain exactly one local aggregate (the
+        # filtered measure). Recursion suppression guarantees no nested
+        # cross-model plans (Codex review #9).
+        sub_agg_sid: Optional[SlotId] = None
+        for s in sub_plan.aggregate_slots:
+            if isinstance(s.key, AggregateKey) and not getattr(
+                s.key.source, "path", (),
+            ):
+                sub_agg_sid = s.id
+                break
+        if sub_agg_sid is None:
+            raise ValueError(
+                "DEV-1503 sub-plan produced no local aggregate slot for "
+                f"{formula!r} on {host_model.name!r} — planner bug."
+            )
+
+        # Build a minimal CTE schema. The actual CTE columns are derived
+        # from the sub-plan's stage_schema / projection at render time;
+        # this entry exists so external consumers see a schema shape that
+        # matches the existing CrossModelAggregatePlan contract.
+        agg_alias = _aggregate_alias(key=aggregate_key)
+        agg_type: Optional[DataType] = None
+        leaf = getattr(aggregate_key.source, "leaf", None) or getattr(
+            aggregate_key.source, "column_name", None,
+        )
+        if leaf is not None and hasattr(host_model, "get_column"):
+            col = host_model.get_column(leaf)
+            if col is not None:
+                agg_type = col.type
+        cte_schema = StageSchema(
+            relation_name=f"cm_{host_model.name}",
+            columns=[StageColumn(
+                name=agg_alias,
+                sql_alias=agg_alias,
+                public_alias=None,
+                hidden=True,
+                type=agg_type or DataType.DOUBLE,
+                provenance=f"agg:{aggregate_key.agg}",
+            )],
+        )
+
+        return CrossModelAggregatePlan(
+            aggregate_slot_id=aggregate_slot_id,
+            # ``target_model`` is conventionally set to the host name for
+            # filtered-local; ``cte_root_model`` is the disambiguator the
+            # renderer reads.
+            target_model=host_model.name,
+            cte_root_model=host_model.name,
+            datasource=host_model.data_source,
+            join_chain=[],
+            join_back_pairs=[],
+            cte_stage_schema=cte_schema,
+            shared_grain_slots=[host_sid for host_sid, _ in grain_pairs],
+            applied_filter_ids=[],
+            where_filter_ids=[],
+            having_filter_ids=[],
+            target_model_filters=[],
+            dropped_filter_warnings=[],
+            hidden=hidden,
+            public_alias=public_alias,
+            rerooted_plan=sub_plan,
+            rerooted_grain_pairs=grain_pairs,
+            rerooted_agg_slot_id=sub_agg_sid,
+        )
 
 
 # ---------------------------------------------------------------------------
