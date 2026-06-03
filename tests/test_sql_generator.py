@@ -8052,6 +8052,48 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         _assert_valid_sql(sql)
 
+    async def test_no_dim_query_with_host_row_filter_applies_in_base(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """A no-dimension query with cross-model aggregates AND a
+        host-local ROW filter must apply the filter at the placeholder
+        ``_base`` (via ``WHERE`` + ``LIMIT 1``). The round-2 fix that
+        dropped the host ``FROM`` to avoid N-row CROSS JOIN duplication
+        also bypassed ``_build_where_having_from_planned``, silently
+        ignoring host-local ROW filters (Codex round 4 / CodeRabbit).
+
+        With this fix: ``_base`` reintroduces ``FROM <host>`` when a
+        non-routed ROW filter exists; ``WHERE`` applies it; ``LIMIT 1``
+        keeps cardinality at 1. If the filter drops every host row, the
+        combined query returns 0 rows (correct semantics) — not the
+        unfiltered aggregate value (broken semantics).
+        """
+        # Add a host column the filter references.
+        claim_amount_model.columns.append(
+            Column(name="status", sql="status", type=DataType.TEXT),
+        )
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[ModelMeasure(formula="loss_payment_amt:sum")],
+            filters=["status = 'active'"],
+            # No dimensions — triggers the empty_base placeholder path.
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        # The filter literal MUST appear in the SQL.
+        assert "'active'" in sql, (
+            f"Host ROW filter literal silently dropped:\n{sql}"
+        )
+        # The ``_base`` placeholder must carry the filter as WHERE plus
+        # LIMIT 1 (the 1-row cardinality preservation from round 2).
+        base_body = _extract_cte_body(sql, r"_base")
+        assert "'active'" in base_body, (
+            f"Host ROW filter must apply at _base WHERE:\n{base_body}"
+        )
+        assert "LIMIT 1" in base_body.upper(), (
+            f"_base must LIMIT 1 to preserve no-dim cardinality:\n{base_body}"
+        )
+        _assert_valid_sql(sql)
+
     async def test_filtered_local_in_source_queries_smoke(
         self, generator: SQLGenerator,
     ) -> None:

@@ -4983,9 +4983,60 @@ class SQLGenerator:
         # dropping the host FROM is safe.
         empty_base = not base_render_order
         if empty_base:
-            base_select = exp.Select().select(
-                exp.Alias(this=exp.Literal.number("1"), alias=exp.to_identifier("_placeholder")),
+            # Routed filter ids — filters applied inside per-plan ``_cm_*``
+            # CTEs (where/having) or at the outer combined WHERE wrapper.
+            # Host-local ROW filters NOT in this set fall through to the
+            # placeholder via ``DROP_HOST_LOCAL`` routing (forward cross-
+            # model classifier) or simply by being unrouted; they must
+            # apply HERE or the query silently aggregates across host
+            # rows the user filtered out (Codex round 4 / CodeRabbit).
+            routed_ids: Set[str] = set(outer_where_filter_ids)
+            for plan in planned_query.cross_model_aggregate_plans:
+                routed_ids.update(plan.where_filter_ids)
+                routed_ids.update(plan.having_filter_ids)
+            from slayer.core.keys import Phase as _Phase
+            has_host_local_filter = any(
+                fp.phase == _Phase.ROW
+                and fp.id not in routed_ids
+                and (fp.expression is not None or fp.text is not None)
+                for fp in planned_query.filters_by_phase
             )
+            if has_host_local_filter:
+                # Build the placeholder over the host with WHERE + LIMIT 1.
+                # LIMIT 1 collapses the host rowset to a single row so the
+                # combined CROSS JOIN to the scalar ``_cm_*`` does not
+                # duplicate aggregates (round 2 invariant), while WHERE
+                # still gates the entire result — if no host row matches,
+                # ``_base`` is empty and the combined query returns 0
+                # rows (correct host-filter semantics).
+                base_select = exp.Select().select(
+                    exp.Alias(
+                        this=exp.Literal.number("1"),
+                        alias=exp.to_identifier("_placeholder"),
+                    ),
+                ).from_(
+                    self._build_from_clause_from_planned(
+                        source_model=source_model,
+                        source_relation=source_relation,
+                    ),
+                )
+                base_where, _base_having = self._build_where_having_from_planned(
+                    planned_query=planned_query,
+                    source_relation=source_relation,
+                    source_model=source_model,
+                    bundle=bundle,
+                    skip_filter_ids=routed_ids,
+                )
+                if base_where is not None:
+                    base_select = base_select.where(base_where)
+                base_select = base_select.limit(1)
+            else:
+                base_select = exp.Select().select(
+                    exp.Alias(
+                        this=exp.Literal.number("1"),
+                        alias=exp.to_identifier("_placeholder"),
+                    ),
+                )
             aliases_by_slot_id: Dict[str, List[str]] = {}
             base_has_agg = False
             base_group_by: Dict[str, exp.Expression] = {}
@@ -6511,30 +6562,59 @@ class SQLGenerator:
         outer_aliases = outer_composite_aliases or {}
         parts: List[str] = []
         for entry in planned_query.order:
-            direction = "ASC" if entry.direction == "asc" else "DESC"
             slot = slots_by_id.get(entry.slot_id)
             if slot is None:
                 continue
-            if entry.slot_id in cma_slot_ids:
-                alias = cm_alias_for_plan.get(entry.slot_id)
-                if alias is None:
-                    continue
-                parts.append(f'"{alias}" {direction}')
-            elif entry.slot_id in outer_aliases:
-                parts.append(f'"{outer_aliases[entry.slot_id]}" {direction}')
-            else:
-                full_alias = self._full_alias_for_slot(
-                    slot=slot,
-                    source_relation=planned_query.source_relation,
-                    alias_index={},
-                )
-                if entry.slot_id in bare_ids:
-                    parts.append(f'"{full_alias}" {direction}')
-                else:
-                    parts.append(f'_base."{full_alias}" {direction}')
+            term = self._resolve_combined_order_term(
+                entry=entry,
+                slot=slot,
+                source_relation=planned_query.source_relation,
+                cma_slot_ids=cma_slot_ids,
+                cm_alias_for_plan=cm_alias_for_plan,
+                bare_ids=bare_ids,
+                outer_aliases=outer_aliases,
+            )
+            if term is not None:
+                parts.append(term)
         if not parts:
             return None
         return "ORDER BY " + ", ".join(parts)
+
+    def _resolve_combined_order_term(
+        self,
+        *,
+        entry,
+        slot,
+        source_relation: str,
+        cma_slot_ids: Set[str],
+        cm_alias_for_plan: Dict[str, str],
+        bare_ids: Set[str],
+        outer_aliases: Dict[str, str],
+    ) -> Optional[str]:
+        """Resolve one ``OrderEntry`` to its ``"alias" <direction>`` term.
+
+        Cross-model agg slot → bare CTE alias; outer-composite slot →
+        bare combined-SELECT alias; hidden order-only local → bare
+        ``_base`` alias; everything else → qualified ``_base."<alias>"``.
+        Returns ``None`` when the cross-model alias map has no entry
+        (the order slot can't be rendered).
+        """
+        direction = "ASC" if entry.direction == "asc" else "DESC"
+        if entry.slot_id in cma_slot_ids:
+            alias = cm_alias_for_plan.get(entry.slot_id)
+            if alias is None:
+                return None
+            return f'"{alias}" {direction}'
+        if entry.slot_id in outer_aliases:
+            return f'"{outer_aliases[entry.slot_id]}" {direction}'
+        full_alias = self._full_alias_for_slot(
+            slot=slot,
+            source_relation=source_relation,
+            alias_index={},
+        )
+        if entry.slot_id in bare_ids:
+            return f'"{full_alias}" {direction}'
+        return f'_base."{full_alias}" {direction}'
 
     def _full_alias_for_slot(
         self,
