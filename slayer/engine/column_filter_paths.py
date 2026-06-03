@@ -51,6 +51,39 @@ from slayer.engine.source_bundle import ResolvedSourceBundle
 # still happens on the generator side.
 _PLANNER_PARSE_DIALECT = "postgres"
 
+# Fallback dialect chain (Codex round 7) — the planner doesn't carry the
+# datasource's dialect, so a user-configured backend with dialect-specific
+# syntax in ``Column.filter`` (MySQL backticks, T-SQL square brackets,
+# ClickHouse-specific functions) could fail the Postgres parse and
+# silently return no referenced join paths. The DEV-1503 trigger would
+# then miss and the generator would render the filter inline in ``_base``,
+# pulling the cross-model join into the host rowset. Try each dialect in
+# order; only return ``()`` if ALL fail.
+_PLANNER_PARSE_DIALECT_CHAIN: Tuple[Optional[str], ...] = (
+    "postgres",
+    None,        # sqlglot's permissive default — accepts ANSI SQL broadly
+    "mysql",
+    "bigquery",
+    "tsql",
+)
+
+
+def _parse_filter_sql_any_dialect(sql: str) -> Optional[exp.Expression]:
+    """Parse ``sql`` trying each dialect in the fallback chain.
+
+    Returns the first successful parse, or ``None`` when every dialect
+    rejects the input — that fall-through preserves the catch-all the
+    original ``except Exception`` provided for malicious / unparseable
+    payloads (the generator's dialect-aware emission is the
+    authoritative gate).
+    """
+    for dialect in _PLANNER_PARSE_DIALECT_CHAIN:
+        try:
+            return sqlglot.parse_one(sql, dialect=dialect)
+        except Exception:
+            continue
+    return None
+
 
 def _is_nontrivial_derived(model: SlayerModel, name: str) -> bool:
     """True iff ``name`` is a column on ``model`` whose ``Column.sql`` is a
@@ -138,10 +171,7 @@ def _expand_filter_sql_if_anchor_derived(
     )
     if not expanded:
         return parsed
-    try:
-        return sqlglot.parse_one(expanded, dialect=_PLANNER_PARSE_DIALECT)
-    except Exception:
-        return None
+    return _parse_filter_sql_any_dialect(expanded)
 
 
 def compute_column_filter_join_paths(
@@ -168,9 +198,8 @@ def compute_column_filter_join_paths(
     """
     if not canonical_sql:
         return ()
-    try:
-        parsed = sqlglot.parse_one(canonical_sql, dialect=_PLANNER_PARSE_DIALECT)
-    except Exception:
+    parsed = _parse_filter_sql_any_dialect(canonical_sql)
+    if parsed is None:
         return ()
 
     expanded = _expand_filter_sql_if_anchor_derived(

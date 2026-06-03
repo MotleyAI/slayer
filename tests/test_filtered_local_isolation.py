@@ -183,6 +183,33 @@ class TestSqlExprKeyReferencedJoinPaths:
     touches and stamp them on the ``SqlExprKey`` as a typed field —
     so the planner reads structural data, not parsed SQL text."""
 
+    def test_dialect_fallback_chain_recovers_mysql_backtick_filter(self):
+        """A ``Column.filter`` using MySQL backtick identifiers must still
+        surface its non-anchor join paths even though Postgres can't
+        parse backticks. The fallback chain in
+        ``compute_column_filter_join_paths`` tries multiple dialects;
+        without it, the helper would silently return ``()`` and the
+        DEV-1503 trigger would miss, letting the cross-model filter
+        join leak into ``_base`` and silently corrupt the aggregate
+        (Codex round 7).
+        """
+        from slayer.engine.column_filter_paths import (
+            compute_column_filter_join_paths,
+        )
+        host = _claim_amount()
+        bundle = _bundle(host)
+        # Backtick-quoted (MySQL/T-SQL style) joined alias ref.
+        paths = compute_column_filter_join_paths(
+            canonical_sql="`loss_payment`.`has_flag` = 1",
+            anchor_model=host,
+            anchor_relation="claim_amount",
+            bundle=bundle,
+        )
+        assert ("loss_payment",) in paths, (
+            f"Dialect fallback must recover the join path from a "
+            f"backtick-quoted filter; got {paths!r}"
+        )
+
     def test_same_model_filter_has_no_referenced_paths(self):
         host = _claim_amount()
         q = SlayerQuery(
