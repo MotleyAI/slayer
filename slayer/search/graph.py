@@ -4,9 +4,12 @@ Builds an ephemeral in-memory LadybugDB property graph from a StorageBackend
 and executes openCypher queries to return a frozenset of canonical IDs that
 pre-filter the three search channels.
 
-Requires the ``advanced_search`` extra (``pip install motley-slayer[advanced_search]``).
-If the extra is not installed, ``is_available()`` returns ``False`` and no
-graph code is reachable.
+Requires the ``advanced_search`` extra (``pip install motley-slayer[advanced_search]``),
+which pulls in ``ladybug`` — the active successor to KuzuDB (same codebase,
+new name after the original KuzuDB repo was archived post-acquisition).
+The legacy ``kuzu`` package is accepted as a fallback for users who have not
+yet migrated. If neither is installed, ``is_available()`` returns ``False``
+and no graph code is reachable.
 
 Graph schema
 ------------
@@ -49,8 +52,8 @@ from slayer.storage.base import StorageBackend
 
 @lru_cache(maxsize=1)
 def is_available() -> bool:
-    """Return True when the LadybugDB/Kuzu package is importable."""
-    for module_name in ("kuzu", "ladybug"):
+    """Return True when LadybugDB (or the legacy kuzu package) is importable."""
+    for module_name in ("ladybug", "kuzu"):
         try:
             __import__(module_name)
             return True
@@ -60,14 +63,14 @@ def is_available() -> bool:
 
 
 def _import_graph_module() -> Any:
-    """Import the LadybugDB/Kuzu module, trying both package names."""
-    for name in ("kuzu", "ladybug"):
+    """Import LadybugDB, falling back to the legacy kuzu package name."""
+    for name in ("ladybug", "kuzu"):
         try:
             return __import__(name)
         except ImportError:
             continue
     raise ImportError(
-        "LadybugDB/Kuzu not installed; "
+        "LadybugDB not installed; "
         "install with: pip install motley-slayer[advanced_search]"
     )
 
@@ -359,7 +362,7 @@ async def build_graph(storage: StorageBackend) -> tuple[Any, Any]:
     """
     mod = _import_graph_module()
     # No-argument Database() creates an ephemeral in-memory instance in
-    # kuzu ≥ 0.3 / ladybug; no files are written to the working directory.
+    # LadybugDB (and kuzu ≥ 0.3); no files are written to the working directory.
     db = mod.Database()
     conn = db.connect()
     _create_schema(conn)
@@ -485,7 +488,7 @@ async def get_filtered_ids(
     """
     if not is_available():
         raise ValueError(
-            "cypher_filter requires LadybugDB (graph package not installed); "
+            "cypher_filter requires LadybugDB; "
             "install with: pip install motley-slayer[advanced_search]"
         )
     _validate_cypher(cypher)

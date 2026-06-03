@@ -221,7 +221,7 @@ prefix match is unambiguous.
 
 All four surfaces accept an optional `cypher_filter: Optional[str] = None`
 argument. When set, an openCypher `MATCH … RETURN … AS id` query is run
-against an ephemeral in-memory property graph (LadybugDB/Kuzu) built from
+against an ephemeral in-memory property graph (LadybugDB) built from
 the current storage state. The returned canonical IDs become a **hard
 allowlist** that pre-filters all three channels before any ranking:
 

@@ -63,6 +63,10 @@ tantivy = "^0.26"
 # gracefully to tantivy + BM25 when this extra is not installed.
 litellm = {version = ">=1.50", optional = true}
 numpy = {version = ">=1.24", optional = true}
+# LadybugDB is the active successor to KuzuDB (same codebase, new name after
+# the original KuzuDB repo was archived post-acquisition). Import name is
+# ``ladybug``; the old ``kuzu`` package is a legacy fallback.
+ladybug = {version = ">=0.1", optional = true}
 
 [tool.poetry.extras]
 client = ["httpx", "pandas"]
@@ -75,8 +79,8 @@ flight = ["pyarrow"]
 # The Postgres wire-protocol facade is pure-stdlib; the empty extra keeps the
 # `pip install motley-slayer[pg_facade]` install path consistent.
 pg_facade = []
-advanced_search = ["litellm", "numpy", "kuzu"]
-all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "dbt-core", "pyarrow", "litellm", "numpy", "kuzu"]
+advanced_search = ["litellm", "numpy", "ladybug"]
+all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "dbt-core", "pyarrow", "litellm", "numpy", "ladybug"]
 
 [project.scripts]
 slayer = "slayer.cli:main"
