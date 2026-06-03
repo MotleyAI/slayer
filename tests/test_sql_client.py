@@ -126,6 +126,26 @@ class TestMapTypeCode:
         # SQL_BIT
         assert _map_type_code(-7, db_type=db_type) == "boolean"
 
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_datetimeoffset_odbc_code_is_time(self, db_type: str) -> None:
+        # SQL_SS_TIMESTAMPOFFSET (datetimeoffset)
+        assert _map_type_code(-154, db_type=db_type) == "time"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_time2_odbc_code_is_time(self, db_type: str) -> None:
+        # SQL_SS_TIME2 (time with fractional seconds)
+        assert _map_type_code(-155, db_type=db_type) == "time"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_xml_odbc_code_is_string(self, db_type: str) -> None:
+        # SQL_SS_XML
+        assert _map_type_code(-152, db_type=db_type) == "string"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_guid_odbc_code_is_string(self, db_type: str) -> None:
+        # SQL_GUID (uniqueidentifier)
+        assert _map_type_code(-11, db_type=db_type) == "string"
+
     def test_tsql_does_not_fall_through_to_pg_oid_map(self) -> None:
         # Postgres OID 4 maps to nothing in PG map — it's SQL_INTEGER in ODBC.
         # Without the tsql branch it would return "string" (PG fallback).
