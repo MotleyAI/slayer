@@ -292,6 +292,8 @@ def _extract_types_from_cursor(result, db_type: Optional[str] = None) -> Dict[st
 
 # Databases that return all-None cursor.description type codes need a real row
 _NEEDS_ROW_FOR_TYPES = {"sqlite"}
+# T-SQL (SQL Server) does not support LIMIT; use SELECT TOP N instead.
+_TSQL_DB_TYPES = frozenset({"mssql", "sqlserver", "tsql"})
 # DBs that should call _execute_with_retry_sync inline from async coroutines.
 # Empty: every dispatch goes through _run_sync_in_thread / _execute_with_retry_threaded
 # so the event loop is never blocked on DB work or on time.sleep retry backoff.
@@ -311,16 +313,24 @@ async def _run_sync_in_thread(func, *args, **kwargs):
         return await loop.run_in_executor(executor, call)
 
 
+def _build_type_probe_sql(sql: str, db_type: Optional[str]) -> str:
+    """Build a row-limiting probe query appropriate for the target dialect."""
+    limit = 1 if db_type in _NEEDS_ROW_FOR_TYPES else 0
+    if db_type in _TSQL_DB_TYPES:
+        return f"SELECT TOP {limit} * FROM ({sql}) AS _types"
+    return f"SELECT * FROM ({sql}) AS _types LIMIT {limit}"
+
+
 def _get_column_types_sync(
     sql: str,
     connection_string: str,
     db_type: Optional[str],
     engine: Optional[sa.Engine] = None,
 ) -> Dict[str, str]:
-    """Infer column types. Uses LIMIT 0 for cursor metadata, LIMIT 1 for SQLite."""
+    """Infer column types. Uses LIMIT 0 for cursor metadata, LIMIT 1 for SQLite.
+    T-SQL uses SELECT TOP N instead of LIMIT."""
     engine = _resolve_sync_engine(connection_string, override_engine=engine)
-    limit = 1 if db_type in _NEEDS_ROW_FOR_TYPES else 0
-    limit_sql = f"SELECT * FROM ({sql}) AS _types LIMIT {limit}"
+    limit_sql = _build_type_probe_sql(sql, db_type)
     with engine.connect() as conn:
         result = conn.execute(sa.text(limit_sql))
         return _extract_types_from_cursor(result, db_type=db_type)
@@ -331,9 +341,9 @@ async def _get_column_types_async(
     engine,
     db_type: Optional[str],
 ) -> Dict[str, str]:
-    """Async version of column type inference. Uses LIMIT 0; LIMIT 1 for SQLite."""
-    limit = 1 if db_type in _NEEDS_ROW_FOR_TYPES else 0
-    limit_sql = f"SELECT * FROM ({sql}) AS _types LIMIT {limit}"
+    """Async version of column type inference. Uses LIMIT 0; LIMIT 1 for SQLite.
+    T-SQL uses SELECT TOP N instead of LIMIT."""
+    limit_sql = _build_type_probe_sql(sql, db_type)
     async with engine.connect() as conn:
         result = await conn.execute(sa.text(limit_sql))
         return _extract_types_from_cursor(result, db_type=db_type)

@@ -8,6 +8,7 @@ import sqlalchemy.exc
 
 from slayer.sql import client as sql_client
 from slayer.sql.client import (
+    _build_type_probe_sql,
     _execute_with_retry_async,
     _execute_with_retry_sync,
     _execute_with_retry_threaded,
@@ -354,3 +355,38 @@ class TestRetryEmptySqlExcerpt:
             "Transient DB error" in rec.getMessage() and "<empty sql>" in rec.getMessage()
             for rec in caplog.records
         )
+
+
+class TestBuildTypeProbeSQL:
+    """_build_type_probe_sql must emit dialect-appropriate row-limiting syntax."""
+
+    BASE = "SELECT id, name FROM orders"
+
+    def test_standard_dialect_uses_limit_0(self) -> None:
+        sql = _build_type_probe_sql(self.BASE, db_type="postgres")
+        assert "LIMIT 0" in sql
+        assert "TOP" not in sql
+
+    def test_sqlite_uses_limit_1(self) -> None:
+        sql = _build_type_probe_sql(self.BASE, db_type="sqlite")
+        assert "LIMIT 1" in sql
+        assert "TOP" not in sql
+
+    def test_mssql_uses_top_0(self) -> None:
+        sql = _build_type_probe_sql(self.BASE, db_type="mssql")
+        assert "SELECT TOP 0" in sql
+        assert "LIMIT" not in sql
+
+    def test_sqlserver_alias_uses_top_0(self) -> None:
+        sql = _build_type_probe_sql(self.BASE, db_type="sqlserver")
+        assert "SELECT TOP 0" in sql
+        assert "LIMIT" not in sql
+
+    def test_tsql_alias_uses_top_0(self) -> None:
+        sql = _build_type_probe_sql(self.BASE, db_type="tsql")
+        assert "SELECT TOP 0" in sql
+        assert "LIMIT" not in sql
+
+    def test_none_db_type_uses_limit(self) -> None:
+        sql = _build_type_probe_sql(self.BASE, db_type=None)
+        assert "LIMIT 0" in sql
