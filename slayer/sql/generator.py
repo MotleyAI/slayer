@@ -4817,8 +4817,47 @@ class SQLGenerator:
                 if refs_isolated:
                     outer_where_filter_ids.add(fp.id)
                     outer_where_filters.append(fp)
+        # DEV-1503 (Codex round 2 #1) — composite projection slots whose
+        # value-key tree walks an ISOLATED cross-model aggregate must NOT
+        # render in ``_base``. Inline rendering pulls the filter-target
+        # joins back into the host CTE (``_collect_column_filter_join_paths``)
+        # and computes the formula against the host rowset — silently
+        # corrupting both aggregates when two filter-target INNER joins
+        # intersect to different rows. Route them to the outer combined
+        # SELECT where the joined-back ``_cm_*`` columns resolve.
+        #
+        # Composite (``ArithmeticKey`` / ``ScalarCallKey``) projection
+        # slots live in EITHER ``aggregate_slots`` (when the composite
+        # contains an aggregate and the planner buckets it as
+        # AGGREGATE-phase) OR ``combined_expression_slots`` (transform-
+        # adjacent composites). Walk both, but skip pure-leaf
+        # ``AggregateKey`` slots — those have their own routing via
+        # ``cma_slot_ids`` and ``_cm_*`` CTEs.
+        from slayer.core.keys import (
+            ArithmeticKey as _ArithKey,
+            ScalarCallKey as _ScalarKey,
+        )
+        composite_kinds = (_ArithKey, _ScalarKey)
+        outer_composite_slot_ids: Set[str] = set()
+        projection_set = set(planned_query.projection)
+        for slot in (
+            list(planned_query.combined_expression_slots)
+            + list(planned_query.aggregate_slots)
+        ):
+            if slot.id not in projection_set:
+                continue
+            if not isinstance(slot.key, composite_kinds):
+                continue
+            for k in walk_value_keys(slot.key):
+                if isinstance(k, AggregateKey):
+                    s = slot_by_key.get(k)
+                    if s is not None and s.id in cma_slot_ids:
+                        outer_composite_slot_ids.add(slot.id)
+                        break
         base_projection = [
-            sid for sid in planned_query.projection if sid not in cma_slot_ids
+            sid for sid in planned_query.projection
+            if sid not in cma_slot_ids
+            and sid not in outer_composite_slot_ids
         ]
 
         # Hidden ORDER-BY-only LOCAL slots (``ORDER BY revenue:sum`` with
@@ -4881,6 +4920,29 @@ class SQLGenerator:
                 base_render_order.append(sid)
                 seen_base_ids.add(sid)
 
+        # DEV-1503 (Codex round 2 #1) — non-isolated local AggregateKey
+        # operands of an outer-rendered composite (e.g. ``total_amount:sum``
+        # in ``loss_payment_amt:sum + total_amount:sum``) must still
+        # materialise in ``_base`` so the outer combined SELECT can
+        # reference them via ``_base."<alias>"``. Walk each outer
+        # composite's key tree once, promote its non-isolated agg deps
+        # to ``base_render_order`` as hidden aux slots.
+        if outer_composite_slot_ids:
+            for cid in outer_composite_slot_ids:
+                cslot = slots_by_id.get(cid)
+                if cslot is None:
+                    continue
+                for k in walk_value_keys(cslot.key):
+                    if not isinstance(k, AggregateKey):
+                        continue
+                    dep = slot_by_key.get(k)
+                    if dep is None:
+                        continue
+                    if dep.id in cma_slot_ids or dep.id in seen_base_ids:
+                        continue
+                    base_render_order.append(dep.id)
+                    seen_base_ids.add(dep.id)
+
         if planned_query.transform_layers:
             _add_local_aux_slots(include_order=True, aggregates_only=False)
         # DEV-1501 (Codex round 6): host AGG-phase filter operand
@@ -4894,18 +4956,23 @@ class SQLGenerator:
 
         # Hidden grain materialisation: when the user query has neither
         # host row slots NOR local aggs (and no hidden order targets),
-        # ``base_render_order`` is empty and the ``_base`` CTE would be a
-        # bare ``FROM orders`` — legacy emits ``SELECT 1 AS _placeholder
-        # FROM orders`` so the combined CROSS JOIN has a left side to
-        # join against. Mirror that shape.
+        # ``base_render_order`` is empty. ``_base`` becomes a one-row
+        # placeholder so the combined CROSS JOIN to the scalar ``_cm_*``
+        # CTEs has a left side to join against.
+        #
+        # DEV-1503 (Codex round 2 #2): emit the placeholder WITHOUT the
+        # host FROM. With ``FROM <host>`` the placeholder is N rows (one
+        # per host row), and a CROSS JOIN to a 1-row ``_cm_*`` scalar
+        # aggregate duplicates the result N times — for a no-dim
+        # aggregate-only query the user expects ONE row, not one per
+        # host row. The host rowset doesn't contribute to the result
+        # here (every projected slot is a cross-model aggregate that
+        # owns its own ``FROM <host>`` inside the ``_cm_*`` CTE), so
+        # dropping the host FROM is safe.
         empty_base = not base_render_order
         if empty_base:
             base_select = exp.Select().select(
                 exp.Alias(this=exp.Literal.number("1"), alias=exp.to_identifier("_placeholder")),
-            ).from_(
-                self._build_from_clause_from_planned(
-                    source_model=source_model, source_relation=source_relation,
-                ),
             )
             aliases_by_slot_id: Dict[str, List[str]] = {}
             base_has_agg = False
@@ -5070,6 +5137,45 @@ class SQLGenerator:
                 combined_parts.append(f'_base."{full_alias}"')
             if aliases:
                 combined_aliases_by_slot_id[sid] = list(aliases)
+        # DEV-1503 (Codex round 2 #1) — composite slots routed to the outer
+        # combined SELECT. Render via the same substitution renderer the
+        # outer-WHERE wrapper uses: isolated AggregateKey → ``_cm_*."col"``,
+        # non-isolated local agg / ColumnKey → ``_base."<alias>"`` (already
+        # promoted as aux above). Wrap with ``AS "<public_alias>"`` so the
+        # composite surfaces under the user-declared name.
+        if outer_composite_slot_ids:
+            outer_composite_cm_map: Dict[str, Tuple[str, str]] = {}
+            for plan in planned_query.cross_model_aggregate_plans:
+                canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
+                cte_name = _cte_name_from_alias("_cm_", canonical_alias)
+                agg_col_alias = agg_col_alias_for_plan[plan.aggregate_slot_id]
+                outer_composite_cm_map[plan.aggregate_slot_id] = (
+                    cte_name, agg_col_alias,
+                )
+            for sid in planned_query.projection:
+                if sid not in outer_composite_slot_ids:
+                    continue
+                cslot = slots_by_id.get(sid)
+                if cslot is None:
+                    continue
+                rendered = self._render_filter_for_outer_wrapper(
+                    key=cslot.key,
+                    slot_by_key=slot_by_key,
+                    cross_model_agg_slot_to_cm=outer_composite_cm_map,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                )
+                if cslot.type is not None:
+                    rendered = _wrap_cast_for_type(rendered, cslot.type)
+                public_alias = (
+                    cslot.public_aliases[0]
+                    if cslot.public_aliases
+                    else cslot.declared_name
+                )
+                full_alias = f"{source_relation}.{public_alias}"
+                combined_parts.append(
+                    f'{rendered.sql(dialect=self.dialect)} AS "{full_alias}"',
+                )
+                combined_aliases_by_slot_id[sid] = [full_alias]
         # Cross-model side: one entry per declared user alias, all
         # referencing the CTE's aggregate column (canonical for the forward
         # path; the sub-plan alias for the re-rooted path). When the public

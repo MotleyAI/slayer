@@ -43,7 +43,7 @@ Dormant in 7a — no engine code calls these yet. ProjectionPlanner
 from __future__ import annotations
 
 from enum import Enum
-from typing import Callable, Dict, List, Optional, Protocol, Tuple
+from typing import Callable, List, Optional, Protocol, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -406,6 +406,89 @@ def _make_cte_schema(
     )
 
 
+def _match_filtered_local_grain_pairs(
+    *,
+    host_slots: List[ValueSlot],
+    public_projection: List[SlotId],
+    sub_plan: PlannedQuery,
+) -> List[Tuple[SlotId, SlotId]]:
+    """Pair each host dimension / time-dimension slot with the sub-plan's
+    corresponding row slot for the LEFT JOIN ON clause.
+
+    Both plans bind against the SAME underlying column on the host model,
+    so slot identity (the ValueKey) matches across plans.
+    """
+    sub_row_by_key = {s.key: s.id for s in sub_plan.row_slots}
+    grain_pairs: List[Tuple[SlotId, SlotId]] = []
+    for host_sid in public_projection:
+        host_slot = next(
+            (s for s in host_slots if s.id == host_sid), None,
+        )
+        if host_slot is None:
+            continue
+        sub_sid = sub_row_by_key.get(host_slot.key)
+        if sub_sid is not None:
+            grain_pairs.append((host_sid, sub_sid))
+    return grain_pairs
+
+
+def _find_filtered_local_sub_agg_slot(
+    *,
+    sub_plan: PlannedQuery,
+    formula: str,
+    host_model: SlayerModel,
+) -> SlotId:
+    """Locate the sub-plan's single local aggregate slot.
+
+    Recursion suppression guarantees no nested cross-model plans so the
+    sub-plan has exactly one local aggregate — the filtered measure being
+    isolated.
+    """
+    for s in sub_plan.aggregate_slots:
+        if isinstance(s.key, AggregateKey) and not getattr(
+            s.key.source, "path", (),
+        ):
+            return s.id
+    raise ValueError(
+        "DEV-1503 sub-plan produced no local aggregate slot for "
+        f"{formula!r} on {host_model.name!r} — planner bug."
+    )
+
+
+def _build_filtered_local_cte_schema(
+    *,
+    aggregate_key: AggregateKey,
+    host_model: SlayerModel,
+) -> StageSchema:
+    """Build the minimal CTE schema for a filtered-local plan.
+
+    The actual CTE columns are derived from the sub-plan's stage_schema /
+    projection at render time; this entry exists so external consumers see
+    a schema shape that matches the existing CrossModelAggregatePlan
+    contract.
+    """
+    agg_alias = _aggregate_alias(key=aggregate_key)
+    leaf = getattr(aggregate_key.source, "leaf", None) or getattr(
+        aggregate_key.source, "column_name", None,
+    )
+    agg_type: Optional[DataType] = None
+    if leaf is not None and hasattr(host_model, "get_column"):
+        col = host_model.get_column(leaf)
+        if col is not None:
+            agg_type = col.type
+    return StageSchema(
+        relation_name=f"cm_{host_model.name}",
+        columns=[StageColumn(
+            name=agg_alias,
+            sql_alias=agg_alias,
+            public_alias=None,
+            hidden=True,
+            type=agg_type or DataType.DOUBLE,
+            provenance=f"agg:{aggregate_key.agg}",
+        )],
+    )
+
+
 def _classify_subplan_filters(
     *,
     host_query: SlayerQuery,
@@ -722,64 +805,16 @@ class IsolatedCteCrossModelPlanner:
         )
         sub_plan = subplan_builder(rerooted_query, bundle)
 
-        # Grain-pair matching: each host dimension / time-dimension slot
-        # binds against the SAME underlying column on the host model as the
-        # sub-plan's corresponding slot, so slot identity (the ValueKey)
-        # matches across plans. Build the (host_sid, sub_sid) pairs the
-        # generator joins back on.
-        sub_row_by_key: Dict[ValueKey, SlotId] = {
-            s.key: s.id for s in sub_plan.row_slots
-        }
-        grain_pairs: List[Tuple[SlotId, SlotId]] = []
-        for host_sid in public_projection:
-            host_slot = next(
-                (s for s in host_slots if s.id == host_sid), None,
-            )
-            if host_slot is None:
-                continue
-            sub_sid = sub_row_by_key.get(host_slot.key)
-            if sub_sid is not None:
-                grain_pairs.append((host_sid, sub_sid))
-
-        # The sub-plan must contain exactly one local aggregate (the
-        # filtered measure). Recursion suppression guarantees no nested
-        # cross-model plans (Codex review #9).
-        sub_agg_sid: Optional[SlotId] = None
-        for s in sub_plan.aggregate_slots:
-            if isinstance(s.key, AggregateKey) and not getattr(
-                s.key.source, "path", (),
-            ):
-                sub_agg_sid = s.id
-                break
-        if sub_agg_sid is None:
-            raise ValueError(
-                "DEV-1503 sub-plan produced no local aggregate slot for "
-                f"{formula!r} on {host_model.name!r} — planner bug."
-            )
-
-        # Build a minimal CTE schema. The actual CTE columns are derived
-        # from the sub-plan's stage_schema / projection at render time;
-        # this entry exists so external consumers see a schema shape that
-        # matches the existing CrossModelAggregatePlan contract.
-        agg_alias = _aggregate_alias(key=aggregate_key)
-        agg_type: Optional[DataType] = None
-        leaf = getattr(aggregate_key.source, "leaf", None) or getattr(
-            aggregate_key.source, "column_name", None,
+        grain_pairs = _match_filtered_local_grain_pairs(
+            host_slots=host_slots,
+            public_projection=public_projection,
+            sub_plan=sub_plan,
         )
-        if leaf is not None and hasattr(host_model, "get_column"):
-            col = host_model.get_column(leaf)
-            if col is not None:
-                agg_type = col.type
-        cte_schema = StageSchema(
-            relation_name=f"cm_{host_model.name}",
-            columns=[StageColumn(
-                name=agg_alias,
-                sql_alias=agg_alias,
-                public_alias=None,
-                hidden=True,
-                type=agg_type or DataType.DOUBLE,
-                provenance=f"agg:{aggregate_key.agg}",
-            )],
+        sub_agg_sid = _find_filtered_local_sub_agg_slot(
+            sub_plan=sub_plan, formula=formula, host_model=host_model,
+        )
+        cte_schema = _build_filtered_local_cte_schema(
+            aggregate_key=aggregate_key, host_model=host_model,
         )
 
         return CrossModelAggregatePlan(

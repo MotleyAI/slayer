@@ -4298,14 +4298,6 @@ class TestDimensionAggregation:
         assert "SUM(" in sql
         assert "/" in sql
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1499: typed pipeline rejects a cross-model aggregate inside "
-            "an AGGREGATE-phase composite (NotImplementedError). Auto-promotes "
-            "when supported."
-        ),
-    )
     async def test_cross_model_dimension_count_distinct_in_formula(self, generator: SQLGenerator) -> None:
         """cross-model dimension:count_distinct in a formula (e.g., policies.id:count_distinct)."""
 
@@ -6276,13 +6268,6 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
             assert "effective_date" in cte_section.lower()
             assert "GROUP BY" in cte_section
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1499: typed pipeline rejects a cross-model aggregate inside "
-            "an AGGREGATE-phase composite. Auto-promotes when supported."
-        ),
-    )
     async def test_rerooted_cross_model_in_formula(self, generator, _models):
         """Formula mixing local + cross-model measure uses re-rooted CTE."""
         policy, policy_amount, premium, agreement_party_role = _models
@@ -6877,7 +6862,14 @@ class TestIsolatedFilteredMeasureCTEs:
     async def test_formula_over_isolated_measures(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
-        """Formula referencing isolated measures evaluates in the outer query."""
+        """Formula referencing isolated measures evaluates against the
+        joined-back ``_cm_*`` columns at the combined SELECT — NOT inline
+        in ``_base`` (which would pull both filter-target INNER joins back
+        into the host CTE and intersect to rows present in BOTH targets,
+        silently corrupting both aggregates).
+
+        Pins Codex round 2 finding #1.
+        """
         query = SlayerQuery(
             source_model="claim_amount",
             measures=[
@@ -6899,6 +6891,33 @@ class TestIsolatedFilteredMeasureCTEs:
         assert len(cm_cte_names) >= 2, (
             f"Expected ≥ 2 _cm_ CTEs, got {len(cm_cte_names)}: {cm_cte_names}\n{sql}"
         )
+        # Both filter-target INNER joins must live INSIDE the per-measure
+        # ``_cm_*`` CTEs, NEVER in the host ``_base`` body. Inline
+        # rendering of the composite would re-introduce them and the
+        # intersection bug DEV-1503 set out to eliminate.
+        base_body = _extract_cte_body(sql, r"_base")
+        assert "Loss_Payment" not in base_body, (
+            f"Composite over isolated aggregates leaked Loss_Payment join "
+            f"into _base — DEV-1503 isolation regressed:\n{base_body}"
+        )
+        assert "Loss_Reserve" not in base_body, (
+            f"Composite over isolated aggregates leaked Loss_Reserve join "
+            f"into _base — DEV-1503 isolation regressed:\n{base_body}"
+        )
+        # The composite alias must appear in the OUTER combined SELECT
+        # (after all CTEs), referencing both ``_cm_*`` joined-back columns.
+        last_cte_close = sql.rfind("\n)")
+        outer = sql[last_cte_close + 2:]
+        assert "total_loss" in outer, (
+            f"Composite alias 'total_loss' missing from outer combined SELECT:\n{outer}"
+        )
+        assert "loss_payment_amt_sum" in outer, (
+            f"Outer must reference loss_payment_amt_sum CTE column:\n{outer}"
+        )
+        assert "loss_reserve_amt_sum" in outer, (
+            f"Outer must reference loss_reserve_amt_sum CTE column:\n{outer}"
+        )
+        _assert_valid_sql(sql)
 
     async def test_mixed_isolated_and_local_measures(
         self, generator: SQLGenerator, claim_amount_model, related_models,
@@ -7082,7 +7101,14 @@ class TestIsolatedFilteredMeasureCTEs:
     async def test_base_not_empty_when_no_dims_all_measures_skipped(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
-        """Base SELECT must not be empty when all measures are isolated and there are no dims (Bug Q10)."""
+        """Base SELECT must not be empty when all measures are isolated and there are no dims (Bug Q10).
+
+        ALSO: the placeholder ``_base`` must NOT reference the host table.
+        A ``SELECT 1 AS _placeholder FROM <host>`` spine returns one row
+        per host row; CROSS JOINing that to a scalar ``_cm_*`` aggregate
+        duplicates the aggregate by host row count — a no-dim aggregate
+        query must return one row, not N (Codex round 2 #2).
+        """
         query = SlayerQuery(
             source_model="claim_amount",
             measures=[ModelMeasure(formula="loss_payment_amt:sum")],
@@ -7094,6 +7120,18 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "SELECT FROM" not in sql, f"Empty SELECT detected:\n{sql}"
         # Should still produce valid SQL with the isolated _cm_ CTE.
         assert "_cm_" in sql and "loss_payment_amt" in sql
+        # ``_base`` must NOT reference the host table — that turns the
+        # one-row placeholder into N rows.
+        base_body = _extract_cte_body(sql, r"_base")
+        assert "Claim_Amount" not in base_body, (
+            f"_base placeholder must not reference host table when empty "
+            f"(would duplicate scalar aggregate by host row count):"
+            f"\n{base_body}"
+        )
+        assert "_placeholder" in base_body, (
+            f"Expected _base placeholder to use the literal 1 spine:"
+            f"\n{base_body}"
+        )
         _assert_valid_sql(sql)
 
     async def test_aggregate_filter_on_isolated_measure_applied_on_outer(
@@ -7455,11 +7493,9 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await _generate(generator, query, orders, extra_models=[customers, regions])
 
-        # The _cm_ CTE must exist for the filtered measure.
-        cm_match = _re.search(r"(_cm_\w*eu_amount\w*)\s+AS\s*\(", sql)
-        assert cm_match, f"No _cm_ CTE for eu_amount in:\n{sql}"
-        cm_start = cm_match.start()
-        cm_body = sql[cm_start:sql.index("\n)", cm_start)]
+        # The _cm_ CTE must exist for the filtered measure — balanced-paren
+        # walker so a nested subquery doesn't truncate the body.
+        cm_body = _extract_cte_body(sql, r"_cm_\w*eu_amount\w*")
         # Both join hops must be inside the _cm_ CTE — never in _base.
         assert "Customers" in cm_body, (
             f"Intermediate customers join missing from _cm_ CTE:\n{cm_body}"
@@ -7468,10 +7504,7 @@ class TestIsolatedFilteredMeasureCTEs:
             f"Deeper regions join missing from _cm_ CTE:\n{cm_body}"
         )
         # The host _base CTE must NOT include the filter-target joins.
-        base_match = _re.search(r"_base\s+AS\s*\(", sql)
-        assert base_match, f"Expected host _base CTE in:\n{sql}"
-        base_start = base_match.start()
-        base_body = sql[base_start:sql.index("\n)", base_start)]
+        base_body = _extract_cte_body(sql, r"_base")
         assert "Customers" not in base_body, (
             f"customers join leaked into host _base:\n{base_body}"
         )

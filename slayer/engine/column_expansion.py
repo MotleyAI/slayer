@@ -104,6 +104,34 @@ class _SyncBundle(Protocol):
     def get_referenced_model(self, name: str) -> Optional[SlayerModel]: ...
 
 
+def _resolve_alias_to_join_segments(
+    *,
+    alias: str,
+    source_model: SlayerModel,
+    bundle: _SyncBundle,
+) -> Optional[Tuple[str, ...]]:
+    """Walk the ``__``-segmented join alias against ``source_model``'s joins.
+
+    Returns the segments tuple when EVERY hop resolves (so a prefix walk
+    can emit join-path tuples), or ``None`` when any hop fails — that
+    aborts the caller's emission for this column (CTE / subquery alias
+    or a spurious dotted ref).
+    """
+    segments = tuple(alias.split("__"))
+    current = source_model
+    for seg in segments:
+        join = next(
+            (j for j in current.joins if j.target_model == seg), None,
+        )
+        if join is None:
+            return None
+        nxt = bundle.get_referenced_model(seg)
+        if nxt is None:
+            return None
+        current = nxt
+    return segments
+
+
 def collect_root_scope_joined_paths(
     *,
     parsed: exp.Expression,
@@ -129,6 +157,7 @@ def collect_root_scope_joined_paths(
     root_ids = _root_scope_column_ids(parsed=parsed)
     seen: Set[Tuple[str, ...]] = set()
     ordered: List[Tuple[str, ...]] = []
+    anchor_aliases = (source_relation, source_model.name)
     for col in parsed.find_all(exp.Column):
         tbl = col.args.get("table")
         if tbl is None or col.args.get("db") or col.args.get("catalog"):
@@ -136,27 +165,15 @@ def collect_root_scope_joined_paths(
         if id(col) not in root_ids:
             continue
         alias = tbl.name
-        if alias in (source_relation, source_model.name):
+        if alias in anchor_aliases:
             continue
-        segments = alias.split("__")
-        current: SlayerModel = source_model
-        resolved = True
-        for seg in segments:
-            join = next(
-                (j for j in current.joins if j.target_model == seg), None,
-            )
-            if join is None:
-                resolved = False
-                break
-            nxt = bundle.get_referenced_model(seg)
-            if nxt is None:
-                resolved = False
-                break
-            current = nxt
-        if not resolved:
+        segments = _resolve_alias_to_join_segments(
+            alias=alias, source_model=source_model, bundle=bundle,
+        )
+        if segments is None:
             continue
         for i in range(1, len(segments) + 1):
-            prefix = tuple(segments[:i])
+            prefix = segments[:i]
             if prefix not in seen:
                 seen.add(prefix)
                 ordered.append(prefix)
