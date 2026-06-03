@@ -8052,6 +8052,62 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         _assert_valid_sql(sql)
 
+    async def test_local_first_last_with_routed_cross_model_filter(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """A query mixing a LOCAL first/last measure with a cross-model
+        aggregate carrying a routed filter must NOT apply the routed filter
+        inside the host ``_base`` ranked subquery — it belongs in the
+        ``_cm_*`` CTE only.
+
+        Pins Codex round 5 finding: ``_build_first_last_base_select`` must
+        thread ``skip_filter_ids`` so a filter classified as
+        ``PROPAGATE_HAVING`` on a forward cross-model plan doesn't also
+        render inside the host ranked subquery's WHERE — that would
+        double-apply (and, when the filter references the cross-model
+        join path not in ``_base``, emit invalid SQL).
+        """
+        # ``total_amount`` is an unfiltered local measure; first() forces
+        # _base into the ranked-subquery branch. ``loss_payment.has_flag``
+        # is a forward cross-model aggregate. The filter
+        # ``loss_payment.has_flag:sum > 0`` classifies as PROPAGATE_HAVING
+        # on the cross-model plan and is routed there.
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[
+                ModelMeasure(formula="total_amount:last"),
+                ModelMeasure(formula="loss_payment.has_flag:sum"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                ),
+            ],
+            filters=["loss_payment.has_flag:sum > 0"],
+        )
+        sql = await self._sql(
+            claim_amount_model_with_time, related_models, query,
+        )
+        # The routed filter literal must appear in the cross-model CTE's
+        # HAVING.
+        cm_body = _extract_cte_body(
+            sql, r"_cm_\w*has_flag\w*",
+        )
+        assert "> 0" in cm_body, (
+            f"Routed cross-model HAVING filter missing from _cm_ CTE:\n{cm_body}"
+        )
+        # And it must NOT appear inside the host ``_base`` ranked
+        # subquery (double-application bug).
+        base_body = _extract_cte_body(sql, r"_base")
+        assert "> 0" not in base_body, (
+            f"Routed cross-model filter leaked into host _base ranked subquery "
+            f"(skip_filter_ids not threaded into _build_first_last_base_select):"
+            f"\n{base_body}"
+        )
+        _assert_valid_sql(sql)
+
     async def test_no_dim_query_with_host_row_filter_applies_in_base(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:

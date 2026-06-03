@@ -3753,6 +3753,7 @@ class SQLGenerator:
                 slots_by_id=slots_by_id,
                 from_clause=from_clause,
                 base_joins=base_joins,
+                skip_filter_ids=skip_filter_ids,
             )
 
         select_columns: list[exp.Expression] = []
@@ -4254,6 +4255,7 @@ class SQLGenerator:
         slots_by_id: Dict[str, Any],
         from_clause: exp.Expression,
         base_joins: List,
+        skip_filter_ids: Optional[Set[str]] = None,
     ):
         """Render the base SELECT for a query containing LOCAL first/last
         AGGREGATES (planned-native port of legacy ``_generate_base``'s
@@ -4479,11 +4481,15 @@ class SQLGenerator:
 
         # WHERE goes inside the ranked subquery (raw-row filtering before
         # ranking). HAVING is recomputed and applied by the caller.
+        # ``skip_filter_ids`` carries the cross-model-routed filter ids so
+        # filters applied inside a per-plan ``_cm_*`` CTE don't double-apply
+        # inside the host ranked subquery (Codex round 5).
         where_clause, _having = self._build_where_having_from_planned(
             planned_query=planned_query,
             source_relation=source_relation,
             source_model=source_model,
             bundle=bundle,
+            skip_filter_ids=skip_filter_ids,
         )
 
         (
