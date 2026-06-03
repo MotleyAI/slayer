@@ -7968,6 +7968,90 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         _assert_valid_sql(sql)
 
+    async def test_order_by_projected_composite_over_isolated_resolves_at_combined(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """A query whose ORDER BY references a PROJECTED composite over
+        isolated filtered-local aggregates must resolve the order alias at
+        the combined SELECT level — NOT ``_base."<alias>"`` (the alias is
+        no longer materialised in ``_base`` after DEV-1503 routing).
+
+        Pins Codex round 3 #2 (ORDER BY on projected outer-routed composite).
+        """
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[
+                ModelMeasure(formula="loss_payment_amt:sum"),
+                ModelMeasure(formula="loss_reserve_amt:sum"),
+                ModelMeasure(
+                    formula="loss_payment_amt:sum + loss_reserve_amt:sum",
+                    name="total_loss",
+                ),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            order=[OrderItem(column="total_loss", direction="desc")],
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        # The composite must NOT render in _base (G1.1 invariant).
+        base_body = _extract_cte_body(sql, r"_base")
+        assert "Loss_Payment" not in base_body
+        assert "Loss_Reserve" not in base_body
+        # ORDER BY must use the bare combined alias, NOT _base."<alias>".
+        order_match = _re.search(r"ORDER BY[^\n]+", sql)
+        assert order_match, f"Expected ORDER BY in:\n{sql}"
+        order_clause = order_match.group(0)
+        assert "total_loss" in order_clause, (
+            f"ORDER BY must reference total_loss:\n{order_clause}"
+        )
+        assert "_base." not in order_clause, (
+            f"ORDER BY must NOT reference _base alias for an outer-routed "
+            f"composite (alias not materialised in _base):\n{order_clause}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_outer_composite_with_multiple_user_aliases(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """The same composite formula declared under TWO user-aliases must
+        surface BOTH aliases in the combined SELECT. The C13 multi-alias
+        same-key consolidation collapses the two measures into ONE slot
+        with ``public_aliases=[a, b]``; the renderer must cycle through
+        them rather than emit ``public_aliases[0]`` twice.
+
+        Pins CodeRabbit thread on outer-composite alias cycling.
+        """
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[
+                ModelMeasure(formula="loss_payment_amt:sum"),
+                ModelMeasure(formula="loss_reserve_amt:sum"),
+                ModelMeasure(
+                    formula="loss_payment_amt:sum + loss_reserve_amt:sum",
+                    name="total_loss",
+                ),
+                ModelMeasure(
+                    formula="loss_payment_amt:sum + loss_reserve_amt:sum",
+                    name="grand_total",
+                ),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        # The isolation invariant still holds (neither join in _base).
+        base_body = _extract_cte_body(sql, r"_base")
+        assert "Loss_Payment" not in base_body
+        assert "Loss_Reserve" not in base_body
+        # Both user-declared aliases must surface in the outer SELECT.
+        last_cte_close = sql.rfind("\n)")
+        outer = sql[last_cte_close + 2:]
+        assert "total_loss" in outer, (
+            f"Outer must reference total_loss alias:\n{outer}"
+        )
+        assert "grand_total" in outer, (
+            f"Outer must reference grand_total alias (C13 cycling):\n{outer}"
+        )
+        _assert_valid_sql(sql)
+
     async def test_filtered_local_in_source_queries_smoke(
         self, generator: SQLGenerator,
     ) -> None:

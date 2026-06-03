@@ -4839,12 +4839,20 @@ class SQLGenerator:
         )
         composite_kinds = (_ArithKey, _ScalarKey)
         outer_composite_slot_ids: Set[str] = set()
-        projection_set = set(planned_query.projection)
+        # A composite slot routes to the outer combined SELECT when it is
+        # referenced by EITHER the public projection OR an ORDER BY entry —
+        # a hidden ``ORDER BY <isolated_agg> + <other>`` composite would
+        # otherwise fall through to the local order-only path and render
+        # inline in ``_base``, re-pulling filter-target joins into the
+        # host spine (Codex round 3 #1).
+        composite_candidate_ids: Set[str] = set(planned_query.projection)
+        for order_entry in planned_query.order:
+            composite_candidate_ids.add(order_entry.slot_id)
         for slot in (
             list(planned_query.combined_expression_slots)
             + list(planned_query.aggregate_slots)
         ):
-            if slot.id not in projection_set:
+            if slot.id not in composite_candidate_ids:
                 continue
             if not isinstance(slot.key, composite_kinds):
                 continue
@@ -4870,7 +4878,11 @@ class SQLGenerator:
         order_only_local_ids: List[str] = []
         for order_entry in planned_query.order:
             sid = order_entry.slot_id
-            if sid in cma_slot_ids or sid in seen_base_ids:
+            if (
+                sid in cma_slot_ids
+                or sid in outer_composite_slot_ids
+                or sid in seen_base_ids
+            ):
                 continue
             slot = slots_by_id.get(sid)
             if slot is None:
@@ -5143,6 +5155,7 @@ class SQLGenerator:
         # non-isolated local agg / ColumnKey → ``_base."<alias>"`` (already
         # promoted as aux above). Wrap with ``AS "<public_alias>"`` so the
         # composite surfaces under the user-declared name.
+        outer_composite_order_alias_by_sid: Dict[str, str] = {}
         if outer_composite_slot_ids:
             outer_composite_cm_map: Dict[str, Tuple[str, str]] = {}
             for plan in planned_query.cross_model_aggregate_plans:
@@ -5152,12 +5165,8 @@ class SQLGenerator:
                 outer_composite_cm_map[plan.aggregate_slot_id] = (
                     cte_name, agg_col_alias,
                 )
-            for sid in planned_query.projection:
-                if sid not in outer_composite_slot_ids:
-                    continue
-                cslot = slots_by_id.get(sid)
-                if cslot is None:
-                    continue
+
+            def _render_outer_composite(cslot) -> str:
                 rendered = self._render_filter_for_outer_wrapper(
                     key=cslot.key,
                     slot_by_key=slot_by_key,
@@ -5166,16 +5175,65 @@ class SQLGenerator:
                 )
                 if cslot.type is not None:
                     rendered = _wrap_cast_for_type(rendered, cslot.type)
+                return rendered.sql(dialect=self.dialect)
+
+            # Projected outer composites: cycle through ``public_aliases``
+            # for each occurrence in ``planned_query.projection``. C13 lets
+            # the same composite slot project under multiple user-declared
+            # names; emitting ``public_aliases[0]`` twice (and overwriting
+            # ``combined_aliases_by_slot_id[sid]``) would drop the second
+            # alias (CodeRabbit thread 2).
+            outer_emission_count: Dict[str, int] = {}
+            for sid in planned_query.projection:
+                if sid not in outer_composite_slot_ids:
+                    continue
+                cslot = slots_by_id.get(sid)
+                if cslot is None:
+                    continue
+                aliases_for_slot = list(cslot.public_aliases) or [
+                    cslot.declared_name,
+                ]
+                idx = outer_emission_count.get(sid, 0)
                 public_alias = (
-                    cslot.public_aliases[0]
-                    if cslot.public_aliases
-                    else cslot.declared_name
+                    aliases_for_slot[idx]
+                    if idx < len(aliases_for_slot)
+                    else aliases_for_slot[-1]
                 )
+                outer_emission_count[sid] = idx + 1
                 full_alias = f"{source_relation}.{public_alias}"
                 combined_parts.append(
-                    f'{rendered.sql(dialect=self.dialect)} AS "{full_alias}"',
+                    f'{_render_outer_composite(cslot)} AS "{full_alias}"',
                 )
-                combined_aliases_by_slot_id[sid] = [full_alias]
+                combined_aliases_by_slot_id.setdefault(sid, []).append(
+                    full_alias,
+                )
+                # The first emitted alias is the canonical handle the
+                # combined-level ORDER BY references.
+                outer_composite_order_alias_by_sid.setdefault(sid, full_alias)
+
+            # Order-only outer composites (Codex round 3 #1): not in
+            # public projection but referenced by ``planned_query.order``.
+            # Materialise as a HIDDEN column in the combined SELECT so the
+            # ORDER BY can resolve via the synthesised alias. The synthetic
+            # alias uses ``declared_name`` to avoid colliding with any
+            # public alias.
+            projection_set_for_outer = set(planned_query.projection)
+            for entry in planned_query.order:
+                sid = entry.slot_id
+                if sid not in outer_composite_slot_ids:
+                    continue
+                if sid in projection_set_for_outer:
+                    continue
+                cslot = slots_by_id.get(sid)
+                if cslot is None:
+                    continue
+                hidden_alias = (
+                    f"{source_relation}.{cslot.declared_name}"
+                )
+                combined_parts.append(
+                    f'{_render_outer_composite(cslot)} AS "{hidden_alias}"',
+                )
+                outer_composite_order_alias_by_sid[sid] = hidden_alias
         # Cross-model side: one entry per declared user alias, all
         # referencing the CTE's aggregate column (canonical for the forward
         # path; the sub-plan alias for the re-rooted path). When the public
@@ -5297,6 +5355,7 @@ class SQLGenerator:
             cma_slot_ids=cma_slot_ids,
             cm_alias_for_plan=canonical_alias_for_plan,
             bare_order_slot_ids=set(order_only_local_ids),
+            outer_composite_aliases=outer_composite_order_alias_by_sid,
         )
         if order_sql:
             sql += "\n" + order_sql
@@ -6423,6 +6482,7 @@ class SQLGenerator:
         cma_slot_ids: Set[str],
         cm_alias_for_plan: Dict[str, str],
         bare_order_slot_ids: Optional[Set[str]] = None,
+        outer_composite_aliases: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Build the ORDER BY clause for the combined SELECT.
 
@@ -6437,10 +6497,18 @@ class SQLGenerator:
         projection-trim wrapper (which exposes only the bare public
         aliases) is ever layered on top. The bare alias still resolves
         unambiguously against ``_base`` in the combined FROM.
+
+        DEV-1503 (Codex round 3 #2): outer-routed composite slots
+        (``outer_composite_aliases``) live ONLY in the combined SELECT's
+        projection — they are not materialised in ``_base``. Reference
+        them as bare aliases so the ORDER BY resolves against the outer
+        SELECT's own column list rather than ``_base.<alias>`` (which
+        would dangle).
         """
         if not planned_query.order:
             return None
         bare_ids = bare_order_slot_ids or set()
+        outer_aliases = outer_composite_aliases or {}
         parts: List[str] = []
         for entry in planned_query.order:
             direction = "ASC" if entry.direction == "asc" else "DESC"
@@ -6452,6 +6520,8 @@ class SQLGenerator:
                 if alias is None:
                     continue
                 parts.append(f'"{alias}" {direction}')
+            elif entry.slot_id in outer_aliases:
+                parts.append(f'"{outer_aliases[entry.slot_id]}" {direction}')
             else:
                 full_alias = self._full_alias_for_slot(
                     slot=slot,
