@@ -7093,6 +7093,12 @@ class TestTsqlDialect:
             f"T-SQL week truncation must not use bare WEEK (@@DATEFIRST-dependent): {sql}"
         )
 
+    def test_build_date_trunc_quarter(self, gen: SQLGenerator) -> None:
+        col = sqlglot.parse_one("created_at", dialect="tsql")
+        sql = gen._build_date_trunc(col, TimeGranularity.QUARTER).sql(dialect="tsql")
+        assert "DATETRUNC" in sql.upper()
+        assert "QUARTER" in sql.upper()
+
     def test_build_date_trunc_no_date_trunc_function(self, gen: SQLGenerator) -> None:
         """T-SQL uses DATETRUNC (no underscore), not DATE_TRUNC."""
         col = sqlglot.parse_one("created_at", dialect="tsql")

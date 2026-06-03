@@ -20,7 +20,6 @@ COPY pyproject.toml poetry.lock README.md LICENSE ./
 RUN pip install --no-cache-dir poetry && \
     poetry config virtualenvs.create false && \
     poetry install -E all --no-root --no-interaction --no-ansi && \
-    pip install --no-cache-dir psycopg2-binary pymysql clickhouse-sqlalchemy && \
     pip uninstall -y poetry
 
 # Copy application code and install project
