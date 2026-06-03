@@ -3594,3 +3594,95 @@ async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
     assert response.data[1]["orders.status"] == "B", response.data
     assert response.data[0]["orders._count"] == 2, response.data
     assert response.data[1]["orders._count"] == 2, response.data
+
+
+# ---------------------------------------------------------------------------
+# DEV-1502: measure-source Column.sql with __-delimited path alias must
+# (a) execute end-to-end on SQLite (no `no such column` error from a
+# missing JOIN) and (b) return the right cardinality.
+# ---------------------------------------------------------------------------
+
+
+async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
+    """orders → customers → regions chain; a derived column on orders
+    references the deep ``customers__regions.population`` path. The
+    typed pipeline must pull both LEFT JOINs so the aggregate evaluates
+    against real columns.
+    """
+    db_path = tmp_path / "orders_customers_regions.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, population REAL)")
+    cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER)")
+    cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER)")
+    cur.executemany(
+        "INSERT INTO regions VALUES (?, ?)",
+        [(1, 100.0), (2, 50.0)],
+    )
+    cur.executemany(
+        "INSERT INTO customers VALUES (?, ?)",
+        # 3 customers; 2 in region 1 (pop 100), 1 in region 2 (pop 50).
+        [(1, 1), (2, 1), (3, 2)],
+    )
+    cur.executemany(
+        "INSERT INTO orders VALUES (?, ?)",
+        # 4 orders: 2 by customer 1 (region 1), 1 by customer 2 (region 1),
+        # 1 by customer 3 (region 2).
+        [(10, 1), (11, 1), (12, 2), (13, 3)],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage_ocr"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="ds", type="sqlite", database=str(db_path))
+    )
+    await storage.save_model(SlayerModel(
+        name="regions", data_source="ds", sql_table="regions",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="population", sql="population", type=DataType.DOUBLE),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="customers", data_source="ds", sql_table="customers",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+    ))
+    await storage.save_model(SlayerModel(
+        name="orders", data_source="ds", sql_table="orders",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(
+                name="region_pop",
+                sql="customers__regions.population",
+                type=DataType.DOUBLE,
+            ),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    ))
+    engine = SlayerQueryEngine(storage=storage)
+
+    # SUM over per-order region populations:
+    #   order 10 → customer 1 → region 1 (100)
+    #   order 11 → customer 1 → region 1 (100)
+    #   order 12 → customer 2 → region 1 (100)
+    #   order 13 → customer 3 → region 2 (50)
+    # Total: 350.
+    response = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="region_pop:sum")],
+    ))
+    assert response.row_count == 1
+    assert response.data[0]["orders.region_pop_sum"] == 350.0, (
+        f"expected SUM=350 over per-order regions, got "
+        f"{response.data[0].get('orders.region_pop_sum')!r}; row: "
+        f"{response.data[0]!r}"
+    )
+    _sync_engines.clear()

@@ -3099,23 +3099,13 @@ class TestPathAliasJoinInference:
         assert "users" in join_aliases
         assert "users__orgs" in join_aliases
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1502: a measure whose source Column.sql contains a "
-            "__-delimited join-path alias (customers__regions.population) "
-            "does NOT trigger join inference on the typed pipeline — the "
-            "aggregate emits SUM(customers__regions.population) with no LEFT "
-            "JOINs, producing SQL that references an undefined alias. The "
-            "dimension/time-dimension path-alias cases (above) DO infer the "
-            "joins; only the measure-source path regressed. Auto-promotes "
-            "when measure-source path-alias join discovery is restored."
-        ),
-    )
     async def test_measure_sql_with_path_alias_infers_joins(
         self, engine: SlayerQueryEngine, chained_model: SlayerModel
     ) -> None:
-        """Measure SQL like 'customers__regions.population' should infer joins for both tables."""
+        """DEV-1502: measure SQL like ``customers__regions.population``
+        infers joins for both intermediate hops (symmetric to the
+        dimension and time-dimension cases above).
+        """
         chained_model.columns.append(
             Column(name="region_pop_sum", sql="customers__regions.population", type=DataType.DOUBLE)
         )
@@ -3128,6 +3118,546 @@ class TestPathAliasJoinInference:
         join_aliases = _join_aliases(sql)
         assert "customers" in join_aliases
         assert "customers__regions" in join_aliases
+        # The aggregate body must reference the path-aliased ref — not the
+        # bare `region_pop_sum` (which would refer to a non-existent column
+        # on `orders`). Mirrors the DEV-1494 strengthening pattern.
+        assert "SUM(customers__regions.population)" in sql
+
+
+class TestMeasureSourceSqlJoinInference:
+    """DEV-1502: an AGGREGATE slot whose source ``Column.sql`` contains
+    a ``__``-delimited join-path alias (or a sibling derived ref whose
+    own sql does) must pull the implied LEFT JOINs into the host base
+    FROM — symmetric to the dimension/time-dimension treatment
+    (DEV-1484) and the ``Column.filter`` treatment (DEV-1494).
+    """
+
+    @pytest.fixture
+    async def storage(self, tmp_path):
+        """orders → customers → regions chain reused across most tests."""
+        s = YAMLStorage(base_dir=str(tmp_path))
+        await s.save_datasource(DatasourceConfig(name="test", type="postgres"))
+        await s.save_model(SlayerModel(
+            name="regions", sql_table="regions", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="population", sql="population", type=DataType.DOUBLE),
+                Column(name="props", sql="props", type=DataType.TEXT),
+                Column(name="weight", sql="weight", type=DataType.DOUBLE),
+                Column(name="payment_amount", sql="payment_amount", type=DataType.DOUBLE),
+            ],
+        ))
+        await s.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        ))
+        return s
+
+    def _orders_model(self, *, extra_columns=None) -> SlayerModel:
+        """Build the orders model with the standard customer/regions chain
+        and any extra derived columns the per-test wants.
+        """
+        cols = [
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        ]
+        if extra_columns:
+            cols.extend(extra_columns)
+        return SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=cols,
+            joins=[
+                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            ],
+        )
+
+    @pytest.fixture
+    def engine(self, storage) -> SlayerQueryEngine:
+        return SlayerQueryEngine(storage=storage)
+
+    # ------------------------------------------------------------------
+    # Core path-alias discovery
+    # ------------------------------------------------------------------
+
+    async def test_single_hop_path_alias_in_measure_sql(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """A single-hop ``customers.region_id`` alias in the measure source
+        SQL surfaces the ``customers`` join. The multi-hop case is the
+        existing tracking test; this pins the single-hop edge.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(
+                name="customer_region_count",
+                sql="customers.region_id",
+                type=DataType.DOUBLE,
+            ),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="customer_region_count:count_distinct")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        join_aliases = _join_aliases(sql)
+        assert "customers" in join_aliases
+        # `customers__regions` is NOT needed here (single hop).
+        assert "customers__regions" not in join_aliases
+        assert "COUNT(DISTINCT customers.region_id)" in sql
+
+    async def test_composite_arithmetic_path_aliased_measure(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """``region_pop_sum:sum + amount:sum`` is rendered as a composite
+        AGGREGATE slot (``ArithmeticKey`` wrapping two ``AggregateKey``s).
+        The _visit recursion must descend through the operands so the
+        path-aliased operand's joins surface.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(
+                name="region_pop_sum",
+                sql="customers__regions.population",
+                type=DataType.DOUBLE,
+            ),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_pop_sum:sum + amount:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        join_aliases = _join_aliases(sql)
+        assert "customers" in join_aliases
+        assert "customers__regions" in join_aliases
+        assert "SUM(customers__regions.population)" in sql
+        assert "SUM(orders.amount)" in sql
+
+    async def test_composite_scalar_call_path_aliased_measure(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """``coalesce(region_pop_sum:sum, 0)`` is a ``ScalarCallKey``
+        wrapping an ``AggregateKey``. The _visit recursion descends
+        through ``key.args``.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(
+                name="region_pop_sum",
+                sql="customers__regions.population",
+                type=DataType.DOUBLE,
+            ),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="coalesce(region_pop_sum:sum, 0)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        join_aliases = _join_aliases(sql)
+        assert "customers" in join_aliases
+        assert "customers__regions" in join_aliases
+        assert "SUM(customers__regions.population)" in sql
+
+    async def test_mode_a_function_wrapping_path_alias_in_column_sql(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """A Mode-A SQL function call wrapping a ``__`` ref in the column
+        sql (``json_extract(customers__regions.props, '$.x')``) still
+        triggers join discovery — ``_joined_paths_in_sql`` walks the
+        parsed AST regardless of wrapper functions.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(
+                name="region_prop_x",
+                sql="json_extract(customers__regions.props, '$.x')",
+                type=DataType.DOUBLE,
+            ),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_prop_x:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        join_aliases = _join_aliases(sql)
+        assert "customers" in join_aliases
+        assert "customers__regions" in join_aliases
+        # The aggregate body wraps the JSON-extract call, qualified to
+        # the path alias (the bare alias `region_prop_x` would fail).
+        assert "customers__regions.props" in sql
+
+    async def test_sibling_derived_chain_to_path_alias(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """``doubled_pop`` references sibling ``pop_helper``, whose own
+        sql crosses the customers→regions join. ``_expand_derived_column_sql``
+        recursively inlines siblings; the new collector scans the
+        recursively-expanded SQL.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(
+                name="pop_helper",
+                sql="customers__regions.population",
+                type=DataType.DOUBLE,
+            ),
+            Column(
+                name="doubled_pop",
+                sql="pop_helper * 2",
+                type=DataType.DOUBLE,
+            ),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="doubled_pop:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        join_aliases = _join_aliases(sql)
+        assert "customers" in join_aliases
+        assert "customers__regions" in join_aliases
+        # Sibling recursive inlining preserves the path alias.
+        assert "customers__regions.population" in sql
+
+    async def test_local_last_with_path_aliased_derived_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """A LOCAL ``last`` aggregate whose source is a derived column
+        with a ``__`` alias must pull the joins into the ranked-subquery
+        FROM. The shared ``_build_base_select_for_planned`` wiring covers
+        the first/last path because ``_build_first_last_base_select``
+        receives ``from_clause`` / ``base_joins`` from the same call.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(
+                name="region_payment",
+                sql="customers__regions.payment_amount",
+                type=DataType.DOUBLE,
+            ),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        join_aliases = _join_aliases(sql)
+        assert "customers" in join_aliases
+        assert "customers__regions" in join_aliases
+        # last renders inside a ROW_NUMBER-ranked subquery, ORDER BY the
+        # positional time arg DESC; the outer SELECT picks rn=1 via
+        # MAX(CASE WHEN _last_rn = 1 THEN col END).
+        normalized = _norm(sql)
+        assert "ROW_NUMBER() OVER" in normalized, normalized
+        assert "ORDER BY orders.created_at DESC" in normalized, normalized
+        assert "MAX(CASE WHEN _last_rn" in normalized, normalized
+        # Path-aliased source survives the ranked-subquery wrap.
+        assert "customers__regions.payment_amount" in normalized
+
+    async def test_post_transform_wrapping_path_aliased_measure(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """A POST-phase transform like ``cumsum(region_pop_sum:sum)`` aux-
+        materialises its inner ``AggregateKey`` into ``base_render_order``.
+        The new collector visits aux slots the same way it visits public
+        AGGREGATE slots, so the join discovery still fires.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(
+                name="region_pop_sum",
+                sql="customers__regions.population",
+                type=DataType.DOUBLE,
+            ),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="cumsum(region_pop_sum:sum)")],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                ),
+            ],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        join_aliases = _join_aliases(sql)
+        assert "customers" in join_aliases
+        assert "customers__regions" in join_aliases
+        # The inner aggregate is rendered in _base; cumsum wraps it in a
+        # step CTE. Either way the path-aliased ref must reach the
+        # emitted SQL via the base CTE.
+        assert "customers__regions.population" in sql
+
+    async def test_multiple_aggregate_sources_sharing_join_dedupe(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """Two distinct AGGREGATE slots whose sources cross the SAME
+        ``customers__regions`` path must produce exactly one LEFT JOIN
+        for each hop. Exercises the new collector's own dedupe (the
+        wiring's ``if p not in needed_join_paths`` guard).
+        """
+        model = self._orders_model(extra_columns=[
+            Column(
+                name="region_pop_sum",
+                sql="customers__regions.population",
+                type=DataType.DOUBLE,
+            ),
+            Column(
+                name="region_weight_sum",
+                sql="customers__regions.weight",
+                type=DataType.DOUBLE,
+            ),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_pop_sum:sum"),
+                ModelMeasure(formula="region_weight_sum:sum"),
+            ],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
+        assert sql.count("LEFT JOIN regions AS customers__regions") == 1, sql
+        assert "SUM(customers__regions.population)" in sql
+        assert "SUM(customers__regions.weight)" in sql
+
+    # ------------------------------------------------------------------
+    # Dedup + co-existence
+    # ------------------------------------------------------------------
+
+    async def test_dim_and_measure_sharing_join_emits_join_once(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """When a dimension AND a measure both pull in the same join,
+        ``_build_from_and_joins`` must emit it exactly once (the
+        ``emitted_aliases`` guard handles dedupe).
+        """
+        model = self._orders_model(extra_columns=[
+            Column(
+                name="region_pop_sum",
+                sql="customers__regions.population",
+                type=DataType.DOUBLE,
+            ),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_pop_sum:sum")],
+            dimensions=[ColumnRef(name="customers.region_id")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        # Count occurrences of LEFT JOIN customers AS customers (single hop).
+        cust_joins = sql.count("LEFT JOIN customers AS customers")
+        assert cust_joins == 1, f"customers join not deduped:\n{sql}"
+        # And LEFT JOIN regions AS customers__regions appears exactly once.
+        reg_joins = sql.count("LEFT JOIN regions AS customers__regions")
+        assert reg_joins == 1, f"customers__regions join not deduped:\n{sql}"
+
+    async def test_filter_and_source_cross_different_joins(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """Filter crosses the shallow join (customers) and source crosses
+        the deeper join (customers__regions). DEV-1494 alone would pull
+        only customers; DEV-1502 must pull customers__regions. The
+        shared customers join is emitted exactly once.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(
+                name="region_pop_sum",
+                sql="customers__regions.population",
+                type=DataType.DOUBLE,
+                # Filter crosses only the customers hop — does NOT touch
+                # customers__regions. Without DEV-1502 the regions join
+                # is missing entirely.
+                filter="customers.region_id IS NOT NULL",
+            ),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_pop_sum:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        join_aliases = _join_aliases(sql)
+        assert "customers" in join_aliases
+        assert "customers__regions" in join_aliases
+        # customers join is emitted exactly once even though both DEV-1494
+        # (filter) and DEV-1502 (source) discovered it.
+        cust_joins = sql.count("LEFT JOIN customers AS customers")
+        assert cust_joins == 1
+        # The filter CASE-WHEN references the customers hop. sqlglot
+        # may canonicalise ``IS NOT NULL`` to ``NOT ... IS NULL``, so
+        # check structurally rather than for an exact text form.
+        assert "CASE WHEN" in sql
+        assert "customers.region_id" in sql
+        # The aggregate body references the deeper path-aliased ref.
+        assert "customers__regions.population" in sql
+
+    async def test_no_path_alias_no_extra_join(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """Sanity: an aggregate over a local column with no path alias in
+        its sql emits zero joins (no spurious LEFT JOINs).
+        """
+        model = self._orders_model()
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        join_aliases = _join_aliases(sql)
+        assert join_aliases == set(), f"unexpected joins: {join_aliases}\n{sql}"
+
+    # ------------------------------------------------------------------
+    # Defensive scope skip + tracking xfails for follow-up tickets
+    # ------------------------------------------------------------------
+
+    async def test_cross_model_source_not_in_host_collector_scope(
+        self, storage
+    ) -> None:
+        """Defensive: the new collector skips AGGREGATE slots whose
+        ``source.path != ()`` (cross-model). For a cross-model aggregate
+        whose target column has a LOCAL sql (no further join) the host
+        base FROM must not pull a spurious deeper join.
+
+        Confirms the cross-model path IS exercised (positive: ``_cm_``
+        CTE present + the target column ref appears) AND no spurious
+        ``regions`` join leaks to the host base. The *missing* deeper-
+        join discovery for the cross-model case where the target column
+        ITSELF crosses a further join is covered by the strict xfail
+        below.
+        """
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            ],
+            joins=[
+                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            ],
+        ))
+        engine = SlayerQueryEngine(storage=storage)
+        query = SlayerQuery(
+            source_model="orders",
+            # cross-model aggregate on a LOCAL customers column (region_id).
+            measures=[ModelMeasure(formula="customers.region_id:count_distinct")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        # Positive: cross-model CTE was actually produced; the count
+        # aggregate references the joined model's column inside it.
+        assert "_cm_" in sql, f"expected cross-model CTE; got:\n{sql}"
+        assert "customers.region_id" in sql
+        # Negative: no spurious regions join leaks to the host base.
+        assert "regions" not in _join_aliases(sql)
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "DEV-1526 (sibling of DEV-1502 in cross-model space): a "
+            "cross-model aggregate (customers_v2.deep_pop:sum) whose "
+            "TARGET column's Column.sql is a joined-model ref "
+            "(regions.population, crossing the customers_v2 → regions "
+            "join) does not have that further join pulled into the "
+            "_cm_* CTE. The host-side collector added in DEV-1502 "
+            "explicitly skips source.path != () to avoid double-"
+            "emitting; the _cm_* CTE builder needs the symmetric fix. "
+            "File: cross_model_planner.py / "
+            "_render_cross_model_aggregate_cte_body at "
+            "slayer/sql/generator.py:5962. Auto-promotes when the CTE-"
+            "side collector lands."
+        ),
+    )
+    async def test_cross_model_target_column_sql_crosses_further_join_xfail(
+        self, storage
+    ) -> None:
+        """A cross-model aggregate ``customers_v2.deep_pop:sum`` where
+        ``deep_pop`` lives on ``customers_v2`` with sql ``regions.population``
+        — the deeper customers_v2→regions join should appear inside the
+        ``_cm_*`` CTE body. Currently it doesn't.
+        """
+        # `deep_pop` on customers_v2 points at the further-joined regions.
+        await storage.save_model(SlayerModel(
+            name="customers_v2", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+                Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders_x", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="customers_v2", join_pairs=[["customer_id", "id"]])],
+        ))
+        engine = SlayerQueryEngine(storage=storage)
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        # Extract the cross-model CTE body so the assertion ONLY pins
+        # the gap inside that scope (avoids accidental promotion from
+        # an unrelated host-level LEFT JOIN or formatting coincidence).
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "JOIN regions" in cm_body, (
+            f"expected JOIN to regions inside the _cm_* CTE; CTE body:\n{cm_body}"
+        )
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "DEV-1527 (sibling of DEV-1502 in agg-param space): a "
+            "parametric aggregation kwarg whose value is a derived "
+            "column with a __-path alias in its Column.sql (e.g. "
+            "weighted_avg(weight=region_weight) where region_weight.sql "
+            "= 'customers__regions.weight') emits the bare model-"
+            "qualified ref (orders.region_weight, a non-existent column) "
+            "AND does not pull the customers / customers__regions joins. "
+            "Fix touches _resolve_agg_param, _validate_agg_param_value's "
+            "_SAFE_AGG_PARAM_RE allowlist, agg_kwarg_canonical_str, and "
+            "_build_agg_render_spec_from_planned. Auto-promotes when the "
+            "kwarg-expansion fix lands."
+        ),
+    )
+    async def test_agg_param_derived_column_path_alias_xfail(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """``weighted_avg(weight=region_weight)`` where ``region_weight``
+        is a derived column with a path alias in its sql.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(
+                name="region_weight",
+                sql="customers__regions.weight",
+                type=DataType.DOUBLE,
+            ),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:weighted_avg(weight=region_weight)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        join_aliases = _join_aliases(sql)
+        assert "customers" in join_aliases
+        assert "customers__regions" in join_aliases
+        # The kwarg should resolve to the EXPANDED sql, not the bare ident.
+        assert "customers__regions.weight" in sql
+        # And the broken form must not appear.
+        assert "orders.region_weight" not in sql
 
 
 class TestAggParamSanitization:

@@ -3724,6 +3724,22 @@ class SQLGenerator:
         ):
             if p not in needed_join_paths:
                 needed_join_paths.append(p)
+        # DEV-1502: an AGGREGATE slot whose SOURCE is a derived
+        # (``ColumnSqlKey``) column whose ``Column.sql`` crosses a join
+        # (``customers__regions.population``) needs the same discovery the
+        # dimension path performs (DEV-1484). Symmetric with the filter case
+        # above; render-time expansion in ``_build_agg_render_spec_from_planned``
+        # already qualifies the body, so this pass only closes the join-discovery
+        # gap. Cross-model aggregate sources are skipped — they're owned by the
+        # per-plan ``_cm_*`` CTE (the symmetric in-CTE discovery gap is tracked
+        # separately).
+        for p in self._collect_aggregate_source_join_paths(
+            base_render_order=base_render_order, slots_by_id=slots_by_id,
+            source_relation=source_relation, source_model=source_model,
+            bundle=bundle,
+        ):
+            if p not in needed_join_paths:
+                needed_join_paths.append(p)
         from_clause, base_joins = self._build_from_and_joins(
             source_model=source_model,
             source_relation=source_relation,
@@ -8340,6 +8356,77 @@ class SQLGenerator:
                 for p in self._filter_join_paths(
                     sql=cfk.canonical_sql, source_relation=source_relation,
                     source_model=source_model, bundle=bundle,
+                ):
+                    if p not in paths:
+                        paths.append(p)
+            elif isinstance(key, ArithmeticKey):
+                for operand in key.operands:
+                    _visit(operand)
+            elif isinstance(key, ScalarCallKey):
+                for arg in key.args:
+                    _visit(arg)
+
+        for sid in base_render_order:
+            slot = slots_by_id.get(sid)
+            if slot is not None and slot.phase == Phase.AGGREGATE:
+                _visit(slot.key)
+        return paths
+
+    def _collect_aggregate_source_join_paths(  # NOSONAR(S3776) — one cohesive recursive walk of AGGREGATE composite keys (mirrors _collect_column_filter_join_paths) collecting derived-source Column.sql join paths.
+        self, *, base_render_order, slots_by_id, source_relation: str,
+        source_model, bundle,
+    ) -> List[Tuple[str, ...]]:
+        """Join paths needed by LOCAL aggregate slots whose ``source`` is a
+        derived (``ColumnSqlKey``) column whose ``Column.sql`` crosses a
+        join (DEV-1502).
+
+        Symmetric to the dimension treatment (DEV-1484) and the
+        ``Column.filter`` treatment (DEV-1494): the aggregate body already
+        renders the path-aliased ref via ``_expand_derived_column_sql`` at
+        spec-build time; this pass closes the loop by pulling the implied
+        ``LEFT JOIN``s into the host base FROM.
+
+        Recurses into AGGREGATE-phase composite keys (``ArithmeticKey`` /
+        ``ScalarCallKey``) so a path-aliased source nested inside e.g.
+        ``a:sum + b:sum`` or ``coalesce(a:sum, 0)`` discovers its crossed
+        join. Cross-model aggregate sources (non-empty ``source.path``)
+        are skipped: their joins live in the per-plan ``_cm_*`` CTE; the
+        symmetric in-CTE discovery gap is tracked separately.
+        """
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            ColumnSqlKey,
+            Phase,
+            ScalarCallKey,
+        )
+
+        paths: List[Tuple[str, ...]] = []
+
+        def _visit(key) -> None:
+            if isinstance(key, AggregateKey):
+                source = key.source
+                if not isinstance(source, ColumnSqlKey):
+                    return
+                if source.path:
+                    return
+                col = next(
+                    (c for c in source_model.columns if c.name == source.column_name),
+                    None,
+                )
+                if col is None or col.sql is None:
+                    return
+                expanded = self._expand_derived_column_sql(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    column_name=source.column_name,
+                    bundle=bundle,
+                )
+                for p in self._joined_paths_in_sql(
+                    sql_expr=self._parse(expanded),
+                    source_relation=source_relation,
+                    source_model=source_model,
+                    bundle=bundle,
                 ):
                     if p not in paths:
                         paths.append(p)
