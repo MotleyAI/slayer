@@ -8182,6 +8182,52 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "LIMIT 1" in base_body.upper()
         _assert_valid_sql(sql)
 
+    async def test_first_last_with_host_filter_not_reapplied_outside_ranked_subquery(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """A query mixing a LOCAL first/last measure and a host ROW
+        filter must apply the filter only INSIDE the ranked subquery
+        (pre-ranking), not again on the outer ``_base`` SELECT. The
+        first/last branch returns ``where_consumed=True``; the cross-
+        model orchestrator must honour that and skip the outer WHERE
+        application, otherwise the filter double-applies and changes
+        first/last semantics by filtering AFTER ranking.
+
+        Pins CodeRabbit thread on ``_base_where_consumed``.
+        """
+        claim_amount_model_with_time.columns.append(
+            Column(name="status", sql="status", type=DataType.TEXT),
+        )
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[
+                ModelMeasure(formula="total_amount:last"),
+                ModelMeasure(formula="loss_payment.has_flag:sum"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                ),
+            ],
+            filters=["status = 'active'"],
+        )
+        sql = await self._sql(
+            claim_amount_model_with_time, related_models, query,
+        )
+        # The filter literal must appear exactly ONCE in _base — inside
+        # the ranked subquery's WHERE. A second occurrence (outside the
+        # subquery on the wrapping _base SELECT) means base_where was
+        # re-applied even though where_consumed signalled otherwise.
+        base_body = _extract_cte_body(sql, r"_base")
+        assert base_body.count("'active'") == 1, (
+            f"Host filter literal must appear exactly once (inside the "
+            f"ranked subquery's WHERE); got {base_body.count(chr(39) + 'active' + chr(39))} occurrences:"
+            f"\n{base_body}"
+        )
+        _assert_valid_sql(sql)
+
     async def test_filtered_local_in_source_queries_smoke(
         self, generator: SQLGenerator,
     ) -> None:

@@ -5108,7 +5108,13 @@ class SQLGenerator:
                 first_last_state=base_first_last_state,
                 aliases_by_slot_id=aliases_by_slot_id,
             )
-            if base_where is not None:
+            # CodeRabbit thread: the first/last ranked-subquery path
+            # consumes WHERE inside the ranked subquery and returns
+            # ``where_consumed=True``. Re-applying ``base_where`` to the
+            # outer SELECT here would double-filter (and change
+            # first/last semantics by filtering AFTER ranking) and can
+            # dangle joined-column aliases on the outer SELECT scope.
+            if base_where is not None and not _base_where_consumed:
                 base_select = base_select.where(base_where)
             base_dim_only_dedup = bool(base_group_by) and not base_has_agg
             if (base_has_agg or base_dim_only_dedup) and base_group_by:
@@ -5232,6 +5238,7 @@ class SQLGenerator:
         # promoted as aux above). Wrap with ``AS "<public_alias>"`` so the
         # composite surfaces under the user-declared name.
         outer_composite_order_alias_by_sid: Dict[str, str] = {}
+        outer_composite_order_expressions: Dict[str, str] = {}
         if outer_composite_slot_ids:
             outer_composite_cm_map: Dict[str, Tuple[str, str]] = {}
             for plan in planned_query.cross_model_aggregate_plans:
@@ -5287,12 +5294,16 @@ class SQLGenerator:
                 # combined-level ORDER BY references.
                 outer_composite_order_alias_by_sid.setdefault(sid, full_alias)
 
-            # Order-only outer composites (Codex round 3 #1): not in
-            # public projection but referenced by ``planned_query.order``.
-            # Materialise as a HIDDEN column in the combined SELECT so the
-            # ORDER BY can resolve via the synthesised alias. The synthetic
-            # alias uses ``declared_name`` to avoid colliding with any
-            # public alias.
+            # Order-only outer composites (Codex round 3 #1 / round 8):
+            # not in public projection but referenced by
+            # ``planned_query.order``. Rather than materialise as a
+            # hidden combined-SELECT column (which would leak as an
+            # extra public-result column on the no-transform path AND
+            # disappear from the cross-model transform chain's
+            # carry-forward dict), render the expression INLINE in the
+            # combined ORDER BY. ``outer_composite_order_expressions``
+            # carries the rendered SQL for each order-only slot; the
+            # order-by builder emits ``<expr> {direction}`` bare.
             projection_set_for_outer = set(planned_query.projection)
             for entry in planned_query.order:
                 sid = entry.slot_id
@@ -5303,13 +5314,9 @@ class SQLGenerator:
                 cslot = slots_by_id.get(sid)
                 if cslot is None:
                     continue
-                hidden_alias = (
-                    f"{source_relation}.{cslot.declared_name}"
+                outer_composite_order_expressions[sid] = (
+                    _render_outer_composite(cslot)
                 )
-                combined_parts.append(
-                    f'{_render_outer_composite(cslot)} AS "{hidden_alias}"',
-                )
-                outer_composite_order_alias_by_sid[sid] = hidden_alias
         # Cross-model side: one entry per declared user alias, all
         # referencing the CTE's aggregate column (canonical for the forward
         # path; the sub-plan alias for the re-rooted path). When the public
@@ -5432,6 +5439,7 @@ class SQLGenerator:
             cm_alias_for_plan=canonical_alias_for_plan,
             bare_order_slot_ids=set(order_only_local_ids),
             outer_composite_aliases=outer_composite_order_alias_by_sid,
+            outer_composite_expressions=outer_composite_order_expressions,
         )
         if order_sql:
             sql += "\n" + order_sql
@@ -6559,6 +6567,7 @@ class SQLGenerator:
         cm_alias_for_plan: Dict[str, str],
         bare_order_slot_ids: Optional[Set[str]] = None,
         outer_composite_aliases: Optional[Dict[str, str]] = None,
+        outer_composite_expressions: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Build the ORDER BY clause for the combined SELECT.
 
@@ -6585,6 +6594,7 @@ class SQLGenerator:
             return None
         bare_ids = bare_order_slot_ids or set()
         outer_aliases = outer_composite_aliases or {}
+        outer_expressions = outer_composite_expressions or {}
         parts: List[str] = []
         for entry in planned_query.order:
             slot = slots_by_id.get(entry.slot_id)
@@ -6598,6 +6608,7 @@ class SQLGenerator:
                 cm_alias_for_plan=cm_alias_for_plan,
                 bare_ids=bare_ids,
                 outer_aliases=outer_aliases,
+                outer_expressions=outer_expressions,
             )
             if term is not None:
                 parts.append(term)
@@ -6615,14 +6626,19 @@ class SQLGenerator:
         cm_alias_for_plan: Dict[str, str],
         bare_ids: Set[str],
         outer_aliases: Dict[str, str],
+        outer_expressions: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Resolve one ``OrderEntry`` to its ``"alias" <direction>`` term.
 
-        Cross-model agg slot → bare CTE alias; outer-composite slot →
-        bare combined-SELECT alias; hidden order-only local → bare
-        ``_base`` alias; everything else → qualified ``_base."<alias>"``.
-        Returns ``None`` when the cross-model alias map has no entry
-        (the order slot can't be rendered).
+        Cross-model agg slot → bare CTE alias; projected outer-composite
+        slot → bare combined-SELECT alias; order-only outer composite
+        (Codex round 8 / CodeRabbit) → inline ``<expression> <dir>`` so
+        no synthetic alias leaks into the combined projection and the
+        transform-chain carry-forward doesn't lose track; hidden
+        order-only local → bare ``_base`` alias; everything else →
+        qualified ``_base."<alias>"``. Returns ``None`` when the
+        cross-model alias map has no entry (the order slot can't be
+        rendered).
         """
         direction = "ASC" if entry.direction == "asc" else "DESC"
         if entry.slot_id in cma_slot_ids:
@@ -6632,6 +6648,8 @@ class SQLGenerator:
             return f'"{alias}" {direction}'
         if entry.slot_id in outer_aliases:
             return f'"{outer_aliases[entry.slot_id]}" {direction}'
+        if outer_expressions and entry.slot_id in outer_expressions:
+            return f'{outer_expressions[entry.slot_id]} {direction}'
         full_alias = self._full_alias_for_slot(
             slot=slot,
             source_relation=source_relation,
