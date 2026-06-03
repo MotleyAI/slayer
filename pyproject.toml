@@ -65,7 +65,7 @@ litellm = {version = ">=1.50", optional = true}
 numpy = {version = ">=1.24", optional = true}
 # LadybugDB is the active successor to KuzuDB (same codebase, new name after
 # the original KuzuDB repo was archived post-acquisition). Import name is
-# ``ladybug``; the old ``kuzu`` package is a legacy fallback.
+# ``ladybug``.
 ladybug = {version = ">=0.1", optional = true}
 
 [tool.poetry.extras]

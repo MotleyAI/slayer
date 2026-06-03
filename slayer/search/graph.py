@@ -7,8 +7,7 @@ pre-filter the three search channels.
 Requires the ``advanced_search`` extra (``pip install motley-slayer[advanced_search]``),
 which pulls in ``ladybug`` — the active successor to KuzuDB (same codebase,
 new name after the original KuzuDB repo was archived post-acquisition).
-The legacy ``kuzu`` package is accepted as a fallback for users who have not
-yet migrated. If neither is installed, ``is_available()`` returns ``False``
+If LadybugDB is not installed, ``is_available()`` returns ``False``
 and no graph code is reachable.
 
 Graph schema
@@ -52,27 +51,24 @@ from slayer.storage.base import StorageBackend
 
 @lru_cache(maxsize=1)
 def is_available() -> bool:
-    """Return True when LadybugDB (or the legacy kuzu package) is importable."""
-    for module_name in ("ladybug", "kuzu"):
-        try:
-            __import__(module_name)
-            return True
-        except ImportError:
-            continue
-    return False
+    """Return True when LadybugDB is importable."""
+    try:
+        import ladybug  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 def _import_graph_module() -> Any:
-    """Import LadybugDB, falling back to the legacy kuzu package name."""
-    for name in ("ladybug", "kuzu"):
-        try:
-            return __import__(name)
-        except ImportError:
-            continue
-    raise ImportError(
-        "LadybugDB not installed; "
-        "install with: pip install motley-slayer[advanced_search]"
-    )
+    """Import LadybugDB."""
+    try:
+        import ladybug
+        return ladybug
+    except ImportError:
+        raise ImportError(
+            "LadybugDB not installed; "
+            "install with: pip install motley-slayer[advanced_search]"
+        )
 
 
 # ---------------------------------------------------------------------------
