@@ -820,6 +820,74 @@ class TestDatasourceConfig:
         ds = DatasourceConfig(name="test", type="sqlite", database="/tmp/test.db")
         assert ds.get_connection_string() == "sqlite:////tmp/test.db"
 
+    def test_sqlserver_connection_string_uses_pyodbc_driver(self) -> None:
+        ds = DatasourceConfig(
+            name="test",
+            type="mssql",
+            host="localhost",
+            port=1433,
+            database="mydb",
+            username="sa",
+            password="Secret!123",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        cs = ds.get_connection_string()
+        assert cs.startswith("mssql+pyodbc://")
+        assert "localhost" in cs
+        assert "mydb" in cs
+
+    def test_sqlserver_connection_string_includes_odbc_driver_param(self) -> None:
+        ds = DatasourceConfig(name="test", type="mssql", host="sqlhost", database="db")
+        cs = ds.get_connection_string()
+        assert "driver=ODBC+Driver+18+for+SQL+Server" in cs
+
+    def test_sqlserver_connection_string_includes_trust_server_cert(self) -> None:
+        ds = DatasourceConfig(name="test", type="mssql", host="sqlhost", database="db")
+        cs = ds.get_connection_string()
+        # Required for self-signed certs in Docker dev environments; must be lowercase=yes
+        cs_lower = cs.lower()
+        assert "trustservercertificate" in cs_lower
+        assert "yes" in cs_lower
+
+    def test_sqlserver_type_alias_sqlserver(self) -> None:
+        """'sqlserver' alias gets pyodbc driver and TrustServerCertificate params."""
+        ds = DatasourceConfig(name="test", type="sqlserver", host="h", database="db")
+        cs = ds.get_connection_string()
+        assert cs.startswith("mssql+pyodbc://")
+        assert "trustservercertificate" in cs.lower()
+        assert "odbc" in cs.lower()
+
+    def test_sqlserver_type_alias_tsql(self) -> None:
+        """'tsql' alias gets pyodbc driver and TrustServerCertificate params."""
+        ds = DatasourceConfig(name="test", type="tsql", host="h", database="db")
+        cs = ds.get_connection_string()
+        assert cs.startswith("mssql+pyodbc://")
+        assert "trustservercertificate" in cs.lower()
+        assert "odbc" in cs.lower()
+
+    def test_sqlserver_with_port(self) -> None:
+        ds = DatasourceConfig(
+            name="test", type="mssql", host="sqlhost", port=1433, database="mydb",
+        )
+        cs = ds.get_connection_string()
+        assert "1433" in cs
+
+    def test_sqlserver_special_chars_in_password_are_url_encoded(self) -> None:
+        """Passwords with '@' must not break URL parsing (the Docker example uses 'YourStrong@Passw0rd')."""
+        ds = DatasourceConfig(
+            name="test",
+            type="mssql",
+            host="sqlserver",
+            port=1433,
+            database="slayer_demo",
+            username="sa",
+            password="YourStrong@Passw0rd",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        cs = ds.get_connection_string()
+        assert "@Passw0rd" not in cs, "raw '@' in password must be percent-encoded"
+        assert "%40" in cs, "the '@' in password must appear as %40"
+        assert "sqlserver" in cs
+        assert "slayer_demo" in cs
+
 
 class TestTimeGranularity:
     def test_period_start_week(self) -> None:

@@ -8,6 +8,7 @@ import sqlalchemy.exc
 
 from slayer.sql import client as sql_client
 from slayer.sql.client import (
+    _build_type_probe_sql,
     _execute_with_retry_async,
     _execute_with_retry_sync,
     _execute_with_retry_threaded,
@@ -97,6 +98,60 @@ class TestMapTypeCode:
     def test_mysql_decimal_oid(self) -> None:
         """MySQL MYSQL_TYPE_DECIMAL = 0."""
         assert _map_type_code(0, db_type="mysql") == "number"
+
+    # --- SQL Server / pyodbc ODBC SQL type codes ---
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_integer_odbc_code_is_number(self, db_type: str) -> None:
+        # SQL_INTEGER
+        assert _map_type_code(4, db_type=db_type) == "number"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_bigint_odbc_code_is_number(self, db_type: str) -> None:
+        # SQL_BIGINT
+        assert _map_type_code(-5, db_type=db_type) == "number"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_varchar_odbc_code_is_string(self, db_type: str) -> None:
+        # SQL_VARCHAR
+        assert _map_type_code(12, db_type=db_type) == "string"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_timestamp_odbc_code_is_time(self, db_type: str) -> None:
+        # SQL_TYPE_TIMESTAMP
+        assert _map_type_code(93, db_type=db_type) == "time"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_bit_odbc_code_is_boolean(self, db_type: str) -> None:
+        # SQL_BIT
+        assert _map_type_code(-7, db_type=db_type) == "boolean"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_datetimeoffset_odbc_code_is_time(self, db_type: str) -> None:
+        # SQL_SS_TIMESTAMPOFFSET (datetimeoffset)
+        assert _map_type_code(-154, db_type=db_type) == "time"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_time2_odbc_code_is_time(self, db_type: str) -> None:
+        # SQL_SS_TIME2 (time with fractional seconds)
+        assert _map_type_code(-155, db_type=db_type) == "time"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_xml_odbc_code_is_string(self, db_type: str) -> None:
+        # SQL_SS_XML
+        assert _map_type_code(-152, db_type=db_type) == "string"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_guid_odbc_code_is_string(self, db_type: str) -> None:
+        # SQL_GUID (uniqueidentifier)
+        assert _map_type_code(-11, db_type=db_type) == "string"
+
+    def test_tsql_does_not_fall_through_to_pg_oid_map(self) -> None:
+        # Postgres OID 4 maps to nothing in PG map — it's SQL_INTEGER in ODBC.
+        # Without the tsql branch it would return "string" (PG fallback).
+        # With the tsql branch it correctly returns "number".
+        assert _map_type_code(4, db_type="mssql") == "number"
+        assert _map_type_code(4) == "string"  # Postgres fallback (OID 4 not in PG map)
 
 
 def _make_op_error(orig_message: str = "database is locked") -> sqlalchemy.exc.OperationalError:
@@ -354,3 +409,38 @@ class TestRetryEmptySqlExcerpt:
             "Transient DB error" in rec.getMessage() and "<empty sql>" in rec.getMessage()
             for rec in caplog.records
         )
+
+
+class TestBuildTypeProbeSQL:
+    """_build_type_probe_sql must emit dialect-appropriate row-limiting syntax."""
+
+    BASE = "SELECT id, name FROM orders"
+
+    def test_standard_dialect_uses_limit_0(self) -> None:
+        sql = _build_type_probe_sql(self.BASE, db_type="postgres")
+        assert "LIMIT 0" in sql
+        assert "TOP" not in sql
+
+    def test_sqlite_uses_limit_1(self) -> None:
+        sql = _build_type_probe_sql(self.BASE, db_type="sqlite")
+        assert "LIMIT 1" in sql
+        assert "TOP" not in sql
+
+    def test_mssql_uses_top_0(self) -> None:
+        sql = _build_type_probe_sql(self.BASE, db_type="mssql")
+        assert "SELECT TOP 0" in sql
+        assert "LIMIT" not in sql
+
+    def test_sqlserver_alias_uses_top_0(self) -> None:
+        sql = _build_type_probe_sql(self.BASE, db_type="sqlserver")
+        assert "SELECT TOP 0" in sql
+        assert "LIMIT" not in sql
+
+    def test_tsql_alias_uses_top_0(self) -> None:
+        sql = _build_type_probe_sql(self.BASE, db_type="tsql")
+        assert "SELECT TOP 0" in sql
+        assert "LIMIT" not in sql
+
+    def test_none_db_type_uses_limit(self) -> None:
+        sql = _build_type_probe_sql(self.BASE, db_type=None)
+        assert "LIMIT 0" in sql

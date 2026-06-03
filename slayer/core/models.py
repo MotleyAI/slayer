@@ -6,6 +6,7 @@ import re
 from typing import Annotated, Any, Dict, List, Optional
 
 from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
+from sqlalchemy.engine import URL as _SA_URL
 
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
@@ -747,11 +748,27 @@ class DatasourceConfig(BaseModel):
         _NO_COLON.check(name=v, context=label)
         return v
 
+    def _get_tsql_connection_string(self) -> str:
+        return _SA_URL.create(
+            "mssql+pyodbc",
+            username=self.username or None,
+            password=self.password or None,
+            host=self.host or "localhost",
+            port=self.port,
+            database=self.database or "",
+            query={
+                "driver": "ODBC Driver 18 for SQL Server",
+                "TrustServerCertificate": "yes",
+            },
+        ).render_as_string(hide_password=False)
+
     def get_connection_string(self) -> str:
         if self.connection_string:
             return self.connection_string
         if self.type in ("sqlite", "duckdb"):
             return f"{self.type}:///{self.database}"
+        if self.type in ("mssql", "sqlserver", "tsql"):
+            return self._get_tsql_connection_string()
         driver_map = {
             "postgres": "postgresql",
             "postgresql": "postgresql",
