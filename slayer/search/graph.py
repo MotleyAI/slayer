@@ -81,6 +81,13 @@ _MUTATION_RE = re.compile(
     r"\b(CREATE|MERGE|DELETE|SET|DROP|CALL)\b", re.IGNORECASE
 )
 _AS_ID_RE = re.compile(r"\bAS\s+id\b", re.IGNORECASE)
+# Matches single- and double-quoted string literals (with backslash-escape
+# support) so we can strip them before scanning for mutation keywords and
+# avoid false-positive rejections on property values like 'call me'.
+_QUOTED_STRING_RE = re.compile(
+    r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"",
+    re.DOTALL,
+)
 
 
 def _validate_cypher(cypher: str) -> None:
@@ -96,7 +103,8 @@ def _validate_cypher(cypher: str) -> None:
             "cypher_filter must be a single statement; "
             "semicolons are not allowed."
         )
-    match = _MUTATION_RE.search(cypher)
+    bare = _QUOTED_STRING_RE.sub("", cypher)
+    match = _MUTATION_RE.search(bare)
     if match:
         raise ValueError(
             f"cypher_filter must be read-only; "
@@ -350,6 +358,8 @@ async def build_graph(storage: StorageBackend) -> tuple[Any, Any]:
     Memory canonical IDs are stored in ``memory:<id>`` form.
     """
     mod = _import_graph_module()
+    # No-argument Database() creates an ephemeral in-memory instance in
+    # kuzu ≥ 0.3 / ladybug; no files are written to the working directory.
     db = mod.Database()
     conn = db.connect()
     _create_schema(conn)
@@ -413,8 +423,19 @@ def _get_lock(key: str) -> asyncio.Lock:
     return _locks[key]
 
 
+def _close_entry(entry: "_GraphCache") -> None:
+    """Best-effort close of a cached graph entry to release kuzu handles."""
+    for obj in (entry.conn, entry.db):
+        try:
+            obj.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def clear_cache() -> None:
     """Discard all cached graphs and locks. Primarily used in tests."""
+    for entry in _cache.values():
+        _close_entry(entry)
     _cache.clear()
     _locks.clear()
 
@@ -440,7 +461,10 @@ async def _get_or_rebuild(storage: StorageBackend) -> tuple[Any, Any]:
         if cached is not None and current_fp is not None and cached.fingerprint == current_fp:
             return cached.db, cached.conn
 
+        old = _cache.get(key)
         db, conn = await build_graph(storage)
+        if old is not None:
+            _close_entry(old)
         _cache[key] = _GraphCache(
             fingerprint=current_fp if current_fp is not None else "",
             db=db,

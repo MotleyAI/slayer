@@ -688,6 +688,7 @@ class SearchService:
         if not channel_1_active and not question_active:
             return await self._recency_fallback(
                 datasource=datasource,
+                candidate_ids=candidate_ids,
                 max_memories=max_memories,
                 max_example_queries=max_example_queries,
                 warnings=warnings,
@@ -905,6 +906,7 @@ class SearchService:
         max_example_queries: int,
         warnings: List[str],
         datasource: Optional[str] = None,
+        candidate_ids: Optional[FrozenSet[str]] = None,
     ) -> SearchResponse:
         """Empty-input branch: partition all memories by recency into the
         learning-only bucket (``memories``, capped by ``max_memories``)
@@ -923,6 +925,11 @@ class SearchService:
             await self._storage.list_memories(entities=None),
             datasource,
         )
+        if candidate_ids is not None:
+            recency_memories = [
+                m for m in recency_memories
+                if f"memory:{m.id}" in candidate_ids
+            ]
         recency_memories.sort(key=lambda m: m.created_at, reverse=True)
         valid_canonicals = await self._valid_canonical_set(
             all_memories=recency_memories, datasource=datasource,
@@ -1053,6 +1060,9 @@ class SearchService:
                 # memory:<id> refs participate in the memory ranking only.
                 continue
             if candidate_ids is not None and canonical not in candidate_ids:
+                warnings.append(
+                    f"entity {canonical!r} excluded by cypher_filter."
+                )
                 continue
             if datasource is not None and not canonical_id_rooted_at(
                 canonical_id=canonical, datasource=datasource,

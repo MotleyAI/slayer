@@ -1078,3 +1078,72 @@ async def test_stale_canonical_ids_in_candidate_set_cause_no_error(
     assert isinstance(response, SearchResponse)
     result_ids = {h.id for h in response.memories}
     assert mem.id not in result_ids
+
+
+# ---------------------------------------------------------------------------
+# Regex false-positive fix: mutation keywords inside string literals
+# ---------------------------------------------------------------------------
+
+
+def test_validate_cypher_accepts_mutation_keyword_in_string_literal() -> None:
+    """A Cypher query whose property value contains a mutation keyword as a
+    standalone word must NOT be rejected by the safety validator."""
+    from slayer.search.graph import _validate_cypher
+
+    # 'call me' contains the CALL keyword but is a string literal.
+    _validate_cypher(
+        "MATCH (m:Memory) WHERE m.learning CONTAINS 'call me' RETURN m.id AS id"
+    )
+    # 'set operations' contains SET as a standalone word.
+    _validate_cypher(
+        "MATCH (m:Memory) WHERE m.learning = 'set operations' RETURN m.id AS id"
+    )
+    # Double-quoted literal with DROP.
+    _validate_cypher(
+        'MATCH (c:Column) WHERE c.description = "drop rate" RETURN c.id AS id'
+    )
+
+
+def test_validate_cypher_still_rejects_bare_mutation_keyword() -> None:
+    """A mutation keyword that is NOT inside a string literal must still be
+    rejected — the literal-stripping must not be too greedy."""
+    from slayer.search.graph import _validate_cypher
+
+    with pytest.raises(ValueError, match="mutation keyword"):
+        _validate_cypher("MATCH (m:Memory) SET m.x = 1 RETURN m.id AS id")
+
+    with pytest.raises(ValueError, match="mutation keyword"):
+        _validate_cypher("CALL apoc.something() YIELD value RETURN value AS id")
+
+
+# ---------------------------------------------------------------------------
+# cypher_filter respected by the recency fallback path
+# ---------------------------------------------------------------------------
+
+
+async def test_cypher_filter_applied_to_recency_fallback(
+    shop_only_storage: YAMLStorage,
+) -> None:
+    """When cypher_filter is set but no entities/question are provided, the
+    recency fallback must only return memories whose id is in the Cypher
+    result set — not the full corpus."""
+    mem_in = await shop_only_storage.save_memory(
+        learning="This memory should appear.", entities=[]
+    )
+    mem_out = await shop_only_storage.save_memory(
+        learning="This memory should NOT appear.", entities=[]
+    )
+    allowed_id = f"memory:{mem_in.id}"
+
+    service = SearchService(storage=shop_only_storage)
+    with patch(
+        "slayer.search.graph.get_filtered_ids",
+        return_value=frozenset({allowed_id}),
+    ):
+        response = await service.search(
+            cypher_filter="MATCH (m:Memory) RETURN m.id AS id",
+        )
+
+    result_ids = {h.id for h in response.memories}
+    assert mem_in.id in result_ids
+    assert mem_out.id not in result_ids
