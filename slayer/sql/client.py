@@ -202,6 +202,8 @@ def _map_type_code(type_code, db_type: Optional[str] = None) -> str:
         # Select the correct map by database type
         if db_type and "mysql" in db_type.lower():
             return _MYSQL_TYPE_MAP.get(type_code, "string")
+        if db_type and any(t in db_type.lower() for t in ("mssql", "sqlserver", "tsql")):
+            return _ODBC_SQL_TYPE_MAP.get(type_code, "string")
         return _PG_OID_MAP.get(type_code, "string")
     return "string"
 
@@ -249,6 +251,43 @@ _MYSQL_TYPE_MAP: Dict[int, str] = {
     15: "string",    # MYSQL_TYPE_VARCHAR
     253: "string",   # MYSQL_TYPE_VAR_STRING
     254: "string",   # MYSQL_TYPE_STRING
+}
+
+# ODBC SQL type codes (pyodbc with SQL Server / mssql+pyodbc driver).
+# Positive codes are the standard ODBC C-level SQL_* constants; negative codes
+# are SQL Server extensions (SQL_SS_*) defined in msodbcsql.h.
+_ODBC_SQL_TYPE_MAP: Dict[int, str] = {
+    # Integer / numeric family
+    4: "number",      # SQL_INTEGER
+    5: "number",      # SQL_SMALLINT
+    -6: "number",     # SQL_TINYINT
+    -5: "number",     # SQL_BIGINT
+    2: "number",      # SQL_NUMERIC
+    3: "number",      # SQL_DECIMAL
+    6: "number",      # SQL_FLOAT
+    7: "number",      # SQL_REAL
+    8: "number",      # SQL_DOUBLE
+    # String family
+    1: "string",      # SQL_CHAR
+    12: "string",     # SQL_VARCHAR
+    -1: "string",     # SQL_LONGVARCHAR
+    -8: "string",     # SQL_WCHAR
+    -9: "string",     # SQL_WVARCHAR
+    -10: "string",    # SQL_WLONGVARCHAR
+    -152: "string",   # SQL_SS_XML
+    -11: "string",    # SQL_GUID (uniqueidentifier)
+    # Boolean
+    -7: "boolean",    # SQL_BIT
+    # Binary (rowversion / varbinary — treat as opaque string)
+    -2: "string",     # SQL_BINARY
+    -3: "string",     # SQL_VARBINARY
+    -4: "string",     # SQL_LONGVARBINARY
+    # Temporal family
+    91: "time",       # SQL_TYPE_DATE
+    92: "time",       # SQL_TYPE_TIME
+    93: "time",       # SQL_TYPE_TIMESTAMP
+    -154: "time",     # SQL_SS_TIMESTAMPOFFSET (datetimeoffset)
+    -155: "time",     # SQL_SS_TIME2 (time with fractional seconds)
 }
 
 

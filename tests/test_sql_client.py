@@ -99,6 +99,40 @@ class TestMapTypeCode:
         """MySQL MYSQL_TYPE_DECIMAL = 0."""
         assert _map_type_code(0, db_type="mysql") == "number"
 
+    # --- SQL Server / pyodbc ODBC SQL type codes ---
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_integer_odbc_code_is_number(self, db_type: str) -> None:
+        # SQL_INTEGER = 4
+        assert _map_type_code(4, db_type=db_type) == "number"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_bigint_odbc_code_is_number(self, db_type: str) -> None:
+        # SQL_BIGINT = -5
+        assert _map_type_code(-5, db_type=db_type) == "number"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_varchar_odbc_code_is_string(self, db_type: str) -> None:
+        # SQL_VARCHAR = 12
+        assert _map_type_code(12, db_type=db_type) == "string"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_timestamp_odbc_code_is_time(self, db_type: str) -> None:
+        # SQL_TYPE_TIMESTAMP = 93
+        assert _map_type_code(93, db_type=db_type) == "time"
+
+    @pytest.mark.parametrize("db_type", ["mssql", "sqlserver", "tsql"])
+    def test_tsql_bit_odbc_code_is_boolean(self, db_type: str) -> None:
+        # SQL_BIT = -7
+        assert _map_type_code(-7, db_type=db_type) == "boolean"
+
+    def test_tsql_does_not_fall_through_to_pg_oid_map(self) -> None:
+        # Postgres OID 4 maps to nothing in PG map — it's SQL_INTEGER in ODBC.
+        # Without the tsql branch it would return "string" (PG fallback).
+        # With the tsql branch it correctly returns "number".
+        assert _map_type_code(4, db_type="mssql") == "number"
+        assert _map_type_code(4) == "string"  # Postgres fallback (OID 4 not in PG map)
+
 
 def _make_op_error(orig_message: str = "database is locked") -> sqlalchemy.exc.OperationalError:
     """An OperationalError carrying a chosen DBAPI message in ``exc.orig``.
