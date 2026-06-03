@@ -81,7 +81,7 @@ async def test_question_only_warns_when_extra_missing(
     service = SearchService(storage=storage)
     response = await service.search(question="how do I look up purchases?")
     assert any(
-        "embedding_search" in w for w in response.warnings
+        "advanced_search" in w for w in response.warnings
     ), response.warnings
 
 

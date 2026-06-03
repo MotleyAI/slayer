@@ -605,6 +605,16 @@ examples:
         help="Cap on returned entity hits (default 5).",
     )
     search_parser.add_argument(
+        "--cypher-filter",
+        default=None,
+        dest="cypher_filter",
+        help=(
+            "openCypher MATCH query returning '… AS id' to pre-filter all "
+            "channels to matching canonical IDs. Requires the advanced_search "
+            "extra (LadybugDB). Read-only — no CREATE/MERGE/DELETE."
+        ),
+    )
+    search_parser.add_argument(
         "--format",
         choices=["json", "text"],
         default="text",
@@ -800,6 +810,7 @@ def _run_search_query(args, storage) -> None:
             max_memories=args.max_memories,
             max_example_queries=args.max_example_queries,
             max_entities=args.max_entities,
+            cypher_filter=args.cypher_filter,
         ))
     except (EntityResolutionError, AmbiguousModelError, ValueError) as exc:
         _exit_with_error(exc)

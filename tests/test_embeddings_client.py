@@ -78,7 +78,7 @@ async def test_embed_batch_calls_litellm_with_resolved_model(
             [{"embedding": [float(i)] * 4} for i, _ in enumerate(input)]
         )
 
-    import litellm
+    litellm = pytest.importorskip("litellm")
     monkeypatch.setattr(litellm, "aembedding", fake_aembedding)
     vectors = await embedding_client.embed_batch(["a", "b"])
     assert captured["model"] == "openai/test-model"
@@ -94,7 +94,7 @@ async def test_embed_batch_swallows_exception_and_returns_none_list(
     async def boom(*_a: Any, **_kw: Any) -> Any:
         raise RuntimeError("rate limit")
 
-    import litellm
+    litellm = pytest.importorskip("litellm")
     monkeypatch.setattr(litellm, "aembedding", boom)
     result = await embedding_client.embed_batch(
         ["x", "y"], model="openai/x",
@@ -116,7 +116,7 @@ async def test_embed_batch_pads_short_response_with_none(
     async def short_response(*_a: Any, **_kw: Any) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
         return _FakeResponse()
 
-    import litellm
+    litellm = pytest.importorskip("litellm")
     monkeypatch.setattr(litellm, "aembedding", short_response)
     result = await embedding_client.embed_batch(["a", "b", "c"])
     assert result == [[1.0, 2.0], None, None]

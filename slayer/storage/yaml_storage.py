@@ -74,6 +74,28 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             db_path=os.path.join(base_dir, "embeddings.db"),
         )
 
+    # ---- graph fingerprint -------------------------------------------------
+
+    def graph_fingerprint(self) -> str:
+        """Max mtime (as a string) across all YAML files under base_dir.
+
+        Covers memories.yaml, datasource YAMLs, and model YAMLs.  Changes
+        whenever any write touches those files, so the graph cache is
+        invalidated on every relevant mutation.
+        """
+        max_mtime = 0.0
+        for root, _dirs, files in os.walk(self.base_dir):
+            for fname in files:
+                if fname.endswith(".yaml") or fname.endswith(".yml"):
+                    try:
+                        max_mtime = max(
+                            max_mtime,
+                            os.path.getmtime(os.path.join(root, fname)),
+                        )
+                    except OSError:
+                        pass
+        return str(max_mtime)
+
     # ---- internal helpers --------------------------------------------------
 
     def _model_path(self, data_source: str, name: str) -> str:

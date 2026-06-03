@@ -1017,7 +1017,7 @@ async def ingest_datasource_idempotent(
     # DEV-1386: refresh persisted embeddings for the datasource doc plus
     # every visible model + its visible children. Best-effort: per-entity
     # failures are surfaced as IngestionError entries, never aborts
-    # ingestion. When the `embedding_search` extra is not installed,
+    # ingestion. When the `advanced_search` extra is not installed,
     # EmbeddingService returns a single warning and does no work.
     embedding_errors = await _refresh_datasource_embeddings(
         datasource_name=datasource.name, storage=storage,

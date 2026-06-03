@@ -392,13 +392,14 @@ class SlayerClient:
         max_memories: int = 5,
         max_example_queries: int = 2,
         max_entities: int = 5,
+        cypher_filter: Optional[str] = None,
     ) -> "SearchResponse":
         """Up to three-channel semantic search over memories + canonical
         entities.
 
         Channels: (1) entity-overlap BM25 over memories; (2) tantivy
         full-text over memories ∪ entities; (3) optional dense embedding
-        similarity (gated by the ``embedding_search`` extra and a
+        similarity (gated by the ``advanced_search`` extra and a
         configured provider API key). Memory rankings from all active
         channels and entity rankings from channels 2 and 3 are fused via
         Reciprocal Rank Fusion (``k=60``).
@@ -438,6 +439,7 @@ class SlayerClient:
                 max_memories=max_memories,
                 max_example_queries=max_example_queries,
                 max_entities=max_entities,
+                cypher_filter=cypher_filter,
             )
         body: Dict[str, Any] = {
             "max_memories": max_memories,
@@ -452,6 +454,8 @@ class SlayerClient:
             body["question"] = question
         if datasource is not None:
             body["datasource"] = datasource
+        if cypher_filter is not None:
+            body["cypher_filter"] = cypher_filter
         result = await self._request(method="POST", path="/search", json=body)
         return SearchResponse.model_validate(result)
 

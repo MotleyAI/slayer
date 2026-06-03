@@ -150,6 +150,7 @@ class SearchRequest(BaseModel):
     max_memories: int = 5
     max_example_queries: int = 2
     max_entities: int = 5
+    cypher_filter: Optional[str] = None
 
 
 def _slayer_version() -> str:
@@ -673,6 +674,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 max_memories=request.max_memories,
                 max_example_queries=request.max_example_queries,
                 max_entities=request.max_entities,
+                cypher_filter=request.cypher_filter,
             )
         except (
             EntityResolutionError,

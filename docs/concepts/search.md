@@ -7,7 +7,7 @@ Reciprocal Rank Fusion. It is the **only** retrieval surface — there is
 no separate recall tool.
 
 A third channel (dense embeddings via litellm) is gated behind the
-optional `embedding_search` extra. When the extra is not installed or
+optional `advanced_search` extra. When the extra is not installed or
 no provider API key is configured, the embedding channel emits a
 warning into `SearchResponse.warnings` and search degrades gracefully
 via tantivy + BM25 alone.
@@ -96,7 +96,7 @@ top-k cosine similarities are computed with numpy.
 Activated when **all of the following** hold:
 
 - `question` is supplied;
-- the `embedding_search` extra is installed (`pip install motley-slayer[embedding_search]`);
+- the `advanced_search` extra is installed (`pip install motley-slayer[advanced_search]`);
 - at least one embedding row exists for the active model name;
 - the query-embedding call succeeds.
 
@@ -217,11 +217,72 @@ already enforces (DEV-1405). Datasource names cannot contain `.` (rejected
 by `DatasourceConfig.name` + `SlayerModel.data_source` validators), so the
 prefix match is unambiguous.
 
+### `cypher_filter` graph pre-filter (DEV-1464)
+
+All four surfaces accept an optional `cypher_filter: Optional[str] = None`
+argument. When set, an openCypher `MATCH … RETURN … AS id` query is run
+against an ephemeral in-memory property graph (LadybugDB/Kuzu) built from
+the current storage state. The returned canonical IDs become a **hard
+allowlist** that pre-filters all three channels before any ranking:
+
+- Only memories whose `memory:<id>` is in the returned set are ranked by
+  channels 1 / 2 / 3.
+- Only entity docs whose `canonical_id` is in the returned set are ranked
+  by channels 2 and 3.
+- If the query returns an empty set, a warning is emitted and an empty
+  response is returned immediately (no channels fire).
+
+**Requires the `advanced_search` extra** (`pip install motley-slayer[advanced_search]`).
+When the extra is not installed, `get_filtered_ids` raises `ValueError`.
+
+**Query safety**: the Cypher statement must be:
+- A single statement (no semicolons).
+- Read-only (no `CREATE` / `MERGE` / `DELETE` / `SET` / `DROP` / `CALL`).
+- Returns exactly one column aliased `id` (e.g. `RETURN n.id AS id`).
+
+**Graph schema** (nodes and relationships in the ephemeral graph):
+
+| Node table | Properties |
+|---|---|
+| `Memory` | `id` (`memory:<id>` form), `learning` |
+| `Datasource` | `id`, `name` |
+| `Model` | `id` (`<ds>.<model>`), `name`, `description` |
+| `Column` | `id` (`<ds>.<model>.<col>`), `name`, `data_type`, `description` |
+| `Measure` | `id` (`<ds>.<model>.<name>`), `name`, `description` |
+| `Aggregation` | `id` (`<ds>.<model>.<name>`), `name` |
+
+| Relationship | From → To |
+|---|---|
+| `MENTIONS` | Memory → {Datasource, Model, Column, Measure, Aggregation, Memory} |
+| `CONTAINS` | Datasource → Model, Model → {Column, Measure, Aggregation} |
+| `JOINS` | Model → Model |
+
+Hidden models and hidden columns are excluded from the graph. The graph is
+rebuilt automatically when the storage fingerprint changes (file mtime for
+YAML and SQLite).
+
+**Example** — surface only memories that mention the `orders` model:
+
+```cypher
+MATCH (m:Memory)-[:MENTIONS]->(n:Model {id: 'shop.orders'})
+RETURN m.id AS id
+```
+
+**Example** — surface columns in the `shop` datasource:
+
+```cypher
+MATCH (d:Datasource {id: 'shop'})-[:CONTAINS*1..3]->(c:Column)
+RETURN c.id AS id
+```
+
+**Multi-label union**: `MATCH (n:Memory:Column)` returns nodes from both
+`Memory` AND `Column` tables (LadybugDB union semantics).
+
 ### Behaviour matrix
 
 | `entities`/`query` | `question` | Result |
 |---|---|---|
-| set | set | All eligible channels run. Memories RRF-fused (channels 1 + 2 + 3); entities RRF-fused (channels 1 + 2 + 3, DEV-1513). Channel 3 is skipped with a warning when the `embedding_search` extra is missing. Query-bearing memories partitioned out to `example_queries`. |
+| set | set | All eligible channels run. Memories RRF-fused (channels 1 + 2 + 3); entities RRF-fused (channels 1 + 2 + 3, DEV-1513). Channel 3 is skipped with a warning when the `advanced_search` extra is missing. Query-bearing memories partitioned out to `example_queries`. |
 | set | unset/empty | Channel 1 only. Memories partitioned by `query` presence; entity hits = the named refs themselves (DEV-1513). |
 | unset/empty | set | Channels 2 and 3 (when eligible). Memories RRF-fused; entities RRF-fused. |
 | unset/empty | unset/empty | Recency fallback: newest `max_memories` learning-only memories + newest `max_example_queries` query-bearing memories, with a warning. |
@@ -363,7 +424,7 @@ sql-mode and query-backed models are silently skipped in v1.
   `delete_datasource("orders")` does not touch a sibling datasource
   named `orders_archive`; `delete_model("orders", "customers")` does not
   touch a sibling `customers_v2`.
-- Optional pip extra: `pip install motley-slayer[embedding_search]`
+- Optional pip extra: `pip install motley-slayer[advanced_search]`
   installs `litellm` + `numpy`. When omitted, the embedding channel
   emits a one-line warning and contributes nothing.
 - **Storage shape**: embeddings are stored as JSON lists of floats —

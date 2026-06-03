@@ -1,7 +1,7 @@
 """Litellm wrapper for embedding generation (DEV-1386).
 
 This module is the only place that imports ``litellm`` (and only lazily).
-When the ``embedding_search`` extra is not installed, ``is_available()``
+When the ``advanced_search`` extra is not installed, ``is_available()``
 returns ``False`` and every call returns the no-op shape — the caller is
 expected to short-circuit and skip the embedding channel entirely.
 
@@ -54,7 +54,7 @@ def is_available() -> bool:
 
     Two conditions, both required:
 
-    1. The ``embedding_search`` extra is installed (``litellm`` imports).
+    1. The ``advanced_search`` extra is installed (``litellm`` imports).
     2. The configured embedding model has a usable API key in the
        environment, per ``litellm.validate_environment``.
 

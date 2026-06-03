@@ -15,7 +15,7 @@
   ``exclude_kind="memory"`` for the entity ranking. Each query ranks
   the full per-kind subset of the corpus — no over-fetch truncation.
 * **Channel 3** — dense embedding similarity (DEV-1386). Skipped when
-  ``question`` is empty, when the ``embedding_search`` extra is not
+  ``question`` is empty, when the ``advanced_search`` extra is not
   installed, when the query embedding call fails, or when there are
   no embedding rows for the active model name. The persisted embedding
   rows are partitioned by ``entity_kind`` (DEV-1414): memory rows feed
@@ -42,7 +42,7 @@ newest ``max_memories`` learning-only memories + newest
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, Field
 
@@ -59,6 +59,7 @@ from slayer.memories.resolver import (
     extract_entities_from_query,
     resolve_entity,
 )
+from slayer.search import graph as _search_graph
 from slayer.search.index import (
     Corpus,
     IndexHit,
@@ -643,6 +644,7 @@ class SearchService:
         query: Optional[Union[SlayerQuery, dict]] = None,
         question: Optional[str] = None,
         datasource: Optional[str] = None,
+        cypher_filter: Optional[str] = None,
         max_memories: int = 5,
         max_example_queries: int = 2,
         max_entities: int = 5,
@@ -662,6 +664,25 @@ class SearchService:
         )
         channel_1_active = (entities is not None and len(entities) > 0) or query is not None
         question_active = bool(question and question.strip())
+
+        # Cypher pre-filter: run before channels, short-circuit on empty result.
+        candidate_ids: Optional[FrozenSet[str]] = None
+        if cypher_filter is not None:
+            candidate_ids = await _search_graph.get_filtered_ids(
+                cypher_filter, self._storage,
+            )
+            if not candidate_ids:
+                warnings.append(
+                    "cypher_filter returned no matching nodes; "
+                    "search returned no results."
+                )
+                return SearchResponse(
+                    memories=[],
+                    example_queries=[],
+                    entities=[],
+                    resolved_input_entities=canonical_input_entities,
+                    warnings=_dedup(warnings),
+                )
 
         # Recency fallback for the all-empty case.
         if not channel_1_active and not question_active:
@@ -714,6 +735,7 @@ class SearchService:
             all_memories=all_memories,
             channel_1_active=channel_1_active,
             valid_canonicals=valid_canonicals,
+            candidate_ids=candidate_ids,
         )
         # DEV-1513: detect named ``memory:<id>`` refs whose memory was
         # filtered out by the datasource pre-filter — emit a warning
@@ -733,6 +755,7 @@ class SearchService:
             canonical_input_entities=canonical_input_entities,
             datasource=datasource,
             corpus=corpus,
+            candidate_ids=candidate_ids,
         )
         warnings = _dedup(warnings + entity_surfacing_warnings)
         (
@@ -742,6 +765,7 @@ class SearchService:
         ) = self._run_channel_2(
             corpus=corpus,
             question=question,
+            candidate_ids=candidate_ids,
         )
         (
             channel_3_memory_ranking,
@@ -755,6 +779,7 @@ class SearchService:
             eligible_memory_canonicals={
                 f"{_MEMORY_PREFIX}{m.id}" for m in all_memories
             },
+            candidate_ids=candidate_ids,
         )
         warnings = _dedup(warnings + channel_3_warnings)
 
@@ -950,6 +975,7 @@ class SearchService:
         all_memories: List[Memory],
         channel_1_active: bool,
         valid_canonicals: Optional[set] = None,
+        candidate_ids: Optional[FrozenSet[str]] = None,
     ) -> Tuple[List[str], dict[str, Memory]]:
         """Entity-overlap BM25 channel. Ranks the full memory corpus —
         no candidate-pool truncation (DEV-1414).
@@ -963,16 +989,24 @@ class SearchService:
         ref so a user-supplied ``memory:<id>`` ref surfaces the named
         memory at the top of the BM25 ranking. Augmentation runs after
         the filter so the self-ref cannot be stripped even if
-        ``valid_canonicals`` ever drifted."""
+        ``valid_canonicals`` ever drifted.
+
+        DEV-1464: when ``candidate_ids`` is supplied, only memories
+        whose canonical id (``memory:<id>``) appears in the set are
+        ranked — all others are silently excluded."""
         channel_1_memory_ranking: List[str] = []
         memory_by_id: dict[str, Memory] = {}
         if channel_1_active and canonical_input_entities:
+            scope = all_memories
+            if candidate_ids is not None:
+                scope = [
+                    m for m in scope
+                    if f"{_MEMORY_PREFIX}{m.id}" in candidate_ids
+                ]
             filtered_memories = (
-                _filter_memories_entities(
-                    all_memories, valid_canonicals,
-                )
+                _filter_memories_entities(scope, valid_canonicals)
                 if valid_canonicals is not None
-                else all_memories
+                else scope
             )
             augmented_memories = _augment_with_self_refs(filtered_memories)
             ranked = bm25_rank(
@@ -995,6 +1029,7 @@ class SearchService:
         canonical_input_entities: List[str],
         datasource: Optional[str],
         corpus: Optional[Corpus],
+        candidate_ids: Optional[FrozenSet[str]] = None,
     ) -> Tuple[List[str], Dict[str, Tuple[str, str]], List[str]]:
         """DEV-1513: produce channel-1's contribution to the entity
         ranking by surfacing each user-named canonical ref as itself.
@@ -1016,6 +1051,8 @@ class SearchService:
         for canonical in canonical_input_entities:
             if canonical.startswith(_MEMORY_PREFIX):
                 # memory:<id> refs participate in the memory ranking only.
+                continue
+            if candidate_ids is not None and canonical not in candidate_ids:
                 continue
             if datasource is not None and not canonical_id_rooted_at(
                 canonical_id=canonical, datasource=datasource,
@@ -1050,6 +1087,7 @@ class SearchService:
         *,
         corpus: Optional[Corpus],
         question: Optional[str],
+        candidate_ids: Optional[FrozenSet[str]] = None,
     ) -> Tuple[List[str], List[str], dict[str, IndexHit]]:
         """Tantivy full-text channel.
 
@@ -1059,6 +1097,9 @@ class SearchService:
         the other kind's cap. The ``limit`` for each call is the size of
         the corresponding kind in the corpus, so each query returns the
         complete per-kind ranking.
+
+        DEV-1464: when ``candidate_ids`` is set, only hits whose
+        canonical id appears in the set survive.
 
         Returns ``(memory_ranking, entity_ranking_canonicals,
         by_memory_id_hits)``. Empty when ``corpus`` or ``question`` is
@@ -1092,9 +1133,16 @@ class SearchService:
         for hit in memory_hits:
             if hit.memory_id is None:
                 continue
+            if candidate_ids is not None and (
+                f"{_MEMORY_PREFIX}{hit.memory_id}" not in candidate_ids
+            ):
+                continue
             memory_ranking.append(hit.memory_id)
             by_memory_id[hit.memory_id] = hit
-        entity_ranking = [h.id for h in entity_hits]
+        entity_ranking = [
+            h.id for h in entity_hits
+            if candidate_ids is None or h.id in candidate_ids
+        ]
         return memory_ranking, entity_ranking, by_memory_id
 
     async def _run_channel_3(
@@ -1105,6 +1153,7 @@ class SearchService:
         question_active: bool,
         datasource: Optional[str] = None,
         eligible_memory_canonicals: Optional[Set[str]] = None,
+        candidate_ids: Optional[FrozenSet[str]] = None,
     ) -> Tuple[List[str], List[str], List[str]]:
         """Embedding-similarity channel (DEV-1386). Returns
         ``(memory_ranking, entity_ranking_canonicals, warnings)``.
@@ -1116,7 +1165,7 @@ class SearchService:
         Skipped (with a warning) when:
 
         * ``question`` is empty,
-        * the ``embedding_search`` extra is not installed,
+        * the ``advanced_search`` extra is not installed,
         * the active model has no embedding rows in storage,
         * the query embedding call fails.
 
@@ -1137,12 +1186,15 @@ class SearchService:
         invariant under cap changes (so the per-bucket contract still
         holds) but surprising and lossy. The filter keeps the channel's
         candidate set aligned with channel 2's tantivy corpus.
+
+        DEV-1464: when ``candidate_ids`` is set, only rows whose
+        ``canonical_id`` appears in the set are passed to the matrix.
         """
         if not question_active or corpus is None:
             return [], [], []
         if not embedding_client.is_available():
             return [], [], [
-                "embedding channel skipped: `embedding_search` extra not "
+                "embedding channel skipped: `advanced_search` extra not "
                 "installed or no API key configured for the active "
                 "embedding model.",
             ]
@@ -1167,6 +1219,9 @@ class SearchService:
         # string directly. Both shapes match by single dict lookup.
         live_canonicals = corpus.canonical_to_kind.keys()
         rows = [r for r in rows if r.canonical_id in live_canonicals]
+        # DEV-1464: apply Cypher pre-filter to the embedding corpus.
+        if candidate_ids is not None:
+            rows = [r for r in rows if r.canonical_id in candidate_ids]
         if not rows:
             return [], [], [
                 f"embedding channel skipped: no embedding rows for model "
@@ -1182,7 +1237,7 @@ class SearchService:
         except ImportError:
             return [], [], [
                 "embedding channel skipped: numpy not installed "
-                "(reinstall with the `embedding_search` extra).",
+                "(reinstall with the `advanced_search` extra).",
             ]
         query_vec = await service.embed_question(question or "")
         if query_vec is None:

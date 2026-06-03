@@ -9,6 +9,7 @@ runs at open time to upgrade legacy v3 single-PK databases in place.
 
 import asyncio
 import json
+import os
 import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -167,6 +168,16 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                 "CREATE INDEX IF NOT EXISTS idx_memory_entities_entity "
                 "ON memory_entities(entity)"
             )
+
+    # ---- graph fingerprint -------------------------------------------------
+
+    def graph_fingerprint(self) -> str:
+        """mtime of the SQLite database file as a string.
+
+        Any write to the database changes the file's mtime, so this is
+        an O(1) staleness check — no table scans required.
+        """
+        return str(os.path.getmtime(self.db_path))
 
     # --- Sync helpers (run in thread to avoid blocking the event loop) ---
 

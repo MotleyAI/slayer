@@ -79,7 +79,7 @@ and ASCII control characters. Duplicate id → unconditional **upsert**,
 Returns `memory_id` (a non-empty string), the canonical entities
 stored, and any non-fatal warnings.
 
-**Embedding side effect.** When the `embedding_search` extra is
+**Embedding side effect.** When the `advanced_search` extra is
 installed and `SLAYER_EMBEDDING_MODEL` resolves to a configured
 provider, `save_memory` also embeds the new memory inline so it
 participates in the embedding-similarity search channel right away.

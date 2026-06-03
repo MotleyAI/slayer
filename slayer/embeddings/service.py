@@ -8,7 +8,7 @@ and only calls litellm when the text has actually changed.
 
 Per-entity embed failures are non-fatal: the corresponding row is simply
 not written. Search degrades gracefully via the remaining tantivy + BM25
-channels. When the ``embedding_search`` extra is not installed,
+channels. When the ``advanced_search`` extra is not installed,
 ``is_available()`` returns ``False`` and all refresh methods short-circuit
 to "no-op + warning".
 """

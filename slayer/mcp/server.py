@@ -2836,6 +2836,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         max_memories: int = 5,
         max_example_queries: int = 2,
         max_entities: int = 5,
+        cypher_filter: Optional[str] = None,
     ) -> str:
         """Up to three-channel semantic search over memories + canonical entities.
 
@@ -2853,7 +2854,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         non-hidden column / named measure / aggregation).
 
         Channel 3 (dense embedding similarity, optional): runs when
-        ``question`` is supplied AND the ``embedding_search`` extra is
+        ``question`` is supplied AND the ``advanced_search`` extra is
         installed AND a provider API key is configured for the active
         embedding model. Cosine similarity between the question
         embedding and persisted entity/memory embeddings. Skipped with
@@ -2889,6 +2890,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             max_example_queries: Cap on returned query-bearing memory
                 hits (default 2 — they're bulky).
             max_entities: Cap on returned entity hits (default 5).
+            cypher_filter: Optional openCypher MATCH query returning
+                ``… AS id`` that pre-filters all three channels to the
+                returned canonical IDs. Requires the ``advanced_search``
+                extra (LadybugDB). Read-only — no CREATE/MERGE/DELETE.
         """
         try:
             response = await search_service.search(
@@ -2899,6 +2904,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 max_memories=max_memories,
                 max_example_queries=max_example_queries,
                 max_entities=max_entities,
+                cypher_filter=cypher_filter,
             )
         except (
             EntityResolutionError,
