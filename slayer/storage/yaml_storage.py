@@ -48,6 +48,7 @@ from slayer.storage.v4_migration import migrate_yaml_layout
 
 
 _LEGACY_RENAMES = ("embeddings.yaml", "counters.yaml")
+_YAML_EXTS = (".yaml", ".yml")
 
 
 class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
@@ -86,7 +87,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         max_mtime = 0.0
         for root, _dirs, files in os.walk(self.base_dir):
             for fname in files:
-                if fname.endswith(".yaml") or fname.endswith(".yml"):
+                if fname.endswith(_YAML_EXTS):
                     try:
                         max_mtime = max(
                             max_mtime,

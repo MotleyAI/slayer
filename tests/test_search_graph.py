@@ -212,8 +212,8 @@ async def test_yaml_storage_fingerprint_changes_after_write(
 
 @pytest.mark.asyncio
 async def test_sqlite_storage_graph_fingerprint_returns_str() -> None:
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
     try:
         storage = SQLiteStorage(db_path=db_path)
         await storage.save_datasource(
@@ -228,8 +228,8 @@ async def test_sqlite_storage_graph_fingerprint_returns_str() -> None:
 
 @pytest.mark.asyncio
 async def test_sqlite_storage_fingerprint_changes_after_write() -> None:
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
     try:
         storage = SQLiteStorage(db_path=db_path)
         await storage.save_datasource(

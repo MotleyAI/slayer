@@ -27,7 +27,7 @@ Relationship tables:
 
 All queries must be read-only ``MATCH … RETURN … AS id`` statements.
 The ``MATCH (n:A:B)`` multi-label pattern returns nodes from BOTH table A
-and table B (union semantics — Kuzu/LadybugDB behaviour).
+and table B (union semantics — LadybugDB behaviour).
 """
 
 from __future__ import annotations
@@ -168,6 +168,40 @@ def _create_schema(conn: Any) -> None:
     conn.execute("CREATE REL TABLE JOINS(FROM Model TO Model)")
 
 
+def _insert_model_child_nodes(conn: Any, canonical_model: str, model: Any) -> None:
+    """Insert Column, Measure, and Aggregation nodes for one model."""
+    for col in model.columns:
+        if col.hidden:
+            continue
+        conn.execute(
+            "CREATE (:Column {"
+            "id: $id, name: $name, data_type: $dt, description: $desc"
+            "})",
+            {
+                "id": f"{canonical_model}.{col.name}",
+                "name": col.name,
+                "dt": col.type.value if col.type is not None else "",
+                "desc": col.description or "",
+            },
+        )
+    for measure in model.measures:
+        if not measure.name:
+            continue
+        conn.execute(
+            "CREATE (:Measure {id: $id, name: $name, description: $desc})",
+            {
+                "id": f"{canonical_model}.{measure.name}",
+                "name": measure.name,
+                "desc": measure.description or "",
+            },
+        )
+    for agg in model.aggregations:
+        conn.execute(
+            "CREATE (:Aggregation {id: $id, name: $name})",
+            {"id": f"{canonical_model}.{agg.name}", "name": agg.name},
+        )
+
+
 def _insert_nodes(
     conn: Any,
     datasource_names: list[str],
@@ -182,7 +216,7 @@ def _insert_nodes(
         )
 
     for canonical_model, model in visible_models.items():
-        ds, model_name = canonical_model.split(".", 1)
+        _, model_name = canonical_model.split(".", 1)
         conn.execute(
             "CREATE (:Model {id: $id, name: $name, description: $desc})",
             {
@@ -191,36 +225,7 @@ def _insert_nodes(
                 "desc": model.description or "",
             },
         )
-        for col in model.columns:
-            if col.hidden:
-                continue
-            conn.execute(
-                "CREATE (:Column {"
-                "id: $id, name: $name, data_type: $dt, description: $desc"
-                "})",
-                {
-                    "id": f"{canonical_model}.{col.name}",
-                    "name": col.name,
-                    "dt": col.type.value if col.type is not None else "",
-                    "desc": col.description or "",
-                },
-            )
-        for measure in model.measures:
-            if not measure.name:
-                continue
-            conn.execute(
-                "CREATE (:Measure {id: $id, name: $name, description: $desc})",
-                {
-                    "id": f"{canonical_model}.{measure.name}",
-                    "name": measure.name,
-                    "desc": measure.description or "",
-                },
-            )
-        for agg in model.aggregations:
-            conn.execute(
-                "CREATE (:Aggregation {id: $id, name: $name})",
-                {"id": f"{canonical_model}.{agg.name}", "name": agg.name},
-            )
+        _insert_model_child_nodes(conn, canonical_model, model)
 
     for mem in memories:
         conn.execute(
@@ -286,6 +291,56 @@ def _insert_joins_edges(conn: Any, visible_models: dict) -> None:
             )
 
 
+def _connect_entity_mention(
+    conn: Any,
+    src: str,
+    entity: str,
+    ds_set: set[str],
+    valid_models: set[str],
+    valid_columns: set[str],
+    valid_measures: set[str],
+    valid_aggs: set[str],
+    valid_memory_canonicals: set[str],
+) -> None:
+    """Create one MENTIONS edge from memory *src* to the matching entity node."""
+    if entity in valid_memory_canonicals:
+        conn.execute(
+            "MATCH (m1:Memory {id: $src}), (m2:Memory {id: $tgt}) "
+            "CREATE (m1)-[:MENTIONS]->(m2)",
+            {"src": src, "tgt": entity},
+        )
+    elif entity in ds_set:
+        conn.execute(
+            "MATCH (m:Memory {id: $src}), (d:Datasource {id: $tgt}) "
+            "CREATE (m)-[:MENTIONS]->(d)",
+            {"src": src, "tgt": entity},
+        )
+    elif entity in valid_models:
+        conn.execute(
+            "MATCH (m:Memory {id: $src}), (n:Model {id: $tgt}) "
+            "CREATE (m)-[:MENTIONS]->(n)",
+            {"src": src, "tgt": entity},
+        )
+    elif entity in valid_measures:
+        conn.execute(
+            "MATCH (m:Memory {id: $src}), (ms:Measure {id: $tgt}) "
+            "CREATE (m)-[:MENTIONS]->(ms)",
+            {"src": src, "tgt": entity},
+        )
+    elif entity in valid_aggs:
+        conn.execute(
+            "MATCH (m:Memory {id: $src}), (a:Aggregation {id: $tgt}) "
+            "CREATE (m)-[:MENTIONS]->(a)",
+            {"src": src, "tgt": entity},
+        )
+    elif entity in valid_columns:
+        conn.execute(
+            "MATCH (m:Memory {id: $src}), (c:Column {id: $tgt}) "
+            "CREATE (m)-[:MENTIONS]->(c)",
+            {"src": src, "tgt": entity},
+        )
+
+
 def _insert_mentions_edges(
     conn: Any,
     memories: list,
@@ -312,42 +367,11 @@ def _insert_mentions_edges(
     for mem in memories:
         src = f"{_MEMORY_PREFIX}{mem.id}"
         for entity in mem.entities:
-            if entity in valid_memory_canonicals:
-                conn.execute(
-                    "MATCH (m1:Memory {id: $src}), (m2:Memory {id: $tgt}) "
-                    "CREATE (m1)-[:MENTIONS]->(m2)",
-                    {"src": src, "tgt": entity},
-                )
-            elif entity in ds_set:
-                conn.execute(
-                    "MATCH (m:Memory {id: $src}), (d:Datasource {id: $tgt}) "
-                    "CREATE (m)-[:MENTIONS]->(d)",
-                    {"src": src, "tgt": entity},
-                )
-            elif entity in valid_models:
-                conn.execute(
-                    "MATCH (m:Memory {id: $src}), (n:Model {id: $tgt}) "
-                    "CREATE (m)-[:MENTIONS]->(n)",
-                    {"src": src, "tgt": entity},
-                )
-            elif entity in valid_measures:
-                conn.execute(
-                    "MATCH (m:Memory {id: $src}), (ms:Measure {id: $tgt}) "
-                    "CREATE (m)-[:MENTIONS]->(ms)",
-                    {"src": src, "tgt": entity},
-                )
-            elif entity in valid_aggs:
-                conn.execute(
-                    "MATCH (m:Memory {id: $src}), (a:Aggregation {id: $tgt}) "
-                    "CREATE (m)-[:MENTIONS]->(a)",
-                    {"src": src, "tgt": entity},
-                )
-            elif entity in valid_columns:
-                conn.execute(
-                    "MATCH (m:Memory {id: $src}), (c:Column {id: $tgt}) "
-                    "CREATE (m)-[:MENTIONS]->(c)",
-                    {"src": src, "tgt": entity},
-                )
+            _connect_entity_mention(
+                conn, src, entity,
+                ds_set, valid_models, valid_columns, valid_measures, valid_aggs,
+                valid_memory_canonicals,
+            )
 
 
 async def build_graph(storage: StorageBackend) -> tuple[Any, Any]:
@@ -357,8 +381,8 @@ async def build_graph(storage: StorageBackend) -> tuple[Any, Any]:
     Memory canonical IDs are stored in ``memory:<id>`` form.
     """
     mod = _import_graph_module()
-    # No-argument Database() creates an ephemeral in-memory instance in
-    # LadybugDB (and kuzu ≥ 0.3); no files are written to the working directory.
+    # No-argument Database() creates an ephemeral in-memory instance;
+    # no files are written to the working directory.
     db = mod.Database()
     conn = db.connect()
     _create_schema(conn)
@@ -423,7 +447,7 @@ def _get_lock(key: str) -> asyncio.Lock:
 
 
 def _close_entry(entry: "_GraphCache") -> None:
-    """Best-effort close of a cached graph entry to release kuzu handles."""
+    """Best-effort close of a cached graph entry to release LadybugDB handles."""
     for obj in (entry.conn, entry.db):
         try:
             obj.close()
@@ -490,9 +514,11 @@ async def get_filtered_ids(
     _validate_cypher(cypher)
     _db, conn = await _get_or_rebuild(storage)
     result = conn.execute(cypher)
+    col_names: list[str] = result.get_column_names()
+    id_idx = col_names.index("id")
     ids: set[str] = set()
     while result.has_next():
         row = result.get_next()
-        if row and row[0] is not None:
-            ids.add(str(row[0]))
+        if row and row[id_idx] is not None:
+            ids.add(str(row[id_idx]))
     return frozenset(ids)
