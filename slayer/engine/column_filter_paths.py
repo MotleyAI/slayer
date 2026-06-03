@@ -38,7 +38,7 @@ from sqlglot import exp
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.column_expansion import (
     _is_trivial_base,
-    _root_scope_column_ids,
+    collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
 from slayer.engine.source_bundle import ResolvedSourceBundle
@@ -65,6 +65,83 @@ def _is_nontrivial_derived(model: SlayerModel, name: str) -> bool:
     return col is not None and col.sql is not None and not _is_trivial_base(
         column=col,
     )
+
+
+def _is_anchor_local_col_ref(
+    col: exp.Column, *, anchor_aliases: set,
+) -> bool:
+    """A column ref counts as "on the anchor" when it is bare (no ``table``)
+    OR self-qualified to the anchor (``orders.is_eu`` where ``orders`` is
+    the anchor relation / model name).
+    """
+    if not isinstance(col.this, exp.Identifier):
+        return False
+    tbl = col.args.get("table")
+    if tbl is None:
+        return True
+    return tbl.name in anchor_aliases
+
+
+def _expand_filter_sql_if_anchor_derived(
+    *,
+    parsed: exp.Expression,
+    canonical_sql: str,
+    anchor_model: SlayerModel,
+    anchor_relation: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[exp.Expression]:
+    """Expand any non-trivial derived anchor-local refs in ``parsed``,
+    re-parsing the expanded SQL. Returns the new AST, the original
+    ``parsed`` when no derived ref was present, or ``None`` when the
+    expansion produced unparseable output (caller should bail to ``()``).
+
+    Mirrors the generator's ``_expand_column_filter_sql`` gate so the
+    planner and the renderer surface the same set of crossed joins.
+    """
+    anchor_aliases = {anchor_relation, anchor_model.name}
+    anchor_local_names = {
+        col.this.name
+        for col in parsed.find_all(exp.Column)
+        if _is_anchor_local_col_ref(col, anchor_aliases=anchor_aliases)
+    }
+    has_derived = any(
+        _is_nontrivial_derived(anchor_model, n) for n in anchor_local_names
+    )
+    if not has_derived:
+        return parsed
+
+    # Degenerate: the whole predicate IS a single derived column ref
+    # (``filter="is_eu"`` or self-qualified ``filter="orders.is_eu"``).
+    # ``expand_derived_refs_sync`` rewrites refs via in-place
+    # ``col.replace`` which is a no-op on the AST root, so expand the
+    # column's sql directly.
+    if (
+        isinstance(parsed, exp.Column)
+        and _is_anchor_local_col_ref(parsed, anchor_aliases=anchor_aliases)
+        and _is_nontrivial_derived(anchor_model, parsed.name)
+    ):
+        col = next(
+            (c for c in anchor_model.columns if c.name == parsed.name), None,
+        )
+        if col is None or not col.sql:
+            return None
+        sql_to_expand = col.sql
+    else:
+        sql_to_expand = canonical_sql
+
+    expanded = expand_derived_refs_sync(
+        sql=sql_to_expand,
+        model=anchor_model,
+        alias_path=anchor_relation,
+        resolve_model=bundle.get_referenced_model,
+        dialect=_PLANNER_PARSE_DIALECT,
+    )
+    if not expanded:
+        return parsed
+    try:
+        return sqlglot.parse_one(expanded, dialect=_PLANNER_PARSE_DIALECT)
+    except Exception:
+        return None
 
 
 def compute_column_filter_join_paths(
@@ -96,53 +173,16 @@ def compute_column_filter_join_paths(
     except Exception:
         return ()
 
-    # If the predicate names any non-trivial DERIVED column on the anchor,
-    # inline-expand it before scanning. This is the same gate the generator's
-    # ``_expand_column_filter_sql`` uses for rendering — applied here to
-    # discovery so paths the derived expansion introduces are surfaced.
-    bare_names = {
-        col.this.name
-        for col in parsed.find_all(exp.Column)
-        if col.args.get("table") is None and isinstance(col.this, exp.Identifier)
-    }
-    has_derived = any(
-        _is_nontrivial_derived(anchor_model, n) for n in bare_names
+    expanded = _expand_filter_sql_if_anchor_derived(
+        parsed=parsed,
+        canonical_sql=canonical_sql,
+        anchor_model=anchor_model,
+        anchor_relation=anchor_relation,
+        bundle=bundle,
     )
-    if has_derived:
-        # Degenerate: the whole predicate IS a bare derived column ref
-        # (``filter="is_eu"``). ``expand_derived_refs_sync`` rewrites refs
-        # via in-place ``col.replace`` which is a no-op on the AST root,
-        # so expand the column's sql directly.
-        if (
-            isinstance(parsed, exp.Column)
-            and parsed.args.get("table") is None
-            and _is_nontrivial_derived(anchor_model, parsed.name)
-        ):
-            col = next(
-                (c for c in anchor_model.columns if c.name == parsed.name), None,
-            )
-            if col is None or not col.sql:
-                return ()
-            expanded = expand_derived_refs_sync(
-                sql=col.sql,
-                model=anchor_model,
-                alias_path=anchor_relation,
-                resolve_model=bundle.get_referenced_model,
-                dialect=_PLANNER_PARSE_DIALECT,
-            )
-        else:
-            expanded = expand_derived_refs_sync(
-                sql=canonical_sql,
-                model=anchor_model,
-                alias_path=anchor_relation,
-                resolve_model=bundle.get_referenced_model,
-                dialect=_PLANNER_PARSE_DIALECT,
-            )
-        if expanded:
-            try:
-                parsed = sqlglot.parse_one(expanded, dialect=_PLANNER_PARSE_DIALECT)
-            except Exception:
-                return ()
+    if expanded is None:
+        return ()
+    parsed = expanded
 
     # ``_walk_root_scope_paths`` exercises sqlglot's scope analyser, which
     # can raise ``TypeError`` etc. on unusual / malicious payloads (SQL
@@ -173,41 +213,13 @@ def _walk_root_scope_paths(
     a join walk on ``anchor_model``, returning the ordered tuple of path
     prefixes (de-duplicated).
 
-    Mirrors ``SQLGenerator._joined_paths_in_sql`` so the planner and the
-    generator agree on which refs count as "crosses a join."
+    Thin shim over the shared ``collect_root_scope_joined_paths`` helper so
+    the planner and ``SQLGenerator._joined_paths_in_sql`` agree on what
+    counts as "crosses a join."
     """
-    root_ids = _root_scope_column_ids(parsed=parsed)
-    seen: set = set()
-    ordered: list = []
-    for col in parsed.find_all(exp.Column):
-        tbl = col.args.get("table")
-        if tbl is None or col.args.get("db") or col.args.get("catalog"):
-            continue
-        if id(col) not in root_ids:
-            continue
-        alias = tbl.name
-        if alias in (anchor_relation, anchor_model.name):
-            continue
-        segments = alias.split("__")
-        current: SlayerModel = anchor_model
-        resolved = True
-        for seg in segments:
-            join = next(
-                (j for j in current.joins if j.target_model == seg), None,
-            )
-            if join is None:
-                resolved = False
-                break
-            nxt = bundle.get_referenced_model(seg)
-            if nxt is None:
-                resolved = False
-                break
-            current = nxt
-        if not resolved:
-            continue
-        for i in range(1, len(segments) + 1):
-            prefix = tuple(segments[:i])
-            if prefix not in seen:
-                seen.add(prefix)
-                ordered.append(prefix)
-    return tuple(ordered)
+    return tuple(collect_root_scope_joined_paths(
+        parsed=parsed,
+        source_model=anchor_model,
+        source_relation=anchor_relation,
+        bundle=bundle,
+    ))

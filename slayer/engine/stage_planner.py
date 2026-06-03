@@ -208,7 +208,7 @@ def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
     return None
 
 
-def plan_query(
+def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-1503 addition is a small trigger-predicate branch + a kwarg pass-through; the function's pre-existing complexity is owned by the multi-stage scope / bundle / projection / filter-routing wiring it orchestrates and is tracked as a separate refactor.
     *,
     query: SlayerQuery,
     bundle: ResolvedSourceBundle,

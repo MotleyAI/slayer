@@ -26,8 +26,8 @@ from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.engine.column_expansion import (
     _is_trivial_base,
-    _root_scope_column_ids,
     _walk_path_to_target_sync,
+    collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
@@ -5128,14 +5128,21 @@ class SQLGenerator:
         # for any local operand (which the ``_add_local_aux_slots`` pass
         # has materialised in ``_base``).
         if outer_where_filters:
-            isolated_agg_slot_to_cm: Dict[str, Tuple[str, str]] = {}
+            # Map EVERY cross-model aggregate slot (filtered-local AND
+            # forward / re-rooted) to its ``_cm_*`` CTE column — a mixed
+            # AGGREGATE filter like ``loss_payment_amt:sum >
+            # customers.revenue:sum`` triggers the outer wrapper through
+            # the filtered-local operand but ALSO has to resolve the
+            # forward cross-model operand on the same outer scope. If
+            # only filtered-local plans were mapped, the forward operand
+            # would fall through to the ``_base`` fallback and the
+            # renderer would raise (CodeRabbit thread 2).
+            cross_model_agg_slot_to_cm: Dict[str, Tuple[str, str]] = {}
             for plan in planned_query.cross_model_aggregate_plans:
-                if plan.cte_root_model is None:
-                    continue
                 canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
                 cte_name = _cte_name_from_alias("_cm_", canonical_alias)
                 agg_col_alias = agg_col_alias_for_plan[plan.aggregate_slot_id]
-                isolated_agg_slot_to_cm[plan.aggregate_slot_id] = (
+                cross_model_agg_slot_to_cm[plan.aggregate_slot_id] = (
                     cte_name, agg_col_alias,
                 )
             outer_where_parts: List[str] = []
@@ -5143,7 +5150,7 @@ class SQLGenerator:
                 rendered = self._render_filter_for_outer_wrapper(
                     key=fp.expression.value_key,
                     slot_by_key=slot_by_key,
-                    isolated_agg_slot_to_cm=isolated_agg_slot_to_cm,
+                    cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
                     aliases_by_slot_id=aliases_by_slot_id,
                 )
                 if isinstance(rendered, (exp.And, exp.Or)):
@@ -8293,42 +8300,17 @@ class SQLGenerator:
         set-op branch) — those belong to the inner rowset, not the outer FROM.
         Prefixes are only emitted once the FULL alias path resolves, so a
         partially-matching alias never injects a spurious outer join.
+
+        Thin shim over the shared ``collect_root_scope_joined_paths`` helper
+        — see ``column_filter_paths._walk_root_scope_paths`` for the planner
+        side using the same primitive.
         """
-        root_ids = _root_scope_column_ids(parsed=sql_expr)
-        seen: set = set()
-        ordered: List[Tuple[str, ...]] = []
-        for col in sql_expr.find_all(exp.Column):
-            tbl = col.args.get("table")
-            if tbl is None or col.args.get("db") or col.args.get("catalog"):
-                continue
-            if id(col) not in root_ids:
-                continue
-            alias = tbl.name
-            if alias in (source_relation, source_model.name):
-                continue
-            segments = alias.split("__")
-            current = source_model
-            resolved = True
-            for seg in segments:
-                join = next(
-                    (j for j in current.joins if j.target_model == seg), None,
-                )
-                if join is None:
-                    resolved = False
-                    break
-                nxt = bundle.get_referenced_model(seg)
-                if nxt is None:
-                    resolved = False
-                    break
-                current = nxt
-            if not resolved:
-                continue
-            for i in range(1, len(segments) + 1):
-                prefix = tuple(segments[:i])
-                if prefix not in seen:
-                    seen.add(prefix)
-                    ordered.append(prefix)
-        return ordered
+        return collect_root_scope_joined_paths(
+            parsed=sql_expr,
+            source_model=source_model,
+            source_relation=source_relation,
+            bundle=bundle,
+        )
 
     def _collect_filter_join_paths(
         self, *, planned_query, source_model, source_relation: str, bundle,
@@ -9157,7 +9139,7 @@ class SQLGenerator:
         *,
         key,
         slot_by_key: Dict[Any, Any],
-        isolated_agg_slot_to_cm: Dict[str, Tuple[str, str]],
+        cross_model_agg_slot_to_cm: Dict[str, Tuple[str, str]],
         aliases_by_slot_id: Dict[str, List[str]],
     ) -> exp.Expression:
         """Render a ValueKey tree for the DEV-1503 outer combined-SELECT WHERE.
@@ -9174,7 +9156,7 @@ class SQLGenerator:
         Slot-bearing leaves resolve via:
 
         * Isolated aggregate slot → ``<cte_name>."<agg_col_alias>"`` from
-          ``isolated_agg_slot_to_cm`` (the CTE's emitted aggregate column).
+          ``cross_model_agg_slot_to_cm`` (the CTE's emitted aggregate column).
         * Any other slot (row column, joined dim, local aggregate operand)
           → ``_base."<first_alias>"`` from ``aliases_by_slot_id``. The
           generator's aux-slot pass (``_add_local_aux_slots(aggregates_only=
@@ -9203,7 +9185,7 @@ class SQLGenerator:
 
         def _slot_alias_column(slot) -> Optional[exp.Expression]:
             sid = slot.id
-            cm_entry = isolated_agg_slot_to_cm.get(sid)
+            cm_entry = cross_model_agg_slot_to_cm.get(sid)
             if cm_entry is not None:
                 cte_name, agg_col_alias = cm_entry
                 return exp.Column(
@@ -9248,7 +9230,7 @@ class SQLGenerator:
                 self._render_filter_for_outer_wrapper(
                     key=o,
                     slot_by_key=slot_by_key,
-                    isolated_agg_slot_to_cm=isolated_agg_slot_to_cm,
+                    cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
                     aliases_by_slot_id=aliases_by_slot_id,
                 )
                 for o in key.operands
@@ -9265,7 +9247,7 @@ class SQLGenerator:
                     args.append(self._render_filter_for_outer_wrapper(
                         key=a,
                         slot_by_key=slot_by_key,
-                        isolated_agg_slot_to_cm=isolated_agg_slot_to_cm,
+                        cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
                         aliases_by_slot_id=aliases_by_slot_id,
                     ))
             if key.name == "like":
@@ -9275,19 +9257,19 @@ class SQLGenerator:
             col_expr = self._render_filter_for_outer_wrapper(
                 key=key.column,
                 slot_by_key=slot_by_key,
-                isolated_agg_slot_to_cm=isolated_agg_slot_to_cm,
+                cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
                 aliases_by_slot_id=aliases_by_slot_id,
             )
             low_expr = self._render_filter_for_outer_wrapper(
                 key=key.low,
                 slot_by_key=slot_by_key,
-                isolated_agg_slot_to_cm=isolated_agg_slot_to_cm,
+                cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
                 aliases_by_slot_id=aliases_by_slot_id,
             )
             high_expr = self._render_filter_for_outer_wrapper(
                 key=key.high,
                 slot_by_key=slot_by_key,
-                isolated_agg_slot_to_cm=isolated_agg_slot_to_cm,
+                cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
                 aliases_by_slot_id=aliases_by_slot_id,
             )
             return exp.Between(this=col_expr, low=low_expr, high=high_expr)
@@ -9295,7 +9277,7 @@ class SQLGenerator:
             col_expr = self._render_filter_for_outer_wrapper(
                 key=key.column,
                 slot_by_key=slot_by_key,
-                isolated_agg_slot_to_cm=isolated_agg_slot_to_cm,
+                cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
                 aliases_by_slot_id=aliases_by_slot_id,
             )
             value_exprs = [

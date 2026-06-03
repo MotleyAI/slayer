@@ -123,6 +123,48 @@ def _bundle(host: SlayerModel) -> ResolvedSourceBundle:
     )
 
 
+def _orders_with_derived_eu_filter(*, eu_amount_filter: str):
+    """Build an ``orders`` host whose ``eu_amount`` filter references the
+    derived ``is_eu`` column (whose own sql crosses to ``customers.region``).
+
+    ``eu_amount_filter`` lets each test exercise a different ref shape
+    (bare ``is_eu = 1``, self-qualified ``orders.is_eu = 1``) — the
+    rest of the setup (host + customers + bundle) is shared, matching
+    DEV-1503's "filter expansion must surface the cross-model path
+    regardless of ref qualification" contract.
+    """
+    host = SlayerModel(
+        name="orders", data_source="test", sql_table="Orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="customer_id", type=DataType.INT),
+            Column(name="amount", type=DataType.DOUBLE),
+            Column(
+                name="is_eu", type=DataType.DOUBLE,
+                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
+            ),
+            Column(
+                name="eu_amount", sql="amount", filter=eu_amount_filter,
+                type=DataType.DOUBLE,
+            ),
+        ],
+        joins=[ModelJoin(
+            target_model="customers", join_pairs=[["customer_id", "id"]],
+        )],
+    )
+    customers = SlayerModel(
+        name="customers", data_source="test", sql_table="Customers",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="region", type=DataType.TEXT),
+        ],
+    )
+    bundle = ResolvedSourceBundle(
+        source_model=host, referenced_models=[customers],
+    )
+    return host, bundle
+
+
 def _agg_slot_for(planned, name: str):
     """Find the public aggregate slot whose canonical alias contains ``name``."""
     for slot in planned.aggregate_slots:
@@ -176,40 +218,36 @@ class TestSqlExprKeyReferencedJoinPaths:
             f"Expected ('loss_payment',) in referenced_join_paths; got {cfk.referenced_join_paths!r}"
         )
 
+    def test_self_qualified_derived_ref_records_expanded_path(self):
+        """A ``Column.filter`` like ``filter="orders.is_eu = 1"`` —
+        self-qualified to the anchor relation — must trip the same
+        derived-expansion gate as the bare ``filter="is_eu = 1"`` form.
+        Without that, ``orders.is_eu`` is treated as same-model and the
+        join through ``customers`` is missed (CodeRabbit thread 1)."""
+        _, bundle = _orders_with_derived_eu_filter(
+            eu_amount_filter="orders.is_eu = 1",
+        )
+        q = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "eu_amount:sum"}],
+        )
+        planned = plan_query(query=q, bundle=bundle)
+        slot = _agg_slot_for(planned, "eu_amount")
+        assert slot is not None
+        assert isinstance(slot.key, AggregateKey)
+        cfk = slot.key.column_filter_key
+        assert isinstance(cfk, SqlExprKey)
+        assert ("customers",) in cfk.referenced_join_paths, (
+            f"Self-qualified derived ref must surface expanded cross-model "
+            f"path; got {cfk.referenced_join_paths!r}"
+        )
+
     def test_derived_ref_cross_model_filter_records_expanded_path(self):
         """``Column.filter`` that references a host derived column whose
         own sql crosses a join (1494's derived-ref flavour) must surface
         the EXPANDED join path on ``referenced_join_paths``."""
-        host = SlayerModel(
-            name="orders", data_source="test", sql_table="Orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="amount", type=DataType.DOUBLE),
-                # Derived host column whose sql crosses to customers.
-                Column(
-                    name="is_eu", type=DataType.DOUBLE,
-                    sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
-                ),
-                # Filter references the derived column.
-                Column(
-                    name="eu_amount", sql="amount", filter="is_eu = 1",
-                    type=DataType.DOUBLE,
-                ),
-            ],
-            joins=[ModelJoin(
-                target_model="customers", join_pairs=[["customer_id", "id"]],
-            )],
-        )
-        customers = SlayerModel(
-            name="customers", data_source="test", sql_table="Customers",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
-            ],
-        )
-        bundle = ResolvedSourceBundle(
-            source_model=host, referenced_models=[customers],
+        _, bundle = _orders_with_derived_eu_filter(
+            eu_amount_filter="is_eu = 1",
         )
         q = SlayerQuery(
             source_model="orders",
@@ -280,34 +318,8 @@ class TestCrossModelPlannerTriggerPredicate:
         )
 
     def test_derived_ref_cross_model_filter_triggers_isolation(self):
-        host = SlayerModel(
-            name="orders", data_source="test", sql_table="Orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(
-                    name="is_eu", type=DataType.DOUBLE,
-                    sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
-                ),
-                Column(
-                    name="eu_amount", sql="amount", filter="is_eu = 1",
-                    type=DataType.DOUBLE,
-                ),
-            ],
-            joins=[ModelJoin(
-                target_model="customers", join_pairs=[["customer_id", "id"]],
-            )],
-        )
-        customers = SlayerModel(
-            name="customers", data_source="test", sql_table="Customers",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
-            ],
-        )
-        bundle = ResolvedSourceBundle(
-            source_model=host, referenced_models=[customers],
+        _, bundle = _orders_with_derived_eu_filter(
+            eu_amount_filter="is_eu = 1",
         )
         q = SlayerQuery(
             source_model="orders",

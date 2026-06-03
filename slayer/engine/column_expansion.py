@@ -17,7 +17,7 @@ unresolved derived references.
 """
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Set, Tuple
 
 import sqlglot
 from sqlglot import exp
@@ -93,6 +93,74 @@ def _root_scope_column_ids(*, parsed: exp.Expression) -> Set[int]:
         if scope_type == ScopeType.ROOT:
             root_ids.add(id(p_col))
     return root_ids
+
+
+class _SyncBundle(Protocol):
+    """Minimal contract for ``collect_root_scope_joined_paths``'s bundle —
+    matches ``ResolvedSourceBundle.get_referenced_model``. Declared inline so
+    this helper stays import-free of the engine layer.
+    """
+
+    def get_referenced_model(self, name: str) -> Optional[SlayerModel]: ...
+
+
+def collect_root_scope_joined_paths(
+    *,
+    parsed: exp.Expression,
+    source_model: SlayerModel,
+    source_relation: str,
+    bundle: _SyncBundle,
+) -> List[Tuple[str, ...]]:
+    """Collect the ordered de-duplicated list of join-path prefixes a parsed
+    SQL fragment references in its root scope.
+
+    Each ROOT-scope ``<alias>.<col>`` whose ``alias`` is not the source
+    relation and fully resolves as a join walk on ``source_model``
+    contributes its prefixes (``a__b`` yields ``("a",)`` AND ``("a", "b")``).
+    Aliases that don't resolve as a join walk (CTE / subquery aliases,
+    spurious dotted refs) are skipped, as are columns inside a nested
+    scope (subquery / set-op branch) — those belong to the inner rowset.
+
+    Shared by the SQL generator (``SQLGenerator._joined_paths_in_sql``) and
+    the planner-side column filter discovery
+    (``slayer.engine.column_filter_paths._walk_root_scope_paths``) so the
+    two surfaces agree on what counts as "crosses a join."
+    """
+    root_ids = _root_scope_column_ids(parsed=parsed)
+    seen: Set[Tuple[str, ...]] = set()
+    ordered: List[Tuple[str, ...]] = []
+    for col in parsed.find_all(exp.Column):
+        tbl = col.args.get("table")
+        if tbl is None or col.args.get("db") or col.args.get("catalog"):
+            continue
+        if id(col) not in root_ids:
+            continue
+        alias = tbl.name
+        if alias in (source_relation, source_model.name):
+            continue
+        segments = alias.split("__")
+        current: SlayerModel = source_model
+        resolved = True
+        for seg in segments:
+            join = next(
+                (j for j in current.joins if j.target_model == seg), None,
+            )
+            if join is None:
+                resolved = False
+                break
+            nxt = bundle.get_referenced_model(seg)
+            if nxt is None:
+                resolved = False
+                break
+            current = nxt
+        if not resolved:
+            continue
+        for i in range(1, len(segments) + 1):
+            prefix = tuple(segments[:i])
+            if prefix not in seen:
+                seen.add(prefix)
+                ordered.append(prefix)
+    return ordered
 
 
 async def _walk_path_to_target(

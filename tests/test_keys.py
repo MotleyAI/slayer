@@ -133,6 +133,46 @@ class TestSqlExprKey:
         b = SqlExprKey(canonical_sql="x = 2")
         assert a != b
 
+    def test_referenced_join_paths_canonical_order_independent(self):
+        # DEV-1503 — two SqlExprKeys built with the same set of referenced
+        # paths in DIFFERENT input order must intern as equal. The
+        # ``before``-validator canonicalises to a sorted, de-duplicated
+        # tuple (CodeRabbit nitpick).
+        a = SqlExprKey(
+            canonical_sql="x = 1",
+            referenced_join_paths=(("loss_payment",), ("claim",)),
+        )
+        b = SqlExprKey(
+            canonical_sql="x = 1",
+            referenced_join_paths=(("claim",), ("loss_payment",)),
+        )
+        assert a == b
+        assert hash(a) == hash(b)
+
+    def test_referenced_join_paths_dedup(self):
+        # Duplicate paths in the input collapse — the field is a set.
+        a = SqlExprKey(
+            canonical_sql="x = 1",
+            referenced_join_paths=(("loss_payment",), ("loss_payment",)),
+        )
+        b = SqlExprKey(
+            canonical_sql="x = 1",
+            referenced_join_paths=(("loss_payment",),),
+        )
+        assert a == b
+        assert hash(a) == hash(b)
+
+    def test_referenced_join_paths_accepts_iterables(self):
+        # The validator coerces any iterable (list, set, generator) of
+        # iterables to tuples — callers should not have to pre-canonicalise.
+        a = SqlExprKey(
+            canonical_sql="x = 1",
+            referenced_join_paths=[["loss_payment"], ["claim", "regions"]],
+        )
+        assert a.referenced_join_paths == (
+            ("claim", "regions"), ("loss_payment",),
+        )
+
 
 # ---------------------------------------------------------------------------
 # AggregateKey

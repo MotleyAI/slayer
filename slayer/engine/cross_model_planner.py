@@ -406,6 +406,45 @@ def _make_cte_schema(
     )
 
 
+def _classify_subplan_filters(
+    *,
+    host_query: SlayerQuery,
+    host_filters: List[HostFilterRouting],
+) -> Optional[List[str]]:
+    """Decide which host-query filters propagate into the DEV-1503 sub-plan.
+
+    ROW: pass through — the sub-plan applies them to the aggregate's rowset
+    (otherwise a non-dim filter like ``status = 'active'`` has no effect on
+    the join-back aggregate value).
+    AGGREGATE (any slot ref): skip. Pushing such a filter into the sub-plan
+    as HAVING would drop CTE rows where the aggregate fails the test; the
+    outer LEFT JOIN then surfaces the host row with a NULL aggregate
+    instead of dropping it — wrong semantics. The generator's outer-WHERE
+    wrapper applies the filter on the joined-back column so the row is
+    actually dropped (DEV-1503 spec).
+    POST: skip — stays at the existing host post-transform wrapper.
+
+    ``host_filters`` is assembled by ``stage_planner`` as
+    ``[date_range_routings..., user_filter_routings...]`` (in order), so the
+    user portion is the trailing slice; do NOT look up by ``f"f{i}"``
+    against ``host_query.filters[i]`` — when a ``date_range``-bearing
+    time_dimension is present the index is off by ``n_date_range`` and
+    aggregate-phase user filters get classified against a leading
+    date_range routing (Codex review).
+    """
+    user_query_filters = host_query.filters or []
+    if not user_query_filters:
+        return None
+    user_routings = list(host_filters[-len(user_query_filters):])
+    sub_filter_texts: List[str] = []
+    for routing, filt in zip(user_routings, user_query_filters):
+        if routing.phase in (Phase.POST, Phase.AGGREGATE):
+            continue
+        # ROW phase — propagate.
+        sub_filter_texts.append(filt)
+    return sub_filter_texts or None
+
+
 class IsolatedCteCrossModelPlanner:
     """Default impl — one CTE per (target_model, shared_grain) tuple.
 
@@ -441,41 +480,17 @@ class IsolatedCteCrossModelPlanner:
         agg_source = aggregate_key.source
         path = getattr(agg_source, "path", ())
         if not path:
-            # DEV-1503 — filtered-local isolation: the aggregate is on a
-            # HOST column but its ``Column.filter`` crosses a join. Build a
-            # host-rooted nested sub-plan that aggregates the measure in its
-            # own ``_cm_*`` CTE (FROM host + the filter-target join), grouped
-            # at the host's shared grain, joined back to the host base.
-            cfk = aggregate_key.column_filter_key
-            if cfk is None or not cfk.referenced_join_paths:
-                raise ValueError(
-                    f"AggregateKey on {agg_source!r} has empty source.path "
-                    f"AND no cross-model column_filter_key — this is a plain "
-                    f"local aggregate. The cross-model planner should not "
-                    f"have been invoked."
-                )
-            if subplan_builder is None or host_query is None:
-                # The DEV-1503 strategy requires a sub-plan builder + the
-                # host query for grain-pair matching. Direct callers without
-                # these (legacy test doubles) can't trigger filtered-local —
-                # raise loudly so the call site is fixed rather than emitting
-                # silently wrong SQL.
-                raise ValueError(
-                    "DEV-1503 filtered-local isolation requires host_query "
-                    "and subplan_builder; received None for one or both. "
-                    "Confirm the stage_planner is wired to pass them."
-                )
-            return self._plan_filtered_local(
+            return self._dispatch_filtered_local(
                 aggregate_slot_id=aggregate_slot_id,
                 aggregate_key=aggregate_key,
                 bundle=bundle,
                 host_model=host_model,
                 host_slots=host_slots,
                 host_filters=host_filters,
-                host_query=host_query,
                 public_alias=public_alias,
-                public_projection=public_projection or [],
                 hidden=hidden,
+                host_query=host_query,
+                public_projection=public_projection,
                 subplan_builder=subplan_builder,
             )
 
@@ -595,6 +610,62 @@ class IsolatedCteCrossModelPlanner:
     # DEV-1503 — filtered-local isolation
     # ----------------------------------------------------------------------
 
+    def _dispatch_filtered_local(
+        self,
+        *,
+        aggregate_slot_id: SlotId,
+        aggregate_key: AggregateKey,
+        bundle: ResolvedSourceBundle,
+        host_model: SlayerModel,
+        host_slots: List[ValueSlot],
+        host_filters: List[HostFilterRouting],
+        public_alias: Optional[str],
+        hidden: bool,
+        host_query: Optional[SlayerQuery],
+        public_projection: Optional[List[SlotId]],
+        subplan_builder: Optional[
+            Callable[[SlayerQuery, ResolvedSourceBundle], PlannedQuery]
+        ],
+    ) -> CrossModelAggregatePlan:
+        """Validate the filtered-local trigger preconditions and dispatch
+        into ``_plan_filtered_local`` — the aggregate is on a HOST column
+        but its ``Column.filter`` crosses a join, so a host-rooted nested
+        sub-plan owns the aggregation and the host base LEFT JOINs back.
+        """
+        agg_source = aggregate_key.source
+        cfk = aggregate_key.column_filter_key
+        if cfk is None or not cfk.referenced_join_paths:
+            raise ValueError(
+                f"AggregateKey on {agg_source!r} has empty source.path "
+                f"AND no cross-model column_filter_key — this is a plain "
+                f"local aggregate. The cross-model planner should not "
+                f"have been invoked."
+            )
+        if subplan_builder is None or host_query is None:
+            # The DEV-1503 strategy requires a sub-plan builder + the host
+            # query for grain-pair matching. Direct callers without these
+            # (legacy test doubles) can't trigger filtered-local — raise
+            # loudly so the call site is fixed rather than emitting
+            # silently wrong SQL.
+            raise ValueError(
+                "DEV-1503 filtered-local isolation requires host_query "
+                "and subplan_builder; received None for one or both. "
+                "Confirm the stage_planner is wired to pass them."
+            )
+        return self._plan_filtered_local(
+            aggregate_slot_id=aggregate_slot_id,
+            aggregate_key=aggregate_key,
+            bundle=bundle,
+            host_model=host_model,
+            host_slots=host_slots,
+            host_filters=host_filters,
+            host_query=host_query,
+            public_alias=public_alias,
+            public_projection=public_projection or [],
+            hidden=hidden,
+            subplan_builder=subplan_builder,
+        )
+
     def _plan_filtered_local(
         self,
         *,
@@ -636,40 +707,10 @@ class IsolatedCteCrossModelPlanner:
         # ``latest_payment_last_updated_at`` form.
         formula = _local_agg_formula(aggregate_key)
         measure_name_for_subplan = public_alias
-        # Classify host query filters per phase before passing to the
-        # sub-plan. ``host_filters`` carries routings for user query
-        # filters (ids ``f0``, ``f1``, ...) and model filters (ids
-        # ``mf0``, ...); user query filters indexed in ``host_query.filters``
-        # correspond to ``f{i}`` by position.
-        #
-        # ROW: pass through — the sub-plan applies them to the aggregate's
-        #   rowset (otherwise a non-dim filter like ``status = 'active'``
-        #   has no effect on the join-back aggregate value).
-        # AGGREGATE (any slot ref): SKIP. Pushing such a filter into the
-        #   sub-plan as HAVING would drop CTE rows where the aggregate
-        #   fails the test; the outer LEFT JOIN then surfaces the host
-        #   row with a NULL aggregate instead of dropping it — wrong
-        #   semantics. The generator's outer-WHERE wrapper applies the
-        #   filter on the joined-back column so the row is actually
-        #   dropped (DEV-1503 spec).
-        # POST: skip — stays at the existing host post-transform wrapper.
-        routing_by_id: Dict[str, HostFilterRouting] = {
-            r.filter_id: r for r in host_filters
-        }
-        sub_filter_texts: List[str] = []
-        for i, filt in enumerate(host_query.filters or []):
-            routing = routing_by_id.get(f"f{i}")
-            if routing is None:
-                # No routing — pass through (safest default).
-                sub_filter_texts.append(filt)
-                continue
-            if routing.phase is Phase.POST:
-                continue
-            if routing.phase is Phase.AGGREGATE:
-                continue
-            # ROW phase — propagate.
-            sub_filter_texts.append(filt)
-        sub_filters = sub_filter_texts or None
+        sub_filters = _classify_subplan_filters(
+            host_query=host_query,
+            host_filters=host_filters,
+        )
         rerooted_query = SlayerQuery(
             source_model=host_model.name,
             measures=[ModelMeasure(

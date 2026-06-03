@@ -3575,11 +3575,8 @@ class TestFilteredMeasures:
         assert "_cm_" in sql, f"Expected isolated _cm_ CTE:\n{sql}"
         assert "_last_rn" in sql, f"Expected _last_rn in isolated CTE:\n{sql}"
         # The customers JOIN should be inside the _cm_ CTE's ranked subquery.
-        cm_match = _re.search(r"(_cm_\w+)\s+AS\s*\(", sql)
-        assert cm_match, f"No _cm_ CTE found:\n{sql}"
-        cm_start = cm_match.start()
-        cm_end = sql.index("\n)", cm_start)
-        cm_body = sql[cm_start:cm_end]
+        # Balanced-paren walker — the body wraps a nested ranked subquery.
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
         assert "public.customers" in cm_body, (
             f"Expected customers JOIN inside _cm_ CTE:\n{cm_body}"
         )
@@ -7205,11 +7202,9 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
 
-        # Extract the _base CTE body
-        assert "_base" in sql, f"Expected _base CTE in:\n{sql}"
-        base_start = sql.index("_base AS")
-        base_end = sql.index("\n)", base_start)
-        base_body = sql[base_start:base_end]
+        # Extract the _base CTE body (balanced-paren walker — guards against
+        # nested ranked subqueries in mixed-isolation cases).
+        base_body = _extract_cte_body(sql, r"_base")
 
         # Base must NOT have ROW_NUMBER — no ranked subquery needed
         assert "ROW_NUMBER" not in base_body, (
@@ -7236,11 +7231,9 @@ class TestIsolatedFilteredMeasureCTEs:
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
 
         # The _cm_ CTE for the isolated measure must exist and contain ROW_NUMBER.
-        cm_match = _re.search(r"(_cm_\w*latest_payment\w*)\s+AS\s*\(", sql)
-        assert cm_match, f"No _cm_ CTE for latest_payment in:\n{sql}"
-        cm_start = cm_match.start()
-        cm_end = sql.index("\n)", cm_start)
-        cm_body = sql[cm_start:cm_end]
+        # Balanced-paren walker — the body carries a nested ranked subquery
+        # whose ``\n)`` closes the inner subquery, not the CTE.
+        cm_body = _extract_cte_body(sql, r"_cm_\w*latest_payment\w*")
 
         assert "ROW_NUMBER" in cm_body, (
             f"_cm_ CTE for latest_payment must contain ROW_NUMBER:\n{cm_body}"
@@ -7275,18 +7268,13 @@ class TestIsolatedFilteredMeasureCTEs:
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
 
         # Host _base SHOULD have ROW_NUMBER (for the non-isolated total_amount:last).
-        base_start = sql.index("_base AS")
-        base_end = sql.index("\n)", base_start)
-        base_body = sql[base_start:base_end]
+        base_body = _extract_cte_body(sql, r"_base")
         assert "ROW_NUMBER" in base_body, (
             f"_base must have ROW_NUMBER for non-isolated last measure:\n{base_body}"
         )
 
         # Isolated measure should get its own _cm_ CTE with its own ranked subquery.
-        cm_match = _re.search(r"(_cm_\w*latest_payment\w*)\s+AS\s*\(", sql)
-        assert cm_match, f"No _cm_ CTE for latest_payment in:\n{sql}"
-        cm_start = cm_match.start()
-        cm_body = sql[cm_start:sql.index("\n)", cm_start)]
+        cm_body = _extract_cte_body(sql, r"_cm_\w*latest_payment\w*")
         assert "ROW_NUMBER" in cm_body, (
             f"isolated _cm_ CTE must contain its own ROW_NUMBER:\n{cm_body}"
         )
@@ -7320,12 +7308,9 @@ class TestIsolatedFilteredMeasureCTEs:
         )
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
 
-        # The _cm_ CTE should use first (ASC ordering).
-        cm_match = _re.search(r"(_cm_\w*earliest_reserve\w*)\s+AS\s*\(", sql)
-        assert cm_match, f"No _cm_ CTE for earliest_reserve in:\n{sql}"
-        cm_start = cm_match.start()
-        cm_end = sql.index("\n)", cm_start)
-        cm_body = sql[cm_start:cm_end]
+        # The _cm_ CTE should use first (ASC ordering). Balanced-paren
+        # walker — body carries the nested ranked subquery.
+        cm_body = _extract_cte_body(sql, r"_cm_\w*earliest_reserve\w*")
 
         assert "_first_rn" in cm_body, (
             f"_cm_ CTE should use _first_rn for 'first' aggregation:\n{cm_body}"
@@ -7360,9 +7345,7 @@ class TestIsolatedFilteredMeasureCTEs:
         sql = await self._sql(claim_amount_model_with_time, related_models, query)
 
         # No ROW_NUMBER in host _base when all first/last are isolated.
-        base_start = sql.index("_base AS")
-        base_end = sql.index("\n)", base_start)
-        base_body = sql[base_start:base_end]
+        base_body = _extract_cte_body(sql, r"_base")
         assert "ROW_NUMBER" not in base_body, (
             f"No ROW_NUMBER should be in base when all first/last are isolated:\n{base_body}"
         )
@@ -7375,11 +7358,10 @@ class TestIsolatedFilteredMeasureCTEs:
         assert len(filtered_names) == 2, (
             f"Expected 2 filtered _cm_ CTEs, got {len(filtered_names)}: {filtered_names}\n{sql}"
         )
-        # Each should have ROW_NUMBER.
+        # Each should have ROW_NUMBER. Balanced-paren walker because each
+        # ``_cm_*`` body wraps a ranked subquery.
         for cm_name in filtered_names:
-            cm_start = sql.index(f"{cm_name} AS")
-            cm_end = sql.index("\n)", cm_start)
-            cm_body = sql[cm_start:cm_end]
+            cm_body = _extract_cte_body(sql, _re.escape(cm_name))
             assert "ROW_NUMBER" in cm_body, (
                 f"CTE {cm_name} must have ROW_NUMBER:\n{cm_body}"
             )
@@ -7616,9 +7598,26 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "SUM" in sql.upper() and "OVER" in sql.upper(), (
             f"Expected windowed SUM ... OVER (...) for cumsum:\n{sql}"
         )
-        # The POST filter applies AFTER the transform layer's CTE, not as part
-        # of the combined ``_filtered`` outer WHERE. Locate the cumsum window
-        # expression and assert the predicate sits past it.
+        # Layer-boundary pin: the POST predicate lives in the ``_filtered``
+        # outer wrap AFTER every CTE — not inside the ``base`` CTE (the
+        # combined SELECT that feeds the transform step). Routing it into
+        # ``base.WHERE`` would filter rows BEFORE the cumsum window saw
+        # them, silently changing the cumulative semantics.
+        base_body = _extract_cte_body(sql, r"\bbase\b")
+        assert "> 0" not in base_body, (
+            f"POST filter '> 0' leaked into the combined ``base`` CTE — "
+            f"it must stay at the post-transform ``_filtered`` wrapper:"
+            f"\n{base_body}"
+        )
+        # And the POST predicate IS in the outer ``_filtered`` wrap.
+        filtered_match = _re.search(r"\)\s*AS\s+_filtered\s*WHERE\s+([^)]+)", sql)
+        assert filtered_match, (
+            f"Expected ``_filtered`` outer wrap with WHERE for POST filter:\n{sql}"
+        )
+        assert "> 0" in filtered_match.group(1), (
+            f"POST filter '> 0' must apply at the ``_filtered`` outer wrap:"
+            f"\n{filtered_match.group(0)}"
+        )
         _assert_valid_sql(sql)
 
     async def test_aggregate_and_post_filters_route_independently(
@@ -7658,13 +7657,31 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "> 0" in sql, f"POST filter '> 0' missing:\n{sql}"
         # Cumsum window must be present somewhere.
         assert "OVER" in sql.upper(), f"Expected windowed SUM ... OVER (...) for cumsum:\n{sql}"
-        # The POST filter and the AGGREGATE filter must NOT be merged into a
-        # single comparison/WHERE — they belong in different layers. Verify
-        # by checking that '> 0' and '> 1000' both appear, but not adjacent
-        # in a way that suggests an `AND`-merge in one predicate.
-        merged_re = _re.compile(r">\s*1000\s+AND\s+[^()]*>\s*0|>\s*0\s+AND\s+[^()]*>\s*1000")
-        assert not merged_re.search(sql), (
-            f"AGGREGATE and POST filters appear AND-merged in one predicate:\n{sql}"
+        # Layer-boundary pin: AGGREGATE in the combined ``base`` CTE
+        # WHERE; POST in the outer ``_filtered`` wrap; neither leaks into
+        # the other layer.
+        base_body = _extract_cte_body(sql, r"\bbase\b")
+        assert "> 1000" in base_body, (
+            f"AGGREGATE filter '> 1000' must apply in the combined "
+            f"``base`` CTE WHERE:\n{base_body}"
+        )
+        assert "> 0" not in base_body, (
+            f"POST filter '> 0' leaked into the combined ``base`` CTE — "
+            f"it must stay at the post-transform ``_filtered`` wrapper:"
+            f"\n{base_body}"
+        )
+        filtered_match = _re.search(r"\)\s*AS\s+_filtered\s*WHERE\s+([^)]+)", sql)
+        assert filtered_match, (
+            f"Expected ``_filtered`` outer wrap with WHERE for POST filter:\n{sql}"
+        )
+        filtered_where = filtered_match.group(1)
+        assert "> 0" in filtered_where, (
+            f"POST filter '> 0' must apply at the ``_filtered`` outer wrap:"
+            f"\n{filtered_match.group(0)}"
+        )
+        assert "> 1000" not in filtered_where, (
+            f"AGGREGATE filter '> 1000' leaked into the ``_filtered`` "
+            f"outer wrap:\n{filtered_match.group(0)}"
         )
         _assert_valid_sql(sql)
 
@@ -7801,6 +7818,120 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "500" in outer, f"Filter literal '500' must apply in outer:\n{outer}"
         assert "WHERE" in outer.upper(), (
             f"Filter on parametric last filtered-local must route to outer WHERE:\n{outer}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_outer_wrapper_resolves_forward_cross_model_agg_operand(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """A mixed AGGREGATE-phase filter referencing BOTH an isolated
+        filtered-local aggregate AND a forward cross-model aggregate
+        must resolve BOTH operands at the outer combined SELECT — the
+        filtered-local through the host-rooted ``_cm_`` CTE, the forward
+        cross-model through ITS own ``_cm_`` CTE.
+
+        Pins CodeRabbit thread 2: the outer wrapper's slot-to-CTE map must
+        cover EVERY cross-model aggregate plan (not just filtered-local
+        ones). Without this, the forward cross-model operand falls
+        through to the ``_base`` fallback and the renderer raises
+        ``NotImplementedError`` because the slot doesn't materialise in
+        ``_base``.
+        """
+        # ``loss_payment.has_flag:sum`` is a forward cross-model aggregate
+        # on the joined ``loss_payment`` target — no Column.filter, so it
+        # routes as a plain forward-path ``_cm_`` plan, not filtered-local.
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[
+                ModelMeasure(formula="loss_payment_amt:sum"),
+                ModelMeasure(formula="loss_payment.has_flag:sum"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            filters=[
+                "loss_payment_amt:sum + loss_payment.has_flag:sum > 100",
+            ],
+        )
+        sql = await self._sql(claim_amount_model, related_models, query)
+        # Two _cm_ CTEs: one filtered-local (host-rooted), one forward
+        # cross-model.
+        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        assert len(cm_cte_names) >= 2, (
+            f"Expected ≥ 2 _cm_ CTEs (filtered-local + forward); got {cm_cte_names}\n{sql}"
+        )
+        # Outer combined SELECT must carry the filter and reference both
+        # aggregate aliases.
+        last_cte_close = sql.rfind("\n)")
+        outer = sql[last_cte_close + 2:]
+        assert "100" in outer, (
+            f"Filter literal '100' must apply in outer combined SELECT:\n{outer}"
+        )
+        assert "WHERE" in outer.upper(), (
+            f"Outer combined SELECT must carry WHERE:\n{outer}"
+        )
+        assert "loss_payment_amt_sum" in outer, (
+            f"Outer must reference filtered-local aggregate alias:\n{outer}"
+        )
+        assert "has_flag_sum" in outer, (
+            f"Outer must reference forward cross-model aggregate alias:\n{outer}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_aggregate_filter_with_date_range_routes_correctly(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """A query carrying BOTH a date_range time dimension AND an
+        AGGREGATE-phase filter on the isolated aggregate must route each
+        independently: the date_range as ROW-phase WHERE (propagated into
+        the sub-plan / _cm_ CTE), the aggregate filter as outer WHERE on
+        the joined-back column.
+
+        Pins the Codex review finding: ``host_filter_routings`` is
+        ``[date_range_routings..., user_filter_routings...]`` in order, so
+        the planner must slice user routings as ``host_filters[-N:]`` —
+        not look them up by ``f"f{i}"`` against ``host_query.filters[i]``
+        (off-by-one when n_date_range > 0). Without the fix, the aggregate
+        filter would be classified against the leading date_range routing
+        (typically ROW phase) and double-applied (sub-plan HAVING +
+        outer WHERE).
+        """
+        query = SlayerQuery(
+            source_model="claim_amount",
+            measures=[ModelMeasure(formula="loss_payment_amt:sum")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                    date_range=("2020-01-01", "2021-01-01"),
+                ),
+            ],
+            filters=["loss_payment_amt:sum > 1000"],
+        )
+        sql = await self._sql(claim_amount_model_with_time, related_models, query)
+        # The date_range literal is a ROW-phase filter — must apply where
+        # the row-set forms (inside the _cm_ CTE for the isolated agg).
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "2020-01-01" in cm_body, (
+            f"date_range ROW filter must apply inside the _cm_ CTE:\n{cm_body}"
+        )
+        # The AGGREGATE filter must apply on the OUTER combined SELECT,
+        # not inside the CTE (which would surface host rows as NULL via
+        # LEFT JOIN instead of dropping them).
+        last_cte_close = sql.rfind("\n)")
+        outer = sql[last_cte_close + 2:]
+        assert "1000" in outer, (
+            f"Aggregate filter '> 1000' must apply in outer combined SELECT:\n{outer}"
+        )
+        assert "WHERE" in outer.upper(), (
+            f"Outer combined SELECT must carry a WHERE for the aggregate filter:\n{outer}"
+        )
+        # Double-application check: the '> 1000' literal must NOT also
+        # appear inside the _cm_ CTE body (which would mean the planner
+        # mis-routed the aggregate filter as ROW phase under the
+        # date_range off-by-one bug).
+        assert "1000" not in cm_body, (
+            f"Aggregate filter '> 1000' leaked into _cm_ CTE body "
+            f"(off-by-one with date_range):\n{cm_body}"
         )
         _assert_valid_sql(sql)
 

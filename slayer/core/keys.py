@@ -319,9 +319,10 @@ class SqlExprKey(_FrozenKey):
     ``canonical_sql`` is a sqlglot-normalized string (the binder is
     responsible for normalization — the key trusts the form it receives).
 
-    DEV-1503 — ``referenced_join_paths`` is the typed set of non-anchor
-    join-path prefixes the filter touches after derived-ref expansion.
-    Computed once at bind time via
+    DEV-1503 — ``referenced_join_paths`` is the typed SET (semantically;
+    stored as an ordered tuple for hashability) of non-anchor join-path
+    prefixes the filter touches after derived-ref expansion. Computed
+    once at bind time via
     ``slayer.engine.column_filter_paths.compute_column_filter_join_paths``;
     the planner reads it to decide whether a filtered-local measure must
     isolate (the DEV-1503 trigger predicate). ``()`` for same-model
@@ -330,10 +331,23 @@ class SqlExprKey(_FrozenKey):
     canonical SQL but different referenced paths would be a bug, so
     folding it into the key catches that invariant violation by
     comparison.
+
+    The ``before``-validator canonicalises the input to a sorted,
+    de-duplicated tuple of tuples — so callers can pass any iterable
+    (list, set, generator) and order doesn't affect identity (otherwise
+    two semantically-equal SqlExprKeys built with paths in different
+    order would intern as different keys; CodeRabbit nitpick).
     """
 
     canonical_sql: str
     referenced_join_paths: Tuple[Tuple[str, ...], ...] = ()
+
+    @field_validator("referenced_join_paths", mode="before")
+    @classmethod
+    def _canonicalize_referenced_join_paths(cls, v):
+        if not v:
+            return ()
+        return tuple(sorted({tuple(p) for p in v}))
 
     @property
     def phase(self) -> Phase:
