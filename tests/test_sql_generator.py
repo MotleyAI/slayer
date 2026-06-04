@@ -3556,8 +3556,14 @@ class TestMeasureSourceSqlJoinInference:
         # aggregate references the joined model's column inside it.
         assert "_cm_" in sql, f"expected cross-model CTE; got:\n{sql}"
         assert "customers.region_id" in sql
-        # Negative: no spurious regions join leaks to the host base.
-        assert "regions" not in _join_aliases(sql)
+        # Negative: no spurious regions join leaks. The realistic leak
+        # shape from a misbehaving host-side collector walking through
+        # customers would be the path alias ``customers__regions``;
+        # ``_join_aliases`` returns the exact alias set so a substring
+        # check on bare ``regions`` would miss that. Assert both shapes.
+        join_aliases = _join_aliases(sql)
+        assert "customers__regions" not in join_aliases
+        assert "regions" not in join_aliases
 
     @pytest.mark.xfail(
         strict=True,
