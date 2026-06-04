@@ -3680,7 +3680,7 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
         measures=[ModelMeasure(formula="region_pop:sum")],
     ))
     assert response.row_count == 1
-    assert response.data[0]["orders.region_pop_sum"] == 350.0, (
+    assert response.data[0]["orders.region_pop_sum"] == pytest.approx(350.0), (
         f"expected SUM=350 over per-order regions, got "
         f"{response.data[0].get('orders.region_pop_sum')!r}; row: "
         f"{response.data[0]!r}"
