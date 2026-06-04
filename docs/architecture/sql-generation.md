@@ -153,9 +153,14 @@ call chain just before `_build_from_and_joins`:
 
 All three collectors restrict to **local** aggregate sources (empty
 `AggregateKey.source.path`); cross-model aggregates own their own join
-discovery inside the per-plan `_cm_*` CTE. All three feed the shared
-`needed_join_paths` list, so repeated paths surfaced by different sources
-dedupe naturally via `_build_from_and_joins`'s `emitted_aliases` guard.
+discovery inside the per-plan `_cm_*` CTE for the `Column.filter` side
+(DEV-1494 / DEV-1503). The symmetric source-`Column.sql` discovery inside
+the `_cm_*` CTE is a known gap (DEV-1526) — a cross-model aggregate whose
+target column's `Column.sql` crosses a further join does not yet have that
+join pulled into the CTE FROM. All three host-side collectors feed the
+shared `needed_join_paths` list, so repeated paths surfaced by different
+sources dedupe naturally via `_build_from_and_joins`'s `emitted_aliases`
+guard.
 
 ## Result-key contract (P10)
 
