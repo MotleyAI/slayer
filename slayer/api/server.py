@@ -13,6 +13,7 @@ from slayer.core.errors import (
     EntityResolutionError,
     MemoryNotFoundError,
     SchemaDriftError,
+    SlayerError,
 )
 from slayer.core.format import NumberFormat
 from slayer.core.models import DatasourceConfig, SlayerModel
@@ -675,6 +676,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         except (
             EntityResolutionError,
             AmbiguousModelError,
+            SlayerError,
             ValueError,
         ) as exc:
             raise HTTPException(status_code=400, detail=str(exc))

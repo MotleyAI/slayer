@@ -21,6 +21,8 @@ from typing import AsyncIterator
 import pytest
 import pytest_asyncio
 
+from tests.search_helpers import call_mcp_tool, seed_warehouse_models
+
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
@@ -43,32 +45,7 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
     """1 datasource, 2 models, 5 memories (3 learning-only, 2 query-bearing)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = resolve_storage(tmpdir)
-        await storage.save_datasource(
-            DatasourceConfig(name="warehouse", type="sqlite", database=":memory:")
-        )
-        await storage.save_model(SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="warehouse",
-            description="Checkout orders.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount_paid", type=DataType.DOUBLE,
-                       description="Net paid in USD."),
-                Column(name="status", type=DataType.TEXT,
-                       description="paid|refunded|cancelled."),
-            ],
-        ))
-        await storage.save_model(SlayerModel(
-            name="customers",
-            sql_table="customers",
-            data_source="warehouse",
-            description="Customer master data.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="email", type=DataType.TEXT),
-            ],
-        ))
+        await seed_warehouse_models(storage)
         # learning-only memories
         await storage.save_memory(
             learning="amount_paid is gross of refunds.",
@@ -197,7 +174,7 @@ async def test_max_memories_param_removed_raises_type_error(
     service: SearchService,
 ) -> None:
     with pytest.raises(TypeError):
-        await service.search(question="x", max_memories=5)  # type: ignore[call-arg]
+        await service.search(**{"question": "x", "max_memories": 5})  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -205,7 +182,7 @@ async def test_max_example_queries_param_removed_raises_type_error(
     service: SearchService,
 ) -> None:
     with pytest.raises(TypeError):
-        await service.search(question="x", max_example_queries=2)  # type: ignore[call-arg]
+        await service.search(**{"question": "x", "max_example_queries": 2})  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -213,7 +190,7 @@ async def test_max_entities_param_removed_raises_type_error(
     service: SearchService,
 ) -> None:
     with pytest.raises(TypeError):
-        await service.search(question="x", max_entities=5)  # type: ignore[call-arg]
+        await service.search(**{"question": "x", "max_entities": 5})  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -600,21 +577,7 @@ def test_rest_search_old_max_entities_param_rejected(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _call_mcp_tool(*, mcp, name: str, arguments: dict) -> str:
-    result = await mcp.call_tool(name, arguments)
-    if isinstance(result, tuple):
-        for block in result[0]:
-            if hasattr(block, "text"):
-                return block.text
-    if isinstance(result, list):
-        for block in result:
-            if hasattr(block, "text"):
-                return block.text
-    if hasattr(result, "content"):
-        for block in result.content:
-            if hasattr(block, "text"):
-                return block.text
-    return str(result)
+_call_mcp_tool = call_mcp_tool
 
 
 @pytest.mark.asyncio
@@ -767,7 +730,4 @@ async def test_client_search_old_max_params_raise_type_error(
     from slayer.client.slayer_client import SlayerClient
     client = SlayerClient(storage=storage_with_corpus)
     with pytest.raises(TypeError):
-        await client.search(  # type: ignore[call-arg]
-            question="x",
-            max_memories=5,
-        )
+        await client.search(**{"question": "x", "max_memories": 5})  # type: ignore[arg-type]

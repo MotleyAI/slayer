@@ -20,13 +20,18 @@ _LABEL_TO_KIND: dict[str, str] = {
     "memory": "memory",
     "datasource": "datasource",
     "model": "model",
+    "modelcolumn": "column",
     "column": "column",
     "measure": "measure",
     "aggregation": "aggregation",
 }
 
+# Structured pattern: one label word optionally followed by (: word)* pairs.
+# \s* is only used as a delimiter between fixed tokens (never inside a
+# quantified character class that can also match \s), which avoids
+# polynomial backtracking on non-matching inputs (Sonar S5852).
 _NAIVE_PATTERN = re.compile(
-    r"^\s*MATCH\s*\(\s*\w+\s*:([\w\s:]+)\s*\)\s*RETURN\s+\w+\.id\s+AS\s+id\s*$",
+    r"^\s*MATCH\s*\(\s*\w+\s*:\s*(\w+(?:\s*:\s*\w+)*)\s*\)\s*RETURN\s+\w+\.id\s+AS\s+id\s*$",
     re.IGNORECASE,
 )
 

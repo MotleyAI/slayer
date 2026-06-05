@@ -21,6 +21,8 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.storage.base import StorageBackend, resolve_storage
 
+from tests.search_helpers import call_mcp_tool as _call_mcp_tool
+
 
 @pytest_asyncio.fixture
 async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
@@ -50,23 +52,6 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
 # ---------------------------------------------------------------------------
 
 
-async def _call_mcp_tool(*, mcp, name: str, arguments: dict) -> str:  # NOSONAR(S3776) — small test helper that branches over three FastMCP result shapes; splitting hurts readability
-    """Invoke an MCP tool and return its text result."""
-    result = await mcp.call_tool(name, arguments)
-    if isinstance(result, tuple):
-        # Some FastMCP versions return (content_list, structured_result).
-        for block in result[0]:
-            if hasattr(block, "text"):
-                return block.text
-    if isinstance(result, list):
-        for block in result:
-            if hasattr(block, "text"):
-                return block.text
-    if hasattr(result, "content"):
-        for block in result.content:
-            if hasattr(block, "text"):
-                return block.text
-    return str(result)
 
 
 @pytest.mark.asyncio

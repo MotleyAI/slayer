@@ -242,6 +242,50 @@ def _filter_memories_entities(
     return out
 
 
+def _query_bearing_memory_hits(hits: List["SearchHit"]) -> List["SearchHit"]:
+    """Return hits that are query-bearing memories (kind=='memory', query set)."""
+    return [h for h in hits if h.kind == "memory" and h.query is not None]
+
+
+def _build_hit_from_fused_key(
+    *,
+    key: str,
+    score: float,
+    memory_by_id: dict,
+    index_hits_by_memory_id: dict,
+    canonical_input_entities: List[str],
+    corpus: Optional["Corpus"],
+    named_kind_text: Optional[Dict[str, Tuple[str, str]]],
+    valid_canonicals: Optional[set],
+    kind_filter: Optional[Set[str]],
+) -> Optional["SearchHit"]:
+    """Build one SearchHit from a fused (key, score) pair, or return None to skip."""
+    if key.startswith(_MEMORY_PREFIX):
+        memory_id = key[len(_MEMORY_PREFIX):]
+        mem = memory_by_id.get(memory_id)
+        if mem is None or (kind_filter is not None and "memory" not in kind_filter):
+            return None
+        return _build_memory_hit(
+            mem=mem,
+            memory_id=memory_id,
+            score=score,
+            index_hits_by_memory_id=index_hits_by_memory_id,
+            canonical_input_entities=canonical_input_entities,
+            valid_canonicals=valid_canonicals,
+        )
+    resolved = _resolve_entity_hit_kind_text(
+        canonical=key,
+        corpus=corpus,
+        named_kind_text=named_kind_text,
+    )
+    if resolved is None:
+        return None
+    kind, text = resolved
+    if kind_filter is not None and kind not in kind_filter:
+        return None
+    return SearchHit(id=key, kind=kind, score=score, text=text)
+
+
 def _fuse_all_hits(
     *,
     memory_rankings: List[List[str]],
@@ -272,37 +316,21 @@ def _fuse_all_hits(
 
     results: List[SearchHit] = []
     for key, score in fused_sorted:
-        if key.startswith(_MEMORY_PREFIX):
-            memory_id = key[len(_MEMORY_PREFIX):]
-            mem = memory_by_id.get(memory_id)
-            if mem is None:
-                continue
-            if kind_filter is not None and "memory" not in kind_filter:
-                continue
-            hit: SearchHit = _build_memory_hit(
-                mem=mem,
-                memory_id=memory_id,
-                score=score,
-                index_hits_by_memory_id=index_hits_by_memory_id,
-                canonical_input_entities=canonical_input_entities,
-                valid_canonicals=valid_canonicals,
-            )
-        else:
-            canonical = key
-            resolved = _resolve_entity_hit_kind_text(
-                canonical=canonical,
-                corpus=corpus,
-                named_kind_text=named_kind_text,
-            )
-            if resolved is None:
-                continue
-            kind, text = resolved
-            if kind_filter is not None and kind not in kind_filter:
-                continue
-            hit = SearchHit(id=canonical, kind=kind, score=score, text=text)
-        results.append(hit)
-        if len(results) >= max_results:
-            break
+        hit = _build_hit_from_fused_key(
+            key=key,
+            score=score,
+            memory_by_id=memory_by_id,
+            index_hits_by_memory_id=index_hits_by_memory_id,
+            canonical_input_entities=canonical_input_entities,
+            corpus=corpus,
+            named_kind_text=named_kind_text,
+            valid_canonicals=valid_canonicals,
+            kind_filter=kind_filter,
+        )
+        if hit is not None:
+            results.append(hit)
+            if len(results) >= max_results:
+                break
     return results
 
 
@@ -630,25 +658,13 @@ class SearchService:
 
         # Cypher pre-filter: run before channels, short-circuit on empty result.
         # When advanced_search is absent, attempt naive label-filter parsing.
-        candidate_ids: Optional[FrozenSet[str]] = None
-        kind_filter: Optional[Set[str]] = None
-        if cypher_filter is not None:
-            if _search_graph.is_available():
-                candidate_ids = await _search_graph.get_filtered_ids(
-                    cypher_filter, self._storage,
-                )
-                if not candidate_ids:
-                    warnings.append(
-                        "cypher_filter returned no matching nodes; "
-                        "search returned no results."
-                    )
-                    return SearchResponse(
-                        results=[],
-                        resolved_input_entities=canonical_input_entities,
-                        warnings=_dedup(warnings),
-                    )
-            else:
-                kind_filter = _parse_naive_cypher(cypher_filter)
+        candidate_ids, kind_filter, early = await self._apply_cypher_filter(
+            cypher_filter=cypher_filter,
+            canonical_input_entities=canonical_input_entities,
+            warnings=warnings,
+        )
+        if early is not None:
+            return early
 
         # Recency fallback for the all-empty case.
         if not channel_1_active and not question_active:
@@ -798,7 +814,7 @@ class SearchService:
             valid_canonicals=valid_canonicals,
             kind_filter=kind_filter,
         )
-        query_bearing_hits = [h for h in all_hits if h.kind == "memory" and h.query is not None]
+        query_bearing_hits = _query_bearing_memory_hits(all_hits)
         # DEV-1428: stale Memory.query warnings — surface memories whose
         # attached query references entities that no longer resolve.
         # DEV-1513: ALSO emit the warning for any explicitly-named
@@ -867,6 +883,41 @@ class SearchService:
                 canonical.extend(extraction.canonical_forms)
                 warnings.extend(extraction.warnings)
         return _dedup(canonical), _dedup(warnings)
+
+    async def _apply_cypher_filter(
+        self,
+        *,
+        cypher_filter: Optional[str],
+        canonical_input_entities: List[str],
+        warnings: List[str],
+    ) -> Tuple[Optional[FrozenSet[str]], Optional[Set[str]], Optional[SearchResponse]]:
+        """Resolve the optional cypher_filter into (candidate_ids, kind_filter).
+
+        Returns a 3-tuple:
+        - candidate_ids: non-None when the full graph path ran (advanced_search).
+        - kind_filter: non-None when the naive fallback ran.
+        - early: a short-circuit SearchResponse when the graph returned no ids.
+        """
+        if cypher_filter is None:
+            return None, None, None
+        if _search_graph.is_available():
+            candidate_ids = await _search_graph.get_filtered_ids(
+                cypher_filter, self._storage,
+            )
+            if not candidate_ids:
+                early_warnings = _dedup(
+                    warnings + [
+                        "cypher_filter returned no matching nodes; "
+                        "search returned no results."
+                    ]
+                )
+                return candidate_ids, None, SearchResponse(
+                    results=[],
+                    resolved_input_entities=canonical_input_entities,
+                    warnings=early_warnings,
+                )
+            return candidate_ids, None, None
+        return None, _parse_naive_cypher(cypher_filter), None
 
     async def _recency_fallback(
         self,

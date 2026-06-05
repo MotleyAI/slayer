@@ -14,6 +14,7 @@ from slayer.core.errors import (
     AmbiguousModelError,
     EntityResolutionError,
     MemoryNotFoundError,
+    SlayerError,
 )
 from slayer.core.models import SlayerModel
 from slayer.engine.ingestion import (
@@ -791,7 +792,7 @@ def _run_search_query(args, storage) -> None:
             max_results=args.max_results,
             cypher_filter=args.cypher_filter,
         ))
-    except (EntityResolutionError, AmbiguousModelError, ValueError) as exc:
+    except (EntityResolutionError, AmbiguousModelError, SlayerError, ValueError) as exc:
         _exit_with_error(exc)
         return
     if args.format == "json":

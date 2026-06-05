@@ -11,6 +11,7 @@ from slayer.core.errors import (
     AmbiguousModelError,
     EntityResolutionError,
     MemoryNotFoundError,
+    SlayerError,
 )
 from slayer.core.models import (
     Aggregation,
@@ -2898,6 +2899,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         except (
             EntityResolutionError,
             AmbiguousModelError,
+            SlayerError,
             ValueError,
         ) as exc:
             return _format_resolution_error(exc)

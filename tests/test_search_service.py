@@ -26,8 +26,7 @@ from typing import AsyncIterator
 import pytest
 import pytest_asyncio
 
-from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import ModelMeasure
 from slayer.core.query import SlayerQuery
 from slayer.search.service import (
     SearchHit,
@@ -36,36 +35,15 @@ from slayer.search.service import (
 )
 from slayer.storage.base import StorageBackend, resolve_storage
 
+from tests.search_helpers import seed_warehouse_models
+
 
 @pytest_asyncio.fixture
 async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
     """A small fixture corpus: 1 datasource, 2 models, 4 memories."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = resolve_storage(tmpdir)
-        await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="warehouse",
-            description="Checkout orders.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount_paid", type=DataType.DOUBLE,
-                       description="Net paid in USD."),
-                Column(name="status", type=DataType.TEXT,
-                       description="paid|refunded|cancelled."),
-            ],
-        ))
-        await storage.save_model(SlayerModel(
-            name="customers",
-            sql_table="customers",
-            data_source="warehouse",
-            description="Customer master data.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="email", type=DataType.TEXT),
-            ],
-        ))
+        await seed_warehouse_models(storage)
         # 4 memories: 2 tagged on orders.amount_paid, 1 on customers, 1 untagged
         await storage.save_memory(
             learning="amount_paid is gross of refunds.",
