@@ -380,11 +380,64 @@ All three are populated:
 - on `edit_model` (column edits → that column; model-level filter / sql /
   source-query body change → every column);
 - lazily on `inspect_model` when the cached value is missing (write-back
-  best-effort). Cache validity for categorical columns requires
-  `sampled_values is not None` — v6 (legacy `sampled` only) models
-  re-profile on next call so the structured field gets populated.
+  best-effort);
+- lazily inside `search()` itself for any column hit whose persisted
+  `sampled_values` is stale (DEV-1516). The post-fusion column-hit hook
+  groups hits by `(data_source, model_name)` — refreshes within a model
+  serialise (the storage write is a model-level read-modify-write);
+  refreshes across different models run concurrently via
+  `asyncio.gather`. When `search()` is constructed without an engine
+  (storage-only contexts), the hook is a silent no-op.
+
+Cache validity for categorical columns requires `sampled_values is not None` —
+v6 (legacy `sampled` only) models re-profile on the next `inspect_model`
+or `search()` column hit so the structured field gets populated.
 
 sql-mode and query-backed models are silently skipped in v1.
+
+### How sample values surface in search results
+
+The per-column doc rendered by `slayer/search/render.py:render_column_text`
+prefers the structured `sampled_values` list (full top-50) over the
+20-truncated `sampled` text. When `sampled_values` is populated:
+
+```text
+Column: warehouse.orders.status
+Type: TEXT
+Description: Order status.
+Sample values: ["paid", "refunded", "cancelled", "pending", …]  ← JSON-encoded, all 50
+Distinct count: 12345        ← only when distinct_count > len(sampled_values)
+```
+
+The list is rendered as a JSON array (not comma-joined) so values that
+themselves contain commas — `"R$ 1,000–3,000"`, locale-formatted numbers,
+multi-clause labels — survive unambiguously to the consumer. This is why
+DEV-1480 introduced the structured `sampled_values` field in the first
+place; comma-joining it back to a flat string would re-introduce the
+exact ambiguity it was meant to solve.
+
+When `sampled_values` is `None` (numeric / temporal columns, or legacy
+v6 data, or rare overflow-with-failed-count_distinct rows), the renderer
+falls back to the persisted `sampled` text — which already carries the
+`... (N distinct)` suffix for the legacy overflow case, so no extra
+`Distinct count` line is emitted. An empty `sampled_values=[]` list is
+authoritative-empty: the line is skipped entirely (no fallback to stale
+`sampled`).
+
+This same text feeds both the per-column search index doc AND
+`EntityHit.text` returned by `search()` — single renderer, single
+source of truth. `inspect_model`'s markdown `## Columns` table is the
+**all-columns-at-once** surface and continues to show the 20-truncated
+`sampled` text per column for readability on wide models. JSON
+`inspect_model` output already carries the full `sampled_values` list.
+
+**Known limitation.** The refresh hook runs **after** RRF fusion, on the
+top-K hits being returned. Ranking (BM25 / tantivy / embeddings) still
+operates on whatever the corpus held at index-build time. A query whose
+only match against a column is a newly-revealed value in positions 21-50
+may still fail to surface that column. The text the agent sees IS
+refreshed; tantivy / embeddings will catch up on the next
+`slayer ingest` content-hash pass.
 
 ## Index design notes
 

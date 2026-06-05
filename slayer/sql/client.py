@@ -202,6 +202,8 @@ def _map_type_code(type_code, db_type: Optional[str] = None) -> str:
         # Select the correct map by database type
         if db_type and "mysql" in db_type.lower():
             return _MYSQL_TYPE_MAP.get(type_code, "string")
+        if db_type and any(t in db_type.lower() for t in ("mssql", "sqlserver", "tsql")):
+            return _ODBC_SQL_TYPE_MAP.get(type_code, "string")
         return _PG_OID_MAP.get(type_code, "string")
     return "string"
 
@@ -251,6 +253,43 @@ _MYSQL_TYPE_MAP: Dict[int, str] = {
     254: "string",   # MYSQL_TYPE_STRING
 }
 
+# ODBC SQL type codes (pyodbc with SQL Server / mssql+pyodbc driver).
+# Positive codes are the standard ODBC C-level SQL_* constants; negative codes
+# are SQL Server extensions (SQL_SS_*) defined in msodbcsql.h.
+_ODBC_SQL_TYPE_MAP: Dict[int, str] = {
+    # Integer / numeric family
+    4: "number",      # SQL_INTEGER
+    5: "number",      # SQL_SMALLINT
+    -6: "number",     # SQL_TINYINT
+    -5: "number",     # SQL_BIGINT
+    2: "number",      # SQL_NUMERIC
+    3: "number",      # SQL_DECIMAL
+    6: "number",      # SQL_FLOAT
+    7: "number",      # SQL_REAL
+    8: "number",      # SQL_DOUBLE
+    # String family
+    1: "string",      # SQL_CHAR
+    12: "string",     # SQL_VARCHAR
+    -1: "string",     # SQL_LONGVARCHAR
+    -8: "string",     # SQL_WCHAR
+    -9: "string",     # SQL_WVARCHAR
+    -10: "string",    # SQL_WLONGVARCHAR
+    -152: "string",   # SQL_SS_XML
+    -11: "string",    # SQL_GUID (uniqueidentifier)
+    # Boolean
+    -7: "boolean",    # SQL_BIT
+    # Binary (rowversion / varbinary — treat as opaque string)
+    -2: "string",     # SQL_BINARY
+    -3: "string",     # SQL_VARBINARY
+    -4: "string",     # SQL_LONGVARBINARY
+    # Temporal family
+    91: "time",       # SQL_TYPE_DATE
+    92: "time",       # SQL_TYPE_TIME
+    93: "time",       # SQL_TYPE_TIMESTAMP
+    -154: "time",     # SQL_SS_TIMESTAMPOFFSET (datetimeoffset)
+    -155: "time",     # SQL_SS_TIME2 (time with fractional seconds)
+}
+
 
 def _extract_types_from_cursor(result, db_type: Optional[str] = None) -> Dict[str, str]:
     """Extract {column_name: type_category} from a SQLAlchemy CursorResult.
@@ -292,6 +331,8 @@ def _extract_types_from_cursor(result, db_type: Optional[str] = None) -> Dict[st
 
 # Databases that return all-None cursor.description type codes need a real row
 _NEEDS_ROW_FOR_TYPES = {"sqlite"}
+# T-SQL (SQL Server) does not support LIMIT; use SELECT TOP N instead.
+_TSQL_DB_TYPES = frozenset({"mssql", "sqlserver", "tsql"})
 # DBs that should call _execute_with_retry_sync inline from async coroutines.
 # Empty: every dispatch goes through _run_sync_in_thread / _execute_with_retry_threaded
 # so the event loop is never blocked on DB work or on time.sleep retry backoff.
@@ -311,16 +352,24 @@ async def _run_sync_in_thread(func, *args, **kwargs):
         return await loop.run_in_executor(executor, call)
 
 
+def _build_type_probe_sql(sql: str, db_type: Optional[str]) -> str:
+    """Build a row-limiting probe query appropriate for the target dialect."""
+    limit = 1 if db_type in _NEEDS_ROW_FOR_TYPES else 0
+    if db_type in _TSQL_DB_TYPES:
+        return f"SELECT TOP {limit} * FROM ({sql}) AS _types"
+    return f"SELECT * FROM ({sql}) AS _types LIMIT {limit}"
+
+
 def _get_column_types_sync(
     sql: str,
     connection_string: str,
     db_type: Optional[str],
     engine: Optional[sa.Engine] = None,
 ) -> Dict[str, str]:
-    """Infer column types. Uses LIMIT 0 for cursor metadata, LIMIT 1 for SQLite."""
+    """Infer column types. Uses LIMIT 0 for cursor metadata, LIMIT 1 for SQLite.
+    T-SQL uses SELECT TOP N instead of LIMIT."""
     engine = _resolve_sync_engine(connection_string, override_engine=engine)
-    limit = 1 if db_type in _NEEDS_ROW_FOR_TYPES else 0
-    limit_sql = f"SELECT * FROM ({sql}) AS _types LIMIT {limit}"
+    limit_sql = _build_type_probe_sql(sql, db_type)
     with engine.connect() as conn:
         result = conn.execute(sa.text(limit_sql))
         return _extract_types_from_cursor(result, db_type=db_type)
@@ -331,9 +380,9 @@ async def _get_column_types_async(
     engine,
     db_type: Optional[str],
 ) -> Dict[str, str]:
-    """Async version of column type inference. Uses LIMIT 0; LIMIT 1 for SQLite."""
-    limit = 1 if db_type in _NEEDS_ROW_FOR_TYPES else 0
-    limit_sql = f"SELECT * FROM ({sql}) AS _types LIMIT {limit}"
+    """Async version of column type inference. Uses LIMIT 0; LIMIT 1 for SQLite.
+    T-SQL uses SELECT TOP N instead of LIMIT."""
+    limit_sql = _build_type_probe_sql(sql, db_type)
     async with engine.connect() as conn:
         result = await conn.execute(sa.text(limit_sql))
         return _extract_types_from_cursor(result, db_type=db_type)

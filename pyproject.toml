@@ -45,6 +45,7 @@ asyncpg = {version = ">=0.27", optional = true}
 pymysql = {version = ">=1.0", optional = true}
 aiomysql = {version = ">=0.2", optional = true}
 clickhouse-sqlalchemy = {version = ">=0.3", optional = true}
+pyodbc = {version = ">=5.0", optional = true}
 # DuckDB + jafgen are core deps so the bundled `slayer datasources create demo`
 # works after a single `pip install motley-slayer`.
 duckdb = ">=0.9"
@@ -73,6 +74,7 @@ client = ["httpx", "pandas"]
 postgres = ["psycopg2-binary", "asyncpg"]
 mysql = ["pymysql", "aiomysql"]
 clickhouse = ["clickhouse-sqlalchemy"]
+sqlserver = ["pyodbc"]
 dbt = ["dbt-core"]
 docs = ["mkdocs-material"]
 flight = ["pyarrow"]
@@ -81,7 +83,7 @@ flight = ["pyarrow"]
 pg_facade = []
 advanced_search = ["litellm", "numpy", "ladybug"]
 embedding_search = ["litellm", "numpy"]  # legacy alias for advanced_search without graph support
-all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "dbt-core", "pyarrow", "litellm", "numpy", "ladybug"]
+all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "dbt-core", "pyarrow", "litellm", "numpy", "ladybug"]
 
 [project.scripts]
 slayer = "slayer.cli:main"

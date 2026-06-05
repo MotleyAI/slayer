@@ -146,18 +146,17 @@ class MemoryService:
             query=attached_query,
             id=id,
         )
-        # DEV-1386: best-effort embedding refresh for this single
-        # memory. Local import keeps the embeddings module off the
-        # critical-path import graph; failures are surfaced as warnings,
-        # never aborting the save.
-        from slayer.embeddings.service import EmbeddingService
+        # DEV-1514: fan out the upsert through SearchService so every
+        # registered retriever gets a chance to react. SearchService
+        # isolates per-retriever exceptions as prefixed warnings, so
+        # this site no longer needs its own try/except.
+        # Local import keeps the search module off the critical-path
+        # import graph.
+        from slayer.search.service import SearchService
 
-        try:
-            embed_warnings = await EmbeddingService(
-                storage=self._storage,
-            ).refresh_memory(memory)
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            embed_warnings = [f"embedding refresh failed: {exc}"]
+        embed_warnings = await SearchService(
+            storage=self._storage,
+        ).upsert_memory(memory)
         warnings = _dedup(warnings + embed_warnings)
         return SaveMemoryResponse(
             memory_id=memory.id,

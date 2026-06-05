@@ -650,7 +650,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 
     # ---------- DEV-1375: semantic search -----------------------------
 
-    search_service = SearchService(storage=storage)
+    # DEV-1516: pass the engine so the search service's post-fusion
+    # column-hit hook can auto-refresh stale categorical columns.
+    search_service = SearchService(storage=storage, engine=engine)
 
     @app.post(
         "/search",

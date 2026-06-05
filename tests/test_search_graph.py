@@ -900,24 +900,39 @@ async def test_zero_match_cypher_preserves_prior_warnings(
 
 @pytest.mark.skipif(not is_available(), reason="ladybug not installed")
 @pytest.mark.asyncio
-async def test_zero_match_cypher_does_not_call_channels(
+async def test_zero_match_cypher_does_not_call_retrievers(
     rich_storage: YAMLStorage,
 ) -> None:
+    """When the cypher_filter returns no ids, the orchestrator
+    short-circuits BEFORE fanning out to any retriever — retrieval is
+    expensive (embedding + tantivy + BM25) and would produce zero
+    surviving hits anyway."""
     service = SearchService(storage=rich_storage)
-    with (
-        patch.object(service, "_run_channel_1", wraps=service._run_channel_1) as ch1,
-        patch.object(service, "_run_channel_2", wraps=service._run_channel_2) as ch2,
-        patch.object(service, "_run_channel_3", wraps=service._run_channel_3) as ch3,
-    ):
-        await service.search(
-            entities=["shop.orders.amount"],
-            cypher_filter=(
-                "MATCH (m:Memory {id: 'memory:nonexistent-9999'}) RETURN m.id AS id"
-            ),
-        )
-        ch1.assert_not_called()
-        ch2.assert_not_called()
-        ch3.assert_not_called()
+    retrieve_call_counts = [0] * len(service.retrievers)
+    for idx, r in enumerate(service.retrievers):
+        original = r.retrieve
+
+        async def counting(_idx=idx, _orig=original, **kwargs):
+            retrieve_call_counts[_idx] += 1
+            return await _orig(**kwargs)
+
+        r.retrieve = counting  # type: ignore[method-assign]
+
+    response = await service.search(
+        entities=["shop.orders.amount"],
+        cypher_filter=(
+            "MATCH (m:Memory {id: 'memory:nonexistent-9999'}) RETURN m.id AS id"
+        ),
+    )
+    assert retrieve_call_counts == [0] * len(service.retrievers), (
+        f"expected no retriever invocations on empty-cypher short-circuit; "
+        f"got {retrieve_call_counts}"
+    )
+    assert response.results == []
+    assert any(
+        "cypher_filter returned no matching nodes" in w
+        for w in response.warnings
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -990,22 +1005,38 @@ async def test_ladybug_not_installed_without_filter_no_warning(
 
 
 @pytest.mark.asyncio
-async def test_candidate_ids_exact_set_passed_to_all_channels(
+async def test_candidate_ids_narrow_memory_corpus_seen_by_retrievers(
     rich_storage: YAMLStorage,
 ) -> None:
-    """Mock get_filtered_ids to return a known set; assert every channel
-    receives exactly that set."""
+    """Under the DEV-1514 retriever-orchestrator model, candidate_ids
+    is not threaded into each retriever's ``retrieve`` call. Instead,
+    the orchestrator pre-filters ``all_memories`` against the allowlist
+    BEFORE fan-out so each retriever sees only the surviving memory
+    rows. This test pins that contract: when get_filtered_ids returns
+    ``{memory:1, memory:2}``, every retriever's captured ``all_memories``
+    contains only ids ``1`` and ``2`` — non-candidate memories never
+    leak into the fan-out."""
     expected_ids = frozenset({"memory:1", "memory:2"})
     service = SearchService(storage=rich_storage)
+    captured_memory_id_sets: list = []
 
-    with (
-        patch(
-            "slayer.search.graph.get_filtered_ids",
-            return_value=expected_ids,
-        ),
-        patch.object(service, "_run_channel_1", wraps=service._run_channel_1) as ch1,
-        patch.object(service, "_run_channel_2", wraps=service._run_channel_2) as ch2,
-        patch.object(service, "_run_channel_3", wraps=service._run_channel_3) as ch3,
+    for r in service.retrievers:
+        original = r.retrieve
+
+        async def capturing(
+            _orig=original,
+            **kwargs,
+        ):
+            captured_memory_id_sets.append(
+                {m.id for m in kwargs["all_memories"]}
+            )
+            return await _orig(**kwargs)
+
+        r.retrieve = capturing  # type: ignore[method-assign]
+
+    with patch(
+        "slayer.search.graph.get_filtered_ids",
+        return_value=expected_ids,
     ):
         await service.search(
             entities=["shop.orders.amount"],
@@ -1013,12 +1044,11 @@ async def test_candidate_ids_exact_set_passed_to_all_channels(
             cypher_filter="MATCH (m:Memory) RETURN m.id AS id",
         )
 
-    for mock_ch in (ch1, ch2, ch3):
-        assert mock_ch.call_args is not None, f"{mock_ch} was never called"
-        call_kwargs = mock_ch.call_args.kwargs
-        assert call_kwargs.get("candidate_ids") == expected_ids, (
-            f"channel {mock_ch} received wrong candidate_ids: "
-            f"{call_kwargs.get('candidate_ids')!r}"
+    assert captured_memory_id_sets, "no retriever was invoked"
+    for seen in captured_memory_id_sets:
+        assert seen <= {"1", "2"}, (
+            f"retriever saw memory ids outside the cypher_filter "
+            f"allowlist: {seen!r}"
         )
 
 

@@ -864,7 +864,8 @@ class TestMemoryEmbeddingsOnStartup:
                 return [[0.1, 0.2, 0.3] for _ in texts]
 
             monkeypatch.setattr(
-                "slayer.embeddings.service.embed_batch", fake_embed_batch,
+                "slayer.search.retrievers.embeddings.embed_batch",
+                fake_embed_batch,
             )
 
             stream = io.StringIO()

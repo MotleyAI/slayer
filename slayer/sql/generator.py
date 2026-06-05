@@ -71,10 +71,10 @@ _AGG_FUNCTION_MAP: dict[str, str] = {
 # DEV-1317: statistical aggregations routed through _build_stat_agg.
 # stddev_samp/_pop and var_samp/_pop are 1-arg; corr / covar_samp /
 # covar_pop are 2-arg via the `other=` kwarg. SQLite gets these through
-# registered Python UDFs; Postgres/DuckDB/MySQL/ClickHouse use the
-# native function emitted via sqlglot transpilation. MySQL has no
-# native CORR / COVAR_SAMP / COVAR_POP — _build_stat_agg raises
-# NotImplementedError there, mirroring _build_median.
+# registered Python UDFs; Postgres/DuckDB/ClickHouse use the native
+# function emitted via sqlglot transpilation. MySQL and T-SQL have no
+# native CORR / COVAR_SAMP / COVAR_POP — these use the
+# variance-decomposition formula in _build_covar_formula instead.
 _STAT_AGG_NAMES: frozenset[str] = frozenset({
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
     "corr", "covar_samp", "covar_pop",
@@ -82,6 +82,20 @@ _STAT_AGG_NAMES: frozenset[str] = frozenset({
 
 # Subset of _STAT_AGG_NAMES that take two columns (LHS + `other=` kwarg).
 _TWO_ARG_STAT_AGGS: frozenset[str] = frozenset({"corr", "covar_samp", "covar_pop"})
+
+# Dialects that lack native CORR/COVAR_SAMP/COVAR_POP and need the
+# variance-decomposition formula: cov(x,y) = (Var(x+y)-Var(x)-Var(y)) / 2.
+_FORMULA_COVAR_DIALECTS: frozenset[str] = frozenset({"mysql", "tsql"})
+
+# T-SQL function name overrides for 1-arg statistical aggregations.
+# sqlglot's tsql transpiler emits incorrect names (e.g. VAR_SAMP, VARIANCE_POP)
+# that do not exist in T-SQL; these are the correct T-SQL names.
+_TSQL_STAT_NAMES: dict[str, str] = {
+    "stddev_samp": "STDEV",
+    "stddev_pop": "STDEVP",
+    "var_samp": "VAR",
+    "var_pop": "VARP",
+}
 
 # DEV-1337: dialects with native single-arg `log10(x)` / `log2(x)`. sqlglot
 # normalises both into a generic ``Log(this=Literal(base), expression=arg)``
@@ -1009,6 +1023,13 @@ class SQLGenerator:
                 expressions=[col_expr, exp.Literal.string(f"{sqlite_val} {sqlite_unit}")],
             )
 
+        if self.dialect == "tsql":
+            # T-SQL: DATEADD(unit, val, col). INTERVAL is not valid T-SQL syntax.
+            return exp.Anonymous(
+                this="DATEADD",
+                expressions=[exp.Var(this=unit), exp.Literal.number(val), col_expr],
+            )
+
         # Standard SQL: col ± INTERVAL N UNIT (single-unit; sqlglot transpiles
         # to the dialect-correct form, e.g. MySQL `INTERVAL N UNIT`,
         # ClickHouse same, BigQuery same).
@@ -1082,6 +1103,21 @@ class SQLGenerator:
         """
         if self.dialect == "sqlite":
             return exp.Anonymous(this="DATETIME", expressions=[expr, *intervals])
+        if self.dialect == "tsql":
+            # T-SQL: chain DATEADD(unit, ±amount, col) — INTERVAL is invalid T-SQL.
+            # Each interval in the list is an exp.Interval from _duration_interval_exprs;
+            # extract unit name and amount, negate when sign < 0.
+            result = expr
+            for iv in intervals:
+                if not isinstance(iv, exp.Interval):
+                    raise TypeError(f"Expected exp.Interval in T-SQL DATEADD branch, got {type(iv)}")
+                unit_str = iv.unit.name.upper()
+                amount = exp.Neg(this=iv.this) if sign < 0 else iv.this
+                result = exp.Anonymous(
+                    this="DATEADD",
+                    expressions=[exp.Var(this=unit_str), amount, result],
+                )
+            return result
         op_cls = exp.Add if sign >= 0 else exp.Sub
         result = expr
         for iv in intervals:
@@ -1790,6 +1826,17 @@ class SQLGenerator:
                 this="STRFTIME",
                 expressions=[exp.Literal.string(fmt), col_expr],
             )
+        if self.dialect == "tsql":
+            # T-SQL uses DATETRUNC(unit, col) — available since SQL Server 2022.
+            # Week must use ISO_WEEK (Monday-start) to be @@DATEFIRST-independent.
+            # DATETRUNC requires a temporal type; wrap non-column/cast expressions.
+            if not isinstance(col_expr, (exp.Column, exp.Cast)):
+                col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
+            tsql_gran = "iso_week" if gran_str == "week" else gran_str
+            return exp.Anonymous(
+                this="DATETRUNC",
+                expressions=[exp.Var(this=tsql_gran), col_expr],
+            )
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
             col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
         return exp.DateTrunc(this=col_expr, unit=exp.Literal.string(gran_str))
@@ -2378,6 +2425,13 @@ class SQLGenerator:
                 "MEDIAN/PERCENTILE_CONT function and no Python UDF mechanism. "
                 "Use MariaDB (has MEDIAN()) or compute the value client-side."
             )
+        if self.dialect == "tsql":
+            raise NotImplementedError(
+                "Aggregation 'median' is not supported on T-SQL (SQL Server): "
+                "PERCENTILE_CONT in T-SQL is a window function (requires OVER clause) "
+                "and cannot be used as a GROUP BY aggregate. "
+                "Use a window subquery or compute the value client-side."
+            )
         if self.dialect in ("sqlite", "clickhouse"):
             # SQLite: provided by the median() UDF registered on connect.
             # ClickHouse: native median() aggregate.
@@ -2421,9 +2475,16 @@ class SQLGenerator:
 
         if self.dialect == "mysql":
             raise NotImplementedError(
-                "Aggregation 'percentile' is not supported on MySQL: MySQL has no native "
-                "PERCENTILE_CONT function and no Python UDF mechanism. "
+                "Aggregation 'percentile' is not supported on MySQL: "
+                "MySQL has no native PERCENTILE_CONT. "
                 "Use MariaDB or compute the value client-side."
+            )
+        if self.dialect == "tsql":
+            raise NotImplementedError(
+                "Aggregation 'percentile' is not supported on T-SQL (SQL Server): "
+                "PERCENTILE_CONT requires a window function OVER clause in T-SQL "
+                "and is not valid as a GROUP BY aggregate. "
+                "Compute the value client-side or restructure as a window query."
             )
 
         col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
@@ -2439,6 +2500,62 @@ class SQLGenerator:
 
         return self._parse(sql_str)
 
+    def _build_covar_formula(
+        self,
+        col_sql: str,
+        other_sql: str,
+        agg: str,
+    ) -> exp.Expression:
+        """Variance-decomposition formula for corr/covar_samp/covar_pop.
+
+        Used on dialects without native two-arg CORR/COVAR functions (MySQL, T-SQL).
+        Implements: cov(x, y) = (Var(x+y) - Var(x) - Var(y)) / 2
+        and: corr(x, y) = cov_samp(x, y) / (Stddev(x) * Stddev(y))
+
+        Both columns are NULL-guarded against each other so rows where
+        either leg is NULL are excluded from all variance calls.
+
+        Uses exp.Anonymous for aggregate calls to prevent sqlglot from
+        renaming VAR_SAMP → VARIANCE (wrong on MySQL: VARIANCE = VAR_POP).
+        """
+        if self.dialect == "tsql":
+            var_fn = "VAR" if agg in ("covar_samp", "corr") else "VARP"
+            std_fn = "STDEV"
+        else:  # mysql
+            var_fn = "VAR_SAMP" if agg in ("covar_samp", "corr") else "VAR_POP"
+            std_fn = "STDDEV_SAMP"
+
+        # NULL cross-guards: x is NULL when y is NULL (and vice versa),
+        # so pairs where either column is NULL are excluded uniformly.
+        x_guarded = self._parse(
+            f"CASE WHEN ({other_sql}) IS NOT NULL THEN ({col_sql}) END"
+        )
+        y_guarded = self._parse(
+            f"CASE WHEN ({col_sql}) IS NOT NULL THEN ({other_sql}) END"
+        )
+        xy_sum = exp.Add(this=x_guarded, expression=y_guarded)
+
+        var_xy = exp.Anonymous(this=var_fn, expressions=[xy_sum])
+        var_x = exp.Anonymous(this=var_fn, expressions=[x_guarded])
+        var_y = exp.Anonymous(this=var_fn, expressions=[y_guarded])
+
+        covar = exp.Div(
+            this=exp.Paren(this=exp.Sub(
+                this=exp.Sub(this=var_xy, expression=var_x),
+                expression=var_y,
+            )),
+            expression=exp.Literal.number(2),
+        )
+
+        if agg != "corr":
+            return covar
+
+        std_x = exp.Anonymous(this=std_fn, expressions=[x_guarded])
+        std_y = exp.Anonymous(this=std_fn, expressions=[y_guarded])
+        raw_denom = exp.Paren(this=exp.Mul(this=std_x, expression=std_y))
+        denom = exp.Anonymous(this="NULLIF", expressions=[raw_denom, exp.Literal.number(0)])
+        return exp.Div(this=covar, expression=denom)
+
     def _build_stat_agg(self, measure: "EnrichedMeasure") -> exp.Expression:
         """Build SQL for the statistical aggregations added in DEV-1317.
 
@@ -2449,7 +2566,9 @@ class SQLGenerator:
         ``corr`` / ``covar_*`` are not. SQLite gets them via Python UDFs
         registered in ``slayer.sql.sqlite_udfs`` — the UDFs alias
         sqlglot's transpiled names (e.g. ``var_samp`` → ``VARIANCE`` on
-        SQLite) so generator output resolves at runtime.
+        SQLite) so generator output resolves at runtime. MySQL and T-SQL
+        implement ``corr`` / ``covar_*`` via the variance-decomposition
+        formula in ``_build_covar_formula``.
 
         Both legs flow through ``_resolve_sql`` so bare identifiers are
         qualified under ``measure.model_name`` (matches the standard
@@ -2461,11 +2580,10 @@ class SQLGenerator:
         """
         agg_name = measure.aggregation
 
-        # Resolve the `other=` kwarg before the MySQL guard so that a
-        # missing-required-param error takes priority over the
-        # MySQL-not-supported error when both conditions hold — the
-        # missing-param message points at the actual user mistake. Closes
-        # Codex #5 on PR #82.
+        # Resolve the `other=` kwarg before the dialect guard so that a
+        # missing-required-param error takes priority over any dialect-specific
+        # error when both conditions hold — the missing-param message points at
+        # the actual user mistake. Closes Codex #5 on PR #82.
         other_expr: Optional[str] = None
         if agg_name in _TWO_ARG_STAT_AGGS:
             other_expr = _wrap_filter(
@@ -2473,23 +2591,19 @@ class SQLGenerator:
                 measure.filter_sql,
             )
 
-        if agg_name in _TWO_ARG_STAT_AGGS and self.dialect == "mysql":
-            raise NotImplementedError(
-                f"Aggregation '{agg_name}' is not supported on MySQL: MySQL has no "
-                f"native {agg_name.upper()} function and no Python UDF mechanism. "
-                f"Use MariaDB or compute the value client-side."
-            )
-
         col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
+
+        if agg_name in _TWO_ARG_STAT_AGGS and self.dialect in _FORMULA_COVAR_DIALECTS:
+            return self._build_covar_formula(col_expr, other_expr, agg_name)
 
         if agg_name in _TWO_ARG_STAT_AGGS:
             sql_str = f"{agg_name.upper()}({col_expr}, {other_expr})"
         else:
             # stddev_samp, stddev_pop, var_samp, var_pop: emit the
             # canonical Postgres-style name and let sqlglot transpile per
-            # dialect (e.g., var_samp → VARIANCE on SQLite/DuckDB/MySQL,
-            # var_pop → VARIANCE_POP on SQLite/MySQL). Both spellings
-            # resolve via the SQLite UDF aliases.
+            # dialect (e.g., var_samp → VARIANCE on SQLite/DuckDB,
+            # var_pop → VARIANCE_POP on SQLite). Both spellings resolve
+            # via the SQLite UDF aliases.
             #
             # MySQL exception: sqlglot's MySQL dialect rewrites
             # ``VAR_POP`` → ``VARIANCE_POP`` (no such function in MySQL —
@@ -2497,11 +2611,19 @@ class SQLGenerator:
             # ``VARIANCE`` (silently wrong, since MySQL's ``VARIANCE``
             # equals ``VAR_POP`` — sample variance gets aliased to
             # population variance). Bypass both by emitting the
-            # MySQL-native names through ``exp.Anonymous``, which
-            # sqlglot leaves verbatim.
+            # MySQL-native names through ``exp.Anonymous``.
+            #
+            # T-SQL exception: sqlglot emits incorrect names for T-SQL
+            # (e.g. VAR_SAMP, VARIANCE_POP). Use the T-SQL canonical names
+            # (STDEV, STDEVP, VAR, VARP) via ``exp.Anonymous``.
             if self.dialect == "mysql" and agg_name in {"var_samp", "var_pop"}:
                 return exp.Anonymous(
                     this=agg_name.upper(),
+                    expressions=[self._parse(col_expr)],
+                )
+            if self.dialect == "tsql" and agg_name in _TSQL_STAT_NAMES:
+                return exp.Anonymous(
+                    this=_TSQL_STAT_NAMES[agg_name],
                     expressions=[self._parse(col_expr)],
                 )
             sql_str = f"{agg_name.upper()}({col_expr})"

@@ -68,7 +68,20 @@ SQL generation is covered by unit tests, but not verified against live instances
 | `trino` / `presto` / `athena` | `trino` or `PyAthena` | `pip install trino` or `pip install PyAthena` |
 | `databricks` / `spark` | `databricks-sql-connector` | `pip install databricks-sql-connector` |
 | `oracle` | `oracledb` | `pip install oracledb` |
-| `mssql` / `sqlserver` / `tsql` | `pyodbc` or `pymssql` | `pip install pyodbc` or `pip install pymssql` |
+| `mssql` / `sqlserver` / `tsql` | `pyodbc` (auto-generated strings) or `pymssql` (manual `connection_string` only) | `pip install pyodbc` or `pip install pymssql` |
+
+!!! warning "SQL Server — requires SQL Server 2022+"
+    SLayer uses `DATETRUNC` for time-dimension queries, which was introduced in SQL Server 2022 (version 16.0).
+    SQL Server 2019 and earlier will return an error on time-dimension queries.
+    The Docker example uses `mcr.microsoft.com/mssql/server:2022-latest`.
+
+!!! warning "SQL Server — TrustServerCertificate"
+    Auto-generated SQL Server connection strings include `TrustServerCertificate=yes`, which disables
+    TLS certificate validation. This is correct for local development and Docker environments that use
+    self-signed certificates, but **must not be used in production** — it allows a man-in-the-middle
+    attack on the database connection. For production, supply a `connection_string` field directly with
+    a valid CA certificate chain, or configure your SQL Server instance with a certificate signed by a
+    trusted CA and omit `TrustServerCertificate`.
 
 !!! note
     Snowflake, BigQuery, ClickHouse, and similar analytical warehouses typically don't have foreign keys, so auto-ingestion won't discover joins. Define joins manually in your model YAML.

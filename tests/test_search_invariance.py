@@ -393,14 +393,15 @@ async def storage_with_embeddings(
             return _vec(text)
 
         monkeypatch.setattr(
-            "slayer.embeddings.service.embed_batch", stub_embed_batch,
+            "slayer.search.retrievers.embeddings.embed_batch",
+            stub_embed_batch,
         )
         monkeypatch.setattr(
             embedding_client, "embed_query", stub_embed_query,
         )
 
-        from slayer.embeddings.service import EmbeddingService
-        emb_service = EmbeddingService(storage=storage)
+        from slayer.search.retrievers.embeddings import EmbeddingRetriever
+        emb_retriever = EmbeddingRetriever(storage=storage)
         persisted_models = []
         for m in _make_models():
             persisted = await storage.get_model(
@@ -408,12 +409,12 @@ async def storage_with_embeddings(
             )
             assert persisted is not None
             persisted_models.append(persisted)
-            await emb_service.refresh_model_subtree(persisted)
-        await emb_service.refresh_datasource(
+            await emb_retriever.refresh_model_subtree(persisted)
+        await emb_retriever.refresh_datasource(
             name="warehouse", models=persisted_models,
         )
         for mem in await storage.list_memories(entities=None):
-            await emb_service.refresh_memory(mem)
+            await emb_retriever.upsert_memory(mem)
 
         yield storage
 

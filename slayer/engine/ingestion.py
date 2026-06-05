@@ -14,6 +14,7 @@ from collections import defaultdict, deque
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, TextIO, Tuple
 
 import sqlalchemy as sa
+import sqlalchemy.dialects.mssql as _sqla_mssql
 from pydantic import BaseModel, Field
 
 from slayer.core.enums import DataType
@@ -31,9 +32,9 @@ from slayer.storage.base import StorageBackend
 
 if TYPE_CHECKING:
     # The runtime import lives inside ``_refresh_datasource_embeddings``
-    # so the embeddings module stays off the cold-start import graph
-    # when the optional extra isn't installed.
-    from slayer.embeddings.service import EmbeddingService
+    # so the search module stays off the cold-start import graph
+    # when the optional embedding extra isn't installed.
+    from slayer.search.service import SearchService
 
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,7 @@ _SA_TYPE_MAP = {
     # Boolean
     "BOOLEAN": DataType.BOOLEAN,
     "BOOL": DataType.BOOLEAN,
+    "BIT": DataType.BOOLEAN,  # T-SQL (SQL Server) boolean type
     # Temporal
     "TIMESTAMP": DataType.TIMESTAMP,
     "DATETIME": DataType.TIMESTAMP,
@@ -95,6 +97,18 @@ _SA_TYPE_MAP = {
     "FLOAT64": DataType.DOUBLE,
     "DATETIME64": DataType.TIMESTAMP,
     "DATE32": DataType.DATE,
+    # T-SQL (SQL Server) types; TINYINT also covers MySQL/MariaDB
+    "TINYINT": DataType.INT,
+    "DATETIME2": DataType.TIMESTAMP,
+    "SMALLDATETIME": DataType.TIMESTAMP,
+    "DATETIMEOFFSET": DataType.TIMESTAMP,
+    "NVARCHAR": DataType.TEXT,
+    "NCHAR": DataType.TEXT,
+    "NTEXT": DataType.TEXT,
+    "MONEY": DataType.DOUBLE,
+    "SMALLMONEY": DataType.DOUBLE,
+    # SQL Server rowversion — 8-byte binary counter, not temporal
+    "ROWVERSION": DataType.TEXT,
 }
 
 _NUMERIC_TYPES = {DataType.INT, DataType.DOUBLE}
@@ -111,6 +125,9 @@ _FLOAT_LIKE_SA_TYPES = frozenset(
         # ClickHouse adapter (clickhouse-sqlalchemy)
         "FLOAT32",
         "FLOAT64",
+        # T-SQL monetary types (fixed-precision decimal, no integer rounding)
+        "MONEY",
+        "SMALLMONEY",
     }
 )
 
@@ -184,6 +201,11 @@ def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEn
 
 def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
     sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    # mssql.TIMESTAMP is SQL Server's rowversion (8-byte binary counter), not
+    # a temporal type. Its class name collides with sa.TIMESTAMP, so we must
+    # check isinstance before the generic name-based _SA_TYPE_MAP lookup.
+    if isinstance(sa_type, _sqla_mssql.TIMESTAMP):
+        return DataType.TEXT
     type_name = type(sa_type).__name__.upper()
     type_str = str(sa_type).split("(")[0].upper().strip()
     # DEV-1361: NUMERIC/DECIMAL with scale=0 are integer-shaped → INT.
@@ -1018,7 +1040,7 @@ async def ingest_datasource_idempotent(
     # every visible model + its visible children. Best-effort: per-entity
     # failures are surfaced as IngestionError entries, never aborts
     # ingestion. When the `advanced_search` extra is not installed,
-    # EmbeddingService returns a single warning and does no work.
+    # EmbeddingRetriever returns a single warning and does no work.
     embedding_errors = await _refresh_datasource_embeddings(
         datasource_name=datasource.name, storage=storage,
     )
@@ -1217,7 +1239,7 @@ async def _refresh_models_for_datasource(
     *,
     datasource_name: str,
     storage: StorageBackend,
-    service: "EmbeddingService",
+    search: "SearchService",
 ) -> Tuple[List[Tuple[str, str]], List[SlayerModel]]:
     """Refresh embeddings for every visible model in the datasource.
 
@@ -1245,7 +1267,7 @@ async def _refresh_models_for_datasource(
             continue
         models_in_ds.append(m)
         try:
-            subtree_warnings = await service.refresh_model_subtree(m)
+            subtree_warnings = await search.refresh_model_subtree(m)
         except Exception as exc:  # noqa: BLE001 — defensive per-model
             subtree_warnings = [str(exc)]
         for w in subtree_warnings:
@@ -1257,12 +1279,12 @@ async def _refresh_datasource_doc(
     *,
     datasource_name: str,
     models: List[SlayerModel],
-    service: "EmbeddingService",
+    search: "SearchService",
 ) -> List[Tuple[str, str]]:
     """Refresh the datasource doc embedding. Warnings are tagged with
     an empty ``model_name`` since the doc has no specific entity name."""
     try:
-        doc_warnings = await service.refresh_datasource(
+        doc_warnings = await search.refresh_datasource(
             name=datasource_name, models=models,
         )
     except Exception as exc:  # noqa: BLE001 — defensive
@@ -1322,7 +1344,7 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
     *,
     datasource_name: str,
     storage: StorageBackend,
-    service: "EmbeddingService",
+    search: "SearchService",
 ) -> List[Tuple[str, str]]:
     """Refresh embeddings for every memory whose canonical entities are
     rooted at this datasource. Each warning is tagged with
@@ -1363,7 +1385,7 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
         tag = f"{_MEMORY_PREFIX}{memory.id}"
         if rooted_at_ds:
             try:
-                memory_warnings = await service.refresh_memory(memory)
+                memory_warnings = await search.upsert_memory(memory)
             except Exception as exc:  # noqa: BLE001 — defensive per-memory
                 memory_warnings = [str(exc)]
             for w in memory_warnings:
@@ -1413,18 +1435,18 @@ async def _refresh_datasource_embeddings(
     doc) used by ``ingest_datasource_idempotent`` to route per-entity
     failures to the matching ``IngestionError``.
     """
-    # Local import to avoid pulling embeddings into ingestion's import
-    # graph on a cold start without the optional extra installed.
-    from slayer.embeddings.service import EmbeddingService
+    # Local import: keep the search module off the cold-start path
+    # when the optional embedding extra isn't installed.
+    from slayer.search.service import SearchService
 
-    service = EmbeddingService(storage=storage)
+    search = SearchService(storage=storage)
     model_warnings, models_in_ds = await _refresh_models_for_datasource(
-        datasource_name=datasource_name, storage=storage, service=service,
+        datasource_name=datasource_name, storage=storage, search=search,
     )
     doc_warnings = await _refresh_datasource_doc(
-        datasource_name=datasource_name, models=models_in_ds, service=service,
+        datasource_name=datasource_name, models=models_in_ds, search=search,
     )
     memory_warnings = await _refresh_memories_for_datasource(
-        datasource_name=datasource_name, storage=storage, service=service,
+        datasource_name=datasource_name, storage=storage, search=search,
     )
     return model_warnings + doc_warnings + memory_warnings
