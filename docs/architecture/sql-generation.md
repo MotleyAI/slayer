@@ -127,6 +127,41 @@ CTE is an isolated per-(target, grain) computation, adding the join resolves the
 filter's refs without affecting sibling measures. Discovery is root-scope-only,
 so a correlated ref inside an `EXISTS (...)` subquery does not pull an outer join.
 
+## Host-base join discovery (the three symmetric sources)
+
+The host base FROM at `_build_base_select_for_planned` pulls in `LEFT JOIN`s from
+three symmetric sources, each handled by a dedicated collector wired in the same
+call chain just before `_build_from_and_joins`:
+
+1. **Dimension / time-dimension `Column.sql`** (DEV-1484): `_expand_derived_row_dims`
+   pre-expands derived ROW slots (`ColumnSqlKey` dims and `TimeTruncKey` columns
+   that are themselves derived) and scans the expansion through
+   `_joined_paths_in_sql`, appending crossed paths to `needed_join_paths`.
+2. **Aggregated-measure `Column.filter`** (DEV-1494): `_collect_column_filter_join_paths`
+   recurses through AGGREGATE-phase composite keys (`ArithmeticKey` /
+   `ScalarCallKey`) and, for each `AggregateKey` with a `column_filter_key`,
+   collects the paths the predicate touches via `_filter_join_paths` (the union
+   of un-inlined and inline-expanded predicate paths, per the section above).
+3. **Aggregate-source `Column.sql`** (DEV-1502): `_collect_aggregate_source_join_paths`
+   mirrors the filter helper — recurses through the same composite keys, and for
+   each `AggregateKey` whose `source` is a `ColumnSqlKey` with `path == ()`,
+   expands the column via `_expand_derived_column_sql` and scans the result
+   through `_joined_paths_in_sql`. The render-time expansion in
+   `_build_agg_render_spec_from_planned` already produces `SUM(<expanded>)` SQL;
+   this collector closes the join-discovery loop so a measure source like
+   `customers__regions.population` emits both `LEFT JOIN`s.
+
+All three collectors restrict to **local** aggregate sources (empty
+`AggregateKey.source.path`); cross-model aggregates own their own join
+discovery inside the per-plan `_cm_*` CTE for the `Column.filter` side
+(DEV-1494 / DEV-1503). The symmetric source-`Column.sql` discovery inside
+the `_cm_*` CTE is a known gap (DEV-1526) — a cross-model aggregate whose
+target column's `Column.sql` crosses a further join does not yet have that
+join pulled into the CTE FROM. All three host-side collectors feed the
+shared `needed_join_paths` list, so repeated paths surfaced by different
+sources dedupe naturally via `_build_from_and_joins`'s `emitted_aliases`
+guard.
+
 ## Result-key contract (P10)
 
 The generator preserves the result keys byte-for-byte: `orders.revenue_sum`,
