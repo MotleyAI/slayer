@@ -5,7 +5,7 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.mcp.server import create_mcp_server
 from slayer.core.errors import (
@@ -148,7 +148,7 @@ class SearchRequest(BaseModel):
     query: Optional[Any] = None
     question: Optional[str] = None
     datasource: Optional[str] = None
-    max_results: int = 10
+    max_results: int = Field(default=10, ge=1)
     cypher_filter: Optional[str] = None
 
 

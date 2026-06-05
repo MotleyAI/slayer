@@ -1210,3 +1210,85 @@ async def test_cypher_filter_applied_to_recency_fallback(
     result_ids = {h.id for h in response.results if h.kind == "memory"}
     assert mem_in.id in result_ids
     assert mem_out.id not in result_ids
+
+
+# ---------------------------------------------------------------------------
+# cypher_filter narrowing precedence vs other filters (review-fix tests)
+# ---------------------------------------------------------------------------
+
+
+async def test_cypher_filter_exclusion_does_not_emit_off_datasource_warning(
+    shop_only_storage: YAMLStorage,
+) -> None:
+    """A memory that IS rooted at the requested datasource but is excluded
+    by ``cypher_filter`` must emit ONLY the cypher_filter warning, NOT
+    the spurious "not rooted at datasource" warning. Codex finding on the
+    merge: the off-datasource check was running on the post-cypher-narrowed
+    memory list, so cypher-excluded memories looked off-datasource."""
+    mem = await shop_only_storage.save_memory(
+        learning="Note about orders.", entities=["shop.orders.amount"],
+    )
+    excluded_canonical = f"memory:{mem.id}"
+    # Cypher filter returns only an unrelated entity id — the memory is
+    # excluded by the allowlist but IS rooted at "shop".
+    service = SearchService(storage=shop_only_storage)
+    with patch(
+        "slayer.search.graph.get_filtered_ids",
+        return_value=frozenset({"shop.orders"}),
+    ):
+        response = await service.search(
+            entities=[excluded_canonical],
+            datasource="shop",
+            cypher_filter="MATCH (n) RETURN n.id AS id",
+        )
+
+    cypher_warnings = [
+        w for w in response.warnings
+        if "excluded by cypher_filter" in w
+    ]
+    off_ds_warnings = [
+        w for w in response.warnings
+        if "not rooted at datasource" in w and excluded_canonical in w
+    ]
+    assert cypher_warnings, (
+        f"expected a cypher_filter exclusion warning for {excluded_canonical}, "
+        f"got: {response.warnings!r}"
+    )
+    assert not off_ds_warnings, (
+        f"memory rooted at the requested datasource must NOT get an "
+        f"off-datasource warning when its exclusion is from cypher_filter; "
+        f"got: {off_ds_warnings!r}"
+    )
+
+
+async def test_recency_fallback_warns_when_filters_excluded_all(
+    shop_only_storage: YAMLStorage,
+) -> None:
+    """When ``cypher_filter`` zeroes out an otherwise-populated recency
+    pool, surface the cause explicitly — the generic
+    "returning newest memories" warning otherwise reads as a healthy
+    empty corpus when actually a filter removed everything."""
+    await shop_only_storage.save_memory(
+        learning="A real memory.", entities=["shop.orders.amount"],
+    )
+    service = SearchService(storage=shop_only_storage)
+    # Cypher returns IDs that don't match any memory canonical — the
+    # recency pool is non-empty pre-filter but empty post-filter.
+    with patch(
+        "slayer.search.graph.get_filtered_ids",
+        return_value=frozenset({"shop.orders"}),
+    ):
+        response = await service.search(
+            cypher_filter="MATCH (n) RETURN n.id AS id",
+        )
+
+    assert any(
+        "cypher_filter excluded all memory candidates" in w
+        for w in response.warnings
+    ), (
+        "expected an explicit warning that filters cleared the recency "
+        f"pool; got: {response.warnings!r}"
+    )
+    assert not [h for h in response.results if h.kind == "memory"], (
+        "no memory hits should surface when cypher_filter excluded all"
+    )

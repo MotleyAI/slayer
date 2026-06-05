@@ -753,18 +753,38 @@ class SearchService:
                 warnings=warnings,
             )
 
-        all_memories: List[Memory] = _filter_memories_by_datasource(
-            memories=await self._storage.list_memories(entities=None),
-            datasource=datasource,
+        # Datasource filter runs first so the off-datasource warning
+        # reflects "memory dropped because of datasource", not
+        # "memory dropped because of cypher_filter".
+        datasource_filtered_memories: List[Memory] = (
+            _filter_memories_by_datasource(
+                memories=await self._storage.list_memories(entities=None),
+                datasource=datasource,
+            )
         )
-        # DEV-1464: narrow the memory corpus by the cypher_filter
-        # allowlist (full graph path) so BM25 / tantivy / embeddings
-        # rank only the surviving memories.
+        # DEV-1513: detect named ``memory:<id>`` refs whose memory was
+        # filtered out by the datasource pre-filter — emit BEFORE
+        # cypher_filter narrowing so a memory that IS rooted at the
+        # datasource but is excluded by cypher_filter doesn't get a
+        # spurious "not rooted at datasource" warning on top of the
+        # cypher_filter warning.
+        warnings = _dedup(
+            warnings + _memory_id_off_datasource_warnings(
+                canonical_input_entities=canonical_input_entities,
+                live_memory_ids={m.id for m in datasource_filtered_memories},
+                datasource=datasource,
+            )
+        )
+        # DEV-1464: now narrow by the cypher_filter allowlist for the
+        # retrieval path — BM25 / tantivy / embeddings rank only the
+        # surviving memories.
         if candidate_ids is not None:
-            all_memories = [
-                m for m in all_memories
+            all_memories: List[Memory] = [
+                m for m in datasource_filtered_memories
                 if f"{_MEMORY_PREFIX}{m.id}" in candidate_ids
             ]
+        else:
+            all_memories = datasource_filtered_memories
 
         valid_canonicals = await self._valid_canonical_set(
             all_memories=all_memories, datasource=datasource,
@@ -781,18 +801,8 @@ class SearchService:
                 datasources=datasources,
             )
 
-        # DEV-1513: detect named ``memory:<id>`` refs whose memory was
-        # filtered out by the datasource pre-filter — emit a warning
-        # symmetric with the entity-side off-ds drop.
-        warnings = _dedup(
-            warnings + _memory_id_off_datasource_warnings(
-                canonical_input_entities=canonical_input_entities,
-                live_memory_ids={m.id for m in all_memories},
-                datasource=datasource,
-            )
-        )
-        # DEV-1464: same idea for cypher_filter — surface the reason a
-        # named memory:<id> ref didn't appear in results.
+        # DEV-1464: surface the reason a named memory:<id> ref didn't
+        # appear in results when cypher_filter excluded it.
         if candidate_ids is not None:
             warnings = _dedup(
                 warnings + _memory_id_cypher_filter_warnings(
@@ -1143,6 +1153,7 @@ class SearchService:
             memories=await self._storage.list_memories(entities=None),
             datasource=datasource,
         )
+        had_candidates_pre_filter = bool(recency_memories)
         if candidate_ids is not None:
             recency_memories = [
                 m for m in recency_memories
@@ -1150,6 +1161,21 @@ class SearchService:
             ]
         if kind_filter is not None and "memory" not in kind_filter:
             recency_memories = []
+        # DEV-1464: when cypher_filter (or its naive kind-filter
+        # fallback) zeroed out an otherwise-populated recency pool,
+        # surface that explicitly — the generic "returning newest"
+        # warning would otherwise read as "system is healthy, the
+        # corpus is just empty," masking that the filter was the cause.
+        filters_excluded_all = (
+            had_candidates_pre_filter
+            and not recency_memories
+            and (candidate_ids is not None or kind_filter is not None)
+        )
+        if filters_excluded_all:
+            warnings.append(
+                "cypher_filter excluded all memory candidates for the "
+                "empty-input recency fallback; no results."
+            )
         recency_memories.sort(key=lambda m: m.created_at, reverse=True)
         valid_canonicals = await self._valid_canonical_set(
             all_memories=recency_memories, datasource=datasource,

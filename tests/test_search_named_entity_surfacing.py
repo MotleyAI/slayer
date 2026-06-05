@@ -399,27 +399,22 @@ async def test_memory_id_off_datasource_drops_with_warning(
 
 
 # ---------------------------------------------------------------------------
-# Test 14: max_entities=0 suppresses channel-1 named output
+# Test 14: named entity surfaces when max_results is large enough
 # ---------------------------------------------------------------------------
 
 
-async def test_max_entities_zero_suppresses_channel_1_named_output(
+async def test_named_entity_surfaces_when_max_results_large(
     service: SearchService,
 ) -> None:
-    # With max_results=1, a single memory hit (if any) would fill the slot,
-    # but since no memories are tagged on this entity and no question is provided,
-    # only the named entity hit would appear. Use max_results=20 and filter.
-    # The original test checked max_entities=0 suppressed entity output.
-    # With the flat API, we just verify that entity hits are present when max_results>0.
-    # To mirror the old behavior of max_entities=0, we verify the named entity
-    # surfaces when max_results is large enough.
+    """Under DEV-1532's flat results API, a user-supplied canonical
+    entity (with no matching memory) surfaces as an entity hit as soon
+    as ``max_results`` has room. Replaces the legacy
+    ``max_entities=0`` suppression test — that knob no longer exists."""
     resp = await service.search(
         entities=["warehouse.orders.amount"],
         max_results=20,
     )
     entity_hits = [h for h in resp.results if h.kind != "memory"]
-    # Named entity should surface (unlike old max_entities=0 which suppressed it).
-    # This test is now a positive assertion: the entity IS present.
     assert any(h.id == "warehouse.orders.amount" for h in entity_hits)
 
 
@@ -712,13 +707,13 @@ async def test_stale_query_warning_for_named_memory_id_default_cap(
     )
 
 
-async def test_stale_query_warning_for_named_memory_id_cap_zero(
+async def test_stale_query_warning_for_named_memory_id_under_tight_cap(
     storage: YAMLStorage, service: SearchService,
 ) -> None:
-    """Even with ``max_results=1`` (forces the hit to be surfaced but the
-    stale warning should still fire), an explicitly-named ``memory:<id>``
-    that points at a query-bearing memory with stale refs still emits the
-    stale-query warning."""
+    """Under a tight ``max_results=1`` cap, an explicitly-named
+    ``memory:<id>`` pointing at a query-bearing memory with stale refs
+    still emits the stale-query warning even when the cap may suppress
+    the hit itself."""
     seed = await storage.save_memory(
         learning="legacy revenue lookup",
         entities=["warehouse.orders.amount"],
@@ -730,7 +725,7 @@ async def test_stale_query_warning_for_named_memory_id_cap_zero(
     await _make_amount_stale(storage)
     resp = await service.search(
         entities=[f"memory:{seed.id}"],
-        max_results=20,
+        max_results=1,
     )
     assert any(
         f"memory:{seed.id}" in w and "stale" in w

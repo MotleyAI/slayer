@@ -415,11 +415,12 @@ async def test_query_bearing_memories_go_to_example_queries(
 
 
 @pytest.mark.asyncio
-async def test_max_example_queries_default_is_two(
+async def test_search_surfaces_query_bearing_memories_within_max_results(
     service_with_query_memories: SearchService,
 ) -> None:
-    # With max_results=10 (default), the flat list may include up to 10 items.
-    # We check that query-bearing memories surface.
+    """Query-bearing memories surface in the flat ``results`` list under
+    DEV-1532. With ``max_results=20`` (>= the fixture's 3 query-bearing
+    memories), at least one such hit is returned."""
     response = await service_with_query_memories.search(
         entities=["warehouse.orders.amount_paid"],
         max_results=20,
@@ -429,10 +430,11 @@ async def test_max_example_queries_default_is_two(
 
 
 @pytest.mark.asyncio
-async def test_max_example_queries_caps_independently(
+async def test_search_respects_max_results_cap(
     service_with_query_memories: SearchService,
 ) -> None:
-    # With max_results=1, at most 1 hit surfaces total.
+    """``max_results=1`` caps the flat list at exactly one hit total —
+    no independent per-bucket cap exists under DEV-1532."""
     response = await service_with_query_memories.search(
         entities=["warehouse.orders.amount_paid"],
         max_results=1,

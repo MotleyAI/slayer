@@ -2884,8 +2884,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             cypher_filter: Optional openCypher MATCH query returning
                 ``… AS id`` that pre-filters all three channels to the
                 returned canonical IDs. When ``advanced_search`` is not
-                installed, only simple ``MATCH (n:Label) RETURN n.id AS id``
-                patterns are supported as a kind filter.
+                installed, only simple
+                ``MATCH (n:Label1:Label2) RETURN n.id AS id`` patterns are
+                supported as a kind filter (multi-label uses union
+                semantics; allowed labels: Memory, Datasource, Model,
+                Column, Measure, Aggregation).
         """
         try:
             response = await search_service.search(

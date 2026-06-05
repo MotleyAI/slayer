@@ -598,8 +598,10 @@ examples:
         help=(
             "openCypher MATCH query returning '… AS id' to pre-filter all "
             "channels to matching canonical IDs. When advanced_search is not "
-            "installed, only simple MATCH (n:Label) RETURN n.id AS id patterns "
-            "are supported as a kind filter."
+            "installed, only simple MATCH (n:Label1:Label2) RETURN n.id AS id "
+            "patterns are supported as a kind filter (multi-label uses union "
+            "semantics; allowed labels: Memory, Datasource, Model, Column, "
+            "Measure, Aggregation)."
         ),
     )
     search_parser.add_argument(
@@ -773,7 +775,10 @@ def _print_search_response_text(response) -> None:
         )
     print(f"\nResults ({len(response.results)}):")
     for hit in response.results:
-        prefix = "M" if hit.kind == "memory" else f"[{hit.kind}]"
+        if hit.kind == "memory":
+            prefix = "Q" if hit.query is not None else "M"
+        else:
+            prefix = f"[{hit.kind}]"
         print(f"  {prefix} {hit.id} (score={hit.score:.4f})")
         print(f"    {hit.text.splitlines()[0] if hit.text else ''}")
 
