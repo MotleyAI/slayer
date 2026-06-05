@@ -80,7 +80,7 @@ def _import_graph_module() -> Any:
 
 
 _MUTATION_RE = re.compile(
-    r"\b(CREATE|MERGE|DELETE|SET|DROP|CALL)\b", re.IGNORECASE
+    r"\b(CREATE|MERGE|DELETE|SET|REMOVE|DROP|CALL)\b", re.IGNORECASE
 )
 _AS_ID_RE = re.compile(r"\bAS\s+id\b", re.IGNORECASE)
 # Matches single- and double-quoted string literals (with backslash-escape
@@ -97,7 +97,7 @@ def _validate_cypher(cypher: str) -> None:
 
     Raises ``ValueError`` on:
     * semicolons (multiple statements)
-    * mutation keywords: CREATE, MERGE, DELETE, SET, DROP, CALL
+    * mutation keywords: CREATE, MERGE, DELETE, SET, REMOVE, DROP, CALL
     * missing ``AS id`` alias in the RETURN clause
     """
     if ";" in cypher:

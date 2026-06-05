@@ -802,6 +802,12 @@ def test_validate_cypher_accepts_match_return() -> None:
         "MERGE (n:Memory {id: 'x'})",
         "MATCH (n) DELETE n",
         "MATCH (n) SET n.x = 1",
+        # REMOVE strips properties/labels — also a mutation. Codex finding:
+        # was missing from _MUTATION_RE, letting a query like the one below
+        # mutate the cached in-memory graph and corrupt downstream filters
+        # until the cache rebuilt.
+        "MATCH (n) REMOVE n.name RETURN n.id AS id",
+        "MATCH (n:Memory) REMOVE n:Memory RETURN n.id AS id",
         "DROP TABLE Memory",
         "CALL apoc.something()",
         # Missing AS id alias
