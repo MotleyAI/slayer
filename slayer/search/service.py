@@ -665,6 +665,16 @@ class SearchService:
         )
         if early is not None:
             return early
+        # Naive kind_filter parity with graph path: warn when a named
+        # memory:<id> ref would be excluded by the kind filter so the
+        # caller knows why it doesn't appear in results.
+        if kind_filter is not None and "memory" not in kind_filter:
+            for canonical in canonical_input_entities:
+                if canonical.startswith(_MEMORY_PREFIX):
+                    warnings.append(
+                        f"{canonical} excluded by cypher_filter kind filter "
+                        f"(allowed kinds: {sorted(kind_filter)!r})."
+                    )
 
         # Recency fallback for the all-empty case.
         if not channel_1_active and not question_active:

@@ -30,12 +30,12 @@ _LABEL_TO_KIND: dict[str, str] = {
 # \s* is only used as a delimiter between fixed tokens (never inside a
 # quantified character class that can also match \s), which avoids
 # polynomial backtracking on non-matching inputs (Sonar S5852).
-_NAIVE_PATTERN = re.compile(  # NOSONAR(S5843) — structural complexity is load-bearing; each \s* and \w token corresponds to a distinct syntactic element in the Cypher MATCH fragment
-    r"^\s*MATCH\s*\(\s*\w+\s*:\s*(\w+(?:\s*:\s*\w+)*)\s*\)\s*RETURN\s+\w+\.id\s+AS\s+id\s*$",
-    re.IGNORECASE,
+_NAIVE_PATTERN = re.compile(
+    pattern=r"^\s*MATCH\s*\(\s*(?P<var>\w+)\s*:\s*(?P<labels>\w+(?:\s*:\s*\w+)*)\s*\)\s*RETURN\s+(?P=var)\.id\s+AS\s+id\s*$",  # NOSONAR(S5843) — structural complexity is load-bearing; each token maps to a distinct syntactic Cypher element
+    flags=re.IGNORECASE,
 )
 
-_AS_ID_RE = re.compile(r"\bAS\s+id\b", re.IGNORECASE)
+_AS_ID_RE = re.compile(pattern=r"\bAS\s+id\b", flags=re.IGNORECASE)
 
 
 def parse_naive_label_filter(cypher: str) -> Set[str]:
@@ -60,7 +60,7 @@ def parse_naive_label_filter(cypher: str) -> Set[str]:
             "install the advanced_search extra: "
             "pip install motley-slayer[advanced_search]"
         )
-    labels_str = match.group(1)
+    labels_str = match.group("labels")
     labels = [lb.strip() for lb in re.split(r"\s*:\s*", labels_str) if lb.strip()]
     kinds: Set[str] = set()
     for label in labels:
