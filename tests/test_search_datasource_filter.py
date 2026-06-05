@@ -92,9 +92,10 @@ async def test_filter_keeps_memory_tagged_only_at_datasource(
     response = await service.search(
         entities=["prod.orders.amount"],
         datasource="prod",
-        max_memories=10,
+        max_results=20,
     )
-    learnings = {h.text for h in response.memories}
+    memory_hits = [h for h in response.results if h.kind == "memory"]
+    learnings = {h.text for h in memory_hits}
     assert "prod-only: amount excludes tax" in learnings
     assert "staging-only: amount includes tax" not in learnings
 
@@ -108,17 +109,17 @@ async def test_filter_keeps_cross_datasource_memory(
     response_prod = await service.search(
         entities=["prod.orders.amount"],
         datasource="prod",
-        max_memories=10,
+        max_results=20,
     )
-    learnings_prod = {h.text for h in response_prod.memories}
+    learnings_prod = {h.text for h in response_prod.results if h.kind == "memory"}
     assert "cross: amount is gross" in learnings_prod
 
     response_staging = await service.search(
         entities=["staging.orders.amount"],
         datasource="staging",
-        max_memories=10,
+        max_results=20,
     )
-    learnings_staging = {h.text for h in response_staging.memories}
+    learnings_staging = {h.text for h in response_staging.results if h.kind == "memory"}
     assert "cross: amount is gross" in learnings_staging
 
 
@@ -132,9 +133,9 @@ async def test_filter_drops_other_datasource_memory(
     response = await service.search(
         entities=["prod.orders.amount"],
         datasource="prod",
-        max_memories=10,
+        max_results=20,
     )
-    learnings = {h.text for h in response.memories}
+    learnings = {h.text for h in response.results if h.kind == "memory"}
     assert "staging-only: amount includes tax" not in learnings
 
 
@@ -147,9 +148,9 @@ async def test_filter_drops_untagged_memory(
     response = await service.search(
         entities=["prod.orders.amount"],
         datasource="prod",
-        max_memories=10,
+        max_results=20,
     )
-    learnings = {h.text for h in response.memories}
+    learnings = {h.text for h in response.results if h.kind == "memory"}
     assert "free-floating note" not in learnings
 
 
@@ -168,9 +169,9 @@ async def test_filter_excludes_other_datasource_entity_hits(
     response = await service.search(
         question="orders amount",
         datasource="prod",
-        max_entities=10,
+        max_results=20,
     )
-    canonical_ids = {h.id for h in response.entities}
+    canonical_ids = {h.id for h in response.results if h.kind != "memory"}
     # All entity hits must be rooted at 'prod' (exact or dotted descendant).
     for cid in canonical_ids:
         assert cid == "prod" or cid.startswith("prod.")
@@ -186,9 +187,9 @@ async def test_no_filter_returns_both_datasources(
     """Sanity: without the filter, both datasources' entities are
     eligible."""
     response = await service.search(
-        question="orders amount", max_entities=10,
+        question="orders amount", max_results=20,
     )
-    canonical_ids = {h.id for h in response.entities}
+    canonical_ids = {h.id for h in response.results if h.kind != "memory"}
     has_prod = any(cid == "prod" or cid.startswith("prod.") for cid in canonical_ids)
     has_staging = any(
         cid == "staging" or cid.startswith("staging.") for cid in canonical_ids
@@ -210,7 +211,7 @@ async def test_unknown_datasource_raises(
         await service.search(
             question="anything",
             datasource="does_not_exist",
-            max_memories=5,
+            max_results=5,
         )
 
 
@@ -239,9 +240,9 @@ async def test_filter_with_recency_fallback(
     """No entities, no query, no question → recency fallback. The
     datasource filter still applies to which memories are eligible."""
     response = await service.search(
-        datasource="prod", max_memories=10,
+        datasource="prod", max_results=20,
     )
-    learnings = {h.text for h in response.memories}
+    learnings = {h.text for h in response.results if h.kind == "memory"}
     # The prod-only and cross memories surface; staging-only and untagged don't.
     assert "prod-only: amount excludes tax" in learnings
     assert "cross: amount is gross" in learnings
@@ -258,9 +259,9 @@ async def test_none_datasource_is_no_filter(
     response_none = await service.search(
         entities=["prod.orders.amount", "staging.orders.amount"],
         datasource=None,
-        max_memories=10,
+        max_results=20,
     )
-    learnings = {h.text for h in response_none.memories}
+    learnings = {h.text for h in response_none.results if h.kind == "memory"}
     # All three tagged memories should be eligible.
     assert "prod-only: amount excludes tax" in learnings
     assert "staging-only: amount includes tax" in learnings
@@ -287,13 +288,13 @@ async def test_empty_datasource_returns_empty_response(
         response = await svc.search(
             question="anything",
             datasource="empty_ds",
-            max_memories=5,
-            max_entities=5,
+            max_results=10,
         )
-        assert response.memories == []
-        assert response.example_queries == []
+        memory_hits = [h for h in response.results if h.kind == "memory"]
+        assert memory_hits == []
         # Entity ranking may include the datasource doc itself, depending
         # on whether build_in_memory_corpus indexes empty-model datasources.
         # Either way: zero hits from a non-existent datasource.
-        for hit in response.entities:
-            assert hit.id == "empty_ds" or hit.id.startswith("empty_ds.")
+        for hit in response.results:
+            if hit.kind != "memory":
+                assert hit.id == "empty_ds" or hit.id.startswith("empty_ds.")

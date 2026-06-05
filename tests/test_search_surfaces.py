@@ -85,15 +85,11 @@ async def test_mcp_search_tool_returns_json_with_three_lists(
         arguments={
             "entities": ["warehouse.orders.amount_paid"],
             "question": "gross refunds",
-            "max_memories": 5,
-            "max_example_queries": 2,
-            "max_entities": 5,
+            "max_results": 20,
         },
     )
     payload = json.loads(result_text)
-    assert "memories" in payload
-    assert "example_queries" in payload
-    assert "entities" in payload
+    assert "results" in payload
     assert "resolved_input_entities" in payload
     assert "warehouse.orders.amount_paid" in payload["resolved_input_entities"]
 
@@ -143,15 +139,11 @@ def test_rest_post_search_returns_response_shape(tmp_path) -> None:
     res = client.post("/search", json={
         "entities": ["warehouse.orders.amount_paid"],
         "question": "refunds",
-        "max_memories": 5,
-        "max_example_queries": 2,
-        "max_entities": 5,
+        "max_results": 20,
     })
     assert res.status_code == 200
     body = res.json()
-    assert "memories" in body
-    assert "example_queries" in body
-    assert "entities" in body
+    assert "results" in body
     assert "resolved_input_entities" in body
     # Recall endpoint is gone (FastAPI returns 405 because /memories/{id}
     # captures the path with the wrong method, or 404 if no route matches).
@@ -238,15 +230,14 @@ def test_cli_search_runs_against_storage(tmp_path, monkeypatch, capsys) -> None:
             "search",
             "--storage", storage_dir,
             "--entity", "warehouse.orders.amount_paid",
-            "--max-example-queries", "1",
+            "--max-results", "10",
             "--format", "json",
         ],
         monkeypatch, capsys,
     )
     assert code == 0
     payload = json.loads(out)
-    assert "memories" in payload
-    assert "example_queries" in payload
+    assert "results" in payload
     assert "resolved_input_entities" in payload
 
 
@@ -269,9 +260,7 @@ async def test_client_search_round_trip(
     in-process ``SearchService`` and returns a populated ``SearchResponse``."""
     from slayer.client.slayer_client import SlayerClient
     from slayer.search.service import (
-        EntityHit,
-        ExampleQueryHit,
-        MemoryHit,
+        SearchHit,
         SearchResponse,
     )
 
@@ -283,19 +272,16 @@ async def test_client_search_round_trip(
     response = await client.search(
         entities=["warehouse.orders.amount_paid"],
         question="refunds",
-        max_example_queries=2,
+        max_results=20,
     )
 
     assert isinstance(response, SearchResponse)
-    assert isinstance(response.memories, list)
-    assert isinstance(response.example_queries, list)
-    assert isinstance(response.entities, list)
+    assert isinstance(response.results, list)
     assert isinstance(response.warnings, list)
-    assert all(isinstance(m, MemoryHit) for m in response.memories)
-    assert all(isinstance(e, ExampleQueryHit) for e in response.example_queries)
-    assert all(isinstance(e, EntityHit) for e in response.entities)
-    assert len(response.memories) >= 1
-    assert "warehouse.orders.amount_paid" in response.memories[0].matched_entities
+    assert all(isinstance(h, SearchHit) for h in response.results)
+    memory_hits = [h for h in response.results if h.kind == "memory" and h.query is None]
+    assert len(memory_hits) >= 1
+    assert "warehouse.orders.amount_paid" in memory_hits[0].matched_entities
     assert "warehouse.orders.amount_paid" in response.resolved_input_entities
 
 
@@ -398,7 +384,7 @@ def test_cli_search_accepts_datasource_flag(tmp_path, monkeypatch, capsys) -> No
     )
     assert code == 0
     payload = json.loads(out)
-    assert "memories" in payload
+    assert "results" in payload
 
 
 @pytest.mark.asyncio
@@ -413,6 +399,6 @@ async def test_client_search_accepts_datasource(
     response = await client.search(
         entities=["warehouse.orders.amount_paid"],
         datasource="warehouse",
-        max_example_queries=2,
+        max_results=20,
     )
     assert "warehouse.orders.amount_paid" in response.resolved_input_entities

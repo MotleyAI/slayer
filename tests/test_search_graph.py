@@ -275,11 +275,11 @@ async def test_join_sync_storage_fingerprint_delegates(
 async def test_cypher_missing_id_column_friendly_error(
     rich_storage: YAMLStorage,
 ) -> None:
-    # Query passes _validate_cypher (AS id appears in WITH clause)
+    # Query passes _validate_cypher (AS id appears in the WITH clause)
     # but the final RETURN exposes 'name' instead of 'id'.
     with pytest.raises(ValueError, match="must return a column named 'id'"):
         await get_filtered_ids(
-            "MATCH (m:Memory) WITH m.id AS id RETURN m.learning AS name",
+            "MATCH (m:Memory) WITH m.id AS id RETURN id AS name",
             rich_storage,
         )
 
@@ -325,7 +325,7 @@ async def test_graph_model_node_count(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_graph_column_node_count(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (c:Column) RETURN c.id AS id", rich_storage
+        "MATCH (c:ModelColumn) RETURN c.id AS id", rich_storage
     )
     # orders: 3, customers: 3, events: 2 → 8 total
     assert len(ids) == 8
@@ -372,7 +372,7 @@ async def test_memory_node_learning_property(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_column_node_data_type_property(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (c:Column {data_type: 'DOUBLE'}) RETURN c.id AS id",
+        "MATCH (c:ModelColumn {data_type: 'DOUBLE'}) RETURN c.id AS id",
         rich_storage,
     )
     assert "shop.orders.amount" in ids
@@ -399,7 +399,7 @@ async def test_model_description_property(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_mentions_memory_to_column(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Memory)-[:MENTIONS]->(c:Column {id: 'shop.orders.amount'}) "
+        "MATCH (m:Memory)-[:MENTIONS]->(c:ModelColumn {id: 'shop.orders.amount'}) "
         "RETURN m.id AS id",
         rich_storage,
     )
@@ -506,7 +506,7 @@ async def test_contains_datasource_to_model(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_contains_model_to_column(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Model {id: 'shop.orders'})-[:CONTAINS]->(c:Column) "
+        "MATCH (m:Model {id: 'shop.orders'})-[:CONTAINS]->(c:ModelColumn) "
         "RETURN c.id AS id",
         rich_storage,
     )
@@ -541,7 +541,7 @@ async def test_contains_multi_hop_datasource_to_column(
     rich_storage: YAMLStorage,
 ) -> None:
     ids = await get_filtered_ids(
-        "MATCH (d:Datasource {id: 'shop'})-[:CONTAINS*2]->(c:Column) "
+        "MATCH (d:Datasource {id: 'shop'})-[:CONTAINS*2]->(c:ModelColumn) "
         "RETURN c.id AS id",
         rich_storage,
     )
@@ -575,7 +575,7 @@ async def test_joins_model_to_model(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_multi_label_union_column_and_measure(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (n:Column:Measure) RETURN n.id AS id", rich_storage
+        "MATCH (n:ModelColumn:Measure) RETURN n.id AS id", rich_storage
     )
     assert "shop.orders.amount" in ids          # Column
     assert "shop.orders.total_revenue" in ids   # Measure
@@ -585,7 +585,7 @@ async def test_multi_label_union_column_and_measure(rich_storage: YAMLStorage) -
 @pytest.mark.asyncio
 async def test_multi_label_all_data_model_entities(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (n:Datasource:Model:Column:Measure:Aggregation) RETURN n.id AS id",
+        "MATCH (n:Datasource:Model:ModelColumn:Measure:Aggregation) RETURN n.id AS id",
         rich_storage,
     )
     assert "shop" in ids                        # Datasource
@@ -622,7 +622,7 @@ async def test_hidden_column_excluded_from_graph() -> None:
         )
         clear_cache()
         all_cols = await get_filtered_ids(
-            "MATCH (c:Column) RETURN c.id AS id", storage
+            "MATCH (c:ModelColumn) RETURN c.id AS id", storage
         )
         assert "ds.orders.internal_flag" not in all_cols
         assert "ds.orders.id" in all_cols
@@ -788,10 +788,10 @@ def test_validate_cypher_accepts_match_return() -> None:
 
     _validate_cypher("MATCH (m:Memory) RETURN m.id AS id")
     _validate_cypher(
-        "MATCH (m:Memory)-[:MENTIONS]->(e:Column) WHERE e.id = 'x' RETURN m.id AS id"
+        "MATCH (m:Memory)-[:MENTIONS]->(e:ModelColumn) WHERE e.id = 'x' RETURN m.id AS id"
     )
     _validate_cypher(
-        "MATCH (e:Column)<-[:CONTAINS*1..3]-(d:Datasource) RETURN e.id AS id"
+        "MATCH (e:ModelColumn)<-[:CONTAINS*1..3]-(d:Datasource) RETURN e.id AS id"
     )
 
 
@@ -826,7 +826,7 @@ def test_validate_cypher_rejects_invalid(bad_cypher: str) -> None:
 @pytest.mark.asyncio
 async def test_cypher_property_filter(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (c:Column {id: 'shop.orders.amount'}) RETURN c.id AS id",
+        "MATCH (c:ModelColumn {id: 'shop.orders.amount'}) RETURN c.id AS id",
         rich_storage,
     )
     assert ids == {"shop.orders.amount"}
@@ -838,7 +838,7 @@ async def test_cypher_path_traversal_memories_of_model(
     rich_storage: YAMLStorage,
 ) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Memory)-[:MENTIONS]->(e:Column) "
+        "MATCH (m:Memory)-[:MENTIONS]->(e:ModelColumn) "
         "WHERE e.id STARTS WITH 'shop.orders.' "
         "RETURN m.id AS id",
         rich_storage,
@@ -879,9 +879,7 @@ async def test_zero_match_cypher_returns_empty_response_with_warning(
             "MATCH (m:Memory {id: 'memory:nonexistent-9999'}) RETURN m.id AS id"
         ),
     )
-    assert response.memories == []
-    assert response.example_queries == []
-    assert response.entities == []
+    assert response.results == []
     assert any("zero" in w.lower() or "no" in w.lower() for w in response.warnings)
 
 
@@ -946,16 +944,18 @@ async def test_no_cypher_filter_does_not_invoke_graph(
 
 
 @pytest.mark.asyncio
-async def test_ladybug_not_installed_with_cypher_filter_raises(
+async def test_ladybug_not_installed_with_cypher_filter_uses_naive_fallback(
     rich_storage: YAMLStorage,
 ) -> None:
+    """When ladybug is absent, cypher_filter falls back to the naive label parser
+    rather than raising — search still returns a valid SearchResponse."""
     with patch("slayer.search.graph.is_available", return_value=False):
         service = SearchService(storage=rich_storage)
-        with pytest.raises(ValueError, match="(?i)ladybug|graph|not installed"):
-            await service.search(
-                entities=["shop.orders.amount"],
-                cypher_filter="MATCH (m:Memory) RETURN m.id AS id",
-            )
+        response = await service.search(
+            entities=["shop.orders.amount"],
+            cypher_filter="MATCH (m:Memory) RETURN m.id AS id",
+        )
+        assert isinstance(response, SearchResponse)
 
 
 @pytest.mark.asyncio
@@ -1031,7 +1031,7 @@ async def test_candidate_ids_results_are_exact_subset_of_cypher_output(
     Cypher — no memory outside the candidate set must surface."""
     # Cypher: only the memory that mentions shop.orders.amount
     cypher = (
-        "MATCH (m:Memory)-[:MENTIONS]->(c:Column {id: 'shop.orders.amount'}) "
+        "MATCH (m:Memory)-[:MENTIONS]->(c:ModelColumn {id: 'shop.orders.amount'}) "
         "RETURN m.id AS id"
     )
     expected_candidates = await get_filtered_ids(cypher, rich_storage)
@@ -1041,10 +1041,10 @@ async def test_candidate_ids_results_are_exact_subset_of_cypher_output(
     response = await service.search(
         entities=["shop.orders.amount"],
         cypher_filter=cypher,
-        max_memories=10,
+        max_results=20,
     )
 
-    returned_ids = {h.id for h in response.memories}
+    returned_ids = {h.id for h in response.results if h.kind == "memory"}
     # Every returned memory id, when prefixed with "memory:", must be in candidates
     for bare_id in returned_ids:
         assert f"memory:{bare_id}" in expected_candidates, (
@@ -1070,12 +1070,12 @@ async def test_cypher_filter_and_datasource_are_intersected(
         entities=["shop.orders.amount"],
         datasource="analytics",
         cypher_filter=(
-            "MATCH (m:Memory)-[:MENTIONS]->(c:Column) "
+            "MATCH (m:Memory)-[:MENTIONS]->(c:ModelColumn) "
             "WHERE c.id STARTS WITH 'shop.' "
             "RETURN m.id AS id"
         ),
     )
-    assert response.memories == []
+    assert [h for h in response.results if h.kind == "memory"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -1109,7 +1109,7 @@ async def test_stale_canonical_ids_in_candidate_set_cause_no_error(
             question="deleted memory",
         )
     assert isinstance(response, SearchResponse)
-    result_ids = {h.id for h in response.memories}
+    result_ids = {h.id for h in response.results if h.kind == "memory"}
     assert mem.id not in result_ids
 
 
@@ -1133,7 +1133,7 @@ def test_validate_cypher_accepts_mutation_keyword_in_string_literal() -> None:
     )
     # Double-quoted literal with DROP.
     _validate_cypher(
-        'MATCH (c:Column) WHERE c.description = "drop rate" RETURN c.id AS id'
+        'MATCH (c:ModelColumn) WHERE c.description = "drop rate" RETURN c.id AS id'
     )
 
 
@@ -1177,6 +1177,6 @@ async def test_cypher_filter_applied_to_recency_fallback(
             cypher_filter="MATCH (m:Memory) RETURN m.id AS id",
         )
 
-    result_ids = {h.id for h in response.memories}
+    result_ids = {h.id for h in response.results if h.kind == "memory"}
     assert mem_in.id in result_ids
     assert mem_out.id not in result_ids

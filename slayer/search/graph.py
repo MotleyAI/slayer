@@ -16,13 +16,16 @@ Node tables (one per entity kind):
   Memory        id STRING (canonical ``memory:<id>`` form), learning STRING
   Datasource    id STRING, name STRING
   Model         id STRING, name STRING, description STRING
-  Column        id STRING, name STRING, data_type STRING, description STRING
+  ModelColumn   id STRING, name STRING, data_type STRING, description STRING
   Measure       id STRING, name STRING, description STRING
   Aggregation   id STRING, name STRING
 
+Note: the node table for schema columns is named ``ModelColumn`` (not ``Column``)
+because ``Column`` is a reserved keyword in LadybugDB ≥ 0.15.
+
 Relationship tables:
-  MENTIONS   Memory → {Datasource, Model, Column, Measure, Aggregation, Memory}
-  CONTAINS   Datasource → Model, Model → {Column, Measure, Aggregation}
+  MENTIONS   Memory → {Datasource, Model, ModelColumn, Measure, Aggregation, Memory}
+  CONTAINS   Datasource → Model, Model → {ModelColumn, Measure, Aggregation}
   JOINS      Model → Model
 
 All queries must be read-only ``MATCH … RETURN … AS id`` statements.
@@ -136,7 +139,7 @@ def _create_schema(conn: Any) -> None:
         "id STRING, name STRING, description STRING, PRIMARY KEY(id))"
     )
     conn.execute(
-        "CREATE NODE TABLE Column("
+        "CREATE NODE TABLE ModelColumn("
         "id STRING, name STRING, data_type STRING, description STRING, PRIMARY KEY(id))"
     )
     conn.execute(
@@ -151,7 +154,7 @@ def _create_schema(conn: Any) -> None:
         "CREATE REL TABLE MENTIONS("
         "FROM Memory TO Datasource, "
         "FROM Memory TO Model, "
-        "FROM Memory TO Column, "
+        "FROM Memory TO ModelColumn, "
         "FROM Memory TO Measure, "
         "FROM Memory TO Aggregation, "
         "FROM Memory TO Memory"
@@ -160,7 +163,7 @@ def _create_schema(conn: Any) -> None:
     conn.execute(
         "CREATE REL TABLE CONTAINS("
         "FROM Datasource TO Model, "
-        "FROM Model TO Column, "
+        "FROM Model TO ModelColumn, "
         "FROM Model TO Measure, "
         "FROM Model TO Aggregation"
         ")"
@@ -169,30 +172,30 @@ def _create_schema(conn: Any) -> None:
 
 
 def _insert_model_child_nodes(conn: Any, canonical_model: str, model: Any) -> None:
-    """Insert Column, Measure, and Aggregation nodes for one model."""
+    """Insert ModelColumn, Measure, and Aggregation nodes for one model."""
     for col in model.columns:
         if col.hidden:
             continue
         conn.execute(
-            "CREATE (:Column {"
-            "id: $id, name: $name, data_type: $dt, description: $desc"
+            "CREATE (:ModelColumn {"
+            "id: $id, name: $name, data_type: $dt, description: $descr"
             "})",
             {
                 "id": f"{canonical_model}.{col.name}",
                 "name": col.name,
                 "dt": col.type.value if col.type is not None else "",
-                "desc": col.description or "",
+                "descr": col.description or "",
             },
         )
     for measure in model.measures:
         if not measure.name:
             continue
         conn.execute(
-            "CREATE (:Measure {id: $id, name: $name, description: $desc})",
+            "CREATE (:Measure {id: $id, name: $name, description: $descr})",
             {
                 "id": f"{canonical_model}.{measure.name}",
                 "name": measure.name,
-                "desc": measure.description or "",
+                "descr": measure.description or "",
             },
         )
     for agg in model.aggregations:
@@ -218,11 +221,11 @@ def _insert_nodes(
     for canonical_model, model in visible_models.items():
         _, model_name = canonical_model.split(".", 1)
         conn.execute(
-            "CREATE (:Model {id: $id, name: $name, description: $desc})",
+            "CREATE (:Model {id: $id, name: $name, description: $descr})",
             {
                 "id": canonical_model,
                 "name": model_name,
-                "desc": model.description or "",
+                "descr": model.description or "",
             },
         )
         _insert_model_child_nodes(conn, canonical_model, model)
@@ -242,7 +245,7 @@ def _insert_contains_edges(
     datasource_names: list[str],
     visible_models: dict,
 ) -> None:
-    """Insert CONTAINS edges: Datasource→Model and Model→{Column/Measure/Agg}."""
+    """Insert CONTAINS edges: Datasource→Model and Model→{ModelColumn/Measure/Agg}."""
     ds_set = set(datasource_names)
     for canonical_model, model in visible_models.items():
         ds = canonical_model.split(".", 1)[0]
@@ -256,7 +259,7 @@ def _insert_contains_edges(
             if col.hidden:
                 continue
             conn.execute(
-                "MATCH (m:Model {id: $model}), (c:Column {id: $col}) "
+                "MATCH (m:Model {id: $model}), (c:ModelColumn {id: $col}) "
                 "CREATE (m)-[:CONTAINS]->(c)",
                 {"model": canonical_model, "col": f"{canonical_model}.{col.name}"},
             )
@@ -335,7 +338,7 @@ def _connect_entity_mention(
         )
     elif entity in valid_columns:
         conn.execute(
-            "MATCH (m:Memory {id: $src}), (c:Column {id: $tgt}) "
+            "MATCH (m:Memory {id: $src}), (c:ModelColumn {id: $tgt}) "
             "CREATE (m)-[:MENTIONS]->(c)",
             {"src": src, "tgt": entity},
         )
@@ -368,7 +371,7 @@ def _insert_mentions_edges(
     visible_models: dict,
     datasource_names: list[str],
 ) -> None:
-    """Insert MENTIONS edges: Memory → {Datasource, Model, Column, Measure, Agg, Memory}."""
+    """Insert MENTIONS edges: Memory → {Datasource, Model, ModelColumn, Measure, Agg, Memory}."""
     ds_set = set(datasource_names)
     valid_models: set[str] = set(visible_models)
     valid_columns, valid_measures, valid_aggs, valid_memory_canonicals = (
@@ -395,7 +398,7 @@ async def build_graph(storage: StorageBackend) -> tuple[Any, Any]:
     # No-argument Database() creates an ephemeral in-memory instance;
     # no files are written to the working directory.
     db = mod.Database()
-    conn = db.connect()
+    conn = mod.Connection(db)
     _create_schema(conn)
 
     datasource_names = await storage.list_datasources()

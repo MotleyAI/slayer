@@ -584,25 +584,11 @@ examples:
         ),
     )
     search_parser.add_argument(
-        "--max-memories",
+        "--max-results",
         type=int,
-        default=5,
-        dest="max_memories",
-        help="Cap on returned learning-only memory hits (default 5).",
-    )
-    search_parser.add_argument(
-        "--max-example-queries",
-        type=int,
-        default=2,
-        dest="max_example_queries",
-        help="Cap on returned query-bearing memory hits (default 2 — bulky).",
-    )
-    search_parser.add_argument(
-        "--max-entities",
-        type=int,
-        default=5,
-        dest="max_entities",
-        help="Cap on returned entity hits (default 5).",
+        default=10,
+        dest="max_results",
+        help="Maximum total number of hits to return (default 10).",
     )
     search_parser.add_argument(
         "--cypher-filter",
@@ -610,8 +596,9 @@ examples:
         dest="cypher_filter",
         help=(
             "openCypher MATCH query returning '… AS id' to pre-filter all "
-            "channels to matching canonical IDs. Requires the advanced_search "
-            "extra (LadybugDB). Read-only — no CREATE/MERGE/DELETE."
+            "channels to matching canonical IDs. When advanced_search is not "
+            "installed, only simple MATCH (n:Label) RETURN n.id AS id patterns "
+            "are supported as a kind filter."
         ),
     )
     search_parser.add_argument(
@@ -783,17 +770,11 @@ def _print_search_response_text(response) -> None:
             "\nResolved input entities: "
             + ", ".join(response.resolved_input_entities)
         )
-    print(f"\nMemories ({len(response.memories)}):")
-    for hit in response.memories:
-        print(f"  M{hit.id} (score={hit.score:.4f})")
+    print(f"\nResults ({len(response.results)}):")
+    for hit in response.results:
+        prefix = "M" if hit.kind == "memory" else f"[{hit.kind}]"
+        print(f"  {prefix} {hit.id} (score={hit.score:.4f})")
         print(f"    {hit.text.splitlines()[0] if hit.text else ''}")
-    print(f"\nExample queries ({len(response.example_queries)}):")
-    for hit in response.example_queries:
-        print(f"  M{hit.id} (score={hit.score:.4f})")
-        print(f"    {hit.text.splitlines()[0] if hit.text else ''}")
-    print(f"\nEntities ({len(response.entities)}):")
-    for hit in response.entities:
-        print(f"  [{hit.kind}] {hit.id} (score={hit.score:.4f})")
 
 
 def _run_search_query(args, storage) -> None:
@@ -807,9 +788,7 @@ def _run_search_query(args, storage) -> None:
             query=query_input,
             question=args.question,
             datasource=args.datasource,
-            max_memories=args.max_memories,
-            max_example_queries=args.max_example_queries,
-            max_entities=args.max_entities,
+            max_results=args.max_results,
             cypher_filter=args.cypher_filter,
         ))
     except (EntityResolutionError, AmbiguousModelError, ValueError) as exc:
