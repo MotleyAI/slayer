@@ -33,8 +33,9 @@ class TestSearchLazyGC:
         resp = await svc.search(
             entities=["mydb.orders.amount", "mydb.deleted_model"],
         )
-        assert resp.memories, "expected the live-tag memory to surface"
-        for hit in resp.memories:
+        memory_hits = [h for h in resp.results if h.kind == "memory" and h.query is None]
+        assert memory_hits, "expected the live-tag memory to surface"
+        for hit in memory_hits:
             assert "mydb.deleted_model" not in hit.matched_entities
 
     async def test_recency_fallback_filter_excludes_stale_in_matched(
@@ -52,13 +53,14 @@ class TestSearchLazyGC:
         )
         svc = SearchService(storage=storage)
         resp = await svc.search()
-        learnings = {m.text for m in resp.memories}
+        memory_hits = [h for h in resp.results if h.kind == "memory" and h.query is None]
+        learnings = {m.text for m in memory_hits}
         # Both rows survive the recency fallback (no datasource filter,
         # no entity filter — just newest-N).
         assert "only stale" in learnings
         assert "has live" in learnings
         # No memory's matched_entities should ever name a stale entity.
-        for hit in resp.memories:
+        for hit in memory_hits:
             assert "mydb.does_not_exist" not in hit.matched_entities
 
     async def test_no_writeback_on_stale_filter(

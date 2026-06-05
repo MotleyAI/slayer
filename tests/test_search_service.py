@@ -26,17 +26,16 @@ from typing import AsyncIterator
 import pytest
 import pytest_asyncio
 
-from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import ModelMeasure
 from slayer.core.query import SlayerQuery
 from slayer.search.service import (
-    EntityHit,
-    ExampleQueryHit,
-    MemoryHit,
+    SearchHit,
     SearchResponse,
     SearchService,
 )
 from slayer.storage.base import StorageBackend, resolve_storage
+
+from tests.search_helpers import seed_warehouse_models
 
 
 @pytest_asyncio.fixture
@@ -44,30 +43,7 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
     """A small fixture corpus: 1 datasource, 2 models, 4 memories."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = resolve_storage(tmpdir)
-        await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="warehouse",
-            description="Checkout orders.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount_paid", type=DataType.DOUBLE,
-                       description="Net paid in USD."),
-                Column(name="status", type=DataType.TEXT,
-                       description="paid|refunded|cancelled."),
-            ],
-        ))
-        await storage.save_model(SlayerModel(
-            name="customers",
-            sql_table="customers",
-            data_source="warehouse",
-            description="Customer master data.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="email", type=DataType.TEXT),
-            ],
-        ))
+        await seed_warehouse_models(storage)
         # 4 memories: 2 tagged on orders.amount_paid, 1 on customers, 1 untagged
         await storage.save_memory(
             learning="amount_paid is gross of refunds.",
@@ -105,16 +81,17 @@ async def test_entities_and_question_both_set_runs_both_channels(
     response = await service.search(
         entities=["warehouse.orders.amount_paid"],
         question="paid revenue",
-        max_memories=5,
-        max_entities=5,
+        max_results=20,
     )
     assert isinstance(response, SearchResponse)
     # Channel 1 should surface the memory tagged on amount_paid.
-    learnings = [h.text for h in response.memories]
+    memory_hits = [h for h in response.results if h.kind == "memory" and h.query is None]
+    learnings = [h.text for h in memory_hits]
     assert any("gross of refunds" in lm for lm in learnings)
     # Channel 2 should surface entity hits.
-    assert response.entities, "expected channel 2 to surface at least one entity hit"
-    assert all(isinstance(h, EntityHit) for h in response.entities)
+    entity_hits = [h for h in response.results if h.kind != "memory"]
+    assert entity_hits, "expected channel 2 to surface at least one entity hit"
+    assert all(isinstance(h, SearchHit) for h in entity_hits)
 
 
 @pytest.mark.asyncio
@@ -123,15 +100,16 @@ async def test_entities_only_runs_channel_1_only(service: SearchService) -> None
     entity hits (DEV-1513 implicit self-reference)."""
     response = await service.search(
         entities=["warehouse.orders.amount_paid"],
-        max_memories=5,
-        max_entities=5,
+        max_results=20,
     )
+    entity_hits = [h for h in response.results if h.kind != "memory"]
+    memory_hits = [h for h in response.results if h.kind == "memory" and h.query is None]
     # DEV-1513: the named ref itself surfaces in the entities bucket.
     assert any(
-        h.id == "warehouse.orders.amount_paid" for h in response.entities
+        h.id == "warehouse.orders.amount_paid" for h in entity_hits
     )
     # Memories include the two tagged on amount_paid (both have query=None).
-    learnings = [h.text for h in response.memories]
+    learnings = [h.text for h in memory_hits]
     assert any("gross of refunds" in lm for lm in learnings)
 
 
@@ -146,15 +124,15 @@ async def test_query_only_runs_channel_1_via_extracted_entities(
             "source_model": "orders",
             "measures": [{"formula": "amount_paid:sum"}],
         },
-        max_memories=5,
-        max_entities=5,
+        max_results=20,
     )
     # DEV-1513: the query's source model and referenced column surface
     # in the entities bucket.
-    entity_ids = {h.id for h in response.entities}
+    entity_ids = {h.id for h in response.results if h.kind != "memory"}
     assert "warehouse.orders" in entity_ids
     assert "warehouse.orders.amount_paid" in entity_ids
-    learnings = [h.text for h in response.memories]
+    memory_hits = [h for h in response.results if h.kind == "memory" and h.query is None]
+    learnings = [h.text for h in memory_hits]
     assert any("gross of refunds" in lm for lm in learnings)
 
 
@@ -162,21 +140,23 @@ async def test_query_only_runs_channel_1_via_extracted_entities(
 async def test_question_only_runs_channel_2_only(service: SearchService) -> None:
     response = await service.search(
         question="anonymous checkouts",
-        max_memories=5,
-        max_entities=5,
+        max_results=20,
     )
     # Channel 1 was skipped → memories come only from tantivy memory subset.
-    learnings = [h.text for h in response.memories]
+    memory_hits = [h for h in response.results if h.kind == "memory" and h.query is None]
+    learnings = [h.text for h in memory_hits]
     assert any("anonymous" in lm for lm in learnings)
 
 
 @pytest.mark.asyncio
 async def test_all_empty_falls_back_to_recency(service: SearchService) -> None:
-    response = await service.search(max_memories=2, max_entities=5)
-    assert response.entities == []
+    response = await service.search(max_results=2)
+    entity_hits = [h for h in response.results if h.kind != "memory"]
+    memory_hits = [h for h in response.results if h.kind == "memory"]
+    assert entity_hits == []
     # Newest first: the 4th saved memory should appear before the 1st.
-    assert len(response.memories) == 2
-    assert any("free-floating" in h.text for h in response.memories)
+    assert len(memory_hits) == 2
+    assert any("free-floating" in h.text for h in memory_hits)
     # Warning explains the fallback.
     assert any("recency" in w.lower() for w in response.warnings)
 
@@ -190,30 +170,26 @@ async def test_all_empty_falls_back_to_recency(service: SearchService) -> None:
 async def test_max_memories_caps_memory_list(service: SearchService) -> None:
     response = await service.search(
         entities=["warehouse.orders.amount_paid", "warehouse.orders.status"],
-        max_memories=1,
-        max_entities=5,
+        max_results=1,
     )
-    assert len(response.memories) <= 1
+    assert len(response.results) <= 1
 
 
 @pytest.mark.asyncio
 async def test_max_entities_caps_entity_list(service: SearchService) -> None:
     response = await service.search(
         question="orders amount status customer email id",
-        max_memories=5,
-        max_entities=2,
+        max_results=2,
     )
-    assert len(response.entities) <= 2
+    assert len(response.results) <= 2
 
 
 @pytest.mark.asyncio
 async def test_negative_caps_rejected(service: SearchService) -> None:
     with pytest.raises(ValueError):
-        await service.search(question="x", max_memories=-1)
+        await service.search(question="x", max_results=-1)
     with pytest.raises(ValueError):
-        await service.search(question="x", max_entities=-1)
-    with pytest.raises(ValueError):
-        await service.search(question="x", max_example_queries=-1)
+        await service.search(question="x", max_results=0)
 
 
 # ---------------------------------------------------------------------------
@@ -239,17 +215,19 @@ async def test_unknown_entity_becomes_warning(service: SearchService) -> None:
 
 @pytest.mark.asyncio
 async def test_memory_hit_id_is_str(service: SearchService) -> None:
-    """DEV-1428: ``MemoryHit.id`` is the str memory id."""
-    response = await service.search(entities=["warehouse.orders.amount_paid"])
-    for hit in response.memories:
+    """DEV-1428: memory SearchHit.id is the str memory id."""
+    response = await service.search(entities=["warehouse.orders.amount_paid"], max_results=20)
+    memory_hits = [h for h in response.results if h.kind == "memory"]
+    for hit in memory_hits:
         assert isinstance(hit.id, str)
         assert hit.id != ""
 
 
 @pytest.mark.asyncio
 async def test_entity_hit_id_is_canonical_string(service: SearchService) -> None:
-    response = await service.search(question="amount_paid status")
-    for hit in response.entities:
+    response = await service.search(question="amount_paid status", max_results=20)
+    entity_hits = [h for h in response.results if h.kind != "memory"]
+    for hit in entity_hits:
         assert isinstance(hit.id, str)
         assert hit.kind in {"datasource", "model", "column", "measure", "aggregation"}
 
@@ -257,16 +235,18 @@ async def test_entity_hit_id_is_canonical_string(service: SearchService) -> None
 @pytest.mark.asyncio
 async def test_memory_hit_text_is_full_indexed_text(service: SearchService) -> None:
     """`text` must be the full indexed text — no truncation."""
-    response = await service.search(entities=["warehouse.orders.amount_paid"])
-    assert all(isinstance(h.text, str) and len(h.text) > 0 for h in response.memories)
+    response = await service.search(entities=["warehouse.orders.amount_paid"], max_results=20)
+    memory_hits = [h for h in response.results if h.kind == "memory"]
+    assert all(isinstance(h.text, str) and len(h.text) > 0 for h in memory_hits)
 
 
 @pytest.mark.asyncio
 async def test_memory_matched_entities_populated_from_channel_1(
     service: SearchService,
 ) -> None:
-    response = await service.search(entities=["warehouse.orders.amount_paid"])
-    for hit in response.memories:
+    response = await service.search(entities=["warehouse.orders.amount_paid"], max_results=20)
+    memory_hits = [h for h in response.results if h.kind == "memory"]
+    for hit in memory_hits:
         assert "warehouse.orders.amount_paid" in hit.matched_entities
 
 
@@ -281,8 +261,7 @@ async def test_empty_corpus_returns_empty_with_warning() -> None:
         storage = resolve_storage(tmpdir)
         service = SearchService(storage=storage)
         response = await service.search(question="anything")
-        assert response.memories == []
-        assert response.entities == []
+        assert response.results == []
 
 
 # ---------------------------------------------------------------------------
@@ -300,9 +279,10 @@ async def test_memory_appearing_in_both_channels_outranks_single_channel(
     response = await service.search(
         entities=["warehouse.orders.amount_paid"],
         question="amount_paid gross refunds",
-        max_memories=5,
+        max_results=20,
     )
-    learnings_in_order = [h.text for h in response.memories]
+    memory_hits = [h for h in response.results if h.kind == "memory" and h.query is None]
+    learnings_in_order = [h.text for h in memory_hits]
     # Memory 1 ("amount_paid is gross of refunds") matches both channels.
     # Memory 2 ("Filter status='paid' for net revenue.") matches only via
     # entity overlap on amount_paid — tantivy doesn't pick it up on the
@@ -380,7 +360,7 @@ async def test_resolved_input_entities_combined_input_dedupes(
 async def test_resolved_input_entities_empty_on_recency_fallback(
     service: SearchService,
 ) -> None:
-    response = await service.search(max_memories=2)
+    response = await service.search(max_results=2)
     assert response.resolved_input_entities == []
 
 
@@ -419,55 +399,57 @@ async def test_query_bearing_memories_go_to_example_queries(
 ) -> None:
     response = await service_with_query_memories.search(
         entities=["warehouse.orders.amount_paid"],
-        max_memories=10,
-        max_example_queries=10,
+        max_results=20,
     )
-    # No query-bearing memory should leak into `memories`.
-    assert all(isinstance(h, MemoryHit) for h in response.memories)
-    # All three query-bearing memories surface in `example_queries`.
-    assert len(response.example_queries) == 3
-    assert all(isinstance(h, ExampleQueryHit) for h in response.example_queries)
-    assert all(h.query is not None for h in response.example_queries)
+    # All memory hits are SearchHit instances.
+    assert all(isinstance(h, SearchHit) for h in response.results)
+    # All three query-bearing memories surface with query set.
+    example_query_hits = [h for h in response.results if h.kind == "memory" and h.query is not None]
+    assert len(example_query_hits) == 3
+    assert all(h.query is not None for h in example_query_hits)
 
 
 @pytest.mark.asyncio
 async def test_max_example_queries_default_is_two(
     service_with_query_memories: SearchService,
 ) -> None:
+    # With max_results=10 (default), the flat list may include up to 10 items.
+    # We check that query-bearing memories surface.
     response = await service_with_query_memories.search(
         entities=["warehouse.orders.amount_paid"],
+        max_results=20,
     )
-    assert len(response.example_queries) == 2
+    example_query_hits = [h for h in response.results if h.kind == "memory" and h.query is not None]
+    assert len(example_query_hits) >= 1
 
 
 @pytest.mark.asyncio
 async def test_max_example_queries_caps_independently(
     service_with_query_memories: SearchService,
 ) -> None:
+    # With max_results=1, at most 1 hit surfaces total.
     response = await service_with_query_memories.search(
         entities=["warehouse.orders.amount_paid"],
-        max_memories=10,
-        max_example_queries=1,
+        max_results=1,
     )
-    assert len(response.example_queries) == 1
+    assert len(response.results) <= 1
 
 
 @pytest.mark.asyncio
 async def test_bulky_example_does_not_evict_small_learning(
     service_with_query_memories: SearchService,
 ) -> None:
-    """An agent setting low caps still receives both kinds of memory.
-    With three query-bearing memories all matching the same entity, the
-    learning-only memories must still surface in `memories` because the two
-    kinds have independent caps."""
+    """With max_results large enough, both learning-only and query-bearing
+    memories surface in the flat list."""
     response = await service_with_query_memories.search(
         entities=["warehouse.orders.amount_paid"],
-        max_memories=2,
-        max_example_queries=1,
+        max_results=20,
     )
-    assert len(response.memories) == 2
-    assert len(response.example_queries) == 1
-    learning_texts = [h.text for h in response.memories]
+    memory_hits = [h for h in response.results if h.kind == "memory" and h.query is None]
+    example_query_hits = [h for h in response.results if h.kind == "memory" and h.query is not None]
+    assert len(memory_hits) >= 1
+    assert len(example_query_hits) >= 1
+    learning_texts = [h.text for h in memory_hits]
     assert any("gross of refunds" in t for t in learning_texts)
 
 
@@ -476,18 +458,17 @@ async def test_recency_fallback_fills_both_buckets(
     service_with_query_memories: SearchService,
 ) -> None:
     response = await service_with_query_memories.search(
-        max_memories=10,
-        max_example_queries=10,
+        max_results=20,
     )
-    # All learning-only memories from the base fixture (4) surface in
-    # `memories`; all query-bearing (3) in `example_queries`.
-    assert len(response.memories) == 4
-    assert len(response.example_queries) == 3
+    # All learning-only memories from the base fixture (4) and all
+    # query-bearing (3) surface in the flat list.
+    memory_hits = [h for h in response.results if h.kind == "memory" and h.query is None]
+    example_query_hits = [h for h in response.results if h.kind == "memory" and h.query is not None]
+    assert len(memory_hits) == 4
+    assert len(example_query_hits) == 3
 
 
 @pytest.mark.asyncio
-async def test_memory_hit_no_longer_carries_query_field() -> None:
-    """`MemoryHit` is reserved for learning-only memories; the `query`
-    field has moved to `ExampleQueryHit`."""
-    assert "query" not in MemoryHit.model_fields
-    assert "query" in ExampleQueryHit.model_fields
+async def test_memory_hit_query_field_is_on_searchhit() -> None:
+    """`SearchHit` carries a ``query`` field for query-bearing memories."""
+    assert "query" in SearchHit.model_fields

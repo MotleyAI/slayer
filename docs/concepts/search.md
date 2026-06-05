@@ -39,28 +39,28 @@ Concretely:
 
 ```json
 {
-  "call": {"entities": ["mydb.orders.amount"], "max_memories": 0},
+  "call": {"entities": ["mydb.orders.amount"], "max_results": 5},
   "response": {
-    "entities": [{"id": "mydb.orders.amount", "kind": "column"}]
+    "results": [{"id": "mydb.orders.amount", "kind": "column", "score": 0.0}]
   }
 }
 ```
 
 ```json
 {
-  "call": {"entities": ["memory:42"], "max_entities": 0},
+  "call": {"entities": ["memory:42"], "max_results": 5},
   "response": {
-    "memories": [{"id": "42", "matched_entities": ["memory:42"]}]
+    "results": [{"id": "42", "kind": "memory", "matched_entities": ["memory:42"]}]
   }
 }
 ```
 
 Filter rules for the new entity surfacing:
 
-- `memory:<id>` refs participate in the memory ranking only — they never appear in the entities bucket.
+- `memory:<id>` refs contribute to the memory portion of the ranking only — they surface as `kind="memory"` hits.
 - Refs not rooted at `datasource` (when set) drop with a warning `entity '<X>' is not rooted at datasource '<ds>'; dropped from entities bucket.` The memory side fires the symmetric `memory:<id> is not rooted at datasource '<ds>'; dropped.` when the named memory has no entities rooted at the requested datasource.
-- Refs on a hidden model or hidden column drop from the entities bucket with `entity '<X>' is on a hidden model/column; dropped from entities bucket.` BM25 over original memory tags is unaffected — memories tagged with that canonical still surface.
-- An explicitly-named `memory:<id>` whose attached `Memory.query` has stale references emits the standard stale-query warning regardless of `max_example_queries` (the user explicitly asked for that memory; they deserve to know the query is broken).
+- Refs on a hidden model or hidden column drop from the entities portion with `entity '<X>' is on a hidden model/column; dropped from entities bucket.` BM25 over original memory tags is unaffected — memories tagged with that canonical still surface.
+- An explicitly-named `memory:<id>` whose attached `Memory.query` has stale references emits the standard stale-query warning (the user explicitly asked for that memory; they deserve to know the query is broken).
 
 Activated when `entities` and/or `query` is supplied to `search`.
 
@@ -146,19 +146,18 @@ Entity rankings from channels 1, 2, and 3 are RRF-fused the same way.
 Channel 1's entity ranking is the user-supplied canonical refs in
 supplied order (DEV-1513); channels 2 and 3 contribute fuzzy hits.
 
-### Per-bucket ranking invariance (DEV-1414)
+### Ranking stability (DEV-1414)
 
 Each channel produces a **full per-kind ranking** — channel 2 runs as
 two kind-filtered tantivy queries (one over memory docs only, one over
 entity docs only), and channel 3 partitions the embedding corpus by
-`entity_kind` and ranks each side independently. There is no shared
-candidate-pool budget across kinds, so for a fixed
-`(question, datasource, max_X)` the membership and order of the
-returned `X` bucket (`memories` / `example_queries` / `entities`) is a
-pure function of the corpus + question + that one cap. Varying the
-other two caps cannot move an id in or out of the returned list nor
-reorder it. The `max_*` caps are pure post-fusion slice operations on
-the three independent ranked lists.
+`entity_kind` and ranks each side independently. The per-kind rankings
+are RRF-fused into a single flat list before the `max_results` cap is
+applied. Because the fusion is deterministic, the relative order of any
+subset of the flat list is stable with respect to the corpus and
+question — changing only `max_results` never reorders existing entries
+nor causes an entry to appear or disappear unless the cap boundary
+moves past it.
 
 ## Tool surface
 
@@ -168,9 +167,8 @@ search(
     query: Optional[Union[SlayerQuery, dict]] = None,
     question: Optional[str] = None,
     datasource: Optional[str] = None,
-    max_memories: int = 5,
-    max_example_queries: int = 2,
-    max_entities: int = 5,
+    max_results: int = 10,
+    cypher_filter: Optional[str] = None,
 ) -> SearchResponse
 ```
 
@@ -232,8 +230,26 @@ allowlist** that pre-filters all three channels before any ranking:
 - If the query returns an empty set, a warning is emitted and an empty
   response is returned immediately (no channels fire).
 
-**Requires the `advanced_search` extra** (`pip install motley-slayer[advanced_search]`).
-When the extra is not installed, `get_filtered_ids` raises `ValueError`.
+**Naive fallback (no `advanced_search` required)**. When the
+`advanced_search` extra is not installed, a simple subset of Cypher is
+supported without LadybugDB. The naive parser accepts only:
+
+```cypher
+MATCH (var:Label1:Label2:...) RETURN var.id AS id
+```
+
+Labels must be one or more of `Memory`, `Datasource`, `Model`,
+`Column` (or its alias `ModelColumn`), `Measure`, `Aggregation`
+(case-insensitive). The colon-separated
+multi-label form is a union — it returns hits whose kind matches any of
+the listed labels. Any other Cypher (WHERE clauses, relationships,
+multiple MATCH clauses, etc.) raises `SlayerError` with a hint to
+install the `advanced_search` extra.
+
+**Full `advanced_search` path**: When the `advanced_search` extra is
+installed, the full openCypher query runs against the property graph
+(see graph schema below). Complex filters, relationship traversals, and
+property conditions are all supported.
 
 **Query safety**: the Cypher statement must be:
 - A single statement (no semicolons).
@@ -247,14 +263,16 @@ When the extra is not installed, `get_filtered_ids` raises `ValueError`.
 | `Memory` | `id` (`memory:<id>` form), `learning` |
 | `Datasource` | `id`, `name` |
 | `Model` | `id` (`<ds>.<model>`), `name`, `description` |
-| `Column` | `id` (`<ds>.<model>.<col>`), `name`, `data_type`, `description` |
+| `ModelColumn` | `id` (`<ds>.<model>.<col>`), `name`, `data_type`, `description` |
 | `Measure` | `id` (`<ds>.<model>.<name>`), `name`, `description` |
 | `Aggregation` | `id` (`<ds>.<model>.<name>`), `name` |
 
+Note: the column node table is named `ModelColumn` (not `Column`) because `Column` is a reserved keyword in LadybugDB ≥ 0.15.
+
 | Relationship | From → To |
 |---|---|
-| `MENTIONS` | Memory → {Datasource, Model, Column, Measure, Aggregation, Memory} |
-| `CONTAINS` | Datasource → Model, Model → {Column, Measure, Aggregation} |
+| `MENTIONS` | Memory → {Datasource, Model, ModelColumn, Measure, Aggregation, Memory} |
+| `CONTAINS` | Datasource → Model, Model → {ModelColumn, Measure, Aggregation} |
 | `JOINS` | Model → Model |
 
 Hidden models and hidden columns are excluded from the graph. The graph is
@@ -271,58 +289,42 @@ RETURN m.id AS id
 **Example** — surface columns in the `shop` datasource:
 
 ```cypher
-MATCH (d:Datasource {id: 'shop'})-[:CONTAINS*1..3]->(c:Column)
+MATCH (d:Datasource {id: 'shop'})-[:CONTAINS*1..3]->(c:ModelColumn)
 RETURN c.id AS id
 ```
 
-**Multi-label union**: `MATCH (n:Memory:Column)` returns nodes from both
-`Memory` AND `Column` tables (LadybugDB union semantics).
+**Multi-label union**: `MATCH (n:Memory:ModelColumn)` returns nodes from both
+`Memory` AND `ModelColumn` tables (LadybugDB union semantics).
 
 ### Behaviour matrix
 
 | `entities`/`query` | `question` | Result |
 |---|---|---|
-| set | set | All eligible channels run. Memories RRF-fused (channels 1 + 2 + 3); entities RRF-fused (channels 1 + 2 + 3, DEV-1513). Channel 3 is skipped with a warning when the `advanced_search` extra is missing. Query-bearing memories partitioned out to `example_queries`. |
-| set | unset/empty | Channel 1 only. Memories partitioned by `query` presence; entity hits = the named refs themselves (DEV-1513). |
-| unset/empty | set | Channels 2 and 3 (when eligible). Memories RRF-fused; entities RRF-fused. |
-| unset/empty | unset/empty | Recency fallback: newest `max_memories` learning-only memories + newest `max_example_queries` query-bearing memories, with a warning. |
+| set | set | All eligible channels run. Memories and entities are RRF-fused across all active channels. Channel 3 is skipped with a warning when the `advanced_search` extra is missing. |
+| set | unset/empty | Channel 1 only. Memory hits ranked by entity-tag overlap; entity hits = the named refs themselves (DEV-1513). |
+| unset/empty | set | Channels 2 and 3 (when eligible). Memories and entities RRF-fused. |
+| unset/empty | unset/empty | Recency fallback: newest memories (any kind) capped at `max_results`, with a warning. |
 
 ### Response shape
 
-Memories are partitioned by `Memory.query is None`: learning-only
-memories land in `memories`, query-bearing memories in
-`example_queries`. The two lists are capped independently so a few
-bulky example queries cannot crowd out small learning-only notes.
+All hits — memories (both learning-only and query-bearing) and entities
+(datasources, models, columns, measures, aggregations) — are returned
+as a single flat ranked `results` list capped at `max_results`.
+Query-bearing memories have `query` set; learning-only memories have
+`query=None`; entity hits have `kind` set to their entity type.
 
 ```python
-class MemoryHit(BaseModel):
-    id: str                          # memory id (forget_memory(id=hit.id) works)
-    score: float                     # RRF-fused (or single-channel raw)
-    text: str                        # full indexed text (no truncation)
-    matched_entities: List[str]      # canonical entities that channel-1 input
-                                     # overlapped with the memory's tags;
-                                     # stale tags are filtered before this is
-                                     # computed (DEV-1428 lazy GC).
-
-class ExampleQueryHit(BaseModel):
-    id: str                          # memory id
-    score: float                     # RRF-fused
-    text: str                        # full indexed text
-    matched_entities: List[str]
-    query: SlayerQuery               # always set on this hit type
-
-class EntityHit(BaseModel):
-    id: str                          # canonical entity string
-    kind: str                        # "datasource"|"model"|"column"|"measure"|"aggregation"
-    score: float                     # RRF-fused across channels 1+2+3
-                                     # (DEV-1513), or single-channel raw
-                                     # when only one channel contributed
-    text: str                        # full indexed text (no truncation)
+class SearchHit(BaseModel):
+    id: str            # memory id OR canonical entity string
+    kind: str          # "memory"|"datasource"|"model"|"column"|"measure"|"aggregation"
+    score: float       # RRF-fused score
+    text: str          # full indexed text (no truncation)
+    matched_entities: List[str]   # channel-1 overlap (memory hits only;
+                                  # stale tags filtered, DEV-1428)
+    query: Optional[SlayerQuery]  # set on query-bearing memory hits
 
 class SearchResponse(BaseModel):
-    memories: List[MemoryHit]            # learning-only (query is None)
-    example_queries: List[ExampleQueryHit]   # query-bearing
-    entities: List[EntityHit]
+    results: List[SearchHit]
     resolved_input_entities: List[str]   # echo of the resolver output
     warnings: List[str]
 ```
@@ -340,7 +342,7 @@ search proceeds against whatever did resolve. Examples:
 - A stale entity tag inside a saved memory does not contribute to
   channel-1 BM25 ranking, and is excluded from any hit's
   `matched_entities` list.
-- An `example_queries` hit whose attached `Memory.query` references a
+- A query-bearing memory hit whose attached `Memory.query` references a
   vanished column gets the warning
   `example_query memory:<id>: attached query has stale references (...); re-save to clean.`
   but is still surfaced with its stored query intact.
