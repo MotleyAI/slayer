@@ -792,7 +792,7 @@ def _run_search_query(args, storage) -> None:
             max_results=args.max_results,
             cypher_filter=args.cypher_filter,
         ))
-    except (EntityResolutionError, AmbiguousModelError, SlayerError, ValueError) as exc:
+    except (SlayerError, ValueError) as exc:
         _exit_with_error(exc)
         return
     if args.format == "json":

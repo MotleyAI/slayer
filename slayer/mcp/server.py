@@ -2896,12 +2896,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 max_results=max_results,
                 cypher_filter=cypher_filter,
             )
-        except (
-            EntityResolutionError,
-            AmbiguousModelError,
-            SlayerError,
-            ValueError,
-        ) as exc:
+        except (SlayerError, ValueError) as exc:
             return _format_resolution_error(exc)
         return response.model_dump_json(indent=2)
 

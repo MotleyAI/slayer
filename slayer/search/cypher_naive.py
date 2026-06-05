@@ -30,7 +30,7 @@ _LABEL_TO_KIND: dict[str, str] = {
 # \s* is only used as a delimiter between fixed tokens (never inside a
 # quantified character class that can also match \s), which avoids
 # polynomial backtracking on non-matching inputs (Sonar S5852).
-_NAIVE_PATTERN = re.compile(
+_NAIVE_PATTERN = re.compile(  # NOSONAR(S5843) — structural complexity is load-bearing; each \s* and \w token corresponds to a distinct syntactic element in the Cypher MATCH fragment
     r"^\s*MATCH\s*\(\s*\w+\s*:\s*(\w+(?:\s*:\s*\w+)*)\s*\)\s*RETURN\s+\w+\.id\s+AS\s+id\s*$",
     re.IGNORECASE,
 )

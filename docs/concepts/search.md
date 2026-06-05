@@ -239,7 +239,8 @@ MATCH (var:Label1:Label2:...) RETURN var.id AS id
 ```
 
 Labels must be one or more of `Memory`, `Datasource`, `Model`,
-`Column`, `Measure`, `Aggregation` (case-insensitive). The colon-separated
+`Column` (or its alias `ModelColumn`), `Measure`, `Aggregation`
+(case-insensitive). The colon-separated
 multi-label form is a union — it returns hits whose kind matches any of
 the listed labels. Any other Cypher (WHERE clauses, relationships,
 multiple MATCH clauses, etc.) raises `SlayerError` with a hint to

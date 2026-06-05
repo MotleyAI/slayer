@@ -673,12 +673,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 max_results=request.max_results,
                 cypher_filter=request.cypher_filter,
             )
-        except (
-            EntityResolutionError,
-            AmbiguousModelError,
-            SlayerError,
-            ValueError,
-        ) as exc:
+        except (SlayerError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return response.model_dump(mode="json")
 
