@@ -99,6 +99,25 @@ The agent should call `list_datasources` and then `models_summary(datasource_nam
 2. Models have been ingested (via `slayer mcp --ingest-on-startup`, `ingest_datasource_models`, or `create_datasource` with auto-ingest)
 3. Environment variables referenced in the datasource config are set
 
+## Search & memories
+
+Once a datasource is ingested, the agent has access to two extra tools beyond `query`:
+
+- `search` — three-channel retrieval (BM25 over memory tags + Tantivy full-text + optional dense embeddings) fused into a single ranked list of memory hits and canonical entity discovery hits.
+- `save_memory` / `forget_memory` — persist or remove free-form notes tagged with canonical entities (e.g. `mydb.orders.amount`) so the next session inherits the context.
+
+Try it conversationally:
+
+> "Save a memory: 'orders.is_returned is in {0,1,NULL}; treat NULL as not returned' linked to mydb.orders.is_returned"
+>
+> "Search for what we know about orders.is_returned"
+
+The agent calls `save_memory` then `search` and gets back a `SearchResponse` with `results: [...]` — each hit carries a `kind` discriminator (`"memory"` for prior notes, `"column"` / `"model"` / etc. for entity discovery hits) and a `score`.
+
+The same `search` call also accepts `cypher_filter` for graph-shaped narrowing (full openCypher with `advanced_search` installed, naive `MATCH (n:Label) RETURN n.id AS id` kind-filter without). The embedding channel needs `motley-slayer[advanced_search]` plus a provider API key — without those, search degrades to BM25 + Tantivy with a single warning in `SearchResponse.warnings`.
+
+See [Search](../concepts/search.md), [Memories](../concepts/memories.md), and the [MCP Reference](../reference/mcp.md#memories-semantic-search) for full signatures.
+
 ## Alternative: permanent install
 
 If you prefer a traditional install instead of `uvx`:

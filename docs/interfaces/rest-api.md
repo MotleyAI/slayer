@@ -148,3 +148,62 @@ Response:
   "models": ["orders", "customers", "products"]
 }
 ```
+
+### Memories + Semantic Search
+
+`POST /search` is the single retrieval surface. It returns memories **and** entity discovery hits in one flat list, fused across up to three channels (BM25 over memory entity tags + Tantivy full-text + optional dense embeddings via `motley-slayer[advanced_search]` plus a provider API key) via Reciprocal Rank Fusion (`k=60`). See [Search](../concepts/search.md) and [Memories](../concepts/memories.md).
+
+```
+POST   /search                # Run a semantic search
+POST   /memories              # Persist a memory
+DELETE /memories/{id}         # Delete a memory (cascade-strips memory:<id> refs)
+```
+
+**`POST /search` body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `entities` | array[str] | Canonical entity strings (`mydb.orders.amount`, `memory:42`, …). Aggregation suffixes are stripped (`revenue:sum` → `mydb.orders.revenue`). Drives the BM25 channel. Unresolved tokens emit warnings rather than errors. |
+| `query` | object | Inline SLayer query; its `source_model` / dimensions / measures / time dims / filters are walked for canonical entities. |
+| `question` | str | Free-text question. Drives the Tantivy channel and (when available) the embedding channel. |
+| `datasource` | str | Pre-narrows every channel to ids rooted at the named datasource. Unknown name → HTTP 400. |
+| `cypher_filter` | str | Graph pre-filter applied to all three channels. Full openCypher with the `advanced_search` extra (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges; read-only — mutation clauses rejected). Without the extra, only the naive form `MATCH (n:Label1:Label2…) RETURN n.id AS id` is accepted as a label/kind filter; richer Cypher returns HTTP 400 with an install hint. |
+| `max_results` | int | Applied **after** RRF fusion and the `cypher_filter` allowlist. Default `10`. |
+
+```bash
+curl -X POST http://localhost:5143/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What should I know about returns?",
+    "max_results": 10
+  }'
+```
+
+Response (`SearchResponse`):
+
+```json
+{
+  "results": [
+    {"kind": "memory",  "id": "42", "score": 0.13, "text": "orders.is_returned in {0,1,NULL}; treat NULL as not returned", "matched_entities": [], "query": null},
+    {"kind": "column",  "id": "mydb.orders.is_returned", "score": 0.11, "text": "...\nSample values: [\"0\", \"1\", null]\nDistinct count: 3", "matched_entities": [], "query": null}
+  ],
+  "resolved_input_entities": [],
+  "warnings": []
+}
+```
+
+`kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `DELETE /memories/{id}`); `query` carries the saved `SlayerQuery` when the memory is query-bearing. Column hits embed the structured `sampled_values` (top 50 by frequency, JSON-encoded) and `Distinct count: N` lines from the column profile; stale profiles are refreshed lazily inside `/search`.
+
+**`POST /memories` body:**
+
+```json
+{
+  "learning": "orders.is_returned in {0,1,NULL}; treat NULL as not returned",
+  "linked_entities": ["mydb.orders.is_returned"],
+  "id": "kb.returns.null-handling"
+}
+```
+
+`linked_entities` accepts either an array of canonical entity strings (strict resolution; `memory:<id>` valid for cross-memory refs) **or** an inline `SlayerQuery` dict — the entities are auto-extracted and the query is persisted on the memory. `id` is optional; omit to auto-allocate (`max(int-shaped id) + 1`). Forbidden charset on user-supplied ids: `:`, `/`, `?`, `#`, whitespace, ASCII control. Duplicate id → unconditional upsert; `created_at` preserved.
+
+**`DELETE /memories/{id}`** removes the memory, drops the matching embedding row, and strips every `memory:<id>` reference to it from every other memory's `entities` list (exact-match only).

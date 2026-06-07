@@ -32,7 +32,7 @@ Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (inc
 Ingestion: `ingest_datasource_models`
 Schema drift: `validate_models` (read-only diff against live schema; surfaces `SchemaDriftError` cleanups)
 Memory write side: `save_memory`, `forget_memory` (per-entity learnings indexed by canonical entity strings — see [memories.md](../../docs/concepts/memories.md))
-Search: `search` (three-channel: entity-overlap BM25 over memories + tantivy full-text + optional dense embedding similarity, RRF-fused per kind so each output bucket — `memories` / `example_queries` / `entities` — has membership/order invariant under the other buckets' caps; embeddings require the `advanced_search` extra and degrade gracefully when unavailable; partitions query-bearing memories into `example_queries` — see [search.md](../../docs/concepts/search.md))
+Search: `search` (three-channel: entity-overlap BM25 over memory tags + tantivy full-text + optional dense embedding similarity, RRF-fused into a single flat `SearchResponse.results: List[SearchHit]` (DEV-1532) with a `kind` discriminator — `"memory"` / `"datasource"` / `"model"` / `"column"` / `"measure"` / `"aggregation"`; query-bearing memories are still memory hits, distinguished by `hit.query is not None`. Optional `cypher_filter` pre-narrows all three channels: full openCypher when `advanced_search` is installed, naive `MATCH (n:Label) RETURN n.id AS id` kind-filter otherwise. Embeddings also require the `advanced_search` extra and degrade gracefully when unavailable — see [search.md](../../docs/concepts/search.md))
 
 ## Package Structure
 

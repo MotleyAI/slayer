@@ -127,6 +127,39 @@ curl http://localhost:5143/models
 
 If `/models` returns an empty list, restart with `slayer serve --ingest-on-startup` or run `slayer ingest --datasource my_pg`.
 
+## Search & memories
+
+`POST /search` returns memories and canonical entity discovery hits in a single flat ranked list, fused across up to three channels (BM25 over memory entity tags + Tantivy full-text + optional dense embeddings via `motley-slayer[advanced_search]` plus a provider API key).
+
+```bash
+# Question-driven
+curl -X POST http://localhost:5143/search \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What should I know about returns?", "max_results": 10}'
+
+# Entity-driven; cypher_filter narrows to memories only (naive form, always available)
+curl -X POST http://localhost:5143/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "entities": ["mydb.orders.is_returned"],
+    "cypher_filter": "MATCH (n:Memory) RETURN n.id AS id"
+  }'
+
+# Persist a learning so the next session inherits it
+curl -X POST http://localhost:5143/memories \
+  -H "Content-Type: application/json" \
+  -d '{
+    "learning": "orders.is_returned in {0,1,NULL}; treat NULL as not returned",
+    "linked_entities": ["mydb.orders.is_returned"],
+    "id": "kb.returns.null-handling"
+  }'
+
+# Delete (cascade-strips memory:<id> refs)
+curl -X DELETE http://localhost:5143/memories/kb.returns.null-handling
+```
+
+Each hit in the response carries a `kind` discriminator (`"memory"` for prior notes, `"datasource"` / `"model"` / `"column"` / `"measure"` / `"aggregation"` for entity discovery hits) and a `score`. `cypher_filter` accepts full openCypher when `advanced_search` is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges); without the extra, only the naive `MATCH (n:Label) RETURN n.id AS id` kind-filter form is accepted — anything richer returns HTTP 400. See [Search](../concepts/search.md), [Memories](../concepts/memories.md), and the [REST API Reference](../reference/rest-api.md#memories-semantic-search).
+
 ## Using from other languages
 
 SLayer is just HTTP + JSON — use any HTTP client:
