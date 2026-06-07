@@ -3613,11 +3613,24 @@ async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_sco
     assert dry.sql is not None
     norm = " ".join(dry.sql.split())
     assert "HAVING" in norm
-    having = norm.split("HAVING", 1)[1]
-    # The substituted multi-term SUM(...) / NULLIF(SUM(...)) must be
-    # wrapped before `> 0`. Plain substring checks avoid the
-    # multi-`.*` regex pattern flagged by Sonar's S5852.
-    assert "(SUM(" in having and "NULLIF(SUM(" in having and ") > 0" in having, (
-        f"Expected wrapped HAVING `(SUM(...) / NULLIF(SUM(...), 0)) > 0`; "
-        f"got HAVING body:\n{having}"
+    having = norm.split("HAVING", 1)[1].strip()
+    # The substituted multi-term ``SUM(...) / NULLIF(SUM(...))`` must
+    # be wrapped before ``> 0``. Anchor on positional checks (mirror
+    # of the strengthened unit-side assertion) rather than substring
+    # containment: ``"(SUM(" in having`` would otherwise also match
+    # the inner ``NULLIF(SUM(`` and the assertion would silently pass
+    # on the un-wrapped regression shape.
+    gt_index = having.find(" > 0")
+    assert gt_index > 0, (
+        f"HAVING must end with `... > 0`; got:\n{having}"
+    )
+    assert having[gt_index - 1] == ")", (
+        f"Expected `)` immediately before `> 0` (the outer wrap's "
+        f"closer); got char {having[gt_index - 1]!r} in:\n{having}"
+    )
+    assert having.startswith("("), (
+        f"Expected HAVING body to start with `(` (outer wrap); got:\n{having}"
+    )
+    assert "SUM(" in having.upper() and "/" in having and "NULLIF" in having.upper(), (
+        f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
     )
