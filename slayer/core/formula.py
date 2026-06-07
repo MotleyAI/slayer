@@ -1070,6 +1070,19 @@ _BINOP_OP_MAP: Dict[type, str] = {
 }
 
 
+# DEV-1539: SQL-precedence tier for each supported ``ast.BinOp`` op.
+# Higher = tighter binding. Used by ``_binop_to_sql`` to decide whether
+# a child BinOp's operands need parenthesising so the tree-encoded
+# precedence survives serialisation. Mirrors standard SQL precedence
+# (which matches Python's for these operators): ``**`` > ``* / %`` >
+# ``+ -``.
+_BINOP_PRECEDENCE: Dict[type, int] = {
+    ast.Pow: 3,
+    ast.Mult: 2, ast.Div: 2, ast.Mod: 2,
+    ast.Add: 1, ast.Sub: 1,
+}
+
+
 def _resolve_dotted_attribute(node: ast.expr) -> str:
     """Render an ``ast.Attribute`` (or ``ast.Name`` leaf) as a dotted string."""
     if isinstance(node, ast.Name):
@@ -1181,7 +1194,57 @@ def _binop_to_sql(node: ast.BinOp, original: str, recur) -> str:
     op_str = _BINOP_OP_MAP.get(type(node.op))
     if op_str is None:
         raise ValueError(f"Unsupported arithmetic operator in filter: {original!r}")
-    return f"{recur(node.left)} {op_str} {recur(node.right)}"
+    # DEV-1539: precedence-aware operand wrapping. Without this,
+    # ``(a + b) * c`` and ``a + b * c`` both serialise to
+    # ``a + b * c`` — the Python AST's parens are tracked only by tree
+    # shape, not by an explicit node, so re-emission via plain
+    # ``left op right`` silently drops grouping. Wrap a child BinOp
+    # whose operator has *strictly lower* precedence than this op
+    # (preserves grouping like ``(a + b) * c``); for the right operand
+    # also wrap on *equal* precedence so left-to-right associativity is
+    # preserved (``a - (b - c)`` vs ``a - b - c``). LShift / concat
+    # children carry their own grouping via ``concat(...)`` and are
+    # already self-contained.
+    parent_prec = _BINOP_PRECEDENCE.get(type(node.op))
+    return f"{_emit_binop_operand(node.left, parent_prec, is_right=False, recur=recur)} {op_str} {_emit_binop_operand(node.right, parent_prec, is_right=True, recur=recur)}"
+
+
+def _emit_binop_operand(
+    child: ast.AST,
+    parent_prec: Optional[int],
+    *,
+    is_right: bool,
+    recur,
+) -> str:
+    """Render a ``BinOp`` operand, wrapping in ``(...)`` when the child's
+    precedence-tier rule says it would otherwise be misread on re-parse.
+
+    The wrap rule (left-associative ops):
+
+    - Left operand: wrap iff child has *strictly lower* precedence than
+      parent (``(a + b) * c`` — parent ``*``, left child ``+``).
+    - Right operand: wrap iff child has *lower or equal* precedence
+      (``a / (b * c)`` — parent ``/``, right child ``*``, equal — must
+      wrap to keep left-associative grouping intact).
+
+    Conservative fallbacks (return wrap=True): the child is a BinOp
+    using a non-arithmetic op we haven't registered in
+    ``_BINOP_PRECEDENCE``, or ``parent_prec`` is missing.
+    """
+    sql = recur(child)
+    if not isinstance(child, ast.BinOp):
+        return sql
+    if isinstance(child.op, ast.LShift):
+        # ``concat(...)`` is self-grouped — no extra wrap needed.
+        return sql
+    child_prec = _BINOP_PRECEDENCE.get(type(child.op))
+    if parent_prec is None or child_prec is None:
+        return f"({sql})"
+    if child_prec < parent_prec:
+        return f"({sql})"
+    if is_right and child_prec == parent_prec:
+        return f"({sql})"
+    return sql
 
 
 def _call_to_sql(node: ast.Call, original: str, recur) -> str:

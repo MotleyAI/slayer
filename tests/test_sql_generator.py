@@ -7373,13 +7373,33 @@ class TestFilterOuterParenWrapDev1539:
         norm = _norm(sql)
         assert "HAVING" in norm
         # The substituted multi-term SUM(...) / NULLIF(SUM(...)) must
-        # appear wrapped in parens immediately before `> 0`. Use plain
-        # substring checks instead of multi-`.*` regex to avoid
-        # S5852-style backtracking-vulnerable patterns.
-        having = norm.split("HAVING", 1)[1]
-        upper = having.upper()
-        assert "(SUM(" in upper and ") > 0" in upper and "/" in having, (
-            f"Expected HAVING multi-term measure wrapped before `> 0`; got:\n{having}"
+        # appear wrapped in parens immediately before `> 0`. Per
+        # CodeRabbit feedback: a substring check like `"(SUM(" in upper
+        # and ") > 0" in upper` would pass even on the un-wrapped
+        # ``SUM(...) / NULLIF(SUM(...), 0) > 0`` because the `(SUM(`
+        # substring matches inside `NULLIF(SUM(`. Anchor on positional
+        # checks instead — find the comparator and verify the LHS as a
+        # whole is parenthesised.
+        having = norm.split("HAVING", 1)[1].strip()
+        gt_index = having.find(" > 0")
+        assert gt_index > 0, (
+            f"HAVING must end with `... > 0`; got:\n{having}"
+        )
+        assert having[gt_index - 1] == ")", (
+            f"Expected `)` immediately before `> 0` (the outer wrap's "
+            f"closer); got char {having[gt_index - 1]!r} at index "
+            f"{gt_index - 1} in:\n{having}"
+        )
+        # The HAVING expression must START with an open paren — the
+        # outer wrap. (After ``strip()`` above any pretty-print
+        # indentation is gone.)
+        assert having.startswith("("), (
+            f"Expected HAVING multi-term LHS to start with `(`; got:\n{having}"
+        )
+        # And the body contains a real top-level divide between two
+        # aggregate calls — not just the inner NULLIF.
+        assert "SUM(" in having.upper() and "/" in having and "NULLIF" in having.upper(), (
+            f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
         )
 
     async def test_having_simple_measure_not_wrapped(
@@ -7433,6 +7453,46 @@ class TestFilterOuterParenWrapDev1539:
         assert f"'{double_bs}'" in sql, (
             f"Backslash halving regression: expected '{double_bs}' literal "
             f"preserved in emitted SQL; got:\n{sql}"
+        )
+
+    @pytest.mark.parametrize(
+        ["formula", "expected_sql"],
+        [
+            # Inner low-prec child under high-prec parent — left operand.
+            ("(a + b) * c > 10", "((a + b) * c) > 10"),
+            # Same shape — RHS of comparator.
+            ("a > (b + c) * d", "a > ((b + c) * d)"),
+            # Equal-precedence right child of /, must stay wrapped.
+            ("a / (b * c) > 0", "(a / (b * c)) > 0"),
+            # Equal-precedence right child of -, must stay wrapped to
+            # preserve right-grouping semantics.
+            ("a - (b - c) > 0", "(a - (b - c)) > 0"),
+            # Left-assoc, no source parens: no inner wrap needed.
+            ("a - b - c > 0", "(a - b - c) > 0"),
+            # Higher-precedence child under lower-precedence parent:
+            # no wrap needed — `a + b * c` reads correctly bare.
+            ("a + b * c > 10", "(a + b * c) > 10"),
+            # User-supplied parens around left equal-precedence are
+            # semantically a no-op (`(a + b) + c` == `a + b + c`) so
+            # we don't emit a stray inner wrap.
+            ("(a + b) + c > 0", "(a + b + c) > 0"),
+        ],
+    )
+    def test_dsl_compare_preserves_nested_arithmetic_precedence(
+        self, formula: str, expected_sql: str,
+    ) -> None:
+        """DEV-1539: ``_binop_to_sql`` must wrap nested child operands so
+        the AST-encoded operator precedence survives serialisation.
+        Without this, ``(a + b) * c > 10`` and ``a + b * c > 10`` would
+        both emit as ``(a + b * c) > 10`` — semantically distinct
+        inputs collapse to the same output, silently changing results.
+        """
+        from slayer.core.formula import parse_filter
+
+        pf = parse_filter(formula)
+        assert pf.sql == expected_sql, (
+            f"parse_filter({formula!r}).sql == {pf.sql!r}, expected "
+            f"{expected_sql!r}"
         )
 
     async def test_filter_inlines_not_predicate_column_with_outer_parens(
