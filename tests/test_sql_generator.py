@@ -7640,6 +7640,27 @@ class TestFilterOuterParenWrapDev1539:
             f"IN-predicate Column.sql must be wrapped on inline; got:\n{norm}"
         )
 
+    def test_dotted_path_substitution_does_not_match_longer_path(self) -> None:
+        """Site 1b (dotted joined-column branch in
+        ``slayer/engine/enrichment.py``) must guard against substituting
+        a shorter dotted col_name (e.g. ``customers.score``) inside a
+        longer dotted reference (e.g. ``customers.score.extra``).
+        Without the trailing ``(?!\\.)`` lookahead — which the local and
+        HAVING branches both have — a 2-hop col_name mis-substitutes as
+        a prefix of a 3-hop ref, mangling the emitted SQL.
+        """
+        import re as _re_mod
+        col_name = "customers.score"
+        pattern = r"(?<!\.)(?<!\w)\b" + _re_mod.escape(col_name) + r"\b(?!\.)"
+        having_sql = "customers.score > 7 AND customers.score.extra > 0"
+        result = _re_mod.sub(pattern, lambda _m: "EXPANDED", having_sql)
+        # Only the standalone 2-hop ref is rewritten; the 3-hop ref is
+        # left intact for its own (later) substitution.
+        assert result == "EXPANDED > 7 AND customers.score.extra > 0", (
+            f"Post-fix dotted-path regex must skip dotted prefix matches; "
+            f"got: {result!r}"
+        )
+
     def test_having_substitution_does_not_match_dotted_continuation(
         self,
     ) -> None:

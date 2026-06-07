@@ -2863,9 +2863,15 @@ async def resolve_filter_columns(
                             # is already an atomic expression.
                             if _filter_inline_needs_paren_wrap(sql=qualified, dialect=dialect):
                                 qualified = f"({qualified})"
-                        # DEV-1539: lambda replacement for backslash safety.
+                        # DEV-1539: lambda replacement for backslash
+                        # safety. Symmetric ``(?<!\.)…(?!\.)`` guards
+                        # mirror the local-branch pattern — without the
+                        # trailing guard, a shorter dotted col_name like
+                        # ``customers.score`` would mis-substitute as a
+                        # prefix of a longer reference such as
+                        # ``customers.score.extra``, mangling the SQL.
                         resolved_sql = _re.sub(
-                            rf"(?<!\w)\b{_re.escape(col_name)}\b",
+                            rf"(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)",
                             lambda _m, q=qualified: q,
                             resolved_sql,
                         )
