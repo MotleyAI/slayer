@@ -83,6 +83,13 @@ _MUTATION_RE = re.compile(
     r"\b(CREATE|MERGE|DELETE|SET|REMOVE|DROP|CALL)\b", re.IGNORECASE
 )
 _AS_ID_RE = re.compile(r"\bAS\s+id\b", re.IGNORECASE)
+# DEV-1464: the validator is fundamentally allowlist-shaped — start with
+# MATCH or reject. A denylist over Kuzu's evolving keyword surface (LOAD,
+# IMPORT, EXPORT, INSTALL, UNWIND-from-the-front, …) is too fragile to
+# defend the search endpoint, since non-mutating but still-dangerous
+# clauses like ``LOAD FROM '/etc/passwd' RETURN 1 AS id`` would otherwise
+# pass the mutation-keyword check and reach ``conn.execute()``.
+_STARTS_WITH_MATCH_RE = re.compile(r"^\s*MATCH\b", re.IGNORECASE)
 # Matches single- and double-quoted string literals (with backslash-escape
 # support) so we can strip them before scanning for mutation keywords and
 # avoid false-positive rejections on property values like 'call me'.
@@ -96,10 +103,16 @@ def _validate_cypher(cypher: str) -> None:
     """Validate that ``cypher`` is a safe read-only ``MATCH … RETURN … AS id``.
 
     Raises ``ValueError`` on:
+    * queries that don't start with ``MATCH`` (read-only allowlist)
     * semicolons (multiple statements)
     * mutation keywords: CREATE, MERGE, DELETE, SET, REMOVE, DROP, CALL
     * missing ``AS id`` alias in the RETURN clause
     """
+    if not _STARTS_WITH_MATCH_RE.match(cypher):
+        raise ValueError(
+            "cypher_filter must start with MATCH (read-only graph "
+            "traversal); other Cypher clauses are not allowed."
+        )
     if ";" in cypher:
         raise ValueError(
             "cypher_filter must be a single statement; "

@@ -795,6 +795,17 @@ def test_validate_cypher_accepts_match_return() -> None:
     )
 
 
+def test_validate_cypher_accepts_leading_whitespace_and_case_variants() -> None:
+    """The MATCH-prefix allowlist (DEV-1464) is case-insensitive and
+    tolerates leading whitespace."""
+    from slayer.search.graph import _validate_cypher
+
+    _validate_cypher("  MATCH (m:Memory) RETURN m.id AS id")
+    _validate_cypher("\tMATCH (m:Memory) RETURN m.id AS id")
+    _validate_cypher("\n  match (m:Memory) RETURN m.id AS id")
+    _validate_cypher("Match (m:Memory) RETURN m.id AS id")
+
+
 @pytest.mark.parametrize(
     "bad_cypher",
     [
@@ -814,6 +825,22 @@ def test_validate_cypher_accepts_match_return() -> None:
         "MATCH (m:Memory) RETURN m.id",
         # Multiple statements
         "MATCH (m:Memory) RETURN m.id AS id; MATCH (n) RETURN n.id AS id",
+        # DEV-1464 / Codex round-2 finding: the validator was an
+        # under-constrained denylist. Non-mutating but still-dangerous
+        # Kuzu clauses (LOAD FROM file, UNWIND scan, IMPORT/EXPORT,
+        # INSTALL/LOAD extension) used to pass the mutation-keyword
+        # check whenever they contained "AS id" anywhere — even though
+        # the documented contract is read-only MATCH-only traversal.
+        # The fix requires the query to START WITH MATCH.
+        "LOAD FROM '/etc/passwd' RETURN 1 AS id",
+        "UNWIND [1, 2, 3] AS id RETURN id",
+        "IMPORT DATABASE FROM '/tmp/x' RETURN 1 AS id",
+        "EXPORT DATABASE TO '/tmp/x' RETURN 1 AS id",
+        "INSTALL httpfs RETURN 1 AS id",
+        "RETURN 1 AS id",
+        # Empty / whitespace-only inputs must also be rejected.
+        "",
+        "   \n\t  ",
     ],
 )
 def test_validate_cypher_rejects_invalid(bad_cypher: str) -> None:
@@ -1180,14 +1207,18 @@ def test_validate_cypher_accepts_mutation_keyword_in_string_literal() -> None:
 
 
 def test_validate_cypher_still_rejects_bare_mutation_keyword() -> None:
-    """A mutation keyword that is NOT inside a string literal must still be
-    rejected — the literal-stripping must not be too greedy."""
+    """A mutation keyword that is NOT inside a string literal must still
+    be rejected — the literal-stripping must not be too greedy. The
+    embedded-mutation case (query starts with MATCH but smuggles a SET
+    after) is the one that exercises the keyword denylist directly; the
+    bare-CALL case is now caught one layer earlier by the
+    must-start-with-MATCH allowlist (DEV-1464 round 2)."""
     from slayer.search.graph import _validate_cypher
 
     with pytest.raises(ValueError, match="mutation keyword"):
         _validate_cypher("MATCH (m:Memory) SET m.x = 1 RETURN m.id AS id")
 
-    with pytest.raises(ValueError, match="mutation keyword"):
+    with pytest.raises(ValueError, match="must start with MATCH"):
         _validate_cypher("CALL apoc.something() YIELD value RETURN value AS id")
 
 
