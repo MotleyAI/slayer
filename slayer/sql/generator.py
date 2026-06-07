@@ -106,6 +106,22 @@ _LOG2_NATIVE_DIALECTS: frozenset[str] = frozenset({
 # and handles gaps in time series correctly.
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
 
+# DEV-1539: AST shapes considered atomic for HAVING aggregate
+# substitution. When ``_build_agg`` returns an expression of one of
+# these types, the substituted ``agg_sql`` is left unwrapped — its
+# precedence is already unambiguous. Any other shape (arithmetic,
+# Not/Unary, Between, In, …) is wrapped in outer parens so a
+# surrounding comparator binds correctly. The list mirrors the
+# WHERE-side ``_ATOMIC_FILTER_INLINE_TYPES`` in ``slayer/engine/enrichment.py``.
+_HAVING_AGG_ATOMIC_TYPES: tuple = (
+    exp.Column,
+    exp.Literal,
+    exp.Func,      # covers function calls, CAST, CASE, Anonymous, …
+    exp.Paren,
+    exp.Boolean,
+    exp.Null,
+)
+
 # Separator used when joining pre-rendered SQL fragments into a conjunctive
 # WHERE/HAVING clause; extracted as a constant so Sonar S1192 doesn't flag it
 # at every join site.
@@ -2561,13 +2577,17 @@ class SQLGenerator:
                             )
                             agg_sql = agg_expr.sql(dialect=self.dialect)
                             # DEV-1539: when the substituted aggregate is
-                            # a Binary (arithmetic / comparison) or
-                            # Connector (AND/OR) at the AST root, wrap it
-                            # in outer parens so any surrounding
-                            # comparator's precedence is explicit. Single
-                            # function-call aggregates (SUM/COUNT/AVG/…)
-                            # stay unwrapped to avoid noise.
-                            if isinstance(agg_expr, (exp.Binary, exp.Connector)):
+                            # NOT an atomic shape (single function call /
+                            # column / literal / paren / boolean / null),
+                            # wrap it in outer parens so any surrounding
+                            # comparator's precedence is explicit. The
+                            # inverse check catches arithmetic, BoolOp,
+                            # Not/Unary, Between, In, Like, Is, and any
+                            # other multi-token predicate shapes
+                            # uniformly. Single function-call aggregates
+                            # (SUM/COUNT/AVG/…) are ``exp.Func`` and stay
+                            # unwrapped to avoid noise.
+                            if not isinstance(agg_expr, _HAVING_AGG_ATOMIC_TYPES):
                                 agg_sql = f"({agg_sql})"
                             # DEV-1539: lambda replacement (backslash
                             # safety) + trailing ``(?!\.)`` guard so a

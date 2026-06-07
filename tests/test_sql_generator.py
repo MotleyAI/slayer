@@ -6938,6 +6938,89 @@ class TestReplaceFunctionInPredicate:
         assert "REPLACE (" not in sql.upper()
 
 
+def _build_score_model_dev1539(*, name: str = "m", score_sql: str) -> SlayerModel:
+    """DEV-1539 test helper: build a minimal model with four numeric
+    columns (``a, b, c, d``) and a derived ``score`` column whose ``sql``
+    is the multi-term expression under test. Used by both the local-
+    branch positive test and the SQLite integration test so the model
+    setup boilerplate isn't duplicated across files (Sonar
+    ``new_duplicated_lines_density``).
+    """
+    return SlayerModel(
+        name=name,
+        sql_table=f"public.{name}",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="a", sql="a", type=DataType.DOUBLE),
+            Column(name="b", sql="b", type=DataType.DOUBLE),
+            Column(name="c", sql="c", type=DataType.DOUBLE),
+            Column(name="d", sql="d", type=DataType.DOUBLE),
+            Column(name="score", sql=score_sql, type=DataType.DOUBLE),
+        ],
+    )
+
+
+def _build_backslash_risk_model_dev1539(*, name: str = "m") -> tuple[SlayerModel, str]:
+    """DEV-1539 test helper: build a model with a ``risk`` column whose
+    ``sql`` contains a literal double-backslash inside a string literal.
+    Returns ``(model, double_backslash_literal)``. Used by both the
+    WHERE-side and HAVING-side backslash-safety tests.
+    """
+    backslash = chr(92)
+    double_bs = backslash * 2  # SQL literal `'\\'` (two backslashes)
+    model = SlayerModel(
+        name=name,
+        sql_table=f"public.{name}",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="tag", sql="tag", type=DataType.TEXT),
+            Column(
+                name="risk",
+                sql=f"LENGTH(REPLACE(tag, '{double_bs}', '')) + 0",
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    return model, double_bs
+
+
+async def _build_joined_customers_orders_engine_dev1539(
+    *, tmp_path, customers_score_sql: str,
+) -> SlayerQueryEngine:
+    """DEV-1539 test helper: spin up a storage-backed engine with an
+    ``orders`` model joined to a ``customers`` model whose ``score`` /
+    derived column carries ``customers_score_sql``. Used by the dotted
+    joined-column wrap test and the dotted-branch backslash-safety
+    test so the storage + join boilerplate isn't duplicated.
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_model(SlayerModel(
+        name="customers",
+        sql_table="customers",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="a", sql="a", type=DataType.DOUBLE),
+            Column(name="b", sql="b", type=DataType.DOUBLE),
+            Column(name="tag", sql="tag", type=DataType.TEXT),
+            Column(name="score", sql=customers_score_sql, type=DataType.DOUBLE),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    ))
+    return SlayerQueryEngine(storage=storage)
+
+
 class TestFilterOuterParenWrapDev1539:
     """DEV-1539: defensive outer-paren wrapping at every site where a
     multi-term expression gets plopped into a filter context.
@@ -6968,22 +7051,8 @@ class TestFilterOuterParenWrapDev1539:
         arithmetic expression must surface the inlined body wrapped in
         outer parens — ``(a + b) > 7``, not ``a + b > 7``.
         """
-        model = SlayerModel(
-            name="m",
-            sql_table="public.m",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="a", sql="a", type=DataType.DOUBLE),
-                Column(name="b", sql="b", type=DataType.DOUBLE),
-                Column(name="c", sql="c", type=DataType.DOUBLE),
-                Column(name="d", sql="d", type=DataType.DOUBLE),
-                Column(
-                    name="score",
-                    sql="a * 0.4 + b * 0.3 + c * 0.1 + d * 0.2",
-                    type=DataType.DOUBLE,
-                ),
-            ],
+        model = _build_score_model_dev1539(
+            score_sql="a * 0.4 + b * 0.3 + c * 0.1 + d * 0.2",
         )
         query = SlayerQuery(
             source_model="m",
@@ -6998,16 +7067,20 @@ class TestFilterOuterParenWrapDev1539:
         # column qualification) is skipped — the inlined sql_expr is
         # left textually as-written. The PAREN WRAP is independent of
         # qualification, and that's what we're pinning.
-        m = _re.search(r"WHERE.*\(\s*a\s*\*\s*0\.4.*?\)\s*>\s*7", norm)
+        # Single bounded unbounded quantifier (`[^)]+`) avoids the
+        # multi-quantifier-backtracking pattern Sonar's S5852 flags.
+        assert "WHERE" in norm
+        where_clause = norm.split("WHERE", 1)[1]
+        m = _re.search(r"\( a \* 0\.4[^)]+\) > 7", where_clause)
         assert m is not None, (
-            f"Expected pattern `WHERE (... a * 0.4 ... ) > 7` in normalised "
-            f"WHERE; got: {norm}"
+            f"Expected pattern `( a * 0.4 ... ) > 7` in normalised "
+            f"WHERE; got: {where_clause}"
         )
         # Negative: without the wrap, the trailing arithmetic term lands
         # right next to ``> 7`` with no paren in between.
-        assert not _re.search(r"\*\s*0\.2\s*>\s*7", norm), (
+        assert "* 0.2 > 7" not in where_clause, (
             f"Pre-wrap shape `d * 0.2 > 7` should not survive the fix; "
-            f"got: {norm}"
+            f"got: {where_clause}"
         )
 
     async def test_filter_inlines_bare_column_no_parens(
@@ -7039,35 +7112,11 @@ class TestFilterOuterParenWrapDev1539:
         ``joined_model.score > 7`` where the joined column's sql is a
         multi-term arithmetic expression.
         """
-        storage = YAMLStorage(base_dir=str(tmp_path))
-        await storage.save_model(SlayerModel(
-            name="customers",
-            sql_table="customers",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="a", sql="a", type=DataType.DOUBLE),
-                Column(name="b", sql="b", type=DataType.DOUBLE),
-                Column(
-                    name="score",
-                    sql="a * 0.6 + b * 0.4",
-                    type=DataType.DOUBLE,
-                ),
-            ],
-        ))
-        orders = SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        engine = await _build_joined_customers_orders_engine_dev1539(
+            tmp_path=tmp_path,
+            customers_score_sql="a * 0.6 + b * 0.4",
         )
-        await storage.save_model(orders)
-        engine = SlayerQueryEngine(storage=storage)
-
+        orders = await engine.storage.get_model("orders", data_source="test")
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="*:count")],
@@ -7242,42 +7291,25 @@ class TestFilterOuterParenWrapDev1539:
         in ``re.sub`` so backslashes inside the joined column's SQL
         aren't silently halved when substituted into the filter text.
         """
+        # The joined ``customers.risk`` column must be MULTI-TERM so
+        # the non-bare-identifier inlining branch fires AND contains a
+        # backslash literal. We piggy-back on the shared joined-engine
+        # helper by renaming the ``score`` column's body to a
+        # backslash-bearing expression.
         backslash = chr(92)
         double_bs = backslash * 2
-        storage = YAMLStorage(base_dir=str(tmp_path))
-        await storage.save_model(SlayerModel(
-            name="customers",
-            sql_table="customers",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="tag", sql="tag", type=DataType.TEXT),
-                # Joined column with backslash literal + multi-term shape
-                # so the non-bare-identifier branch fires.
-                Column(
-                    name="risk",
-                    sql=f"LENGTH(REPLACE(tag, '{double_bs}', '')) + 0",
-                    type=DataType.DOUBLE,
-                ),
-            ],
-        ))
-        orders = SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        risk_sql = f"LENGTH(REPLACE(tag, '{double_bs}', '')) + 0"
+        engine = await _build_joined_customers_orders_engine_dev1539(
+            tmp_path=tmp_path,
+            customers_score_sql=risk_sql,
         )
-        await storage.save_model(orders)
-        engine = SlayerQueryEngine(storage=storage)
-
+        orders = await engine.storage.get_model("orders", data_source="test")
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="*:count")],
-            filters=["customers.risk > 0"],
+            # The joined column is named ``score`` in the helper; that's
+            # the alias under which the backslash-bearing sql lives.
+            filters=["customers.score > 0"],
         )
         enriched = await engine._enrich(query=query, model=orders)
         sql = generator.generate(enriched=enriched)
@@ -7293,25 +7325,7 @@ class TestFilterOuterParenWrapDev1539:
         aggregated value's source SQL aren't silently halved when the
         emitted ``agg_sql`` is substituted into the HAVING text.
         """
-        backslash = chr(92)
-        double_bs = backslash * 2
-        model = SlayerModel(
-            name="m",
-            sql_table="public.m",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="tag", sql="tag", type=DataType.TEXT),
-                # Value column with backslash literal — gets folded
-                # into the aggregation expression at HAVING-substitution
-                # time as `SUM(LENGTH(REPLACE(tag, '\\', '')) + 0)`.
-                Column(
-                    name="risk",
-                    sql=f"LENGTH(REPLACE(tag, '{double_bs}', '')) + 0",
-                    type=DataType.DOUBLE,
-                ),
-            ],
-        )
+        model, double_bs = _build_backslash_risk_model_dev1539()
         query = SlayerQuery(
             source_model="m",
             dimensions=[ColumnRef(name="id")],
@@ -7359,9 +7373,12 @@ class TestFilterOuterParenWrapDev1539:
         norm = _norm(sql)
         assert "HAVING" in norm
         # The substituted multi-term SUM(...) / NULLIF(SUM(...)) must
-        # appear wrapped in parens immediately before `> 0`.
+        # appear wrapped in parens immediately before `> 0`. Use plain
+        # substring checks instead of multi-`.*` regex to avoid
+        # S5852-style backtracking-vulnerable patterns.
         having = norm.split("HAVING", 1)[1]
-        assert _re.search(r"\(\s*SUM\(.*\)\s*/.*\)\s*>\s*0", having, _re.IGNORECASE), (
+        upper = having.upper()
+        assert "(SUM(" in upper and ") > 0" in upper and "/" in having, (
             f"Expected HAVING multi-term measure wrapped before `> 0`; got:\n{having}"
         )
 
@@ -7402,25 +7419,7 @@ class TestFilterOuterParenWrapDev1539:
         emitted WHERE. Using ``lambda _: repl`` for the replacement
         side-steps the bug. This test pins the fix.
         """
-        backslash = chr(92)
-        double_bs = backslash * 2  # SQL literal `'\\'` (two backslashes)
-        model = SlayerModel(
-            name="m",
-            sql_table="public.m",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="tag", sql="tag", type=DataType.TEXT),
-                # Column.sql with a string literal containing two backslashes.
-                # The arithmetic shape forces the non-bare-identifier branch,
-                # which is the substitution path under test.
-                Column(
-                    name="risk",
-                    sql=f"LENGTH(REPLACE(tag, '{double_bs}', '')) + 0",
-                    type=DataType.DOUBLE,
-                ),
-            ],
-        )
+        model, double_bs = _build_backslash_risk_model_dev1539()
         query = SlayerQuery(
             source_model="m",
             measures=[ModelMeasure(formula="*:count")],
@@ -7436,8 +7435,109 @@ class TestFilterOuterParenWrapDev1539:
             f"preserved in emitted SQL; got:\n{sql}"
         )
 
-    async def test_having_substitution_does_not_match_dotted_continuation(
+    async def test_filter_inlines_not_predicate_column_with_outer_parens(
         self, generator: SQLGenerator,
+    ) -> None:
+        """A Column.sql whose root is ``NOT <expr>`` (sqlglot ``exp.Not``)
+        must be wrapped on inline so a surrounding predicate like
+        ``IS NULL`` binds to the whole expression, not just the inner
+        operand. Without the wrap, ``NOT archived IS NULL`` reads as
+        ``NOT (archived IS NULL)`` — different semantics from the
+        intended ``(NOT archived) IS NULL``. The original
+        ``_filter_inline_needs_paren_wrap`` only matched ``Binary``/
+        ``Connector`` and missed this shape.
+        """
+        model = SlayerModel(
+            name="m",
+            sql_table="public.m",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="archived", sql="archived", type=DataType.BOOLEAN),
+                Column(name="active", sql="NOT archived", type=DataType.BOOLEAN),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["active IS NULL"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        # Must wrap: WHERE (NOT archived) IS NULL
+        m = _re.search(r"\(\s*NOT\s+archived\s*\)\s+IS\s+NULL", norm, _re.IGNORECASE)
+        assert m is not None, (
+            f"NOT-predicate Column.sql must be wrapped on inline; got:\n{norm}"
+        )
+
+    async def test_filter_inlines_between_predicate_column_with_outer_parens(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A Column.sql whose root is ``BETWEEN`` (sqlglot ``exp.Between``)
+        must be wrapped on inline. ``exp.Between`` is NOT ``exp.Binary`` —
+        the original positive check missed it.
+        """
+        model = SlayerModel(
+            name="m",
+            sql_table="public.m",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="midrange", sql="amount BETWEEN 100 AND 500", type=DataType.BOOLEAN),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["midrange IS NULL"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        m = _re.search(
+            r"\(\s*amount\s+BETWEEN\s+100\s+AND\s+500\s*\)\s+IS\s+NULL",
+            norm,
+            _re.IGNORECASE,
+        )
+        assert m is not None, (
+            f"BETWEEN-predicate Column.sql must be wrapped on inline; got:\n{norm}"
+        )
+
+    async def test_filter_inlines_in_predicate_column_with_outer_parens(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A Column.sql whose root is ``IN`` (sqlglot ``exp.In``) must
+        also be wrapped — same gap as ``Not`` / ``Between`` in the
+        original positive check.
+        """
+        model = SlayerModel(
+            name="m",
+            sql_table="public.m",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="active", sql="status IN ('a', 'b', 'c')", type=DataType.BOOLEAN),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["active IS NULL"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        m = _re.search(
+            r"\(\s*status\s+IN\s*\([^)]*\)\s*\)\s+IS\s+NULL",
+            norm,
+            _re.IGNORECASE,
+        )
+        assert m is not None, (
+            f"IN-predicate Column.sql must be wrapped on inline; got:\n{norm}"
+        )
+
+    def test_having_substitution_does_not_match_dotted_continuation(
+        self,
     ) -> None:
         """The HAVING-side measure substitution regex in
         ``_build_where_and_having`` must guard against matching a

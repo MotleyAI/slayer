@@ -2627,16 +2627,39 @@ def extract_filter_transforms(
     return _unmangle(_ast.unparse(modified)), transforms
 
 
+# DEV-1539: AST shapes whose precedence is already unambiguous when
+# substituted into a filter context with a surrounding comparator. A
+# ``Column.sql`` body whose root is one of these does NOT need an outer
+# paren wrap. Anything else — ``Binary`` (arith / comparison),
+# ``Connector`` (AND/OR), ``Not`` / ``Unary``, ``Between``, ``In``, and
+# any other multi-token predicate shape — DOES. The inverse check is
+# the safer default: it catches any sqlglot predicate type we haven't
+# enumerated explicitly.
+_ATOMIC_FILTER_INLINE_TYPES: tuple = (
+    exp.Column,
+    exp.Literal,
+    exp.Func,      # covers function calls, CAST, CASE, Anonymous, …
+    exp.Paren,     # already self-wrapped
+    exp.Boolean,   # TRUE / FALSE
+    exp.Null,
+)
+
+
 def _filter_inline_needs_paren_wrap(*, sql: str, dialect: str) -> bool:
     """DEV-1539: decide whether an inlined ``Column.sql`` body needs an
     outer ``(...)`` wrap when substituted into a filter's text.
 
-    The wrap matters when the body is a multi-term expression whose
-    precedence is ambiguous against the surrounding comparator
-    (``a + b > 7`` reading as either ``(a + b) > 7`` or ``a + (b > 7)``).
-    Atomic shapes — bare columns, literals, single function calls,
-    single CASE expressions, single CAST expressions — are already
-    unambiguous; wrapping them adds noise without changing meaning.
+    The wrap matters when the body is a multi-term / predicate
+    expression whose precedence is ambiguous against the surrounding
+    comparator. Atomic shapes — bare columns, literals, single
+    function calls, single CASE / CAST — are already unambiguous;
+    wrapping them adds noise without changing meaning. **Anything
+    else** (BinOp, BoolOp, ``NOT``, ``BETWEEN``, ``IN``, ``LIKE``,
+    ``IS``, …) needs wrapping. The original implementation used a
+    positive ``Binary``/``Connector`` check which missed
+    ``Not``/``Between``/``In`` and emitted ambiguous SQL when those
+    shapes were inlined under a surrounding predicate. Inverse check
+    is safer.
 
     Parses ``sql`` once via sqlglot to determine the root AST shape.
     Conservative on parse failure: returns ``True`` so the caller wraps
@@ -2646,12 +2669,7 @@ def _filter_inline_needs_paren_wrap(*, sql: str, dialect: str) -> bool:
         tree = sqlglot.parse_one(sql, dialect=dialect)
     except Exception:  # noqa: BLE001 — sqlglot raises a variety of error types
         return True
-    # ``Paren`` already self-wraps; ``Binary`` (arith / comparison) and
-    # ``Connector`` (AND/OR) DO need wrapping; anything else (Column,
-    # Literal, Anonymous/Function call, Case, Cast, …) does not.
-    if isinstance(tree, exp.Paren):
-        return False
-    return isinstance(tree, (exp.Binary, exp.Connector))
+    return not isinstance(tree, _ATOMIC_FILTER_INLINE_TYPES)
 
 
 async def resolve_filter_columns(
