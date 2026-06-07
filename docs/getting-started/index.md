@@ -10,6 +10,7 @@ SLayer is a semantic layer that sits between your database and whatever consumes
 | Query from the terminal or scripts | **CLI** | [CLI Setup](cli.md) |
 | Build an app that queries data (any language) | **REST API** | [REST API Setup](rest-api.md) |
 | Use SLayer as a Python library | **Python SDK** | [Python Setup](python.md) |
+| Find prior context (memories) and discover models / columns | **All four** | [Search](../concepts/search.md) · [Memories](../concepts/memories.md) |
 
 All four interfaces use the same query language and the same models — pick the one that fits your workflow. You can use multiple interfaces simultaneously (e.g., MCP for your agent + REST API for your dashboard).
 

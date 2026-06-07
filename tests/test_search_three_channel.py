@@ -81,7 +81,7 @@ async def test_question_only_warns_when_extra_missing(
     service = SearchService(storage=storage)
     response = await service.search(question="how do I look up purchases?")
     assert any(
-        "embedding_search" in w for w in response.warnings
+        "advanced_search" in w for w in response.warnings
     ), response.warnings
 
 
@@ -158,8 +158,9 @@ async def test_question_with_embeddings_returns_entity(
 
     service = SearchService(storage=storage)
     response = await service.search(question="purchase total in dollars")
-    assert response.entities
-    assert response.entities[0].id == "dsx.orders.amount"
+    entity_hits = [h for h in response.results if h.kind != "memory"]
+    assert entity_hits
+    assert entity_hits[0].id == "dsx.orders.amount"
 
 
 # ---------------------------------------------------------------------------
@@ -202,12 +203,13 @@ async def test_entity_hits_now_carry_rrf_fused_score(
 
     service = SearchService(storage=storage)
     response = await service.search(question="orders")
-    if response.entities:
+    entity_hits = [h for h in response.results if h.kind != "memory"]
+    if entity_hits:
         # Any entity ranked #1 in *one* channel through RRF has
         # score = 1/(60+1) ≈ 0.0164. If both channels hit it #1,
         # score ≈ 0.0328. Both are well under the raw tantivy BM25
         # band that the old surface emitted (5+).
-        assert response.entities[0].score < 0.1
+        assert entity_hits[0].score < 0.1
 
 
 # ---------------------------------------------------------------------------
@@ -302,4 +304,4 @@ async def test_recency_fallback_when_all_inputs_empty(
     service = SearchService(storage=storage)
     response = await service.search()
     assert any("returning" in w for w in response.warnings)
-    assert response.entities == []
+    assert [h for h in response.results if h.kind != "memory"] == []
