@@ -91,6 +91,7 @@ claude mcp list
 | Tool | Description |
 |------|-------------|
 | `query` | Execute a semantic query. See [Queries](../concepts/queries.md) for format. |
+| `query_nested` | Execute a multi-stage DAG of named sub-queries that can reference one another via `source_model` or `joins.target_model`. Companion to `query`; the engine auto-sorts the list (Kahn's algorithm), so order doesn't matter. Params: `queries: List[Dict[str, Any]]`, plus `variables` / `show_sql` / `dry_run` / `explain` / `format` mirroring `query`. See [Multistage Queries](../examples/06_multistage_queries/multistage_queries.md). |
 
 **`query` parameters:**
 
@@ -109,6 +110,71 @@ claude mcp list
 | `dry_run` | bool | Generate and return the SQL without executing it |
 | `explain` | bool | Run EXPLAIN ANALYZE and return the query plan |
 | `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive |
+
+### Memories + semantic search
+
+Memories are free-form notes the agent saves against canonical entity strings (`<ds>`, `<ds>.<model>`, `<ds>.<model>.<leaf>`, or `memory:<id>`). `search` is the only retrieval surface and returns memories **and** entity discovery hits in one flat list. See [Memories](../concepts/memories.md) and [Search](../concepts/search.md).
+
+| Tool | Description |
+|------|-------------|
+| `search` | Up to three-channel retrieval over memories and canonical entities (datasource / model / column / measure / aggregation), RRF-fused (k=60) into a single ranked list. |
+| `save_memory` | Persist a free-form `learning` tagged with canonical entities or an inline `SlayerQuery`. |
+| `forget_memory` | Delete a memory by id. Cascade-strips every other memory's `memory:<id>` ref to it. |
+
+**`search` parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `entities` | list[str] | Canonical entity strings (`mydb.orders.amount`, `memory:42`, …) or aggregated colon forms (`revenue:sum` — the suffix is stripped). Drives the BM25 channel. Unresolved tokens emit warnings, not errors. |
+| `query` | dict \| SlayerQuery | Inline query; its `source_model`, dimensions, measures, time dims, and filters are walked for canonical entities. |
+| `question` | str | Free-text question. Drives the Tantivy full-text channel and (when available) the dense-embedding channel. |
+| `datasource` | str | When set, every channel pre-filters to canonical ids rooted at that datasource. Unknown name → error. |
+| `cypher_filter` | str | Graph pre-filter applied to all three channels. Full openCypher when the `advanced_search` extra is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges; read-only — `CREATE`, `MERGE`, `DELETE`, `SET`, `REMOVE`, `DROP`, `CALL` are rejected). Without the extra, only the naive form `MATCH (n:Label1:Label2…) RETURN n.id AS id` is accepted as a label/kind filter; anything richer raises with an install hint. |
+| `max_results` | int | Cap applied **after** RRF fusion and after the `cypher_filter` narrowing, so it counts surviving items only. Default `10`. |
+
+**Response shape (`SearchResponse`):**
+
+```json
+{
+  "results": [
+    {"kind": "memory",  "id": "42", "score": 0.13, "text": "...", "matched_entities": ["mydb.orders.amount"], "query": null},
+    {"kind": "column",  "id": "mydb.orders.amount", "score": 0.11, "text": "...", "matched_entities": [], "query": null},
+    {"kind": "model",   "id": "mydb.orders",        "score": 0.09, "text": "...", "matched_entities": [], "query": null}
+  ],
+  "resolved_input_entities": ["mydb.orders.amount"],
+  "warnings": []
+}
+```
+
+`kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `forget_memory`); `hit.query is not None` marks a saved example query. Column hits carry the column's structured sample-value snapshot — the top 50 `sampled_values` are rendered as a JSON array (so values containing commas survive), followed by `Distinct count: N` when the true cardinality exceeds the snapshot. `SearchService` refreshes any column hit whose profile is stale on the fly.
+
+**`save_memory` parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `learning` | str | The free-form note. |
+| `linked_entities` | list[str] \| dict (SlayerQuery) | Canonical entity strings (strict resolution; `memory:<id>` is valid for cross-memory refs) **or** an inline `SlayerQuery` dict whose entities are auto-extracted and which is persisted on the memory. |
+| `id` | str (optional) | User-pinned canonical memory id. Forbidden charset: `:`, `/`, `?`, `#`, whitespace, ASCII control. Omit to let the allocator assign the next int-shaped id (`max(int-shaped id) + 1`, never less than `"1"`). Duplicate id → unconditional upsert; `created_at` is preserved. |
+
+**`forget_memory` parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `id` | str | Memory id. Cascade strips every `memory:<id>` ref to it from every other memory's `entities` list and drops the matching embedding row. |
+
+**Cypher filter examples.** Naive form (always available):
+
+```
+MATCH (n:Memory) RETURN n.id AS id          # memory hits only
+MATCH (n:Column:Measure) RETURN n.id AS id  # column + named-measure hits only
+```
+
+Full openCypher (requires `advanced_search`):
+
+```
+MATCH (d:Datasource {name: 'mydb'})-[:CONTAINS]->(m:Model)-[:CONTAINS]->(c:ModelColumn)
+RETURN c.id AS id
+```
 
 ## Typical Agent Workflows
 

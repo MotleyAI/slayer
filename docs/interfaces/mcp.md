@@ -86,6 +86,7 @@ claude mcp list
 | Tool | Description |
 |------|-------------|
 | `query` | Execute a semantic query. See [Queries](../concepts/queries.md) for format. |
+| `query_nested` | Execute a multi-stage DAG of named sub-queries that reference one another via `source_model` or `joins.target_model`. Companion to `query`; the engine auto-sorts the list, so order doesn't matter. Params: `queries: List[Dict[str, Any]]`, plus `variables` / `show_sql` / `dry_run` / `explain` / `format` mirroring `query`. |
 
 **`query` parameters:**
 
@@ -110,6 +111,33 @@ claude mcp list
 | Tool | Description |
 |------|-------------|
 | `ingest_datasource_models` | Auto-generate models from DB schema with rollup joins. Params: `datasource_name`, `include_tables`, `schema_name`. |
+
+### Memories + semantic search
+
+Memories are free-form notes the agent saves against canonical entity strings (`<ds>`, `<ds>.<model>`, `<ds>.<model>.<leaf>`, or `memory:<id>`). `search` is the only retrieval surface and returns memories **and** entity discovery hits in one flat ranked list. See [Memories](../concepts/memories.md) and [Search](../concepts/search.md).
+
+| Tool | Description |
+|------|-------------|
+| `search` | Up to three-channel retrieval over memories and canonical entities (datasource / model / column / measure / aggregation), RRF-fused (k=60) into a single ranked list of `SearchHit` objects. |
+| `save_memory` | Persist a free-form `learning` tagged with canonical entities or an inline `SlayerQuery`. |
+| `forget_memory` | Delete a memory by id. Cascade-strips every other memory's `memory:<id>` ref to it. |
+
+**`search` parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `entities` | list[str] | Canonical entity strings (`mydb.orders.amount`, `memory:42`, …) or aggregated colon forms (`revenue:sum` — the suffix is stripped). Drives the BM25 channel. Unresolved tokens emit warnings, not errors. |
+| `query` | dict \| SlayerQuery | Inline query; its `source_model`, dimensions, measures, time dims, and filters are walked for canonical entities. |
+| `question` | str | Free-text question. Drives the Tantivy full-text channel and (when available) the dense-embedding channel. |
+| `datasource` | str | When set, every channel pre-filters to canonical ids rooted at that datasource. Unknown name → error. |
+| `cypher_filter` | str | Graph pre-filter applied to all three channels. Full openCypher when `advanced_search` is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges; read-only — `CREATE`, `MERGE`, `DELETE`, `SET`, `REMOVE`, `DROP`, `CALL` are rejected). Without the extra, only the naive form `MATCH (n:Label1:Label2…) RETURN n.id AS id` is accepted as a label/kind filter; richer Cypher raises with an install hint. |
+| `max_results` | int | Cap applied **after** RRF fusion and the `cypher_filter` allowlist. Default `10`. |
+
+`SearchResponse.results` is a flat list of `SearchHit { kind, id, score, text, matched_entities, query }`. `kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `forget_memory`); `hit.query is not None` marks a saved example query. Column hits embed the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded) plus a `Distinct count: N` line on overflow; stale column profiles are refreshed lazily inside `search()`.
+
+**`save_memory(learning, linked_entities, id=None)`** — `linked_entities` accepts canonical entity strings (strict resolution; `memory:<id>` valid for cross-memory refs) **or** an inline `SlayerQuery` dict (the entities are auto-extracted and the query is persisted on the memory). Optional `id` pins a user-controlled canonical memory id; forbidden charset: `:`, `/`, `?`, `#`, whitespace, ASCII control. Omit `id` to let the allocator assign the next int-shaped id (`max(int-shaped id) + 1`). Duplicate id → unconditional upsert; `created_at` preserved.
+
+**`forget_memory(id)`** — removes the memory, drops the matching embedding row, and strips every `memory:<id>` ref to it from every other memory's `entities` list (exact-match only — `memory:42` does not strip `memory:421`).
 
 ### Conceptual Help
 

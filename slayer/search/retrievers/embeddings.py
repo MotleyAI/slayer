@@ -196,7 +196,7 @@ class EmbeddingRetriever(Retriever):
         Skipped (with a warning) when:
 
         * ``question`` is blank,
-        * the ``embedding_search`` extra is not installed,
+        * the ``advanced_search`` extra is not installed,
         * the active model has no embedding rows in storage,
         * the query embedding call fails,
         * dim mismatch between query vec and corpus.
@@ -205,7 +205,7 @@ class EmbeddingRetriever(Retriever):
             return RetrievalResult()
         if not embedding_client.is_available():
             return RetrievalResult(warnings=[
-                "embedding channel skipped: `embedding_search` extra not "
+                "embedding channel skipped: `advanced_search` extra not "
                 "installed or no API key configured for the active "
                 "embedding model.",
             ])
@@ -231,7 +231,7 @@ class EmbeddingRetriever(Retriever):
             ])
 
         # Inline imports: ``numpy`` and ``slayer.embeddings.ranker``
-        # require the optional ``embedding_search`` extra. When the extra
+        # require the optional ``advanced_search`` extra. When the extra
         # is not installed, we fall through to a soft warning instead of
         # raising at module import time so the rest of slayer keeps
         # working without the extra.
@@ -245,7 +245,7 @@ class EmbeddingRetriever(Retriever):
         except ImportError:
             return RetrievalResult(warnings=[
                 "embedding channel skipped: numpy not installed "
-                "(reinstall with the `embedding_search` extra).",
+                "(reinstall with the `advanced_search` extra).",
             ])
 
         query_vec = await self.embed_question(question or "")

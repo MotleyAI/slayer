@@ -108,6 +108,11 @@ class JoinSyncStorage(StorageBackend):
         self._inner = inner
         self._reconciled = False
 
+    # -- graph fingerprint ------------------------------------------------
+
+    async def graph_fingerprint(self) -> str:
+        return await self._inner.graph_fingerprint()
+
     # -- helpers ----------------------------------------------------------
 
     async def _ensure_reconciled(self) -> None:

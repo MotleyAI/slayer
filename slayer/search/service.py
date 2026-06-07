@@ -1,24 +1,42 @@
 """SearchService — facade orchestrator over a list of
-:class:`~slayer.search.retriever.Retriever` instances (DEV-1514).
+:class:`~slayer.search.retriever.Retriever` instances (DEV-1514) with a
+unified flat-results interface (DEV-1532) and an optional graph-backed
+Cypher pre-filter (DEV-1464).
 
 The orchestrator owns:
 
-* Input validation (``max_*`` non-negative, ``datasource`` known).
+* Input validation (``max_results`` >= 1, ``datasource`` known).
 * Lenient input-entity resolution (per-token failures → warnings).
+* Optional ``cypher_filter`` pre-filter — when set, the result of
+  the openCypher / naive-fallback query becomes a hard allowlist
+  applied across every channel (DEV-1464).
 * Recency fallback when no channel is active.
-* One-shot ``all_memories`` fetch (datasource-filtered).
+* One-shot ``all_memories`` fetch (datasource-filtered, then
+  cypher_filter-narrowed when applicable).
 * One-shot ``valid_canonicals`` set build (datasources + persisted
   model identities + memory canonical ids).
 * One-shot ``corpus`` build when ``question`` is active.
 * Parallel fan-out across retrievers via ``asyncio.gather``.
 * Channel-1 named-entity surfacing (DEV-1513): every user-supplied
   canonical entity ref is contributed to the entity ranking as itself
-  (subject to datasource / hidden / missing filters), so an explicit
-  ``entities=["<ds>.<model>"]`` surfaces that entity at the top of the
-  entities bucket even without a fuzzy ``question``.
-* RRF fusion (``k=60``) over memory rankings and entity rankings.
-* Bucket partitioning (``MemoryHit`` vs ``ExampleQueryHit``,
-  each capped independently — per-bucket invariance, DEV-1414).
+  (subject to datasource / hidden / missing / cypher_filter checks),
+  so an explicit ``entities=["<ds>.<model>"]`` surfaces that entity
+  at the top of the results even without a fuzzy ``question``.
+* RRF fusion (``k=60``) over memory + entity rankings, collapsed into
+  a single flat ``results: List[SearchHit]`` list capped at
+  ``max_results`` (DEV-1532). ``kind`` distinguishes memories from
+  entity hits; ``query`` is populated for query-bearing memory hits.
+* Post-fusion cypher_filter / kind_filter narrowing (DEV-1464) —
+  candidates outside the allowlist (full graph path) or outside the
+  naive kind list (fallback path) are dropped before the
+  ``max_results`` cap, so the cap always counts surviving items only.
+* Post-fusion column-hit refresh (DEV-1516) — categorical column
+  hits with stale ``sampled_values`` are re-profiled inline via
+  :func:`slayer.engine.profiling.ensure_column_sample_fresh` so the
+  surfaced text reflects live values. Per-model writes serialise
+  (storage's ``update_column_sampled`` is a model-level
+  read-modify-write); cross-model writes parallelise via
+  ``asyncio.gather``. Silently no-op when ``engine`` is None.
 * Stale-``Memory.query`` warnings.
 
 Each registered retriever runs ONCE per search call, returning a
@@ -27,13 +45,19 @@ The default retriever list is ``[BM25Retriever, TantivyRetriever,
 EmbeddingRetriever]``; callers may inject any list via the
 ``retrievers=`` kwarg.
 
+Ranking stability (DEV-1414): because each retriever produces a full
+per-kind ranking — never truncated by a shared candidate-pool budget —
+the relative order of any subset of the flat list is stable. Changing
+only ``max_results`` never reorders existing entries nor causes an
+entry to appear or disappear unless the cap boundary moves past it.
+
 Write-side (``upsert_memory`` / ``refresh_model_subtree`` /
 ``refresh_datasource``): fans the call out to every registered
 retriever, isolating per-retriever exceptions as prefixed warnings so
 the fan-out always reaches the last retriever. Warning aggregation is
 deterministic — declared retriever order, not gather completion order.
 
-This PR deliberately does NOT expose ``delete_*`` public methods:
+This module deliberately does NOT expose ``delete_*`` public methods:
 :class:`StorageBackend` owns embedding-row cascade transactionally
 with the row delete; adding retriever fan-out would create a second
 deletion path on top. The :class:`Retriever` ABC defines the delete
@@ -44,7 +68,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, Field
 
@@ -60,6 +84,8 @@ from slayer.memories.resolver import (
     extract_entities_from_query,
     resolve_entity,
 )
+from slayer.search import graph as _search_graph
+from slayer.search.cypher_naive import parse_naive_label_filter as _parse_naive_cypher
 from slayer.search.index import Corpus, build_in_memory_corpus
 from slayer.search.render import (
     collect_model_entity_pairs,
@@ -83,53 +109,31 @@ _RRF_K = 60
 
 
 # ---------------------------------------------------------------------------
-# Hit & response models (public — unchanged shape)
+# Hit & response models
 # ---------------------------------------------------------------------------
 
 
-class MemoryHit(BaseModel):
-    """A learning-only memory result (``Memory.query is None``). ``id``
-    is the string memory id (suitable for ``forget_memory(id=hit.id)``).
-    ``score`` is always the Reciprocal-Rank-Fusion score
+class SearchHit(BaseModel):
+    """A unified search result (DEV-1532). ``kind`` is ``"memory"`` for
+    memories, or the entity kind string (``"datasource"``, ``"model"``,
+    ``"column"``, ``"measure"``, ``"aggregation"``) for entity hits.
+
+    ``id`` is the raw storage id for memories (suitable for
+    ``forget_memory(id=hit.id)``) and the canonical entity string for
+    entity hits. ``score`` is always the Reciprocal-Rank-Fusion score
     (``Σ 1 / (k + rank)``, ``k=60``); even single-channel searches go
     through RRF, so the value is comparable across channels but is not
-    directly the raw BM25 / tantivy / cosine score."""
+    directly the raw BM25 / tantivy / cosine score.
 
+    ``matched_entities`` and ``query`` are populated for memory hits
+    only; entity hits carry empty / ``None`` defaults."""
+
+    kind: str
     id: str
     score: float
     text: str
     matched_entities: List[str] = Field(default_factory=list)
-
-
-class ExampleQueryHit(BaseModel):
-    """A query-bearing memory result (``Memory.query`` is set). Same id
-    / score / text shape as ``MemoryHit`` but always carries the attached
-    ``SlayerQuery``. Surfaces in ``SearchResponse.example_queries`` —
-    bulky reference material, capped independently from learning-only
-    memories so it cannot crowd them out."""
-
-    id: str
-    score: float
-    text: str
-    matched_entities: List[str] = Field(default_factory=list)
-    query: SlayerQuery
-
-
-class EntityHit(BaseModel):
-    """An entity result. ``id`` is the canonical entity string
-    (``"<ds>"``, ``"<ds>.<model>"``, or ``"<ds>.<model>.<leaf>"``).
-    ``score`` is the RRF-fused score across retrievers that contributed
-    an entity ranking.
-
-    DEV-1513: channel 1 contributes named-entity surfacing via the
-    implicit self-reference model — each entity is conceptually tagged
-    with itself, so a user-supplied ref in ``entities=`` ranks at the
-    top of the entities bucket alongside any fuzzy hits."""
-
-    id: str
-    kind: str  # "datasource" | "model" | "column" | "measure" | "aggregation"
-    score: float
-    text: str
+    query: Optional[SlayerQuery] = None
 
 
 # ---------------------------------------------------------------------------
@@ -164,9 +168,11 @@ LookupResult = Union[LookupFound, LookupHidden, LookupMissing]
 
 
 class SearchResponse(BaseModel):
-    memories: List[MemoryHit] = Field(default_factory=list)
-    example_queries: List[ExampleQueryHit] = Field(default_factory=list)
-    entities: List[EntityHit] = Field(default_factory=list)
+    """Unified search response (DEV-1532). ``results`` is a single flat
+    list ranked by RRF score; consumers partition by ``kind`` (or by
+    ``query is None`` for the memory subset) at the call site."""
+
+    results: List[SearchHit] = Field(default_factory=list)
     resolved_input_entities: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
 
@@ -226,7 +232,8 @@ def _backfill_memory_by_id(
     """For each id in ``mem_ids`` not already in ``memory_by_id``,
     look it up in ``all_memories_by_id`` and insert it. Mutates
     ``memory_by_id``. Takes a precomputed id→Memory dict (not the raw
-    list) so per-call backfill stays O(N) (DEV-1414)."""
+    list) so per-call backfill stays O(N) instead of O(N²) when every
+    retriever returns the full memory corpus (DEV-1414)."""
     for mem_id in mem_ids:
         if mem_id in memory_by_id:
             continue
@@ -243,11 +250,11 @@ def _build_memory_hit(
     text_by_id: Dict[str, str],
     canonical_input_entities: List[str],
     valid_canonicals: Optional[set] = None,
-) -> Union[MemoryHit, ExampleQueryHit]:
-    """Build the appropriate hit type for ``mem``: ``MemoryHit`` for
-    learning-only memories (``query is None``), ``ExampleQueryHit`` for
-    query-bearing ones. ``text`` falls back to ``mem.learning`` when no
-    retriever supplied a hit text for this memory.
+) -> SearchHit:
+    """Build a SearchHit for a memory (DEV-1532 unified shape).
+
+    ``text`` falls back to ``mem.learning`` when no retriever supplied
+    a hit text for this memory.
 
     DEV-1428: ``matched_entities`` is computed against the LIVE
     canonical set when ``valid_canonicals`` is supplied, so stale tags
@@ -267,63 +274,14 @@ def _build_memory_hit(
     wanted_set = set(canonical_input_entities)
     matched = sorted(wanted_set & set(live_entities)) if wanted_set else []
     text = text_by_id.get(memory_id) or mem.learning
-    if mem.query is None:
-        return MemoryHit(
-            id=memory_id, score=score, text=text,
-            matched_entities=matched,
-        )
-    return ExampleQueryHit(
-        id=memory_id, score=score, text=text,
-        matched_entities=matched, query=mem.query,
+    return SearchHit(
+        kind="memory",
+        id=memory_id,
+        score=score,
+        text=text,
+        matched_entities=matched,
+        query=mem.query,
     )
-
-
-def _fuse_memory_hits(
-    *,
-    rankings: List[List[str]],
-    memory_by_id: dict,
-    text_by_id: Dict[str, str],
-    canonical_input_entities: List[str],
-    max_memories: int,
-    max_example_queries: int,
-    valid_canonicals: Optional[set] = None,
-) -> Tuple[List[MemoryHit], List[ExampleQueryHit]]:
-    """RRF-fuse the supplied memory rankings and partition into
-    learning-only (``MemoryHit``) vs query-bearing (``ExampleQueryHit``)
-    lists, each capped independently. Empty inner rankings are filtered
-    out so single-channel results still flow through RRF
-    normalisation."""
-    non_empty = [r for r in rankings if r]
-    fused = rrf_fuse(rankings=non_empty, k=_RRF_K) if non_empty else {}
-    fused_sorted = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
-
-    learnings: List[MemoryHit] = []
-    examples: List[ExampleQueryHit] = []
-    for memory_id, score in fused_sorted:
-        mem = memory_by_id.get(memory_id)
-        if mem is None:
-            continue
-        hit = _build_memory_hit(
-            mem=mem,
-            memory_id=memory_id,
-            score=score,
-            text_by_id=text_by_id,
-            canonical_input_entities=canonical_input_entities,
-            valid_canonicals=valid_canonicals,
-        )
-        if isinstance(hit, MemoryHit) and len(learnings) < max_memories:
-            learnings.append(hit)
-        elif (
-            isinstance(hit, ExampleQueryHit)
-            and len(examples) < max_example_queries
-        ):
-            examples.append(hit)
-        if (
-            len(learnings) >= max_memories
-            and len(examples) >= max_example_queries
-        ):
-            break
-    return learnings, examples
 
 
 def _resolve_entity_hit_kind_text(
@@ -349,36 +307,109 @@ def _resolve_entity_hit_kind_text(
     return None
 
 
-def _fuse_entity_hits(
+def _build_hit_from_fused_key(
     *,
-    rankings: List[List[str]],
+    key: str,
+    score: float,
+    memory_by_id: dict,
+    text_by_id: Dict[str, str],
+    canonical_input_entities: List[str],
     corpus: Optional[Corpus],
     named_kind_text: Optional[Dict[str, Tuple[str, str]]],
-    max_entities: int,
-) -> List[EntityHit]:
-    """RRF-fuse the entity rankings and look text/kind up via
-    ``_resolve_entity_hit_kind_text`` (corpus first, then channel-1
-    named-entity fallback, DEV-1513). Returns at most ``max_entities``
-    hits."""
-    non_empty = [r for r in rankings if r]
+    valid_canonicals: Optional[set],
+    candidate_ids: Optional[FrozenSet[str]],
+    kind_filter: Optional[Set[str]],
+) -> Optional[SearchHit]:
+    """Build one SearchHit from a fused (key, score) pair, or return None
+    to skip. Applies the DEV-1464 cypher_filter (candidate_ids allowlist
+    for the full graph path; kind_filter for the naive fallback) BEFORE
+    materialising the hit, so the upstream cap counts surviving items
+    only."""
+    if key.startswith(_MEMORY_PREFIX):
+        memory_id = key[len(_MEMORY_PREFIX):]
+        if candidate_ids is not None and key not in candidate_ids:
+            return None
+        if kind_filter is not None and "memory" not in kind_filter:
+            return None
+        mem = memory_by_id.get(memory_id)
+        if mem is None:
+            return None
+        return _build_memory_hit(
+            mem=mem,
+            memory_id=memory_id,
+            score=score,
+            text_by_id=text_by_id,
+            canonical_input_entities=canonical_input_entities,
+            valid_canonicals=valid_canonicals,
+        )
+    # Entity key.
+    if candidate_ids is not None and key not in candidate_ids:
+        return None
+    resolved = _resolve_entity_hit_kind_text(
+        canonical=key,
+        corpus=corpus,
+        named_kind_text=named_kind_text,
+    )
+    if resolved is None:
+        return None
+    kind, text = resolved
+    if kind_filter is not None and kind not in kind_filter:
+        return None
+    return SearchHit(id=key, kind=kind, score=score, text=text)
+
+
+def _fuse_all_hits(
+    *,
+    memory_rankings: List[List[str]],
+    entity_rankings: List[List[str]],
+    memory_by_id: dict,
+    text_by_id: Dict[str, str],
+    canonical_input_entities: List[str],
+    corpus: Optional[Corpus],
+    named_kind_text: Optional[Dict[str, Tuple[str, str]]],
+    max_results: int,
+    valid_canonicals: Optional[set] = None,
+    candidate_ids: Optional[FrozenSet[str]] = None,
+    kind_filter: Optional[Set[str]] = None,
+) -> List[SearchHit]:
+    """RRF-fuse memory and entity rankings into a single flat list
+    (DEV-1532). Memory IDs are prefixed with the canonical memory prefix
+    so the unified pool contains no key collisions.
+
+    DEV-1464: ``candidate_ids`` (full-graph allowlist) and
+    ``kind_filter`` (naive-fallback kind allowlist) are applied BEFORE
+    the ``max_results`` cap so the cap always counts surviving items
+    only — a wrong implementation that filters AFTER capping would
+    silently drop matching results when an unrelated hit happens to
+    out-rank them."""
+    prefixed_memory_rankings = [
+        [f"{_MEMORY_PREFIX}{mid}" for mid in ranking]
+        for ranking in memory_rankings
+    ]
+    all_rankings = prefixed_memory_rankings + entity_rankings
+    non_empty = [r for r in all_rankings if r]
     fused = rrf_fuse(rankings=non_empty, k=_RRF_K) if non_empty else {}
     fused_sorted = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
-    out: List[EntityHit] = []
-    for canonical, score in fused_sorted:
-        if len(out) >= max_entities:
-            break
-        resolved = _resolve_entity_hit_kind_text(
-            canonical=canonical,
+
+    results: List[SearchHit] = []
+    for key, score in fused_sorted:
+        hit = _build_hit_from_fused_key(
+            key=key,
+            score=score,
+            memory_by_id=memory_by_id,
+            text_by_id=text_by_id,
+            canonical_input_entities=canonical_input_entities,
             corpus=corpus,
             named_kind_text=named_kind_text,
+            valid_canonicals=valid_canonicals,
+            candidate_ids=candidate_ids,
+            kind_filter=kind_filter,
         )
-        if resolved is None:
-            continue
-        kind, text = resolved
-        out.append(EntityHit(
-            id=canonical, kind=kind, score=score, text=text,
-        ))
-    return out
+        if hit is not None:
+            results.append(hit)
+            if len(results) >= max_results:
+                break
+    return results
 
 
 def _merge_text_by_id_in_declaration_order(
@@ -395,7 +426,7 @@ def _merge_text_by_id_in_declaration_order(
 
 
 # ---------------------------------------------------------------------------
-# DEV-1513: named-entity surfacing helpers
+# DEV-1513 / DEV-1464: named-entity surfacing helpers
 # ---------------------------------------------------------------------------
 
 
@@ -424,6 +455,21 @@ def _memory_id_off_datasource_warnings(
                 f"{datasource!r}; dropped."
             )
     return out
+
+
+def _memory_id_cypher_filter_warnings(
+    *,
+    canonical_input_entities: List[str],
+    candidate_ids: FrozenSet[str],
+) -> List[str]:
+    """DEV-1464: emit one warning per user-supplied ``memory:<id>`` ref
+    that was excluded by the cypher_filter allowlist (the graph query
+    did not return that memory's canonical id)."""
+    return [
+        f"{c!r} excluded by cypher_filter."
+        for c in canonical_input_entities
+        if c.startswith(_MEMORY_PREFIX) and c not in candidate_ids
+    ]
 
 
 async def _lookup_bare_datasource_canonical(
@@ -502,37 +548,40 @@ async def _lookup_named_entity(
 
 
 # ---------------------------------------------------------------------------
-# Service
+# DEV-1516 column-hit refresh helpers (adapted to flat SearchHit)
 # ---------------------------------------------------------------------------
 
 
 def _group_column_hits(
-    entity_hits: List["EntityHit"],
-) -> Dict[Tuple[str, str], List[Tuple[int, "EntityHit", str]]]:
-    """DEV-1516 helper: split a fused entity-hit list into per-model
-    buckets for the search-side sample-refresh hook.
+    results: List[SearchHit],
+) -> Dict[Tuple[str, str], List[Tuple[int, SearchHit, str]]]:
+    """DEV-1516 helper: split a fused result list into per-model buckets
+    for the search-side sample-refresh hook.
 
-    Walks ``entity_hits``, keeps only ``kind == "column"`` hits whose
+    Walks ``results``, keeps only ``kind == "column"`` hits whose
     canonical id parses as ``<data_source>.<model>.<column>`` (3
     segments), and groups them by ``(data_source, model_name)`` so the
     caller can serialise writes within a model and parallelise across
     models. Each member tuple is ``(original_hit_index, hit,
     column_name)`` — the index is preserved so caller can splice
     refreshed text back into the original list in place."""
-    groups: Dict[Tuple[str, str], List[Tuple[int, EntityHit, str]]] = {}
-    for idx, hit in enumerate(entity_hits):
+    groups: Dict[Tuple[str, str], List[Tuple[int, SearchHit, str]]] = {}
+    for idx, hit in enumerate(results):
         if hit.kind != "column":
             continue
         segments = hit.id.split(".")
         if len(segments) != 3:
-            # Bare datasource / model canonicals are handled by other
-            # kinds; columns are always 3-segment.
             continue
         data_source, model_name, column_name = segments
         groups.setdefault((data_source, model_name), []).append(
             (idx, hit, column_name)
         )
     return groups
+
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
 
 
 class SearchService:
@@ -548,7 +597,7 @@ class SearchService:
         """DEV-1516: ``engine`` is optional so storage-only test contexts
         keep working unchanged. When supplied, the post-fusion column-hit
         hook auto-refreshes stale categorical columns via
-        :func:`ensure_column_sample_fresh` before rendering ``EntityHit.text``.
+        :func:`ensure_column_sample_fresh` before rendering ``SearchHit.text``.
         Without an engine the hook is a silent no-op."""
         self._storage = storage
         self._engine = engine
@@ -572,22 +621,22 @@ class SearchService:
     async def _refresh_stale_column_hits(
         self,
         *,
-        entity_hits: List[EntityHit],
-    ) -> List[EntityHit]:
+        results: List[SearchHit],
+    ) -> List[SearchHit]:
         """DEV-1516 post-fusion column-hit refresh.
 
         Groups column hits by ``(data_source, model_name)`` and dispatches
         each group to :meth:`_refresh_group_worker`. Per-model writes
         serialise (storage's ``update_column_sampled`` is a model-level
         read-modify-write); cross-model writes parallelise via
-        ``asyncio.gather``. Returns ``entity_hits`` with refreshed text
+        ``asyncio.gather``. Returns ``results`` with refreshed text
         spliced in for each column hit whose helper call returned a
         materially-updated column."""
         assert self._engine is not None  # caller-guarded
-        groups = _group_column_hits(entity_hits)
+        groups = _group_column_hits(results)
         if not groups:
-            return entity_hits
-        refreshed_by_idx: Dict[int, EntityHit] = {}
+            return results
+        refreshed_by_idx: Dict[int, SearchHit] = {}
         await asyncio.gather(*[
             self._refresh_group_worker(
                 ds_name=ds, model_name=model_name,
@@ -596,9 +645,9 @@ class SearchService:
             for (ds, model_name), members in groups.items()
         ])
         if not refreshed_by_idx:
-            return entity_hits
+            return results
         return [
-            refreshed_by_idx.get(i, h) for i, h in enumerate(entity_hits)
+            refreshed_by_idx.get(i, h) for i, h in enumerate(results)
         ]
 
     async def _refresh_group_worker(
@@ -606,8 +655,8 @@ class SearchService:
         *,
         ds_name: str,
         model_name: str,
-        members: List[Tuple[int, EntityHit, str]],
-        refreshed_by_idx: Dict[int, EntityHit],
+        members: List[Tuple[int, SearchHit, str]],
+        refreshed_by_idx: Dict[int, SearchHit],
     ) -> None:
         """Refresh every column hit on one ``(data_source, model_name)``
         group sequentially (per-model serialisation). Loads the model
@@ -656,22 +705,12 @@ class SearchService:
         query: Optional[Union[SlayerQuery, dict]] = None,
         question: Optional[str] = None,
         datasource: Optional[str] = None,
-        max_memories: int = 5,
-        max_example_queries: int = 2,
-        max_entities: int = 5,
+        cypher_filter: Optional[str] = None,
+        max_results: int = 10,
     ) -> SearchResponse:
-        if max_memories < 0:
+        if max_results < 1:
             raise ValueError(
-                f"max_memories must be >= 0; got {max_memories}."
-            )
-        if max_example_queries < 0:
-            raise ValueError(
-                f"max_example_queries must be >= 0; got "
-                f"{max_example_queries}."
-            )
-        if max_entities < 0:
-            raise ValueError(
-                f"max_entities must be >= 0; got {max_entities}."
+                f"max_results must be >= 1; got {max_results}."
             )
         await self._validate_datasource_known(datasource)
 
@@ -683,18 +722,69 @@ class SearchService:
         )
         question_active = bool(question and question.strip())
 
+        # DEV-1464: optional cypher_filter pre-filter. When the graph
+        # path runs and returns no ids, short-circuit to an empty result
+        # with a warning — every channel would otherwise return zero
+        # surviving hits and we'd burn a corpus build for nothing.
+        candidate_ids, kind_filter, early = await self._apply_cypher_filter(
+            cypher_filter=cypher_filter,
+            canonical_input_entities=canonical_input_entities,
+            warnings=warnings,
+        )
+        if early is not None:
+            return early
+        # Naive kind_filter parity with graph path: warn when a named
+        # memory:<id> ref would be excluded by the kind filter so the
+        # caller knows why it doesn't appear in results.
+        if kind_filter is not None and "memory" not in kind_filter:
+            for canonical in canonical_input_entities:
+                if canonical.startswith(_MEMORY_PREFIX):
+                    warnings.append(
+                        f"{canonical} excluded by cypher_filter kind filter "
+                        f"(allowed kinds: {sorted(kind_filter)!r})."
+                    )
+
         if not channel_1_active and not question_active:
             return await self._recency_fallback(
                 datasource=datasource,
-                max_memories=max_memories,
-                max_example_queries=max_example_queries,
+                candidate_ids=candidate_ids,
+                kind_filter=kind_filter,
+                max_results=max_results,
                 warnings=warnings,
             )
 
-        all_memories: List[Memory] = _filter_memories_by_datasource(
-            memories=await self._storage.list_memories(entities=None),
-            datasource=datasource,
+        # Datasource filter runs first so the off-datasource warning
+        # reflects "memory dropped because of datasource", not
+        # "memory dropped because of cypher_filter".
+        datasource_filtered_memories: List[Memory] = (
+            _filter_memories_by_datasource(
+                memories=await self._storage.list_memories(entities=None),
+                datasource=datasource,
+            )
         )
+        # DEV-1513: detect named ``memory:<id>`` refs whose memory was
+        # filtered out by the datasource pre-filter — emit BEFORE
+        # cypher_filter narrowing so a memory that IS rooted at the
+        # datasource but is excluded by cypher_filter doesn't get a
+        # spurious "not rooted at datasource" warning on top of the
+        # cypher_filter warning.
+        warnings = _dedup(
+            warnings + _memory_id_off_datasource_warnings(
+                canonical_input_entities=canonical_input_entities,
+                live_memory_ids={m.id for m in datasource_filtered_memories},
+                datasource=datasource,
+            )
+        )
+        # DEV-1464: now narrow by the cypher_filter allowlist for the
+        # retrieval path — BM25 / tantivy / embeddings rank only the
+        # surviving memories.
+        if candidate_ids is not None:
+            all_memories: List[Memory] = [
+                m for m in datasource_filtered_memories
+                if f"{_MEMORY_PREFIX}{m.id}" in candidate_ids
+            ]
+        else:
+            all_memories = datasource_filtered_memories
 
         valid_canonicals = await self._valid_canonical_set(
             all_memories=all_memories, datasource=datasource,
@@ -711,16 +801,15 @@ class SearchService:
                 datasources=datasources,
             )
 
-        # DEV-1513: detect named ``memory:<id>`` refs whose memory was
-        # filtered out by the datasource pre-filter — emit a warning
-        # symmetric with the entity-side off-ds drop.
-        warnings = _dedup(
-            warnings + _memory_id_off_datasource_warnings(
-                canonical_input_entities=canonical_input_entities,
-                live_memory_ids={m.id for m in all_memories},
-                datasource=datasource,
+        # DEV-1464: surface the reason a named memory:<id> ref didn't
+        # appear in results when cypher_filter excluded it.
+        if candidate_ids is not None:
+            warnings = _dedup(
+                warnings + _memory_id_cypher_filter_warnings(
+                    canonical_input_entities=canonical_input_entities,
+                    candidate_ids=candidate_ids,
+                )
             )
-        )
         # DEV-1513: channel-1 named-entity surfacing.
         (
             channel_1_entity_ranking,
@@ -730,6 +819,7 @@ class SearchService:
             canonical_input_entities=canonical_input_entities,
             datasource=datasource,
             corpus=corpus,
+            candidate_ids=candidate_ids,
         )
         warnings = _dedup(warnings + entity_surfacing_warnings)
 
@@ -776,56 +866,97 @@ class SearchService:
                 mem_ids=result.memory_ranking,
             )
 
-        memory_hits, example_query_hits = _fuse_memory_hits(
-            rankings=[r.memory_ranking for r in results],
+        all_hits = _fuse_all_hits(
+            memory_rankings=[r.memory_ranking for r in results],
+            entity_rankings=(
+                [channel_1_entity_ranking]
+                + [r.entity_ranking for r in results]
+            ),
             memory_by_id=memory_by_id,
             text_by_id=text_by_id,
             canonical_input_entities=canonical_input_entities,
-            max_memories=max_memories,
-            max_example_queries=max_example_queries,
+            corpus=corpus,
+            named_kind_text=named_kind_text,
+            max_results=max_results,
             valid_canonicals=valid_canonicals,
+            candidate_ids=candidate_ids,
+            kind_filter=kind_filter,
         )
-        # DEV-1428 + DEV-1513: stale-query warnings for surfaced
-        # example_queries AND for explicitly-named ``memory:<id>`` refs.
+
+        # DEV-1428 + DEV-1513: stale-Memory.query warnings for surfaced
+        # query-bearing hits AND for explicitly-named ``memory:<id>``
+        # refs whose attached query has stale references.
+        query_bearing_hits = [
+            h for h in all_hits
+            if h.kind == "memory" and h.query is not None
+        ]
         warnings = _dedup(
             warnings + await self._stale_query_warnings(
-                example_query_hits=example_query_hits,
+                query_bearing_hits=query_bearing_hits,
                 memory_by_id=memory_by_id,
             ) + await self._stale_query_warnings_for_named_memory_refs(
                 canonical_input_entities=canonical_input_entities,
                 all_memories=all_memories,
-                already_warned_ids={h.id for h in example_query_hits},
+                already_warned_ids={h.id for h in query_bearing_hits},
             )
         )
-        # Entity rankings: channel-1 named-entity ranking (DEV-1513) +
-        # retriever-contributed rankings (channels 2 and 3 via Tantivy
-        # and Embedding retrievers).
-        entity_hits = _fuse_entity_hits(
-            rankings=[channel_1_entity_ranking] + [
-                r.entity_ranking for r in results
-            ],
-            corpus=corpus,
-            named_kind_text=named_kind_text,
-            max_entities=max_entities,
-        )
+
         # DEV-1516: refresh stale categorical column hits in-place before
-        # returning. Group by (data_source, model_name) so persists for
-        # different columns of the SAME model are serialized (the storage
-        # write is a model-level read-modify-write — concurrent updates
-        # would lose data); persists across DIFFERENT models run
-        # concurrently via ``asyncio.gather``. Silently no-op when engine
-        # is None.
+        # returning. Per-model writes serialise; cross-model writes run
+        # concurrently. Silently no-op when engine is None.
         if self._engine is not None:
-            entity_hits = await self._refresh_stale_column_hits(
-                entity_hits=entity_hits,
+            all_hits = await self._refresh_stale_column_hits(
+                results=all_hits,
             )
         return SearchResponse(
-            memories=memory_hits,
-            example_queries=example_query_hits,
-            entities=entity_hits,
+            results=all_hits,
             resolved_input_entities=canonical_input_entities,
             warnings=warnings,
         )
+
+    async def _apply_cypher_filter(
+        self,
+        *,
+        cypher_filter: Optional[str],
+        canonical_input_entities: List[str],
+        warnings: List[str],
+    ) -> Tuple[
+        Optional[FrozenSet[str]],
+        Optional[Set[str]],
+        Optional[SearchResponse],
+    ]:
+        """DEV-1464: resolve the optional ``cypher_filter`` into
+        ``(candidate_ids, kind_filter, early)``.
+
+        * ``candidate_ids`` is non-None when the full graph path ran
+          (advanced_search extra installed). The set is the allowlist
+          every channel is narrowed against.
+        * ``kind_filter`` is non-None when the naive fallback ran
+          (graph extra absent). The set is the entity kinds the result
+          is filtered down to.
+        * ``early`` is a short-circuit ``SearchResponse`` when the graph
+          path returned no ids — we skip the corpus build entirely.
+        """
+        if cypher_filter is None:
+            return None, None, None
+        if _search_graph.is_available():
+            candidate_ids = await _search_graph.get_filtered_ids(
+                cypher=cypher_filter, storage=self._storage,
+            )
+            if not candidate_ids:
+                early_warnings = _dedup(
+                    warnings + [
+                        "cypher_filter returned no matching nodes; "
+                        "search returned no results."
+                    ]
+                )
+                return candidate_ids, None, SearchResponse(
+                    results=[],
+                    resolved_input_entities=canonical_input_entities,
+                    warnings=early_warnings,
+                )
+            return candidate_ids, None, None
+        return None, _parse_naive_cypher(cypher_filter), None
 
     async def _build_channel_1_entity_ranking(
         self,
@@ -833,6 +964,7 @@ class SearchService:
         canonical_input_entities: List[str],
         datasource: Optional[str],
         corpus: Optional[Corpus],
+        candidate_ids: Optional[FrozenSet[str]] = None,
     ) -> Tuple[List[str], Dict[str, Tuple[str, str]], List[str]]:
         """DEV-1513: produce channel-1's contribution to the entity
         ranking by surfacing each user-named canonical ref as itself.
@@ -840,19 +972,30 @@ class SearchService:
         Returns ``(entity_ranking, named_kind_text, warnings)``:
 
         * ``entity_ranking`` — surviving canonicals in user-supplied
-          order; this is the channel-1 input to ``_fuse_entity_hits``.
+          order; this is the channel-1 input to the entity-side of
+          ``_fuse_all_hits``.
         * ``named_kind_text`` — ``{canonical: (kind, text)}`` lookup
-          consumed by ``_fuse_entity_hits`` as a fallback when the corpus
+          consumed by ``_fuse_all_hits`` as a fallback when the corpus
           doesn't carry the canonical (pure-named call with no corpus,
           or hidden-from-corpus refs).
         * ``warnings`` — drop reasons per filter (off-datasource,
-          hidden, missing).
+          hidden, missing, cypher_filter exclusion).
+
+        DEV-1464: when ``candidate_ids`` is supplied, entities outside
+        the allowlist are dropped (with a warning) BEFORE the
+        rendering / lookup work so we don't waste a storage round-trip.
         """
         entity_ranking: List[str] = []
         named_kind_text: Dict[str, Tuple[str, str]] = {}
         warnings: List[str] = []
         for canonical in canonical_input_entities:
             if canonical.startswith(_MEMORY_PREFIX):
+                # memory:<id> refs participate in the memory ranking only.
+                continue
+            if candidate_ids is not None and canonical not in candidate_ids:
+                warnings.append(
+                    f"entity {canonical!r} excluded by cypher_filter."
+                )
                 continue
             if datasource is not None and not canonical_id_rooted_at(
                 canonical_id=canonical, datasource=datasource,
@@ -984,14 +1127,24 @@ class SearchService:
     async def _recency_fallback(
         self,
         *,
-        max_memories: int,
-        max_example_queries: int,
+        max_results: int,
         warnings: List[str],
         datasource: Optional[str] = None,
+        candidate_ids: Optional[FrozenSet[str]] = None,
+        kind_filter: Optional[Set[str]] = None,
     ) -> SearchResponse:
-        """Empty-input branch: partition all memories by recency into
-        the learning-only bucket and the query-bearing bucket. No
-        retriever is invoked on this path."""
+        """Empty-input branch: return the newest memories (both
+        learning-only and query-bearing) as a flat list, capped by
+        ``max_results``. No retriever is invoked on this path.
+
+        DEV-1409: when ``datasource`` is set, the same memory pre-filter
+        used by the main search path applies.
+
+        DEV-1464: when ``candidate_ids`` is set, only memories whose
+        canonical id appears in the allowlist survive; when
+        ``kind_filter`` is set and doesn't include ``"memory"``, the
+        recency bucket is empty (no entity recency on the fallback
+        path)."""
         warnings.append(
             "no entities, query, or question supplied; returning "
             "newest memories by recency."
@@ -1000,47 +1153,56 @@ class SearchService:
             memories=await self._storage.list_memories(entities=None),
             datasource=datasource,
         )
+        had_candidates_pre_filter = bool(recency_memories)
+        if candidate_ids is not None:
+            recency_memories = [
+                m for m in recency_memories
+                if f"{_MEMORY_PREFIX}{m.id}" in candidate_ids
+            ]
+        if kind_filter is not None and "memory" not in kind_filter:
+            recency_memories = []
+        # DEV-1464: when cypher_filter (or its naive kind-filter
+        # fallback) zeroed out an otherwise-populated recency pool,
+        # surface that explicitly — the generic "returning newest"
+        # warning would otherwise read as "system is healthy, the
+        # corpus is just empty," masking that the filter was the cause.
+        filters_excluded_all = (
+            had_candidates_pre_filter
+            and not recency_memories
+            and (candidate_ids is not None or kind_filter is not None)
+        )
+        if filters_excluded_all:
+            warnings.append(
+                "cypher_filter excluded all memory candidates for the "
+                "empty-input recency fallback; no results."
+            )
         recency_memories.sort(key=lambda m: m.created_at, reverse=True)
         valid_canonicals = await self._valid_canonical_set(
             all_memories=recency_memories, datasource=datasource,
         )
-        memory_hits: List[MemoryHit] = []
-        example_query_hits: List[ExampleQueryHit] = []
+        hits: List[SearchHit] = []
         for m in recency_memories:
-            hit = _build_memory_hit(
+            if len(hits) >= max_results:
+                break
+            hits.append(_build_memory_hit(
                 mem=m,
                 memory_id=m.id,
                 score=0.0,
                 text_by_id={},
                 canonical_input_entities=[],
                 valid_canonicals=valid_canonicals,
-            )
-            if (
-                isinstance(hit, MemoryHit)
-                and len(memory_hits) < max_memories
-            ):
-                memory_hits.append(hit)
-            elif (
-                isinstance(hit, ExampleQueryHit)
-                and len(example_query_hits) < max_example_queries
-            ):
-                example_query_hits.append(hit)
-            if (
-                len(memory_hits) >= max_memories
-                and len(example_query_hits) >= max_example_queries
-            ):
-                break
+            ))
+        # DEV-1428: emit stale-Memory.query warnings on the recency path too.
         memory_by_id = {m.id: m for m in recency_memories}
+        query_bearing = [h for h in hits if h.query is not None]
         warnings = _dedup(
             warnings + await self._stale_query_warnings(
-                example_query_hits=example_query_hits,
+                query_bearing_hits=query_bearing,
                 memory_by_id=memory_by_id,
             )
         )
         return SearchResponse(
-            memories=memory_hits,
-            example_queries=example_query_hits,
-            entities=[],
+            results=hits,
             resolved_input_entities=[],
             warnings=warnings,
         )
@@ -1096,11 +1258,14 @@ class SearchService:
     async def _stale_query_warnings(
         self,
         *,
-        example_query_hits: List[ExampleQueryHit],
+        query_bearing_hits: List[SearchHit],
         memory_by_id: Dict[str, Memory],
     ) -> List[str]:
+        """Emit one warning per surfaced query-bearing hit whose
+        attached ``SlayerQuery`` no longer resolves (entities pointing
+        at deleted/renamed models or columns). DEV-1428."""
         out: List[str] = []
-        for hit in example_query_hits:
+        for hit in query_bearing_hits:
             mem = memory_by_id.get(hit.id)
             if mem is None or mem.query is None:
                 continue
@@ -1124,7 +1289,7 @@ class SearchService:
     ) -> List[str]:
         """DEV-1513: emit the stale-query warning for any explicitly-named
         ``memory:<id>`` ref pointing at a query-bearing memory with
-        stale refs, regardless of whether the example_queries cap
+        stale refs, regardless of whether the ``max_results`` cap
         suppressed the hit. The user explicitly named the memory; they
         deserve to know the attached query is broken."""
         memories_by_id = {m.id: m for m in all_memories}
@@ -1169,12 +1334,10 @@ class SearchService:
 
 
 __all__ = [
-    "EntityHit",
-    "ExampleQueryHit",
     "LookupFound",
     "LookupHidden",
     "LookupMissing",
-    "MemoryHit",
+    "SearchHit",
     "SearchResponse",
     "SearchService",
 ]
