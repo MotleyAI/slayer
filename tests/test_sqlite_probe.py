@@ -162,7 +162,10 @@ class TestProbeTextCoerce:
     def test_text_coerce_widens_to_double(self, conn) -> None:
         from slayer.sql.sqlite_introspect import probe_sqlite_integer_column
 
-        conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
+        # No declared type → BLOB affinity; inserted strings remain TEXT.
+        # INTEGER affinity would coerce "1" / "1e3" / "  4  " to INTEGER on
+        # insert (and "2.5" to REAL), so the coerce branch would never fire.
+        conn.execute(sa.text('CREATE TABLE t (v)'))
         # All TEXT, all numeric-coercible to finite floats.
         _insert_typed(conn, "t", "v", ["1", "2.5", "1e3", "-7.2", "  4  "])
         verdict = probe_sqlite_integer_column(conn=conn, table="t", column="v")
@@ -356,7 +359,7 @@ class TestProbeSampleSaturation:
         sqlite_introspect.PROBE_SCAN_CAP = 50
         try:
             conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
-            _insert_typed(conn, "t", "v", [i for i in range(60)])
+            _insert_typed(conn, "t", "v", list(range(60)))
             with caplog.at_level(logging.WARNING):
                 verdict = sqlite_introspect.probe_sqlite_integer_column(
                     conn=conn, table="t", column="v"
@@ -381,7 +384,7 @@ class TestProbeSampleSaturation:
             conn.execute(sa.text('CREATE TABLE t (v INTEGER)'))
             # First row REAL, rest INT — sample saturates but n_real > 0.
             _insert_typed(conn, "t", "v", [0.5])
-            _insert_typed(conn, "t", "v", [i for i in range(60)])
+            _insert_typed(conn, "t", "v", list(range(60)))
             verdict = sqlite_introspect.probe_sqlite_integer_column(
                 conn=conn, table="t", column="v"
             )
@@ -474,7 +477,7 @@ class TestProbeCoerceQueryFailure:
         def _spy(statement, *args, **kwargs):
             call_count["n"] += 1
             if call_count["n"] >= 2:
-                raise sa.exc.OperationalError("coerce-probe boom", None, Exception("simulated"))
+                raise sa.exc.OperationalError("coerce-probe boom", None, Exception("simulated"))  # NOSONAR(S112) — Exception(...) is the cause-of arg for the simulated SQLAlchemy connect error
             return original_execute(statement, *args, **kwargs)
 
         conn.execute = _spy  # type: ignore[method-assign]

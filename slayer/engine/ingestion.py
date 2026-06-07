@@ -922,66 +922,49 @@ def _format_for_widened_type(verdict: DataType) -> Optional[NumberFormat]:
     return None  # TEXT clears format
 
 
-def _additive_merge_existing(
+def _merge_persisted_column_with_probe(
     *,
-    persisted: SlayerModel,
-    fresh: SlayerModel,
-) -> Tuple[SlayerModel, List[str], List[str], List[str]]:
-    """Merge a freshly-ingested ``fresh`` model into ``persisted`` additively.
+    persisted_col: Column,
+    fresh_col: Optional[Column],
+    model_name: str,
+    sqlite_widen_enabled: bool,
+) -> Tuple[Column, bool]:
+    """DEV-1538: decide whether a persisted column should be widened based
+    on a freshly-probed type, and return ``(merged_column, did_widen)``.
 
-    Returns ``(merged, new_column_names, new_join_target_names,
-    widened_column_names)``.
-
-    * Existing columns are preserved verbatim (description / label / format /
-      meta / allowed_aggregations / filter never overwritten).
-    * DEV-1538 carve-out: a fresh column whose type widened from the
-      persisted ``DataType.INT`` (i.e. fresh type is ``DOUBLE`` or ``TEXT``)
-      replaces ONLY the persisted type — and the persisted ``format`` IF
-      the persisted format is the auto-ingested ``NumberFormat(INTEGER)``
-      default. Custom formats are preserved verbatim and an INFO log line
-      is emitted naming the column. Widening never narrows DOUBLE → INT.
-    * Live columns whose names are absent from ``persisted.columns`` are
-      appended from ``fresh.columns``.
-    * Joins with new ``(target_model, join_pairs)`` signatures are appended.
+    The widen branch only fires when ``sqlite_widen_enabled`` is True
+    (SQLite-only auto-heal), the fresh column exists, the persisted column
+    is ``DataType.INT``, and the fresh type is ``DataType.DOUBLE`` or
+    ``DataType.TEXT``. All other cases return ``persisted_col`` unchanged.
     """
-    existing_by_name: Dict[str, Column] = {c.name: c for c in persisted.columns}
-    fresh_by_name: Dict[str, Column] = {c.name: c for c in fresh.columns}
+    if not (
+        sqlite_widen_enabled
+        and fresh_col is not None
+        and persisted_col.type is DataType.INT
+        and fresh_col.type in (DataType.DOUBLE, DataType.TEXT)
+    ):
+        return persisted_col, False
 
-    new_column_names: List[str] = []
-    widened_column_names: List[str] = []
-    merged_columns: List[Column] = []
+    updates: Dict[str, Any] = {"type": fresh_col.type}
+    if _is_auto_default_integer_format(persisted_col.format):
+        updates["format"] = _format_for_widened_type(fresh_col.type)
+    else:
+        logger.info(
+            "Custom format on %s.%s preserved on SQLite probe widening "
+            "(persisted INT -> %s). Review whether the format still applies.",
+            model_name,
+            persisted_col.name,
+            fresh_col.type.value,
+        )
+    return persisted_col.model_copy(update=updates), True
 
-    for persisted_col in persisted.columns:
-        fresh_col = fresh_by_name.get(persisted_col.name)
-        if (
-            fresh_col is not None
-            and persisted_col.type is DataType.INT
-            and fresh_col.type in (DataType.DOUBLE, DataType.TEXT)
-        ):
-            # DEV-1538 widening — replace type + (auto-default) format.
-            updates: Dict[str, Any] = {"type": fresh_col.type}
-            if _is_auto_default_integer_format(persisted_col.format):
-                updates["format"] = _format_for_widened_type(fresh_col.type)
-            else:
-                logger.info(
-                    "Custom format on %s.%s preserved on SQLite probe widening "
-                    "(persisted INT -> %s). Review whether the format still "
-                    "applies.",
-                    persisted.name,
-                    persisted_col.name,
-                    fresh_col.type.value,
-                )
-            merged_columns.append(persisted_col.model_copy(update=updates))
-            widened_column_names.append(persisted_col.name)
-        else:
-            merged_columns.append(persisted_col)
 
-    for fresh_col in fresh.columns:
-        if fresh_col.name in existing_by_name:
-            continue
-        merged_columns.append(fresh_col)
-        new_column_names.append(fresh_col.name)
-
+def _merge_joins_strict(
+    persisted: SlayerModel, fresh: SlayerModel,
+) -> Tuple[List[ModelJoin], List[str]]:
+    """Append joins whose signature isn't already present. Raises on the
+    duplicate-target / different-pairs conflict so callers don't end up
+    with two joins pointing at the same target_model."""
     existing_join_sigs = _existing_join_signatures(persisted)
     existing_join_targets = {j.target_model for j in persisted.joins}
     new_joins: List[ModelJoin] = list(persisted.joins)
@@ -991,12 +974,6 @@ def _additive_merge_existing(
         if sig in existing_join_sigs:
             continue
         if j.target_model in existing_join_targets:
-            # Same target_model already present with a different
-            # join_pairs signature. Downstream consumers key joins by
-            # target_model only — appending a second one would let the
-            # stale join shadow the live one and ``remove.joins=[name]``
-            # would wipe both. Surface the conflict so the user can
-            # decide instead of silently breaking.
             raise ValueError(
                 f"Model {persisted.name!r} already has a join targeting "
                 f"{j.target_model!r} with different join_pairs; the "
@@ -1007,6 +984,59 @@ def _additive_merge_existing(
             )
         new_joins.append(j)
         new_join_targets.append(j.target_model)
+    return new_joins, new_join_targets
+
+
+def _additive_merge_existing(
+    *,
+    persisted: SlayerModel,
+    fresh: SlayerModel,
+    sqlite_widen_enabled: bool = False,
+) -> Tuple[SlayerModel, List[str], List[str], List[str]]:
+    """Merge a freshly-ingested ``fresh`` model into ``persisted`` additively.
+
+    Returns ``(merged, new_column_names, new_join_target_names,
+    widened_column_names)``.
+
+    * Existing columns are preserved verbatim (description / label / format /
+      meta / allowed_aggregations / filter never overwritten).
+    * DEV-1538 carve-out (SQLite only — ``sqlite_widen_enabled=True``): a
+      fresh column whose type widened from the persisted ``DataType.INT``
+      (i.e. fresh type is ``DOUBLE`` or ``TEXT``) replaces ONLY the persisted
+      type — and the persisted ``format`` IF the persisted format is the
+      auto-ingested ``NumberFormat(INTEGER)`` default. Custom formats are
+      preserved verbatim and an INFO log line is emitted naming the column.
+      Widening never narrows DOUBLE → INT. On non-SQLite datasources the
+      additive contract stays strict — schema drift surfaces via
+      ``slayer validate-models``, not via silent re-ingest overwrites.
+    * Live columns whose names are absent from ``persisted.columns`` are
+      appended from ``fresh.columns``.
+    * Joins with new ``(target_model, join_pairs)`` signatures are appended.
+    """
+    existing_by_name: Dict[str, Column] = {c.name: c for c in persisted.columns}
+    fresh_by_name: Dict[str, Column] = {c.name: c for c in fresh.columns}
+
+    widened_column_names: List[str] = []
+    merged_columns: List[Column] = []
+    for persisted_col in persisted.columns:
+        merged_col, did_widen = _merge_persisted_column_with_probe(
+            persisted_col=persisted_col,
+            fresh_col=fresh_by_name.get(persisted_col.name),
+            model_name=persisted.name,
+            sqlite_widen_enabled=sqlite_widen_enabled,
+        )
+        merged_columns.append(merged_col)
+        if did_widen:
+            widened_column_names.append(persisted_col.name)
+
+    new_column_names: List[str] = []
+    for fresh_col in fresh.columns:
+        if fresh_col.name in existing_by_name:
+            continue
+        merged_columns.append(fresh_col)
+        new_column_names.append(fresh_col.name)
+
+    new_joins, new_join_targets = _merge_joins_strict(persisted, fresh)
 
     if not new_column_names and not new_join_targets and not widened_column_names:
         return persisted, [], [], []
@@ -1045,7 +1075,9 @@ async def _process_one_table(
         # leave it alone.
         return None
     merged, new_cols, new_joins, widened_cols = _additive_merge_existing(
-        persisted=persisted, fresh=fresh
+        persisted=persisted,
+        fresh=fresh,
+        sqlite_widen_enabled=(datasource.type or "").lower() == "sqlite",
     )
     if new_cols or new_joins or widened_cols:
         await storage.save_model(merged)

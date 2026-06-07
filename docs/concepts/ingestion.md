@@ -55,7 +55,7 @@ All models use `sql_table` (the source table) plus `joins` (direct FK joins only
 
 SQLite's declared column types are affinity hints, not strict constraints: a column declared `INTEGER` can store `INTEGER`, `REAL`, `TEXT`, or `BLOB` values per row. To prevent silent truncation downstream (a column declared `INTEGER` but actually storing `0.99` would cast to `0` and break `AVG`/`SUM` results), SLayer runs an additional value-level probe on SQLite ingestion for every column the inspector reports as `INTEGER`-affinity.
 
-The probe samples up to **100,000 rows** (configurable via `slayer.sql.sqlite_introspect.PROBE_SCAN_CAP`) and decides per column:
+The probe samples up to **`PROBE_SCAN_CAP + 1` rows** (100,001 by default; configurable via `slayer.sql.sqlite_introspect.PROBE_SCAN_CAP`). The `+1` lets the probe detect saturation — if 100,001 rows come back, there's at least one row past the cap, and the probe declines to certify INT. It decides per column:
 
 - **DOUBLE** when any row's storage class is `REAL`, or any integer-storage value fails `ROUND(col) = col`, or every distinct TEXT value coerces to a finite `float()`.
 - **TEXT** when any row holds a `BLOB`, or any TEXT value is non-coercible / non-finite, or the distinct-text sample saturates the 1,000-distinct-value cap.

@@ -1763,6 +1763,7 @@ def _sqlite_probe_int_drift_for_model(
     *,
     model: SlayerModel,
     sa_engine,
+    default_schema: Optional[str] = None,
 ) -> List[Tuple[str, DataType, DeleteReason]]:
     """DEV-1538: probe-driven type-drift detection on SQLite.
 
@@ -1773,6 +1774,11 @@ def _sqlite_probe_int_drift_for_model(
     ``(column_name, verdict, DeleteReason)`` tuples so the caller can
     merge them into the model's diff state BEFORE the cascade fixed-point
     walk fires.
+
+    ``default_schema`` (typically ``datasource.schema_name``) is used as
+    the SQLite schema when ``model.sql_table`` is an unqualified table
+    name. Without this, attached SQLite schemas would silently fall back
+    to ``main`` and drift would be skipped or attributed to the wrong DB.
 
     Probe failures (``None`` verdict — explicit failure or saturated
     sample) silently skip; the helper's own WARNING covers them.
@@ -1788,7 +1794,7 @@ def _sqlite_probe_int_drift_for_model(
         schema_name, _, table_name = model.sql_table.partition(".")
         schema_name = schema_name or None
     else:
-        schema_name, table_name = None, model.sql_table
+        schema_name, table_name = default_schema or None, model.sql_table
 
     drifts: List[Tuple[str, DataType, DeleteReason]] = []
     with sa_engine.connect() as conn:
@@ -1849,9 +1855,12 @@ async def _sqlite_probe_drifts_for_models(
         )
         try:
             out: Dict[str, List[Tuple[str, DataType, DeleteReason]]] = {}
+            default_schema = datasource.schema_name or None
             for m in sql_table_models:
                 out[m.name] = _sqlite_probe_int_drift_for_model(
-                    model=m, sa_engine=sa_engine,
+                    model=m,
+                    sa_engine=sa_engine,
+                    default_schema=default_schema,
                 )
             return out
         finally:
@@ -1910,6 +1919,29 @@ def _merge_probe_drifts_into_diff(
     return merged_entry, merged_dropped
 
 
+def _diff_one_sql_table_model(
+    *,
+    model: SlayerModel,
+    live_tables: Dict[str, "LiveTable"],
+    available_in_ds: Set[str],
+    probe_drifts: List[Tuple[str, DataType, DeleteReason]],
+) -> Tuple[Optional[ToDeleteEntry], Set[str]]:
+    """Per-model body of :func:`_collect_sql_table_diffs` — resolves the
+    live table, runs ``diff_sql_table_model``, and merges any DEV-1538
+    SQLite probe drifts so the cascade walk treats them as regular drops."""
+    live = _resolve_live_table(
+        sql_table=model.sql_table or "", live_tables=live_tables,
+    )
+    base = diff_sql_table_model(
+        model=model,
+        live_table=live,
+        available_models_in_ds=available_in_ds,
+    )
+    return _merge_probe_drifts_into_diff(
+        model=model, base_diff=base, probe_drifts=probe_drifts,
+    )
+
+
 async def _collect_sql_table_diffs(
     *,
     datasource: DatasourceConfig,
@@ -1922,9 +1954,8 @@ async def _collect_sql_table_diffs(
     drift entries into each model's diff so the cascade fixed-point walk
     sees them as regular column drops.
     """
-    out: Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]] = {}
     if not sql_table_models:
-        return out
+        return {}
     # Honour the datasource's configured schema_name so non-default-schema
     # datasources diff against the right table set; otherwise SQLAlchemy
     # introspects the default and produces false WholeModelDeletes.
@@ -1937,21 +1968,15 @@ async def _collect_sql_table_diffs(
         datasource=datasource,
         sql_table_models=sql_table_models,
     )
-    for m in sql_table_models:
-        live = _resolve_live_table(
-            sql_table=m.sql_table or "", live_tables=live_tables
-        )
-        base = diff_sql_table_model(
+    return {
+        m.name: _diff_one_sql_table_model(
             model=m,
-            live_table=live,
-            available_models_in_ds=available_in_ds,
-        )
-        out[m.name] = _merge_probe_drifts_into_diff(
-            model=m,
-            base_diff=base,
+            live_tables=live_tables,
+            available_in_ds=available_in_ds,
             probe_drifts=probe_drifts_by_model.get(m.name, []),
         )
-    return out
+        for m in sql_table_models
+    }
 
 
 async def _collect_sql_diffs(

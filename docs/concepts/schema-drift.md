@@ -136,7 +136,7 @@ On SQLite, `validate_models` additionally runs the value-level affinity
 probe (see [Ingestion → SQLite affinity probing](ingestion.md#sqlite-affinity-probing))
 against every persisted base column with `type = INT`. When the probe
 disagrees with the persisted type — the live storage class is `REAL`,
-non-coercible `TEXT`, `BLOB`, or `INTEGER` with non-integral values —
+non-coercible `TEXT`, `BLOB`, or otherwise non-integral numeric evidence —
 `validate_models` emits an `EditModelDelete` removing the column with
 reason `"SQLite affinity probe widened <model>.<col> from INT to
 <verdict>; re-run slayer ingest to recreate with the correct type."`

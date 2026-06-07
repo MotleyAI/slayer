@@ -19,6 +19,7 @@ from slayer.memories.models import (
 from slayer.storage import migrations as _mig
 from slayer.storage.type_refinement import (
     has_refineable_columns,
+    has_sqlite_widenable_columns,
     refine_dict_with_live_schema,
 )
 
@@ -329,16 +330,34 @@ class StorageBackend(ABC):
             if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
                 data = _mig.migrate("SlayerModel", data)
                 write_back = True
-                if has_refineable_columns(data):
+                needs_double = has_refineable_columns(data)
+                needs_sqlite_int = has_sqlite_widenable_columns(data)
+                if needs_double or needs_sqlite_int:
                     ds = await self.get_datasource(data_source)
                     if ds is None:
-                        raise ValueError(
-                            f"Cannot migrate model {name!r}: datasource "
-                            f"{data_source!r} is unavailable for type "
-                            f"refinement. Restore the datasource entry or "
-                            f"remove the stale model file."
+                        # DEV-1361 DOUBLE narrowing requires live introspection
+                        # — without it the column stays at DOUBLE forever, so
+                        # hard-fail. DEV-1538 SQLite-INT widening is
+                        # best-effort: the persisted INT is a safe default
+                        # (re-ingest will heal it once the DS is back).
+                        if needs_double:
+                            raise ValueError(
+                                f"Cannot migrate model {name!r}: datasource "
+                                f"{data_source!r} is unavailable for type "
+                                f"refinement. Restore the datasource entry or "
+                                f"remove the stale model file."
+                            )
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "Datasource %r unavailable; skipping SQLite "
+                            "affinity probe for INT base columns on %r. "
+                            "Re-run `slayer ingest` once the datasource is "
+                            "back to widen any mis-typed columns.",
+                            data_source,
+                            name,
                         )
-                    refine_dict_with_live_schema(data, ds)
+                    else:
+                        refine_dict_with_live_schema(data, ds)
         model = SlayerModel.model_validate(data)
         if write_back:
             # DEV-1410: legacy on-disk models may contain derived-column

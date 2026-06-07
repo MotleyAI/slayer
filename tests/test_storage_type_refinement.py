@@ -667,12 +667,17 @@ class TestRefineSqliteAffinityProbe:
 
 
 class TestHasRefineableColumnsSqliteIntBranch:
-    """DEV-1538: ``has_refineable_columns`` must return True for SQLite
-    datasources when the dict has any persisted INT base column, so the
-    migration-write-back gate triggers the load-time probe pass."""
+    """DEV-1538: SQLite-INT widening is gated by ``has_sqlite_widenable_columns``
+    (best-effort, no DS hard-fail). DEV-1361 DOUBLE narrowing stays gated by
+    ``has_refineable_columns`` (DS required). The split was added after Codex
+    caught a regression where the broadened predicate made non-SQLite legacy
+    INT-only dicts hard-fail on missing DS — pre-DEV-1538 they didn't."""
 
-    def test_sqlite_int_base_column_is_refineable(self) -> None:
-        from slayer.storage.type_refinement import has_refineable_columns
+    def test_sqlite_int_base_column_is_widenable_not_refineable(self) -> None:
+        from slayer.storage.type_refinement import (
+            has_refineable_columns,
+            has_sqlite_widenable_columns,
+        )
 
         d = {
             "name": "items",
@@ -682,29 +687,54 @@ class TestHasRefineableColumnsSqliteIntBranch:
                 {"name": "qty", "sql": "qty", "type": "INT"},
             ],
         }
-        # The current has_refineable_columns predicate doesn't know the
-        # datasource type; the gate's downstream behavior is what we're
-        # pinning here — the predicate must surface SQLite-INT columns as
-        # refineable so the load-time write-back gate fires.
-        assert has_refineable_columns(d) is True
+        # INT base columns are *widenable* (best-effort), not *refineable*
+        # (mandatory DS); this asymmetry keeps non-SQLite legacy INT-only
+        # dicts loadable when the datasource entry is gone.
+        assert has_sqlite_widenable_columns(d) is True
+        assert has_refineable_columns(d) is False
 
-    async def test_sqlite_legacy_dict_with_int_raises_when_datasource_missing(
-        self, tmp_path: Path
+    def test_double_base_column_is_refineable_not_widenable(self) -> None:
+        from slayer.storage.type_refinement import (
+            has_refineable_columns,
+            has_sqlite_widenable_columns,
+        )
+
+        d = {
+            "name": "items",
+            "sql_table": "items",
+            "data_source": "live",
+            "columns": [
+                {"name": "amount", "sql": "amount", "type": "DOUBLE"},
+            ],
+        }
+        assert has_refineable_columns(d) is True
+        assert has_sqlite_widenable_columns(d) is False
+
+    async def test_sqlite_legacy_dict_with_int_loads_when_datasource_missing(
+        self, tmp_path: Path, caplog
     ) -> None:
-        """A v4 dict on SQLite with only INT base columns must hit the
-        "datasource unavailable for type refinement" hard-fail path the
-        same way DOUBLE-only dicts do today (DEV-1361 contract preserved)."""
-        # Build a v4 dict on disk that, after migration, will have INT base
-        # columns and no DOUBLE ones. The pre-DEV-1538 gate would let this
-        # load silently without refinement; DEV-1538 changes the predicate
-        # so the load-time probe runs (and hard-fails if the DS is gone).
+        """DEV-1538: when a legacy dict has ONLY INT base columns (no
+        DOUBLE), a missing datasource is NOT a hard fail. The persisted
+        INT is a safe default — re-ingest will heal any mis-typed columns
+        once the DS is back. A WARNING is logged so the skip is visible.
+
+        This is the corrected behavior after Codex caught a regression
+        where the original predicate broadening made non-SQLite legacy
+        INT-only dicts hard-fail on missing DS (pre-DEV-1538 they didn't).
+        """
+        import logging
         base = str(tmp_path)
         models_dir = os.path.join(base, "models", "live")
         os.makedirs(models_dir, exist_ok=True)
-        with open(os.path.join(models_dir, "items.yaml"), "w") as f:
+        # Use a recent legacy version that genuinely carries the modern
+        # "INT" type token. (Pre-DEV-1361 v4 dicts only know the legacy
+        # "number" / "string" tokens — pinning "version": 4 with "type":
+        # "INT" wouldn't represent any real on-disk model shape.)
+        legacy_version = mig.CURRENT_VERSIONS["SlayerModel"] - 1
+        with open(os.path.join(models_dir, "items.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             yaml.dump(
                 {
-                    "version": 4,
+                    "version": legacy_version,
                     "name": "items",
                     "sql_table": "items",
                     "data_source": "live",
@@ -714,7 +744,43 @@ class TestHasRefineableColumnsSqliteIntBranch:
                 },
                 f,
             )
-        # Don't register the datasource — load should hard-fail.
+        # Don't register the datasource — load should succeed (skip probe,
+        # log warning), NOT hard-fail like a DOUBLE-base-column dict would.
+        storage = YAMLStorage(base_dir=base)
+        with caplog.at_level(logging.WARNING, logger="slayer.storage.base"):
+            loaded = await storage.get_model("items", data_source="live")
+        assert loaded is not None
+        col = next(c for c in loaded.columns if c.name == "qty")
+        # Persisted INT preserved as the safe default.
+        assert col.type is DataType.INT
+        # Warning emitted naming the model + datasource.
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("items" in m and "live" in m for m in msgs), msgs
+
+    async def test_legacy_dict_with_double_still_raises_when_datasource_missing(
+        self, tmp_path: Path
+    ) -> None:
+        """The DEV-1361 hard-fail contract is preserved: a legacy dict with
+        ANY DOUBLE base column still hard-fails when the datasource is
+        missing (live introspection is required to narrow safely)."""
+        base = str(tmp_path)
+        models_dir = os.path.join(base, "models", "live")
+        os.makedirs(models_dir, exist_ok=True)
+        legacy_version = mig.CURRENT_VERSIONS["SlayerModel"] - 1
+        with open(os.path.join(models_dir, "items.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+            yaml.dump(
+                {
+                    "version": legacy_version,
+                    "name": "items",
+                    "sql_table": "items",
+                    "data_source": "live",
+                    "columns": [
+                        # DOUBLE base column → DEV-1361 narrowing required.
+                        {"name": "amount", "sql": "amount", "type": "DOUBLE"},
+                    ],
+                },
+                f,
+            )
         storage = YAMLStorage(base_dir=base)
         with pytest.raises(ValueError, match="datasource 'live' is unavailable"):
             await storage.get_model("items", data_source="live")
@@ -739,7 +805,7 @@ class TestV7SqliteModelNotAutoRepairedOnLoad:
         base = str(tmp_path / "storage")
         datasources_dir = os.path.join(base, "datasources")
         os.makedirs(datasources_dir, exist_ok=True)
-        with open(os.path.join(datasources_dir, "live.yaml"), "w") as f:
+        with open(os.path.join(datasources_dir, "live.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             yaml.dump(
                 {
                     "name": "live",
@@ -751,7 +817,7 @@ class TestV7SqliteModelNotAutoRepairedOnLoad:
             )
         models_dir = os.path.join(base, "models", "live")
         os.makedirs(models_dir, exist_ok=True)
-        with open(os.path.join(models_dir, "items.yaml"), "w") as f:
+        with open(os.path.join(models_dir, "items.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             yaml.dump(
                 {
                     "version": mig.CURRENT_VERSIONS["SlayerModel"],

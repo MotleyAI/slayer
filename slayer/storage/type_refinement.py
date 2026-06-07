@@ -9,12 +9,13 @@ declared column type is only an affinity hint — a column declared
 DEV-1538 splits this module's behavior by datasource type:
 
 * **SQLite**: skip the declared-type-driven narrowing entirely. Instead,
-  for every persisted INT base column, run
-  :func:`slayer.sql.sqlite_introspect.probe_sqlite_integer_column` against
-  the live storage classes and widen the persisted type to DOUBLE / TEXT
-  when the probe disagrees. The auto-default integer ``format`` is also
-  flipped (FLOAT for DOUBLE, cleared for TEXT); user-set custom formats
-  are preserved verbatim and an INFO log line is emitted as a hint.
+  run :func:`slayer.sql.sqlite_introspect.probe_sqlite_integer_column`
+  for persisted INT / DOUBLE base columns. Widen persisted INT to
+  DOUBLE / TEXT when the probe disagrees, and narrow persisted DOUBLE to
+  INT only when the probe positively certifies integer storage. The
+  auto-default integer ``format`` is flipped on widening (FLOAT for
+  DOUBLE, cleared for TEXT); user-set custom formats are preserved
+  verbatim and an INFO log line is emitted as a hint.
 * **Non-SQLite**: existing DEV-1361 narrowing unchanged.
 
 Hard-fails when the datasource is unreachable: the SQLAlchemy connect
@@ -25,7 +26,7 @@ behaviour as a normal query against a down DS would.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 
 import sqlalchemy as sa
 
@@ -79,16 +80,16 @@ def _format_for_widened_type_dict(verdict: DataType) -> Optional[dict]:
 
 def has_refineable_columns(d: dict) -> bool:
     """Return True iff ``d`` is a table-backed model dict with at least one
-    column that requires live-schema introspection to refine:
-
-    * Any DOUBLE-typed base column (the DEV-1361 narrowing target), OR
-    * Any INT-typed base column (the DEV-1538 SQLite-affinity widening
-      target — the predicate is datasource-type-agnostic here; the
-      SQLite branch is the only consumer that acts on the INT case, but
-      that decision lives in :func:`refine_dict_with_live_schema`).
+    DOUBLE-typed base column — the DEV-1361 narrowing target. These
+    columns cannot be refined without live introspection, so callers
+    treat a missing datasource as a hard failure.
 
     Used by storage callers to decide whether the live datasource is
-    actually needed before raising on a missing ``DatasourceConfig``.
+    *required* before raising on a missing ``DatasourceConfig``. The
+    DEV-1538 SQLite-INT widening case is handled by
+    :func:`has_sqlite_widenable_columns` and is best-effort (missing DS
+    → log warning + skip refinement, since the persisted INT is a safe
+    default).
     """
     if not isinstance(d, dict):
         return False
@@ -100,10 +101,137 @@ def has_refineable_columns(d: dict) -> bool:
         return False
     return any(
         isinstance(c, dict)
-        and c.get("type") in (DataType.DOUBLE.value, DataType.INT.value)
+        and c.get("type") == DataType.DOUBLE.value
         and _column_is_base(c.get("sql"))
         for c in columns
     )
+
+
+def has_sqlite_widenable_columns(d: dict) -> bool:
+    """Return True iff ``d`` is a table-backed model dict with at least one
+    INT-typed base column — the DEV-1538 SQLite-affinity widening target.
+
+    Unlike :func:`has_refineable_columns`, this predicate is *advisory* —
+    callers run the probe to attempt widening when possible, but a missing
+    datasource is NOT a hard fail because the persisted INT is a safe
+    default (re-ingest will heal it once the DS is back). Only matters for
+    SQLite datasources; non-SQLite consumers no-op silently inside
+    :func:`refine_dict_with_live_schema`.
+    """
+    if not isinstance(d, dict):
+        return False
+    sql_table = d.get("sql_table")
+    if not isinstance(sql_table, str) or not sql_table:
+        return False
+    columns = d.get("columns")
+    if not isinstance(columns, list) or not columns:
+        return False
+    return any(
+        isinstance(c, dict)
+        and c.get("type") == DataType.INT.value
+        and _column_is_base(c.get("sql"))
+        for c in columns
+    )
+
+
+def _parse_sql_table_with_default_schema(
+    sql_table: str, datasource: DatasourceConfig,
+) -> Tuple[Optional[str], str]:
+    """Split ``sql_table`` into ``(schema, table)``, falling back to
+    ``datasource.schema_name`` when the name is unqualified. This honours
+    attached SQLite schemas instead of silently using ``main``.
+    """
+    default_schema = getattr(datasource, "schema_name", None) or None
+    if "." in sql_table:
+        schema_name, _, table_name = sql_table.partition(".")
+        return (schema_name or None), table_name
+    return default_schema, sql_table
+
+
+def _safe_probe(
+    *, conn, table: str, column: str, schema: Optional[str],
+    sql_table: str, persisted_type: str,
+) -> Optional[DataType]:
+    """Run the probe with a defence-in-depth try/except so the refinement
+    loop never aborts on an unexpected exception."""
+    from slayer.sql.sqlite_introspect import probe_sqlite_integer_column
+    try:
+        return probe_sqlite_integer_column(
+            conn=conn, table=table, column=column, schema=schema,
+        )
+    except Exception as exc:
+        logger.warning(
+            "probe call raised for %s.%s; keeping persisted type %s: %s",
+            sql_table, column, persisted_type, exc,
+        )
+        return None
+
+
+def _verdict_changes_persisted_type(
+    *, persisted_type: str, verdict: DataType,
+) -> bool:
+    """Returns True when the probe verdict warrants flipping the persisted
+    type. INT persisted: any non-INT verdict widens. DOUBLE persisted:
+    only an INT verdict narrows (probe-verified)."""
+    if persisted_type == DataType.INT.value:
+        return verdict is not DataType.INT
+    if persisted_type == DataType.DOUBLE.value:
+        return verdict is DataType.INT
+    return False
+
+
+def _apply_format_flip(
+    *, col: dict, d: dict, col_name: str, persisted_type: str, verdict: DataType,
+) -> None:
+    """Update ``col["format"]`` in place to match the new type. Only the
+    auto-default ``NumberFormat(INTEGER)`` is overwritten; custom formats
+    are preserved verbatim (with an INFO log hint for the widening direction)."""
+    if _is_auto_default_integer_format_dict(col.get("format")):
+        new_format = _format_for_widened_type_dict(verdict)
+        if new_format is None:
+            col.pop("format", None)
+        else:
+            col["format"] = new_format
+        return
+    if persisted_type == DataType.INT.value:
+        # Only log the "custom format preserved" hint for the widening
+        # direction; on the DOUBLE → INT narrowing the format is typically
+        # already a numeric default.
+        logger.info(
+            "Custom format on %s.%s preserved on SQLite probe widening "
+            "(persisted INT -> %s). Review whether the format still applies.",
+            d.get("name", "<unknown>"),
+            col.get("name", col_name),
+            verdict.value,
+        )
+
+
+def _refine_one_column(
+    *, conn, col: dict, d: dict, table_name: str, schema_name: Optional[str],
+    sql_table: str,
+) -> bool:
+    """Run the probe for one column and apply the verdict. Returns True if
+    the column dict was mutated."""
+    col_name = col.get("sql") or col.get("name")
+    if not isinstance(col_name, str):
+        return False
+    persisted_type = col.get("type")
+    verdict = _safe_probe(
+        conn=conn, table=table_name, column=col_name, schema=schema_name,
+        sql_table=sql_table, persisted_type=str(persisted_type),
+    )
+    if verdict is None:
+        return False
+    if not _verdict_changes_persisted_type(
+        persisted_type=str(persisted_type), verdict=verdict,
+    ):
+        return False
+    col["type"] = verdict.value
+    _apply_format_flip(
+        col=col, d=d, col_name=col_name,
+        persisted_type=str(persisted_type), verdict=verdict,
+    )
+    return True
 
 
 def _refine_dict_sqlite_probe(d: dict, datasource: DatasourceConfig) -> bool:
@@ -135,77 +263,17 @@ def _refine_dict_sqlite_probe(d: dict, datasource: DatasourceConfig) -> bool:
     if not refineable:
         return False
 
-    # Local import to avoid loading the helper on cold-start of non-SQLite
-    # backends.
-    from slayer.sql.sqlite_introspect import probe_sqlite_integer_column
-
-    # Parse schema-qualified sql_table the same way the ingest helper does.
-    if "." in sql_table:
-        schema_name, _, table_name = sql_table.partition(".")
-        schema_name = schema_name or None
-    else:
-        schema_name, table_name = None, sql_table
-
+    schema_name, table_name = _parse_sql_table_with_default_schema(sql_table, datasource)
     sa_engine = sa.create_engine(datasource.resolve_env_vars().get_connection_string())
     changed = False
     try:
         with sa_engine.connect() as conn:
             for col in refineable:
-                col_name = col.get("sql") or col.get("name")
-                if not isinstance(col_name, str):
-                    continue
-                persisted_type = col.get("type")
-                try:
-                    verdict = probe_sqlite_integer_column(
-                        conn=conn,
-                        table=table_name,
-                        column=col_name,
-                        schema=schema_name,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "probe call raised for %s.%s; keeping persisted type %s: %s",
-                        sql_table,
-                        col_name,
-                        persisted_type,
-                        exc,
-                    )
-                    verdict = None
-                if verdict is None:
-                    continue
-                # Decide whether this verdict changes the persisted type.
-                if persisted_type == DataType.INT.value:
-                    # DEV-1538 widening: only flip on disagreement.
-                    if verdict is DataType.INT:
-                        continue
-                elif persisted_type == DataType.DOUBLE.value:
-                    # DEV-1361 narrowing (probe-verified): only narrow to
-                    # INT. Probe-says-DOUBLE or probe-says-TEXT leaves
-                    # the persisted DOUBLE alone.
-                    if verdict is not DataType.INT:
-                        continue
-                col["type"] = verdict.value
-                # Format flip rule: only overwrite the auto-default
-                # NumberFormat(type=INTEGER); custom formats preserved.
-                if _is_auto_default_integer_format_dict(col.get("format")):
-                    new_format = _format_for_widened_type_dict(verdict)
-                    if new_format is None:
-                        col.pop("format", None)
-                    else:
-                        col["format"] = new_format
-                elif persisted_type == DataType.INT.value:
-                    # Only log the "custom format preserved" hint for the
-                    # widening direction; on the DOUBLE → INT narrowing
-                    # the format is typically already a numeric default.
-                    logger.info(
-                        "Custom format on %s.%s preserved on SQLite probe widening "
-                        "(persisted INT -> %s). Review whether the format still "
-                        "applies.",
-                        d.get("name", "<unknown>"),
-                        col.get("name", col_name),
-                        verdict.value,
-                    )
-                changed = True
+                if _refine_one_column(
+                    conn=conn, col=col, d=d, table_name=table_name,
+                    schema_name=schema_name, sql_table=sql_table,
+                ):
+                    changed = True
     finally:
         sa_engine.dispose()
     return changed
@@ -215,10 +283,12 @@ def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig) -> bool:
     """Mutate ``d`` in place: refine column types against the live schema.
 
     SQLite (DEV-1538):
-        Run the per-column affinity probe for every persisted INT base
-        column and widen INT -> DOUBLE / TEXT when the probe disagrees.
-        The DEV-1361 DOUBLE -> INT narrowing is **skipped** on SQLite —
-        the declared-type signal it relies on is broken on this backend.
+        Run the per-column affinity probe for every persisted INT and
+        DOUBLE base column. Widen persisted INT to DOUBLE / TEXT when the
+        probe disagrees, and narrow persisted DOUBLE to INT only when the
+        probe positively certifies integer storage. The declared-type-
+        driven narrowing path is bypassed entirely on SQLite — the
+        affinity signal it relies on is broken on this backend.
 
     Non-SQLite (DEV-1361):
         Walk the live schema and narrow DOUBLE-typed base columns to INT
@@ -229,11 +299,15 @@ def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig) -> bool:
     Hard-fails with the SQLAlchemy connect error when the datasource is
     unreachable. Idempotent: a second call on a refined dict is a no-op.
     """
+    if _is_sqlite_datasource(datasource):
+        # SQLite admits both INT and DOUBLE base columns to the probe-driven
+        # refinement (widen INT or probe-verified narrow DOUBLE).
+        if not (has_refineable_columns(d) or has_sqlite_widenable_columns(d)):
+            return False
+        return _refine_dict_sqlite_probe(d, datasource)
+
     if not has_refineable_columns(d):
         return False
-
-    if _is_sqlite_datasource(datasource):
-        return _refine_dict_sqlite_probe(d, datasource)
 
     # DEV-1361 narrowing path — unchanged from pre-1538 behaviour.
     sql_table = d["sql_table"]

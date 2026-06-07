@@ -16,7 +16,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import pytest
 
@@ -701,13 +701,13 @@ async def _persist_int_model(
 ) -> None:
     """Persist a model with the target column hard-coded as type=INT,
     simulating a pre-DEV-1538 ingest."""
-    col_kwargs = dict(
-        name=column,
-        sql=column,
-        type=DataType.INT,
-        format=column_format or NumberFormat(type=NumberFormatType.INTEGER),
-        description=description,
-    )
+    col_kwargs: Dict[str, Any] = {
+        "name": column,
+        "sql": column,
+        "type": DataType.INT,
+        "format": column_format or NumberFormat(type=NumberFormatType.INTEGER),
+        "description": description,
+    }
     if label is not None:
         col_kwargs["label"] = label
     if extra_meta is not None:
@@ -844,6 +844,38 @@ class TestSqliteProbeWideningOnReingest:
 
         loaded = await storage.get_model("t", data_source="ds")
         col = next(c for c in loaded.columns if c.name == "qty")
+        assert col.type is DataType.INT
+
+    async def test_non_sqlite_with_live_schema_drift_stays_strict_additive(
+        self, workspace: Path
+    ) -> None:
+        """DEV-1538: the widening branch must NOT fire on non-SQLite datasources
+        even when the fresh live schema disagrees with persisted (e.g. a DBA
+        ran ``ALTER COLUMN qty TYPE DOUBLE`` on Postgres). On non-SQLite the
+        additive contract stays strict — drift surfaces via ``slayer
+        validate-models``, not via silent re-ingest overwrites.
+        """
+        pytest.importorskip("duckdb")
+        import duckdb
+
+        db_path = str(workspace / "live.duckdb")
+        # Live schema declares ``qty`` as DOUBLE; persisted will say INT.
+        con = duckdb.connect(db_path)
+        con.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, qty DOUBLE)")
+        con.execute("INSERT INTO t VALUES (1, 0.5), (2, 0.7)")
+        con.close()
+
+        storage = YAMLStorage(base_dir=str(workspace / "storage"))
+        ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
+        await storage.save_datasource(ds)
+        # Persist with stale INT type (e.g. left over from a prior schema).
+        await _persist_int_model(storage, "ds", "t", "qty")
+
+        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+
+        loaded = await storage.get_model("t", data_source="ds")
+        col = next(c for c in loaded.columns if c.name == "qty")
+        # Non-SQLite: persisted INT stays INT, even though fresh said DOUBLE.
         assert col.type is DataType.INT
 
     async def test_widened_columns_in_model_addition(
