@@ -2644,6 +2644,61 @@ def extract_filter_transforms(
     return _unmangle(_ast.unparse(modified)), transforms
 
 
+# DEV-1539: compound AST shapes that ALWAYS need an outer ``(...)``
+# wrap when their SQL is substituted into a filter context with a
+# surrounding comparator. Checked **before** the atomic list below
+# because in sqlglot 30.4.3 ``exp.And`` and ``exp.Or`` inherit from
+# ``exp.Func`` — a single inverse-atomic check would mis-classify
+# ``a AND b`` as atomic and skip the wrap (Codex finding).
+_COMPOUND_FILTER_INLINE_TYPES: tuple = (
+    exp.Binary,     # arith / comparison
+    exp.Connector,  # AND / OR
+    exp.Unary,      # NOT, -x
+    exp.Predicate,  # BETWEEN, IN, LIKE, IS, …
+)
+
+# DEV-1539: AST shapes whose precedence is already unambiguous when
+# substituted into a filter context. A ``Column.sql`` body whose root
+# is one of these does NOT need an outer paren wrap. Used as the
+# fallback after the compound-types check.
+_ATOMIC_FILTER_INLINE_TYPES: tuple = (
+    exp.Column,
+    exp.Literal,
+    exp.Func,      # covers function calls, CAST, CASE, Anonymous, …
+    exp.Paren,     # already self-wrapped
+    exp.Boolean,   # TRUE / FALSE
+    exp.Null,
+)
+
+
+def _filter_inline_needs_paren_wrap(*, sql: str, dialect: str) -> bool:
+    """DEV-1539: decide whether an inlined ``Column.sql`` body needs an
+    outer ``(...)`` wrap when substituted into a filter's text.
+
+    The wrap matters when the body is a multi-term / predicate
+    expression whose precedence is ambiguous against the surrounding
+    comparator. Atomic shapes — bare columns, literals, single
+    function calls, single CASE / CAST — are already unambiguous;
+    wrapping them adds noise without changing meaning. **Anything
+    else** (BinOp, BoolOp, ``NOT``, ``BETWEEN``, ``IN``, ``LIKE``,
+    ``IS``, …) needs wrapping.
+
+    Parses ``sql`` once via sqlglot to determine the root AST shape.
+    The compound-type check fires first because in sqlglot 30.4.3
+    ``exp.And`` / ``exp.Or`` inherit from ``exp.Func``; a single
+    inverse-atomic check would mis-classify ``a AND b`` as atomic.
+    Conservative on parse failure: returns ``True`` so the caller wraps
+    (errs on the side of correctness over noise).
+    """
+    try:
+        tree = sqlglot.parse_one(sql, dialect=dialect)
+    except Exception:  # noqa: BLE001 — sqlglot raises a variety of error types
+        return True
+    if isinstance(tree, _COMPOUND_FILTER_INLINE_TYPES):
+        return True
+    return not isinstance(tree, _ATOMIC_FILTER_INLINE_TYPES)
+
+
 async def resolve_filter_columns(
     parsed_filters: list,
     model: SlayerModel,
@@ -2725,9 +2780,24 @@ async def resolve_filter_columns(
                             alias_path=model_name,
                             is_root=True,
                         )
+                        # DEV-1539: wrap the inlined non-bare Column.sql
+                        # in outer parens so the precedence of any
+                        # surrounding comparator is explicit. Mirrors the
+                        # ``exp.Paren`` wrap that ``expand_derived_refs``
+                        # already applies to spliced derived bodies. Skip
+                        # the wrap when the inlined body is already a
+                        # single atomic expression (literal / column /
+                        # function call) — its precedence is unambiguous
+                        # and the wrap would only add noise.
+                        if _filter_inline_needs_paren_wrap(sql=qualified, dialect=dialect):
+                            qualified = f"({qualified})"
+                    # DEV-1539: lambda replacement so backslashes inside
+                    # ``qualified`` aren't interpreted as ``re`` escape
+                    # sequences (which would silently halve ``\\`` or
+                    # raise on a ``\1`` backref).
                     resolved_sql = _re.sub(
                         rf"(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)",
-                        qualified,
+                        lambda _m, q=qualified: q,
                         resolved_sql,
                     )
                     resolved_columns.append(qualified)
@@ -2814,9 +2884,22 @@ async def resolve_filter_columns(
                                 alias_path=table_alias,
                                 is_root=False,
                             )
+                            # DEV-1539: wrap inlined non-bare joined
+                            # Column.sql in outer parens; mirror of the
+                            # local-branch fix above. Skip when the body
+                            # is already an atomic expression.
+                            if _filter_inline_needs_paren_wrap(sql=qualified, dialect=dialect):
+                                qualified = f"({qualified})"
+                        # DEV-1539: lambda replacement for backslash
+                        # safety. Symmetric ``(?<!\.)…(?!\.)`` guards
+                        # mirror the local-branch pattern — without the
+                        # trailing guard, a shorter dotted col_name like
+                        # ``customers.score`` would mis-substitute as a
+                        # prefix of a longer reference such as
+                        # ``customers.score.extra``, mangling the SQL.
                         resolved_sql = _re.sub(
-                            rf"(?<!\w)\b{_re.escape(col_name)}\b",
-                            qualified,
+                            rf"(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)",
+                            lambda _m, q=qualified: q,
                             resolved_sql,
                         )
                         # Keep the original dotted path in resolved_columns
