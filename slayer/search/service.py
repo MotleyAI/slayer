@@ -941,7 +941,7 @@ class SearchService:
             return None, None, None
         if _search_graph.is_available():
             candidate_ids = await _search_graph.get_filtered_ids(
-                cypher_filter, self._storage,
+                cypher=cypher_filter, storage=self._storage,
             )
             if not candidate_ids:
                 early_warnings = _dedup(

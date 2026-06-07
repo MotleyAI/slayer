@@ -1040,9 +1040,12 @@ async def test_candidate_ids_narrow_memory_corpus_seen_by_retrievers(
 
         r.retrieve = capturing  # type: ignore[method-assign]
 
-    with patch(
-        "slayer.search.graph.get_filtered_ids",
-        return_value=expected_ids,
+    with (
+        patch("slayer.search.graph.is_available", return_value=True),
+        patch(
+            "slayer.search.graph.get_filtered_ids",
+            return_value=expected_ids,
+        ),
     ):
         await service.search(
             entities=["shop.orders.amount"],
@@ -1136,9 +1139,12 @@ async def test_stale_canonical_ids_in_candidate_set_cause_no_error(
 
     service = SearchService(storage=shop_only_storage)
     # Inject the stale id as if it came from Cypher
-    with patch(
-        "slayer.search.graph.get_filtered_ids",
-        return_value=frozenset({stale_id}),
+    with (
+        patch("slayer.search.graph.is_available", return_value=True),
+        patch(
+            "slayer.search.graph.get_filtered_ids",
+            return_value=frozenset({stale_id}),
+        ),
     ):
         response = await service.search(
             cypher_filter="MATCH (m:Memory) RETURN m.id AS id",
@@ -1205,9 +1211,12 @@ async def test_cypher_filter_applied_to_recency_fallback(
     allowed_id = f"memory:{mem_in.id}"
 
     service = SearchService(storage=shop_only_storage)
-    with patch(
-        "slayer.search.graph.get_filtered_ids",
-        return_value=frozenset({allowed_id}),
+    with (
+        patch("slayer.search.graph.is_available", return_value=True),
+        patch(
+            "slayer.search.graph.get_filtered_ids",
+            return_value=frozenset({allowed_id}),
+        ),
     ):
         response = await service.search(
             cypher_filter="MATCH (m:Memory) RETURN m.id AS id",
@@ -1238,9 +1247,12 @@ async def test_cypher_filter_exclusion_does_not_emit_off_datasource_warning(
     # Cypher filter returns only an unrelated entity id — the memory is
     # excluded by the allowlist but IS rooted at "shop".
     service = SearchService(storage=shop_only_storage)
-    with patch(
-        "slayer.search.graph.get_filtered_ids",
-        return_value=frozenset({"shop.orders"}),
+    with (
+        patch("slayer.search.graph.is_available", return_value=True),
+        patch(
+            "slayer.search.graph.get_filtered_ids",
+            return_value=frozenset({"shop.orders"}),
+        ),
     ):
         response = await service.search(
             entities=[excluded_canonical],
@@ -1280,9 +1292,12 @@ async def test_recency_fallback_warns_when_filters_excluded_all(
     service = SearchService(storage=shop_only_storage)
     # Cypher returns IDs that don't match any memory canonical — the
     # recency pool is non-empty pre-filter but empty post-filter.
-    with patch(
-        "slayer.search.graph.get_filtered_ids",
-        return_value=frozenset({"shop.orders"}),
+    with (
+        patch("slayer.search.graph.is_available", return_value=True),
+        patch(
+            "slayer.search.graph.get_filtered_ids",
+            return_value=frozenset({"shop.orders"}),
+        ),
     ):
         response = await service.search(
             cypher_filter="MATCH (n) RETURN n.id AS id",
