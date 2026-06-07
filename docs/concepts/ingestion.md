@@ -51,6 +51,23 @@ FK columns from referenced tables are excluded from the source model to avoid re
 
 All models use `sql_table` (the source table) plus `joins` (direct FK joins only, storing source/target column pairs). Multi-hop JOINs are resolved dynamically at query time by walking the join graph.
 
+### SQLite affinity probing
+
+SQLite's declared column types are affinity hints, not strict constraints: a column declared `INTEGER` can store `INTEGER`, `REAL`, `TEXT`, or `BLOB` values per row. To prevent silent truncation downstream (a column declared `INTEGER` but actually storing `0.99` would cast to `0` and break `AVG`/`SUM` results), SLayer runs an additional value-level probe on SQLite ingestion for every column the inspector reports as `INTEGER`-affinity.
+
+The probe samples up to **100,000 rows** (configurable via `slayer.sql.sqlite_introspect.PROBE_SCAN_CAP`) and decides per column:
+
+- **DOUBLE** when any row's storage class is `REAL`, or any integer-storage value fails `ROUND(col) = col`, or every distinct TEXT value coerces to a finite `float()`.
+- **TEXT** when any row holds a `BLOB`, or any TEXT value is non-coercible / non-finite, or the distinct-text sample saturates the 1,000-distinct-value cap.
+- **INT** when the entire sample is integer-shaped and the sample isn't saturated.
+- The SA-derived `INT` is kept (probe returns `None`) when the column is empty, all-NULL, the row sample saturates without enough evidence, or the probe itself errors. The probe logs a `WARNING` in the saturated / error cases.
+
+The probe is **idempotent re-ingest aware**: a persisted `Column.type = INT` is widened to `DOUBLE` / `TEXT` on the next `slayer ingest` if the live storage classes disagree. `Column.format = NumberFormat(INTEGER)` (the auto-ingested default) is flipped to `FLOAT` for `DOUBLE` or cleared for `TEXT`; user-set custom formats (currency, custom precision) are preserved verbatim with an `INFO` log noting the type change. The CLI prints `Updated: <model> (widened: <col>)` so the change is visible.
+
+Non-SQLite datasources (Postgres, MySQL, DuckDB, ClickHouse, SQL Server) skip the probe entirely — their type systems are strict and this class of bug doesn't exist.
+
+Already-persisted v7 SQLite models with the wrong `INT` type are **not** auto-repaired on `storage.get_model()` load (running a full table scan per column on every load would be too expensive). Re-ingest is the auto-heal path: `slayer ingest` or `slayer serve --ingest-on-startup`. The DEV-1361 DOUBLE → INT narrowing on legacy-dict migration is also gated on the probe on SQLite — it only fires when the probe positively certifies INT.
+
 ## Usage
 
 ### CLI

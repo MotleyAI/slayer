@@ -667,6 +667,84 @@ def _columns_to_model(
     )
 
 
+def _sqlite_probe_integer_columns(
+    *,
+    sa_engine: sa.Engine,
+    sql_table: str,
+    columns: List[tuple],
+) -> List[tuple]:
+    """DEV-1538: per-column SQLite affinity probe.
+
+    Walks the tuples ``(col_name, DataType, is_pk, is_float)`` produced by
+    :func:`_introspect_query_columns_via_inspector` and, for every base
+    column (alias without ``.``) that the SA inspector reported as
+    :class:`DataType.INT`, runs
+    :func:`slayer.sql.sqlite_introspect.probe_sqlite_integer_column` against
+    the actual storage classes. Mutates the tuple to the widened
+    :class:`DataType` whenever the probe disagrees with the declared
+    affinity.
+
+    No-op on non-SQLite engines.
+
+    Failure modes:
+    * Non-SQLite engine → input returned verbatim.
+    * Probe returns ``None`` (failure or saturation) → keep the SA-derived
+      INT type, leave the warning already logged by the probe in place.
+    * Joined-column alias (``"."`` in the name) → skipped; joined references
+      inherit their type from the target model's own probe pass.
+    """
+    if sa_engine.dialect.name != "sqlite":
+        return columns
+
+    from slayer.sql.sqlite_introspect import probe_sqlite_integer_column
+
+    schema, table = _parse_qualified_sql_table(sql_table)
+    out: List[tuple] = []
+    with sa_engine.connect() as conn:
+        for col_name, data_type, is_pk, is_float in columns:
+            if data_type is not DataType.INT or "." in col_name:
+                out.append((col_name, data_type, is_pk, is_float))
+                continue
+            try:
+                verdict = probe_sqlite_integer_column(
+                    conn=conn,
+                    table=table,
+                    column=col_name,
+                    schema=schema,
+                )
+            except Exception as exc:
+                # Defence-in-depth: the helper catches its own errors but a
+                # caller-level guard keeps ingest from aborting on unexpected
+                # exceptions outside the helper's scope (e.g. import-time
+                # failures on environments missing sqlite_introspect).
+                logger.warning(
+                    "probe call raised for %s.%s; keeping declared INT: %s",
+                    sql_table,
+                    col_name,
+                    exc,
+                )
+                verdict = None
+            if verdict is None or verdict is DataType.INT:
+                out.append((col_name, data_type, is_pk, is_float))
+                continue
+            new_is_float = verdict is DataType.DOUBLE
+            out.append((col_name, verdict, is_pk, new_is_float))
+    return out
+
+
+def _parse_qualified_sql_table(sql_table: str) -> Tuple[Optional[str], str]:
+    """Split ``"schema.table"`` into ``(schema, table)`` or ``(None, table)``.
+
+    Only splits on a single dot — table/schema names containing dots are
+    out of scope for the auto-ingest path (the dotted form would never have
+    survived ``Inspector.get_table_names`` either).
+    """
+    if "." in sql_table:
+        schema, _, table = sql_table.partition(".")
+        return schema or None, table
+    return None, sql_table
+
+
 def introspect_table_to_model(
     *,
     sa_engine: sa.Engine,
@@ -691,6 +769,11 @@ def introspect_table_to_model(
         fk_columns_by_table={},
     )
     sql_table = f"{schema}.{table_name}" if schema else table_name
+    columns = _sqlite_probe_integer_columns(
+        sa_engine=sa_engine,
+        sql_table=sql_table,
+        columns=columns,
+    )
     return _columns_to_model(
         name=model_name or table_name,
         columns=columns,
@@ -762,6 +845,11 @@ def ingest_datasource(
                 fk_columns_by_table=fk_columns_by_table,
                 joins=model_joins,
             )
+            columns = _sqlite_probe_integer_columns(
+                sa_engine=sa_engine,
+                sql_table=sql_table,
+                columns=columns,
+            )
             model = _columns_to_model(
                 name=table_name,
                 columns=columns,
@@ -779,6 +867,11 @@ def ingest_datasource(
                 rollup_sql=None,
                 referenced_tables=set(),
                 fk_columns_by_table=fk_columns_by_table,
+            )
+            columns = _sqlite_probe_integer_columns(
+                sa_engine=sa_engine,
+                sql_table=sql_table,
+                columns=columns,
             )
             model = _columns_to_model(
                 name=table_name,
@@ -809,29 +902,85 @@ def _existing_join_signatures(model: SlayerModel) -> Set[Tuple[str, Tuple[Tuple[
     return out
 
 
+def _is_auto_default_integer_format(fmt: Optional[NumberFormat]) -> bool:
+    """Return True when ``fmt`` looks like the auto-ingested ``NumberFormat
+    (type=INTEGER)`` default (no custom precision / symbol set). Used by
+    DEV-1538's widening path to decide whether to flip the format alongside
+    the type; user-set custom formats are preserved verbatim.
+    """
+    if fmt is None:
+        return False
+    if fmt.type != NumberFormatType.INTEGER:
+        return False
+    return fmt.precision is None and fmt.symbol is None
+
+
+def _format_for_widened_type(verdict: DataType) -> Optional[NumberFormat]:
+    """Return the auto-default format for a probed widening verdict."""
+    if verdict is DataType.DOUBLE:
+        return NumberFormat(type=NumberFormatType.FLOAT)
+    return None  # TEXT clears format
+
+
 def _additive_merge_existing(
     *,
     persisted: SlayerModel,
     fresh: SlayerModel,
-) -> Tuple[SlayerModel, List[str], List[str]]:
+) -> Tuple[SlayerModel, List[str], List[str], List[str]]:
     """Merge a freshly-ingested ``fresh`` model into ``persisted`` additively.
 
-    Returns ``(merged, new_column_names, new_join_target_names)``.
+    Returns ``(merged, new_column_names, new_join_target_names,
+    widened_column_names)``.
 
     * Existing columns are preserved verbatim (description / label / format /
       meta / allowed_aggregations / filter never overwritten).
+    * DEV-1538 carve-out: a fresh column whose type widened from the
+      persisted ``DataType.INT`` (i.e. fresh type is ``DOUBLE`` or ``TEXT``)
+      replaces ONLY the persisted type — and the persisted ``format`` IF
+      the persisted format is the auto-ingested ``NumberFormat(INTEGER)``
+      default. Custom formats are preserved verbatim and an INFO log line
+      is emitted naming the column. Widening never narrows DOUBLE → INT.
     * Live columns whose names are absent from ``persisted.columns`` are
       appended from ``fresh.columns``.
     * Joins with new ``(target_model, join_pairs)`` signatures are appended.
     """
-    existing_col_names = {c.name for c in persisted.columns}
-    new_columns: List[Column] = list(persisted.columns)
+    existing_by_name: Dict[str, Column] = {c.name: c for c in persisted.columns}
+    fresh_by_name: Dict[str, Column] = {c.name: c for c in fresh.columns}
+
     new_column_names: List[str] = []
-    for c in fresh.columns:
-        if c.name in existing_col_names:
+    widened_column_names: List[str] = []
+    merged_columns: List[Column] = []
+
+    for persisted_col in persisted.columns:
+        fresh_col = fresh_by_name.get(persisted_col.name)
+        if (
+            fresh_col is not None
+            and persisted_col.type is DataType.INT
+            and fresh_col.type in (DataType.DOUBLE, DataType.TEXT)
+        ):
+            # DEV-1538 widening — replace type + (auto-default) format.
+            updates: Dict[str, Any] = {"type": fresh_col.type}
+            if _is_auto_default_integer_format(persisted_col.format):
+                updates["format"] = _format_for_widened_type(fresh_col.type)
+            else:
+                logger.info(
+                    "Custom format on %s.%s preserved on SQLite probe widening "
+                    "(persisted INT -> %s). Review whether the format still "
+                    "applies.",
+                    persisted.name,
+                    persisted_col.name,
+                    fresh_col.type.value,
+                )
+            merged_columns.append(persisted_col.model_copy(update=updates))
+            widened_column_names.append(persisted_col.name)
+        else:
+            merged_columns.append(persisted_col)
+
+    for fresh_col in fresh.columns:
+        if fresh_col.name in existing_by_name:
             continue
-        new_columns.append(c)
-        new_column_names.append(c.name)
+        merged_columns.append(fresh_col)
+        new_column_names.append(fresh_col.name)
 
     existing_join_sigs = _existing_join_signatures(persisted)
     existing_join_targets = {j.target_model for j in persisted.joins}
@@ -859,13 +1008,13 @@ def _additive_merge_existing(
         new_joins.append(j)
         new_join_targets.append(j.target_model)
 
-    if not new_column_names and not new_join_targets:
-        return persisted, [], []
+    if not new_column_names and not new_join_targets and not widened_column_names:
+        return persisted, [], [], []
 
     merged = persisted.model_copy(
-        update={"columns": new_columns, "joins": new_joins}
+        update={"columns": merged_columns, "joins": new_joins}
     )
-    return merged, new_column_names, new_join_targets
+    return merged, new_column_names, new_join_targets, widened_column_names
 
 
 async def _process_one_table(
@@ -895,10 +1044,10 @@ async def _process_one_table(
         # User-authored sql / query-backed model with the matching name —
         # leave it alone.
         return None
-    merged, new_cols, new_joins = _additive_merge_existing(
+    merged, new_cols, new_joins, widened_cols = _additive_merge_existing(
         persisted=persisted, fresh=fresh
     )
-    if new_cols or new_joins:
+    if new_cols or new_joins or widened_cols:
         await storage.save_model(merged)
     return ModelAddition(
         model_name=table_name,
@@ -906,6 +1055,7 @@ async def _process_one_table(
         created=False,
         new_columns=new_cols,
         new_joins=new_joins,
+        widened_columns=widened_cols,
     )
 
 
@@ -1112,13 +1262,16 @@ def _print_ingest_addition(
             file=out,
         )
         return
-    if not (addition.new_columns or addition.new_joins):
+    widened = getattr(addition, "widened_columns", []) or []
+    if not (addition.new_columns or addition.new_joins or widened):
         return
     details = []
     if addition.new_columns:
         details.append(f"+columns: {', '.join(addition.new_columns)}")
     if addition.new_joins:
         details.append(f"+joins: {', '.join(addition.new_joins)}")
+    if widened:
+        details.append(f"widened: {', '.join(widened)}")
     print(f"Updated: {addition.model_name} ({'; '.join(details)})", file=out)
 
 

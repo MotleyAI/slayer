@@ -15,7 +15,7 @@ against the DS would produce.
 import os
 import sqlite3
 import tempfile
-from typing import Any
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -37,6 +37,11 @@ from slayer.storage.yaml_storage import YAMLStorage
 def sqlite_with_int_double_text():
     """A real SQLite file with three columns of distinct types so live
     introspection produces a meaningful Dict[str, DataType].
+
+    DEV-1538: SQLite-aware refinement is probe-driven, so the fixture
+    inserts integer rows into ``id`` and ``qty`` (the columns the tests
+    expect to narrow DOUBLE → INT). Without data, the probe returns
+    ``None`` and the narrowing wouldn't fire.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "live.db")
@@ -45,6 +50,16 @@ def sqlite_with_int_double_text():
             conn.execute(
                 "CREATE TABLE items (id INTEGER PRIMARY KEY, amount REAL, name TEXT, qty INTEGER)"
             )
+            # DEV-1538: integer rows so the probe positively certifies INT
+            # for id and qty. amount has no rows here on purpose — that
+            # gives the probe no evidence and exercises the
+            # "REAL-declared, empty storage" path that
+            # ``test_leaves_double_for_real_columns`` pins.
+            for i in range(1, 4):
+                conn.execute(
+                    "INSERT INTO items (id, qty) VALUES (?, ?)",
+                    (i, i * 10),
+                )
             conn.commit()
         finally:
             conn.close()
@@ -349,9 +364,14 @@ class TestYamlStorageRefinementOnLoad:
     ) -> None:
         """If introspection fails during first-load refinement, the error
         propagates out of get_model — the v4 model isn't silently kept at
-        coarse types."""
-        from slayer.engine import schema_drift
+        coarse types.
 
+        DEV-1538 update: the SQLite branch of ``refine_dict_with_live_schema``
+        opens its own SA engine via ``sa.create_engine`` (rather than going
+        through ``_live_schema_for_datasource`` like the non-SQLite path).
+        Patch the SQLite probe's engine factory so a connect failure
+        propagates identically.
+        """
         base = sqlite_with_int_double_text["tmpdir"]
         # Datasource record on disk; pointing it at the SQLite file is fine
         # for the loader's get_datasource path.
@@ -379,16 +399,390 @@ class TestYamlStorageRefinementOnLoad:
             )
         storage = YAMLStorage(base_dir=base)
 
-        def _boom(*, datasource: Any, schema: Any = None) -> Any:
+        from slayer.storage import type_refinement
+
+        def _boom(*_args, **_kw):
             raise sa.exc.OperationalError("simulated", None, Exception("connect refused"))  # NOSONAR(S112) — Exception(...) is the cause-of arg for the simulated SQLAlchemy connect error
 
-        monkeypatch.setattr(schema_drift, "_live_schema_for_datasource", _boom)
+        # SQLite refinement runs via sa.create_engine inside type_refinement;
+        # the same engine factory that any consumer would use must surface
+        # the connect failure.
+        monkeypatch.setattr(type_refinement.sa, "create_engine", _boom)
         with pytest.raises(sa.exc.OperationalError):
             await storage.get_model("items", data_source="live")
 
 
 def _unreachable(**kw):  # used as a wraps target only — the spy.assert_not_called check fires first
     raise AssertionError("Unexpectedly called _live_schema_for_datasource on a v5 model")
+
+
+# ---------------------------------------------------------------------------
+# DEV-1538: load-time SQLite affinity probe on legacy-dict migration.
+#
+# The v5 refinement is wrong on SQLite because it trusts the declared
+# affinity. The DEV-1538 fix:
+#
+# 1. SQLite branch in ``refine_dict_with_live_schema`` runs the per-column
+#    value probe for every persisted INT base column AND skips the existing
+#    DOUBLE → INT narrowing entirely.
+# 2. Already-v7 dicts on SQLite remain untouched on load — DEV-1538 only
+#    affects the migration-write-back path. Re-ingest is the auto-heal for
+#    v7 models.
+# 3. The narrowing is unchanged on non-SQLite datasources.
+# ---------------------------------------------------------------------------
+
+
+def _create_sqlite_with_int_storage(db_path: str, values: list) -> None:
+    """Build a SQLite file with one INTEGER-declared column holding the
+    given per-row typed values (preserves storage classes)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, qty INTEGER)"
+        )
+        for i, v in enumerate(values, start=1):
+            conn.execute("INSERT INTO items VALUES (?, ?)", (i, v))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestRefineSqliteAffinityProbe:
+    """DEV-1538: ``refine_dict_with_live_schema`` SQLite branch."""
+
+    def _ds_for(self, db_path: str) -> DatasourceConfig:
+        return DatasourceConfig(name="live", type="sqlite", database=db_path)
+
+    def test_sqlite_int_with_real_storage_widens_to_double(
+        self, tmp_path: Path
+    ) -> None:
+        from slayer.storage.type_refinement import refine_dict_with_live_schema
+
+        db_path = str(tmp_path / "live.db")
+        _create_sqlite_with_int_storage(db_path, [1, 0.5, 0.7, 0.9])
+
+        d = {
+            "name": "items",
+            "sql_table": "items",
+            "data_source": "live",
+            "columns": [
+                {
+                    "name": "qty", "sql": "qty",
+                    "type": "INT",
+                    "format": {"type": "integer"},
+                },
+            ],
+        }
+        ds = self._ds_for(db_path)
+        changed = refine_dict_with_live_schema(d, ds)
+        assert changed is True
+        assert d["columns"][0]["type"] == "DOUBLE"
+        # Auto-default integer format is updated to FLOAT.
+        assert d["columns"][0]["format"]["type"] == "float"
+
+    def test_sqlite_double_narrows_to_int_when_probe_certifies_int(
+        self, tmp_path: Path
+    ) -> None:
+        """On SQLite, the DEV-1361 DOUBLE → INT narrowing is now probe-
+        verified rather than declared-type-driven. With all-integer
+        storage, the probe certifies INT and the narrowing fires (the
+        DEV-1361 contract is preserved on SQLite when the probe agrees).
+        """
+        from slayer.storage.type_refinement import refine_dict_with_live_schema
+
+        db_path = str(tmp_path / "live.db")
+        _create_sqlite_with_int_storage(db_path, [1, 2, 3])
+
+        d = {
+            "name": "items",
+            "sql_table": "items",
+            "data_source": "live",
+            "columns": [
+                {"name": "qty", "sql": "qty", "type": "DOUBLE"},
+            ],
+        }
+        ds = self._ds_for(db_path)
+        refine_dict_with_live_schema(d, ds)
+        assert d["columns"][0]["type"] == "INT"
+
+    def test_sqlite_double_stays_double_when_probe_says_double(
+        self, tmp_path: Path
+    ) -> None:
+        """A persisted DOUBLE column stays DOUBLE when the probe sees REAL
+        values — the DEV-1361 narrowing would have flipped it to INT based
+        on the declared affinity, but the probe knows better."""
+        from slayer.storage.type_refinement import refine_dict_with_live_schema
+
+        db_path = str(tmp_path / "live.db")
+        _create_sqlite_with_int_storage(db_path, [1, 0.5, 0.7])
+
+        d = {
+            "name": "items",
+            "sql_table": "items",
+            "data_source": "live",
+            "columns": [
+                {"name": "qty", "sql": "qty", "type": "DOUBLE"},
+            ],
+        }
+        ds = self._ds_for(db_path)
+        refine_dict_with_live_schema(d, ds)
+        assert d["columns"][0]["type"] == "DOUBLE"
+
+    def test_sqlite_double_stays_double_when_probe_returns_none(
+        self, tmp_path: Path
+    ) -> None:
+        """A None probe verdict (failure or saturation) is conservative:
+        the persisted DOUBLE stays DOUBLE."""
+        from unittest.mock import patch
+        from slayer.storage.type_refinement import refine_dict_with_live_schema
+
+        db_path = str(tmp_path / "live.db")
+        _create_sqlite_with_int_storage(db_path, [1, 2, 3])
+
+        d = {
+            "name": "items",
+            "sql_table": "items",
+            "data_source": "live",
+            "columns": [
+                {"name": "qty", "sql": "qty", "type": "DOUBLE"},
+            ],
+        }
+        ds = self._ds_for(db_path)
+        with patch(
+            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+            return_value=None,
+        ):
+            refine_dict_with_live_schema(d, ds)
+        assert d["columns"][0]["type"] == "DOUBLE"
+
+    def test_postgres_still_narrows_double_to_int(self) -> None:
+        """Sanity: the DEV-1361 narrowing rule is preserved for non-SQLite
+        datasources. (Postgres datasource is unreachable here, but the
+        SQLite-only carve-out must not apply.)"""
+        from slayer.storage.type_refinement import refine_dict_with_live_schema
+
+        d = {
+            "name": "items",
+            "sql_table": "items",
+            "data_source": "live",
+            "columns": [
+                {"name": "qty", "sql": "qty", "type": "DOUBLE"},
+            ],
+        }
+        # Use a closed-port Postgres URL; the connect must raise (not
+        # silently no-op like the SQLite skip would).
+        ds = DatasourceConfig(
+            name="live",
+            type="postgres",
+            host="127.0.0.1",
+            port=1,
+            database="nope",
+            username="nobody",
+            password="nope",  # NOSONAR(S2068)
+        )
+        with pytest.raises(sa.exc.OperationalError):
+            refine_dict_with_live_schema(d, ds)
+
+    def test_sqlite_int_with_pure_int_storage_stays_int(
+        self, tmp_path: Path
+    ) -> None:
+        """All-INTEGER storage → probe returns INT → no widening, type
+        preserved."""
+        from slayer.storage.type_refinement import refine_dict_with_live_schema
+
+        db_path = str(tmp_path / "live.db")
+        _create_sqlite_with_int_storage(db_path, [1, 2, 3])
+
+        d = {
+            "name": "items",
+            "sql_table": "items",
+            "data_source": "live",
+            "columns": [
+                {"name": "qty", "sql": "qty", "type": "INT"},
+            ],
+        }
+        ds = self._ds_for(db_path)
+        refine_dict_with_live_schema(d, ds)
+        assert d["columns"][0]["type"] == "INT"
+
+    def test_custom_format_preserved_on_widening(self, tmp_path: Path) -> None:
+        """A user-set custom format on a widening column is left untouched."""
+        from slayer.storage.type_refinement import refine_dict_with_live_schema
+
+        db_path = str(tmp_path / "live.db")
+        _create_sqlite_with_int_storage(db_path, [1, 0.5, 0.7])
+
+        d = {
+            "name": "items",
+            "sql_table": "items",
+            "data_source": "live",
+            "columns": [
+                {
+                    "name": "qty", "sql": "qty",
+                    "type": "INT",
+                    "format": {
+                        "type": "currency",
+                        "symbol": "€",
+                        "precision": 3,
+                    },
+                },
+            ],
+        }
+        ds = self._ds_for(db_path)
+        refine_dict_with_live_schema(d, ds)
+        assert d["columns"][0]["type"] == "DOUBLE"
+        # Custom format preserved verbatim.
+        assert d["columns"][0]["format"]["type"] == "currency"
+        assert d["columns"][0]["format"]["symbol"] == "€"
+        assert d["columns"][0]["format"]["precision"] == 3
+
+    def test_sqlite_int_with_text_storage_widens_to_text(
+        self, tmp_path: Path
+    ) -> None:
+        """Persisted INT column whose live storage is non-coercible TEXT
+        widens to TEXT and the auto-default integer format is cleared."""
+        from slayer.storage.type_refinement import refine_dict_with_live_schema
+
+        db_path = str(tmp_path / "live.db")
+        _create_sqlite_with_int_storage(db_path, [1, "abc", "xyz"])
+
+        d = {
+            "name": "items",
+            "sql_table": "items",
+            "data_source": "live",
+            "columns": [
+                {
+                    "name": "qty", "sql": "qty",
+                    "type": "INT",
+                    "format": {"type": "integer"},
+                },
+            ],
+        }
+        ds = self._ds_for(db_path)
+        changed = refine_dict_with_live_schema(d, ds)
+        assert changed is True
+        assert d["columns"][0]["type"] == "TEXT"
+        # Auto-default integer format must be cleared on TEXT widening.
+        assert d["columns"][0].get("format") in (None, {})
+
+
+class TestHasRefineableColumnsSqliteIntBranch:
+    """DEV-1538: ``has_refineable_columns`` must return True for SQLite
+    datasources when the dict has any persisted INT base column, so the
+    migration-write-back gate triggers the load-time probe pass."""
+
+    def test_sqlite_int_base_column_is_refineable(self) -> None:
+        from slayer.storage.type_refinement import has_refineable_columns
+
+        d = {
+            "name": "items",
+            "sql_table": "items",
+            "data_source": "live",
+            "columns": [
+                {"name": "qty", "sql": "qty", "type": "INT"},
+            ],
+        }
+        # The current has_refineable_columns predicate doesn't know the
+        # datasource type; the gate's downstream behavior is what we're
+        # pinning here — the predicate must surface SQLite-INT columns as
+        # refineable so the load-time write-back gate fires.
+        assert has_refineable_columns(d) is True
+
+    async def test_sqlite_legacy_dict_with_int_raises_when_datasource_missing(
+        self, tmp_path: Path
+    ) -> None:
+        """A v4 dict on SQLite with only INT base columns must hit the
+        "datasource unavailable for type refinement" hard-fail path the
+        same way DOUBLE-only dicts do today (DEV-1361 contract preserved)."""
+        # Build a v4 dict on disk that, after migration, will have INT base
+        # columns and no DOUBLE ones. The pre-DEV-1538 gate would let this
+        # load silently without refinement; DEV-1538 changes the predicate
+        # so the load-time probe runs (and hard-fails if the DS is gone).
+        base = str(tmp_path)
+        models_dir = os.path.join(base, "models", "live")
+        os.makedirs(models_dir, exist_ok=True)
+        with open(os.path.join(models_dir, "items.yaml"), "w") as f:
+            yaml.dump(
+                {
+                    "version": 4,
+                    "name": "items",
+                    "sql_table": "items",
+                    "data_source": "live",
+                    "columns": [
+                        {"name": "qty", "sql": "qty", "type": "INT"},
+                    ],
+                },
+                f,
+            )
+        # Don't register the datasource — load should hard-fail.
+        storage = YAMLStorage(base_dir=base)
+        with pytest.raises(ValueError, match="datasource 'live' is unavailable"):
+            await storage.get_model("items", data_source="live")
+
+
+class TestV7SqliteModelNotAutoRepairedOnLoad:
+    """DEV-1538 non-goal: already-current-version SQLite models with the
+    wrong INT type are NOT auto-repaired on load. Re-ingest is the
+    auto-heal path. Loading must not trigger the probe."""
+
+    async def test_current_version_sqlite_model_untouched_on_load(
+        self, tmp_path: Path
+    ) -> None:
+        from unittest.mock import patch
+
+        from slayer.storage import migrations as mig
+
+        db_path = str(tmp_path / "live.db")
+        _create_sqlite_with_int_storage(db_path, [1, 0.5, 0.7, 0.9])
+
+        # Write a current-version dict on disk (no migration will run).
+        base = str(tmp_path / "storage")
+        datasources_dir = os.path.join(base, "datasources")
+        os.makedirs(datasources_dir, exist_ok=True)
+        with open(os.path.join(datasources_dir, "live.yaml"), "w") as f:
+            yaml.dump(
+                {
+                    "name": "live",
+                    "type": "sqlite",
+                    "database": db_path,
+                    "version": 1,
+                },
+                f,
+            )
+        models_dir = os.path.join(base, "models", "live")
+        os.makedirs(models_dir, exist_ok=True)
+        with open(os.path.join(models_dir, "items.yaml"), "w") as f:
+            yaml.dump(
+                {
+                    "version": mig.CURRENT_VERSIONS["SlayerModel"],
+                    "name": "items",
+                    "sql_table": "items",
+                    "data_source": "live",
+                    "columns": [
+                        {
+                            "name": "id", "sql": "id",
+                            "type": "INT", "primary_key": True,
+                        },
+                        # WRONG persisted type: live storage is REAL but
+                        # persisted INT. Load must NOT widen it.
+                        {"name": "qty", "sql": "qty", "type": "INT"},
+                    ],
+                },
+                f,
+            )
+        storage = YAMLStorage(base_dir=base)
+
+        # The probe must NOT be called on a current-version dict load.
+        with patch(
+            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+            side_effect=AssertionError(
+                "probe must not run on already-current-version dict load"
+            ),
+        ):
+            loaded = await storage.get_model("items", data_source="live")
+        # Type stays INT because the probe never ran.
+        col = next(c for c in loaded.columns if c.name == "qty")
+        assert col.type is DataType.INT
 
 
 # ---------------------------------------------------------------------------
