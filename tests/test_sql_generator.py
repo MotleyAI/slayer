@@ -7218,6 +7218,41 @@ class TestFilterOuterParenWrapDev1539:
             f"Spurious parens around LOWER(...) call; got:\n{norm}"
         )
 
+    @pytest.mark.parametrize(
+        ["formula", "expected_sql"],
+        [
+            # IS NULL / IS NOT NULL stay as-is — `_compare_op_to_sql`
+            # returns the complete operator string when the RHS is None.
+            ("flag is None", "flag IS NULL"),
+            ("flag is not None", "flag IS NOT NULL"),
+            # Non-None IS / IS NOT: previously the `continue` in the
+            # IS/IsNot branch dropped the RHS and emitted broken SQL
+            # like `flag IS` / `flag IS NOT`. Fall-through must render
+            # `IS <rhs>` / `IS NOT <rhs>`.
+            ("flag is True", "flag IS True"),
+            ("flag is not False", "flag IS NOT False"),
+            # IS-non-None composed with another predicate still flows
+            # through `_boolop_to_sql`'s outer wrap.
+            ("flag is True and value > 0", "(flag IS True AND value > 0)"),
+        ],
+    )
+    def test_dsl_compare_is_isnot_with_non_none_rhs(
+        self, formula: str, expected_sql: str,
+    ) -> None:
+        """``is`` / ``is not`` against a non-None RHS used to drop the
+        RHS entirely and emit the broken ``IS`` / ``IS NOT`` operator
+        string. Fix: only the ``is None`` / ``is not None`` paths
+        short-circuit to the complete operator; everything else falls
+        through to the standard ``<op> <rhs>`` emission.
+        """
+        from slayer.core.formula import parse_filter
+
+        pf = parse_filter(formula)
+        assert pf.sql == expected_sql, (
+            f"parse_filter({formula!r}).sql == {pf.sql!r}, expected "
+            f"{expected_sql!r}"
+        )
+
     def test_dsl_chained_compare_rejected(self) -> None:
         """Chained comparisons (``a < b < c``) have different semantics
         between Python and SQL. Python: ``(a < b) AND (b < c)``. SQL:
@@ -7476,6 +7511,15 @@ class TestFilterOuterParenWrapDev1539:
             # semantically a no-op (`(a + b) + c` == `a + b + c`) so
             # we don't emit a stray inner wrap.
             ("(a + b) + c > 0", "(a + b + c) > 0"),
+            # Pow is RIGHT-associative — the equal-precedence rule
+            # mirrors the others. `(a ** b) ** c` must keep its inner
+            # parens; without the fix it would re-emit as
+            # `a ** b ** c` which Python re-parses as `a ** (b ** c)`,
+            # giving a different result.
+            ("(a ** b) ** c > 0", "((a ** b) ** c) > 0"),
+            # `a ** b ** c` parses RIGHT-assoc; emission must preserve
+            # the grouping via explicit parens on the right operand.
+            ("a ** b ** c > 0", "(a ** (b ** c)) > 0"),
         ],
     )
     def test_dsl_compare_preserves_nested_arithmetic_precedence(

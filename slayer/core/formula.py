@@ -1073,11 +1073,16 @@ _BINOP_OP_MAP: Dict[type, str] = {
 # DEV-1539: SQL-precedence tier for each supported ``ast.BinOp`` op.
 # Higher = tighter binding. Used by ``_binop_to_sql`` to decide whether
 # a child BinOp's operands need parenthesising so the tree-encoded
-# precedence survives serialisation. Mirrors standard SQL precedence
-# (which matches Python's for these operators): ``**`` > ``* / %`` >
-# ``+ -``.
+# precedence survives serialisation. Only left-associative arithmetic
+# ops live here: ``ast.Pow`` is intentionally absent because it is
+# right-associative — its equal-precedence rule is the mirror of the
+# others (wrap on LEFT, not right) and the simplest way to stay correct
+# is to fall through to the ``parent_prec is None`` fallback in
+# ``_emit_binop_operand`` (wrap every BinOp child unconditionally).
+# That adds at most one harmless paren on mixed-precedence Pow
+# expressions and guarantees ``(a ** b) ** c`` doesn't silently
+# re-associate to ``a ** (b ** c)``.
 _BINOP_PRECEDENCE: Dict[type, int] = {
-    ast.Pow: 3,
     ast.Mult: 2, ast.Div: 2, ast.Mod: 2,
     ast.Add: 1, ast.Sub: 1,
 }
@@ -1121,15 +1126,28 @@ def _compare_to_sql(node: ast.Compare, recur) -> str:
         left_sql = f"({left_sql})"
     parts = [left_sql]
     for op, comparator in zip(node.ops, node.comparators):
+        # ``is None`` / ``is not None`` map to ``IS NULL`` / ``IS NOT NULL``
+        # — ``_compare_op_to_sql`` already returns the complete operator
+        # string and there is no RHS to render. Every other ``is`` /
+        # ``is not`` (e.g. ``flag is True``) falls through to the
+        # standard ``IS <rhs>`` / ``IS NOT <rhs>`` emission; without
+        # this fall-through ``flag is True`` previously serialised as
+        # the broken ``flag IS`` (no RHS).
+        is_null_check = (
+            isinstance(op, (ast.Is, ast.IsNot))
+            and isinstance(comparator, ast.Constant)
+            and comparator.value is None
+        )
         sql_op = _compare_op_to_sql(op, comparator)
-        if isinstance(op, (ast.Is, ast.IsNot)):
-            parts.append(sql_op)  # "IS NULL" / "IS NOT NULL" already complete
+        if is_null_check:
+            parts.append(sql_op)
             continue
         right_sql = recur(comparator)
         if _needs_wrap(comparator):
             right_sql = f"({right_sql})"
-        # Both regular comparisons and IN / NOT IN take "<op> <right>";
-        # for IN/NotIn the right is already "(val1, val2, ...)".
+        # Regular comparisons, IN / NOT IN, and IS / IS NOT with
+        # non-None RHS all take "<op> <right>"; for IN/NotIn the right
+        # is already "(val1, val2, ...)".
         parts.append(f"{sql_op} {right_sql}")
     return " ".join(parts)
 
