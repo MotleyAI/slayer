@@ -2644,14 +2644,23 @@ def extract_filter_transforms(
     return _unmangle(_ast.unparse(modified)), transforms
 
 
+# DEV-1539: compound AST shapes that ALWAYS need an outer ``(...)``
+# wrap when their SQL is substituted into a filter context with a
+# surrounding comparator. Checked **before** the atomic list below
+# because in sqlglot 30.4.3 ``exp.And`` and ``exp.Or`` inherit from
+# ``exp.Func`` — a single inverse-atomic check would mis-classify
+# ``a AND b`` as atomic and skip the wrap (Codex finding).
+_COMPOUND_FILTER_INLINE_TYPES: tuple = (
+    exp.Binary,     # arith / comparison
+    exp.Connector,  # AND / OR
+    exp.Unary,      # NOT, -x
+    exp.Predicate,  # BETWEEN, IN, LIKE, IS, …
+)
+
 # DEV-1539: AST shapes whose precedence is already unambiguous when
-# substituted into a filter context with a surrounding comparator. A
-# ``Column.sql`` body whose root is one of these does NOT need an outer
-# paren wrap. Anything else — ``Binary`` (arith / comparison),
-# ``Connector`` (AND/OR), ``Not`` / ``Unary``, ``Between``, ``In``, and
-# any other multi-token predicate shape — DOES. The inverse check is
-# the safer default: it catches any sqlglot predicate type we haven't
-# enumerated explicitly.
+# substituted into a filter context. A ``Column.sql`` body whose root
+# is one of these does NOT need an outer paren wrap. Used as the
+# fallback after the compound-types check.
 _ATOMIC_FILTER_INLINE_TYPES: tuple = (
     exp.Column,
     exp.Literal,
@@ -2672,19 +2681,20 @@ def _filter_inline_needs_paren_wrap(*, sql: str, dialect: str) -> bool:
     function calls, single CASE / CAST — are already unambiguous;
     wrapping them adds noise without changing meaning. **Anything
     else** (BinOp, BoolOp, ``NOT``, ``BETWEEN``, ``IN``, ``LIKE``,
-    ``IS``, …) needs wrapping. The original implementation used a
-    positive ``Binary``/``Connector`` check which missed
-    ``Not``/``Between``/``In`` and emitted ambiguous SQL when those
-    shapes were inlined under a surrounding predicate. Inverse check
-    is safer.
+    ``IS``, …) needs wrapping.
 
     Parses ``sql`` once via sqlglot to determine the root AST shape.
+    The compound-type check fires first because in sqlglot 30.4.3
+    ``exp.And`` / ``exp.Or`` inherit from ``exp.Func``; a single
+    inverse-atomic check would mis-classify ``a AND b`` as atomic.
     Conservative on parse failure: returns ``True`` so the caller wraps
     (errs on the side of correctness over noise).
     """
     try:
         tree = sqlglot.parse_one(sql, dialect=dialect)
     except Exception:  # noqa: BLE001 — sqlglot raises a variety of error types
+        return True
+    if isinstance(tree, _COMPOUND_FILTER_INLINE_TYPES):
         return True
     return not isinstance(tree, _ATOMIC_FILTER_INLINE_TYPES)
 

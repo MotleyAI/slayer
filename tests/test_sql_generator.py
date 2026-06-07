@@ -7638,6 +7638,65 @@ class TestFilterOuterParenWrapDev1539:
             f"{expected_sql!r}"
         )
 
+    @pytest.mark.parametrize(
+        ["body_sql", "connector"],
+        [
+            # sqlglot 30.4.3: ``exp.And`` is a subclass of ``exp.Func``,
+            # so a pure inverse-atomic check would mis-classify this as
+            # atomic and skip the wrap. The compound check must fire
+            # first.
+            ("archived AND deleted", "AND"),
+            ("archived OR deleted", "OR"),
+        ],
+    )
+    async def test_filter_inlines_and_or_connector_column_with_outer_parens(
+        self, generator: SQLGenerator, body_sql: str, connector: str,
+    ) -> None:
+        """Column.sql whose root is ``a AND b`` / ``a OR b`` (sqlglot
+        ``exp.And`` / ``exp.Or``) must be wrapped on inline. These
+        inherit from ``exp.Func`` in sqlglot 30.4.3, so the
+        inverse-atomic check at ``_filter_inline_needs_paren_wrap``
+        would skip them — the compound-types check has to fire first.
+        """
+        model = SlayerModel(
+            name="m",
+            sql_table="public.m",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="archived", sql="archived", type=DataType.BOOLEAN),
+                Column(name="deleted", sql="deleted", type=DataType.BOOLEAN),
+                Column(name="active", sql=body_sql, type=DataType.BOOLEAN),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["active IS NULL"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        # Body matches `(... <connector> ...)` allowing whitespace
+        # padding that sqlglot's pretty-printer injects inside the
+        # parens. Single bounded `[^)]+` quantifier — S5852-safe.
+        m = _re.search(
+            r"\(\s*archived\s+" + connector + r"\s+deleted\s*\)",
+            norm,
+            _re.IGNORECASE,
+        )
+        assert m is not None, (
+            f"{connector}-rooted Column.sql must be wrapped on inline; got:\n{norm}"
+        )
+        # And the wrap really protects the IS NULL precedence —
+        # the char before `IS NULL` must be `)`.
+        is_null_index = norm.find("IS NULL")
+        assert is_null_index > 0, f"WHERE must contain IS NULL; got:\n{norm}"
+        preceding = norm[:is_null_index].rstrip()
+        assert preceding.endswith(")"), (
+            f"Char before `IS NULL` must be `)` (outer wrap closer); "
+            f"got tail {preceding[-15:]!r} in:\n{norm}"
+        )
+
     async def test_filter_inlines_not_predicate_column_with_outer_parens(
         self, generator: SQLGenerator,
     ) -> None:
