@@ -7,7 +7,7 @@ call costs O(N*dim) memory + one matmul; both are negligible at this
 scale and avoid the operational burden of a persistent ANN index.
 
 Imports numpy at module top — this module is only imported behind the
-``embedding_search`` extra's gate, so a missing numpy is a programming
+``advanced_search`` extra's gate, so a missing numpy is a programming
 error here, not a runtime fallback.
 """
 

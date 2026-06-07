@@ -3126,26 +3126,25 @@ async def test_search_ingest_populates_sampled(search_env):
 
 
 async def test_search_question_finds_column(search_env):
-    """``search(question="amount")`` returns a column EntityHit pointing at
+    """``search(question="amount")`` returns a column hit pointing at
     one of the seeded ``amount``-named columns."""
     from slayer.search.service import SearchService
 
     _engine, storage = search_env
     response = await SearchService(storage=storage).search(
         question="amount",
-        max_entities=10,
-        max_memories=0,
+        max_results=20,
     )
-    column_hits = [e for e in response.entities if e.kind == "column"]
+    column_hits = [h for h in response.results if h.kind == "column"]
     assert column_hits, (
-        "expected at least one column EntityHit; got entities="
-        f"{[(e.id, e.kind) for e in response.entities]}"
+        "expected at least one column hit; got results="
+        f"{[(h.id, h.kind) for h in response.results]}"
     )
     # The question is "amount" — only ``*.amount`` columns are
     # acceptable. Accepting any column hit (e.g. ``customers.region``)
     # would mask a relevance regression in the search ranker.
     assert any(h.id.endswith(".amount") for h in column_hits), (
-        "expected an `.amount` column EntityHit; got column hits="
+        "expected an `.amount` column hit; got column hits="
         f"{[h.id for h in column_hits]}"
     )
 
@@ -3158,10 +3157,11 @@ async def test_search_entity_filter_finds_memory(search_env):
     _engine, storage = search_env
     response = await SearchService(storage=storage).search(
         entities=["test_sqlite.orders"],
-        max_memories=5,
+        max_results=10,
     )
-    assert len(response.memories) >= 1
-    hit = response.memories[0]
+    memory_hits = [h for h in response.results if h.kind == "memory"]
+    assert len(memory_hits) >= 1
+    hit = memory_hits[0]
     assert "test_sqlite.orders" in hit.matched_entities
     assert "refunds" in hit.text
 

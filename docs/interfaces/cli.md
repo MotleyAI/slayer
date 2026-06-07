@@ -146,6 +146,78 @@ slayer datasources list
 slayer datasources show my_postgres   # credentials masked
 ```
 
+### `slayer search`
+
+Run semantic search over memories and canonical entities. Three retrieval channels run in parallel — BM25 over memory entity tags, Tantivy full-text over memories ∪ entities, and (with `motley-slayer[advanced_search]` plus a provider API key) dense embeddings — and are RRF-fused into a single ranked list. See [Search](../concepts/search.md).
+
+```bash
+# Entity-driven
+slayer search --entity jaffle_shop.orders.order_total
+
+# Question-driven
+slayer search --question "What stores are in jaffle_shop?"
+
+# Inline query / from a file (auto-extracts canonical entities)
+slayer search --query '{"source_model": "orders", "measures": ["order_total:sum"]}'
+slayer search --query @draft_query.json
+
+# Narrow to one datasource
+slayer search --question "lifetime spend" --datasource jaffle_shop
+
+# Graph-narrow with cypher_filter (naive form, always available)
+slayer search --question "Brooklyn POS" --cypher-filter 'MATCH (n:Memory) RETURN n.id AS id'
+
+# JSON output for piping
+slayer search --question "lifetime spend" --format json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--entity ENT` (repeatable) | | Canonical entity string (`<ds>`, `<ds>.<model>`, `<ds>.<model>.<leaf>`, `memory:<id>`). |
+| `--query JSON_OR_@FILE` | | Inline SLayer query (or `@path.json`); entities auto-extracted. |
+| `--question TEXT` | | Free-text question. Drives Tantivy + embeddings. |
+| `--datasource DS` | | Pre-narrow every channel to ids rooted at the named datasource. |
+| `--cypher-filter CYPHER` | | Graph pre-filter. Full openCypher with the `advanced_search` extra (LadybugDB property graph: `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes; `MENTIONS` / `CONTAINS` / `JOINS` edges). Without the extra, only the naive `MATCH (n:Label1:Label2…) RETURN n.id AS id` form is accepted; richer Cypher raises with an install hint. |
+| `--max-results N` | `10` | Cap applied after RRF fusion and the `cypher_filter` allowlist. |
+| `--format` | `text` | `text` (newline-grouped human output) or `json` (full `SearchResponse`). |
+
+#### `slayer search refresh-samples`
+
+Re-profile and persist `Column.sampled` / `sampled_values` / `distinct_count` for table-backed models. Per-column failures are reported but do not abort.
+
+```bash
+slayer search refresh-samples
+slayer search refresh-samples --data-source jaffle_shop
+slayer search refresh-samples --data-source jaffle_shop --model orders --model customers
+```
+
+### `slayer memory`
+
+Manage the agent-memory layer. See [Memories](../concepts/memories.md).
+
+```bash
+# Save a learning (--entities is a single comma-separated string; --query is mutually exclusive)
+slayer memory save \
+  --learning "orders.is_returned in {0,1,NULL}; treat NULL as not returned" \
+  --entities mydb.orders.is_returned \
+  --id kb.returns.null-handling
+
+slayer memory save \
+  --learning "Top customers by lifetime spend" \
+  --query @top_customers.json \
+  --id kb.top-customers
+
+slayer memory forget kb.returns.null-handling
+```
+
+| Subcommand | Flag | Description |
+|------------|------|-------------|
+| `save` | `--learning TEXT` (required) | The free-form note. |
+| `save` | `--entities ENT,ENT,…` | Comma-separated canonical entity strings. Mutually exclusive with `--query`; one of the two is required. |
+| `save` | `--query JSON_OR_@FILE` | Inline SLayer query (or `@path.json`). Entities auto-extracted and the query is persisted on the memory. |
+| `save` | `--id ID` | User-pinned canonical memory id. Forbidden charset: `:`, `/`, `?`, `#`, whitespace, ASCII control. Omit to auto-allocate (`max(int-shaped id) + 1`). Duplicate id → unconditional upsert; `created_at` preserved. |
+| `forget` | `<id>` (positional) | Memory id. Cascade-strips every `memory:<id>` reference to it from every other memory's `entities` list. |
+
 ### `slayer help`
 
 Show SLayer's conceptual help — the same content the MCP `help()` tool returns.

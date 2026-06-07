@@ -21,6 +21,8 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.storage.base import StorageBackend, resolve_storage
 
+from tests.search_helpers import call_mcp_tool as _call_mcp_tool
+
 
 @pytest_asyncio.fixture
 async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
@@ -50,23 +52,6 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
 # ---------------------------------------------------------------------------
 
 
-async def _call_mcp_tool(*, mcp, name: str, arguments: dict) -> str:  # NOSONAR(S3776) — small test helper that branches over three FastMCP result shapes; splitting hurts readability
-    """Invoke an MCP tool and return its text result."""
-    result = await mcp.call_tool(name, arguments)
-    if isinstance(result, tuple):
-        # Some FastMCP versions return (content_list, structured_result).
-        for block in result[0]:
-            if hasattr(block, "text"):
-                return block.text
-    if isinstance(result, list):
-        for block in result:
-            if hasattr(block, "text"):
-                return block.text
-    if hasattr(result, "content"):
-        for block in result.content:
-            if hasattr(block, "text"):
-                return block.text
-    return str(result)
 
 
 @pytest.mark.asyncio
@@ -85,17 +70,84 @@ async def test_mcp_search_tool_returns_json_with_three_lists(
         arguments={
             "entities": ["warehouse.orders.amount_paid"],
             "question": "gross refunds",
-            "max_memories": 5,
-            "max_example_queries": 2,
-            "max_entities": 5,
+            "max_results": 20,
         },
     )
     payload = json.loads(result_text)
-    assert "memories" in payload
-    assert "example_queries" in payload
-    assert "entities" in payload
+    assert "results" in payload
     assert "resolved_input_entities" in payload
     assert "warehouse.orders.amount_paid" in payload["resolved_input_entities"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_search_path_wires_engine_into_search_service(
+    storage_with_corpus: StorageBackend,
+) -> None:
+    """DEV-1516 codex finding #1: ``create_mcp_server`` constructs a
+    ``SearchService`` with an engine kwarg so the search-side refresh
+    actually fires in the MCP product path. This test catches a regression
+    where the engine wiring is dropped (the helper would silently no-op)."""
+    from slayer.mcp.server import create_mcp_server
+    from slayer.search.service import SearchService
+
+    constructed: list = []
+
+    real_init = SearchService.__init__
+
+    def capturing_init(self, *args, **kwargs):
+        constructed.append(kwargs)
+        return real_init(self, *args, **kwargs)
+
+    # Patch on the class so the MCP factory's `SearchService(storage=..., engine=...)`
+    # call funnels through us.
+    original = SearchService.__init__
+    SearchService.__init__ = capturing_init  # type: ignore[assignment]
+    try:
+        create_mcp_server(storage=storage_with_corpus)
+    finally:
+        SearchService.__init__ = original  # type: ignore[assignment]
+
+    assert constructed, "create_mcp_server should construct SearchService"
+    # At least one construction must include a non-None engine kwarg.
+    kw_lists = constructed
+    assert any(
+        kw.get("engine") is not None for kw in kw_lists
+    ), (
+        "MCP wiring regression: SearchService constructed without engine. "
+        "Search-side sample-refresh would silently no-op."
+    )
+
+
+@pytest.mark.asyncio
+async def test_rest_search_path_wires_engine_into_search_service(
+    storage_with_corpus: StorageBackend,
+) -> None:
+    """REST counterpart of the MCP wiring test. ``create_app`` must also
+    pass the engine to SearchService."""
+    from slayer.api.server import create_app
+    from slayer.search.service import SearchService
+
+    constructed: list = []
+    real_init = SearchService.__init__
+
+    def capturing_init(self, *args, **kwargs):
+        constructed.append(kwargs)
+        return real_init(self, *args, **kwargs)
+
+    original = SearchService.__init__
+    SearchService.__init__ = capturing_init  # type: ignore[assignment]
+    try:
+        create_app(storage=storage_with_corpus)
+    finally:
+        SearchService.__init__ = original  # type: ignore[assignment]
+
+    assert constructed, "create_app should construct SearchService"
+    assert any(
+        kw.get("engine") is not None for kw in constructed
+    ), (
+        "REST wiring regression: SearchService constructed without engine. "
+        "Search-side sample-refresh would silently no-op on REST calls."
+    )
 
 
 @pytest.mark.asyncio
@@ -143,15 +195,11 @@ def test_rest_post_search_returns_response_shape(tmp_path) -> None:
     res = client.post("/search", json={
         "entities": ["warehouse.orders.amount_paid"],
         "question": "refunds",
-        "max_memories": 5,
-        "max_example_queries": 2,
-        "max_entities": 5,
+        "max_results": 20,
     })
     assert res.status_code == 200
     body = res.json()
-    assert "memories" in body
-    assert "example_queries" in body
-    assert "entities" in body
+    assert "results" in body
     assert "resolved_input_entities" in body
     # Recall endpoint is gone (FastAPI returns 405 because /memories/{id}
     # captures the path with the wrong method, or 404 if no route matches).
@@ -238,15 +286,14 @@ def test_cli_search_runs_against_storage(tmp_path, monkeypatch, capsys) -> None:
             "search",
             "--storage", storage_dir,
             "--entity", "warehouse.orders.amount_paid",
-            "--max-example-queries", "1",
+            "--max-results", "10",
             "--format", "json",
         ],
         monkeypatch, capsys,
     )
     assert code == 0
     payload = json.loads(out)
-    assert "memories" in payload
-    assert "example_queries" in payload
+    assert "results" in payload
     assert "resolved_input_entities" in payload
 
 
@@ -269,9 +316,7 @@ async def test_client_search_round_trip(
     in-process ``SearchService`` and returns a populated ``SearchResponse``."""
     from slayer.client.slayer_client import SlayerClient
     from slayer.search.service import (
-        EntityHit,
-        ExampleQueryHit,
-        MemoryHit,
+        SearchHit,
         SearchResponse,
     )
 
@@ -283,19 +328,16 @@ async def test_client_search_round_trip(
     response = await client.search(
         entities=["warehouse.orders.amount_paid"],
         question="refunds",
-        max_example_queries=2,
+        max_results=20,
     )
 
     assert isinstance(response, SearchResponse)
-    assert isinstance(response.memories, list)
-    assert isinstance(response.example_queries, list)
-    assert isinstance(response.entities, list)
+    assert isinstance(response.results, list)
     assert isinstance(response.warnings, list)
-    assert all(isinstance(m, MemoryHit) for m in response.memories)
-    assert all(isinstance(e, ExampleQueryHit) for e in response.example_queries)
-    assert all(isinstance(e, EntityHit) for e in response.entities)
-    assert len(response.memories) >= 1
-    assert "warehouse.orders.amount_paid" in response.memories[0].matched_entities
+    assert all(isinstance(h, SearchHit) for h in response.results)
+    memory_hits = [h for h in response.results if h.kind == "memory" and h.query is None]
+    assert len(memory_hits) >= 1
+    assert "warehouse.orders.amount_paid" in memory_hits[0].matched_entities
     assert "warehouse.orders.amount_paid" in response.resolved_input_entities
 
 
@@ -398,7 +440,7 @@ def test_cli_search_accepts_datasource_flag(tmp_path, monkeypatch, capsys) -> No
     )
     assert code == 0
     payload = json.loads(out)
-    assert "memories" in payload
+    assert "results" in payload
 
 
 @pytest.mark.asyncio
@@ -413,6 +455,6 @@ async def test_client_search_accepts_datasource(
     response = await client.search(
         entities=["warehouse.orders.amount_paid"],
         datasource="warehouse",
-        max_example_queries=2,
+        max_results=20,
     )
     assert "warehouse.orders.amount_paid" in response.resolved_input_entities

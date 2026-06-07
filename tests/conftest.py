@@ -24,7 +24,7 @@ def _disable_embedding_channel_by_default(monkeypatch: pytest.MonkeyPatch) -> No
       machine that has ``OPENAI_API_KEY`` set, and emitting per-entity
       bubble-up warnings on CI that doesn't.
     * Tests that *do* want to exercise the embedding code path
-      (``test_embeddings_service.py``, ``test_search_three_channel.py``)
+      (``test_embedding_retriever.py``, ``test_search_three_channel.py``)
       explicitly monkeypatch ``is_available`` back to ``True`` in their
       local fixtures, so this autouse default doesn't interfere.
 

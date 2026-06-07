@@ -52,6 +52,38 @@ CREATE TABLE orders (
 );
 """
 
+# T-SQL (SQL Server): TEXT is deprecated — use NVARCHAR; TIMESTAMP is a binary
+# rowversion type — use DATETIME2 instead.
+CREATE_SQL_TSQL = """
+CREATE TABLE regions (
+    id INTEGER PRIMARY KEY,
+    name NVARCHAR(255) NOT NULL
+);
+
+CREATE TABLE customers (
+    id INTEGER PRIMARY KEY,
+    name NVARCHAR(255) NOT NULL,
+    email NVARCHAR(255) NOT NULL,
+    region_id INTEGER REFERENCES regions(id)
+);
+
+CREATE TABLE products (
+    id INTEGER PRIMARY KEY,
+    name NVARCHAR(255) NOT NULL,
+    category NVARCHAR(255) NOT NULL,
+    price NUMERIC(10,2) NOT NULL
+);
+
+CREATE TABLE orders (
+    id INTEGER PRIMARY KEY,
+    customer_id INTEGER REFERENCES customers(id),
+    product_id INTEGER REFERENCES products(id),
+    quantity INTEGER NOT NULL,
+    status NVARCHAR(50) NOT NULL,
+    created_at DATETIME2 NOT NULL
+);
+"""
+
 # ClickHouse uses MergeTree engine, no PRIMARY KEY constraint, no REFERENCES
 CREATE_SQL_CLICKHOUSE = """
 CREATE TABLE regions (
@@ -88,6 +120,8 @@ def _get_create_sql(connection_string: str) -> str:
     """Return dialect-appropriate CREATE TABLE SQL."""
     if "clickhouse" in connection_string.lower():
         return CREATE_SQL_CLICKHOUSE
+    if "mssql" in connection_string.lower() or "sqlserver" in connection_string.lower():
+        return CREATE_SQL_TSQL
     return CREATE_SQL_STANDARD
 
 

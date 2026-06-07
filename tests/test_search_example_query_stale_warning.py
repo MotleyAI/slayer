@@ -45,16 +45,18 @@ class TestExampleQueryStaleWarning:
         await storage.save_model(updated)
 
         svc = SearchService(storage=storage)
-        resp = await svc.search(question="paid revenue")
-        if not resp.example_queries:
-            resp = await svc.search(question="revenue")
+        resp = await svc.search(question="paid revenue", max_results=20)
+        example_queries = [h for h in resp.results if h.kind == "memory" and h.query is not None]
+        if not example_queries:
+            resp = await svc.search(question="revenue", max_results=20)
+            example_queries = [h for h in resp.results if h.kind == "memory" and h.query is not None]
         # The query-bearing memory must still surface.
-        eq_ids = [eq.id for eq in resp.example_queries]
+        eq_ids = [eq.id for eq in example_queries]
         assert str(seed.id) in eq_ids, (
             f"expected memory {seed.id!r} in example_queries; got {eq_ids}"
         )
         # And its attached query must be unchanged (we don't rewrite).
-        eq = next(e for e in resp.example_queries if e.id == str(seed.id))
+        eq = next(e for e in example_queries if e.id == str(seed.id))
         assert eq.query.source_model == "orders"
         assert eq.query.measures is not None
         assert eq.query.measures[0].formula == "amount:sum"

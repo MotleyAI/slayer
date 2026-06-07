@@ -12,14 +12,17 @@ canonical entity matches via tantivy full-text — see the search docs).
 A memory has two flavours:
 
 - **Learning** — a memory with no attached query. Surfaces in
-  `inspect_model` and in the `memories` list of `search`.
+  `inspect_model` and as a `kind="memory"` hit in `search` with
+  `hit.query is None`.
 - **Query-bearing** — a memory whose `query` field carries a
-  `SlayerQuery`. Surfaces only in the `example_queries` list of
-  `search` (capped independently from `memories` so bulky examples
-  cannot crowd out small notes).
+  `SlayerQuery`. Surfaces only via `search`, as a `kind="memory"` hit
+  with `hit.query is not None`. Not rendered in `inspect_model`.
 
-The split is implicit: pass an entity list to `save_memory` to record
-a learning; pass a `SlayerQuery` and the memory carries that query.
+Both flavours land in the same flat `SearchResponse.results` list
+(DEV-1532); callers split on `hit.query` rather than on separate
+buckets. The split is implicit at save time: pass an entity list to
+`save_memory` to record a learning; pass a `SlayerQuery` and the
+memory carries that query.
 
 ## The canonical entity form
 
@@ -79,7 +82,7 @@ and ASCII control characters. Duplicate id → unconditional **upsert**,
 Returns `memory_id` (a non-empty string), the canonical entities
 stored, and any non-fatal warnings.
 
-**Embedding side effect.** When the `embedding_search` extra is
+**Embedding side effect.** When the `advanced_search` extra is
 installed and `SLAYER_EMBEDDING_MODEL` resolves to a configured
 provider, `save_memory` also embeds the new memory inline so it
 participates in the embedding-similarity search channel right away.
@@ -125,9 +128,12 @@ list (exact-match only — `memory:42` never strips `memory:421`).
 1. **Plan the query.** Decide the source model and the columns / measures you
    intend to use.
 2. **Call `search` first.** Pass the entities you're considering (and/or
-   the draft query, and/or a free-text `question`). Read the returned
-   `memories` and `example_queries` — they may flag pitfalls you'd
-   otherwise hit (NULL handling, units, deprecated columns, etc.).
+   the draft query, and/or a free-text `question`). Walk
+   `response.results`: hits with `kind="memory"` are prior notes (a
+   `hit.query is not None` marks a saved example query); other kinds
+   surface canonical entities matched by the full-text / embedding
+   channels. Memory hits may flag pitfalls you'd otherwise hit (NULL
+   handling, units, deprecated columns, etc.).
 3. **Issue the actual query** via the `query` tool.
 4. **Save what you learn.** When you discover a non-obvious quirk
    (encoding, NULL semantics, business rule), call `save_memory`
@@ -139,9 +145,9 @@ list (exact-match only — `memory:42` never strips `memory:421`).
 every memory **whose `query` is `None`** and whose stored entity set
 overlaps the model's own entity set (the model itself, every column,
 every named measure, every custom aggregation). Query-bearing memories
-appear only via `search` (in the `example_queries` bucket). The
-section is auto-pruned when there are no matches — no header is
-emitted in that case.
+appear only via `search` (as `kind="memory"` hits with
+`hit.query is not None`). The section is auto-pruned when there are
+no matches — no header is emitted in that case.
 
 ## Surfaces
 

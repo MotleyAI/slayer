@@ -1875,9 +1875,9 @@ class TestMultiDialectGeneration:
         assert "COUNT(" in sql
         # Each dialect uses its own truncation function
         sql_upper = sql.upper()
-        assert any(fn in sql_upper for fn in ["DATE_TRUNC", "STRFTIME", "TRUNC", "STR_TO_DATE"])
+        assert any(fn in sql_upper for fn in ["DATE_TRUNC", "STRFTIME", "TRUNC", "STR_TO_DATE", "DATETRUNC"])
 
-    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "bigquery", "duckdb", "snowflake"])
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "bigquery", "duckdb", "snowflake", "tsql"])
     async def test_date_trunc_casts_unknown_typed_time_dim(self, dialect: str) -> None:
         """A time-dimension whose ``sql`` is a bare literal (or any expression
         whose live type is ``unknown``) must be wrapped in ``CAST(... AS
@@ -1942,6 +1942,8 @@ class TestMultiDialectGeneration:
         sql_upper = sql.upper()
         if dialect == "sqlite":
             assert "DATE(" in sql_upper
+        elif dialect == "tsql":
+            assert "DATEADD" in sql_upper
         else:
             assert "INTERVAL" in sql_upper
 
@@ -2016,6 +2018,43 @@ class TestMultiDialectGeneration:
             f"sql:\n{sql}"
         )
 
+    async def test_window_measure_tsql_uses_dateadd(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """Window boundary on T-SQL must use DATEADD instead of INTERVAL (invalid T-SQL)."""
+        gen = SQLGenerator(dialect="tsql")
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"),
+                              granularity=TimeGranularity.DAY),
+            ],
+            measures=[ModelMeasure(formula="revenue:sum(window='7d')", name="rev_w")],
+        )
+        sql = await _generate(generator=gen, query=query, model=orders_model)
+        norm = _norm(sql).upper()
+        assert "DATEADD" in norm, f"Expected DATEADD in T-SQL window output:\n{sql}"
+        assert "INTERVAL" not in norm, f"INTERVAL is invalid T-SQL syntax:\n{sql}"
+
+    async def test_window_measure_tsql_multi_unit_uses_chained_dateadd(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """Multi-unit window '1y2m3d' on T-SQL must use chained DATEADD calls, not INTERVAL."""
+        gen = SQLGenerator(dialect="tsql")
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"),
+                              granularity=TimeGranularity.DAY),
+            ],
+            measures=[ModelMeasure(formula="revenue:sum(window='1y2m3d')", name="rev_w")],
+        )
+        sql = await _generate(generator=gen, query=query, model=orders_model)
+        norm = _norm(sql).upper()
+        # Must use DATEADD, not INTERVAL literals
+        assert "INTERVAL" not in norm, f"INTERVAL is invalid T-SQL syntax:\n{sql}"
+        assert "DATEADD" in norm, f"Expected DATEADD in multi-unit T-SQL window:\n{sql}"
+
     # DEV-1317: cross-dialect stat-agg generation. The exact SQL shape per
     # Tier-1 dialect is pinned in TestStatAggsPerDialect; here we just confirm
     # the generator produces parseable SQL on every supported dialect.
@@ -2054,10 +2093,11 @@ class TestMultiDialectGeneration:
             f"expected single-arg call (ORDERS.AMOUNT) in SQL for {formula!r} on {dialect}:\n{sql}"
         )
 
-    # corr / covar_samp / covar_pop are not supported on MySQL — the generator
-    # raises NotImplementedError there, so MySQL is filtered out of the matrix.
+    # corr / covar_samp / covar_pop are implemented via variance-decomposition
+    # formula on MySQL and T-SQL (neither has native two-arg functions), so those
+    # dialects are filtered out of the direct two-arg call assertion matrix.
     @pytest.mark.parametrize(
-        "dialect", [d for d in ALL_DIALECTS if d != "mysql"],
+        "dialect", [d for d in ALL_DIALECTS if d not in ("mysql", "tsql")],
     )
     @pytest.mark.parametrize(
         "formula",
@@ -2091,6 +2131,32 @@ class TestMultiDialectGeneration:
             f"on {dialect}:\n{sql}"
         )
 
+    @pytest.mark.parametrize("dialect", ["mysql", "tsql"])
+    @pytest.mark.parametrize(
+        "formula",
+        [
+            "revenue:corr(other=quantity)",
+            "revenue:covar_samp(other=quantity)",
+            "revenue:covar_pop(other=quantity)",
+        ],
+    )
+    async def test_two_arg_stat_formula_dialects_generate_valid_sql(
+        self,
+        dialect: str,
+        formula: str,
+        orders_model: SlayerModel,
+    ) -> None:
+        """MySQL and T-SQL emit variance-decomposition formula instead of direct two-arg call."""
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula=formula)],
+        )
+        sql = await _generate(generator=gen, query=query, model=orders_model)
+        assert "SELECT" in sql.upper()
+        # The formula uses division (variance decomposition)
+        assert "/" in sql
+
     @pytest.mark.parametrize(
         "formula", [
             "revenue:corr(other=quantity)",
@@ -2098,16 +2164,19 @@ class TestMultiDialectGeneration:
             "revenue:covar_pop(other=quantity)",
         ],
     )
-    async def test_two_arg_stat_agg_mysql_raises(
+    async def test_two_arg_stat_agg_mysql_emits_formula_valid_sql(
         self, formula: str, orders_model: SlayerModel,
     ) -> None:
+        """MySQL uses variance-decomposition formula for corr/covar_samp/covar_pop."""
         gen = SQLGenerator(dialect="mysql")
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula=formula)],
         )
-        with pytest.raises(NotImplementedError, match="MySQL"):
-            await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, model=orders_model)
+        assert "SELECT" in sql.upper()
+        # Formula uses division (variance decomposition)
+        assert "/" in sql
 
 
 class TestSqliteJsonExtractInGenerator:
@@ -2464,6 +2533,8 @@ class TestStatAggsPerDialect:
             ("duckdb", "STDDEV_SAMP(orders.amount)"),
             ("mysql", "STDDEV_SAMP(orders.amount)"),
             ("sqlite", "STDDEV_SAMP(orders.amount)"),
+            # T-SQL: STDEV is the T-SQL name for sample standard deviation
+            ("tsql", "STDEV(orders.amount)"),
         ],
     )
     def test_build_stddev_samp(self, dialect: str, expected: str) -> None:
@@ -2481,6 +2552,8 @@ class TestStatAggsPerDialect:
             ("duckdb", "STDDEV_POP(orders.amount)"),
             ("mysql", "STDDEV_POP(orders.amount)"),
             ("sqlite", "STDDEV_POP(orders.amount)"),
+            # T-SQL: STDEVP is the T-SQL name for population standard deviation
+            ("tsql", "STDEVP(orders.amount)"),
         ],
     )
     def test_build_stddev_pop(self, dialect: str, expected: str) -> None:
@@ -2506,6 +2579,8 @@ class TestStatAggsPerDialect:
             ("duckdb", "VARIANCE(orders.amount)"),
             ("mysql", "VAR_SAMP(orders.amount)"),
             ("sqlite", "VARIANCE(orders.amount)"),
+            # T-SQL: VAR is the T-SQL name for sample variance
+            ("tsql", "VAR(orders.amount)"),
         ],
     )
     def test_build_var_samp(self, dialect: str, expected: str) -> None:
@@ -2527,6 +2602,8 @@ class TestStatAggsPerDialect:
             # generator emits ``VAR_POP`` directly via ``exp.Anonymous``.
             ("mysql", "VAR_POP(orders.amount)"),
             ("sqlite", "VARIANCE_POP(orders.amount)"),
+            # T-SQL: VARP is the T-SQL name for population variance
+            ("tsql", "VARP(orders.amount)"),
         ],
     )
     def test_build_var_pop(self, dialect: str, expected: str) -> None:
@@ -2567,13 +2644,35 @@ class TestStatAggsPerDialect:
         assert sql.lower() == f"{agg.lower()}(orders.amount, orders.quantity)"
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
-    def test_build_two_arg_stat_mysql_raises(self, agg: str) -> None:
-        # MySQL has no native CORR / COVAR_SAMP / COVAR_POP and no Python-
-        # UDF mechanism, so all three raise at SQL generation time.
+    def test_build_two_arg_stat_mysql_emits_formula(self, agg: str) -> None:
+        # MySQL has no native CORR / COVAR_SAMP / COVAR_POP but can express them
+        # via the variance-decomposition formula: cov(x,y) = (var(x+y)-var(x)-var(y))/2
         gen = SQLGenerator(dialect="mysql")
         m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
-        with pytest.raises(NotImplementedError, match="MySQL"):
-            gen._build_agg(measure=m)
+        sql = gen._build_agg(measure=m)[0].sql(dialect="mysql")
+        # Formula uses MySQL-compatible VAR_SAMP or VAR_POP (covar_pop uses population variance)
+        assert "VAR_SAMP(" in sql or "VAR_POP(" in sql
+        # Not a direct two-arg COVAR_SAMP/COVAR_POP/CORR call (those don't exist in MySQL)
+        assert f"{agg.upper()}(" not in sql
+        # Variance-decomposition uses division
+        assert "/" in sql
+        # Both columns are NULL-guarded against each other
+        assert "CASE WHEN" in sql.upper()
+        # MySQL may emit "IS NOT NULL" or "NOT ... IS NULL" (semantically equivalent)
+        assert "IS NOT NULL" in sql.upper() or "IS NULL" in sql.upper()
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_tsql_emits_formula(self, agg: str) -> None:
+        # T-SQL has no native CORR / COVAR_SAMP / COVAR_POP; use variance-decomposition
+        gen = SQLGenerator(dialect="tsql")
+        m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
+        sql = gen._build_agg(measure=m)[0].sql(dialect="tsql")
+        # Formula uses T-SQL VAR() or VARP() (covar_pop uses population variance)
+        assert "VAR(" in sql or "VARP(" in sql
+        # Not a direct two-arg call
+        assert f"{agg.upper()}(" not in sql
+        # Variance-decomposition uses division
+        assert "/" in sql
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     def test_build_two_arg_stat_mysql_missing_other_prioritises_param_error(
@@ -7696,3 +7795,294 @@ class TestFilterOuterParenWrapDev1539:
         )
         # Also verify the inverse — that the bare `foo` IS substituted.
         assert "SUM(amount)" in result
+
+
+class TestTsqlDialect:
+    """DEV-1520: T-SQL (SQL Server) dialect-specific SQL generation tests."""
+
+    @pytest.fixture
+    def gen(self) -> SQLGenerator:
+        return SQLGenerator(dialect="tsql")
+
+    @pytest.fixture
+    def orders_model(self) -> SlayerModel:
+        return SlayerModel(
+            name="orders",
+            sql_table="dbo.orders",
+            data_source="test",
+            default_time_dimension="created_at",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+                Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
+            ],
+        )
+
+    # --- date trunc ---
+
+    def test_build_date_trunc_month_emits_datetrunc(self, gen: SQLGenerator) -> None:
+        col = sqlglot.parse_one("created_at", dialect="tsql")
+        sql = gen._build_date_trunc(col, TimeGranularity.MONTH).sql(dialect="tsql")
+        assert "DATETRUNC" in sql.upper()
+        assert "MONTH" in sql.upper()
+
+    def test_build_date_trunc_year(self, gen: SQLGenerator) -> None:
+        col = sqlglot.parse_one("created_at", dialect="tsql")
+        sql = gen._build_date_trunc(col, TimeGranularity.YEAR).sql(dialect="tsql")
+        assert "DATETRUNC" in sql.upper()
+        assert "YEAR" in sql.upper()
+
+    def test_build_date_trunc_day(self, gen: SQLGenerator) -> None:
+        col = sqlglot.parse_one("created_at", dialect="tsql")
+        sql = gen._build_date_trunc(col, TimeGranularity.DAY).sql(dialect="tsql")
+        assert "DATETRUNC" in sql.upper()
+        assert "DAY" in sql.upper()
+
+    def test_build_date_trunc_week_uses_iso_week(self, gen: SQLGenerator) -> None:
+        """Week truncation must use ISO_WEEK for Monday-start (@@DATEFIRST-independent)."""
+        col = sqlglot.parse_one("created_at", dialect="tsql")
+        sql = gen._build_date_trunc(col, TimeGranularity.WEEK).sql(dialect="tsql")
+        assert "ISO_WEEK" in sql.upper(), (
+            f"T-SQL week truncation must use ISO_WEEK (not WEEK) to be "
+            f"locale-independent. Got: {sql}"
+        )
+        # DATETRUNC(WEEK, ...) without ISO_ is locale-dependent — must not appear
+        assert "DATETRUNC(WEEK" not in sql.upper().replace("ISO_WEEK", ""), (
+            f"T-SQL week truncation must not use bare WEEK (@@DATEFIRST-dependent): {sql}"
+        )
+
+    def test_build_date_trunc_quarter(self, gen: SQLGenerator) -> None:
+        col = sqlglot.parse_one("created_at", dialect="tsql")
+        sql = gen._build_date_trunc(col, TimeGranularity.QUARTER).sql(dialect="tsql")
+        assert "DATETRUNC" in sql.upper()
+        assert "QUARTER" in sql.upper()
+
+    def test_build_date_trunc_no_date_trunc_function(self, gen: SQLGenerator) -> None:
+        """T-SQL uses DATETRUNC (no underscore), not DATE_TRUNC."""
+        col = sqlglot.parse_one("created_at", dialect="tsql")
+        sql = gen._build_date_trunc(col, TimeGranularity.MONTH).sql(dialect="tsql")
+        assert "DATE_TRUNC" not in sql.upper(), f"T-SQL should use DATETRUNC, got: {sql}"
+
+    # --- time offset ---
+
+    def test_build_time_offset_year(self, gen: SQLGenerator) -> None:
+        col = sqlglot.parse_one("created_at", dialect="tsql")
+        sql = gen._build_time_offset_expr(col, -1, "year").sql(dialect="tsql")
+        assert "DATEADD" in sql.upper()
+        assert "YEAR" in sql.upper()
+
+    def test_build_time_offset_month(self, gen: SQLGenerator) -> None:
+        col = sqlglot.parse_one("created_at", dialect="tsql")
+        sql = gen._build_time_offset_expr(col, -1, "month").sql(dialect="tsql")
+        assert "DATEADD" in sql.upper()
+        assert "MONTH" in sql.upper()
+
+    def test_build_time_offset_positive(self, gen: SQLGenerator) -> None:
+        col = sqlglot.parse_one("created_at", dialect="tsql")
+        sql = gen._build_time_offset_expr(col, 3, "day").sql(dialect="tsql")
+        assert "DATEADD" in sql.upper()
+        assert "DAY" in sql.upper()
+        assert "3" in sql
+        assert "created_at" in sql
+        assert "INTERVAL" not in sql.upper()
+
+    @pytest.mark.parametrize("gran", ["year", "month", "day", "week"])
+    def test_build_time_offset_no_interval_keyword(self, gen: SQLGenerator, gran: str) -> None:
+        """T-SQL must never emit INTERVAL (invalid syntax) for time offsets."""
+        col = sqlglot.parse_one("created_at", dialect="tsql")
+        sql = gen._build_time_offset_expr(col, -1, gran).sql(dialect="tsql")
+        assert "INTERVAL" not in sql.upper(), (
+            f"INTERVAL is invalid T-SQL syntax for granularity {gran!r}: {sql}"
+        )
+
+    # --- median / percentile (unsupported) ---
+
+    def test_build_median_tsql_raises(self, gen: SQLGenerator) -> None:
+        """T-SQL PERCENTILE_CONT is window-only (requires OVER); unsupported as GROUP BY agg."""
+        inner = sqlglot.parse_one("amount", dialect="tsql")
+        with pytest.raises(NotImplementedError):
+            gen._build_median(inner)
+
+    def test_build_percentile_tsql_raises(self, gen: SQLGenerator) -> None:
+        """T-SQL PERCENTILE_CONT is window-only (requires OVER); unsupported as GROUP BY agg."""
+        m = EnrichedMeasure(
+            name="amount", sql="amount", model_name="orders",
+            alias="amount_percentile", aggregation="percentile",
+            agg_kwargs={"p": "0.5"},
+        )
+        with pytest.raises(NotImplementedError):
+            gen._build_percentile(m)
+
+    # --- one-arg stat aggs ---
+
+    @pytest.mark.parametrize("agg,expected_fn", [
+        ("stddev_samp", "STDEV"),
+        ("stddev_pop", "STDEVP"),
+        ("var_samp", "VAR"),
+        ("var_pop", "VARP"),
+    ])
+    def test_build_one_arg_stat_tsql(
+        self, gen: SQLGenerator, agg: str, expected_fn: str,
+    ) -> None:
+        m = EnrichedMeasure(
+            name="amount", sql="amount", model_name="orders",
+            alias=f"amount_{agg}", aggregation=agg, agg_kwargs={},
+        )
+        sql = gen._build_agg(measure=m)[0].sql(dialect="tsql")
+        assert f"{expected_fn}(" in sql, f"Expected {expected_fn}() in {sql!r}"
+        assert "orders.amount" in sql
+
+    # --- two-arg stat aggs (variance-decomposition formula) ---
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_tsql_uses_var_function(
+        self, gen: SQLGenerator, agg: str,
+    ) -> None:
+        """covar/corr on T-SQL must use T-SQL VAR() not Postgres VAR_SAMP()."""
+        m = EnrichedMeasure(
+            name="amount", sql="amount", model_name="orders",
+            alias=f"amount_{agg}", aggregation=agg,
+            agg_kwargs={"other": "quantity"},
+        )
+        sql = gen._build_agg(measure=m)[0].sql(dialect="tsql")
+        # covar_samp/corr use VAR(), covar_pop uses VARP() — both are valid T-SQL
+        assert "VAR(" in sql or "VARP(" in sql, f"Expected VAR()/VARP() in formula, got: {sql}"
+        # Must NOT use Postgres-style VAR_SAMP (invalid T-SQL function)
+        assert "VAR_SAMP(" not in sql, f"VAR_SAMP is not a T-SQL function: {sql}"
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_tsql_no_direct_call(
+        self, gen: SQLGenerator, agg: str,
+    ) -> None:
+        """T-SQL doesn't have COVAR_SAMP / COVAR_POP / CORR natively."""
+        m = EnrichedMeasure(
+            name="amount", sql="amount", model_name="orders",
+            alias=f"amount_{agg}", aggregation=agg,
+            agg_kwargs={"other": "quantity"},
+        )
+        sql = gen._build_agg(measure=m)[0].sql(dialect="tsql")
+        assert f"{agg.upper()}(" not in sql, (
+            f"T-SQL should not emit a direct {agg.upper()}() call; use formula. Got: {sql}"
+        )
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_tsql_contains_both_columns(
+        self, gen: SQLGenerator, agg: str,
+    ) -> None:
+        m = EnrichedMeasure(
+            name="amount", sql="amount", model_name="orders",
+            alias=f"amount_{agg}", aggregation=agg,
+            agg_kwargs={"other": "quantity"},
+        )
+        sql = gen._build_agg(measure=m)[0].sql(dialect="tsql")
+        assert "orders.amount" in sql
+        assert "orders.quantity" in sql
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_tsql_uses_division(
+        self, gen: SQLGenerator, agg: str,
+    ) -> None:
+        m = EnrichedMeasure(
+            name="amount", sql="amount", model_name="orders",
+            alias=f"amount_{agg}", aggregation=agg,
+            agg_kwargs={"other": "quantity"},
+        )
+        sql = gen._build_agg(measure=m)[0].sql(dialect="tsql")
+        assert "/" in sql, f"Variance-decomposition formula must contain division: {sql}"
+
+    @pytest.mark.parametrize("agg", ["covar_samp", "covar_pop"])
+    def test_build_covar_tsql_null_guards_both_columns(
+        self, gen: SQLGenerator, agg: str,
+    ) -> None:
+        """Both columns must be NULL-guarded against each other in the formula.
+
+        For `covar_samp(x, y)`: x is guarded as `CASE WHEN y IS NOT NULL THEN x END`
+        and y is guarded as `CASE WHEN x IS NOT NULL THEN y END`, so pairs where
+        either column is NULL are excluded from the variance computation.
+        """
+        m = EnrichedMeasure(
+            name="amount", sql="amount", model_name="orders",
+            alias=f"amount_{agg}", aggregation=agg,
+            agg_kwargs={"other": "quantity"},
+        )
+        sql = gen._build_agg(measure=m)[0].sql(dialect="tsql")
+        upper = sql.upper()
+        # Both x-guarded-by-y and y-guarded-by-x CASE WHEN patterns must appear
+        assert "CASE WHEN" in upper, f"Expected NULL guards (CASE WHEN) in formula: {sql}"
+        # T-SQL may emit "IS NOT NULL" or "NOT ... IS NULL" (semantically equivalent)
+        assert "IS NOT NULL" in upper or "IS NULL" in upper, (
+            f"Expected IS NULL/IS NOT NULL guard in formula: {sql}"
+        )
+
+    def test_build_corr_tsql_uses_stdev_for_denominator(self, gen: SQLGenerator) -> None:
+        """corr denominator uses STDEV (T-SQL stddev_samp) * STDEV."""
+        m = EnrichedMeasure(
+            name="amount", sql="amount", model_name="orders",
+            alias="amount_corr", aggregation="corr",
+            agg_kwargs={"other": "quantity"},
+        )
+        sql = gen._build_agg(measure=m)[0].sql(dialect="tsql")
+        assert "STDEV(" in sql, f"Expected STDEV() in corr denominator, got: {sql}"
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_tsql_missing_other_raises(
+        self, gen: SQLGenerator, agg: str,
+    ) -> None:
+        m = EnrichedMeasure(
+            name="amount", sql="amount", model_name="orders",
+            alias=f"amount_{agg}", aggregation=agg, agg_kwargs={},
+        )
+        with pytest.raises(ValueError, match=r"requires parameter 'other'|other="):
+            gen._build_agg(measure=m)
+
+    # --- full query integration ---
+
+    async def test_full_aggregation_query_valid_tsql(
+        self, gen: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        sql = await _generate(gen, query, orders_model)
+        assert "COUNT(" in sql
+        assert "SUM(" in sql
+
+    async def test_full_query_with_time_dim_valid_tsql(
+        self, gen: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="revenue:sum")],
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            )],
+        )
+        sql = await _generate(gen, query, orders_model)
+        assert "DATETRUNC" in sql.upper()
+        assert "SUM(" in sql
+
+    async def test_calendar_time_shift_tsql_uses_dateadd(
+        self, gen: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            )],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="time_shift(revenue:sum, -1, 'year')", name="rev_prev_year"),
+            ],
+        )
+        sql = await _generate(gen, query, orders_model)
+        assert "shifted_" in sql
+        assert "DATEADD" in sql.upper()
+        assert "INTERVAL" not in sql.upper(), (
+            f"INTERVAL is invalid T-SQL syntax; shifted CTE must use DATEADD:\n{sql}"
+        )

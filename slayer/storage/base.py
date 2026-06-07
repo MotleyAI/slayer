@@ -1,5 +1,6 @@
 """Abstract storage protocol and factory."""
 
+import asyncio
 import os
 import sys
 from abc import ABC, abstractmethod
@@ -700,6 +701,24 @@ class StorageBackend(ABC):
             fresh.model_copy(update={"entities": fresh_kept})
         )
         return True
+
+    # ---- graph fingerprint (DEV-1464) -------------------------------------
+
+    async def graph_fingerprint(self) -> str:
+        """Return a string that changes whenever storage content changes.
+
+        Used by ``slayer.search.graph`` to decide whether to rebuild the
+        ephemeral in-memory LadybugDB property graph.  The default
+        implementation returns ``"0"``; concrete backends override this
+        to provide a meaningful fingerprint (e.g. the db file's mtime for
+        SQLiteStorage, or the max mtime across all YAML files for
+        YAMLStorage).
+
+        Implementations may raise ``OSError`` when the underlying files
+        are inaccessible; callers treat that as a forced rebuild.
+        """
+        await asyncio.sleep(0)
+        return "0"
 
     # ---- embeddings sidecar (DEV-1386) ------------------------------------
     #

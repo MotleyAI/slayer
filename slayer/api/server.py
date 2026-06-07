@@ -5,7 +5,7 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.mcp.server import create_mcp_server
 from slayer.core.errors import (
@@ -13,6 +13,7 @@ from slayer.core.errors import (
     EntityResolutionError,
     MemoryNotFoundError,
     SchemaDriftError,
+    SlayerError,
 )
 from slayer.core.format import NumberFormat
 from slayer.core.models import DatasourceConfig, SlayerModel
@@ -137,19 +138,18 @@ class SearchRequest(BaseModel):
     """Body for ``POST /search`` (DEV-1375). Mirrors the MCP / CLI /
     SlayerClient surfaces.
 
-    All three retrieval inputs are optional. Empty input falls back to
-    a recency listing of the newest ``max_memories`` learning-only
-    memories plus the newest ``max_example_queries`` query-bearing
-    memories.
+    All retrieval inputs are optional. Empty input falls back to a
+    recency listing capped at ``max_results`` hits.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     entities: Optional[List[str]] = None
     query: Optional[Any] = None
     question: Optional[str] = None
     datasource: Optional[str] = None
-    max_memories: int = 5
-    max_example_queries: int = 2
-    max_entities: int = 5
+    max_results: int = Field(default=10, ge=1)
+    cypher_filter: Optional[str] = None
 
 
 def _slayer_version() -> str:
@@ -650,7 +650,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 
     # ---------- DEV-1375: semantic search -----------------------------
 
-    search_service = SearchService(storage=storage)
+    # DEV-1516: pass the engine so the search service's post-fusion
+    # column-hit hook can auto-refresh stale categorical columns.
+    search_service = SearchService(storage=storage, engine=engine)
 
     @app.post(
         "/search",
@@ -670,15 +672,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 query=request.query,
                 question=request.question,
                 datasource=request.datasource,
-                max_memories=request.max_memories,
-                max_example_queries=request.max_example_queries,
-                max_entities=request.max_entities,
+                max_results=request.max_results,
+                cypher_filter=request.cypher_filter,
             )
-        except (
-            EntityResolutionError,
-            AmbiguousModelError,
-            ValueError,
-        ) as exc:
+        except (SlayerError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return response.model_dump(mode="json")
 

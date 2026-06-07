@@ -62,7 +62,7 @@ def check_column_types(model_name, expected_types):
     """Assert /models/{name} returns the expected DataType strings.
 
     expected_types: dict mapping column name to DataType .value string
-        (e.g. "number", "string", "time", "date"). Columns absent
+        (e.g. "DOUBLE", "TEXT", "TIMESTAMP", "DATE"). Columns absent
         from the dict are ignored — different dialects expose different
         column sets, and this helper is a positive-coverage check, not
         an exhaustive schema comparison.
@@ -317,9 +317,9 @@ def check_stddev_var(measure="quantity"):
 def check_corr_covar(measure="quantity", other="customer_id"):
     """2-arg stat aggregates: corr, covar_samp, covar_pop.
 
-    Do NOT call from MySQL examples — SLayer raises ``NotImplementedError``
-    for these on MySQL (no native function, no Python-UDF mechanism).
-    Use MariaDB or compute client-side as a workaround.
+    Safe to call for all Tier-1 dialects including MySQL and T-SQL (SQL Server):
+    those use a variance-decomposition formula instead of native functions.
+    MariaDB and all others use native CORR/COVAR_*.
     """
     print("\nCorrelation / covariance:")
 

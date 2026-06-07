@@ -81,7 +81,7 @@ async def test_question_only_warns_when_extra_missing(
     service = SearchService(storage=storage)
     response = await service.search(question="how do I look up purchases?")
     assert any(
-        "embedding_search" in w for w in response.warnings
+        "advanced_search" in w for w in response.warnings
     ), response.warnings
 
 
@@ -129,17 +129,18 @@ async def test_question_with_embeddings_returns_entity(
         return out
 
     monkeypatch.setattr(
-        "slayer.embeddings.service.embed_batch", stub_embed_batch,
+        "slayer.search.retrievers.embeddings.embed_batch",
+        stub_embed_batch,
     )
 
     # Refresh embeddings for everything in the seeded datasource via the
-    # service so the storage table is populated.
-    from slayer.embeddings.service import EmbeddingService
+    # retriever so the storage table is populated.
+    from slayer.search.retrievers.embeddings import EmbeddingRetriever
 
     model = await storage.get_model("orders", data_source="dsx")
     assert model is not None
-    await EmbeddingService(storage=storage).refresh_model_subtree(model)
-    await EmbeddingService(storage=storage).refresh_datasource(
+    await EmbeddingRetriever(storage=storage).refresh_model_subtree(model)
+    await EmbeddingRetriever(storage=storage).refresh_datasource(
         name="dsx", models=[model],
     )
 
@@ -157,8 +158,9 @@ async def test_question_with_embeddings_returns_entity(
 
     service = SearchService(storage=storage)
     response = await service.search(question="purchase total in dollars")
-    assert response.entities
-    assert response.entities[0].id == "dsx.orders.amount"
+    entity_hits = [h for h in response.results if h.kind != "memory"]
+    assert entity_hits
+    assert entity_hits[0].id == "dsx.orders.amount"
 
 
 # ---------------------------------------------------------------------------
@@ -185,27 +187,29 @@ async def test_entity_hits_now_carry_rrf_fused_score(
         return [0.0, 0.0, 0.0, 0.0]
 
     monkeypatch.setattr(
-        "slayer.embeddings.service.embed_batch", stub_embed_batch,
+        "slayer.search.retrievers.embeddings.embed_batch",
+        stub_embed_batch,
     )
     monkeypatch.setattr(
         embedding_client, "embed_query", stub_embed_query,
     )
-    from slayer.embeddings.service import EmbeddingService
+    from slayer.search.retrievers.embeddings import EmbeddingRetriever
     model = await storage.get_model("orders", data_source="dsx")
     assert model is not None
-    await EmbeddingService(storage=storage).refresh_model_subtree(model)
-    await EmbeddingService(storage=storage).refresh_datasource(
+    await EmbeddingRetriever(storage=storage).refresh_model_subtree(model)
+    await EmbeddingRetriever(storage=storage).refresh_datasource(
         name="dsx", models=[model],
     )
 
     service = SearchService(storage=storage)
     response = await service.search(question="orders")
-    if response.entities:
+    entity_hits = [h for h in response.results if h.kind != "memory"]
+    if entity_hits:
         # Any entity ranked #1 in *one* channel through RRF has
         # score = 1/(60+1) ≈ 0.0164. If both channels hit it #1,
         # score ≈ 0.0328. Both are well under the raw tantivy BM25
         # band that the old surface emitted (5+).
-        assert response.entities[0].score < 0.1
+        assert entity_hits[0].score < 0.1
 
 
 # ---------------------------------------------------------------------------
@@ -226,12 +230,13 @@ async def test_query_embed_failure_warns_and_continues(
         return [[0.1, 0.1, 0.1, 0.1] for _ in texts]
 
     monkeypatch.setattr(
-        "slayer.embeddings.service.embed_batch", stub_embed_batch,
+        "slayer.search.retrievers.embeddings.embed_batch",
+        stub_embed_batch,
     )
-    from slayer.embeddings.service import EmbeddingService
+    from slayer.search.retrievers.embeddings import EmbeddingRetriever
     model = await storage.get_model("orders", data_source="dsx")
     assert model is not None
-    await EmbeddingService(storage=storage).refresh_model_subtree(model)
+    await EmbeddingRetriever(storage=storage).refresh_model_subtree(model)
 
     async def failing_query(*_a, **_kw):  # NOSONAR(S7503) — stub matches embed_query async signature
         return None
@@ -299,4 +304,4 @@ async def test_recency_fallback_when_all_inputs_empty(
     service = SearchService(storage=storage)
     response = await service.search()
     assert any("returning" in w for w in response.warnings)
-    assert response.entities == []
+    assert [h for h in response.results if h.kind != "memory"] == []

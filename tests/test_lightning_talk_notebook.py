@@ -415,7 +415,7 @@ def test_search_demo_has_three_calls():
 
 def test_search_question_cell_targets_brooklyn():
     """Cell 18: search(question=Brooklyn-related). Must also assert at
-    runtime that resp.memories contains the Brooklyn memory."""
+    runtime that the Brooklyn memory is in the flat results list."""
     nb = _load_notebook()
     for src in _all_search_cells(nb["cells"]):
         if "search" not in src:
@@ -432,10 +432,10 @@ def test_search_question_cell_targets_brooklyn():
             # tantivy retrieve via the learning text).
             assert BROOKLYN_MEMORY_ID in src, (
                 f"Brooklyn search cell must reference {BROOKLYN_MEMORY_ID!r} "
-                "in a runtime assertion on resp.memories"
+                "in a runtime assertion on the results"
             )
-            assert "resp.memories" in src or ".memories" in src, (
-                "Brooklyn search cell must assert against resp.memories"
+            assert "resp.results" in src or ".results" in src, (
+                "Brooklyn search cell must assert against resp.results"
             )
             return
     pytest.fail("Expected a search(question=...) cell referencing Brooklyn")
@@ -443,7 +443,7 @@ def test_search_question_cell_targets_brooklyn():
 
 def test_search_entities_cell_uses_order_total():
     """Cell 19: search(entities=[order_total]). Must also assert at
-    runtime that resp.memories contains the Brooklyn memory."""
+    runtime that the Brooklyn memory is in results."""
     nb = _load_notebook()
     for src in _all_search_cells(nb["cells"]):
         try:
@@ -454,7 +454,7 @@ def test_search_entities_cell_uses_order_total():
         if isinstance(ents, list) and any("order_total" in e for e in ents):
             assert BROOKLYN_MEMORY_ID in src, (
                 f"Entities search cell must reference {BROOKLYN_MEMORY_ID!r} "
-                "in a runtime assertion on resp.memories"
+                "in a runtime assertion on results"
             )
             return
     pytest.fail(
@@ -464,43 +464,41 @@ def test_search_entities_cell_uses_order_total():
 
 def test_search_discovery_cell_caps_memories_zero_and_lifts_entities():
     """The third search call demonstrates entity-discovery + example_queries:
-    ``max_memories=0`` and ``max_entities >= 1`` and ``max_example_queries >= 1``
-    so it surfaces both entity hits and the query-bearing memory.
+    uses ``max_results`` large enough to surface both entity hits and
+    query-bearing memories.
     Must also assert at runtime that the top-customers memory appears in
-    resp.example_queries and resp.entities is non-empty."""
+    the example_queries local variable and entities is non-empty."""
     nb = _load_notebook()
     for src in _all_search_cells(nb["cells"]):
         try:
             kwargs = _find_kwargs_for_call(src, callee_suffix="search")
         except AssertionError:
             continue
-        if (
-            kwargs.get("max_memories") == 0
-            and (kwargs.get("max_entities") or 0) >= 1
-            and (kwargs.get("max_example_queries") or 0) >= 1
-        ):
-            q = kwargs.get("question")
-            assert isinstance(q, str) and (
-                "customer" in q.lower() or "lifetime" in q.lower()
-            ), (
-                "Discovery search question should be about customer "
-                "lifetime spend; got: " + repr(q)
-            )
-            # Runtime assertion: top-customers memory in resp.example_queries
-            assert TOP_CUSTOMERS_MEMORY_ID in src, (
-                f"Discovery cell must reference {TOP_CUSTOMERS_MEMORY_ID!r} "
-                "in a runtime assertion on resp.example_queries"
-            )
-            assert "example_queries" in src, (
-                "Discovery cell must assert against resp.example_queries"
-            )
-            assert "entities" in src and ".entities" in src.replace(" ", ""), (
-                "Discovery cell must also assert resp.entities is non-empty"
-            )
-            return
+        # The new API uses max_results instead of separate caps.
+        # Look for the discovery cell: uses a question about customer lifetime
+        # and surfaces both example_queries and entities from the flat results.
+        q = kwargs.get("question")
+        if not (isinstance(q, str) and (
+            "customer" in q.lower() or "lifetime" in q.lower()
+        )):
+            continue
+        if "max_results" not in src:
+            continue
+        # Runtime assertion: top-customers memory in example_queries
+        assert TOP_CUSTOMERS_MEMORY_ID in src, (
+            f"Discovery cell must reference {TOP_CUSTOMERS_MEMORY_ID!r} "
+            "in a runtime assertion on example_queries"
+        )
+        assert "example_queries" in src, (
+            "Discovery cell must assert against example_queries local variable"
+        )
+        assert "entities" in src, (
+            "Discovery cell must also assert entities is non-empty"
+        )
+        return
     pytest.fail(
-        "Expected a search() call with max_memories=0, "
-        "max_entities>=1, max_example_queries>=1"
+        "Expected a search() call with a customer/lifetime question, "
+        "max_results=..., asserting example_queries and entities"
     )
 
 

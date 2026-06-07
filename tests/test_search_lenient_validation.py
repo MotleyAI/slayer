@@ -72,9 +72,10 @@ class TestSearchLenientValidation:
         resp = await svc.search(
             entities=["otherdb.catalog"],
             datasource="mydb",
-            max_memories=0, max_example_queries=0, max_entities=5,
+            max_results=20,
         )
-        assert resp.entities == []
+        entity_hits = [h for h in resp.results if h.kind != "memory"]
+        assert entity_hits == []
         assert any(
             "otherdb.catalog" in w
             and "not rooted at datasource 'mydb'" in w

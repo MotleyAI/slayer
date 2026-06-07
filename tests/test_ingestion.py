@@ -6,6 +6,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.dialects.mssql import (
+    BIT,
+    DATETIME2,
+    DATETIMEOFFSET,
+    MONEY,
+    NCHAR,
+    NTEXT,
+    NVARCHAR,
+    SMALLDATETIME,
+    SMALLMONEY,
+    TIMESTAMP as MSSQL_TIMESTAMP,
+    TINYINT,
+)
 
 from slayer.core.enums import DataType
 from slayer.engine.ingestion import (
@@ -339,6 +352,45 @@ class TestSaTypeToDataTypeIntDouble:
 
     def test_datetime_maps_to_timestamp(self) -> None:
         assert _sa_type_to_data_type(sa.DateTime()) is DataType.TIMESTAMP
+
+    # --- T-SQL (SQL Server) specific types ---
+
+    def test_tsql_tinyint_maps_to_int(self) -> None:
+        assert _sa_type_to_data_type(TINYINT()) is DataType.INT
+
+    def test_tsql_datetime2_maps_to_timestamp(self) -> None:
+        assert _sa_type_to_data_type(DATETIME2()) is DataType.TIMESTAMP
+
+    def test_tsql_smalldatetime_maps_to_timestamp(self) -> None:
+        assert _sa_type_to_data_type(SMALLDATETIME()) is DataType.TIMESTAMP
+
+    def test_tsql_datetimeoffset_maps_to_timestamp(self) -> None:
+        assert _sa_type_to_data_type(DATETIMEOFFSET()) is DataType.TIMESTAMP
+
+    def test_tsql_nvarchar_maps_to_text(self) -> None:
+        assert _sa_type_to_data_type(NVARCHAR()) is DataType.TEXT
+
+    def test_tsql_nchar_maps_to_text(self) -> None:
+        assert _sa_type_to_data_type(NCHAR()) is DataType.TEXT
+
+    def test_tsql_ntext_maps_to_text(self) -> None:
+        assert _sa_type_to_data_type(NTEXT()) is DataType.TEXT
+
+    def test_tsql_money_maps_to_double(self) -> None:
+        assert _sa_type_to_data_type(MONEY()) is DataType.DOUBLE
+
+    def test_tsql_smallmoney_maps_to_double(self) -> None:
+        assert _sa_type_to_data_type(SMALLMONEY()) is DataType.DOUBLE
+
+    def test_tsql_bit_maps_to_boolean(self) -> None:
+        assert _sa_type_to_data_type(BIT()) is DataType.BOOLEAN
+
+    def test_tsql_mssql_timestamp_rowversion_maps_to_text(self) -> None:
+        # mssql.TIMESTAMP is SQL Server's rowversion (8-byte binary counter),
+        # not a temporal type. Its class name is "TIMESTAMP", same as
+        # sa.TIMESTAMP, so without the isinstance guard it would incorrectly
+        # land on DataType.TIMESTAMP.
+        assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
 
 
 class TestSqliteIngestionRoundTrip:

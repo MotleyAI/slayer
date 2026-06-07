@@ -397,7 +397,7 @@ class TestMemoryEmbeddingRefresh:
             return [[0.1, 0.2, 0.3] for _ in texts]
 
         monkeypatch.setattr(
-            "slayer.embeddings.service.embed_batch", fake_embed_batch,
+            "slayer.search.retrievers.embeddings.embed_batch", fake_embed_batch,
         )
         return calls
 
@@ -485,14 +485,15 @@ class TestMemoryEmbeddingRefresh:
         # Force `refresh_memory` to return the per-row failure warning
         # shape that `_apply_pending` would normally emit when
         # `embed_batch` returns None.
-        async def failing_refresh(self, memory):  # NOSONAR(S7503) — replaces async refresh_memory
+        async def failing_refresh(self, memory):  # NOSONAR(S7503) — replaces async upsert_memory
             return [
                 f"embedding refresh failed for memory:{memory.id}; "
                 f"skipped (search will still find this entity via tantivy + BM25)."
             ]
 
         monkeypatch.setattr(
-            "slayer.embeddings.service.EmbeddingService.refresh_memory",
+            "slayer.search.retrievers.embeddings."
+            "EmbeddingRetriever.upsert_memory",
             failing_refresh,
         )
 
@@ -524,11 +525,12 @@ class TestMemoryEmbeddingRefresh:
         )
         self._enable_channel(monkeypatch)
 
-        async def raising_refresh(self, memory):  # NOSONAR(S7503) — replaces async refresh_memory
+        async def raising_refresh(self, memory):  # NOSONAR(S7503) — replaces async upsert_memory
             raise RuntimeError("boom")
 
         monkeypatch.setattr(
-            "slayer.embeddings.service.EmbeddingService.refresh_memory",
+            "slayer.search.retrievers.embeddings."
+            "EmbeddingRetriever.upsert_memory",
             raising_refresh,
         )
 
@@ -564,7 +566,7 @@ class TestMemoryEmbeddingRefresh:
             return [None for _ in texts]
 
         monkeypatch.setattr(
-            "slayer.embeddings.service.embed_batch", should_not_be_called,
+            "slayer.search.retrievers.embeddings.embed_batch", should_not_be_called,
         )
 
         warnings = await _refresh_datasource_embeddings(

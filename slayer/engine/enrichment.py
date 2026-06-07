@@ -204,6 +204,20 @@ async def enrich_query(
             )
         named_measures[m.name] = m.formula
 
+    # A bare named-measure reference like ``measures=["companies_count"]`` is
+    # an implicit rename: the user already chose ``companies_count`` as the
+    # surfacing name when they declared the ModelMeasure. Promote it to an
+    # explicit ``qf.name`` so DEV-1443's surface / collision / canonical
+    # machinery (which keys on ``qf.name``) treats it identically to an
+    # explicit ``{"formula": "...", "name": "..."}`` rename. Without this,
+    # the SELECT alias canonicalises off the expanded formula
+    # (``company_name_count_distinct``) while ORDER BY / result-key lookups
+    # still use the declared measure name (``companies_count``) — they
+    # diverge and the emitted SQL references a column that isn't projected.
+    for qf in (query.measures or []):
+        if qf.name is None and qf.formula.strip() in named_measures:
+            qf.name = qf.formula.strip()
+
     # --- Dimensions ---
     dimensions = await _resolve_dimensions(
         query=query,
@@ -1235,7 +1249,10 @@ async def enrich_query(
                 agg_args=spec.agg_args,
                 agg_kwargs=spec.agg_kwargs,
             )
-            if field_name == qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace("*", ""):
+            if (
+                field_name == qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace("*", "")
+                and qfield.formula.strip() not in named_measures
+            ):
                 field_name = canonical_name
 
             if "." in spec.measure_name and spec.measure_name != "*":
