@@ -2560,9 +2560,22 @@ class SQLGenerator:
                                 filtered_rn_map=filtered_rn_map,
                             )
                             agg_sql = agg_expr.sql(dialect=self.dialect)
+                            # DEV-1539: when the substituted aggregate is
+                            # a Binary (arithmetic / comparison) or
+                            # Connector (AND/OR) at the AST root, wrap it
+                            # in outer parens so any surrounding
+                            # comparator's precedence is explicit. Single
+                            # function-call aggregates (SUM/COUNT/AVG/…)
+                            # stay unwrapped to avoid noise.
+                            if isinstance(agg_expr, (exp.Binary, exp.Connector)):
+                                agg_sql = f"({agg_sql})"
+                            # DEV-1539: lambda replacement (backslash
+                            # safety) + trailing ``(?!\.)`` guard so a
+                            # measure name doesn't mis-substitute inside
+                            # a dotted continuation in ``having_sql``.
                             having_sql = re.sub(
-                                rf'(?<!\.)(?<!\w)\b{re.escape(col_name)}\b',
-                                agg_sql,
+                                rf'(?<!\.)(?<!\w)\b{re.escape(col_name)}\b(?!\.)',
+                                lambda _m, s=agg_sql: s,
                                 having_sql,
                             )
                             break

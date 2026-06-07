@@ -2627,6 +2627,33 @@ def extract_filter_transforms(
     return _unmangle(_ast.unparse(modified)), transforms
 
 
+def _filter_inline_needs_paren_wrap(*, sql: str, dialect: str) -> bool:
+    """DEV-1539: decide whether an inlined ``Column.sql`` body needs an
+    outer ``(...)`` wrap when substituted into a filter's text.
+
+    The wrap matters when the body is a multi-term expression whose
+    precedence is ambiguous against the surrounding comparator
+    (``a + b > 7`` reading as either ``(a + b) > 7`` or ``a + (b > 7)``).
+    Atomic shapes — bare columns, literals, single function calls,
+    single CASE expressions, single CAST expressions — are already
+    unambiguous; wrapping them adds noise without changing meaning.
+
+    Parses ``sql`` once via sqlglot to determine the root AST shape.
+    Conservative on parse failure: returns ``True`` so the caller wraps
+    (errs on the side of correctness over noise).
+    """
+    try:
+        tree = sqlglot.parse_one(sql, dialect=dialect)
+    except Exception:  # noqa: BLE001 — sqlglot raises a variety of error types
+        return True
+    # ``Paren`` already self-wraps; ``Binary`` (arith / comparison) and
+    # ``Connector`` (AND/OR) DO need wrapping; anything else (Column,
+    # Literal, Anonymous/Function call, Case, Cast, …) does not.
+    if isinstance(tree, exp.Paren):
+        return False
+    return isinstance(tree, (exp.Binary, exp.Connector))
+
+
 async def resolve_filter_columns(
     parsed_filters: list,
     model: SlayerModel,
@@ -2708,9 +2735,24 @@ async def resolve_filter_columns(
                             alias_path=model_name,
                             is_root=True,
                         )
+                        # DEV-1539: wrap the inlined non-bare Column.sql
+                        # in outer parens so the precedence of any
+                        # surrounding comparator is explicit. Mirrors the
+                        # ``exp.Paren`` wrap that ``expand_derived_refs``
+                        # already applies to spliced derived bodies. Skip
+                        # the wrap when the inlined body is already a
+                        # single atomic expression (literal / column /
+                        # function call) — its precedence is unambiguous
+                        # and the wrap would only add noise.
+                        if _filter_inline_needs_paren_wrap(sql=qualified, dialect=dialect):
+                            qualified = f"({qualified})"
+                    # DEV-1539: lambda replacement so backslashes inside
+                    # ``qualified`` aren't interpreted as ``re`` escape
+                    # sequences (which would silently halve ``\\`` or
+                    # raise on a ``\1`` backref).
                     resolved_sql = _re.sub(
                         rf"(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)",
-                        qualified,
+                        lambda _m, q=qualified: q,
                         resolved_sql,
                     )
                     resolved_columns.append(qualified)
@@ -2797,9 +2839,16 @@ async def resolve_filter_columns(
                                 alias_path=table_alias,
                                 is_root=False,
                             )
+                            # DEV-1539: wrap inlined non-bare joined
+                            # Column.sql in outer parens; mirror of the
+                            # local-branch fix above. Skip when the body
+                            # is already an atomic expression.
+                            if _filter_inline_needs_paren_wrap(sql=qualified, dialect=dialect):
+                                qualified = f"({qualified})"
+                        # DEV-1539: lambda replacement for backslash safety.
                         resolved_sql = _re.sub(
                             rf"(?<!\w)\b{_re.escape(col_name)}\b",
-                            qualified,
+                            lambda _m, q=qualified: q,
                             resolved_sql,
                         )
                         # Keep the original dotted path in resolved_columns

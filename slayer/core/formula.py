@@ -1080,16 +1080,44 @@ def _resolve_dotted_attribute(node: ast.expr) -> str:
 
 
 def _compare_to_sql(node: ast.Compare, recur) -> str:
-    parts = [recur(node.left)]
+    # DEV-1539: chained comparisons (``a < b < c``) have different
+    # semantics in Python (``(a < b) AND (b < c)``) and SQL (left-to-right
+    # ``(a < b) < c``, a boolean re-compared with ``c``). Reject up front
+    # with a pointer at the ``AND`` rewrite rather than emit silently
+    # wrong SQL.
+    if len(node.ops) > 1:
+        raise ValueError(
+            "Chained comparisons (e.g. `a < b < c`) are not supported in "
+            "DSL filters because their Python semantics differ from SQL. "
+            "Rewrite using AND: `a < b AND b < c`."
+        )
+    # DEV-1539: wrap a Compare LHS/RHS that is ``ast.BinOp`` in outer
+    # parens so the comparator's precedence is explicit in the emitted
+    # SQL. ``ast.BoolOp`` is intentionally NOT included — ``_boolop_to_sql``
+    # already self-wraps multi-operand outputs in ``(...)`` and a second
+    # layer would add noise. ``ast.LShift`` is also excluded — it is a
+    # marker for the SQL ``||`` concat operator (pre-processed by
+    # ``_preprocess_concat``) and ``_binop_to_sql`` rewrites the chain
+    # into a single ``concat(...)`` function call, which doesn't need
+    # an outer paren.
+    def _needs_wrap(n: ast.AST) -> bool:
+        return isinstance(n, ast.BinOp) and not isinstance(n.op, ast.LShift)
+
+    left_sql = recur(node.left)
+    if _needs_wrap(node.left):
+        left_sql = f"({left_sql})"
+    parts = [left_sql]
     for op, comparator in zip(node.ops, node.comparators):
         sql_op = _compare_op_to_sql(op, comparator)
-        right = recur(comparator)
         if isinstance(op, (ast.Is, ast.IsNot)):
             parts.append(sql_op)  # "IS NULL" / "IS NOT NULL" already complete
-        else:
-            # Both regular comparisons and IN / NOT IN take "<op> <right>";
-            # for IN/NotIn the right is already "(val1, val2, ...)".
-            parts.append(f"{sql_op} {right}")
+            continue
+        right_sql = recur(comparator)
+        if _needs_wrap(comparator):
+            right_sql = f"({right_sql})"
+        # Both regular comparisons and IN / NOT IN take "<op> <right>";
+        # for IN/NotIn the right is already "(val1, val2, ...)".
+        parts.append(f"{sql_op} {right_sql}")
     return " ".join(parts)
 
 
