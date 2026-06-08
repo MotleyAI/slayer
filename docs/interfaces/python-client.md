@@ -87,6 +87,54 @@ datasources = client.list_datasources()
 client.create_datasource({"name": "mydb", "type": "postgres", ...})
 ```
 
+### Memories + Semantic Search
+
+`SlayerClient` exposes the same single retrieval surface as MCP / REST. All three are async; wrap them with `run_sync` for synchronous use. Local mode goes through `SearchService` / `MemoryService` directly; remote mode POSTs to `/search` and `/memories`. See [Search](../concepts/search.md) and [Memories](../concepts/memories.md).
+
+```python
+from slayer.async_utils import run_sync
+
+# Save a learning
+run_sync(client.save_memory(
+    learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned",
+    linked_entities=["mydb.orders.is_returned"],
+    id="kb.returns.null-handling",   # optional; auto-allocated if omitted
+))
+
+# Search — single flat ranked list with kind discriminator
+resp = run_sync(client.search(
+    question="What should I know about returns?",
+    max_results=10,
+))
+
+for hit in resp.results:
+    if hit.kind == "memory":
+        kind = "example_query" if hit.query is not None else "learning"
+        print(f"[{kind}] {hit.id} score={hit.score:.3f}  {hit.text[:80]}")
+    else:
+        print(f"[{hit.kind}] {hit.id} score={hit.score:.3f}")
+
+# Forget by id (cascade-strips memory:<id> refs from other memories)
+run_sync(client.forget_memory("kb.returns.null-handling"))
+```
+
+`client.search` signature (keyword-only):
+
+```python
+async def search(
+    self,
+    *,
+    entities: Optional[List[str]] = None,
+    query: Optional[Union[SlayerQuery, Dict[str, Any]]] = None,
+    question: Optional[str] = None,
+    datasource: Optional[str] = None,
+    max_results: int = 10,
+    cypher_filter: Optional[str] = None,
+) -> SearchResponse: ...
+```
+
+`cypher_filter` accepts full openCypher when the `advanced_search` extra is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges; mutation clauses rejected). Without the extra, only the naive form `MATCH (n:Label1:Label2…) RETURN n.id AS id` is accepted as a label/kind filter — anything richer raises with an install hint. Column hits embed the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded) plus a `Distinct count: N` line on overflow; stale profiles are refreshed lazily inside `search()`.
+
 ## Direct Engine Access
 
 For maximum control, use the query engine directly:

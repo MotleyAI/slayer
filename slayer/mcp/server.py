@@ -11,6 +11,7 @@ from slayer.core.errors import (
     AmbiguousModelError,
     EntityResolutionError,
     MemoryNotFoundError,
+    SlayerError,
 )
 from slayer.core.models import (
     Aggregation,
@@ -2833,9 +2834,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         query: Any = None,
         question: Optional[str] = None,
         datasource: Optional[str] = None,
-        max_memories: int = 5,
-        max_example_queries: int = 2,
-        max_entities: int = 5,
+        max_results: int = 10,
+        cypher_filter: Optional[str] = None,
     ) -> str:
         """Up to three-channel semantic search over memories + canonical entities.
 
@@ -2853,23 +2853,19 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         non-hidden column / named measure / aggregation).
 
         Channel 3 (dense embedding similarity, optional): runs when
-        ``question`` is supplied AND the ``embedding_search`` extra is
+        ``question`` is supplied AND the ``advanced_search`` extra is
         installed AND a provider API key is configured for the active
         embedding model. Cosine similarity between the question
         embedding and persisted entity/memory embeddings. Skipped with
         a single warning into ``SearchResponse.warnings`` when any
         precondition fails — tantivy + BM25 continue to work.
 
-        Memory rankings from every active channel and entity rankings
-        from channels 2 and 3 are fused via Reciprocal Rank Fusion
-        (k=60). Query-bearing memories (those saved with an attached
-        ``SlayerQuery``) are partitioned into ``example_queries`` and
-        capped independently from learning-only ``memories`` so bulky
-        example queries cannot crowd out small notes.
+        All hits (memories, example queries, entities) are fused via
+        Reciprocal Rank Fusion (k=60) into a single ranked
+        ``results`` list capped at ``max_results``.
 
         Empty input (no entities, no query, no question) returns the
-        newest ``max_memories`` learning-only memories and the newest
-        ``max_example_queries`` query-bearing memories, with a warning.
+        newest memories capped at ``max_results``, with a warning.
 
         Args:
             entities: Canonical entity reference strings.
@@ -2884,11 +2880,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 a memory spanning multiple datasources surfaces from
                 each. BM25 / IDF stats reflect only the filtered subset.
                 Unknown datasource raises ``ValueError``.
-            max_memories: Cap on returned learning-only memory hits
-                (default 5).
-            max_example_queries: Cap on returned query-bearing memory
-                hits (default 2 — they're bulky).
-            max_entities: Cap on returned entity hits (default 5).
+            max_results: Maximum total number of hits to return (default 10).
+            cypher_filter: Optional openCypher MATCH query returning
+                ``… AS id`` that pre-filters all three channels to the
+                returned canonical IDs. When ``advanced_search`` is not
+                installed, only simple
+                ``MATCH (n:Label1:Label2) RETURN n.id AS id`` patterns are
+                supported as a kind filter (multi-label uses union
+                semantics; allowed labels: Memory, Datasource, Model,
+                Column, Measure, Aggregation).
         """
         try:
             response = await search_service.search(
@@ -2896,15 +2896,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 query=query,
                 question=question,
                 datasource=datasource,
-                max_memories=max_memories,
-                max_example_queries=max_example_queries,
-                max_entities=max_entities,
+                max_results=max_results,
+                cypher_filter=cypher_filter,
             )
-        except (
-            EntityResolutionError,
-            AmbiguousModelError,
-            ValueError,
-        ) as exc:
+        except (SlayerError, ValueError) as exc:
             return _format_resolution_error(exc)
         return response.model_dump_json(indent=2)
 

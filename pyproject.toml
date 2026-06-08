@@ -1,6 +1,6 @@
 [project]
 name = "motley-slayer"
-version = "0.7.0"
+version = "0.7.1"
 description = "A lightweight, agent-first semantic layer for AI agents"
 requires-python = ">=3.11"
 license = "MIT"
@@ -64,6 +64,10 @@ tantivy = "^0.26"
 # gracefully to tantivy + BM25 when this extra is not installed.
 litellm = {version = ">=1.50", optional = true}
 numpy = {version = ">=1.24", optional = true}
+# LadybugDB is the active successor to KuzuDB (same codebase, new name after
+# the original KuzuDB repo was archived post-acquisition). Import name is
+# ``ladybug``.
+ladybug = {version = ">=0.1", optional = true}
 
 [tool.poetry.extras]
 client = ["httpx", "pandas"]
@@ -77,8 +81,9 @@ flight = ["pyarrow"]
 # The Postgres wire-protocol facade is pure-stdlib; the empty extra keeps the
 # `pip install motley-slayer[pg_facade]` install path consistent.
 pg_facade = []
-embedding_search = ["litellm", "numpy"]
-all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "dbt-core", "pyarrow", "litellm", "numpy"]
+advanced_search = ["litellm", "numpy", "ladybug"]
+embedding_search = ["litellm", "numpy"]  # legacy alias for advanced_search without graph support
+all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "dbt-core", "pyarrow", "litellm", "numpy", "ladybug"]
 
 [project.scripts]
 slayer = "slayer.cli:main"

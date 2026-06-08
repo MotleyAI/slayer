@@ -120,6 +120,34 @@ _LOG2_NATIVE_DIALECTS: frozenset[str] = frozenset({
 # and handles gaps in time series correctly.
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
 
+# DEV-1539: compound AST shapes that ALWAYS need an outer ``(...)``
+# wrap when substituted into the HAVING text. Checked **before** the
+# atomic list below because in sqlglot 30.4.3 ``exp.And`` / ``exp.Or``
+# inherit from ``exp.Func``; without this priority, a custom-aggregation
+# formula rooted at an ``And``/``Or`` would mis-classify as atomic and
+# emit ambiguous SQL like ``SUM(x) > 0 AND SUM(y) > 0 IS NULL`` instead
+# of ``(SUM(x) > 0 AND SUM(y) > 0) IS NULL``. Mirrors the WHERE-side
+# ``_COMPOUND_FILTER_INLINE_TYPES`` in ``slayer/engine/enrichment.py``.
+_HAVING_AGG_COMPOUND_TYPES: tuple = (
+    exp.Binary,
+    exp.Connector,
+    exp.Unary,
+    exp.Predicate,
+)
+
+# DEV-1539: AST shapes considered atomic for HAVING aggregate
+# substitution. Used as the fallback after the compound-types check.
+# Mirrors the WHERE-side ``_ATOMIC_FILTER_INLINE_TYPES`` in
+# ``slayer/engine/enrichment.py``.
+_HAVING_AGG_ATOMIC_TYPES: tuple = (
+    exp.Column,
+    exp.Literal,
+    exp.Func,      # covers function calls, CAST, CASE, Anonymous, …
+    exp.Paren,
+    exp.Boolean,
+    exp.Null,
+)
+
 # Separator used when joining pre-rendered SQL fragments into a conjunctive
 # WHERE/HAVING clause; extracted as a constant so Sonar S1192 doesn't flag it
 # at every join site.
@@ -2682,9 +2710,31 @@ class SQLGenerator:
                                 filtered_rn_map=filtered_rn_map,
                             )
                             agg_sql = agg_expr.sql(dialect=self.dialect)
+                            # DEV-1539: wrap the substituted aggregate
+                            # in outer parens when it's a compound
+                            # shape (arithmetic, AND/OR connector,
+                            # NOT, BETWEEN, IN, LIKE, IS, …) so any
+                            # surrounding comparator's precedence is
+                            # explicit. The compound check fires
+                            # first because in sqlglot 30.4.3
+                            # ``exp.And`` / ``exp.Or`` inherit from
+                            # ``exp.Func``; a pure inverse-atomic check
+                            # would mis-classify a connector-rooted
+                            # aggregate as atomic. Single function-call
+                            # aggregates (SUM/COUNT/AVG/…) match
+                            # ``exp.Func`` and stay unwrapped.
+                            if (
+                                isinstance(agg_expr, _HAVING_AGG_COMPOUND_TYPES)
+                                or not isinstance(agg_expr, _HAVING_AGG_ATOMIC_TYPES)
+                            ):
+                                agg_sql = f"({agg_sql})"
+                            # DEV-1539: lambda replacement (backslash
+                            # safety) + trailing ``(?!\.)`` guard so a
+                            # measure name doesn't mis-substitute inside
+                            # a dotted continuation in ``having_sql``.
                             having_sql = re.sub(
-                                rf'(?<!\.)(?<!\w)\b{re.escape(col_name)}\b',
-                                agg_sql,
+                                rf'(?<!\.)(?<!\w)\b{re.escape(col_name)}\b(?!\.)',
+                                lambda _m, s=agg_sql: s,
                                 having_sql,
                             )
                             break

@@ -3,12 +3,15 @@
 Run with: pytest tests/integration/test_integration.py -m integration
 """
 
+import re
 import sqlite3
 
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
+    Aggregation,
+    AggregationParam,
     Column,
     DatasourceConfig,
     ModelJoin,
@@ -3123,26 +3126,25 @@ async def test_search_ingest_populates_sampled(search_env):
 
 
 async def test_search_question_finds_column(search_env):
-    """``search(question="amount")`` returns a column EntityHit pointing at
+    """``search(question="amount")`` returns a column hit pointing at
     one of the seeded ``amount``-named columns."""
     from slayer.search.service import SearchService
 
     _engine, storage = search_env
     response = await SearchService(storage=storage).search(
         question="amount",
-        max_entities=10,
-        max_memories=0,
+        max_results=20,
     )
-    column_hits = [e for e in response.entities if e.kind == "column"]
+    column_hits = [h for h in response.results if h.kind == "column"]
     assert column_hits, (
-        "expected at least one column EntityHit; got entities="
-        f"{[(e.id, e.kind) for e in response.entities]}"
+        "expected at least one column hit; got results="
+        f"{[(h.id, h.kind) for h in response.results]}"
     )
     # The question is "amount" — only ``*.amount`` columns are
     # acceptable. Accepting any column hit (e.g. ``customers.region``)
     # would mask a relevance regression in the search ranker.
     assert any(h.id.endswith(".amount") for h in column_hits), (
-        "expected an `.amount` column EntityHit; got column hits="
+        "expected an `.amount` column hit; got column hits="
         f"{[h.id for h in column_hits]}"
     )
 
@@ -3155,10 +3157,11 @@ async def test_search_entity_filter_finds_memory(search_env):
     _engine, storage = search_env
     response = await SearchService(storage=storage).search(
         entities=["test_sqlite.orders"],
-        max_memories=5,
+        max_results=10,
     )
-    assert len(response.memories) >= 1
-    hit = response.memories[0]
+    memory_hits = [h for h in response.results if h.kind == "memory"]
+    assert len(memory_hits) >= 1
+    hit = memory_hits[0]
     assert "test_sqlite.orders" in hit.matched_entities
     assert "refunds" in hit.text
 
@@ -3472,4 +3475,162 @@ async def test_filter_renamed_measure_colon_syntax(integration_env):
     surviving = {row["orders.status"]: row["orders.num_customers"] for row in response.data}
     assert surviving == {"completed": 2, "pending": 2}, (
         f"unexpected rows from renamed-measure HAVING filter: {response.data}"
+    )
+
+
+@pytest.fixture
+async def composite_score_env(tmp_path):
+    """DEV-1539 fixture: a model whose ``Column.sql`` is a multi-term
+    arithmetic expression. Used by both the WHERE-side and HAVING-side
+    paren-wrap integration tests.
+    """
+    db_path = tmp_path / "score.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE entities (id INTEGER PRIMARY KEY, a REAL, b REAL, c REAL, d REAL)"
+    )
+    rows = [
+        # Two rows engineered so that the weighted-sum semantics and the
+        # "compare binds to last term" misreading would return different
+        # row sets — defending against precedence regression even on
+        # dialects that handle the unparenthesised form correctly today.
+        (1, 10.0, 10.0, 10.0, 10.0),  # weighted sum = 10 → passes > 7
+        (2, 0.0, 0.0, 0.0, 5.0),      # weighted sum = 1 → fails > 7
+    ]
+    cur.executemany("INSERT INTO entities VALUES (?, ?, ?, ?, ?)", rows)
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(DatasourceConfig(
+        name="score_sqlite", type="sqlite", database=str(db_path),
+    ))
+    # Build the columns list via a small helper so the unit-test-side
+    # equivalent (``_build_score_model_dev1539``) and this fixture
+    # don't duplicate the column-list boilerplate (Sonar
+    # ``new_duplicated_lines_density``). Score body is the canonical
+    # multi-term arithmetic shape from the bug report.
+    bare_cols = [Column(name=n, sql=n, type=DataType.DOUBLE) for n in ("a", "b", "c", "d")]
+    model = SlayerModel(
+        name="entities",
+        sql_table="entities",
+        data_source="score_sqlite",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            *bare_cols,
+            Column(
+                name="score",
+                sql="a * 0.4 + b * 0.3 + c * 0.1 + d * 0.2",
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    await storage.save_model(model)
+    return SlayerQueryEngine(storage=storage)
+
+
+async def test_dev1539_where_multiterm_filter_emits_outer_parens(composite_score_env):
+    """DEV-1539: the SQL emitted for a filter on a multi-term Column.sql
+    must wrap the inlined arithmetic expression in outer parens.
+
+    Asserts both:
+
+    * Row-set correctness — only the row whose weighted sum truly
+      exceeds the threshold survives. Even where standard SQL precedence
+      handles the unparenthesised form correctly, this row count is the
+      ground truth.
+    * Emitted SQL shape — ``last_sql`` contains explicit parens around
+      the multi-term LHS of the comparator. This is what catches a
+      future regression where someone strips the wrap thinking the
+      generator's output is "already correct".
+    """
+    engine = composite_score_env
+
+    # First, the executable shape — confirms semantic correctness.
+    query = SlayerQuery(
+        source_model="entities",
+        dimensions=[ColumnRef(name="id")],
+        filters=["score > 7"],
+    )
+    response = await engine.execute(query)
+    surviving_ids = {row["entities.id"] for row in response.data}
+    assert surviving_ids == {1}, (
+        f"Expected only row id=1 (weighted_sum=10 > 7); got {surviving_ids}"
+    )
+
+    # Then, the SQL-shape assertion via dry_run.
+    dry = await engine.execute(query, dry_run=True)
+    assert dry.sql is not None
+    norm = " ".join(dry.sql.split())
+    # The LHS of `> 7` must be a parenthesised arithmetic expression.
+    # Single bounded quantifier (`[^)]+`) avoids the multi-quantifier
+    # backtracking pattern flagged by Sonar's S5852.
+    m = re.search(r"\( entities\.a \* 0\.4[^)]+\) > 7", norm)
+    assert m is not None, (
+        f"Expected `( entities.a * 0.4 ... ) > 7` in emitted WHERE; "
+        f"got:\n{dry.sql}"
+    )
+
+
+async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_score_env):
+    """DEV-1539 HAVING-side: when a custom multi-term aggregation is
+    referenced by name in a HAVING filter, the substituted SQL must be
+    wrapped in outer parens before the comparator.
+    """
+    # We piggy-back on the entities fixture but use a multi-term custom
+    # aggregation (``SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)``)
+    # so the substituted ``agg_sql`` is a Binary at the AST root.
+    engine = composite_score_env
+    # Re-fetch and edit the model to add the custom aggregation.
+    model = await engine.storage.get_model("entities", data_source="score_sqlite")
+    model.aggregations = [
+        Aggregation(
+            name="wavg",
+            formula="SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
+            params=[AggregationParam(name="weight", sql="d")],
+        ),
+    ]
+    await engine.storage.save_model(model)
+
+    query = SlayerQuery(
+        source_model="entities",
+        dimensions=[ColumnRef(name="id")],
+        measures=[ModelMeasure(formula="a:wavg", name="wavg_a")],
+        filters=["wavg_a > 0"],
+    )
+    response = await engine.execute(query)
+    # Row 1: SUM(10*10)/NULLIF(SUM(10),0) = 100/10 = 10 > 0 ✓
+    # Row 2: SUM(0*5)/NULLIF(SUM(5),0)   = 0/5 = 0   not > 0 ✗
+    surviving_ids = {row["entities.id"] for row in response.data}
+    assert surviving_ids == {1}, (
+        f"Expected only row id=1 (wavg=10 > 0); got {surviving_ids}"
+    )
+
+    dry = await engine.execute(query, dry_run=True)
+    assert dry.sql is not None
+    norm = " ".join(dry.sql.split())
+    assert "HAVING" in norm
+    having = norm.split("HAVING", 1)[1].strip()
+    # The substituted multi-term ``SUM(...) / NULLIF(SUM(...))`` must
+    # be wrapped before ``> 0``. Anchor on positional checks (mirror
+    # of the strengthened unit-side assertion) rather than substring
+    # containment: ``"(SUM(" in having`` would otherwise also match
+    # the inner ``NULLIF(SUM(`` and the assertion would silently pass
+    # on the un-wrapped regression shape.
+    gt_index = having.find(" > 0")
+    assert gt_index > 0, (
+        f"HAVING must end with `... > 0`; got:\n{having}"
+    )
+    assert having[gt_index - 1] == ")", (
+        f"Expected `)` immediately before `> 0` (the outer wrap's "
+        f"closer); got char {having[gt_index - 1]!r} in:\n{having}"
+    )
+    assert having.startswith("("), (
+        f"Expected HAVING body to start with `(` (outer wrap); got:\n{having}"
+    )
+    assert "SUM(" in having.upper() and "/" in having and "NULLIF" in having.upper(), (
+        f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
     )

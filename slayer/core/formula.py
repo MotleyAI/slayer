@@ -1070,6 +1070,24 @@ _BINOP_OP_MAP: Dict[type, str] = {
 }
 
 
+# DEV-1539: SQL-precedence tier for each supported ``ast.BinOp`` op.
+# Higher = tighter binding. Used by ``_binop_to_sql`` to decide whether
+# a child BinOp's operands need parenthesising so the tree-encoded
+# precedence survives serialisation. Only left-associative arithmetic
+# ops live here: ``ast.Pow`` is intentionally absent because it is
+# right-associative — its equal-precedence rule is the mirror of the
+# others (wrap on LEFT, not right) and the simplest way to stay correct
+# is to fall through to the ``parent_prec is None`` fallback in
+# ``_emit_binop_operand`` (wrap every BinOp child unconditionally).
+# That adds at most one harmless paren on mixed-precedence Pow
+# expressions and guarantees ``(a ** b) ** c`` doesn't silently
+# re-associate to ``a ** (b ** c)``.
+_BINOP_PRECEDENCE: Dict[type, int] = {
+    ast.Mult: 2, ast.Div: 2, ast.Mod: 2,
+    ast.Add: 1, ast.Sub: 1,
+}
+
+
 def _resolve_dotted_attribute(node: ast.expr) -> str:
     """Render an ``ast.Attribute`` (or ``ast.Name`` leaf) as a dotted string."""
     if isinstance(node, ast.Name):
@@ -1080,16 +1098,57 @@ def _resolve_dotted_attribute(node: ast.expr) -> str:
 
 
 def _compare_to_sql(node: ast.Compare, recur) -> str:
-    parts = [recur(node.left)]
+    # DEV-1539: chained comparisons (``a < b < c``) have different
+    # semantics in Python (``(a < b) AND (b < c)``) and SQL (left-to-right
+    # ``(a < b) < c``, a boolean re-compared with ``c``). Reject up front
+    # with a pointer at the ``AND`` rewrite rather than emit silently
+    # wrong SQL.
+    if len(node.ops) > 1:
+        raise ValueError(
+            "Chained comparisons (e.g. `a < b < c`) are not supported in "
+            "DSL filters because their Python semantics differ from SQL. "
+            "Rewrite using AND: `a < b AND b < c`."
+        )
+    # DEV-1539: wrap a Compare LHS/RHS that is ``ast.BinOp`` in outer
+    # parens so the comparator's precedence is explicit in the emitted
+    # SQL. ``ast.BoolOp`` is intentionally NOT included — ``_boolop_to_sql``
+    # already self-wraps multi-operand outputs in ``(...)`` and a second
+    # layer would add noise. ``ast.LShift`` is also excluded — it is a
+    # marker for the SQL ``||`` concat operator (pre-processed by
+    # ``_preprocess_concat``) and ``_binop_to_sql`` rewrites the chain
+    # into a single ``concat(...)`` function call, which doesn't need
+    # an outer paren.
+    def _needs_wrap(n: ast.AST) -> bool:
+        return isinstance(n, ast.BinOp) and not isinstance(n.op, ast.LShift)
+
+    left_sql = recur(node.left)
+    if _needs_wrap(node.left):
+        left_sql = f"({left_sql})"
+    parts = [left_sql]
     for op, comparator in zip(node.ops, node.comparators):
+        # ``is None`` / ``is not None`` map to ``IS NULL`` / ``IS NOT NULL``
+        # — ``_compare_op_to_sql`` already returns the complete operator
+        # string and there is no RHS to render. Every other ``is`` /
+        # ``is not`` (e.g. ``flag is True``) falls through to the
+        # standard ``IS <rhs>`` / ``IS NOT <rhs>`` emission; without
+        # this fall-through ``flag is True`` previously serialised as
+        # the broken ``flag IS`` (no RHS).
+        is_null_check = (
+            isinstance(op, (ast.Is, ast.IsNot))
+            and isinstance(comparator, ast.Constant)
+            and comparator.value is None
+        )
         sql_op = _compare_op_to_sql(op, comparator)
-        right = recur(comparator)
-        if isinstance(op, (ast.Is, ast.IsNot)):
-            parts.append(sql_op)  # "IS NULL" / "IS NOT NULL" already complete
-        else:
-            # Both regular comparisons and IN / NOT IN take "<op> <right>";
-            # for IN/NotIn the right is already "(val1, val2, ...)".
-            parts.append(f"{sql_op} {right}")
+        if is_null_check:
+            parts.append(sql_op)
+            continue
+        right_sql = recur(comparator)
+        if _needs_wrap(comparator):
+            right_sql = f"({right_sql})"
+        # Regular comparisons, IN / NOT IN, and IS / IS NOT with
+        # non-None RHS all take "<op> <right>"; for IN/NotIn the right
+        # is already "(val1, val2, ...)".
+        parts.append(f"{sql_op} {right_sql}")
     return " ".join(parts)
 
 
@@ -1153,7 +1212,57 @@ def _binop_to_sql(node: ast.BinOp, original: str, recur) -> str:
     op_str = _BINOP_OP_MAP.get(type(node.op))
     if op_str is None:
         raise ValueError(f"Unsupported arithmetic operator in filter: {original!r}")
-    return f"{recur(node.left)} {op_str} {recur(node.right)}"
+    # DEV-1539: precedence-aware operand wrapping. Without this,
+    # ``(a + b) * c`` and ``a + b * c`` both serialise to
+    # ``a + b * c`` — the Python AST's parens are tracked only by tree
+    # shape, not by an explicit node, so re-emission via plain
+    # ``left op right`` silently drops grouping. Wrap a child BinOp
+    # whose operator has *strictly lower* precedence than this op
+    # (preserves grouping like ``(a + b) * c``); for the right operand
+    # also wrap on *equal* precedence so left-to-right associativity is
+    # preserved (``a - (b - c)`` vs ``a - b - c``). LShift / concat
+    # children carry their own grouping via ``concat(...)`` and are
+    # already self-contained.
+    parent_prec = _BINOP_PRECEDENCE.get(type(node.op))
+    return f"{_emit_binop_operand(node.left, parent_prec, is_right=False, recur=recur)} {op_str} {_emit_binop_operand(node.right, parent_prec, is_right=True, recur=recur)}"
+
+
+def _emit_binop_operand(
+    child: ast.AST,
+    parent_prec: Optional[int],
+    *,
+    is_right: bool,
+    recur,
+) -> str:
+    """Render a ``BinOp`` operand, wrapping in ``(...)`` when the child's
+    precedence-tier rule says it would otherwise be misread on re-parse.
+
+    The wrap rule (left-associative ops):
+
+    - Left operand: wrap iff child has *strictly lower* precedence than
+      parent (``(a + b) * c`` — parent ``*``, left child ``+``).
+    - Right operand: wrap iff child has *lower or equal* precedence
+      (``a / (b * c)`` — parent ``/``, right child ``*``, equal — must
+      wrap to keep left-associative grouping intact).
+
+    Conservative fallbacks (return wrap=True): the child is a BinOp
+    using a non-arithmetic op we haven't registered in
+    ``_BINOP_PRECEDENCE``, or ``parent_prec`` is missing.
+    """
+    sql = recur(child)
+    if not isinstance(child, ast.BinOp):
+        return sql
+    if isinstance(child.op, ast.LShift):
+        # ``concat(...)`` is self-grouped — no extra wrap needed.
+        return sql
+    child_prec = _BINOP_PRECEDENCE.get(type(child.op))
+    if parent_prec is None or child_prec is None:
+        return f"({sql})"
+    if child_prec < parent_prec:
+        return f"({sql})"
+    if is_right and child_prec == parent_prec:
+        return f"({sql})"
+    return sql
 
 
 def _call_to_sql(node: ast.Call, original: str, recur) -> str:

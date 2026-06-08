@@ -144,6 +144,37 @@ result = engine.execute_sync(query={"source_model": "orders", "measures": ["*:co
 print(f"{result.row_count} row(s), columns: {result.columns}")
 ```
 
+## Search & memories
+
+`SlayerClient.search`, `save_memory`, and `forget_memory` are the single retrieval surface for prior notes **and** canonical entity discovery. All three are async; wrap them with `run_sync` for synchronous use. Local mode (`storage=`) goes through `SearchService` / `MemoryService` directly; remote mode (`url=`) POSTs to `/search` / `/memories`.
+
+```python
+from slayer.async_utils import run_sync
+
+# Save a learning so the next session inherits it
+run_sync(client.save_memory(
+    learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned",
+    linked_entities=["mydb.orders.is_returned"],
+    id="kb.returns.null-handling",   # optional; auto-allocated if omitted
+))
+
+# Three retrieval channels (BM25 + Tantivy + optional dense embeddings)
+# fused into one flat ranked list:
+resp = run_sync(client.search(
+    question="What should I know about returns?",
+    max_results=10,
+))
+
+for hit in resp.results:
+    # kind: "memory" | "datasource" | "model" | "column" | "measure" | "aggregation"
+    # hit.query is not None marks a saved example query
+    print(hit.kind, hit.id, round(hit.score, 3), hit.text[:80])
+```
+
+`client.search` also accepts `cypher_filter` for graph-shaped narrowing — full openCypher with the `advanced_search` extra (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges), naive `MATCH (n:Label) RETURN n.id AS id` kind-filter otherwise. Without `advanced_search` (or a provider API key) the dense-embedding channel emits a single warning into `SearchResponse.warnings` and search degrades to BM25 + Tantivy. Column hits embed the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded) plus a `Distinct count: N` line on overflow; stale profiles are refreshed lazily inside `search()`.
+
+See [Search](../concepts/search.md), [Memories](../concepts/memories.md), and the [Python Client Reference](../reference/python-client.md#memories-semantic-search) for the full signature.
+
 ## Embedded REST / MCP servers
 
 If you're mounting SLayer's REST or MCP surface inside your own process and want models freshly ingested by the time the server starts handling requests, pass `ingest_on_startup=True` to the constructor:

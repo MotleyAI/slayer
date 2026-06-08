@@ -130,6 +130,37 @@ orders._count
 
 If you see "Model 'orders' not found", check that `slayer ingest` ran successfully and that `--storage` points to the right location.
 
+## Search & memories
+
+`slayer search` runs semantic retrieval over memories and canonical entities (models, columns, named measures, custom aggregations). Three channels run in parallel — BM25 over memory entity tags, Tantivy full-text, and (with `motley-slayer[advanced_search]` plus a provider API key) dense embeddings — and are RRF-fused into a single ranked list.
+
+```bash
+# Entity-driven
+slayer search --entity jaffle_shop.orders.order_total
+
+# Question-driven
+slayer search --question "What stores are in jaffle_shop?"
+
+# Graph-narrow with cypher_filter (naive form, always available)
+slayer search --question "Brooklyn POS" \
+  --cypher-filter 'MATCH (n:Memory) RETURN n.id AS id'
+```
+
+`--cypher-filter` accepts full openCypher when `advanced_search` is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges). Without the extra, only the naive `MATCH (n:Label) RETURN n.id AS id` kind-filter form is accepted; richer Cypher raises with an install hint. Without the extra (or a provider API key) the embedding channel emits a single warning into `SearchResponse.warnings` and search degrades to BM25 + Tantivy.
+
+Persist a note with `slayer memory save` so the next session inherits it:
+
+```bash
+slayer memory save \
+  --learning "orders.is_returned in {0,1,NULL}; treat NULL as not returned" \
+  --entities jaffle_shop.orders.is_returned \
+  --id kb.returns.null-handling
+
+slayer memory forget kb.returns.null-handling   # cascade-strips memory:<id> refs
+```
+
+See [Search](../concepts/search.md), [Memories](../concepts/memories.md), and the [CLI Reference](../reference/cli.md#slayer-search) for the full signature.
+
 ## Start a server (optional)
 
 If you also want a REST API or MCP endpoint:

@@ -160,3 +160,95 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 The demo path generates a DuckDB at `<storage>/demo/jaffle_shop.duckdb` and is idempotent — re-running reuses the existing file. `duckdb` and `jafgen` are core dependencies of `motley-slayer`, so the demo works after a single `pip install motley-slayer` with no extras needed.
 
 If a datasource with the same name already exists, or (with `--ingest`) any generated model name collides with a stored model, SLayer prompts for confirmation. Use `--yes` for non-interactive use.
+
+### `slayer search`
+
+Run semantic search over memories and canonical entities (datasources, models, columns, named measures, custom aggregations). Three retrieval channels run in parallel — BM25 over memory entity tags, Tantivy full-text over memories ∪ entities, and (with the `advanced_search` extra plus a provider API key) dense embeddings — and are RRF-fused into a single ranked list. See [Search](../concepts/search.md).
+
+```bash
+# Entity-driven
+slayer search --entity jaffle_shop.orders.order_total
+
+# Question-driven
+slayer search --question "What stores are in jaffle_shop?"
+
+# Query-driven (auto-extracts the entities the query references)
+slayer search --query @draft_query.json
+
+# Inline query JSON
+slayer search --query '{"source_model": "orders", "measures": ["order_total:sum"]}'
+
+# Narrow to one datasource
+slayer search --question "lifetime spend" --datasource jaffle_shop
+
+# Graph-narrow with cypher_filter (naive form, always available)
+slayer search --question "Brooklyn POS" --cypher-filter 'MATCH (n:Memory) RETURN n.id AS id'
+
+# Graph-narrow with cypher_filter (full openCypher; requires the advanced_search extra)
+slayer search --question "store rev" --cypher-filter \
+  "MATCH (d:Datasource {name: 'jaffle_shop'})-[:CONTAINS]->(m:Model)-[:CONTAINS]->(c:ModelColumn) RETURN c.id AS id"
+
+# JSON output for piping
+slayer search --question "lifetime spend" --format json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--entity ENT` (repeatable) | | Canonical entity string (`<ds>`, `<ds>.<model>`, `<ds>.<model>.<leaf>`, `memory:<id>`). Pass multiple times to combine. Drives the BM25 channel. |
+| `--query JSON_OR_@FILE` | | Inline SLayer query (or `@path.json`). Entities are auto-extracted from `source_model`, dimensions, measures, time dims, and filters. |
+| `--question TEXT` | | Free-text question. Drives Tantivy + embeddings. |
+| `--datasource DS` | | Pre-narrow every channel to ids rooted at the named datasource. Unknown name raises. |
+| `--cypher-filter CYPHER` | | Pre-narrow all three channels via a graph query. Full openCypher with `advanced_search` (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges). Without the extra, only the naive `MATCH (n:Label1:Label2…) RETURN n.id AS id` form is accepted; anything richer raises with an install hint. |
+| `--max-results N` | `10` | Cap applied after RRF fusion and the `cypher_filter` allowlist. |
+| `--format` | `text` | `text` (newline-grouped human output) or `json` (full `SearchResponse`). |
+
+Each result row prints `kind`, `id`, `score`, and a one-line preview of `text`. Memory hits with `query is not None` are saved example queries; column hits include the structured `sampled_values` snapshot (top 50 by frequency) and a `Distinct count: N` line when cardinality overflows. Unresolved input entities surface as warnings rather than errors.
+
+### `slayer search refresh-samples`
+
+Re-profile and persist `Column.sampled` / `sampled_values` / `distinct_count` for table-backed models. Per-column failures are reported but do not abort.
+
+```bash
+slayer search refresh-samples
+slayer search refresh-samples --data-source jaffle_shop
+slayer search refresh-samples --data-source jaffle_shop --model orders --model customers
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--data-source X` | all | Limit the refresh to one datasource. |
+| `--model M` | all | Repeatable; limit to specific models. |
+
+### `slayer memory`
+
+Manage the agent-memory layer. See [Memories](../concepts/memories.md).
+
+```bash
+# Save a learning (--entities is a single comma-separated string)
+slayer memory save \
+  --learning "orders.is_returned in {0,1,NULL}; treat NULL as not returned" \
+  --entities jaffle_shop.orders.is_returned
+
+# Save with a pinned id and multiple entities
+slayer memory save \
+  --learning "Brooklyn POS changed late 2024" \
+  --entities jaffle_shop.orders.order_total,jaffle_shop.stores.name \
+  --id kb.brooklyn-pos
+
+# Save with an inline query (mutually exclusive with --entities)
+slayer memory save \
+  --learning "Top customers by lifetime spend" \
+  --query @top_customers.json \
+  --id kb.top-customers
+
+# Forget by id
+slayer memory forget kb.brooklyn-pos
+```
+
+| Subcommand | Flag | Description |
+|------------|------|-------------|
+| `save` | `--learning TEXT` (required) | The free-form note. |
+| `save` | `--entities ENT,ENT,…` | Comma-separated canonical entity strings. `memory:<id>` is valid for cross-memory refs. Mutually exclusive with `--query`; one of the two is required. |
+| `save` | `--query JSON_OR_@FILE` | Inline SLayer query (or `@path.json`). Entities are auto-extracted and the query is persisted on the memory. Mutually exclusive with `--entities`. |
+| `save` | `--id ID` | User-pinned canonical memory id. Forbidden charset: `:`, `/`, `?`, `#`, whitespace, ASCII control. Omit to auto-allocate (`max(int-shaped id) + 1`). Duplicate id → unconditional upsert; `created_at` preserved. |
+| `forget` | `<id>` (positional) | Memory id. Cascade-strips every `memory:<id>` reference to it from every other memory's `entities` list. |

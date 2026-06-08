@@ -1,18 +1,15 @@
-"""Per-bucket ranking invariance (DEV-1414).
+"""Per-result ranking invariance.
 
-For a fixed ``(question, datasource, max_X)``, the user-visible list of
-``X`` (``memories`` / ``example_queries`` / ``entities``) must be a pure
-function of the corpus + question + that one cap. Changing the OTHER
-two caps must not move any id in or out of the returned ``X`` list,
-nor reorder it.
+For a fixed ``(question, datasource)``, the ranked order within each
+kind-category (memories / example_queries / entities) must not change
+when ``max_results`` is increased. Items surfaced at a smaller cap must
+appear in the same order at a larger cap — only new items may be appended
+at the bottom.
 
-These tests exercise the bug reported in DEV-1414: the previous
-``over_fetch_budget = max(max_memories + max_example_queries,
-max_entities) * 5`` shared one candidate-pool cap across all three
-channels, so changing ``max_entities`` or ``max_example_queries`` would
-push memories in or out of the bottom of each channel's per-kind
-ranking — and the membership/order at the top of the fused memory list
-would shift even though the question and ``max_memories`` were fixed.
+These tests replace the pre-flat-API per-bucket invariance suite. The old
+tests exercised that changing ``max_entities`` didn't perturb ``memories``,
+etc.; that property is a consequence of independent per-kind ranking and
+is validated here by checking order-stability as ``max_results`` grows.
 """
 
 from __future__ import annotations
@@ -222,202 +219,100 @@ async def service_invariance(
 # ---------------------------------------------------------------------------
 
 
-async def _ids(service: SearchService, **kwargs) -> dict[str, list]:
+async def _ids_by_kind(service: SearchService, **kwargs) -> dict[str, list]:
+    """Return per-kind id lists from a search response."""
     response = await service.search(**kwargs)
     return {
-        "memories": [h.id for h in response.memories],
-        "example_queries": [h.id for h in response.example_queries],
-        "entities": [h.id for h in response.entities],
+        "memories": [h.id for h in response.results if h.kind == "memory" and h.query is None],
+        "example_queries": [h.id for h in response.results if h.kind == "memory" and h.query is not None],
+        "entities": [h.id for h in response.results if h.kind != "memory"],
     }
 
 
+def _is_prefix(shorter: list, longer: list) -> bool:
+    """Return True if ``shorter`` is a prefix of ``longer``."""
+    return longer[:len(shorter)] == shorter
+
+
 # ---------------------------------------------------------------------------
-# Memory-bucket invariance under entity / example-query caps
+# Memory-bucket order stability as max_results grows
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_memories_invariant_under_max_entities(
+async def test_memories_order_stable_as_max_results_grows(
     service_invariance: SearchService,
 ) -> None:
-    """Varying ``max_entities`` (with question + datasource +
-    max_memories + max_example_queries fixed) must not change the
-    `memories` id list or its order. Tight caps exercise the bottom
-    cliff in the legacy ``over_fetch_budget``."""
-    base = await _ids(
+    """Items surfaced at a smaller max_results must appear in the same order
+    at a larger cap — only new items may be appended at the bottom.
+
+    With a flat ranked list the invariant is: the ids returned at cap N are
+    a prefix of those returned at cap N+k (within the same kind)."""
+    small = await _ids_by_kind(
         service_invariance,
         question="amount paid refund revenue customer email warehouse",
         datasource="warehouse",
-        max_memories=3,
-        max_example_queries=0,
-        max_entities=2,
+        max_results=5,
     )
-    for max_entities in (0, 1, 5, 50, 200):
-        other = await _ids(
-            service_invariance,
-            question="amount paid refund revenue customer email warehouse",
-            datasource="warehouse",
-            max_memories=3,
-            max_example_queries=0,
-            max_entities=max_entities,
-        )
-        assert other["memories"] == base["memories"], (
-            f"memories order changed when max_entities went 2 -> "
-            f"{max_entities}: {base['memories']} vs {other['memories']}"
-        )
-
-
-@pytest.mark.asyncio
-async def test_memories_invariant_under_max_example_queries(
-    service_invariance: SearchService,
-) -> None:
-    base = await _ids(
+    large = await _ids_by_kind(
         service_invariance,
         question="amount paid refund revenue customer email warehouse",
         datasource="warehouse",
-        max_memories=3,
-        max_example_queries=0,
-        max_entities=2,
+        max_results=30,
     )
-    for max_example_queries in (0, 1, 5, 20, 100):
-        other = await _ids(
-            service_invariance,
-            question="amount paid refund revenue customer email warehouse",
-            datasource="warehouse",
-            max_memories=3,
-            max_example_queries=max_example_queries,
-            max_entities=2,
-        )
-        assert other["memories"] == base["memories"], (
-            f"memories order changed when max_example_queries went 0 -> "
-            f"{max_example_queries}: {base['memories']} vs "
-            f"{other['memories']}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# example_queries-bucket invariance under memory / entity caps
-# ---------------------------------------------------------------------------
+    assert _is_prefix(small["memories"], large["memories"]), (
+        f"memory order changed as max_results grew: "
+        f"{small['memories']} is not a prefix of {large['memories']}"
+    )
 
 
 @pytest.mark.asyncio
-async def test_example_queries_invariant_under_max_memories(
+async def test_example_queries_order_stable_as_max_results_grows(
     service_invariance: SearchService,
 ) -> None:
-    base = await _ids(
+    small = await _ids_by_kind(
         service_invariance,
         question="revenue rollup amount paid",
         datasource="warehouse",
-        max_memories=5,
-        max_example_queries=5,
-        max_entities=5,
+        max_results=5,
     )
-    for max_memories in (0, 1, 10, 50):
-        other = await _ids(
-            service_invariance,
-            question="revenue rollup amount paid",
-            datasource="warehouse",
-            max_memories=max_memories,
-            max_example_queries=5,
-            max_entities=5,
-        )
-        assert other["example_queries"] == base["example_queries"], (
-            f"example_queries order changed when max_memories went 5 -> "
-            f"{max_memories}: {base['example_queries']} vs "
-            f"{other['example_queries']}"
-        )
-
-
-@pytest.mark.asyncio
-async def test_example_queries_invariant_under_max_entities(
-    service_invariance: SearchService,
-) -> None:
-    base = await _ids(
+    large = await _ids_by_kind(
         service_invariance,
         question="revenue rollup amount paid",
         datasource="warehouse",
-        max_memories=5,
-        max_example_queries=5,
-        max_entities=5,
+        max_results=30,
     )
-    for max_entities in (0, 1, 20, 100):
-        other = await _ids(
-            service_invariance,
-            question="revenue rollup amount paid",
-            datasource="warehouse",
-            max_memories=5,
-            max_example_queries=5,
-            max_entities=max_entities,
-        )
-        assert other["example_queries"] == base["example_queries"], (
-            f"example_queries order changed when max_entities went 5 -> "
-            f"{max_entities}: {base['example_queries']} vs "
-            f"{other['example_queries']}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# entities-bucket invariance under memory / example-query caps
-# ---------------------------------------------------------------------------
+    assert _is_prefix(small["example_queries"], large["example_queries"]), (
+        f"example_queries order changed as max_results grew: "
+        f"{small['example_queries']} is not a prefix of {large['example_queries']}"
+    )
 
 
 @pytest.mark.asyncio
-async def test_entities_invariant_under_max_memories(
+async def test_entities_order_stable_as_max_results_grows(
     service_invariance: SearchService,
 ) -> None:
-    base = await _ids(
+    small = await _ids_by_kind(
         service_invariance,
         question="amount paid refund customer email warehouse shipping",
         datasource="warehouse",
-        max_memories=2,
-        max_example_queries=0,
-        max_entities=3,
+        max_results=5,
     )
-    for max_memories in (0, 1, 20, 100):
-        other = await _ids(
-            service_invariance,
-            question="amount paid refund customer email warehouse shipping",
-            datasource="warehouse",
-            max_memories=max_memories,
-            max_example_queries=0,
-            max_entities=3,
-        )
-        assert other["entities"] == base["entities"], (
-            f"entities order changed when max_memories went 2 -> "
-            f"{max_memories}: {base['entities']} vs {other['entities']}"
-        )
-
-
-@pytest.mark.asyncio
-async def test_entities_invariant_under_max_example_queries(
-    service_invariance: SearchService,
-) -> None:
-    base = await _ids(
+    large = await _ids_by_kind(
         service_invariance,
         question="amount paid refund customer email warehouse shipping",
         datasource="warehouse",
-        max_memories=2,
-        max_example_queries=0,
-        max_entities=3,
+        max_results=30,
     )
-    for max_example_queries in (0, 1, 5, 30):
-        other = await _ids(
-            service_invariance,
-            question="amount paid refund customer email warehouse shipping",
-            datasource="warehouse",
-            max_memories=2,
-            max_example_queries=max_example_queries,
-            max_entities=3,
-        )
-        assert other["entities"] == base["entities"], (
-            f"entities order changed when max_example_queries went 0 -> "
-            f"{max_example_queries}: {base['entities']} vs "
-            f"{other['entities']}"
-        )
+    assert _is_prefix(small["entities"], large["entities"]), (
+        f"entities order changed as max_results grew: "
+        f"{small['entities']} is not a prefix of {large['entities']}"
+    )
 
 
 # ---------------------------------------------------------------------------
-# DEV-1414 repro tuples
+# DEV-1414 repro: same question, same question, different max_results
+# Top items must be stable across calls
 # ---------------------------------------------------------------------------
 
 
@@ -425,40 +320,34 @@ async def test_entities_invariant_under_max_example_queries(
 async def test_dev_1414_repro_tuples_yield_same_top_memories(
     service_invariance: SearchService,
 ) -> None:
-    """The exact three call shapes from DEV-1414 (max_memories fixed at
-    the smaller of the two values, varying entity / example-query caps)
-    must yield identical top-``min(max_memories)`` memory ids.
-
-    Original repro held max_memories=10 across A and B, then bumped to
-    15 in C. Compare the prefix of length 10 across all three."""
-    call_a = await _ids(
+    """With a flat list, three calls with increasing max_results must
+    yield the same top-N ids in the same order (prefix property)."""
+    call_a = await _ids_by_kind(
         service_invariance,
         question="amount paid refund revenue customer email",
         datasource="warehouse",
-        max_memories=10,
-        max_entities=10,
-        max_example_queries=5,
+        max_results=10,
     )
-    call_b = await _ids(
+    call_b = await _ids_by_kind(
         service_invariance,
         question="amount paid refund revenue customer email",
         datasource="warehouse",
-        max_memories=10,
-        max_entities=0,
-        max_example_queries=0,
+        max_results=20,
     )
-    call_c = await _ids(
+    call_c = await _ids_by_kind(
         service_invariance,
         question="amount paid refund revenue customer email",
         datasource="warehouse",
-        max_memories=15,
-        max_entities=5,
-        max_example_queries=2,
+        max_results=30,
     )
-    # A and B share max_memories=10 → full equality.
-    assert call_a["memories"] == call_b["memories"]
-    # C asks for 15 memories; the first 10 must match A and B.
-    assert call_c["memories"][:10] == call_a["memories"]
+    # A is a prefix of B.
+    assert _is_prefix(call_a["memories"], call_b["memories"]), (
+        f"memories prefix violated: {call_a['memories']} vs {call_b['memories']}"
+    )
+    # A is a prefix of C.
+    assert _is_prefix(call_a["memories"], call_c["memories"]), (
+        f"memories prefix violated: {call_a['memories']} vs {call_c['memories']}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -538,136 +427,93 @@ async def service_with_embeddings(
 
 
 @pytest.mark.asyncio
-async def test_memories_invariant_under_max_entities_with_channel_3_active(
+async def test_memories_order_stable_with_channel_3_active(
     service_with_embeddings: SearchService,
 ) -> None:
-    base = await _ids(
+    small = await _ids_by_kind(
         service_with_embeddings,
         question="amount paid refund revenue customer email",
         datasource="warehouse",
-        max_memories=10,
-        max_example_queries=2,
-        max_entities=5,
+        max_results=10,
     )
-    for max_entities in (0, 20, 50):
-        other = await _ids(
-            service_with_embeddings,
-            question="amount paid refund revenue customer email",
-            datasource="warehouse",
-            max_memories=10,
-            max_example_queries=2,
-            max_entities=max_entities,
-        )
-        assert other["memories"] == base["memories"], (
-            f"channel-3 active: memories changed when max_entities went "
-            f"5 -> {max_entities}"
-        )
+    large = await _ids_by_kind(
+        service_with_embeddings,
+        question="amount paid refund revenue customer email",
+        datasource="warehouse",
+        max_results=30,
+    )
+    assert _is_prefix(small["memories"], large["memories"]), (
+        "channel-3 active: memories order changed as max_results grew"
+    )
 
 
 @pytest.mark.asyncio
-async def test_entities_invariant_under_max_memories_with_channel_3_active(
+async def test_entities_order_stable_with_channel_3_active(
     service_with_embeddings: SearchService,
 ) -> None:
-    base = await _ids(
+    small = await _ids_by_kind(
         service_with_embeddings,
         question="amount paid refund customer email warehouse",
         datasource="warehouse",
-        max_memories=5,
-        max_example_queries=2,
-        max_entities=10,
+        max_results=10,
     )
-    for max_memories in (0, 20, 50):
-        other = await _ids(
-            service_with_embeddings,
-            question="amount paid refund customer email warehouse",
-            datasource="warehouse",
-            max_memories=max_memories,
-            max_example_queries=2,
-            max_entities=10,
-        )
-        assert other["entities"] == base["entities"], (
-            f"channel-3 active: entities changed when max_memories went "
-            f"5 -> {max_memories}"
-        )
+    large = await _ids_by_kind(
+        service_with_embeddings,
+        question="amount paid refund customer email warehouse",
+        datasource="warehouse",
+        max_results=30,
+    )
+    assert _is_prefix(small["entities"], large["entities"]), (
+        "channel-3 active: entities order changed as max_results grew"
+    )
 
 
 # ---------------------------------------------------------------------------
-# DEV-1513: channel-1 entity ranking — per-bucket invariance must hold
-# when named entity surfacing is active
+# DEV-1513: channel-1 entity ranking — order stability with named entities
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_memories_invariant_under_max_entities_with_channel_1_named(
+async def test_memories_order_stable_with_channel_1_named(
     service_invariance: SearchService,
 ) -> None:
     """DEV-1513: with ``entities=[X]`` supplied (channel 1 entity ranking
-    active), varying ``max_entities`` must not perturb the memories list.
-
-    Control: the entities bucket actually contains the named ref at the
-    baseline cap, proving channel-1 entity surfacing is active in this
-    fixture configuration."""
-    # No ``question`` so channel 1 is the SOLE entity source — proving the
-    # invariance loop genuinely exercises the new code path rather than
-    # passing trivially via channel 2/3 contributions.
-    base = await _ids(
+    active), increasing ``max_results`` must not reorder the memories."""
+    small = await _ids_by_kind(
         service_invariance,
         entities=["warehouse.orders.amount_paid"],
         datasource="warehouse",
-        max_memories=3,
-        max_example_queries=0,
-        max_entities=5,
+        max_results=5,
     )
-    assert "warehouse.orders.amount_paid" in base["entities"], (
-        "channel-1 named surfacing must be active to make this invariance "
-        "test meaningful"
+    large = await _ids_by_kind(
+        service_invariance,
+        entities=["warehouse.orders.amount_paid"],
+        datasource="warehouse",
+        max_results=20,
     )
-    for max_entities in (0, 1, 5, 50, 200):
-        other = await _ids(
-            service_invariance,
-            entities=["warehouse.orders.amount_paid"],
-            datasource="warehouse",
-            max_memories=3,
-            max_example_queries=0,
-            max_entities=max_entities,
-        )
-        assert other["memories"] == base["memories"], (
-            f"channel-1 named active: memories changed when max_entities "
-            f"went 5 -> {max_entities}"
-        )
+    assert _is_prefix(small["memories"], large["memories"]), (
+        "channel-1 named active: memories order changed as max_results grew"
+    )
 
 
 @pytest.mark.asyncio
-async def test_entities_invariant_under_max_memories_with_channel_1_named(
+async def test_entities_order_stable_with_channel_1_named(
     service_invariance: SearchService,
 ) -> None:
-    """DEV-1513: with ``entities=[X]`` supplied, varying ``max_memories``
-    must not perturb the entities list.
-
-    Control: the entities bucket contains the named ref at baseline."""
-    # No ``question`` so channel 1 is the SOLE entity source.
-    base = await _ids(
+    """DEV-1513: with ``entities=[X]`` supplied, increasing ``max_results``
+    must not reorder the entities returned at the smaller cap."""
+    small = await _ids_by_kind(
         service_invariance,
         entities=["warehouse.orders.amount_paid"],
         datasource="warehouse",
-        max_memories=2,
-        max_example_queries=0,
-        max_entities=3,
+        max_results=3,
     )
-    assert "warehouse.orders.amount_paid" in base["entities"], (
-        "channel-1 named surfacing must be active to make this invariance "
-        "test meaningful"
+    large = await _ids_by_kind(
+        service_invariance,
+        entities=["warehouse.orders.amount_paid"],
+        datasource="warehouse",
+        max_results=15,
     )
-    for max_memories in (0, 1, 20, 100):
-        other = await _ids(
-            service_invariance,
-            entities=["warehouse.orders.amount_paid"],
-            datasource="warehouse",
-            max_memories=max_memories,
-            max_example_queries=0,
-            max_entities=3,
-        )
-        assert other["entities"] == base["entities"], (
-            f"channel-1 named active: entities changed when max_memories "
-            f"went 2 -> {max_memories}"
-        )
+    assert _is_prefix(small["entities"], large["entities"]), (
+        "channel-1 named active: entities order changed as max_results grew"
+    )

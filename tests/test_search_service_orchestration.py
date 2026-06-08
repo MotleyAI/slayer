@@ -1,4 +1,5 @@
-"""Read-side orchestration tests for SearchService (DEV-1514).
+"""Read-side orchestration tests for SearchService (DEV-1514, adapted
+for DEV-1532's unified flat-results interface).
 
 Pins the orchestrator's contract under the new Retriever ABC:
 
@@ -15,8 +16,9 @@ Pins the orchestrator's contract under the new Retriever ABC:
   entity ranking contributes nothing).
 * ``text_by_id`` precedence: when two retrievers supply text for the
   same memory id, the FIRST-DECLARED retriever wins (Codex Finding 6).
-* Per-bucket invariance (DEV-1414) preserved: varying ``max_X`` cannot
-  reorder or move items in/out of any other bucket.
+* Cap stability (DEV-1414 carried into DEV-1532): increasing
+  ``max_results`` cannot reorder or remove items from the head of the
+  list — a wider cap just appends.
 * Recency fallback: when neither channel is active, retrievers are
   NOT invoked.
 * ``all_memories`` and ``datasource`` are forwarded to each retriever.
@@ -132,7 +134,7 @@ async def test_valid_canonicals_built_once_and_shared_by_identity(
     await service.search(
         entities=["mydb.orders.amount"],
         question="amount cents",
-        max_memories=5, max_example_queries=2, max_entities=5,
+        max_results=12,
     )
     # Same object identity for both retrievers' captured set.
     assert r1.captured_valid_canonicals_ids, (
@@ -165,7 +167,7 @@ async def test_corpus_built_once_when_question_active_via_patched_builder(
         await service.search(
             entities=None,
             question="amount",
-            max_memories=5, max_example_queries=2, max_entities=5,
+            max_results=12,
         )
     assert build_spy.call_count == 1
     # And both retrievers received the same corpus instance.
@@ -186,7 +188,7 @@ async def test_retrievers_invoked_in_parallel_via_gather(
     start = asyncio.get_event_loop().time()
     await service.search(
         entities=["mydb.orders.amount"], question="amount",
-        max_memories=5, max_example_queries=2, max_entities=5,
+        max_results=12,
     )
     elapsed = asyncio.get_event_loop().time() - start
     # Should be roughly one delay (parallel), not three (sequential).
@@ -208,7 +210,7 @@ async def test_warning_order_matches_retriever_declaration_not_completion(
     service = SearchService(storage=seeded_storage, retrievers=[r1, r2, r3])
     response = await service.search(
         entities=["mydb.orders.amount"], question="amount",
-        max_memories=5, max_example_queries=2, max_entities=5,
+        max_results=12,
     )
     # Find the retriever warnings within the response (other warnings —
     # e.g. lenient resolution / stale query — may also appear, in their
@@ -239,39 +241,41 @@ async def test_text_by_id_precedence_first_declared_wins(
     service = SearchService(storage=seeded_storage, retrievers=[r1, r2])
     response = await service.search(
         entities=["mydb.orders.amount"], question="amount",
-        max_memories=5, max_example_queries=2, max_entities=5,
+        max_results=12,
     )
     # Memory id 1 surfaced with r1's text (first-declared).
-    matched = [h for h in response.memories if h.id == "1"]
+    matched = [
+        h for h in response.results
+        if h.kind == "memory" and h.id == "1"
+    ]
     assert matched, "memory 1 should appear in results"
     assert matched[0].text == "r1-text"
 
 
-async def test_per_bucket_invariance_under_cap_changes(
+async def test_cap_stability_under_max_results_changes(
     seeded_storage: StorageBackend,
 ) -> None:
-    """DEV-1414: varying one cap cannot reorder or change membership
-    of the other buckets. Tested against the retriever-based pipeline."""
+    """DEV-1414 / DEV-1532: a wider ``max_results`` cap must never
+    reorder or remove items from the head of the list. A narrower cap
+    is exactly the head prefix of the wider cap's result."""
     r1 = _CapturingRetriever(
         name="r1",
         memory_ranking=["1", "2", "3", "4", "5"],
         entity_ranking=["mydb.orders", "mydb.orders.amount", "mydb"],
     )
     service = SearchService(storage=seeded_storage, retrievers=[r1])
-    response_a = await service.search(
+    response_narrow = await service.search(
         entities=["mydb.orders.amount"], question="amount",
-        max_memories=3, max_example_queries=2, max_entities=5,
+        max_results=3,
     )
-    response_b = await service.search(
+    response_wide = await service.search(
         entities=["mydb.orders.amount"], question="amount",
-        max_memories=3, max_example_queries=2, max_entities=1,
+        max_results=12,
     )
-    # memories bucket identical across the two calls (changing
-    # max_entities does not affect it).
-    assert (
-        [h.id for h in response_a.memories]
-        == [h.id for h in response_b.memories]
-    )
+    # Narrow == prefix of wide.
+    narrow_ids = [(h.kind, h.id) for h in response_narrow.results]
+    wide_ids = [(h.kind, h.id) for h in response_wide.results]
+    assert narrow_ids == wide_ids[: len(narrow_ids)]
 
 
 async def test_each_retriever_called_exactly_once_per_search(
@@ -283,7 +287,7 @@ async def test_each_retriever_called_exactly_once_per_search(
     service = SearchService(storage=seeded_storage, retrievers=[r1, r2, r3])
     await service.search(
         entities=["mydb.orders.amount"], question="amount",
-        max_memories=5, max_example_queries=2, max_entities=5,
+        max_results=12,
     )
     assert r1.retrieve_call_count == 1
     assert r2.retrieve_call_count == 1
@@ -304,13 +308,13 @@ async def test_recency_fallback_does_not_invoke_retrievers(
     service = SearchService(storage=seeded_storage, retrievers=[r1, r2, r3])
     response = await service.search(
         entities=None, query=None, question=None,
-        max_memories=5, max_example_queries=2, max_entities=5,
+        max_results=12,
     )
     assert r1.retrieve_call_count == 0
     assert r2.retrieve_call_count == 0
     assert r3.retrieve_call_count == 0
     # Recency fallback still returns memories from storage.
-    assert response.memories or response.example_queries
+    assert any(h.kind == "memory" for h in response.results)
 
 
 async def test_all_memories_and_datasource_forwarded_to_every_retriever(
@@ -328,7 +332,7 @@ async def test_all_memories_and_datasource_forwarded_to_every_retriever(
         entities=["mydb.orders.amount"],
         question="amount",
         datasource="mydb",
-        max_memories=5, max_example_queries=2, max_entities=5,
+        max_results=12,
     )
     # Same all_memories list identity for both retrievers.
     assert r1.captured_all_memories_ids, "r1.retrieve was not invoked"
@@ -352,6 +356,6 @@ async def test_datasource_none_forwarded_as_none(
         entities=["mydb.orders.amount"],
         question="amount",
         datasource=None,
-        max_memories=5, max_example_queries=2, max_entities=5,
+        max_results=12,
     )
     assert r1.captured_datasources == [None]
