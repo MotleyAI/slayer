@@ -957,6 +957,84 @@ class TestCliMigrateTypes:
         )
         assert result is False
 
+    async def test_sqlite_int_only_legacy_dict_widens_via_cli(
+        self, tmp_path, capsys,
+    ) -> None:
+        """DEV-1538: ``slayer storage migrate-types`` must also surface
+        SQLite INT-only legacy models for widening (not just DOUBLE-only
+        ones — the post-split CLI gate would otherwise skip them). The
+        CLI prints a before/after diff for the widened column."""
+        from slayer.cli import _refine_one_model_for_cli
+
+        base = str(tmp_path)
+        # Real SQLite DB with REAL storage for the INT-declared column.
+        db_path = os.path.join(base, "live.db")
+        _create_sqlite_with_int_storage(db_path, [1, 0.5, 0.7, 0.9])
+        datasources_dir = os.path.join(base, "datasources")
+        os.makedirs(datasources_dir, exist_ok=True)
+        with open(os.path.join(datasources_dir, "live.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+            yaml.dump(
+                {"name": "live", "type": "sqlite", "database": db_path, "version": 1},
+                f,
+            )
+        models_dir = os.path.join(base, "models", "live")
+        os.makedirs(models_dir, exist_ok=True)
+        legacy_version = mig.CURRENT_VERSIONS["SlayerModel"] - 1
+        with open(os.path.join(models_dir, "items.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+            yaml.dump(
+                {
+                    "version": legacy_version,
+                    "name": "items",
+                    "sql_table": "items",
+                    "data_source": "live",
+                    "columns": [{"name": "qty", "sql": "qty", "type": "INT"}],
+                },
+                f,
+            )
+        storage = YAMLStorage(base_dir=base)
+        result = _refine_one_model_for_cli(
+            inner=storage, ds_name="live", model_name="items", dry_run=True,
+        )
+        assert result is True
+        out = capsys.readouterr().out
+        assert "qty" in out
+        assert "INT" in out
+        assert "DOUBLE" in out
+
+    async def test_missing_datasource_skips_silently_for_sqlite_int_only(
+        self, tmp_path, capsys,
+    ) -> None:
+        """DEV-1538 best-effort: an INT-only SQLite legacy dict with no
+        registered datasource must NOT raise — the CLI logs a skip and
+        returns False (re-run after restoring the datasource). The DOUBLE
+        contract is independent and tested separately."""
+        from slayer.cli import _refine_one_model_for_cli
+
+        base = str(tmp_path)
+        models_dir = os.path.join(base, "models", "live")
+        os.makedirs(models_dir, exist_ok=True)
+        legacy_version = mig.CURRENT_VERSIONS["SlayerModel"] - 1
+        with open(os.path.join(models_dir, "items.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+            yaml.dump(
+                {
+                    "version": legacy_version,
+                    "name": "items",
+                    "sql_table": "items",
+                    "data_source": "live",
+                    "columns": [{"name": "qty", "sql": "qty", "type": "INT"}],
+                },
+                f,
+            )
+        storage = YAMLStorage(base_dir=base)
+        result = _refine_one_model_for_cli(
+            inner=storage, ds_name="live", model_name="items", dry_run=True,
+        )
+        assert result is False
+        # Skip message printed on stderr.
+        err = capsys.readouterr().err
+        assert "datasource 'live' unavailable" in err
+        assert "items" in err
+
 
 def _build_args(**kw):
     from types import SimpleNamespace

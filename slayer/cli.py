@@ -31,6 +31,7 @@ from slayer.storage import migrations as _mig
 from slayer.storage.base import default_storage_path
 from slayer.storage.type_refinement import (
     has_refineable_columns,
+    has_sqlite_widenable_columns,
     refine_dict_with_live_schema,
 )
 
@@ -867,8 +868,10 @@ def _refine_one_model_for_cli(
     dict has refineable DOUBLE base columns AND the datasource entry is
     missing, raises ``ValueError`` rather than silently reporting "nothing
     to refine" for a model the CLI never had enough information to inspect.
-    Models with no refineable columns (text-only, query-backed, sql-mode,
-    already-narrowed) skip silently and don't require a live datasource.
+    DEV-1538 SQLite-INT widening is best-effort: a missing datasource for
+    an INT-only model logs a warning and skips. Models with no refineable
+    or widenable columns (text-only, query-backed, sql-mode, already-
+    narrowed) skip silently and don't require a live datasource.
     """
     raw = run_sync(_load_raw_model_dict(inner, ds_name, model_name))
     if raw is None:
@@ -881,24 +884,37 @@ def _refine_one_model_for_cli(
         if isinstance(c, dict)
     }
     upgraded = _mig.migrate("SlayerModel", copy.deepcopy(raw))
-    if not has_refineable_columns(upgraded):
+    needs_double = has_refineable_columns(upgraded)
+    needs_sqlite_int = has_sqlite_widenable_columns(upgraded)
+    if not (needs_double or needs_sqlite_int):
         return False
     ds = run_sync(inner.get_datasource(ds_name))
     if ds is None:
-        raise ValueError(
-            f"Cannot refine model {ds_name!r}.{model_name!r}: datasource "
-            f"{ds_name!r} is unavailable for type refinement. Restore the "
-            f"datasource entry or remove the stale model file."
+        # DEV-1361 DOUBLE narrowing requires live introspection. DEV-1538
+        # SQLite-INT widening is best-effort: skip with a warning so the
+        # CLI report still surfaces the missing-DS condition.
+        if needs_double:
+            raise ValueError(
+                f"Cannot refine model {ds_name!r}.{model_name!r}: datasource "
+                f"{ds_name!r} is unavailable for type refinement. Restore the "
+                f"datasource entry or remove the stale model file."
+            )
+        print(
+            f"skipped {ds_name}.{model_name}: datasource {ds_name!r} unavailable "
+            f"for SQLite affinity probe (INT columns untouched). Restore the "
+            f"datasource and re-run.",
+            file=sys.stderr,
         )
+        return False
     if not refine_dict_with_live_schema(upgraded, ds):
         return False
     print(f"refined {ds_name}.{model_name}:")
     for col in upgraded.get("columns", []) or []:
-        if col.get("type") != "INT":
-            continue
-        before = original_types.get(col.get("name") or "", None)
-        if before != "INT":
-            print(f"  - {col['name']}: {before or '?'} → INT")
+        name = col.get("name") or "?"
+        before = original_types.get(name, None)
+        after = col.get("type", "?")
+        if before != after:
+            print(f"  - {name}: {before or '?'} → {after}")
     if not dry_run:
         model = SlayerModel.model_validate(upgraded)
         # Save through inner so we don't re-trigger the load-time
