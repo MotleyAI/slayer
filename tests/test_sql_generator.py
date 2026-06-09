@@ -8145,3 +8145,44 @@ class TestTsqlDialect:
         assert "INTERVAL" not in sql.upper(), (
             f"INTERVAL is invalid T-SQL syntax; shifted CTE must use DATEADD:\n{sql}"
         )
+
+
+class TestBigQueryAliasMangling:
+    """BigQuery rejects column names containing dots — SLayer's universal
+    ``<model>.<column>`` alias convention has to be mangled to ``___`` on the
+    way out (and reversed on the way back at the engine).
+    """
+
+    async def test_no_dotted_aliases_in_bigquery_sql(self, orders_model: SlayerModel) -> None:
+        gen = SQLGenerator(dialect="bigquery")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="status")],
+            order=[{"column": "count", "direction": "desc"}],
+        )
+        sql = await _generate(gen, query, orders_model)
+        # Every backtick-quoted identifier emitted by SLayer for a column
+        # alias must NOT contain a dot — that's what BigQuery rejects.
+        import re
+        for m in re.findall(r"`([^`]+)`", sql):
+            assert "." not in m, (
+                f"BigQuery output rejects dotted column names, but found "
+                f"backticked identifier `{m}` in:\n{sql}"
+            )
+        # Cross-check the mangled separator made it through.
+        assert "___" in sql, f"expected ___ alias mangling in:\n{sql}"
+
+    async def test_other_dialects_keep_dotted_aliases(self, orders_model: SlayerModel) -> None:
+        # Mangling is bigquery-only; postgres / sqlite / etc. must keep
+        # the dotted alias form (which clients and ORDER BY resolvers
+        # depend on).
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        sql = await _generate(gen, query, orders_model)
+        assert '"orders._count"' in sql
+        assert "___" not in sql

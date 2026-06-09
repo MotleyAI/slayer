@@ -35,10 +35,18 @@ from slayer.engine.enriched import (
 )
 from slayer.engine.enrichment import enrich_query
 from slayer.sql.client import SlayerSQLClient
-from slayer.sql.generator import SQLGenerator
+from slayer.sql.generator import BIGQUERY_ALIAS_SEP, SQLGenerator
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
+
+
+def _demangle_bigquery_aliases(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Reverse the BQ alias mangling on result-row keys.
+
+    See ``_mangle_dotted_aliases_for_bigquery`` for the forward pass.
+    """
+    return [{k.replace(BIGQUERY_ALIAS_SEP, "."): v for k, v in row.items()} for row in rows]
 
 
 # Per-task in-flight join-target names. Used by _resolve_join_target to break
@@ -718,6 +726,12 @@ class SlayerQueryEngine:
                 err=exc, model=model, enriched=enriched
             )
             raise
+        # BigQuery rejects dotted column names — the generator mangles ``.`` to
+        # ``___`` in emitted aliases (see ``_mangle_dotted_aliases_for_bigquery``).
+        # Reverse it on the way back so result-row keys match SLayer's universal
+        # public alias shape (``orders._count``, ``orders.products.category``).
+        if dialect == "bigquery" and rows:
+            rows = _demangle_bigquery_aliases(rows)
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
         return SlayerResponse(data=rows, columns=columns, sql=sql, attributes=attributes)
 
