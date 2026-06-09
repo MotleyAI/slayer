@@ -130,6 +130,26 @@ models and the result is merged into `IdempotentIngestResult.to_delete`.
 `include_tables` / `exclude_tables` constrain *both* the additive pass
 and the validator — excluded tables are not touched in either direction.
 
+## SQLite affinity-probe drift
+
+On SQLite, `validate_models` additionally runs the value-level affinity
+probe (see [Ingestion → SQLite affinity probing](ingestion.md#sqlite-affinity-probing))
+against every persisted base column with `type = INT`. When the probe
+disagrees with the persisted type — the live storage class is `REAL`,
+non-coercible `TEXT`, `BLOB`, or otherwise non-integral numeric evidence —
+`validate_models` emits an `EditModelDelete` removing the column with
+reason `"SQLite affinity probe widened <model>.<col> from INT to
+<verdict>; re-run slayer ingest to recreate with the correct type."`
+
+The probe drop is merged into the model's diff state **before** the
+cascade fixed-point walk, so dependent measures, derived columns, joins,
+and filters that reference the widened column are cascade-dropped in the
+same pass. Pair with `--force-clean` to apply the deletes; the next
+`slayer ingest` recreates the column with the correct type.
+
+Probe failures and saturated samples produce no drift entry (a `WARNING`
+is logged instead). Non-SQLite datasources skip the probe entirely.
+
 ## FK-introspection limitations
 
 Some dialects (ClickHouse, BigQuery, Snowflake) don't expose foreign-key

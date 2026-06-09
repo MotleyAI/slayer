@@ -51,6 +51,33 @@ A query with no measures and at least one dimension or time-dimension returns th
 
 Emits `SELECT orders.status FROM orders GROUP BY orders.status LIMIT 100`.
 
+### Raw rows (`distinct_dimension_values`)
+
+Set `distinct_dimension_values: false` on a query to opt out of the auto-dedup and project raw rows instead. No top-level `GROUP BY`; the usual `WHERE` / `ORDER BY` / `LIMIT` / `OFFSET` still apply.
+
+```json
+{
+  "source_model": "orders",
+  "dimensions": ["status", "amount"],
+  "filters": ["amount > 100"],
+  "order": [{"column": "amount", "direction": "desc"}],
+  "limit": 100,
+  "distinct_dimension_values": false
+}
+```
+
+Emits roughly `SELECT orders.status, orders.amount FROM orders WHERE orders.amount > 100 ORDER BY orders.amount DESC LIMIT 100` — one row per source row.
+
+**Rules** when `distinct_dimension_values=False`:
+
+- `measures` must be empty — `DistinctDimensionValuesError` otherwise.
+- At least one of `dimensions` / `time_dimensions` must be non-empty (nothing to project otherwise).
+- Filters / order items must not reference any measure — neither colon-form (`amount:sum > 100`, `*:count > 0`), transform calls (`rank(amount:sum) <= 5`), nor a bare saved-`ModelMeasure` name.
+
+**Time dimensions** are allowed: each one emits its `DATE_TRUNC` truncation as a projected column without aggregating. For raw column values (no truncation), put the time column in `dimensions` instead.
+
+**Multi-stage**: the flag is per-stage in DAG queries — an inner stage with `false` produces a flat raw-row sub-query that the outer stage can aggregate over.
+
 ## TimeDimension
 
 A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time column without truncation, add it as a regular dimension instead.

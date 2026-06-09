@@ -16,6 +16,7 @@ see the `query` tool's own arg documentation.
 | `limit` / `offset` | Row slicing on the final result. |
 | `main_time_dimension` | Which time dim drives transforms when 2+ are present. |
 | `whole_periods_only` | Snap `date_range` to bucket edges; drop incomplete current bucket. |
+| `distinct_dimension_values` | Default `true` — auto-dedup dim-only queries (emit `GROUP BY <dim/td aliases>`). Set `false` to emit raw rows (no top-level GROUP BY); rejects any measure reference in `measures` / `filters` / `order`. |
 
 ## Evaluation order (the SQL the generator builds)
 

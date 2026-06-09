@@ -3478,6 +3478,73 @@ async def test_filter_renamed_measure_colon_syntax(integration_env):
     )
 
 
+# ---------------------------------------------------------------------------
+# DEV-1538: end-to-end SQLite affinity probe — vaccine-style fixture.
+#
+# Reproduces the Linear issue's vaccine_3 failure mode: a column declared
+# ``INTEGER`` storing mostly REAL values. Pre-fix, the auto-ingested
+# Column.type=INT propagates through downstream SQL generation and produces
+# AVG values ~0 instead of ~0.9. Post-fix, the affinity probe widens to
+# DOUBLE at ingest time and the AVG is correct.
+# ---------------------------------------------------------------------------
+
+
+async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
+    """End-to-end vaccine-style: ingest a SQLite DB whose INTEGER-declared
+    column actually stores REAL values, then run a SUM/AVG measure and
+    confirm the result reflects the REAL values (not zero-truncated)."""
+    from slayer.engine.ingestion import ingest_datasource_idempotent
+
+    db_path = tmp_path / "vaccine.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE sensordata ("
+        "  id INTEGER PRIMARY KEY,"
+        "  tempstabidx INTEGER"  # declared INTEGER affinity
+        ")"
+    )
+    # 3 INT rows + 9 REAL rows. AVG of the actual stored values is
+    # (1+2+3 + 0.99+0.943+0.969+0.85+0.92+0.91+0.83+0.96+0.88) / 12 ≈ 1.10.
+    rows = [
+        (1, 1), (2, 2), (3, 3),
+        (4, 0.99), (5, 0.943), (6, 0.969),
+        (7, 0.85), (8, 0.92), (9, 0.91),
+        (10, 0.83), (11, 0.96), (12, 0.88),
+    ]
+    for r in rows:
+        cur.execute("INSERT INTO sensordata VALUES (?, ?)", r)
+    conn.commit()
+    conn.close()
+
+    storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+    ds = DatasourceConfig(name="vac", type="sqlite", database=str(db_path))
+    await storage.save_datasource(ds)
+    await ingest_datasource_idempotent(datasource=ds, storage=storage)
+    engine = SlayerQueryEngine(storage=storage)
+
+    # Persisted model carries Column.type=DOUBLE for tempstabidx.
+    persisted = await storage.get_model("sensordata", data_source="vac")
+    col = next(c for c in persisted.columns if c.name == "tempstabidx")
+    assert col.type is DataType.DOUBLE
+
+    # AVG query — the canonical AVG result should be ~1.10 (the mean of
+    # the actual stored values), not zero-truncated to ~0.
+    query = SlayerQuery(
+        source_model="sensordata",
+        measures=[
+            ModelMeasure(formula="tempstabidx:avg", name="avg_temp"),
+        ],
+    )
+    response = await engine.execute(query)
+    assert len(response.data) == 1
+    avg = response.data[0]["sensordata.avg_temp"]
+    assert avg > 0.5, (
+        f"AVG was zero-truncated ({avg!r}); the probe should have widened "
+        f"tempstabidx to DOUBLE so SUM/AVG run over REAL storage"
+    )
+
+
 @pytest.fixture
 async def composite_score_env(tmp_path):
     """DEV-1539 fixture: a model whose ``Column.sql`` is a multi-term
