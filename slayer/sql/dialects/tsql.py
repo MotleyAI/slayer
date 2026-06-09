@@ -52,7 +52,16 @@ class TsqlDialect(SqlDialect):
     ) -> exp.Expression:
         """T-SQL: ``DATETRUNC(unit, col)``. Week uses ``iso_week``
         (Monday-start) to be ``@@DATEFIRST``-independent. ``DATETRUNC``
-        requires a temporal type — wrap non-column/cast operands."""
+        requires a temporal type — wrap non-column/cast operands.
+
+        ``DATETRUNC`` requires **SQL Server 2022+**. SLayer's T-SQL
+        support is documented as 2022+ only (see ``CLAUDE.md`` under
+        Tier-1 / SQL Server, and ``examples/sqlserver/``). Pre-2022
+        SQL Server does not have a single-call truncation function;
+        an equivalent ``DATEADD(unit, DATEDIFF(unit, 0, col), 0)``
+        fallback exists but isn't a current target — track separately
+        if anyone needs it.
+        """
         gran_str = granularity.value
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
             col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))

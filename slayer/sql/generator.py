@@ -1006,7 +1006,9 @@ class SQLGenerator:
         Used to shift raw timestamps before DATE_TRUNC in shifted CTEs so that
         aggregated time buckets align with the base query's buckets.
         """
-        return self._dialect.build_time_offset_expr(col_expr, offset, granularity)
+        return self._dialect.build_time_offset_expr(
+            col_expr=col_expr, offset=offset, granularity=granularity,
+        )
 
     def _duration_interval_exprs(self, duration: str, sign: int = 1) -> list[exp.Expression]:
         """Return per-unit AST nodes that `_add_intervals_expr` will chain.
@@ -1016,7 +1018,7 @@ class SQLGenerator:
         literals with sign baked in.
         """
         parts = _parse_window_duration(duration)
-        return self._dialect.duration_interval_exprs(parts, sign)
+        return self._dialect.duration_interval_exprs(parts=parts, sign=sign)
 
     def _granularity_interval_expr(self, granularity: TimeGranularity, sign: int = 1) -> list[exp.Expression]:
         if granularity == TimeGranularity.QUARTER:
@@ -1043,7 +1045,9 @@ class SQLGenerator:
         with ``exp.Interval`` nodes; SQLite wraps as ``DATETIME(...)``;
         T-SQL chains ``DATEADD(...)`` calls.
         """
-        return self._dialect.add_intervals_expr(expr, intervals, sign)
+        return self._dialect.add_intervals_expr(
+            expr=expr, intervals=intervals, sign=sign,
+        )
 
     def _build_window_source_cols(
         self,
@@ -1711,7 +1715,9 @@ class SQLGenerator:
         Cast-wrapping of non-column operands is handled inside each
         dialect's override.
         """
-        return self._dialect.build_date_trunc(col_expr, granularity, parse=self._parse)
+        return self._dialect.build_date_trunc(
+            col_expr=col_expr, granularity=granularity, parse=self._parse,
+        )
 
     @staticmethod
     def _build_transform_sql(t) -> str:  # NOSONAR S3776 — flat dispatch over transform names; per-transform SQL forms read better as one if/elif tree than as named helpers
@@ -2290,7 +2296,7 @@ class SQLGenerator:
 
     def _build_median(self, inner: exp.Expression) -> exp.Expression:
         """Build a median aggregation expression. Dispatches to the dialect."""
-        return self._dialect.build_median(inner, parse=self._parse)
+        return self._dialect.build_median(inner=inner, parse=self._parse)
 
     def _build_percentile(self, measure: "EnrichedMeasure") -> exp.Expression:
         """Build a PERCENTILE_CONT(p) aggregation expression (dialect-dependent).
@@ -2330,7 +2336,9 @@ class SQLGenerator:
         # so user literals like ``0.50`` / ``1`` / ``5e-2`` survive verbatim
         # in the emitted SQL. Range validation above keeps the safety guard.
         col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
-        return self._dialect.build_percentile(p, col_expr, parse=self._parse)
+        return self._dialect.build_percentile(
+            p_str=p, col_sql=col_expr, parse=self._parse,
+        )
 
     # ``_build_covar_formula`` lived here in DEV-1317 — moved to
     # ``slayer/sql/dialects/base._build_covar_decomposition`` in DEV-1542 and
@@ -2377,10 +2385,13 @@ class SQLGenerator:
         if agg_name in _TWO_ARG_STAT_AGGS:
             assert other_expr is not None  # set above when two-arg
             return self._dialect.build_covar_2arg(
-                agg_name, col_expr, other_expr, parse=self._parse,
+                agg_name=agg_name,
+                col_sql=col_expr,
+                other_sql=other_expr,
+                parse=self._parse,
             )
         return self._dialect.build_stat_agg_1arg(
-            agg_name, col_expr, parse=self._parse,
+            agg_name=agg_name, col_expr=col_expr, parse=self._parse,
         )
 
     # ------------------------------------------------------------------

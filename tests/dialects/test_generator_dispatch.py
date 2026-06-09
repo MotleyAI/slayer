@@ -8,6 +8,7 @@ property derived from ``self._dialect.sqlglot_name``.
 from __future__ import annotations
 
 import pytest
+import sqlglot
 
 from slayer.sql.dialects.mysql import MysqlDialect
 from slayer.sql.dialects.postgres import PostgresDialect
@@ -79,6 +80,5 @@ def test_sqlgenerator_dialect_attribute_used_by_sqlglot_emission() -> None:
     a tiny generation."""
     gen = SQLGenerator(dialect="sqlite")
     # The string must be usable as the sqlglot dialect arg
-    import sqlglot
     parsed = sqlglot.parse_one("SELECT 1", dialect=gen.dialect)
     assert parsed.sql(dialect=gen.dialect) == "SELECT 1"

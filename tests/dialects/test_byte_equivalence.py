@@ -14,6 +14,8 @@ parsed-AST caches.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
@@ -24,7 +26,10 @@ from slayer.sql.generator import SQLGenerator
 
 
 async def _noop_async(**kw):
-    return None
+    """Async no-op used as a resolver-callback fixture. Stays ``async`` so
+    callers can ``await`` it through the resolver-callback contract; the
+    body has no real awaitable work to do, so it just returns None."""
+    return None  # NOSONAR(S7503) — must remain async to match resolver-callback contract
 
 
 @pytest.fixture
@@ -283,13 +288,11 @@ async def test_byte_equivalence_median(
 
 
 def test_byte_equivalence_median_mysql_raises(orders_model: SlayerModel) -> None:
-    import asyncio
     with pytest.raises(NotImplementedError, match="median.*MySQL"):
         asyncio.run(_gen("mysql", _MEDIAN_QUERY, orders_model))
 
 
 def test_byte_equivalence_median_tsql_raises(orders_model: SlayerModel) -> None:
-    import asyncio
     with pytest.raises(NotImplementedError, match="median.*T-SQL"):
         asyncio.run(_gen("tsql", _MEDIAN_QUERY, orders_model))
 

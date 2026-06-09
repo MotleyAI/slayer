@@ -32,10 +32,15 @@ class MysqlDialect(SqlDialect):
         *,
         parse: Callable[[str], exp.Expression],
     ) -> exp.Expression:
+        # ``mariadb`` resolves to this same dialect via ``ds_type_aliases``,
+        # so the error must NOT suggest "use MariaDB" — that would loop the
+        # user back here. Point them at a datasource with native percentile
+        # support or client-side computation instead.
         raise NotImplementedError(
             "Aggregation 'median' is not supported on MySQL: MySQL has no native "
             "MEDIAN/PERCENTILE_CONT function and no Python UDF mechanism. "
-            "Use MariaDB (has MEDIAN()) or compute the value client-side."
+            "Use a datasource with native percentile support (Postgres, DuckDB, "
+            "ClickHouse, SQLite via UDF) or compute the value client-side."
         )
 
     def build_percentile(
@@ -48,7 +53,8 @@ class MysqlDialect(SqlDialect):
         raise NotImplementedError(
             "Aggregation 'percentile' is not supported on MySQL: "
             "MySQL has no native PERCENTILE_CONT. "
-            "Use MariaDB or compute the value client-side."
+            "Use a datasource with native percentile support (Postgres, DuckDB, "
+            "ClickHouse, SQLite via UDF) or compute the value client-side."
         )
 
     def build_stat_agg_1arg(

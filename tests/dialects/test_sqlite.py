@@ -21,6 +21,7 @@ from sqlglot import exp
 import pytest
 
 from slayer.core.enums import TimeGranularity
+from slayer.sql.dialects import sqlite as sqlite_mod
 from slayer.sql.dialects.sqlite import (
     SqliteDialect,
     register_sqlite_udfs,
@@ -283,7 +284,7 @@ def test_sqlite_register_udfs_percentile_cont() -> None:
         conn.execute("CREATE TABLE t (x REAL)")
         conn.executemany("INSERT INTO t (x) VALUES (?)", [(i,) for i in range(1, 11)])
         result = conn.execute("SELECT percentile_cont(x, 0.5) FROM t").fetchone()[0]
-        assert result == 5.5
+        assert result == pytest.approx(5.5)
     finally:
         conn.close()
 
@@ -355,8 +356,6 @@ def test_sqlite_module_exposes_udf_aggregate_classes() -> None:
     """The UDF aggregate classes are module-level in
     ``slayer.sql.dialects.sqlite``. ``tests/test_sqlite_udfs.py``
     imports them directly to drive step/finalize."""
-    from slayer.sql.dialects import sqlite as sqlite_mod
-
     expected = [
         "_CorrAgg",
         "_CovarPopAgg",
