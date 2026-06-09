@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections import deque
 from typing import IO, TYPE_CHECKING, List, Optional, Tuple
 
 from slayer.async_utils import run_sync
@@ -159,23 +160,38 @@ def generate_data(
     """
     cmd = ["jafgen", str(max(1, years))]
     out = stream if stream is not None else sys.stderr
+    # Force the child into Python UTF-8 mode (PEP 540). jafgen's Rich progress
+    # bars emit non-Latin-1 glyphs (e.g. the 🥪 emoji); on Windows the child's
+    # default stdio encoding is the ANSI code page (cp1252), which can't encode
+    # them, so jafgen would die with UnicodeEncodeError and exit 1. PYTHONUTF8=1
+    # switches its stdio to UTF-8 regardless of the host code page.
+    child_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     if _stream_fileno(out) is not None:
         try:
-            subprocess.run(args=cmd, cwd=output_dir, check=True, stdout=out, stderr=out)
+            subprocess.run(
+                args=cmd, cwd=output_dir, check=True, stdout=out, stderr=out, env=child_env
+            )
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"jafgen failed with exit code {e.returncode}") from e
         return os.path.join(output_dir, "jaffle-data")
 
+    # Decode the pipe as UTF-8 (matching the child's forced encoding); errors are
+    # replaced so the pump loop never crashes on a stray byte.
+    tail: deque = deque(maxlen=25)
     with subprocess.Popen(
         args=cmd,
         cwd=output_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
+        env=child_env,
     ) as proc:
         assert proc.stdout is not None
         for line in proc.stdout:
+            tail.append(line)
             out.write(line)
             try:
                 out.flush()
@@ -183,7 +199,9 @@ def generate_data(
                 pass
         rc = proc.wait()
     if rc != 0:
-        raise RuntimeError(f"jafgen failed with exit code {rc}")
+        detail = "".join(tail).rstrip()
+        suffix = f":\n{detail}" if detail else ""
+        raise RuntimeError(f"jafgen failed with exit code {rc}{suffix}")
     return os.path.join(output_dir, "jaffle-data")
 
 
