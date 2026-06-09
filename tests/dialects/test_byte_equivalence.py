@@ -25,11 +25,11 @@ from slayer.engine.enrichment import enrich_query
 from slayer.sql.generator import SQLGenerator
 
 
-async def _noop_async(**kw):
+async def _noop_async(**kw):  # NOSONAR(S7503) — must remain async to match resolver-callback contract
     """Async no-op used as a resolver-callback fixture. Stays ``async`` so
     callers can ``await`` it through the resolver-callback contract; the
     body has no real awaitable work to do, so it just returns None."""
-    return None  # NOSONAR(S7503) — must remain async to match resolver-callback contract
+    return None
 
 
 @pytest.fixture
