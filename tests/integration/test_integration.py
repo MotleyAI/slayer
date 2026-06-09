@@ -2046,7 +2046,7 @@ async def test_label_propagation_enrichment(integration_env):
 # Median / percentile via SQLite Python UDFs
 #
 # SQLite has no native MEDIAN/PERCENTILE_CONT. SLayer registers Python
-# aggregates on each new SQLite connection (slayer/sql/sqlite_udfs.py); these
+# aggregates on each new SQLite connection (slayer/sql/dialects/sqlite.py); these
 # tests exercise them end-to-end through the engine.
 # ---------------------------------------------------------------------------
 
