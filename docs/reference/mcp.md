@@ -106,6 +106,7 @@ claude mcp list
 | `limit` | int | Max rows |
 | `offset` | int | Skip rows |
 | `whole_periods_only` | bool | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
+| `distinct_dimension_values` | bool | Default `true` — auto-dedup dim-only queries (`GROUP BY <dim/td aliases>`). Set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`. |
 | `show_sql` | bool | Include the generated SQL in the response for debugging |
 | `dry_run` | bool | Generate and return the SQL without executing it |
 | `explain` | bool | Run EXPLAIN ANALYZE and return the query plan |

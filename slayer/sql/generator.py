@@ -1436,7 +1436,14 @@ class SQLGenerator:
         # isolated measures were skipped (to deduplicate the dimension spine),
         # or the query is dim-only (auto-dedup distinct dim/time-dim tuples
         # — applied before LIMIT so a row cap can't drop unique tuples).
-        dim_only_dedup = bool(group_by_columns) and not enriched.measures
+        # DEV-1543: the dim-only auto-dedup is gated on the query's
+        # ``distinct_dimension_values`` flag. Default True preserves the
+        # Cube.js-style dedup; setting False emits raw rows.
+        dim_only_dedup = (
+            enriched.distinct_dimension_values
+            and bool(group_by_columns)
+            and not enriched.measures
+        )
         needs_group_by = (
             has_aggregation
             or bool(enriched.cross_model_measures)
