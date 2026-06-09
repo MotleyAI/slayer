@@ -402,6 +402,22 @@ class TestEnrichmentRejects:
         with pytest.raises(DistinctDimensionValuesError):
             await _generate(q, model)
 
+    async def test_order_arithmetic_over_aggregations(self) -> None:
+        """Codex + CodeRabbit (PR #172): ``raw_formula`` of arithmetic
+        over aggregations (``revenue:sum / *:count``) parses as
+        ``ArithmeticField`` with ``agg_refs`` non-empty. Must reject in
+        raw-row mode — otherwise hidden aggregate measures get
+        materialised and ``GROUP BY`` returns."""
+        model = _orders_model()
+        q = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            order=[OrderItem(column=ColumnRef(name="aov"), raw_formula="amount:sum / *:count")],
+            distinct_dimension_values=False,
+        )
+        with pytest.raises(DistinctDimensionValuesError):
+            await _generate(q, model)
+
     async def test_order_function_style_aggregate(self) -> None:
         """Case 16b: ``order=[{"column": "sum(amount)"}]`` — function-style
         aggregate via raw_formula. (Equivalent to a measure reference.)"""
@@ -660,11 +676,11 @@ class TestMultiStageDag:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-async def sqlite_orders_env(tmp_path):
-    """Real SQLite with duplicate ``status`` values so the dedup is
-    observable in the response row count."""
-    db_path = tmp_path / "orders.db"
+def _seed_orders_db_at(db_path) -> None:
+    """Create + seed the shared 6-row ``orders`` SQLite table used by
+    every end-to-end / surface test. Shape: 3 unique ``status`` values
+    (``completed`` x3, ``pending`` x2, ``cancelled`` x1) so dim-only
+    dedup is observable in the response row count."""
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
     cur.execute(
@@ -679,7 +695,6 @@ async def sqlite_orders_env(tmp_path):
         """
     )
     rows = [
-        # 6 rows, 3 unique status values: completed (x3), pending (x2), cancelled (x1)
         (1, "completed", 100.0, 1, "2025-01-15"),
         (2, "completed", 200.0, 2, "2025-01-20"),
         (3, "pending", 50.0, 1, "2025-02-10"),
@@ -691,26 +706,39 @@ async def sqlite_orders_env(tmp_path):
     conn.commit()
     conn.close()
 
+
+def _orders_slayer_model_for(data_source: str) -> SlayerModel:
+    """The shared ``SlayerModel`` used by both the async fixture and the
+    sync helper. Five columns; the ``id`` PK is restricted to count
+    aggregations per SLayer defaults but never used as such here."""
+    return SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source=data_source,
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        ],
+    )
+
+
+@pytest.fixture
+async def sqlite_orders_env(tmp_path):
+    """Real SQLite + YAML storage seeded with the shared ``orders`` model.
+    The fixture returns the engine; tests use ``engine.storage`` when
+    they need the underlying storage backend."""
+    db_path = tmp_path / "orders.db"
+    _seed_orders_db_at(db_path)
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
     storage = YAMLStorage(base_dir=str(storage_dir))
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=str(db_path))
     )
-    await storage.save_model(
-        SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            ],
-        )
-    )
+    await storage.save_model(_orders_slayer_model_for("ds"))
     return SlayerQueryEngine(storage=storage)
 
 
@@ -906,35 +934,13 @@ class TestRESTSurface:
 
 
 def _seed_sqlite_storage_sync(tmp_path):
-    """Sync helper for non-async tests (REST TestClient runs sync). Seeds
-    the same SQLite db + storage as ``sqlite_orders_env`` but blocking."""
+    """Sync helper for non-async tests (REST ``TestClient`` runs sync).
+    Re-uses the same SQLite seed + ``SlayerModel`` as ``sqlite_orders_env``;
+    just swaps the async storage calls for ``run_sync`` wrappers."""
     from slayer.async_utils import run_sync
 
     db_path = tmp_path / "orders_sync.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            status TEXT NOT NULL,
-            amount REAL NOT NULL,
-            customer_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
-    rows = [
-        (1, "completed", 100.0, 1, "2025-01-15"),
-        (2, "completed", 200.0, 2, "2025-01-20"),
-        (3, "pending", 50.0, 1, "2025-02-10"),
-        (4, "cancelled", 75.0, 3, "2025-02-15"),
-        (5, "completed", 300.0, 2, "2025-03-05"),
-        (6, "pending", 25.0, 3, "2025-03-20"),
-    ]
-    cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", rows)
-    conn.commit()
-    conn.close()
+    _seed_orders_db_at(db_path)
     storage_dir = tmp_path / "storage_sync"
     storage_dir.mkdir()
     storage = YAMLStorage(base_dir=str(storage_dir))
@@ -943,22 +949,7 @@ def _seed_sqlite_storage_sync(tmp_path):
             DatasourceConfig(name="ds", type="sqlite", database=str(db_path))
         )
     )
-    run_sync(
-        storage.save_model(
-            SlayerModel(
-                name="orders",
-                sql_table="orders",
-                data_source="ds",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                    Column(name="status", sql="status", type=DataType.TEXT),
-                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                    Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                    Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                ],
-            )
-        )
-    )
+    run_sync(storage.save_model(_orders_slayer_model_for("ds")))
     return storage
 
 

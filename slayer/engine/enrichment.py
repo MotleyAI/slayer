@@ -36,7 +36,7 @@ from slayer.core.formula import (
     parse_formula,
 )
 from slayer.core.models import Column, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.query import OrderItem, SlayerQuery
 from slayer.core.refs import DOTTED_IDENT_REF_RE as _DOTTED_IDENT_REF_RE
 from slayer.engine.column_expansion import _is_trivial_base, expand_derived_refs
 from slayer.engine.enriched import (
@@ -2571,6 +2571,133 @@ def _remap_renamed_aliases_in_filter(
     pf.columns = [eligible.get(c, c) for c in pf.columns]
 
 
+# DEV-1543: rejection-helper module-level state. Pre-compiled string-literal
+# regex used to mask quoted ``'a:b'`` content before colon-aggregation
+# detection so the literal's colon isn't mis-classified.
+_RAW_ROW_FIX_HINT = (
+    "Either remove the measure reference, or set "
+    "distinct_dimension_values=True (the default) to keep the "
+    "auto-aggregating behaviour."
+)
+_RAW_ROW_STR_LIT_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
+
+
+def _reject_measure_ref_in_filter(
+    *,
+    raw_filter: str,
+    custom_agg_names: frozenset,
+    named_measures: Dict[str, str],
+) -> None:
+    """DEV-1543: walk a single (substituted) query filter for measure
+    references and raise ``DistinctDimensionValuesError`` on any match.
+    Co-defined with :func:`_reject_measure_ref_in_order_item` below;
+    both are dispatched by :func:`_reject_measure_references_for_raw_rows`.
+    """
+    from slayer.core.errors import DistinctDimensionValuesError
+    from slayer.core.formula import parse_filter
+
+    masked = _RAW_ROW_STR_LIT_RE.sub("''", raw_filter)
+
+    # Transform-call detection FIRST. ``extract_filter_transforms`` is
+    # robust against filter shapes ``parse_filter`` rejects (e.g.
+    # ``rank(amount:sum) <= 5``).
+    try:
+        _, lifted = extract_filter_transforms(
+            masked,
+            counter=[0],
+            extra_agg_names=custom_agg_names,
+            named_measures=named_measures,
+        )
+    except Exception:
+        lifted = []
+    if lifted:
+        raise DistinctDimensionValuesError(
+            f"distinct_dimension_values=False rejects measure references. "
+            f"Filter {raw_filter!r} contains a transform call "
+            f"({lifted[0][1]}). {_RAW_ROW_FIX_HINT}"
+        )
+
+    # Colon-aggregation + saved-measure detection via ``parse_filter``.
+    try:
+        parsed = parse_filter(masked, extra_agg_names=custom_agg_names)
+    except Exception:
+        # The real parser raises downstream with a useful message tied
+        # to the original filter text; don't pre-empt.
+        return
+    if parsed.agg_refs:
+        ref = parsed.agg_refs[0]
+        raise DistinctDimensionValuesError(
+            f"distinct_dimension_values=False rejects measure references. "
+            f"Filter {raw_filter!r} contains an aggregation "
+            f"({ref.measure_name}:{ref.aggregation_name}). "
+            f"{_RAW_ROW_FIX_HINT}"
+        )
+    for col in parsed.columns:
+        if col in named_measures:
+            raise DistinctDimensionValuesError(
+                f"distinct_dimension_values=False rejects measure references. "
+                f"Filter {raw_filter!r} references saved ModelMeasure "
+                f"{col!r}. {_RAW_ROW_FIX_HINT}"
+            )
+
+
+def _reject_measure_ref_in_order_item(
+    *,
+    item: OrderItem,
+    custom_agg_names: frozenset,
+    named_measures: Dict[str, str],
+) -> None:
+    """DEV-1543: walk a single ``OrderItem`` for measure references.
+
+    Covers ``raw_formula`` shapes (``AggregatedMeasureRef``,
+    ``TransformField``, ``MixedArithmeticField``, and ``ArithmeticField``
+    when its ``agg_refs`` is non-empty — i.e. arithmetic OVER
+    aggregations like ``revenue:sum / *:count``; a scalar arithmetic
+    formula like ``amount + 1`` is fine in raw-row mode) plus the
+    bare-name case where ``item.column.name`` resolves to a saved
+    ``ModelMeasure``.
+    """
+    from slayer.core.errors import DistinctDimensionValuesError
+    from slayer.core.formula import (
+        AggregatedMeasureRef as _AggRef,
+        ArithmeticField as _ArithField,
+        MixedArithmeticField as _MixedField,
+        TransformField as _TransformField,
+        parse_formula,
+    )
+
+    if item.raw_formula is not None:
+        try:
+            spec = parse_formula(
+                item.raw_formula,
+                extra_agg_names=custom_agg_names,
+                named_measures=named_measures,
+            )
+        except Exception:
+            spec = None
+        # Direct aggregation / transform / mixed forms are always rejected.
+        is_agg_form = isinstance(spec, (_AggRef, _TransformField, _MixedField))
+        # ArithmeticField is only an aggregation form when it actually
+        # carries aggregate refs (``revenue:sum / *:count``); a pure
+        # scalar arithmetic like ``amount + 1`` is fine in raw-row mode.
+        is_agg_arith = isinstance(spec, _ArithField) and bool(spec.agg_refs)
+        if is_agg_form or is_agg_arith:
+            raise DistinctDimensionValuesError(
+                f"distinct_dimension_values=False rejects measure references. "
+                f"Order item raw_formula={item.raw_formula!r} contains a "
+                f"measure / transform reference. {_RAW_ROW_FIX_HINT}"
+            )
+
+    # Bare-name resolution: OrderItem.column.name matches a saved measure.
+    col_name = item.column.name if item.column else None
+    if col_name and col_name in named_measures:
+        raise DistinctDimensionValuesError(
+            f"distinct_dimension_values=False rejects measure references. "
+            f"Order item column={col_name!r} resolves to a saved "
+            f"ModelMeasure on the source model. {_RAW_ROW_FIX_HINT}"
+        )
+
+
 def _reject_measure_references_for_raw_rows(
     *,
     query: SlayerQuery,
@@ -2588,117 +2715,21 @@ def _reject_measure_references_for_raw_rows(
     structural only (``measures`` non-empty, dims+tds both empty); this
     pass is the authoritative measure-reference catch.
 
-    Detected forms:
-
-    * Colon aggregation (``col:agg``, ``*:count``) — surfaced as
-      ``ParsedFilter.agg_refs`` non-empty.
-    * Transform calls (``rank(...)``, ``cumsum(...)``, etc.) — detected
-      via ``extract_filter_transforms`` returning a non-empty lifted
-      list.
-    * Bare reference to a saved ``ModelMeasure`` — any ``columns`` entry
-      in the parsed filter matching a key of ``named_measures``.
-    * Same forms in ``OrderItem.raw_formula`` (function-style aggregate,
-      transform call, colon-aggregation) — caught via ``parse_formula``
-      yielding ``AggregatedMeasureRef`` / ``TransformField`` /
-      ``MixedArithmeticField``.
-    * Bare ``OrderItem.column.name`` matching a saved ``ModelMeasure``.
+    Dispatches per-filter and per-order-item to the focused helpers
+    above so each unit stays cognitively simple.
     """
-    from slayer.core.errors import DistinctDimensionValuesError
-    from slayer.core.formula import (
-        AggregatedMeasureRef as _AggRef,
-        MixedArithmeticField as _MixedField,
-        TransformField as _TransformField,
-        parse_filter,
-        parse_formula,
-    )
-
-    fix_hint = (
-        "Either remove the measure reference, or set "
-        "distinct_dimension_values=True (the default) to keep the "
-        "auto-aggregating behaviour."
-    )
-
-    # --- Filters ---
-    # Mask single-quoted string literals so colons inside them
-    # (``status == 'a:b'``) don't pre-match as ``col:agg``. The masker
-    # preserves the rest of the formula structure (whitespace,
-    # operators, identifiers) so transform / agg detection stays robust.
-    _STR_LIT_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
     for raw_filter in query_filters:
-        masked = _STR_LIT_RE.sub("''", raw_filter)
-
-        # Transform-call detection FIRST. ``extract_filter_transforms``
-        # is robust against filter shapes ``parse_filter`` rejects (e.g.
-        # ``rank(amount:sum) <= 5`` — ``parse_filter`` raises "Unknown
-        # filter function 'rank'" but ``extract_filter_transforms``
-        # lifts the transform cleanly). Lifted non-empty → transform
-        # call → reject.
-        try:
-            _, lifted = extract_filter_transforms(
-                masked,
-                counter=[0],
-                extra_agg_names=custom_agg_names,
-                named_measures=named_measures,
-            )
-        except Exception:
-            lifted = []
-        if lifted:
-            transform_formula = lifted[0][1]
-            raise DistinctDimensionValuesError(
-                f"distinct_dimension_values=False rejects measure references. "
-                f"Filter {raw_filter!r} contains a transform call "
-                f"({transform_formula}). {fix_hint}"
-            )
-
-        # Colon-aggregation detection — ``parse_filter`` extracts
-        # ``col:agg`` shapes into ``ParsedFilter.agg_refs``.
-        try:
-            parsed = parse_filter(masked, extra_agg_names=custom_agg_names)
-        except Exception:
-            # The real parser will raise downstream with a more useful
-            # message tied to the original filter text; don't pre-empt.
-            continue
-        if parsed.agg_refs:
-            ref = parsed.agg_refs[0]
-            raise DistinctDimensionValuesError(
-                f"distinct_dimension_values=False rejects measure references. "
-                f"Filter {raw_filter!r} contains an aggregation "
-                f"({ref.measure_name}:{ref.aggregation_name}). "
-                f"{fix_hint}"
-            )
-        for col in parsed.columns:
-            if col in named_measures:
-                raise DistinctDimensionValuesError(
-                    f"distinct_dimension_values=False rejects measure references. "
-                    f"Filter {raw_filter!r} references saved ModelMeasure "
-                    f"{col!r}. {fix_hint}"
-                )
-
-    # --- Order items ---
+        _reject_measure_ref_in_filter(
+            raw_filter=raw_filter,
+            custom_agg_names=custom_agg_names,
+            named_measures=named_measures,
+        )
     for item in query.order or []:
-        if item.raw_formula is not None:
-            try:
-                spec = parse_formula(
-                    item.raw_formula,
-                    extra_agg_names=custom_agg_names,
-                    named_measures=named_measures,
-                )
-            except Exception:
-                spec = None
-            if isinstance(spec, (_AggRef, _TransformField, _MixedField)):
-                raise DistinctDimensionValuesError(
-                    f"distinct_dimension_values=False rejects measure references. "
-                    f"Order item raw_formula={item.raw_formula!r} contains a "
-                    f"measure / transform reference. {fix_hint}"
-                )
-        # Bare-name resolution: OrderItem.column.name matches a saved measure.
-        col_name = item.column.name if item.column else None
-        if col_name and col_name in named_measures:
-            raise DistinctDimensionValuesError(
-                f"distinct_dimension_values=False rejects measure references. "
-                f"Order item column={col_name!r} resolves to a saved "
-                f"ModelMeasure on the source model. {fix_hint}"
-            )
+        _reject_measure_ref_in_order_item(
+            item=item,
+            custom_agg_names=custom_agg_names,
+            named_measures=named_measures,
+        )
 
 
 def extract_filter_transforms(
