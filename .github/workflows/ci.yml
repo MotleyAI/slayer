@@ -126,8 +126,11 @@ jobs:
 
       - name: Skip if GCP secrets are unset
         id: gate
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_SA_KEY_B64: ${{ secrets.GCP_SA_KEY_B64 }}
         run: |
-          if [ -z "${{ secrets.GCP_PROJECT_ID }}" ] || [ -z "${{ secrets.GCP_SA_KEY_B64 }}" ]; then
+          if [[ -z "$GCP_PROJECT_ID" || -z "$GCP_SA_KEY_B64" ]]; then
             echo "BigQuery secrets unset — skipping the example."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
@@ -181,7 +184,7 @@ jobs:
       - name: Run verify.py
         if: steps.gate.outputs.skip != 'true'
         timeout-minutes: 5
-        run: python examples/bigquery/verify.py
+        run: poetry run python examples/bigquery/verify.py
 
       - name: Dump server logs on failure
         if: failure() && steps.gate.outputs.skip != 'true'

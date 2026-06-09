@@ -8162,14 +8162,26 @@ class TestBigQueryAliasMangling:
             order=[{"column": "count", "direction": "desc"}],
         )
         sql = await _generate(gen, query, orders_model)
-        # Every backtick-quoted identifier emitted by SLayer for a column
-        # alias must NOT contain a dot — that's what BigQuery rejects.
+        # Every backtick-quoted COLUMN ALIAS emitted by SLayer must NOT
+        # contain a dot — that's what BigQuery rejects. Scope to ``AS `...```
+        # and ORDER/GROUP BY positions so dotted table FQ refs (which use
+        # backticked SEGMENTS like ``\`bigquery-public-data\`.x.y``, not a
+        # single backticked-string with dots inside) don't trip the check.
         import re
-        for m in re.findall(r"`([^`]+)`", sql):
-            assert "." not in m, (
-                f"BigQuery output rejects dotted column names, but found "
-                f"backticked identifier `{m}` in:\n{sql}"
-            )
+        ALIAS_PATTERNS = [
+            r"\bAS\s+`([^`]+)`",            # SELECT expr AS `<alias>`
+            r"\bORDER\s+BY[^\n]*`([^`]+)`",  # ORDER BY `<alias>`
+            r"\bGROUP\s+BY[^\n]*`([^`]+)`",  # GROUP BY `<alias>` (when sqlglot quotes it)
+        ]
+        found_any = False
+        for pat in ALIAS_PATTERNS:
+            for m in re.findall(pat, sql, flags=re.IGNORECASE):
+                found_any = True
+                assert "." not in m, (
+                    f"BigQuery output rejects dotted column aliases, but found "
+                    f"`{m}` in:\n{sql}"
+                )
+        assert found_any, f"expected at least one backticked alias in:\n{sql}"
         # Cross-check the mangled separator made it through.
         assert "___" in sql, f"expected ___ alias mangling in:\n{sql}"
 
@@ -8186,3 +8198,37 @@ class TestBigQueryAliasMangling:
         sql = await _generate(gen, query, orders_model)
         assert '"orders._count"' in sql
         assert "___" not in sql
+
+    def test_round_trip_preserves_legitimate_underscores(self) -> None:
+        """A user-named measure containing ``___`` must round-trip intact
+        through ``_mangle`` → ``_demangle``. The forward pass escapes any
+        pre-existing ``___`` to ``______`` before mapping ``.`` → ``___``;
+        the reverse pass consumes ``______`` before ``___`` so the two
+        encodings stay unambiguous.
+        """
+        from slayer.engine.query_engine import _demangle_bigquery_aliases
+        from slayer.sql.generator import _mangle_dotted_aliases_for_bigquery
+
+        # Each tuple: original_alias_in_sql, expected_demangled_key.
+        # All cases must contain at least one ``.`` because the mangler only
+        # touches dot-bearing backticked identifiers — a dot-less key never
+        # passes through the encode/decode pair.
+        cases = [
+            ("orders._count", "orders._count"),                          # simple
+            ("orders.products.category", "orders.products.category"),    # multi-hop
+            ("orders.my___metric", "orders.my___metric"),                # ___ in leaf
+            ("a.b.c___d", "a.b.c___d"),                                  # ___ mid-string
+        ]
+        for original, expected in cases:
+            sql = f"SELECT 1 AS `{original}`"
+            mangled = _mangle_dotted_aliases_for_bigquery(sql)
+            # Extract the mangled alias name back out of the SQL.
+            import re
+            m = re.search(r"AS `([^`]+)`", mangled)
+            assert m, f"Could not find alias in mangled SQL: {mangled}"
+            demangled = _demangle_bigquery_aliases([{m.group(1): 1}])[0]
+            (got_key,) = demangled.keys()
+            assert got_key == expected, (
+                f"Round-trip failed for {original!r}: "
+                f"mangled={m.group(1)!r}, demangled={got_key!r}, expected={expected!r}"
+            )

@@ -13,7 +13,7 @@ set -euo pipefail
 : "${GCP_PROJECT_ID:?GCP_PROJECT_ID is required (your billing project)}"
 : "${GOOGLE_APPLICATION_CREDENTIALS:?GOOGLE_APPLICATION_CREDENTIALS must point at a service-account JSON key}"
 
-if [ ! -f "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
+if [[ ! -f "$GOOGLE_APPLICATION_CREDENTIALS" ]]; then
   echo "GOOGLE_APPLICATION_CREDENTIALS=$GOOGLE_APPLICATION_CREDENTIALS does not exist" >&2
   exit 1
 fi

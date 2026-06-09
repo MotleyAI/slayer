@@ -22,11 +22,16 @@ import urllib.request
 
 BASE_URL = os.environ.get("SLAYER_URL", "http://localhost:5143")
 
+# Repeated literals (hoisted per SonarCloud python:S1192) — these strings
+# would otherwise show up nine and eight times respectively.
+QUERY_PATH = "/query"
+COUNT_MEASURE = "*:count"
+
 _passed = 0
 _failed = 0
 
 
-def api(method, path, body=None):
+def api(*, method, path, body=None):
     data = json.dumps(body).encode() if body else None
     req = urllib.request.Request(
         f"{BASE_URL}{path}",
@@ -46,7 +51,7 @@ def api(method, path, body=None):
         raise
 
 
-def check(name, condition):
+def check(*, name, condition):
     global _passed, _failed
     if condition:
         print(f"  PASS: {name}")
@@ -67,112 +72,121 @@ def summary():
 def main():
     print("API health:")
     try:
-        health = api("GET", "/health")
-        check("health endpoint", health.get("status") == "ok")
+        health = api(method="GET", path="/health")
+        check(name="health endpoint", condition=health.get("status") == "ok")
     except Exception as e:
         print(f"  FAIL: cannot reach {BASE_URL} — {e}", file=sys.stderr)
         print("\nStart the server first: ./start.sh", file=sys.stderr)
         sys.exit(1)
 
     print("\nModels:")
-    models = api("GET", "/models")
+    models = api(method="GET", path="/models")
     names = {m["name"] for m in models}
     for expected in ("orders", "order_items", "products", "users"):
-        check(f"{expected} model present", expected in names)
+        check(name=f"{expected} model present", condition=expected in names)
 
     print("\nDatasource:")
-    datasources = api("GET", "/datasources")
-    check("thelook datasource registered", any(d["name"] == "thelook" for d in datasources))
+    datasources = api(method="GET", path="/datasources")
+    check(
+        name="thelook datasource registered",
+        condition=any(d["name"] == "thelook" for d in datasources),
+    )
 
     # --- Baseline counts ---------------------------------------------------
     print("\nBaseline counts:")
     total_orders = api(
-        "POST", "/query",
-        {"source_model": "orders", "measures": ["*:count"]},
+        method="POST", path=QUERY_PATH,
+        body={"source_model": "orders", "measures": [COUNT_MEASURE]},
     )["data"][0]["orders._count"]
-    check("orders count > 0", total_orders > 0)
+    check(name="orders count > 0", condition=total_orders > 0)
     print(f"    (orders._count = {total_orders})")
 
     total_users = api(
-        "POST", "/query",
-        {"source_model": "users", "measures": ["*:count"]},
+        method="POST", path=QUERY_PATH,
+        body={"source_model": "users", "measures": [COUNT_MEASURE]},
     )["data"][0]["users._count"]
-    check("users count > 0", total_users > 0)
+    check(name="users count > 0", condition=total_users > 0)
 
     total_products = api(
-        "POST", "/query",
-        {"source_model": "products", "measures": ["*:count"]},
+        method="POST", path=QUERY_PATH,
+        body={"source_model": "products", "measures": [COUNT_MEASURE]},
     )["data"][0]["products._count"]
     # thelook_ecommerce.products has roughly 29k rows; allow a wide band.
-    check("products count in [1k, 1M]", 1_000 < total_products < 1_000_000)
+    check(
+        name="products count in [1k, 1M]",
+        condition=1_000 < total_products < 1_000_000,
+    )
 
     # --- Cardinality invariant (the SLayer "adding a field can't change
     # cardinality" principle, exercised at the wire layer) ----------------
     print("\nCardinality invariant (sum-of-grouped == total):")
     by_status = api(
-        "POST", "/query",
-        {
+        method="POST", path=QUERY_PATH,
+        body={
             "source_model": "orders",
-            "measures": ["*:count"],
+            "measures": [COUNT_MEASURE],
             "dimensions": ["status"],
         },
     )["data"]
     summed = sum(row["orders._count"] for row in by_status)
-    check(f"sum(orders by status) == total ({summed} == {total_orders})", summed == total_orders)
+    check(
+        name=f"sum(orders by status) == total ({summed} == {total_orders})",
+        condition=summed == total_orders,
+    )
     statuses = {row["orders.status"] for row in by_status}
     # thelook statuses (stable over years): Complete, Processing, Shipped,
     # Cancelled, Returned. Require at least three of them to be present so
     # the check survives a future status rename.
     expected_subset = {"Complete", "Processing", "Shipped", "Cancelled", "Returned"}
     check(
-        f"order statuses include >= 3 of {sorted(expected_subset)}",
-        len(statuses & expected_subset) >= 3,
+        name=f"order statuses include >= 3 of {sorted(expected_subset)}",
+        condition=len(statuses & expected_subset) >= 3,
     )
 
     # --- Joined query: order_items → products (category rollup) ----------
     print("\nJoin: order_items by product category:")
     by_category = api(
-        "POST", "/query",
-        {
+        method="POST", path=QUERY_PATH,
+        body={
             "source_model": "order_items",
-            "measures": ["*:count"],
+            "measures": [COUNT_MEASURE],
             "dimensions": ["products.category"],
         },
     )["data"]
-    check("by-category rows present", len(by_category) > 0)
+    check(name="by-category rows present", condition=len(by_category) > 0)
     total_items = api(
-        "POST", "/query",
-        {"source_model": "order_items", "measures": ["*:count"]},
+        method="POST", path=QUERY_PATH,
+        body={"source_model": "order_items", "measures": [COUNT_MEASURE]},
     )["data"][0]["order_items._count"]
     summed_cat = sum(row["order_items._count"] for row in by_category)
     check(
-        f"sum(items by category) == total ({summed_cat} == {total_items})",
-        summed_cat == total_items,
+        name=f"sum(items by category) == total ({summed_cat} == {total_items})",
+        condition=summed_cat == total_items,
     )
 
     # --- Transitive join: order_items → users → country -------------------
     print("\nTransitive join: order_items by user country:")
     by_country = api(
-        "POST", "/query",
-        {
+        method="POST", path=QUERY_PATH,
+        body={
             "source_model": "order_items",
-            "measures": ["*:count"],
+            "measures": [COUNT_MEASURE],
             "dimensions": ["users.country"],
             "order": [{"column": "count", "direction": "desc"}],
             "limit": 5,
         },
     )["data"]
-    check("top-5 countries returned", len(by_country) == 5)
+    check(name="top-5 countries returned", condition=len(by_country) == 5)
     check(
-        "countries are non-empty strings",
-        all(row.get("order_items.users.country") for row in by_country),
+        name="countries are non-empty strings",
+        condition=all(row.get("order_items.users.country") for row in by_country),
     )
 
     # --- Aggregates on a numeric column ----------------------------------
     print("\nAggregates on order_items.sale_price:")
     aggs = api(
-        "POST", "/query",
-        {
+        method="POST", path=QUERY_PATH,
+        body={
             "source_model": "order_items",
             "measures": [
                 "sale_price:sum",
@@ -186,18 +200,18 @@ def main():
     a = aggs["order_items.sale_price_avg"]
     mn = aggs["order_items.sale_price_min"]
     mx = aggs["order_items.sale_price_max"]
-    check("sum > 0", s > 0)
-    check("min >= 0", mn >= 0)
-    check("max > min", mx > mn)
-    check("avg between min and max", mn <= a <= mx)
+    check(name="sum > 0", condition=s > 0)
+    check(name="min >= 0", condition=mn >= 0)
+    check(name="max > min", condition=mx > mn)
+    check(name="avg between min and max", condition=mn <= a <= mx)
 
     # --- Time dimension (BigQuery DATE_TRUNC on TIMESTAMP) ---------------
     print("\nTime dimension (month bucket on orders.created_at):")
     by_month = api(
-        "POST", "/query",
-        {
+        method="POST", path=QUERY_PATH,
+        body={
             "source_model": "orders",
-            "measures": ["*:count"],
+            "measures": [COUNT_MEASURE],
             "time_dimensions": [
                 {"dimension": "created_at", "granularity": "month"},
             ],
@@ -205,11 +219,14 @@ def main():
             "limit": 6,
         },
     )["data"]
-    check("month-bucket rows returned", len(by_month) >= 1)
+    check(name="month-bucket rows returned", condition=len(by_month) >= 1)
     if by_month:
         first_bucket = by_month[0].get("orders.created_at")
         # BQ emits TIMESTAMP truncated to month; SLayer surfaces it as ISO 8601.
-        check("first bucket parseable", first_bucket is not None and "T" in str(first_bucket) or " " in str(first_bucket))
+        check(
+            name="first bucket parseable",
+            condition=first_bucket is not None and ("T" in str(first_bucket) or " " in str(first_bucket)),
+        )
 
     summary()
 

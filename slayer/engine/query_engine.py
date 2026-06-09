@@ -44,9 +44,32 @@ logger = logging.getLogger(__name__)
 def _demangle_bigquery_aliases(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Reverse the BQ alias mangling on result-row keys.
 
-    See ``_mangle_dotted_aliases_for_bigquery`` for the forward pass.
+    Forward pass in ``_mangle_dotted_aliases_for_bigquery`` first escapes any
+    existing ``___`` in the alias to ``______`` (so a user-named measure like
+    ``my___metric`` round-trips intact), then maps ``.`` → ``___``. Reversal
+    walks the string left-to-right and consumes the longer ``______`` token
+    BEFORE the shorter ``___`` so the two encodings stay unambiguous.
     """
-    return [{k.replace(BIGQUERY_ALIAS_SEP, "."): v for k, v in row.items()} for row in rows]
+    sep = BIGQUERY_ALIAS_SEP
+    esc = sep * 2
+
+    def _decode(key: str) -> str:
+        out: List[str] = []
+        i = 0
+        n = len(key)
+        while i < n:
+            if key.startswith(esc, i):
+                out.append(sep)
+                i += len(esc)
+            elif key.startswith(sep, i):
+                out.append(".")
+                i += len(sep)
+            else:
+                out.append(key[i])
+                i += 1
+        return "".join(out)
+
+    return [{_decode(k): v for k, v in row.items()} for row in rows]
 
 
 # Per-task in-flight join-target names. Used by _resolve_join_target to break

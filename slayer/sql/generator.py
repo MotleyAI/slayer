@@ -289,12 +289,15 @@ def _parse_window_duration(value: str) -> list[tuple[int, str]]:
 BIGQUERY_ALIAS_SEP = "___"
 
 # Backtick-quoted dotted alias. The pattern is constrained to identifier
-# characters ``[A-Za-z0-9_]`` separated by dots so it can't accidentally
-# span unrelated SQL between two unrelated backticks (table catalog name
-# ``\`bigquery-public-data\``.thelook_ecommerce... uses hyphens, which the
-# starter class rejects; the inner ``[A-Za-z0-9_]+`` plus ``(\.…)+`` also
-# guarantees at least one dot inside the captured group).
-_BIGQUERY_DOTTED_ALIAS_RE = re.compile(r"`([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+)`")
+# characters ``\w`` separated by dots so it can't accidentally span unrelated
+# SQL between two unrelated backticks (table catalog name
+# ``\`bigquery-public-data\``.thelook_ecommerce... uses hyphens, which ``\w``
+# rejects; the inner ``\w+`` plus ``(\.…)+`` also guarantees at least one
+# dot inside the captured group). ``re.ASCII`` is used so ``\w`` stays
+# ASCII-only — SLayer aliases are constructed from ASCII identifier text
+# and we don't want stray Unicode word-chars in surrounding SQL to widen
+# the match accidentally.
+_BIGQUERY_DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
 
 
 def _mangle_dotted_aliases_for_bigquery(sql: str) -> str:
@@ -311,11 +314,17 @@ def _mangle_dotted_aliases_for_bigquery(sql: str) -> str:
     (or unquoted), so the dot lives outside the backticks. The regex matches
     a dot INSIDE one pair of backticks, which only happens for a dotted
     alias.
+
+    Encoding is bijective: any pre-existing ``___`` in the alias text (e.g.
+    a user-named measure like ``my___metric``) is first escaped to ``______``
+    (the separator doubled), then dots are replaced by ``___``. The matching
+    ``_demangle_bigquery_aliases`` in the engine layer reverses both steps in
+    the correct order so the round-trip is lossless.
     """
-    return _BIGQUERY_DOTTED_ALIAS_RE.sub(
-        lambda m: f"`{m.group(1).replace('.', BIGQUERY_ALIAS_SEP)}`",
-        sql,
-    )
+    def _encode(alias: str) -> str:
+        return alias.replace(BIGQUERY_ALIAS_SEP, BIGQUERY_ALIAS_SEP * 2).replace(".", BIGQUERY_ALIAS_SEP)
+
+    return _BIGQUERY_DOTTED_ALIAS_RE.sub(lambda m: f"`{_encode(m.group(1))}`", sql)
 
 
 def _cte_name_from_alias(prefix: str, alias: str) -> str:
