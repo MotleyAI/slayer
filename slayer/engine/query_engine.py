@@ -35,6 +35,7 @@ from slayer.engine.enriched import (
 )
 from slayer.engine.enrichment import enrich_query
 from slayer.sql.client import SlayerSQLClient
+from slayer.sql.dialects import dialect_for_ds_type, get_dialect
 from slayer.sql.generator import SQLGenerator
 from slayer.storage.base import StorageBackend
 
@@ -73,27 +74,9 @@ class _NoJoinError(Exception):
         self.hop_name = hop_name
 
 
-_EXPLAIN_PREFIX = {
-    "postgres": "EXPLAIN ANALYZE",
-    "redshift": "EXPLAIN",
-    "mysql": "EXPLAIN FORMAT=JSON",
-    "sqlite": "EXPLAIN QUERY PLAN",
-    "duckdb": "EXPLAIN ANALYZE",
-    "clickhouse": "EXPLAIN",
-    "snowflake": "EXPLAIN USING JSON",
-    "bigquery": None,  # BigQuery doesn't support EXPLAIN via SQL
-    "trino": "EXPLAIN ANALYZE",
-    "presto": "EXPLAIN ANALYZE",
-    "databricks": "EXPLAIN EXTENDED",
-    "spark": "EXPLAIN EXTENDED",
-    "tsql": "SET SHOWPLAN_ALL ON;",  # SQL Server: batch prefix, needs suffix too
-    "oracle": "EXPLAIN PLAN FOR",
-}
-
-
-_EXPLAIN_POSTFIX = {
-    "tsql": "; SET SHOWPLAN_ALL OFF",
-}
+# EXPLAIN prefix/postfix moved to per-dialect classes in
+# ``slayer/sql/dialects/`` (DEV-1542). ``_build_explain_sql`` below
+# delegates via ``get_dialect``.
 
 
 _PLACEHOLDER_FILL_VALUE = "0"
@@ -130,14 +113,23 @@ def _apply_placeholder_fill(
 
 
 def _build_explain_sql(dialect: str, sql: str) -> str:
-    """Build a dialect-appropriate EXPLAIN statement."""
-    prefix = _EXPLAIN_PREFIX.get(dialect)
-    if prefix is None:
+    """Build a dialect-appropriate EXPLAIN statement.
+
+    Delegates to the dialect strategy registered in
+    ``slayer.sql.dialects`` (DEV-1542). Both branches that previously
+    raised ``ValueError`` (unsupported dialect via the None-prefix sentinel,
+    AND today's ``_EXPLAIN_PREFIX.get(...)`` miss for typo-ed dialect
+    names) preserve that exception type — the strict ``KeyError`` from
+    ``get_dialect`` is converted to ``ValueError`` to match.
+    """
+    try:
+        active = get_dialect(dialect)
+    except KeyError:
         raise ValueError(
-            f"EXPLAIN is not supported for dialect '{dialect}'. Use dry_run=True to inspect the generated SQL instead."
-        )
-    suffix = _EXPLAIN_POSTFIX.get(dialect, "")
-    return f"{prefix} {sql}{suffix}"
+            f"EXPLAIN is not supported for dialect '{dialect}'. "
+            "Use dry_run=True to inspect the generated SQL instead."
+        ) from None
+    return active.build_explain_sql(sql)
 
 
 class FieldMetadata(BaseModel):
@@ -2465,25 +2457,11 @@ class SlayerQueryEngine:
 
     @staticmethod
     def _dialect_for_type(ds_type: Optional[str]) -> str:
-        _DIALECT_MAP = {
-            "postgres": "postgres",
-            "postgresql": "postgres",
-            "mysql": "mysql",
-            "mariadb": "mysql",
-            "clickhouse": "clickhouse",
-            "bigquery": "bigquery",
-            "snowflake": "snowflake",
-            "sqlite": "sqlite",
-            "duckdb": "duckdb",
-            "redshift": "redshift",
-            "trino": "trino",
-            "presto": "presto",
-            "athena": "presto",
-            "databricks": "databricks",
-            "spark": "spark",
-            "mssql": "tsql",
-            "sqlserver": "tsql",
-            "tsql": "tsql",
-            "oracle": "oracle",
-        }
-        return _DIALECT_MAP.get(ds_type or "", "postgres")
+        """Map a datasource-config ``type`` string to a sqlglot dialect name.
+
+        Delegates to ``dialect_for_ds_type`` in ``slayer.sql.dialects``
+        (DEV-1542). Returns a string for back-compat with the 24+ test
+        sites that assert ``_dialect_for_type("postgres") == "postgres"``.
+        Unknown / ``None`` / empty ds-types fall back to ``"postgres"``.
+        """
+        return dialect_for_ds_type(ds_type).sqlglot_name
