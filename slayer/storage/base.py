@@ -301,6 +301,42 @@ class StorageBackend(ABC):
             return None
         return identity
 
+    async def _apply_refinement_or_raise(
+        self, *, name: str, data: dict, data_source: str,
+    ) -> None:
+        """Inner gate of :meth:`_migrate_and_refine_on_load`: decide whether
+        live introspection is needed for ``data`` and dispatch to it.
+
+        Hard-fails (``ValueError``) when the dict has DOUBLE base columns
+        and the datasource is missing. SQLite-INT widening with missing DS
+        is best-effort — logs a warning and skips. No-op when neither
+        predicate fires.
+        """
+        needs_double = has_refineable_columns(data)
+        needs_sqlite_int = has_sqlite_widenable_columns(data)
+        if not (needs_double or needs_sqlite_int):
+            return
+        ds = await self.get_datasource(data_source)
+        if ds is not None:
+            refine_dict_with_live_schema(data, ds)
+            return
+        if needs_double:
+            raise ValueError(
+                f"Cannot migrate model {name!r}: datasource "
+                f"{data_source!r} is unavailable for type "
+                f"refinement. Restore the datasource entry or "
+                f"remove the stale model file."
+            )
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "Datasource %r unavailable; skipping SQLite "
+            "affinity probe for INT base columns on %r. "
+            "Re-run `slayer ingest` once the datasource is "
+            "back to widen any mis-typed columns.",
+            data_source,
+            name,
+        )
+
     async def _migrate_and_refine_on_load(
         self,
         *,
@@ -320,9 +356,10 @@ class StorageBackend(ABC):
         Hard-fails with ``ValueError`` when a migration ran, the dict has
         refineable DOUBLE base columns, and the named datasource entry is
         missing — silently skipping refinement and persisting the v5 dict
-        would leave base integer columns stuck at ``DOUBLE`` forever. Models
-        with no refineable columns (text-only, query-backed, sql-mode, or
-        already-narrowed) load without needing a live datasource.
+        would leave base integer columns stuck at ``DOUBLE`` forever.
+        DEV-1538 SQLite-INT widening with missing DS is best-effort: logs
+        a warning and skips. Models with no refineable or widenable
+        columns load without needing a live datasource.
         """
         write_back = False
         if isinstance(data, dict):
@@ -330,34 +367,9 @@ class StorageBackend(ABC):
             if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
                 data = _mig.migrate("SlayerModel", data)
                 write_back = True
-                needs_double = has_refineable_columns(data)
-                needs_sqlite_int = has_sqlite_widenable_columns(data)
-                if needs_double or needs_sqlite_int:
-                    ds = await self.get_datasource(data_source)
-                    if ds is None:
-                        # DEV-1361 DOUBLE narrowing requires live introspection
-                        # — without it the column stays at DOUBLE forever, so
-                        # hard-fail. DEV-1538 SQLite-INT widening is
-                        # best-effort: the persisted INT is a safe default
-                        # (re-ingest will heal it once the DS is back).
-                        if needs_double:
-                            raise ValueError(
-                                f"Cannot migrate model {name!r}: datasource "
-                                f"{data_source!r} is unavailable for type "
-                                f"refinement. Restore the datasource entry or "
-                                f"remove the stale model file."
-                            )
-                        import logging as _logging
-                        _logging.getLogger(__name__).warning(
-                            "Datasource %r unavailable; skipping SQLite "
-                            "affinity probe for INT base columns on %r. "
-                            "Re-run `slayer ingest` once the datasource is "
-                            "back to widen any mis-typed columns.",
-                            data_source,
-                            name,
-                        )
-                    else:
-                        refine_dict_with_live_schema(data, ds)
+                await self._apply_refinement_or_raise(
+                    name=name, data=data, data_source=data_source,
+                )
         model = SlayerModel.model_validate(data)
         if write_back:
             # DEV-1410: legacy on-disk models may contain derived-column

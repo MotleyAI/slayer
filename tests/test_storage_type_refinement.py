@@ -957,7 +957,7 @@ class TestCliMigrateTypes:
         )
         assert result is False
 
-    async def test_sqlite_int_only_legacy_dict_widens_via_cli(
+    def test_sqlite_int_only_legacy_dict_widens_via_cli(
         self, tmp_path, capsys,
     ) -> None:
         """DEV-1538: ``slayer storage migrate-types`` must also surface
@@ -1001,7 +1001,7 @@ class TestCliMigrateTypes:
         assert "INT" in out
         assert "DOUBLE" in out
 
-    async def test_missing_datasource_skips_silently_for_sqlite_int_only(
+    def test_missing_datasource_skips_silently_for_sqlite_int_only(
         self, tmp_path, capsys,
     ) -> None:
         """DEV-1538 best-effort: an INT-only SQLite legacy dict with no

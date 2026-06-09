@@ -1759,6 +1759,53 @@ def _resolve_live_table(
     return live
 
 
+def _is_validate_models_base_column(col: Column) -> bool:
+    """Same base-column predicate as the storage refinement: ``col.sql``
+    is None or a single bare identifier."""
+    if col.type is not DataType.INT:
+        return False
+    if col.sql is None:
+        return True
+    s = col.sql.strip()
+    if not s or s[0].isdigit():
+        return False
+    return all(c.isalnum() or c == "_" for c in s)
+
+
+def _probe_validate_models_column(
+    *, conn, model: SlayerModel, col: Column, table_name: str,
+    schema_name: Optional[str],
+) -> Optional[DataType]:
+    """Run the affinity probe for one column in a validate_models pass."""
+    from slayer.sql.sqlite_introspect import probe_sqlite_integer_column
+    try:
+        return probe_sqlite_integer_column(
+            conn=conn,
+            table=table_name,
+            column=col.sql or col.name,
+            schema=schema_name,
+        )
+    except Exception as exc:
+        logger.warning(
+            "validate_models probe raised for %s.%s; ignoring: %s",
+            model.name, col.name, exc,
+        )
+        return None
+
+
+def _drift_reason_for_probe(
+    *, model: SlayerModel, col: Column, verdict: DataType,
+) -> DeleteReason:
+    return DeleteReason(
+        target=f"column:{col.name}",
+        reason=(
+            f"SQLite affinity probe widened {model.name}.{col.name} "
+            f"from INT to {verdict.value}; re-run `slayer ingest` "
+            f"to recreate with the correct type."
+        ),
+    )
+
+
 def _sqlite_probe_int_drift_for_model(
     *,
     model: SlayerModel,
@@ -1783,10 +1830,6 @@ def _sqlite_probe_int_drift_for_model(
     Probe failures (``None`` verdict — explicit failure or saturated
     sample) silently skip; the helper's own WARNING covers them.
     """
-    # Local import to avoid loading the helper on cold-start of non-SQLite
-    # backends.
-    from slayer.sql.sqlite_introspect import probe_sqlite_integer_column
-
     if model.sql_table is None:
         return []
 
@@ -1799,41 +1842,19 @@ def _sqlite_probe_int_drift_for_model(
     drifts: List[Tuple[str, DataType, DeleteReason]] = []
     with sa_engine.connect() as conn:
         for col in model.columns:
-            if col.type is not DataType.INT:
+            if not _is_validate_models_base_column(col):
                 continue
-            # Same base-column predicate as the storage refinement.
-            if col.sql is not None:
-                s = col.sql.strip()
-                if not s or s[0].isdigit():
-                    continue
-                if not all(c.isalnum() or c == "_" for c in s):
-                    continue
-            try:
-                verdict = probe_sqlite_integer_column(
-                    conn=conn,
-                    table=table_name,
-                    column=col.sql or col.name,
-                    schema=schema_name,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "validate_models probe raised for %s.%s; ignoring: %s",
-                    model.name,
-                    col.name,
-                    exc,
-                )
-                verdict = None
+            verdict = _probe_validate_models_column(
+                conn=conn, model=model, col=col,
+                table_name=table_name, schema_name=schema_name,
+            )
             if verdict is None or verdict is DataType.INT:
                 continue
-            reason = DeleteReason(
-                target=f"column:{col.name}",
-                reason=(
-                    f"SQLite affinity probe widened {model.name}.{col.name} "
-                    f"from INT to {verdict.value}; re-run `slayer ingest` "
-                    f"to recreate with the correct type."
-                ),
+            drifts.append(
+                (col.name, verdict, _drift_reason_for_probe(
+                    model=model, col=col, verdict=verdict,
+                ))
             )
-            drifts.append((col.name, verdict, reason))
     return drifts
 
 

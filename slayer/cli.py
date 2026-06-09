@@ -5,7 +5,7 @@ import copy
 import json
 import os
 import sys
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -855,6 +855,49 @@ def _run_storage_migrate_types(args) -> None:
         print(f"\nDone: refined {refined_total} model(s).")
 
 
+def _resolve_datasource_for_cli_refinement(
+    *, inner, ds_name: str, model_name: str, needs_double: bool,
+) -> Optional[Any]:
+    """Resolve the datasource for ``slayer storage migrate-types``.
+
+    Returns the ``DatasourceConfig`` when present, ``None`` when missing
+    and the model is SQLite-INT-only (best-effort skip — prints a stderr
+    skip notice). Raises ``ValueError`` when the model has DOUBLE base
+    columns and the DS is missing (DEV-1361 hard-fail contract).
+    """
+    ds = run_sync(inner.get_datasource(ds_name))
+    if ds is not None:
+        return ds
+    if needs_double:
+        raise ValueError(
+            f"Cannot refine model {ds_name!r}.{model_name!r}: datasource "
+            f"{ds_name!r} is unavailable for type refinement. Restore the "
+            f"datasource entry or remove the stale model file."
+        )
+    print(
+        f"skipped {ds_name}.{model_name}: datasource {ds_name!r} unavailable "
+        f"for SQLite affinity probe (INT columns untouched). Restore the "
+        f"datasource and re-run.",
+        file=sys.stderr,
+    )
+    return None
+
+
+def _print_refinement_diff(
+    *, ds_name: str, model_name: str, upgraded: dict, types_before: Dict[str, str],
+) -> None:
+    """Print before→after diffs for columns whose type changed during
+    refinement. Migration-only aliases are excluded because ``types_before``
+    is captured AFTER migration."""
+    print(f"refined {ds_name}.{model_name}:")
+    for col in upgraded.get("columns", []) or []:
+        name = col.get("name") or "?"
+        before = types_before.get(name, None)
+        after = col.get("type", "?")
+        if before != after:
+            print(f"  - {name}: {before or '?'} → {after}")
+
+
 def _refine_one_model_for_cli(
     *, inner, ds_name: str, model_name: str, dry_run: bool,
 ) -> bool:
@@ -869,52 +912,38 @@ def _refine_one_model_for_cli(
     missing, raises ``ValueError`` rather than silently reporting "nothing
     to refine" for a model the CLI never had enough information to inspect.
     DEV-1538 SQLite-INT widening is best-effort: a missing datasource for
-    an INT-only model logs a warning and skips. Models with no refineable
-    or widenable columns (text-only, query-backed, sql-mode, already-
-    narrowed) skip silently and don't require a live datasource.
+    an INT-only model logs a skip notice and returns False. Models with no
+    refineable or widenable columns (text-only, query-backed, sql-mode,
+    already-narrowed) skip silently and don't require a live datasource.
     """
     raw = run_sync(_load_raw_model_dict(inner, ds_name, model_name))
     if raw is None:
         return False
-    # Snapshot the original column types before migration mutates the
-    # shared inner dicts, so we can show before/after diffs.
-    original_types = {
+    upgraded = _mig.migrate("SlayerModel", copy.deepcopy(raw))
+    # Snapshot column types AFTER migration but BEFORE refinement so the
+    # before/after diff reports only actual refinement changes — migration-
+    # only aliases like ``number → DOUBLE`` are not refinement events.
+    types_before_refinement = {
         (c.get("name") or "?"): c.get("type", "?")
-        for c in raw.get("columns", []) or []
+        for c in upgraded.get("columns", []) or []
         if isinstance(c, dict)
     }
-    upgraded = _mig.migrate("SlayerModel", copy.deepcopy(raw))
     needs_double = has_refineable_columns(upgraded)
     needs_sqlite_int = has_sqlite_widenable_columns(upgraded)
     if not (needs_double or needs_sqlite_int):
         return False
-    ds = run_sync(inner.get_datasource(ds_name))
+    ds = _resolve_datasource_for_cli_refinement(
+        inner=inner, ds_name=ds_name, model_name=model_name,
+        needs_double=needs_double,
+    )
     if ds is None:
-        # DEV-1361 DOUBLE narrowing requires live introspection. DEV-1538
-        # SQLite-INT widening is best-effort: skip with a warning so the
-        # CLI report still surfaces the missing-DS condition.
-        if needs_double:
-            raise ValueError(
-                f"Cannot refine model {ds_name!r}.{model_name!r}: datasource "
-                f"{ds_name!r} is unavailable for type refinement. Restore the "
-                f"datasource entry or remove the stale model file."
-            )
-        print(
-            f"skipped {ds_name}.{model_name}: datasource {ds_name!r} unavailable "
-            f"for SQLite affinity probe (INT columns untouched). Restore the "
-            f"datasource and re-run.",
-            file=sys.stderr,
-        )
         return False
     if not refine_dict_with_live_schema(upgraded, ds):
         return False
-    print(f"refined {ds_name}.{model_name}:")
-    for col in upgraded.get("columns", []) or []:
-        name = col.get("name") or "?"
-        before = original_types.get(name, None)
-        after = col.get("type", "?")
-        if before != after:
-            print(f"  - {name}: {before or '?'} → {after}")
+    _print_refinement_diff(
+        ds_name=ds_name, model_name=model_name,
+        upgraded=upgraded, types_before=types_before_refinement,
+    )
     if not dry_run:
         model = SlayerModel.model_validate(upgraded)
         # Save through inner so we don't re-trigger the load-time
