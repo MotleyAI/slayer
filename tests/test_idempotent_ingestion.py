@@ -16,7 +16,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import pytest
 
@@ -664,3 +664,349 @@ class TestExcludeTables:
         loaded = await storage.get_model("orders", data_source="ds")
         assert loaded is not None
         assert not any(c.name == "extra" for c in loaded.columns)
+
+
+# ---------------------------------------------------------------------------
+# DEV-1538: idempotent re-ingest widens persisted INT → DOUBLE / TEXT when
+# the live SQLite probe disagrees with the SA-declared affinity.
+# ---------------------------------------------------------------------------
+
+
+def _create_probe_workspace_db(
+    db_path: str, column: str, values: list
+) -> None:
+    """Build a SQLite DB with one INTEGER-declared column populated with
+    per-row typed inserts so storage class is preserved."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            f'CREATE TABLE sensordata (id INTEGER PRIMARY KEY, "{column}" INTEGER)'
+        )
+        for i, v in enumerate(values, start=1):
+            conn.execute(
+                'INSERT INTO sensordata VALUES (?, ?)', (i, v),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def _persist_int_model(
+    storage, ds_name: str, table: str, column: str,
+    *,
+    column_format: Optional[NumberFormat] = None,
+    extra_meta: Optional[dict] = None,
+    description: str = "",
+    label: Optional[str] = None,
+) -> None:
+    """Persist a model with the target column hard-coded as type=INT,
+    simulating a pre-DEV-1538 ingest."""
+    col_kwargs: Dict[str, Any] = {
+        "name": column,
+        "sql": column,
+        "type": DataType.INT,
+        "format": column_format or NumberFormat(type=NumberFormatType.INTEGER),
+        "description": description,
+    }
+    if label is not None:
+        col_kwargs["label"] = label
+    if extra_meta is not None:
+        col_kwargs["meta"] = extra_meta
+    await storage.save_model(
+        SlayerModel(
+            name=table,
+            sql_table=table,
+            data_source=ds_name,
+            columns=[
+                Column(
+                    name="id", sql="id", type=DataType.INT, primary_key=True,
+                ),
+                Column(**col_kwargs),
+            ],
+        )
+    )
+
+
+class TestSqliteProbeWideningOnReingest:
+    """DEV-1538: re-ingest widens persisted INT → probe verdict (DOUBLE/TEXT)
+    when the SQLite affinity probe disagrees with the SA-declared type."""
+
+    async def test_widens_persisted_int_to_double(self, workspace: Path) -> None:
+        db_path = str(workspace / "live.db")
+        _create_probe_workspace_db(
+            db_path, "tempstabidx",
+            [1, 2, 3] + [0.99, 0.943, 0.969, 0.5, 0.7, 0.9],
+        )
+        storage = YAMLStorage(base_dir=str(workspace / "storage"))
+        ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+        await storage.save_datasource(ds)
+        await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
+
+        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+
+        loaded = await storage.get_model("sensordata", data_source="ds")
+        col = next(c for c in loaded.columns if c.name == "tempstabidx")
+        assert col.type is DataType.DOUBLE
+        assert col.format is not None
+        assert col.format.type is NumberFormatType.FLOAT
+
+    async def test_widens_persisted_int_to_text(self, workspace: Path) -> None:
+        db_path = str(workspace / "live.db")
+        _create_probe_workspace_db(
+            db_path, "status", [1, 2, "abc", "xyz"],
+        )
+        storage = YAMLStorage(base_dir=str(workspace / "storage"))
+        ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+        await storage.save_datasource(ds)
+        await _persist_int_model(storage, "ds", "sensordata", "status")
+
+        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+
+        loaded = await storage.get_model("sensordata", data_source="ds")
+        col = next(c for c in loaded.columns if c.name == "status")
+        assert col.type is DataType.TEXT
+        # On widening to TEXT, the auto-default integer format must be cleared.
+        assert col.format is None
+
+    async def test_preserves_user_metadata_on_widening(
+        self, workspace: Path
+    ) -> None:
+        """Description, label, meta, allowed_aggregations, filter, and
+        primary_key are preserved verbatim across a widening pass — only
+        type and (auto-default) format change."""
+        db_path = str(workspace / "live.db")
+        _create_probe_workspace_db(
+            db_path, "tempstabidx",
+            [1, 0.99, 0.943, 0.969],
+        )
+        storage = YAMLStorage(base_dir=str(workspace / "storage"))
+        ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+        await storage.save_datasource(ds)
+
+        await storage.save_model(
+            SlayerModel(
+                name="sensordata",
+                sql_table="sensordata",
+                data_source="ds",
+                columns=[
+                    Column(
+                        name="id", sql="id", type=DataType.INT, primary_key=True,
+                    ),
+                    Column(
+                        name="tempstabidx",
+                        sql="tempstabidx",
+                        type=DataType.INT,
+                        format=NumberFormat(type=NumberFormatType.INTEGER),
+                        description="hand-authored note",
+                        label="Temp Stab",
+                        meta={"author": "egor"},
+                        allowed_aggregations=["sum", "avg"],
+                        filter="tempstabidx IS NOT NULL",
+                    ),
+                ],
+            )
+        )
+
+        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+
+        loaded = await storage.get_model("sensordata", data_source="ds")
+        col = next(c for c in loaded.columns if c.name == "tempstabidx")
+        assert col.type is DataType.DOUBLE
+        # User metadata preserved verbatim.
+        assert col.description == "hand-authored note"
+        assert col.label == "Temp Stab"
+        assert col.meta == {"author": "egor"}
+        assert col.allowed_aggregations == ["sum", "avg"]
+        assert col.filter == "tempstabidx IS NOT NULL"
+
+    async def test_no_widening_for_non_sqlite(self, workspace: Path) -> None:
+        """DuckDB datasource: the probe must never fire on re-ingest."""
+        pytest.importorskip("duckdb")
+        import duckdb
+
+        db_path = str(workspace / "live.duckdb")
+        con = duckdb.connect(db_path)
+        con.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, qty INTEGER)")
+        con.execute("INSERT INTO t VALUES (1, 10), (2, 20)")
+        con.close()
+
+        storage = YAMLStorage(base_dir=str(workspace / "storage"))
+        ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
+        await storage.save_datasource(ds)
+        await _persist_int_model(storage, "ds", "t", "qty")
+
+        from unittest.mock import patch
+        with patch(
+            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+            side_effect=AssertionError("probe must not run on DuckDB"),
+        ):
+            await ingest_datasource_idempotent(datasource=ds, storage=storage)
+
+        loaded = await storage.get_model("t", data_source="ds")
+        col = next(c for c in loaded.columns if c.name == "qty")
+        assert col.type is DataType.INT
+
+    async def test_non_sqlite_with_live_schema_drift_stays_strict_additive(
+        self, workspace: Path
+    ) -> None:
+        """DEV-1538: the widening branch must NOT fire on non-SQLite datasources
+        even when the fresh live schema disagrees with persisted (e.g. a DBA
+        ran ``ALTER COLUMN qty TYPE DOUBLE`` on Postgres). On non-SQLite the
+        additive contract stays strict — drift surfaces via ``slayer
+        validate-models``, not via silent re-ingest overwrites.
+        """
+        pytest.importorskip("duckdb")
+        import duckdb
+
+        db_path = str(workspace / "live.duckdb")
+        # Live schema declares ``qty`` as DOUBLE; persisted will say INT.
+        con = duckdb.connect(db_path)
+        con.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, qty DOUBLE)")
+        con.execute("INSERT INTO t VALUES (1, 0.5), (2, 0.7)")
+        con.close()
+
+        storage = YAMLStorage(base_dir=str(workspace / "storage"))
+        ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
+        await storage.save_datasource(ds)
+        # Persist with stale INT type (e.g. left over from a prior schema).
+        await _persist_int_model(storage, "ds", "t", "qty")
+
+        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+
+        loaded = await storage.get_model("t", data_source="ds")
+        col = next(c for c in loaded.columns if c.name == "qty")
+        # Non-SQLite: persisted INT stays INT, even though fresh said DOUBLE.
+        assert col.type is DataType.INT
+
+    async def test_widened_columns_in_model_addition(
+        self, workspace: Path
+    ) -> None:
+        """The IdempotentIngestResult.additions entry for the model carries
+        ``widened_columns: List[str]`` listing the widening events."""
+        db_path = str(workspace / "live.db")
+        _create_probe_workspace_db(
+            db_path, "tempstabidx",
+            [1, 0.5, 0.7, 0.9],
+        )
+        storage = YAMLStorage(base_dir=str(workspace / "storage"))
+        ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+        await storage.save_datasource(ds)
+        await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
+
+        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        addition = _addition_for("sensordata", result.additions)
+        assert addition is not None
+        assert hasattr(addition, "widened_columns"), (
+            "ModelAddition must expose widened_columns: List[str]"
+        )
+        assert "tempstabidx" in addition.widened_columns
+
+    async def test_cli_renderer_shows_widened_columns(
+        self, workspace: Path
+    ) -> None:
+        """The CLI renderer (``_print_ingest_addition``) must include
+        widened columns in user-visible output so re-ingest events are
+        discoverable from the terminal."""
+        import io
+        from slayer.engine.ingestion import _print_ingest_addition
+
+        db_path = str(workspace / "live.db")
+        _create_probe_workspace_db(
+            db_path, "tempstabidx", [1, 0.5, 0.7],
+        )
+        storage = YAMLStorage(base_dir=str(workspace / "storage"))
+        ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+        await storage.save_datasource(ds)
+        await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
+
+        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        addition = _addition_for("sensordata", result.additions)
+        assert addition is not None
+
+        buf = io.StringIO()
+        _print_ingest_addition(addition, file=buf)
+        output = buf.getvalue()
+        # Output mentions the widened column name and a "widen" keyword.
+        assert "tempstabidx" in output
+        assert "widen" in output.lower()
+
+    async def test_does_not_narrow_double_to_int(self, workspace: Path) -> None:
+        """Widen-only contract: a persisted DOUBLE column never narrows to
+        INT even when probe says INT."""
+        db_path = str(workspace / "live.db")
+        _create_probe_workspace_db(
+            db_path, "qty", [1, 2, 3],  # all int-storage
+        )
+        storage = YAMLStorage(base_dir=str(workspace / "storage"))
+        ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+        await storage.save_datasource(ds)
+        # Persist column as DOUBLE.
+        await storage.save_model(
+            SlayerModel(
+                name="sensordata",
+                sql_table="sensordata",
+                data_source="ds",
+                columns=[
+                    Column(
+                        name="id", sql="id", type=DataType.INT, primary_key=True,
+                    ),
+                    Column(
+                        name="qty", sql="qty", type=DataType.DOUBLE,
+                        format=NumberFormat(type=NumberFormatType.FLOAT),
+                    ),
+                ],
+            )
+        )
+
+        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+
+        loaded = await storage.get_model("sensordata", data_source="ds")
+        col = next(c for c in loaded.columns if c.name == "qty")
+        # DOUBLE preserved, never narrowed.
+        assert col.type is DataType.DOUBLE
+
+    async def test_custom_format_preserved_on_widening(
+        self, workspace: Path, caplog
+    ) -> None:
+        """Codex finding #7 (post-discussion): widening only overwrites the
+        auto-default INTEGER format. A user-set custom format (precision,
+        currency) is preserved untouched on a widening pass and an INFO
+        log is emitted as a hint."""
+        import logging as _logging
+
+        db_path = str(workspace / "live.db")
+        _create_probe_workspace_db(
+            db_path, "amount", [1, 0.99, 0.5, 0.7],
+        )
+        storage = YAMLStorage(base_dir=str(workspace / "storage"))
+        ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+        await storage.save_datasource(ds)
+
+        # Custom format: CURRENCY with explicit symbol & precision.
+        custom_format = NumberFormat(
+            type=NumberFormatType.CURRENCY,
+            symbol="€",
+            precision=3,
+        )
+        await _persist_int_model(
+            storage, "ds", "sensordata", "amount",
+            column_format=custom_format,
+        )
+
+        with caplog.at_level(_logging.INFO, logger="slayer.engine.ingestion"):
+            await ingest_datasource_idempotent(datasource=ds, storage=storage)
+
+        loaded = await storage.get_model("sensordata", data_source="ds")
+        col = next(c for c in loaded.columns if c.name == "amount")
+        assert col.type is DataType.DOUBLE
+        # Custom format must be preserved verbatim.
+        assert col.format is not None
+        assert col.format.type is NumberFormatType.CURRENCY
+        assert col.format.symbol == "€"
+        assert col.format.precision == 3
+        # Hint log emitted at INFO level referencing the column name.
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any(
+            "amount" in m and ("custom format" in m.lower() or "preserved" in m.lower())
+            for m in msgs
+        ), msgs

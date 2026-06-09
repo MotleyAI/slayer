@@ -113,6 +113,9 @@ class ModelAddition(BaseModel):
     created: bool = False  # True if the model was new
     new_columns: List[str] = Field(default_factory=list)
     new_joins: List[str] = Field(default_factory=list)
+    # DEV-1538: persisted INT columns whose type widened (to DOUBLE or TEXT)
+    # because the SQLite affinity probe disagreed with the declared type.
+    widened_columns: List[str] = Field(default_factory=list)
 
 
 class IngestionError(BaseModel):
@@ -1756,6 +1759,210 @@ def _resolve_live_table(
     return live
 
 
+def _is_validate_models_base_column(col: Column) -> bool:
+    """Same base-column predicate as the storage refinement: ``col.sql``
+    is None or a single bare identifier."""
+    if col.type is not DataType.INT:
+        return False
+    if col.sql is None:
+        return True
+    s = col.sql.strip()
+    if not s or s[0].isdigit():
+        return False
+    return all(c.isalnum() or c == "_" for c in s)
+
+
+def _probe_validate_models_column(
+    *, conn, model: SlayerModel, col: Column, table_name: str,
+    schema_name: Optional[str],
+) -> Optional[DataType]:
+    """Run the affinity probe for one column in a validate_models pass."""
+    from slayer.sql.sqlite_introspect import probe_sqlite_integer_column
+    try:
+        return probe_sqlite_integer_column(
+            conn=conn,
+            table=table_name,
+            column=col.sql or col.name,
+            schema=schema_name,
+        )
+    except Exception as exc:
+        logger.warning(
+            "validate_models probe raised for %s.%s; ignoring: %s",
+            model.name, col.name, exc,
+        )
+        return None
+
+
+def _drift_reason_for_probe(
+    *, model: SlayerModel, col: Column, verdict: DataType,
+) -> DeleteReason:
+    return DeleteReason(
+        target=f"column:{col.name}",
+        reason=(
+            f"SQLite affinity probe widened {model.name}.{col.name} "
+            f"from INT to {verdict.value}; re-run `slayer ingest` "
+            f"to recreate with the correct type."
+        ),
+    )
+
+
+def _sqlite_probe_int_drift_for_model(
+    *,
+    model: SlayerModel,
+    sa_engine,
+    default_schema: Optional[str] = None,
+) -> List[Tuple[str, DataType, DeleteReason]]:
+    """DEV-1538: probe-driven type-drift detection on SQLite.
+
+    For every persisted base column with ``Column.type == DataType.INT``,
+    open a connection from ``sa_engine`` and run
+    :func:`probe_sqlite_integer_column` against the live storage. When the
+    probe disagrees (verdict DOUBLE or TEXT), return a list of
+    ``(column_name, verdict, DeleteReason)`` tuples so the caller can
+    merge them into the model's diff state BEFORE the cascade fixed-point
+    walk fires.
+
+    ``default_schema`` (typically ``datasource.schema_name``) is used as
+    the SQLite schema when ``model.sql_table`` is an unqualified table
+    name. Without this, attached SQLite schemas would silently fall back
+    to ``main`` and drift would be skipped or attributed to the wrong DB.
+
+    Probe failures (``None`` verdict — explicit failure or saturated
+    sample) silently skip; the helper's own WARNING covers them.
+    """
+    if model.sql_table is None:
+        return []
+
+    if "." in model.sql_table:
+        schema_name, _, table_name = model.sql_table.partition(".")
+        schema_name = schema_name or None
+    else:
+        schema_name, table_name = default_schema or None, model.sql_table
+
+    drifts: List[Tuple[str, DataType, DeleteReason]] = []
+    with sa_engine.connect() as conn:
+        for col in model.columns:
+            if not _is_validate_models_base_column(col):
+                continue
+            verdict = _probe_validate_models_column(
+                conn=conn, model=model, col=col,
+                table_name=table_name, schema_name=schema_name,
+            )
+            if verdict is None or verdict is DataType.INT:
+                continue
+            drifts.append(
+                (col.name, verdict, _drift_reason_for_probe(
+                    model=model, col=col, verdict=verdict,
+                ))
+            )
+    return drifts
+
+
+async def _sqlite_probe_drifts_for_models(
+    *,
+    datasource: DatasourceConfig,
+    sql_table_models: List[SlayerModel],
+) -> Dict[str, List[Tuple[str, DataType, DeleteReason]]]:
+    """Run the SQLite probe for every model in one synchronous worker so
+    the engine + connection lifecycle is shared across the validate pass."""
+    if not sql_table_models:
+        return {}
+    if (datasource.type or "").lower() != "sqlite":
+        return {m.name: [] for m in sql_table_models}
+
+    def _run() -> Dict[str, List[Tuple[str, DataType, DeleteReason]]]:
+        sa_engine = sa.create_engine(
+            datasource.resolve_env_vars().get_connection_string()
+        )
+        try:
+            out: Dict[str, List[Tuple[str, DataType, DeleteReason]]] = {}
+            default_schema = datasource.schema_name or None
+            for m in sql_table_models:
+                out[m.name] = _sqlite_probe_int_drift_for_model(
+                    model=m,
+                    sa_engine=sa_engine,
+                    default_schema=default_schema,
+                )
+            return out
+        finally:
+            sa_engine.dispose()
+
+    return await asyncio.to_thread(_run)
+
+
+def _merge_probe_drifts_into_diff(
+    *,
+    model: SlayerModel,
+    base_diff: Tuple[Optional[ToDeleteEntry], Set[str]],
+    probe_drifts: List[Tuple[str, DataType, DeleteReason]],
+) -> Tuple[Optional[ToDeleteEntry], Set[str]]:
+    """Merge ``probe_drifts`` from
+    :func:`_sqlite_probe_int_drift_for_model` into a model's
+    ``(entry, dropped_columns)`` diff so the cascade fixed-point walk in
+    :func:`compute_datasource_drops` treats them as regular column drops.
+
+    Skipped when ``base_diff`` is already a :class:`WholeModelDelete`
+    (the whole model is going anyway) or when there are no drifts.
+    """
+    if not probe_drifts:
+        return base_diff
+    base_entry, dropped = base_diff
+    if isinstance(base_entry, WholeModelDelete):
+        return base_diff
+
+    drift_cols = [name for name, _, _ in probe_drifts]
+    drift_reasons = [reason for _, _, reason in probe_drifts]
+
+    if base_entry is None:
+        merged_entry = EditModelDelete(
+            model_name=model.name,
+            data_source=model.data_source,
+            remove=RemoveSpec(columns=list(drift_cols)),
+            reasons=list(drift_reasons),
+        )
+    else:
+        # base_entry is an EditModelDelete; append probe columns + reasons
+        # without dropping anything that was already there.
+        merged_columns = list(base_entry.remove.columns)
+        for c in drift_cols:
+            if c not in merged_columns:
+                merged_columns.append(c)
+        merged_entry = base_entry.model_copy(
+            update={
+                "remove": base_entry.remove.model_copy(
+                    update={"columns": merged_columns}
+                ),
+                "reasons": list(base_entry.reasons) + list(drift_reasons),
+            }
+        )
+
+    merged_dropped = set(dropped) | set(drift_cols)
+    return merged_entry, merged_dropped
+
+
+def _diff_one_sql_table_model(
+    *,
+    model: SlayerModel,
+    live_tables: Dict[str, "LiveTable"],
+    available_in_ds: Set[str],
+    probe_drifts: List[Tuple[str, DataType, DeleteReason]],
+) -> Tuple[Optional[ToDeleteEntry], Set[str]]:
+    """Per-model body of :func:`_collect_sql_table_diffs` — resolves the
+    live table, runs ``diff_sql_table_model``, and merges any DEV-1538
+    SQLite probe drifts so the cascade walk treats them as regular drops."""
+    live = _resolve_live_table(
+        sql_table=model.sql_table or "", live_tables=live_tables,
+    )
+    base = diff_sql_table_model(
+        model=model,
+        live_table=live,
+        available_models_in_ds=available_in_ds,
+    )
+    return _merge_probe_drifts_into_diff(
+        model=model, base_diff=base, probe_drifts=probe_drifts,
+    )
+
+
 async def _collect_sql_table_diffs(
     *,
     datasource: DatasourceConfig,
@@ -1763,11 +1970,13 @@ async def _collect_sql_table_diffs(
     available_in_ds: Set[str],
 ) -> Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]]:
     """Run live SQLAlchemy introspection (off the event loop) and diff each
-    sql_table-mode model against it.
+    sql_table-mode model against it. On SQLite, additionally run the
+    DEV-1538 affinity probe per persisted INT base column and merge any
+    drift entries into each model's diff so the cascade fixed-point walk
+    sees them as regular column drops.
     """
-    out: Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]] = {}
     if not sql_table_models:
-        return out
+        return {}
     # Honour the datasource's configured schema_name so non-default-schema
     # datasources diff against the right table set; otherwise SQLAlchemy
     # introspects the default and produces false WholeModelDeletes.
@@ -1776,16 +1985,19 @@ async def _collect_sql_table_diffs(
         datasource=datasource,
         schema=datasource.schema_name or None,
     )
-    for m in sql_table_models:
-        live = _resolve_live_table(
-            sql_table=m.sql_table or "", live_tables=live_tables
-        )
-        out[m.name] = diff_sql_table_model(
+    probe_drifts_by_model = await _sqlite_probe_drifts_for_models(
+        datasource=datasource,
+        sql_table_models=sql_table_models,
+    )
+    return {
+        m.name: _diff_one_sql_table_model(
             model=m,
-            live_table=live,
-            available_models_in_ds=available_in_ds,
+            live_tables=live_tables,
+            available_in_ds=available_in_ds,
+            probe_drifts=probe_drifts_by_model.get(m.name, []),
         )
-    return out
+        for m in sql_table_models
+    }
 
 
 async def _collect_sql_diffs(
