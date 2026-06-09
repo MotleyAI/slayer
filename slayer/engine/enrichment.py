@@ -1693,6 +1693,21 @@ async def enrich_query(
             substitute_variables(filter_str=f, variables=query.variables) for f in query_filters
         ]
 
+    # DEV-1543: distinct_dimension_values=False rejects any measure
+    # reference in filters / order. This pass runs AFTER variable
+    # substitution (so a ``{var}`` revealing an aggregation is caught)
+    # and BEFORE ``extract_filter_transforms`` lifts transforms into
+    # hidden fields (so the original measure-reference shape is still
+    # visible). Pre-empts the construction-time check which is structural
+    # only.
+    if not query.distinct_dimension_values:
+        _reject_measure_references_for_raw_rows(
+            query=query,
+            query_filters=query_filters,
+            custom_agg_names=custom_agg_names,
+            named_measures=named_measures,
+        )
+
     # Transform extraction runs only on Mode B (DSL) query filters. Model
     # filters are SQL mode — they don't carry SLayer transforms (rejected
     # at construction by ``parse_sql_predicate``) and don't go through
@@ -1858,6 +1873,7 @@ async def enrich_query(
         offset=query.offset,
         field_name_aliases=field_name_aliases,
         user_projection=user_projection,
+        distinct_dimension_values=query.distinct_dimension_values,
     )
 
 
@@ -2553,6 +2569,136 @@ def _remap_renamed_aliases_in_filter(
         masked = masked.replace("\x00LIT\x00", literal, 1)
     pf.sql = masked
     pf.columns = [eligible.get(c, c) for c in pf.columns]
+
+
+def _reject_measure_references_for_raw_rows(
+    *,
+    query: SlayerQuery,
+    query_filters: List[str],
+    custom_agg_names: frozenset,
+    named_measures: Dict[str, str],
+) -> None:
+    """DEV-1543: when ``query.distinct_dimension_values is False``, reject
+    any measure reference in ``query.filters`` or ``query.order``.
+
+    Hooks AFTER variable substitution and BEFORE
+    ``extract_filter_transforms`` / order-formula hoisting, so the
+    original measure-reference shape is still visible. The construction-
+    time check in ``SlayerQuery._validate_distinct_dimension_values`` is
+    structural only (``measures`` non-empty, dims+tds both empty); this
+    pass is the authoritative measure-reference catch.
+
+    Detected forms:
+
+    * Colon aggregation (``col:agg``, ``*:count``) — surfaced as
+      ``ParsedFilter.agg_refs`` non-empty.
+    * Transform calls (``rank(...)``, ``cumsum(...)``, etc.) — detected
+      via ``extract_filter_transforms`` returning a non-empty lifted
+      list.
+    * Bare reference to a saved ``ModelMeasure`` — any ``columns`` entry
+      in the parsed filter matching a key of ``named_measures``.
+    * Same forms in ``OrderItem.raw_formula`` (function-style aggregate,
+      transform call, colon-aggregation) — caught via ``parse_formula``
+      yielding ``AggregatedMeasureRef`` / ``TransformField`` /
+      ``MixedArithmeticField``.
+    * Bare ``OrderItem.column.name`` matching a saved ``ModelMeasure``.
+    """
+    from slayer.core.errors import DistinctDimensionValuesError
+    from slayer.core.formula import (
+        AggregatedMeasureRef as _AggRef,
+        MixedArithmeticField as _MixedField,
+        TransformField as _TransformField,
+        parse_filter,
+        parse_formula,
+    )
+
+    fix_hint = (
+        "Either remove the measure reference, or set "
+        "distinct_dimension_values=True (the default) to keep the "
+        "auto-aggregating behaviour."
+    )
+
+    # --- Filters ---
+    # Mask single-quoted string literals so colons inside them
+    # (``status == 'a:b'``) don't pre-match as ``col:agg``. The masker
+    # preserves the rest of the formula structure (whitespace,
+    # operators, identifiers) so transform / agg detection stays robust.
+    _STR_LIT_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
+    for raw_filter in query_filters:
+        masked = _STR_LIT_RE.sub("''", raw_filter)
+
+        # Transform-call detection FIRST. ``extract_filter_transforms``
+        # is robust against filter shapes ``parse_filter`` rejects (e.g.
+        # ``rank(amount:sum) <= 5`` — ``parse_filter`` raises "Unknown
+        # filter function 'rank'" but ``extract_filter_transforms``
+        # lifts the transform cleanly). Lifted non-empty → transform
+        # call → reject.
+        try:
+            _, lifted = extract_filter_transforms(
+                masked,
+                counter=[0],
+                extra_agg_names=custom_agg_names,
+                named_measures=named_measures,
+            )
+        except Exception:
+            lifted = []
+        if lifted:
+            transform_formula = lifted[0][1]
+            raise DistinctDimensionValuesError(
+                f"distinct_dimension_values=False rejects measure references. "
+                f"Filter {raw_filter!r} contains a transform call "
+                f"({transform_formula}). {fix_hint}"
+            )
+
+        # Colon-aggregation detection — ``parse_filter`` extracts
+        # ``col:agg`` shapes into ``ParsedFilter.agg_refs``.
+        try:
+            parsed = parse_filter(masked, extra_agg_names=custom_agg_names)
+        except Exception:
+            # The real parser will raise downstream with a more useful
+            # message tied to the original filter text; don't pre-empt.
+            continue
+        if parsed.agg_refs:
+            ref = parsed.agg_refs[0]
+            raise DistinctDimensionValuesError(
+                f"distinct_dimension_values=False rejects measure references. "
+                f"Filter {raw_filter!r} contains an aggregation "
+                f"({ref.measure_name}:{ref.aggregation_name}). "
+                f"{fix_hint}"
+            )
+        for col in parsed.columns:
+            if col in named_measures:
+                raise DistinctDimensionValuesError(
+                    f"distinct_dimension_values=False rejects measure references. "
+                    f"Filter {raw_filter!r} references saved ModelMeasure "
+                    f"{col!r}. {fix_hint}"
+                )
+
+    # --- Order items ---
+    for item in query.order or []:
+        if item.raw_formula is not None:
+            try:
+                spec = parse_formula(
+                    item.raw_formula,
+                    extra_agg_names=custom_agg_names,
+                    named_measures=named_measures,
+                )
+            except Exception:
+                spec = None
+            if isinstance(spec, (_AggRef, _TransformField, _MixedField)):
+                raise DistinctDimensionValuesError(
+                    f"distinct_dimension_values=False rejects measure references. "
+                    f"Order item raw_formula={item.raw_formula!r} contains a "
+                    f"measure / transform reference. {fix_hint}"
+                )
+        # Bare-name resolution: OrderItem.column.name matches a saved measure.
+        col_name = item.column.name if item.column else None
+        if col_name and col_name in named_measures:
+            raise DistinctDimensionValuesError(
+                f"distinct_dimension_values=False rejects measure references. "
+                f"Order item column={col_name!r} resolves to a saved "
+                f"ModelMeasure on the source model. {fix_hint}"
+            )
 
 
 def extract_filter_transforms(

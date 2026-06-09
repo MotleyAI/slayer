@@ -851,6 +851,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         explain: bool = False,
         format: str = "markdown",
         variables: Optional[Dict[str, Any]] = None,
+        distinct_dimension_values: bool = True,
     ) -> str:
         """Query data from a semantic model. Call inspect_model first to see available columns and measures.
 
@@ -885,6 +886,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             dry_run: When true, generate and return the SQL without executing it.
             explain: When true, run EXPLAIN ANALYZE and return the query plan.
             format: Output format — "markdown" (default, compact and LLM-friendly), "json" (structured), or "csv" (most compact). Case-insensitive.
+            distinct_dimension_values: Default True (Cube.js-style auto-dedup for dim-only queries — emits GROUP BY <dim aliases>). Set False to emit raw rows: no top-level GROUP BY, just SELECT <dimensions/time_dimensions> with the usual WHERE/ORDER BY/LIMIT. Any measure reference (in measures, filters, or order) raises an error in this mode.
 
         Example: query(source_model="orders", measures=[{"formula": "*:count"}], dimensions=["status"], filters=["status == 'completed'"])
 
@@ -909,6 +911,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             data["measures"] = measures
         if variables:
             data["variables"] = dict(variables)
+        # DEV-1543: only emit when non-default so tool calls stay compact.
+        if distinct_dimension_values is False:
+            data["distinct_dimension_values"] = False
         try:
             fmt = format.lower().strip()
             if fmt not in ("json", "csv", "markdown"):
@@ -928,6 +933,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 and not time_dimensions and not order
                 and limit is None and offset is None
                 and not whole_periods_only
+                # DEV-1543: explicit ``False`` is a real override; default
+                # ``True`` falls through.
+                and distinct_dimension_values
             )
             if isinstance(source_model, str) and no_overrides:
                 model_name = source_model

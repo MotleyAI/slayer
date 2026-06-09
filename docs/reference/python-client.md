@@ -66,6 +66,15 @@ client.query_sync([
 
 # Run-by-name (query-backed model)
 client.query_sync("rev_by_region")
+
+# Raw rows — opt out of the dim-only auto-dedup. Per-stage in DAG queries.
+client.query_sync({
+    "source_model": "orders",
+    "dimensions": ["status", "amount"],
+    "filters": ["amount > 100"],
+    "limit": 100,
+    "distinct_dimension_values": False,
+})
 ```
 
 ### Other Methods

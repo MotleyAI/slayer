@@ -338,6 +338,15 @@ class SlayerQuery(BaseModel):
     limit: Optional[int] = None
     offset: Optional[int] = None
     whole_periods_only: bool = False
+    # DEV-1543: opt out of the auto "distinct dimension tuples" GROUP BY
+    # for dim-only queries. Default ``True`` preserves the Cube.js-style
+    # dedup that fires when ``measures`` is empty. Setting ``False`` emits
+    # a flat ``SELECT <dims/td-exprs> FROM ... WHERE ... ORDER BY ...
+    # LIMIT ...`` projection. Any measure reference (in ``measures``, in
+    # ``filters``, or in ``order``) is rejected with
+    # ``DistinctDimensionValuesError``; both ``dimensions`` and
+    # ``time_dimensions`` empty is also rejected (nothing to project).
+    distinct_dimension_values: bool = True
 
     @model_validator(mode="after")
     def _validate_dsl_user_input(self) -> "SlayerQuery":
@@ -358,7 +367,45 @@ class SlayerQuery(BaseModel):
         if self.filters:
             for f in self.filters:
                 _validate_query_filter_string(f)
+        self._validate_distinct_dimension_values()
         return self
+
+    def _validate_distinct_dimension_values(self) -> None:
+        """DEV-1543: structural rejection rules for ``distinct_dimension_values=False``.
+
+        Only the cheap, model-free checks fire here:
+
+        * ``measures`` non-empty — flag asks for raw rows, but the query
+          asks for aggregations.
+        * Both ``dimensions`` and ``time_dimensions`` empty — there are
+          no projected columns to ``SELECT``.
+
+        Deep filter / order measure-reference checks happen at enrichment,
+        where named measures, custom aggregations, and post-substitution
+        text are all available. Detecting them here would either reject
+        valid ``{var}`` filters before substitution or miss model-defined
+        custom aggregations.
+        """
+        if self.distinct_dimension_values:
+            return
+        from slayer.core.errors import DistinctDimensionValuesError
+
+        if self.measures:
+            n = len(self.measures)
+            raise DistinctDimensionValuesError(
+                f"distinct_dimension_values=False requires an empty `measures` "
+                f"field, but {n} measure(s) were supplied. Either remove the "
+                f"measures (and any other measure references) or set "
+                f"distinct_dimension_values=True (the default) to keep the "
+                f"auto-aggregating behaviour."
+            )
+        if not self.dimensions and not self.time_dimensions:
+            raise DistinctDimensionValuesError(
+                "distinct_dimension_values=False requires at least one of "
+                "`dimensions` or `time_dimensions` to be non-empty — there "
+                "are no columns to SELECT. Add the columns you want to "
+                "project."
+            )
 
     def snap_to_whole_periods(self) -> "SlayerQuery":
         """Adjust date filters to align with period boundaries when whole_periods_only=True.

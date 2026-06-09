@@ -52,6 +52,10 @@ class QueryRequest(BaseModel):
     limit: Optional[int] = None
     offset: Optional[int] = None
     whole_periods_only: Optional[bool] = None
+    # DEV-1543: opt out of the dim-only auto-dedup GROUP BY. Default
+    # (``None`` here) keeps the v3 SlayerQuery default (``True``). Set
+    # ``False`` to emit raw rows.
+    distinct_dimension_values: Optional[bool] = None
     dry_run: Optional[bool] = None
     explain: Optional[bool] = None
     variables: Optional[Dict[str, Any]] = None
@@ -235,6 +239,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                         request.source_model, request.measures, request.dimensions,
                         request.time_dimensions, request.filters, request.order,
                         request.limit, request.offset, request.whole_periods_only,
+                        request.distinct_dimension_values,
                     ) if f is not None
                 ]
                 if disallowed:
