@@ -1,0 +1,47 @@
+version: 7
+name: users
+sql_table: bigquery-public-data.thelook_ecommerce.users
+query_variables: {}
+data_source: thelook
+columns:
+- name: id
+  sql: id
+  type: INT
+  primary_key: true
+  hidden: false
+- name: age
+  sql: age
+  type: INT
+  primary_key: false
+  hidden: false
+- name: gender
+  sql: gender
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: country
+  sql: country
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: city
+  sql: city
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: traffic_source
+  sql: traffic_source
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: created_at
+  sql: created_at
+  type: TIMESTAMP
+  primary_key: false
+  hidden: false
+measures: []
+aggregations: []
+joins: []
+filters: []
+default_time_dimension: created_at
+hidden: false

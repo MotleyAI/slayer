@@ -114,3 +114,83 @@ jobs:
         if: always()
         working-directory: examples/${{ matrix.example }}
         run: docker compose down -v
+
+  bigquery-example:
+    # Skip on forked-PR runs where the GCP secrets aren't available — the job
+    # would fail otherwise and we'd rather not nag external contributors.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip if GCP secrets are unset
+        id: gate
+        run: |
+          if [ -z "${{ secrets.GCP_PROJECT_ID }}" ] || [ -z "${{ secrets.GCP_SA_KEY_B64 }}" ]; then
+            echo "BigQuery secrets unset — skipping the example."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        if: steps.gate.outputs.skip != 'true'
+        run: pip install poetry
+
+      - name: Install dependencies (with bigquery extra)
+        if: steps.gate.outputs.skip != 'true'
+        run: poetry install -E bigquery
+
+      - name: Decode service-account JSON key
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GCP_SA_KEY_B64: ${{ secrets.GCP_SA_KEY_B64 }}
+        run: |
+          echo "$GCP_SA_KEY_B64" | base64 -d > "$RUNNER_TEMP/sa-key.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa-key.json" >> "$GITHUB_ENV"
+
+      - name: Start SLayer server
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          poetry run bash examples/bigquery/start.sh > /tmp/slayer-bq.log 2>&1 &
+          echo "SLAYER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for SLayer API to accept connections
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:5143/health >/dev/null; then
+              echo "SLayer API ready after ${i} attempts"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "SLayer API never came up — logs:" >&2
+          cat /tmp/slayer-bq.log
+          exit 1
+
+      - name: Run verify.py
+        if: steps.gate.outputs.skip != 'true'
+        timeout-minutes: 5
+        run: python examples/bigquery/verify.py
+
+      - name: Dump server logs on failure
+        if: failure() && steps.gate.outputs.skip != 'true'
+        run: cat /tmp/slayer-bq.log
+
+      - name: Stop SLayer server
+        if: always() && steps.gate.outputs.skip != 'true'
+        run: |
+          if [ -n "${SLAYER_PID:-}" ]; then
+            kill "$SLAYER_PID" 2>/dev/null || true
+          fi
+          rm -f "$RUNNER_TEMP/sa-key.json"

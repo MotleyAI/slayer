@@ -191,9 +191,10 @@ SLayer uses sqlglot for dialect-aware SQL generation. Databases are supported at
 - **MySQL** — Docker example with `verify.py`
 - **ClickHouse** — Docker example with `verify.py`
 - **SQL Server** — Docker example with `verify.py` in `examples/sqlserver/` (requires SQL Server 2022; uses `mssql+pyodbc://` driver; `median`/`percentile` unsupported; `corr`/`covar_samp`/`covar_pop` via variance-decomposition formula)
+- **BigQuery** — live example in `examples/bigquery/` against `bigquery-public-data.thelook_ecommerce`; uses `bigquery://` driver (`sqlalchemy-bigquery` extra). Auth via Google Application Default Credentials (`$GOOGLE_APPLICATION_CREDENTIALS` JSON key + `$GCP_PROJECT_ID` billing project). No Docker — BigQuery is managed. Verify is identity-based (sum-of-grouped == total) so it survives the public dataset drifting. No FK introspection (BQ has no FK metadata); joins are hand-declared. CI job gates on `GCP_PROJECT_ID` / `GCP_SA_KEY_B64` repo secrets so forks skip cleanly.
 
 **Tier 2 — code-covered** (unit tests for SQL generation, no live instance verification):
-- Snowflake, BigQuery, Redshift, Trino/Presto, Databricks/Spark, Oracle
+- Snowflake, Redshift, Trino/Presto, Databricks/Spark, Oracle
 
 Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific SQL lives in `generator.py` — mainly `_build_date_trunc` (SQLite branch), `_build_time_offset_expr` (date arithmetic for shifted CTEs), `_build_median`, `_build_percentile`, and `_build_stat_agg` (stddev/var/corr). Calendar-based time shifts use timestamp offset inside DATE_TRUNC with simple equality joins (no per-dialect join logic). All other SQL differences are handled by sqlglot transpilation. When adding a new dialect: add it to `_dialect_for_type`, add a `_build_time_offset_expr` branch if it doesn't use Postgres-style `INTERVAL`, and add parameterized tests in `TestMultiDialectGeneration`.
 
