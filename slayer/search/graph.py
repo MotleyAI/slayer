@@ -39,7 +39,7 @@ import asyncio
 import os
 import re
 from functools import lru_cache
-from typing import Any, FrozenSet, Optional
+from typing import Any, Dict, FrozenSet, Optional
 
 from pydantic import BaseModel
 
@@ -141,11 +141,11 @@ def _create_schema(conn: Any) -> None:
     """Create all node and relationship tables."""
     conn.execute(
         "CREATE NODE TABLE Memory("
-        "id STRING, learning STRING, PRIMARY KEY(id))"
+        "id STRING, learning STRING, description STRING, PRIMARY KEY(id))"
     )
     conn.execute(
         "CREATE NODE TABLE Datasource("
-        "id STRING, name STRING, PRIMARY KEY(id))"
+        "id STRING, name STRING, description STRING, PRIMARY KEY(id))"
     )
     conn.execute(
         "CREATE NODE TABLE Model("
@@ -223,12 +223,25 @@ def _insert_nodes(
     datasource_names: list[str],
     visible_models: dict,
     memories: list,
+    datasource_descriptions: Optional[Dict[str, Optional[str]]] = None,
 ) -> None:
-    """Insert all node rows into the graph."""
+    """Insert all node rows into the graph.
+
+    DEV-1549: ``datasource_descriptions`` carries
+    ``{ds_name → DatasourceConfig.description}`` so the graph schema
+    can expose ``Datasource.description`` for cypher_filter queries,
+    in parity with the lexical and embedding channels. Likewise
+    ``Memory.description`` is inserted directly from the memory.
+    """
+    descriptions = datasource_descriptions or {}
     for name in datasource_names:
         conn.execute(
-            "CREATE (:Datasource {id: $id, name: $name})",
-            {"id": name, "name": name},
+            "CREATE (:Datasource {id: $id, name: $name, description: $descr})",
+            {
+                "id": name,
+                "name": name,
+                "descr": descriptions.get(name) or "",
+            },
         )
 
     for canonical_model, model in visible_models.items():
@@ -245,10 +258,11 @@ def _insert_nodes(
 
     for mem in memories:
         conn.execute(
-            "CREATE (:Memory {id: $id, learning: $learning})",
+            "CREATE (:Memory {id: $id, learning: $learning, description: $descr})",
             {
                 "id": f"{_MEMORY_PREFIX}{mem.id}",
                 "learning": mem.learning,
+                "descr": mem.description or "",
             },
         )
 
@@ -425,7 +439,22 @@ async def build_graph(storage: StorageBackend) -> tuple[Any, Any]:
 
     memories = await storage.list_memories(entities=None)
 
-    _insert_nodes(conn, datasource_names, visible_models, memories)
+    # DEV-1549: load datasource descriptions so the graph schema can
+    # expose `Datasource.description` for cypher_filter queries.
+    datasource_descriptions: Dict[str, Optional[str]] = {}
+    for ds_name in datasource_names:
+        cfg = await storage.get_datasource(ds_name)
+        datasource_descriptions[ds_name] = (
+            cfg.description if cfg is not None else None
+        )
+
+    _insert_nodes(
+        conn,
+        datasource_names,
+        visible_models,
+        memories,
+        datasource_descriptions=datasource_descriptions,
+    )
     _insert_contains_edges(conn, datasource_names, visible_models)
     _insert_joins_edges(conn, visible_models)
     _insert_mentions_edges(conn, memories, visible_models, datasource_names)
