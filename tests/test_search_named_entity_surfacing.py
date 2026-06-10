@@ -150,9 +150,12 @@ async def service(storage: YAMLStorage) -> SearchService:
 async def test_named_column_surfaces_in_entities_bucket(
     service: SearchService,
 ) -> None:
+    # DEV-1549: opt out of compact-by-default to exercise the verbose
+    # render text contract this test was written for.
     resp = await service.search(
         entities=["warehouse.orders.amount"],
         max_results=20,
+        compact=False,
     )
     memory_hits = [h for h in resp.results if h.kind == "memory"]
     entity_hits = [h for h in resp.results if h.kind != "memory"]
@@ -170,6 +173,7 @@ async def test_named_model_surfaces_in_entities_bucket(
     resp = await service.search(
         entities=["warehouse.orders"],
         max_results=20,
+        compact=False,
     )
     entity_hits = [h for h in resp.results if h.kind != "memory"]
     assert len(entity_hits) == 1
@@ -185,6 +189,7 @@ async def test_named_datasource_surfaces_in_entities_bucket(
     resp = await service.search(
         entities=["warehouse"],
         max_results=20,
+        compact=False,
     )
     entity_hits = [h for h in resp.results if h.kind != "memory"]
     assert len(entity_hits) == 1
@@ -200,6 +205,7 @@ async def test_named_measure_surfaces_in_entities_bucket(
     resp = await service.search(
         entities=["warehouse.orders.aov"],
         max_results=20,
+        compact=False,
     )
     entity_hits = [h for h in resp.results if h.kind != "memory"]
     assert len(entity_hits) == 1
@@ -215,6 +221,7 @@ async def test_named_aggregation_surfaces_in_entities_bucket(
     resp = await service.search(
         entities=["warehouse.orders.paid_only_sum"],
         max_results=20,
+        compact=False,
     )
     entity_hits = [h for h in resp.results if h.kind != "memory"]
     assert len(entity_hits) == 1
@@ -570,6 +577,7 @@ async def test_pure_named_datasource_text_includes_visible_excludes_hidden(
     resp = await service.search(
         entities=["warehouse"],
         max_results=20,
+        compact=False,
     )
     entity_hits = [h for h in resp.results if h.kind != "memory"]
     hit = next(h for h in entity_hits if h.id == "warehouse")
@@ -604,6 +612,7 @@ async def test_named_hit_with_question_active_reuses_corpus_path(
         entities=["warehouse.orders.amount"],
         question="amount in cents",
         max_results=20,
+        compact=False,
     )
     entity_hits = [h for h in resp.results if h.kind != "memory"]
     hit = next(

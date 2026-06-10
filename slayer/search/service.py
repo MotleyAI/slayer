@@ -68,7 +68,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, Field
 
@@ -89,6 +89,7 @@ from slayer.search.cypher_naive import parse_naive_label_filter as _parse_naive_
 from slayer.search.index import Corpus, build_in_memory_corpus
 from slayer.search.render import (
     collect_model_entity_pairs,
+    compact_description_from_learning,
     render_column_text,
     render_datasource_pair,
 )
@@ -126,12 +127,20 @@ class SearchHit(BaseModel):
     directly the raw BM25 / tantivy / cosine score.
 
     ``matched_entities`` and ``query`` are populated for memory hits
-    only; entity hits carry empty / ``None`` defaults."""
+    only; entity hits carry empty / ``None`` defaults.
+
+    DEV-1549: ``description`` carries a compact preview. For memory
+    hits in compact mode it is ``Memory.description`` (or a
+    first-paragraph fallback computed from ``learning``); for entity
+    hits in any mode it is the entity's structured ``description``
+    field. Under compact mode ``text`` is left empty for both kinds.
+    """
 
     kind: str
     id: str
     score: float
     text: str
+    description: Optional[str] = None
     matched_entities: List[str] = Field(default_factory=list)
     query: Optional[SlayerQuery] = None
 
@@ -142,10 +151,14 @@ class SearchHit(BaseModel):
 
 
 class LookupFound(BaseModel):
-    """``_lookup_named_entity`` succeeded; carries ``(kind, text)``."""
+    """``_lookup_named_entity`` succeeded; carries ``(kind, text,
+    description)``. DEV-1549: ``description`` is the entity's
+    structured description field (``None`` when absent), surfaced as
+    ``SearchHit.description`` under compact mode."""
 
     kind: str
     text: str
+    description: Optional[str] = None
 
 
 class LookupHidden(BaseModel):
@@ -250,6 +263,7 @@ def _build_memory_hit(
     text_by_id: Dict[str, str],
     canonical_input_entities: List[str],
     valid_canonicals: Optional[set] = None,
+    compact: bool = True,
 ) -> SearchHit:
     """Build a SearchHit for a memory (DEV-1532 unified shape).
 
@@ -263,7 +277,14 @@ def _build_memory_hit(
     DEV-1513: every memory has an implicit ``memory:<self_id>``
     self-reference; it appears in ``matched_entities`` only when the
     user explicitly named that ref (so the surfaced memory honestly
-    shows the reason it was returned)."""
+    shows the reason it was returned).
+
+    DEV-1549 (compact):
+    * ``compact=True``  → ``description`` = ``mem.description`` if set,
+      else the first-paragraph fallback; ``text = ""``.
+    * ``compact=False`` → ``description`` = ``mem.description`` (or
+      ``None``; no fallback); ``text`` = full learning rendering.
+    """
     if valid_canonicals is not None:
         live_entities = [e for e in mem.entities if e in valid_canonicals]
     else:
@@ -273,12 +294,22 @@ def _build_memory_hit(
         live_entities.append(self_ref)
     wanted_set = set(canonical_input_entities)
     matched = sorted(wanted_set & set(live_entities)) if wanted_set else []
-    text = text_by_id.get(memory_id) or mem.learning
+    if compact:
+        description = (
+            mem.description
+            if mem.description
+            else compact_description_from_learning(mem.learning)
+        )
+        text = ""
+    else:
+        description = mem.description
+        text = text_by_id.get(memory_id) or mem.learning
     return SearchHit(
         kind="memory",
         id=memory_id,
         score=score,
         text=text,
+        description=description,
         matched_entities=matched,
         query=mem.query,
     )
@@ -288,22 +319,24 @@ def _resolve_entity_hit_kind_text(
     *,
     canonical: str,
     corpus: Optional[Corpus],
-    named_kind_text: Optional[Dict[str, Tuple[str, str]]],
-) -> Optional[Tuple[str, str]]:
-    """DEV-1513: resolve one canonical's ``(kind, text)`` for an entity
-    hit. Prefers the corpus (channels 2/3 already built it); falls back
-    to the channel-1 ``named_kind_text`` lookup (used on pure-named
-    calls with no corpus). Returns ``None`` when neither source carries
-    the canonical."""
+    named_kind_text: Optional[Dict[str, Tuple[str, str, Optional[str]]]],
+) -> Optional[Tuple[str, str, Optional[str]]]:
+    """DEV-1513 / DEV-1549: resolve one canonical's
+    ``(kind, text, description)`` triple for an entity hit. Prefers the
+    corpus (channels 2/3 already built it); falls back to the channel-1
+    ``named_kind_text`` lookup (used on pure-named calls with no
+    corpus). Returns ``None`` when neither source carries the canonical.
+    """
     if corpus is not None:
         kind = corpus.canonical_to_kind.get(canonical)
         text = corpus.canonical_to_text.get(canonical)
         if kind is not None and text is not None:
-            return kind, text
+            description = corpus.canonical_to_description.get(canonical)
+            return kind, text, description
     if named_kind_text is not None:
-        pair = named_kind_text.get(canonical)
-        if pair is not None:
-            return pair
+        triple = named_kind_text.get(canonical)
+        if triple is not None:
+            return triple
     return None
 
 
@@ -315,16 +348,21 @@ def _build_hit_from_fused_key(
     text_by_id: Dict[str, str],
     canonical_input_entities: List[str],
     corpus: Optional[Corpus],
-    named_kind_text: Optional[Dict[str, Tuple[str, str]]],
+    named_kind_text: Optional[Dict[str, Tuple[str, str, Optional[str]]]],
     valid_canonicals: Optional[set],
     candidate_ids: Optional[FrozenSet[str]],
     kind_filter: Optional[Set[str]],
+    compact: bool = True,
 ) -> Optional[SearchHit]:
     """Build one SearchHit from a fused (key, score) pair, or return None
     to skip. Applies the DEV-1464 cypher_filter (candidate_ids allowlist
     for the full graph path; kind_filter for the naive fallback) BEFORE
     materialising the hit, so the upstream cap counts surviving items
-    only."""
+    only.
+
+    DEV-1549: ``compact`` flips memory + entity hit rendering between
+    description-only and description+full-text shapes.
+    """
     if key.startswith(_MEMORY_PREFIX):
         memory_id = key[len(_MEMORY_PREFIX):]
         if candidate_ids is not None and key not in candidate_ids:
@@ -341,6 +379,7 @@ def _build_hit_from_fused_key(
             text_by_id=text_by_id,
             canonical_input_entities=canonical_input_entities,
             valid_canonicals=valid_canonicals,
+            compact=compact,
         )
     # Entity key.
     if candidate_ids is not None and key not in candidate_ids:
@@ -352,10 +391,16 @@ def _build_hit_from_fused_key(
     )
     if resolved is None:
         return None
-    kind, text = resolved
+    kind, text, description = resolved
     if kind_filter is not None and kind not in kind_filter:
         return None
-    return SearchHit(id=key, kind=kind, score=score, text=text)
+    return SearchHit(
+        id=key,
+        kind=kind,
+        score=score,
+        text="" if compact else text,
+        description=description,
+    )
 
 
 def _fuse_all_hits(
@@ -366,11 +411,12 @@ def _fuse_all_hits(
     text_by_id: Dict[str, str],
     canonical_input_entities: List[str],
     corpus: Optional[Corpus],
-    named_kind_text: Optional[Dict[str, Tuple[str, str]]],
+    named_kind_text: Optional[Dict[str, Tuple[str, str, Optional[str]]]],
     max_results: int,
     valid_canonicals: Optional[set] = None,
     candidate_ids: Optional[FrozenSet[str]] = None,
     kind_filter: Optional[Set[str]] = None,
+    compact: bool = True,
 ) -> List[SearchHit]:
     """RRF-fuse memory and entity rankings into a single flat list
     (DEV-1532). Memory IDs are prefixed with the canonical memory prefix
@@ -404,6 +450,7 @@ def _fuse_all_hits(
             valid_canonicals=valid_canonicals,
             candidate_ids=candidate_ids,
             kind_filter=kind_filter,
+            compact=compact,
         )
         if hit is not None:
             results.append(hit)
@@ -489,8 +536,14 @@ async def _lookup_bare_datasource_canonical(
         m = await storage.get_model(name, data_source=ident_ds)
         if m is not None:
             models.append(m)
-    pair = render_datasource_pair(name=ds, models=models)
-    return LookupFound(kind=pair.kind, text=pair.text)
+    cfg = await storage.get_datasource(ds)
+    ds_description = cfg.description if cfg is not None else None
+    pair = render_datasource_pair(
+        name=ds, models=models, description=ds_description,
+    )
+    return LookupFound(
+        kind=pair.kind, text=pair.text, description=pair.description,
+    )
 
 
 async def _lookup_model_or_leaf_canonical(
@@ -512,7 +565,9 @@ async def _lookup_model_or_leaf_canonical(
         return LookupHidden(reason="hidden model")
     for re in collect_model_entity_pairs(model=model):
         if re.canonical_id == canonical:
-            return LookupFound(kind=re.kind, text=re.text)
+            return LookupFound(
+                kind=re.kind, text=re.text, description=re.description,
+            )
     if leaf is not None:
         for column in model.columns:
             if column.name == leaf and column.hidden:
@@ -526,13 +581,16 @@ async def _lookup_named_entity(
     storage: StorageBackend,
     corpus: Optional[Corpus],
 ) -> LookupResult:
-    """Resolve a canonical id to its ``(kind, text)`` pair for channel-1
-    named-entity surfacing (DEV-1513)."""
+    """Resolve a canonical id to its ``(kind, text, description)`` triple
+    for channel-1 named-entity surfacing (DEV-1513 / DEV-1549)."""
     if corpus is not None:
         kind = corpus.canonical_to_kind.get(canonical)
         text = corpus.canonical_to_text.get(canonical)
         if kind is not None and text is not None:
-            return LookupFound(kind=kind, text=text)
+            return LookupFound(
+                kind=kind, text=text,
+                description=corpus.canonical_to_description.get(canonical),
+            )
     segments = canonical.split(".")
     if len(segments) == 1:
         return await _lookup_bare_datasource_canonical(
@@ -622,6 +680,7 @@ class SearchService:
         self,
         *,
         results: List[SearchHit],
+        compact: bool = True,
     ) -> List[SearchHit]:
         """DEV-1516 post-fusion column-hit refresh.
 
@@ -631,7 +690,12 @@ class SearchService:
         read-modify-write); cross-model writes parallelise via
         ``asyncio.gather``. Returns ``results`` with refreshed text
         spliced in for each column hit whose helper call returned a
-        materially-updated column."""
+        materially-updated column.
+
+        DEV-1549 (Codex#3): under ``compact=True`` the refresh leaves
+        ``text=""`` and refreshes ``description`` so the column hit can
+        never resurrect the full render mid-search.
+        """
         assert self._engine is not None  # caller-guarded
         groups = _group_column_hits(results)
         if not groups:
@@ -641,6 +705,7 @@ class SearchService:
             self._refresh_group_worker(
                 ds_name=ds, model_name=model_name,
                 members=members, refreshed_by_idx=refreshed_by_idx,
+                compact=compact,
             )
             for (ds, model_name), members in groups.items()
         ])
@@ -657,11 +722,16 @@ class SearchService:
         model_name: str,
         members: List[Tuple[int, SearchHit, str]],
         refreshed_by_idx: Dict[int, SearchHit],
+        compact: bool = True,
     ) -> None:
         """Refresh every column hit on one ``(data_source, model_name)``
         group sequentially (per-model serialisation). Loads the model
         once, walks members, and writes refreshed hits into the shared
-        ``refreshed_by_idx`` buffer keyed by original hit index."""
+        ``refreshed_by_idx`` buffer keyed by original hit index.
+
+        DEV-1549: under ``compact=True`` only refresh
+        ``SearchHit.description``; leave ``text=""``.
+        """
         try:
             model = await self._storage.get_model(
                 model_name, data_source=ds_name,
@@ -688,11 +758,14 @@ class SearchService:
                 # Helper returned the input — cache hit, ineligible, or
                 # any failure. Leave the hit text as-is.
                 continue
-            refreshed_by_idx[idx] = hit.model_copy(update={
-                "text": render_column_text(
+            update: Dict[str, Any] = {
+                "description": refreshed_col.description,
+            }
+            if not compact:
+                update["text"] = render_column_text(
                     model=model, column=refreshed_col,
-                ),
-            })
+                )
+            refreshed_by_idx[idx] = hit.model_copy(update=update)
 
     # ------------------------------------------------------------------
     # Read side — search()
@@ -707,6 +780,7 @@ class SearchService:
         datasource: Optional[str] = None,
         cypher_filter: Optional[str] = None,
         max_results: int = 10,
+        compact: bool = True,
     ) -> SearchResponse:
         if max_results < 1:
             raise ValueError(
@@ -751,6 +825,7 @@ class SearchService:
                 kind_filter=kind_filter,
                 max_results=max_results,
                 warnings=warnings,
+                compact=compact,
             )
 
         # Datasource filter runs first so the off-datasource warning
@@ -792,13 +867,14 @@ class SearchService:
 
         corpus: Optional[Corpus] = None
         if question_active:
-            all_models, datasources = await self._collect_index_corpus(
-                datasource=datasource,
+            all_models, datasources, datasource_descriptions = (
+                await self._collect_index_corpus(datasource=datasource)
             )
             corpus = build_in_memory_corpus(
                 memories=all_memories,
                 models=all_models,
                 datasources=datasources,
+                datasource_descriptions=datasource_descriptions,
             )
 
         # DEV-1464: surface the reason a named memory:<id> ref didn't
@@ -881,6 +957,7 @@ class SearchService:
             valid_canonicals=valid_canonicals,
             candidate_ids=candidate_ids,
             kind_filter=kind_filter,
+            compact=compact,
         )
 
         # DEV-1428 + DEV-1513: stale-Memory.query warnings for surfaced
@@ -906,7 +983,7 @@ class SearchService:
         # concurrently. Silently no-op when engine is None.
         if self._engine is not None:
             all_hits = await self._refresh_stale_column_hits(
-                results=all_hits,
+                results=all_hits, compact=compact,
             )
         return SearchResponse(
             results=all_hits,
@@ -965,7 +1042,7 @@ class SearchService:
         datasource: Optional[str],
         corpus: Optional[Corpus],
         candidate_ids: Optional[FrozenSet[str]] = None,
-    ) -> Tuple[List[str], Dict[str, Tuple[str, str]], List[str]]:
+    ) -> Tuple[List[str], Dict[str, Tuple[str, str, Optional[str]]], List[str]]:
         """DEV-1513: produce channel-1's contribution to the entity
         ranking by surfacing each user-named canonical ref as itself.
 
@@ -986,7 +1063,7 @@ class SearchService:
         rendering / lookup work so we don't waste a storage round-trip.
         """
         entity_ranking: List[str] = []
-        named_kind_text: Dict[str, Tuple[str, str]] = {}
+        named_kind_text: Dict[str, Tuple[str, str, Optional[str]]] = {}
         warnings: List[str] = []
         for canonical in canonical_input_entities:
             if canonical.startswith(_MEMORY_PREFIX):
@@ -1022,7 +1099,9 @@ class SearchService:
                 )
                 continue
             entity_ranking.append(canonical)
-            named_kind_text[canonical] = (result.kind, result.text)
+            named_kind_text[canonical] = (
+                result.kind, result.text, result.description,
+            )
         return entity_ranking, named_kind_text, warnings
 
     # ------------------------------------------------------------------
@@ -1132,6 +1211,7 @@ class SearchService:
         datasource: Optional[str] = None,
         candidate_ids: Optional[FrozenSet[str]] = None,
         kind_filter: Optional[Set[str]] = None,
+        compact: bool = True,
     ) -> SearchResponse:
         """Empty-input branch: return the newest memories (both
         learning-only and query-bearing) as a flat list, capped by
@@ -1191,6 +1271,7 @@ class SearchService:
                 text_by_id={},
                 canonical_input_entities=[],
                 valid_canonicals=valid_canonicals,
+                compact=compact,
             ))
         # DEV-1428: emit stale-Memory.query warnings on the recency path too.
         memory_by_id = {m.id: m for m in recency_memories}
@@ -1318,7 +1399,10 @@ class SearchService:
         self,
         *,
         datasource: Optional[str] = None,
-    ) -> Tuple[List[SlayerModel], List[str]]:
+    ) -> Tuple[List[SlayerModel], List[str], Dict[str, Optional[str]]]:
+        """DEV-1549: also returns ``{ds_name → description}`` so the
+        corpus builder can populate ``canonical_to_description`` for
+        datasource hits without re-loading the configs."""
         datasources = await self._storage.list_datasources()
         if datasource is not None:
             datasources = [d for d in datasources if d == datasource]
@@ -1330,7 +1414,11 @@ class SearchService:
             m = await self._storage.get_model(name, data_source=ds)
             if m is not None:
                 models.append(m)
-        return models, datasources
+        descriptions: Dict[str, Optional[str]] = {}
+        for ds_name in datasources:
+            cfg = await self._storage.get_datasource(ds_name)
+            descriptions[ds_name] = cfg.description if cfg is not None else None
+        return models, datasources, descriptions
 
 
 __all__ = [

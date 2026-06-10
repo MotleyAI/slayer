@@ -219,9 +219,12 @@ async def test_learning_only_memory_appears_in_results_without_query(
     service: SearchService,
 ) -> None:
     """Learning-only memories have kind='memory' and query=None."""
+    # DEV-1549: opt out of compact-by-default — this test pins the full
+    # learning body in ``hit.text``.
     response = await service.search(
         entities=["warehouse.orders.amount_paid"],
         max_results=20,
+        compact=False,
     )
     hits_without_query = [h for h in response.results if h.kind == "memory" and h.query is None]
     assert len(hits_without_query) >= 1

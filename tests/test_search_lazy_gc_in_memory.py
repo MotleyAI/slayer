@@ -52,7 +52,9 @@ class TestSearchLazyGC:
             entities=["mydb.orders.amount"],
         )
         svc = SearchService(storage=storage)
-        resp = await svc.search()
+        # DEV-1549: opt out of compact-by-default — the assertions read
+        # the full ``hit.text`` body.
+        resp = await svc.search(compact=False)
         memory_hits = [h for h in resp.results if h.kind == "memory" and h.query is None]
         learnings = {m.text for m in memory_hits}
         # Both rows survive the recency fallback (no datasource filter,

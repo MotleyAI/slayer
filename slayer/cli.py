@@ -503,6 +503,16 @@ examples:
             "Duplicate id → upsert."
         ),
     )
+    memory_save_parser.add_argument(
+        "--description",
+        default=None,
+        help=(
+            "Optional compact preview (<= 500 chars) surfaced by "
+            "`slayer search` and `inspect_model` when run in compact "
+            "mode (the default). Omit to let the renderer compute the "
+            "preview from the first paragraph of --learning."
+        ),
+    )
 
     memory_forget_parser = memory_subparsers.add_parser(
         "forget", help="Delete a memory by id"
@@ -610,6 +620,19 @@ examples:
         choices=["json", "text"],
         default="text",
         help="Output format (default: text).",
+    )
+    search_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help=(
+            "Opt out of compact rendering (DEV-1549). Default is "
+            "compact: memory hits surface ``description`` (or a "
+            "first-paragraph fallback from ``learning``) and an "
+            "empty ``text``; entity hits surface ``entity.description`` "
+            "and an empty ``text``. With ``--verbose`` the full hit "
+            "text is restored."
+        ),
     )
     refresh_parser = search_subparsers.add_parser(
         "refresh-samples",
@@ -797,6 +820,7 @@ def _run_search_query(args, storage) -> None:
             datasource=args.datasource,
             max_results=args.max_results,
             cypher_filter=args.cypher_filter,
+            compact=not getattr(args, "verbose", False),
         ))
     except (SlayerError, ValueError) as exc:
         _exit_with_error(exc)
@@ -1692,6 +1716,7 @@ def _run_memory_save(args, service):
                 learning=args.learning,
                 linked_entities=linked,
                 id=getattr(args, "id", None),
+                description=getattr(args, "description", None),
             )
         )
     except (EntityResolutionError, AmbiguousModelError, ValueError) as exc:

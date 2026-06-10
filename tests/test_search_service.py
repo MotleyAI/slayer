@@ -83,10 +83,13 @@ async def service(storage_with_corpus: StorageBackend) -> SearchService:
 async def test_entities_and_question_both_set_runs_both_channels(
     service: SearchService,
 ) -> None:
+    # DEV-1549: opt out of compact-by-default — the test asserts on the
+    # verbose text contract.
     response = await service.search(
         entities=["warehouse.orders.amount_paid"],
         question="paid revenue",
         max_results=20,
+        compact=False,
     )
     assert isinstance(response, SearchResponse)
     # Channel 1 should surface the memory tagged on amount_paid.
@@ -106,6 +109,7 @@ async def test_entities_only_runs_channel_1_only(service: SearchService) -> None
     response = await service.search(
         entities=["warehouse.orders.amount_paid"],
         max_results=20,
+        compact=False,
     )
     entity_hits = [h for h in response.results if h.kind != "memory"]
     memory_hits = [h for h in response.results if h.kind == "memory" and h.query is None]
@@ -130,6 +134,7 @@ async def test_query_only_runs_channel_1_via_extracted_entities(
             "measures": [{"formula": "amount_paid:sum"}],
         },
         max_results=20,
+        compact=False,
     )
     # DEV-1513: the query's source model and referenced column surface
     # in the entities bucket.
@@ -146,6 +151,7 @@ async def test_question_only_runs_channel_2_only(service: SearchService) -> None
     response = await service.search(
         question="anonymous checkouts",
         max_results=20,
+        compact=False,
     )
     # Channel 1 was skipped → memories come only from tantivy memory subset.
     memory_hits = [h for h in response.results if h.kind == "memory" and h.query is None]
@@ -155,7 +161,7 @@ async def test_question_only_runs_channel_2_only(service: SearchService) -> None
 
 @pytest.mark.asyncio
 async def test_all_empty_falls_back_to_recency(service: SearchService) -> None:
-    response = await service.search(max_results=2)
+    response = await service.search(max_results=2, compact=False)
     entity_hits = [h for h in response.results if h.kind != "memory"]
     memory_hits = [h for h in response.results if h.kind == "memory"]
     assert entity_hits == []
@@ -239,8 +245,12 @@ async def test_entity_hit_id_is_canonical_string(service: SearchService) -> None
 
 @pytest.mark.asyncio
 async def test_memory_hit_text_is_full_indexed_text(service: SearchService) -> None:
-    """`text` must be the full indexed text — no truncation."""
-    response = await service.search(entities=["warehouse.orders.amount_paid"], max_results=20)
+    """Verbose mode: `text` must be the full indexed text — no truncation."""
+    response = await service.search(
+        entities=["warehouse.orders.amount_paid"],
+        max_results=20,
+        compact=False,
+    )
     memory_hits = [h for h in response.results if h.kind == "memory"]
     assert all(isinstance(h.text, str) and len(h.text) > 0 for h in memory_hits)
 
@@ -285,6 +295,7 @@ async def test_memory_appearing_in_both_channels_outranks_single_channel(
         entities=["warehouse.orders.amount_paid"],
         question="amount_paid gross refunds",
         max_results=20,
+        compact=False,
     )
     memory_hits = [h for h in response.results if h.kind == "memory" and h.query is None]
     learnings_in_order = [h.text for h in memory_hits]
@@ -451,6 +462,7 @@ async def test_bulky_example_does_not_evict_small_learning(
     response = await service_with_query_memories.search(
         entities=["warehouse.orders.amount_paid"],
         max_results=20,
+        compact=False,
     )
     memory_hits = [h for h in response.results if h.kind == "memory" and h.query is None]
     example_query_hits = [h for h in response.results if h.kind == "memory" and h.query is not None]
@@ -580,6 +592,7 @@ async def test_search_refreshes_stale_categorical_column_hit(
     response = await svc.search(
         entities=["warehouse.orders.status"],
         max_results=10,
+        compact=False,
     )
     column_hits = [h for h in response.results if h.kind == "column"]
     assert column_hits, "expected the status column to surface as a column hit"
@@ -617,6 +630,7 @@ async def test_search_refreshes_stale_column_hit_via_question_corpus(
     response = await svc.search(
         question="order status",
         max_results=10,
+        compact=False,
     )
     column_hits = [
         h for h in response.results
@@ -692,6 +706,7 @@ async def test_search_stale_text_preserved_when_profile_raises(
     response = await svc.search(
         entities=["warehouse.orders.status"],
         max_results=10,
+        compact=False,
     )
     # Search still returned a response and the column hit still exists.
     assert response is not None

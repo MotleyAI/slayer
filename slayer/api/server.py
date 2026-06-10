@@ -131,11 +131,16 @@ class SaveMemoryRequest(BaseModel):
     (e.g. for knowledge-base ingestion that wants stable string ids
     like ``kb.policy.42``). Bad charset → 400. Omit → auto-allocated
     int-shaped id.
+
+    DEV-1549: optional ``description`` is a short compact preview
+    surfaced by ``search(compact=True)`` and ``inspect_model``. Hard
+    cap of 500 chars; over-cap returns HTTP 400.
     """
 
     learning: str
     linked_entities: Any
     id: Optional[str] = None
+    description: Optional[str] = None
 
 
 class SearchRequest(BaseModel):
@@ -144,6 +149,12 @@ class SearchRequest(BaseModel):
 
     All retrieval inputs are optional. Empty input falls back to a
     recency listing capped at ``max_results`` hits.
+
+    DEV-1549: ``compact`` defaults to ``True`` everywhere. Compact
+    memory hits surface ``description`` (with a first-paragraph
+    fallback from ``learning``) and empty ``text``; compact entity
+    hits surface ``entity.description`` and empty ``text``. Set
+    ``compact=False`` to restore the verbose pre-0.7.3 shape.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -154,6 +165,7 @@ class SearchRequest(BaseModel):
     datasource: Optional[str] = None
     max_results: int = Field(default=10, ge=1)
     cypher_filter: Optional[str] = None
+    compact: bool = True
 
 
 def _slayer_version() -> str:
@@ -628,6 +640,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 learning=request.learning,
                 linked_entities=request.linked_entities,
                 id=request.id,
+                description=request.description,
             )
         except (
             EntityResolutionError,
@@ -679,6 +692,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 datasource=request.datasource,
                 max_results=request.max_results,
                 cypher_filter=request.cypher_filter,
+                compact=request.compact,
             )
         except (SlayerError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
