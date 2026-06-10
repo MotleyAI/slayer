@@ -240,56 +240,6 @@ def _parse_window_duration(value: str) -> list[tuple[int, str]]:
     return parts
 
 
-# BigQuery rejects column names containing ``.`` (output schema names must
-# match ``[A-Za-z_][A-Za-z0-9_]*``). SLayer's universal alias convention is
-# dotted (``orders._count``, ``orders.products.category``). For the bigquery
-# dialect we rewrite each dotted alias by replacing every ``.`` with the
-# triple-underscore sentinel ``___``; the engine reverses it on result rows
-# so the public response shape is unchanged. Triple-underscore is the
-# separator because the double-underscore form ``__`` is already used by
-# ``_query_as_model`` to flatten cross-model leaves (e.g. ``stores__name``);
-# using a distinct sentinel keeps the two encodings unambiguous.
-BIGQUERY_ALIAS_SEP = "___"
-
-# Backtick-quoted dotted alias. The pattern is constrained to identifier
-# characters ``\w`` separated by dots so it can't accidentally span unrelated
-# SQL between two unrelated backticks (table catalog name
-# ``\`bigquery-public-data\``.thelook_ecommerce... uses hyphens, which ``\w``
-# rejects; the inner ``\w+`` plus ``(\.…)+`` also guarantees at least one
-# dot inside the captured group). ``re.ASCII`` is used so ``\w`` stays
-# ASCII-only — SLayer aliases are constructed from ASCII identifier text
-# and we don't want stray Unicode word-chars in surrounding SQL to widen
-# the match accidentally.
-_BIGQUERY_DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
-
-
-def _mangle_dotted_aliases_for_bigquery(sql: str) -> str:
-    """Replace ``.`` with ``___`` inside backtick-quoted identifiers.
-
-    Applied as a post-pass on the BigQuery dialect's final SQL so emitted
-    column aliases ('SELECT ... AS `orders._count`') and references to
-    those aliases ('ORDER BY `orders._count`') comply with BigQuery's
-    column-name grammar.
-
-    Table fully-qualified paths
-    (e.g. ``\\`bigquery-public-data\\`.thelook_ecommerce.orders``) are
-    untouched: each path segment is emitted as its own backticked identifier
-    (or unquoted), so the dot lives outside the backticks. The regex matches
-    a dot INSIDE one pair of backticks, which only happens for a dotted
-    alias.
-
-    Encoding is bijective: any pre-existing ``___`` in the alias text (e.g.
-    a user-named measure like ``my___metric``) is first escaped to ``______``
-    (the separator doubled), then dots are replaced by ``___``. The matching
-    ``_demangle_bigquery_aliases`` in the engine layer reverses both steps in
-    the correct order so the round-trip is lossless.
-    """
-    def _encode(alias: str) -> str:
-        return alias.replace(BIGQUERY_ALIAS_SEP, BIGQUERY_ALIAS_SEP * 2).replace(".", BIGQUERY_ALIAS_SEP)
-
-    return _BIGQUERY_DOTTED_ALIAS_RE.sub(lambda m: f"`{_encode(m.group(1))}`", sql)
-
-
 def _cte_name_from_alias(prefix: str, alias: str) -> str:
     """Build a unique CTE name from a measure alias.
 
@@ -555,8 +505,6 @@ class SQLGenerator:
 
         if render_mode == "outer":
             sql = self._apply_outer_projection_trim(sql=sql, enriched=enriched)
-        if self.dialect == "bigquery":
-            sql = _mangle_dotted_aliases_for_bigquery(sql)
         return sql
 
     def _apply_outer_projection_trim(

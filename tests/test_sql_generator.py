@@ -6582,7 +6582,6 @@ class TestBigQueryAliasMangling:
         # and ORDER/GROUP BY positions so dotted table FQ refs (which use
         # backticked SEGMENTS like ``\`bigquery-public-data\`.x.y``, not a
         # single backticked-string with dots inside) don't trip the check.
-        import re
         ALIAS_PATTERNS = [
             r"\bAS\s+`([^`]+)`",            # SELECT expr AS `<alias>`
             r"\bORDER\s+BY[^\n]*`([^`]+)`",  # ORDER BY `<alias>`
@@ -6590,7 +6589,7 @@ class TestBigQueryAliasMangling:
         ]
         found_any = False
         for pat in ALIAS_PATTERNS:
-            for m in re.findall(pat, sql, flags=re.IGNORECASE):
+            for m in _re.findall(pat, sql, flags=_re.IGNORECASE):
                 found_any = True
                 assert "." not in m, (
                     f"BigQuery output rejects dotted column aliases, but found "
@@ -6613,4 +6612,68 @@ class TestBigQueryAliasMangling:
         sql = await _generate(gen, query, orders_model)
         assert '"orders._count"' in sql
         assert "___" not in sql
+
+    async def test_wrapped_render_mode_also_mangles_aliases(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """``render_mode="wrapped"`` (used for ``_query_as_model.inner_sql``
+        and inner stages of ``source_queries``) must mangle aliases too —
+        otherwise the outer stage's references to inner-CTE columns would
+        mismatch what the inner CTE actually emits.
+
+        Pins Codex HIGH #1: the consistency of multi-stage BigQuery SQL
+        rests on the rewrite firing on BOTH render modes. The rewrite is
+        deterministic, so as long as it fires on both, the inner emit and
+        the outer reference resolve to the same ``___``-form alias.
+        """
+        gen = SQLGenerator(dialect="bigquery")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+        sql = gen.generate(enriched=enriched, render_mode="wrapped")
+        # Wrapped mode keeps every alias (so the outer stage can reach
+        # them); all aliases must be mangled.
+        for m in _re.findall(r"`([^`]+)`", sql):
+            assert "." not in m, (
+                f"BigQuery wrapped-mode SQL still has dotted alias `{m}`:\n{sql}"
+            )
+        # And the mangle separator is present (the rewrite actually fired).
+        assert "___" in sql, f"wrapped-mode rewrite did not fire:\n{sql}"
+
+    async def test_rewrite_fires_after_outer_projection_trim(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """The BigQuery alias rewrite must fire AFTER
+        ``_apply_outer_projection_trim`` (and not before). Mangling before
+        the trim would let the trim's parser see already-mangled aliases
+        and potentially miss public-projection columns. Pins Codex MEDIUM
+        #5 — the placement contract.
+
+        Strategy: ``render_mode="outer"`` runs the trim; the rewrite then
+        fires unconditionally at the end. We verify the FINAL SQL has the
+        mangled form AND the projection is trimmed to the public aliases.
+        """
+        gen = SQLGenerator(dialect="bigquery")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        sql = await _generate(gen, query, orders_model)
+        # Mangling happened — the public alias appears in mangled form.
+        assert "`orders___count`" in sql
+        # And the outer projection only carries the public columns
+        # (the trim ran before the rewrite). The trimmed projection
+        # is what gets mangled; an absent ``orders.something_hidden``
+        # would mean the trim trimmed correctly first.
+        assert "`orders___status`" in sql
 
