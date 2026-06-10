@@ -161,7 +161,7 @@ def _create_schema(conn: Any) -> None:
     )
     conn.execute(
         "CREATE NODE TABLE Aggregation("
-        "id STRING, name STRING, PRIMARY KEY(id))"
+        "id STRING, name STRING, description STRING, PRIMARY KEY(id))"
     )
     conn.execute(
         "CREATE REL TABLE MENTIONS("
@@ -213,8 +213,12 @@ def _insert_model_child_nodes(conn: Any, canonical_model: str, model: Any) -> No
         )
     for agg in model.aggregations:
         conn.execute(
-            "CREATE (:Aggregation {id: $id, name: $name})",
-            {"id": f"{canonical_model}.{agg.name}", "name": agg.name},
+            "CREATE (:Aggregation {id: $id, name: $name, description: $descr})",
+            {
+                "id": f"{canonical_model}.{agg.name}",
+                "name": agg.name,
+                "descr": agg.description or "",
+            },
         )
 
 

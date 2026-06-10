@@ -2655,24 +2655,45 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if ds is None:
             return f"Datasource '{name}' not found."
 
+        old_description = ds.description
         if description is not None:
             ds.description = description
 
         await storage.save_datasource(ds)
 
         # DEV-1549: the datasource embedding text now includes
-        # ``DatasourceConfig.description``, so an edit to the description
-        # must refresh the embedding inline — otherwise the persisted
-        # row stays stale until the next ``slayer ingest`` and
-        # description-only semantic matches silently miss.
-        models_in_ds: List[SlayerModel] = []
-        for model_name in await storage.list_models(data_source=name):
-            m = await storage.get_model(model_name, data_source=name)
-            if m is not None:
-                models_in_ds.append(m)
-        await search_service.refresh_datasource(
-            name=name, models=models_in_ds, description=ds.description,
-        )
+        # ``DatasourceConfig.description``, so an edit to the
+        # description must refresh the embedding inline — otherwise the
+        # persisted row stays stale until the next ``slayer ingest``
+        # and description-only semantic matches silently miss.
+        #
+        # The save is already committed at this point. Per CodeRabbit
+        # round-7 review: the refresh is post-save and best-effort —
+        # log a warning if it raises and surface a partial-success
+        # message rather than telling the agent the save itself failed.
+        refresh_warning: Optional[str] = None
+        if description is not None and description != old_description:
+            models_in_ds: List[SlayerModel] = []
+            for model_name in await storage.list_models(data_source=name):
+                m = await storage.get_model(model_name, data_source=name)
+                if m is not None:
+                    models_in_ds.append(m)
+            try:
+                await search_service.refresh_datasource(
+                    name=name,
+                    models=models_in_ds,
+                    description=ds.description,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort post-save refresh
+                logger.warning(
+                    "edit_datasource refresh failed for %r: %s", name, exc,
+                )
+                refresh_warning = str(exc)
+        if refresh_warning:
+            return (
+                f"Datasource '{name}' updated. "
+                f"Warning: embedding refresh failed: {refresh_warning}"
+            )
         return f"Datasource '{name}' updated."
 
     # -----------------------------------------------------------------------

@@ -449,6 +449,36 @@ async def test_datasource_description_property(
     assert len(ids) == 1
 
 
+@pytest.mark.skipif(not is_available(), reason="ladybug not installed")
+@pytest.mark.asyncio
+async def test_aggregation_description_property(
+    rich_storage: YAMLStorage,
+) -> None:
+    """DEV-1549 (round-7 codex): Aggregation nodes carry their
+    ``description`` so cypher_filter can match on aggregation
+    descriptions in parity with model/column/measure."""
+    # The rich_storage fixture seeds shop.orders with a custom
+    # aggregation ``weighted_avg`` that has no description; create a
+    # second, described aggregation on the same model to exercise the
+    # description column.
+    orders = await rich_storage.get_model("orders", data_source="shop")
+    assert orders is not None
+    orders.aggregations.append(Aggregation(
+        name="distinctive_agg",
+        formula="SUM({col})",
+        description="aggregation_token_omega unique description term",
+    ))
+    await rich_storage.save_model(orders)
+    clear_cache()  # invalidate the prior graph build
+
+    ids = await get_filtered_ids(
+        "MATCH (a:Aggregation) WHERE a.description CONTAINS 'aggregation_token_omega' "
+        "RETURN a.id AS id",
+        rich_storage,
+    )
+    assert "shop.orders.distinctive_agg" in ids
+
+
 # ---------------------------------------------------------------------------
 # MENTIONS edges (requires ladybug)
 # ---------------------------------------------------------------------------

@@ -181,6 +181,18 @@ async def test_description_yaml_persists_on_disk() -> None:
 
 
 @pytest.mark.asyncio
+async def test_legacy_dedupe_rejects_description_mismatch() -> None:
+    """DEV-1549 (round-7 codex): the v1 / v2 dedupe path in
+    ``YAMLStorage._rows_content_equal`` must include ``description``
+    so a logical-duplicate pair that differs only in description
+    fails loud instead of silently picking the preview-less row."""
+    a = {"learning": "x", "entities": [], "query": None, "description": "A"}
+    b = {"learning": "x", "entities": [], "query": None, "description": "B"}
+    assert YAMLStorage._rows_content_equal(a, a) is True
+    assert YAMLStorage._rows_content_equal(a, b) is False
+
+
+@pytest.mark.asyncio
 async def test_legacy_v2_row_without_description_loads_with_none() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
