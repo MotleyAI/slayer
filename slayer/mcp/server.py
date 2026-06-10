@@ -2659,6 +2659,20 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             ds.description = description
 
         await storage.save_datasource(ds)
+
+        # DEV-1549: the datasource embedding text now includes
+        # ``DatasourceConfig.description``, so an edit to the description
+        # must refresh the embedding inline — otherwise the persisted
+        # row stays stale until the next ``slayer ingest`` and
+        # description-only semantic matches silently miss.
+        models_in_ds: List[SlayerModel] = []
+        for model_name in await storage.list_models(data_source=name):
+            m = await storage.get_model(model_name, data_source=name)
+            if m is not None:
+                models_in_ds.append(m)
+        await search_service.refresh_datasource(
+            name=name, models=models_in_ds, description=ds.description,
+        )
         return f"Datasource '{name}' updated."
 
     # -----------------------------------------------------------------------
