@@ -104,13 +104,19 @@ def test_build_explain_sql_raises() -> None:
 
 
 def test_rewrite_emitted_sql_mangles_dotted_alias() -> None:
-    """A single dot inside a backticked alias is mangled to ``___``."""
+    """A single dot inside a backticked alias is mangled to ``___``.
+
+    Uses a clean alias (``orders.count``) without leading-underscore noise
+    so the substitution maps 1:1: one dot becomes one ``___``. See
+    ``test_round_trip_preserves_legitimate_underscores`` for the
+    leading-underscore case (``orders._count`` → ``orders____count``).
+    """
     d = BigqueryDialect()
-    sql = "SELECT 1 AS `orders._count`"
+    sql = "SELECT 1 AS `orders.count`"
     out = d.rewrite_emitted_sql(sql)
     assert "`orders___count`" in out
     # The dotted form must NOT appear in any backticked identifier.
-    assert "`orders._count`" not in out
+    assert "`orders.count`" not in out
 
 
 def test_rewrite_emitted_sql_multi_hop_alias() -> None:
@@ -184,11 +190,16 @@ def test_rewrite_emitted_sql_idempotent_on_already_mangled() -> None:
 
 
 def test_decode_result_keys_reverses_mangle() -> None:
-    """Mangled keys are decoded back to SLayer's dotted alias shape."""
+    """Mangled keys are decoded back to SLayer's dotted alias shape.
+
+    Inputs are the literal output of ``rewrite_emitted_sql`` for the
+    SLayer aliases ``orders.count`` and ``orders.products.category`` —
+    one ``___`` per dot.
+    """
     d = BigqueryDialect()
     rows = [{"orders___count": 42, "orders___products___category": "shoes"}]
     out = d.decode_result_keys(rows)
-    assert out == [{"orders._count": 42, "orders.products.category": "shoes"}]
+    assert out == [{"orders.count": 42, "orders.products.category": "shoes"}]
 
 
 def test_decode_result_keys_empty_rows() -> None:
@@ -442,7 +453,13 @@ class TestEngineDecodeIntegration:
     """
 
     async def test_non_empty_rows_decoded_in_response(self) -> None:
-        rows = [{"orders___count": 42, "orders___status": "paid"}]
+        # ``*:count`` measure has alias ``orders._count`` (canonical, with
+        # leading underscore). Encoding: ``.`` -> ``___``, no other change
+        # (no pre-existing ``___`` to escape). Result: ``orders____count``
+        # (3 underscores from the dot + 1 from ``_count`` = 4 underscores).
+        # Status dimension alias ``orders.status`` encodes to
+        # ``orders___status`` (3 underscores).
+        rows = [{"orders____count": 42, "orders___status": "paid"}]
         engine, tmp, _ = await _build_bigquery_engine(rows)
         try:
             query = SlayerQuery(
