@@ -278,7 +278,7 @@ Inside `Column.sql`, `ModelMeasure.formula`, or any `Aggregation.formula`, you c
 | `sqrt(x)` | 1 | Square root |
 | `pow(x, n)` / `power(x, n)` | 2 | `x^n`. Both spellings are accepted (sqlglot may emit either depending on origin dialect). |
 
-These are native on Postgres / DuckDB / MySQL / ClickHouse. SQLite doesn't have most of them in the standard build, so SLayer registers Python implementations on every connection (see `slayer/sql/sqlite_udfs.py`). NULL inputs always return NULL. Math-domain errors (`ln(0)`, `sqrt(-1)`, `pow(0, -1)`) propagate as `sqlite3.OperationalError` — matching Postgres's strict semantics rather than SQLite ≥3.35's silent-NULL built-in `log()`.
+These are native on Postgres / DuckDB / MySQL / ClickHouse. SQLite doesn't have most of them in the standard build, so SLayer registers Python implementations on every connection (see `slayer/sql/dialects/sqlite.py`). NULL inputs always return NULL. Math-domain errors (`ln(0)`, `sqrt(-1)`, `pow(0, -1)`) propagate as `sqlite3.OperationalError` — matching Postgres's strict semantics rather than SQLite ≥3.35's silent-NULL built-in `log()`.
 
 The 2-arg `log(B, X)` UDF is registered on **every** SQLite version, including ≥3.35 where it overrides the built-in's silent-NULL behaviour to match Postgres's strict error semantics. `ln`, `log10`, and `log2` also always register; the `log2` UDF overrides SQLite ≥3.35's silent-NULL built-in to keep the same strict semantics.
 

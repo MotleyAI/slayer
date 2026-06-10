@@ -17,7 +17,7 @@ import sqlite3
 import sqlglot
 from sqlglot import exp
 
-from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
+from slayer.sql.dialects.sqlite import rewrite_sqlite_json_extract
 
 
 def _parse_rewrite_emit(sql: str, *, dialect: str = "sqlite") -> str:

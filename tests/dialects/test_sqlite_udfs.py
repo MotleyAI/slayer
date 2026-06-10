@@ -11,7 +11,7 @@ import sys
 import numpy as np
 import pytest
 
-from slayer.sql.sqlite_udfs import (
+from slayer.sql.dialects.sqlite import (
     _CorrAgg,
     _CovarPopAgg,
     _CovarSampAgg,

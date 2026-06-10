@@ -8,7 +8,7 @@ query engine's _enrich() step.
 import copy
 import logging
 import re
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import sqlglot
 from sqlglot import exp
@@ -20,7 +20,7 @@ from slayer.core.enums import (
     TimeGranularity,
 )
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
-from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
+from slayer.sql.dialects import SqlDialect, get_dialect
 
 
 def _wrap_cast_for_type(expr: exp.Expression, dt: Optional[DataType]) -> exp.Expression:
@@ -81,39 +81,10 @@ _STAT_AGG_NAMES: frozenset[str] = frozenset({
 })
 
 # Subset of _STAT_AGG_NAMES that take two columns (LHS + `other=` kwarg).
+# Dialect-specific stat-agg behaviour (T-SQL name overrides, MySQL/T-SQL
+# variance-decomposition formula, log10/log2 native flags) moved to the
+# per-dialect classes under ``slayer/sql/dialects/`` (DEV-1542).
 _TWO_ARG_STAT_AGGS: frozenset[str] = frozenset({"corr", "covar_samp", "covar_pop"})
-
-# Dialects that lack native CORR/COVAR_SAMP/COVAR_POP and need the
-# variance-decomposition formula: cov(x,y) = (Var(x+y)-Var(x)-Var(y)) / 2.
-_FORMULA_COVAR_DIALECTS: frozenset[str] = frozenset({"mysql", "tsql"})
-
-# T-SQL function name overrides for 1-arg statistical aggregations.
-# sqlglot's tsql transpiler emits incorrect names (e.g. VAR_SAMP, VARIANCE_POP)
-# that do not exist in T-SQL; these are the correct T-SQL names.
-_TSQL_STAT_NAMES: dict[str, str] = {
-    "stddev_samp": "STDEV",
-    "stddev_pop": "STDEVP",
-    "var_samp": "VAR",
-    "var_pop": "VARP",
-}
-
-# DEV-1337: dialects with native single-arg `log10(x)` / `log2(x)`. sqlglot
-# normalises both into a generic ``Log(this=Literal(base), expression=arg)``
-# AST and re-emits as ``LOG(base, x)`` for almost every dialect, which
-# diverges from the recipe formula text and (on dialects without 2-arg
-# ``LOG``) can break a previously working call. We rewrite the AST back
-# to ``Anonymous(this='log10'|'log2', ...)`` for the dialects below;
-# unsupported dialects (oracle; tsql for log2) keep the canonical 2-arg
-# form. Mirrored in tests/test_sql_generator.py — keep in sync.
-_LOG10_NATIVE_DIALECTS: frozenset[str] = frozenset({
-    "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
-    "snowflake", "bigquery", "redshift",
-    "trino", "presto", "databricks", "spark", "tsql",
-})
-_LOG2_NATIVE_DIALECTS: frozenset[str] = frozenset({
-    "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
-    "bigquery", "trino", "presto", "databricks", "spark",
-})
 
 # Transforms that use self-join CTEs instead of window functions.
 # This gives correct results at result-set edges (no NULLs when the DB has the data)
@@ -189,15 +160,7 @@ _WINDOW_UNIT_SQL = {
     "min": "minute",
     "s": "second",
 }
-_WINDOW_UNIT_SQLITE = {
-    "y": "years",
-    "m": "months",
-    "w": "days",
-    "d": "days",
-    "h": "hours",
-    "min": "minutes",
-    "s": "seconds",
-}
+# `_WINDOW_UNIT_SQLITE` moved to ``slayer/sql/dialects/sqlite.py`` (DEV-1542).
 
 
 def _validate_agg_param_value(value: str, param_name: str, agg_name: str) -> None:
@@ -416,8 +379,18 @@ def _strip_trailing_pagination(sql: str) -> str:
 class SQLGenerator:
     """Generates SQL from an EnrichedQuery."""
 
-    def __init__(self, dialect: str = "postgres"):
-        self.dialect = dialect
+    def __init__(self, dialect: Union[str, SqlDialect] = "postgres"):
+        if isinstance(dialect, SqlDialect):
+            self._dialect: SqlDialect = dialect
+        else:
+            self._dialect = get_dialect(dialect)
+
+    @property
+    def dialect(self) -> str:
+        """The sqlglot dialect name. Read-only — derived from
+        ``self._dialect.sqlglot_name``. Mutating it would desync the
+        strategy object from the string sqlglot consumes."""
+        return self._dialect.sqlglot_name
 
     def _parse(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
         """Parse ``sql`` via sqlglot, applying SLayer-specific AST rewrites.
@@ -438,9 +411,9 @@ class SQLGenerator:
         site.
         """
         d = dialect or self.dialect
+        active = self._dialect if d == self.dialect else get_dialect(d)
         tree = sqlglot.parse_one(sql, dialect=d)
-        if d == "sqlite":
-            tree = rewrite_sqlite_json_extract(tree)
+        tree = active.rewrite_parsed_ast(tree)
         # Log-alias rewrite is multi-dialect; the per-base allowlist check
         # lives inside ``_rewrite_log_aliases`` so unsupported dialects
         # (oracle; tsql for log2) keep the canonical 2-arg LOG form.
@@ -464,15 +437,14 @@ class SQLGenerator:
         possible.
         """
         d = dialect or self.dialect
+        active = self._dialect if d == self.dialect else get_dialect(d)
         wrapped = sqlglot.parse_one(f"SELECT 1 WHERE {sql}", dialect=d)
         where = wrapped.args.get("where")
         if where is None or where.this is None:  # pragma: no cover — defensive
             raise ValueError(
                 f"Could not extract WHERE predicate from {sql!r} (dialect={d!r})"
             )
-        tree = where.this
-        if d == "sqlite":
-            tree = rewrite_sqlite_json_extract(tree)
+        tree = active.rewrite_parsed_ast(where.this)
         return tree.transform(self._rewrite_log_aliases)
 
     def generate(
@@ -1034,72 +1006,19 @@ class SQLGenerator:
         Used to shift raw timestamps before DATE_TRUNC in shifted CTEs so that
         aggregated time buckets align with the base query's buckets.
         """
-        unit_map = {"year": "YEAR", "month": "MONTH", "day": "DAY",
-                    "quarter": "MONTH", "week": "WEEK", "hour": "HOUR",
-                    "minute": "MINUTE", "second": "SECOND"}
-        unit = unit_map.get(granularity, granularity.upper())
-        val = offset * 3 if granularity == "quarter" else offset
-
-        if self.dialect == "sqlite":
-            sqlite_units = {"YEAR": "years", "MONTH": "months", "DAY": "days",
-                            "WEEK": "days", "HOUR": "hours", "MINUTE": "minutes",
-                            "SECOND": "seconds"}
-            sqlite_unit = sqlite_units.get(unit, unit.lower() + "s")
-            sqlite_val = val * 7 if granularity == "week" else val
-            return exp.Anonymous(
-                this="DATE",
-                expressions=[col_expr, exp.Literal.string(f"{sqlite_val} {sqlite_unit}")],
-            )
-
-        if self.dialect == "tsql":
-            # T-SQL: DATEADD(unit, val, col). INTERVAL is not valid T-SQL syntax.
-            return exp.Anonymous(
-                this="DATEADD",
-                expressions=[exp.Var(this=unit), exp.Literal.number(val), col_expr],
-            )
-
-        # Standard SQL: col ± INTERVAL N UNIT (single-unit; sqlglot transpiles
-        # to the dialect-correct form, e.g. MySQL `INTERVAL N UNIT`,
-        # ClickHouse same, BigQuery same).
-        if val >= 0:
-            return exp.Add(this=col_expr, expression=exp.Interval(
-                this=exp.Literal.number(val), unit=exp.Var(this=unit),
-            ))
-        return exp.Sub(this=col_expr, expression=exp.Interval(
-            this=exp.Literal.number(-val), unit=exp.Var(this=unit),
-        ))
+        return self._dialect.build_time_offset_expr(
+            col_expr=col_expr, offset=offset, granularity=granularity,
+        )
 
     def _duration_interval_exprs(self, duration: str, sign: int = 1) -> list[exp.Expression]:
         """Return per-unit AST nodes that `_add_intervals_expr` will chain.
 
-        Non-SQLite: one positive `exp.Interval` per parsed (amount, unit) pair.
-        The Add-vs-Sub direction is decided by `_add_intervals_expr` from its
-        own `sign` arg, not baked into the Interval — sqlglot transpiles each
-        single-unit interval per dialect (MySQL: `INTERVAL N UNIT`;
-        ClickHouse: same; BigQuery: same), avoiding the broken Postgres-shape
-        multi-unit literal `INTERVAL '1 year 2 month 3 day'` that fails on
-        every Tier-1+ non-SQLite/non-Postgres dialect.
-
-        SQLite: one DATETIME-modifier string literal per pair, sign baked in.
-        Week is converted to `N*7 days` (SQLite has no week unit).
+        Delegates to the dialect strategy — Postgres-shape returns
+        ``exp.Interval`` nodes; SQLite returns DATETIME-modifier string
+        literals with sign baked in.
         """
         parts = _parse_window_duration(duration)
-        if self.dialect == "sqlite":
-            prefix = "+" if sign >= 0 else "-"
-            return [
-                exp.Literal.string(
-                    f"{prefix}{(amount * 7 if unit == 'w' else amount)} "
-                    f"{_WINDOW_UNIT_SQLITE[unit]}"
-                )
-                for amount, unit in parts
-            ]
-        return [
-            exp.Interval(
-                this=exp.Literal.number(amount),
-                unit=exp.Var(this=_WINDOW_UNIT_SQL[unit].upper()),
-            )
-            for amount, unit in parts
-        ]
+        return self._dialect.duration_interval_exprs(parts=parts, sign=sign)
 
     def _granularity_interval_expr(self, granularity: TimeGranularity, sign: int = 1) -> list[exp.Expression]:
         if granularity == TimeGranularity.QUARTER:
@@ -1122,35 +1041,13 @@ class SQLGenerator:
                             sign: int = 1) -> exp.Expression:
         """Compose `expr ± interval [± interval ...]` as AST.
 
-        SQLite: wraps as `DATETIME(expr, mod1, mod2, ...)` (sign baked into
-        each modifier by `_duration_interval_exprs`); the `sign` arg is
-        ignored on SQLite.
-        Other dialects: chains `exp.Add` (sign>=0) or `exp.Sub` (sign<0). The
-        result transpiles per dialect via sqlglot — MySQL renders
-        `INTERVAL N UNIT` clauses unquoted, ClickHouse same, etc.
+        Delegates to the dialect strategy — defaults to chained Add/Sub
+        with ``exp.Interval`` nodes; SQLite wraps as ``DATETIME(...)``;
+        T-SQL chains ``DATEADD(...)`` calls.
         """
-        if self.dialect == "sqlite":
-            return exp.Anonymous(this="DATETIME", expressions=[expr, *intervals])
-        if self.dialect == "tsql":
-            # T-SQL: chain DATEADD(unit, ±amount, col) — INTERVAL is invalid T-SQL.
-            # Each interval in the list is an exp.Interval from _duration_interval_exprs;
-            # extract unit name and amount, negate when sign < 0.
-            result = expr
-            for iv in intervals:
-                if not isinstance(iv, exp.Interval):
-                    raise TypeError(f"Expected exp.Interval in T-SQL DATEADD branch, got {type(iv)}")
-                unit_str = iv.unit.name.upper()
-                amount = exp.Neg(this=iv.this) if sign < 0 else iv.this
-                result = exp.Anonymous(
-                    this="DATEADD",
-                    expressions=[exp.Var(this=unit_str), amount, result],
-                )
-            return result
-        op_cls = exp.Add if sign >= 0 else exp.Sub
-        result = expr
-        for iv in intervals:
-            result = op_cls(this=result, expression=iv)
-        return result
+        return self._dialect.add_intervals_expr(
+            expr=expr, intervals=intervals, sign=sign,
+        )
 
     def _build_window_source_cols(
         self,
@@ -1817,64 +1714,17 @@ class SQLGenerator:
         return [(reset_cte, reset_sql)], [(value_cte, value_sql)]
 
     def _build_date_trunc(self, col_expr: exp.Expression, granularity: TimeGranularity) -> exp.Expression:
-        """Build a DATE_TRUNC expression, with SQLite STRFTIME fallback.
+        """Build a DATE_TRUNC expression. Dispatches to the dialect strategy.
 
-        When ``col_expr`` is not a bare column reference (e.g., a string
-        literal or other unknown-typed sub-expression), the result is
-        wrapped in ``CAST(... AS TIMESTAMP)`` before being passed to
-        ``DATE_TRUNC``. Postgres has multiple ``date_trunc`` overloads
-        keyed on the second argument's type; an ``unknown``-typed operand
-        (the bare literal `'2025-12-01'`) makes the planner fail with
-        ``function date_trunc(unknown, unknown) is not unique``. The cast
-        pins one overload. Bare columns are left alone — their live DB
-        type is already known, and an explicit cast could strip a
-        ``TIMESTAMPTZ`` to ``TIMESTAMP``. Idempotent: already-cast
-        expressions pass through unchanged.
+        The dialect determines the wire form — DATE_TRUNC for
+        Postgres/DuckDB/ClickHouse, STRFTIME for SQLite (with CASE WHEN
+        for quarter and weekday-modifier for week), DATETRUNC for T-SQL.
+        Cast-wrapping of non-column operands is handled inside each
+        dialect's override.
         """
-        gran_str = _GRANULARITY_MAP.get(granularity, granularity.value)
-        if self.dialect == "sqlite":
-            # SQLite has no DATE_TRUNC — use STRFTIME
-            fmt_map = {
-                "year": "%Y-01-01",
-                "month": "%Y-%m-01",
-                "day": "%Y-%m-%d",
-                "hour": "%Y-%m-%d %H:00:00",
-                "minute": "%Y-%m-%d %H:%M:00",
-                "second": "%Y-%m-%d %H:%M:%S",
-            }
-            # Week: SQLite weekday 0=Sunday, use date() with weekday modifier
-            if gran_str == "week":
-                return self._parse(f"DATE({col_expr.sql(dialect='sqlite')}, 'weekday 0', '-6 days')", dialect="sqlite")
-            if gran_str == "quarter":
-                # Quarter start: derive from month
-                col_sql = col_expr.sql(dialect="sqlite")
-                return self._parse(
-                    f"STRFTIME('%Y-', {col_sql}) || CASE "
-                    f"WHEN CAST(STRFTIME('%m', {col_sql}) AS INTEGER) <= 3 THEN '01-01' "
-                    f"WHEN CAST(STRFTIME('%m', {col_sql}) AS INTEGER) <= 6 THEN '04-01' "
-                    f"WHEN CAST(STRFTIME('%m', {col_sql}) AS INTEGER) <= 9 THEN '07-01' "
-                    f"ELSE '10-01' END",
-                    dialect="sqlite",
-                )
-            fmt = fmt_map.get(gran_str, "%Y-%m-%d")
-            return exp.Anonymous(
-                this="STRFTIME",
-                expressions=[exp.Literal.string(fmt), col_expr],
-            )
-        if self.dialect == "tsql":
-            # T-SQL uses DATETRUNC(unit, col) — available since SQL Server 2022.
-            # Week must use ISO_WEEK (Monday-start) to be @@DATEFIRST-independent.
-            # DATETRUNC requires a temporal type; wrap non-column/cast expressions.
-            if not isinstance(col_expr, (exp.Column, exp.Cast)):
-                col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
-            tsql_gran = "iso_week" if gran_str == "week" else gran_str
-            return exp.Anonymous(
-                this="DATETRUNC",
-                expressions=[exp.Var(this=tsql_gran), col_expr],
-            )
-        if not isinstance(col_expr, (exp.Column, exp.Cast)):
-            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
-        return exp.DateTrunc(this=col_expr, unit=exp.Literal.string(gran_str))
+        return self._dialect.build_date_trunc(
+            col_expr=col_expr, granularity=granularity, parse=self._parse,
+        )
 
     @staticmethod
     def _build_transform_sql(t) -> str:  # NOSONAR S3776 — flat dispatch over transform names; per-transform SQL forms read better as one if/elif tree than as named helpers
@@ -2188,9 +2038,9 @@ class SQLGenerator:
             base_val = float(base.this)
         except (TypeError, ValueError):
             return node
-        if base_val == 10 and self.dialect in _LOG10_NATIVE_DIALECTS:
+        if base_val == 10 and self._dialect.should_use_native_log(10):
             return exp.Anonymous(this="log10", expressions=[arg.copy()])
-        if base_val == 2 and self.dialect in _LOG2_NATIVE_DIALECTS:
+        if base_val == 2 and self._dialect.should_use_native_log(2):
             return exp.Anonymous(this="log2", expressions=[arg.copy()])
         return node
 
@@ -2452,27 +2302,8 @@ class SQLGenerator:
         return self._parse(substituted)
 
     def _build_median(self, inner: exp.Expression) -> exp.Expression:
-        """Build a median aggregation expression (dialect-dependent)."""
-        inner_sql = inner.sql(dialect=self.dialect)
-        if self.dialect == "mysql":
-            raise NotImplementedError(
-                "Aggregation 'median' is not supported on MySQL: MySQL has no native "
-                "MEDIAN/PERCENTILE_CONT function and no Python UDF mechanism. "
-                "Use MariaDB (has MEDIAN()) or compute the value client-side."
-            )
-        if self.dialect == "tsql":
-            raise NotImplementedError(
-                "Aggregation 'median' is not supported on T-SQL (SQL Server): "
-                "PERCENTILE_CONT in T-SQL is a window function (requires OVER clause) "
-                "and cannot be used as a GROUP BY aggregate. "
-                "Use a window subquery or compute the value client-side."
-            )
-        if self.dialect in ("sqlite", "clickhouse"):
-            # SQLite: provided by the median() UDF registered on connect.
-            # ClickHouse: native median() aggregate.
-            return self._parse(f"median({inner_sql})")
-        # Postgres, DuckDB, and most others: PERCENTILE_CONT
-        return self._parse(f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {inner_sql})")
+        """Build a median aggregation expression. Dispatches to the dialect."""
+        return self._dialect.build_median(inner=inner, parse=self._parse)
 
     def _build_percentile(self, measure: "EnrichedMeasure") -> exp.Expression:
         """Build a PERCENTILE_CONT(p) aggregation expression (dialect-dependent).
@@ -2508,88 +2339,18 @@ class SQLGenerator:
                 f"Aggregation 'percentile' parameter 'p' must be in [0, 1]; got {p_float}."
             )
 
-        if self.dialect == "mysql":
-            raise NotImplementedError(
-                "Aggregation 'percentile' is not supported on MySQL: "
-                "MySQL has no native PERCENTILE_CONT. "
-                "Use MariaDB or compute the value client-side."
-            )
-        if self.dialect == "tsql":
-            raise NotImplementedError(
-                "Aggregation 'percentile' is not supported on T-SQL (SQL Server): "
-                "PERCENTILE_CONT requires a window function OVER clause in T-SQL "
-                "and is not valid as a GROUP BY aggregate. "
-                "Compute the value client-side or restructure as a window query."
-            )
-
+        # Pass the **original string** ``p`` (not ``p_float``) to the dialect
+        # so user literals like ``0.50`` / ``1`` / ``5e-2`` survive verbatim
+        # in the emitted SQL. Range validation above keeps the safety guard.
         col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
-
-        if self.dialect == "sqlite":
-            # Provided by the percentile_cont(value, p) UDF registered on connect.
-            sql_str = f"percentile_cont({col_expr}, {p})"
-        elif self.dialect == "clickhouse":
-            # ClickHouse parametric aggregate syntax.
-            sql_str = f"quantile({p})({col_expr})"
-        else:
-            sql_str = f"PERCENTILE_CONT({p}) WITHIN GROUP (ORDER BY {col_expr})"
-
-        return self._parse(sql_str)
-
-    def _build_covar_formula(
-        self,
-        col_sql: str,
-        other_sql: str,
-        agg: str,
-    ) -> exp.Expression:
-        """Variance-decomposition formula for corr/covar_samp/covar_pop.
-
-        Used on dialects without native two-arg CORR/COVAR functions (MySQL, T-SQL).
-        Implements: cov(x, y) = (Var(x+y) - Var(x) - Var(y)) / 2
-        and: corr(x, y) = cov_samp(x, y) / (Stddev(x) * Stddev(y))
-
-        Both columns are NULL-guarded against each other so rows where
-        either leg is NULL are excluded from all variance calls.
-
-        Uses exp.Anonymous for aggregate calls to prevent sqlglot from
-        renaming VAR_SAMP → VARIANCE (wrong on MySQL: VARIANCE = VAR_POP).
-        """
-        if self.dialect == "tsql":
-            var_fn = "VAR" if agg in ("covar_samp", "corr") else "VARP"
-            std_fn = "STDEV"
-        else:  # mysql
-            var_fn = "VAR_SAMP" if agg in ("covar_samp", "corr") else "VAR_POP"
-            std_fn = "STDDEV_SAMP"
-
-        # NULL cross-guards: x is NULL when y is NULL (and vice versa),
-        # so pairs where either column is NULL are excluded uniformly.
-        x_guarded = self._parse(
-            f"CASE WHEN ({other_sql}) IS NOT NULL THEN ({col_sql}) END"
-        )
-        y_guarded = self._parse(
-            f"CASE WHEN ({col_sql}) IS NOT NULL THEN ({other_sql}) END"
-        )
-        xy_sum = exp.Add(this=x_guarded, expression=y_guarded)
-
-        var_xy = exp.Anonymous(this=var_fn, expressions=[xy_sum])
-        var_x = exp.Anonymous(this=var_fn, expressions=[x_guarded])
-        var_y = exp.Anonymous(this=var_fn, expressions=[y_guarded])
-
-        covar = exp.Div(
-            this=exp.Paren(this=exp.Sub(
-                this=exp.Sub(this=var_xy, expression=var_x),
-                expression=var_y,
-            )),
-            expression=exp.Literal.number(2),
+        return self._dialect.build_percentile(
+            p_str=p, col_sql=col_expr, parse=self._parse,
         )
 
-        if agg != "corr":
-            return covar
-
-        std_x = exp.Anonymous(this=std_fn, expressions=[x_guarded])
-        std_y = exp.Anonymous(this=std_fn, expressions=[y_guarded])
-        raw_denom = exp.Paren(this=exp.Mul(this=std_x, expression=std_y))
-        denom = exp.Anonymous(this="NULLIF", expressions=[raw_denom, exp.Literal.number(0)])
-        return exp.Div(this=covar, expression=denom)
+    # ``_build_covar_formula`` lived here in DEV-1317 — moved to
+    # ``slayer/sql/dialects/base._build_covar_decomposition`` in DEV-1542 and
+    # is now called by MysqlDialect / TsqlDialect overrides of
+    # ``build_covar_2arg``.
 
     def _build_stat_agg(self, measure: "EnrichedMeasure") -> exp.Expression:
         """Build SQL for the statistical aggregations added in DEV-1317.
@@ -2628,42 +2389,17 @@ class SQLGenerator:
 
         col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
 
-        if agg_name in _TWO_ARG_STAT_AGGS and self.dialect in _FORMULA_COVAR_DIALECTS:
-            return self._build_covar_formula(col_expr, other_expr, agg_name)
-
         if agg_name in _TWO_ARG_STAT_AGGS:
-            sql_str = f"{agg_name.upper()}({col_expr}, {other_expr})"
-        else:
-            # stddev_samp, stddev_pop, var_samp, var_pop: emit the
-            # canonical Postgres-style name and let sqlglot transpile per
-            # dialect (e.g., var_samp → VARIANCE on SQLite/DuckDB,
-            # var_pop → VARIANCE_POP on SQLite). Both spellings resolve
-            # via the SQLite UDF aliases.
-            #
-            # MySQL exception: sqlglot's MySQL dialect rewrites
-            # ``VAR_POP`` → ``VARIANCE_POP`` (no such function in MySQL —
-            # only VAR_POP / VARIANCE exist) and ``VAR_SAMP`` →
-            # ``VARIANCE`` (silently wrong, since MySQL's ``VARIANCE``
-            # equals ``VAR_POP`` — sample variance gets aliased to
-            # population variance). Bypass both by emitting the
-            # MySQL-native names through ``exp.Anonymous``.
-            #
-            # T-SQL exception: sqlglot emits incorrect names for T-SQL
-            # (e.g. VAR_SAMP, VARIANCE_POP). Use the T-SQL canonical names
-            # (STDEV, STDEVP, VAR, VARP) via ``exp.Anonymous``.
-            if self.dialect == "mysql" and agg_name in {"var_samp", "var_pop"}:
-                return exp.Anonymous(
-                    this=agg_name.upper(),
-                    expressions=[self._parse(col_expr)],
-                )
-            if self.dialect == "tsql" and agg_name in _TSQL_STAT_NAMES:
-                return exp.Anonymous(
-                    this=_TSQL_STAT_NAMES[agg_name],
-                    expressions=[self._parse(col_expr)],
-                )
-            sql_str = f"{agg_name.upper()}({col_expr})"
-
-        return self._parse(sql_str)
+            assert other_expr is not None  # set above when two-arg
+            return self._dialect.build_covar_2arg(
+                agg_name=agg_name,
+                col_sql=col_expr,
+                other_sql=other_expr,
+                parse=self._parse,
+            )
+        return self._dialect.build_stat_agg_1arg(
+            agg_name=agg_name, col_expr=col_expr, parse=self._parse,
+        )
 
     # ------------------------------------------------------------------
     # WHERE / HAVING (filters still use ColumnRef for member resolution)

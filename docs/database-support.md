@@ -44,7 +44,7 @@ because no standard syntax works everywhere:
 SQLite has a much smaller built-in math/stat catalog than the other supported
 engines. SLayer registers Python aggregate and scalar UDFs on every new SQLite
 connection via SQLAlchemy's `connect` event (see
-`slayer/sql/sqlite_udfs.py`).
+`slayer/sql/dialects/sqlite.py`).
 
 **Aggregate UDFs:**
 
@@ -78,7 +78,12 @@ than SQLite ≥3.35's silent-NULL built-in `log()`.
 These are registered automatically as long as connections go through
 `SlayerSQLClient` (which uses the cached SQLAlchemy engine). If you open a
 SQLite connection directly outside SLayer, the UDFs will not be available —
-call `register_sqlite_udfs(connection)` manually if you need them.
+import and call the registration helper manually if you need them:
+
+```python
+from slayer.sql.dialects.sqlite import register_sqlite_udfs
+register_sqlite_udfs(connection)
+```
 
 ### MySQL caveats
 
