@@ -24,29 +24,7 @@ from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.enrichment import enrich_query
 from slayer.sql.generator import SQLGenerator
 
-
-async def _noop_async(**kw):  # NOSONAR(S7503) — must remain async to match resolver-callback contract
-    """Async no-op used as a resolver-callback fixture. Stays ``async`` so
-    callers can ``await`` it through the resolver-callback contract; the
-    body has no real awaitable work to do, so it just returns None."""
-    return None
-
-
-@pytest.fixture
-def orders_model() -> SlayerModel:
-    return SlayerModel(
-        name="orders",
-        sql_table="public.orders",
-        data_source="test",
-        default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
-            Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
-        ],
-    )
+from tests.dialects.conftest import _noop_async
 
 
 async def _gen(dialect: str, query: SlayerQuery, model: SlayerModel) -> str:

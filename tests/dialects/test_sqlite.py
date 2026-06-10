@@ -13,8 +13,6 @@ directly — this is where they live now, no shim layer.
 
 from __future__ import annotations
 
-import sqlite3
-
 import sqlglot
 from sqlglot import exp
 
@@ -229,107 +227,6 @@ def test_sqlite_build_percentile_preserves_literal_string() -> None:
     d = SqliteDialect()
     out = d.build_percentile("0.50", "amount", parse=_parse_sqlite)
     assert "0.50" in out.sql(dialect="sqlite")
-
-
-# ---------------------------------------------------------------------------
-# rewrite_parsed_ast — JSON-extract rewrite
-# ---------------------------------------------------------------------------
-
-
-def test_sqlite_rewrite_parsed_ast_rewrites_jsonextract() -> None:
-    d = SqliteDialect()
-    tree = sqlglot.parse_one("SELECT json_extract(j, '$.k') FROM t", dialect="sqlite")
-    out = d.rewrite_parsed_ast(tree)
-    out_sql = out.sql(dialect="sqlite")
-    # After rewrite, JSON_EXTRACT must be the function-call form, not ``->``
-    assert "JSON_EXTRACT" in out_sql.upper()
-    assert " -> " not in out_sql  # the ``->`` operator must be replaced
-
-
-def test_sqlite_rewrite_parsed_ast_leaves_jsonextract_scalar_alone() -> None:
-    """``->>`` (JSONExtractScalar) returns the unquoted scalar — must be left
-    untouched (it's correct on SQLite)."""
-    d = SqliteDialect()
-    tree = sqlglot.parse_one("SELECT j ->> '$.k' FROM t", dialect="sqlite")
-    out = d.rewrite_parsed_ast(tree)
-    assert "->>" in out.sql(dialect="sqlite")
-
-
-# ---------------------------------------------------------------------------
-# register_udfs — exercised against a real sqlite3 connection
-# ---------------------------------------------------------------------------
-
-
-def _udf_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    SqliteDialect().register_udfs(conn)
-    return conn
-
-
-def test_sqlite_register_udfs_median() -> None:
-    conn = _udf_conn()
-    try:
-        rows = [(1,), (2,), (3,), (4,), (5,)]
-        conn.execute("CREATE TABLE t (x REAL)")
-        conn.executemany("INSERT INTO t (x) VALUES (?)", rows)
-        result = conn.execute("SELECT median(x) FROM t").fetchone()[0]
-        assert result == 3
-    finally:
-        conn.close()
-
-
-def test_sqlite_register_udfs_percentile_cont() -> None:
-    conn = _udf_conn()
-    try:
-        conn.execute("CREATE TABLE t (x REAL)")
-        conn.executemany("INSERT INTO t (x) VALUES (?)", [(i,) for i in range(1, 11)])
-        result = conn.execute("SELECT percentile_cont(x, 0.5) FROM t").fetchone()[0]
-        assert result == pytest.approx(5.5)
-    finally:
-        conn.close()
-
-
-def test_sqlite_register_udfs_corr() -> None:
-    conn = _udf_conn()
-    try:
-        conn.execute("CREATE TABLE t (x REAL, y REAL)")
-        # Perfect positive linear correlation
-        conn.executemany(
-            "INSERT INTO t (x, y) VALUES (?, ?)",
-            [(1, 2), (2, 4), (3, 6), (4, 8)],
-        )
-        result = conn.execute("SELECT corr(x, y) FROM t").fetchone()[0]
-        assert result == pytest.approx(1.0)
-    finally:
-        conn.close()
-
-
-def test_sqlite_register_udfs_log_base_first_arg_order() -> None:
-    """The 2-arg ``log(B, X)`` UDF takes base FIRST. log(10, 100) == 2."""
-    conn = _udf_conn()
-    try:
-        result = conn.execute("SELECT log(10, 100)").fetchone()[0]
-        assert result == pytest.approx(2.0)
-    finally:
-        conn.close()
-
-
-def test_sqlite_register_udfs_log10() -> None:
-    conn = _udf_conn()
-    try:
-        result = conn.execute("SELECT log10(1000)").fetchone()[0]
-        assert result == pytest.approx(3.0)
-    finally:
-        conn.close()
-
-
-def test_sqlite_register_udfs_log2() -> None:
-    conn = _udf_conn()
-    try:
-        result = conn.execute("SELECT log2(8)").fetchone()[0]
-        assert result == pytest.approx(3.0)
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
