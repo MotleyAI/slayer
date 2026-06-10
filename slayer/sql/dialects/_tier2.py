@@ -26,11 +26,6 @@ class SnowflakeDialect(SqlDialect):
     log2_native: bool = False
 
 
-# BigqueryDialect was promoted out of this file to slayer/sql/dialects/bigquery.py
-# (Tier 1) because it has logic (output-alias mangling) on top of scalar
-# config. The remaining tier-2 dialects below are data-shaped only.
-
-
 class RedshiftDialect(SqlDialect):
     sqlglot_name: str = "redshift"
     ds_type_aliases: frozenset[str] = frozenset({"redshift"})
