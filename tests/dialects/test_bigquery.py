@@ -412,7 +412,7 @@ class _FakeBigQueryClient:
     def __init__(self, rows: list[dict]) -> None:
         self._rows = rows
 
-    async def execute(self, *, sql: str) -> list[dict]:  # noqa: ARG002 — stub signature
+    async def execute(self, *, sql: str) -> list[dict]:  # noqa: ARG002 — stub signature  # NOSONAR(S7503) — must remain async to match SlayerSQLClient.execute (awaited by engine.execute)
         return [dict(row) for row in self._rows]
 
 
