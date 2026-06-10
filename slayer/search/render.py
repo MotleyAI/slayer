@@ -70,12 +70,26 @@ def _named_children_csv(items: List[tuple[str, str]]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def render_datasource_text(*, name: str, models: List[SlayerModel]) -> str:
-    """Datasource doc: name + named-child mentions for each model.
+def render_datasource_text(
+    *,
+    name: str,
+    models: List[SlayerModel],
+    description: Optional[str] = None,
+) -> str:
+    """Datasource doc: name + own description (when set) + named-child
+    mentions for each model.
 
-    No model descriptions — each model has its own indexed doc.
+    No model descriptions are included here — each model has its own
+    indexed doc.
+
+    DEV-1549: ``description`` is included so the lexical BM25 / tantivy
+    channels can match terms that live only in the datasource's
+    ``DatasourceConfig.description`` field, in parity with the other
+    entity render helpers.
     """
     lines: List[str] = [f"Datasource: {name}"]
+    if description:
+        lines.append(f"Description: {description}")
     visible = [m for m in models if not m.hidden]
     if visible:
         lines.append(
@@ -98,12 +112,15 @@ def render_datasource_pair(
 
     DEV-1549: ``description`` is the datasource's free-form description
     (DatasourceConfig.description), surfaced as ``SearchHit.description``
-    under compact mode. ``None`` when the datasource has none.
+    under compact mode AND woven into the indexed text so lexical /
+    embedding channels can match terms that live only there.
     """
     return RenderedEntity(
         canonical_id=name,
         kind="datasource",
-        text=render_datasource_text(name=name, models=models),
+        text=render_datasource_text(
+            name=name, models=models, description=description,
+        ),
         description=description,
     )
 

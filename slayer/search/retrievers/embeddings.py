@@ -309,16 +309,27 @@ class EmbeddingRetriever(Retriever):
         return await self._apply_pending([pending])
 
     async def refresh_datasource(
-        self, *, name: str, models: List[SlayerModel],
+        self,
+        *,
+        name: str,
+        models: List[SlayerModel],
+        description: Optional[str] = None,
     ) -> List[str]:
         """Refresh the embedding for one datasource doc.
 
         Routes through the unified :func:`render_datasource_pair` so the
         visibility filter is applied in exactly one place (DEV-1513).
+
+        DEV-1549: ``description`` (DatasourceConfig.description) is
+        woven into the rendered text so the embedding channel can match
+        terms that live only in the description, in parity with the
+        lexical channel.
         """
         if not embedding_client.is_available():
             return []
-        pair = render_datasource_pair(name=name, models=models)
+        pair = render_datasource_pair(
+            name=name, models=models, description=description,
+        )
         pending = _PendingRefresh(
             canonical_id=pair.canonical_id,
             entity_kind="datasource",

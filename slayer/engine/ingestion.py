@@ -1465,12 +1465,19 @@ async def _refresh_datasource_doc(
     datasource_name: str,
     models: List[SlayerModel],
     search: "SearchService",
+    storage: StorageBackend,
 ) -> List[Tuple[str, str]]:
     """Refresh the datasource doc embedding. Warnings are tagged with
-    an empty ``model_name`` since the doc has no specific entity name."""
+    an empty ``model_name`` since the doc has no specific entity name.
+
+    DEV-1549: ``DatasourceConfig.description`` is threaded through so
+    description text contributes to lexical + embedding recall.
+    """
+    cfg = await storage.get_datasource(datasource_name)
+    description = cfg.description if cfg is not None else None
     try:
         doc_warnings = await search.refresh_datasource(
-            name=datasource_name, models=models,
+            name=datasource_name, models=models, description=description,
         )
     except Exception as exc:  # noqa: BLE001 — defensive
         return [("", f"{datasource_name} (datasource doc): {exc}")]
@@ -1629,7 +1636,10 @@ async def _refresh_datasource_embeddings(
         datasource_name=datasource_name, storage=storage, search=search,
     )
     doc_warnings = await _refresh_datasource_doc(
-        datasource_name=datasource_name, models=models_in_ds, search=search,
+        datasource_name=datasource_name,
+        models=models_in_ds,
+        search=search,
+        storage=storage,
     )
     memory_warnings = await _refresh_memories_for_datasource(
         datasource_name=datasource_name, storage=storage, search=search,

@@ -87,7 +87,11 @@ class _RecordingRetriever(Retriever):
         return [self._subtree_warn] if self._subtree_warn else []
 
     async def refresh_datasource(
-        self, *, name: str, models: List[SlayerModel],
+        self,
+        *,
+        name: str,
+        models: List[SlayerModel],
+        description: Optional[str] = None,
     ) -> List[str]:
         self.ds_calls.append(name)
         if self._raise_on_datasource:

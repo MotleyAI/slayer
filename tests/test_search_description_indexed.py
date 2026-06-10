@@ -14,8 +14,10 @@ import pytest_asyncio
 
 from tests.search_helpers import seed_warehouse_models
 
+from slayer.core.enums import DataType
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.memories.models import Memory
-from slayer.search.render import render_memory_text
+from slayer.search.render import render_datasource_text, render_memory_text
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend, resolve_storage
 
@@ -64,4 +66,59 @@ async def test_tantivy_matches_description_only_term(
     memory_hits = [h for h in response.results if h.kind == "memory"]
     assert memory_hits, (
         "expected the description-only term to surface via tantivy"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Datasource description — DEV-1549 round 3
+# ---------------------------------------------------------------------------
+
+
+def test_render_datasource_text_includes_description() -> None:
+    rendered = render_datasource_text(
+        name="warehouse",
+        models=[],
+        description="prod warehouse with billing facts",
+    )
+    assert "warehouse" in rendered
+    assert "prod warehouse with billing facts" in rendered
+
+
+def test_render_datasource_text_omits_none_description() -> None:
+    rendered = render_datasource_text(name="warehouse", models=[])
+    assert "warehouse" in rendered
+    assert "Description:" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_tantivy_matches_datasource_description_only_term() -> None:
+    """A `question=` search whose terms appear ONLY in the datasource's
+    description surfaces the datasource entity via tantivy. Pinning the
+    parity gap codex flagged on round 3."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        s = resolve_storage(tmpdir)
+        await s.save_datasource(DatasourceConfig(
+            name="warehouse",
+            type="sqlite",
+            database=":memory:",
+            description="amalgamated_reconciliation_zeta is a unique term",
+        ))
+        await s.save_model(SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="warehouse",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+            ],
+        ))
+        response = await SearchService(storage=s).search(
+            question="amalgamated_reconciliation_zeta",
+            max_results=10,
+        )
+    ds_hits = [
+        h for h in response.results
+        if h.kind == "datasource" and h.id == "warehouse"
+    ]
+    assert ds_hits, (
+        "expected datasource-description-only term to surface via tantivy"
     )

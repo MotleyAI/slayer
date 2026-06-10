@@ -412,7 +412,12 @@ async def test_embedding_path_actually_calls_render_datasource_pair(
         canonical_id="SENTINEL_DS", kind="datasource", text=sentinel_text,
     )
 
-    def stub(*, name: str, models: List[SlayerModel]) -> RenderedEntity:  # noqa: ARG001
+    def stub(
+        *,
+        name: str,
+        models: List[SlayerModel],
+        description: Optional[str] = None,
+    ) -> RenderedEntity:  # noqa: ARG001
         return sentinel
 
     monkeypatch.setattr(emb_mod, "render_datasource_pair", stub)

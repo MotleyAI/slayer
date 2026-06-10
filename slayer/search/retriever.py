@@ -91,7 +91,11 @@ class Retriever(ABC):
         return []
 
     async def refresh_datasource(  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
-        self, *, name: str, models: List[SlayerModel],
+        self,
+        *,
+        name: str,
+        models: List[SlayerModel],
+        description: Optional[str] = None,
     ) -> List[str]:
         return []
 

@@ -1123,11 +1123,17 @@ class SearchService:
         )
 
     async def refresh_datasource(
-        self, *, name: str, models: List[SlayerModel],
+        self,
+        *,
+        name: str,
+        models: List[SlayerModel],
+        description: Optional[str] = None,
     ) -> List[str]:
         return await self._fan_out_with_isolation(
             hook_name="refresh_datasource",
-            invoke=lambda r: r.refresh_datasource(name=name, models=models),
+            invoke=lambda r: r.refresh_datasource(
+                name=name, models=models, description=description,
+            ),
         )
 
     async def _fan_out_with_isolation(
