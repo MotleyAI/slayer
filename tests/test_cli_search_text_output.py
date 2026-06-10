@@ -61,14 +61,17 @@ def test_text_output_prints_blank_line_when_both_empty() -> None:
     assert "Traceback" not in output
 
 
-def test_text_output_prefers_description_over_text() -> None:
-    """When both are set (e.g. verbose mode with a description), the
-    preview line shows the description (the compact preview)."""
+def test_text_output_prefers_text_when_present() -> None:
+    """When both are set (verbose mode), the printer shows ``text`` —
+    the full body the caller opted into with ``--verbose``. The compact
+    ``description`` is the fallback when ``text`` is empty."""
     response = SearchResponse(results=[
         _hit(description="short preview", text="long full body verbose render"),
     ])
     output = _capture_search_print(response)
-    assert "short preview" in output
+    assert "long full body verbose render" in output
+    # The compact preview must NOT shadow the verbose body.
+    assert "short preview" not in output
 
 
 def test_text_output_handles_multiple_hits() -> None:

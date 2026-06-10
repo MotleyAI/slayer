@@ -791,9 +791,12 @@ def _run_search_refresh_samples(*, args, storage) -> None:
 def _print_search_response_text(response) -> None:
     """Pretty-print a ``SearchResponse`` for the default text format.
 
-    DEV-1549: prefers ``hit.description`` for the preview line so the
-    compact-by-default output is still informative (under compact mode
-    ``hit.text`` is empty; description carries the preview).
+    DEV-1549: under compact mode ``hit.text`` is empty and the preview
+    lives in ``hit.description``; under ``--verbose`` (compact=False)
+    ``hit.text`` carries the full body and is what the caller wants to
+    see. Prefer ``text`` when non-empty so ``--verbose`` actually shows
+    the restored body; fall back to ``description`` for compact
+    responses.
     """
     for w in response.warnings:
         print(f"[warning] {w}")
@@ -809,7 +812,7 @@ def _print_search_response_text(response) -> None:
         else:
             prefix = f"[{hit.kind}]"
         print(f"  {prefix} {hit.id} (score={hit.score:.4f})")
-        preview = hit.description or hit.text
+        preview = hit.text if hit.text else (hit.description or "")
         preview_line = preview.splitlines()[0] if preview else ""
         print(f"    {preview_line}")
 
