@@ -18,6 +18,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 
@@ -164,8 +165,13 @@ async def test_description_yaml_persists_on_disk() -> None:
             entities=["mydb.orders.amount"],
             description="d",
         )
-        with open(os.path.join(tmpdir, "memories.yaml"), "r") as f:
-            rows = yaml.safe_load(f)
+        memories_path = os.path.join(tmpdir, "memories.yaml")
+
+        def _read_yaml() -> list:
+            with open(memories_path, "r") as f:
+                return yaml.safe_load(f)
+
+        rows = await asyncio.to_thread(_read_yaml)
         assert any(r.get("description") == "d" for r in rows)
 
 
@@ -188,8 +194,13 @@ async def test_legacy_v2_row_without_description_loads_with_none() -> None:
             "query": None,
             "created_at": "2026-01-01T00:00:00+00:00",
         }]
-        with open(os.path.join(tmpdir, "memories.yaml"), "w") as f:
-            yaml.safe_dump(legacy, f)
+        memories_path = os.path.join(tmpdir, "memories.yaml")
+
+        def _write_yaml() -> None:
+            with open(memories_path, "w") as f:
+                yaml.safe_dump(legacy, f)
+
+        await asyncio.to_thread(_write_yaml)
         reloaded = await storage.get_memory("1")
         assert reloaded.description is None
         assert reloaded.learning == "legacy"

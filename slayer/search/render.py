@@ -277,10 +277,18 @@ def render_aggregation_text(*, model: SlayerModel, aggregation: Aggregation) -> 
 
 
 def render_memory_text(*, memory: Memory) -> str:
-    """Memory doc for tantivy: learning text + tagged canonical entities
-    so the memory surfaces both via natural-language search and via
-    exact-entity search."""
+    """Memory doc for tantivy: learning text + optional description +
+    tagged canonical entities so the memory surfaces both via
+    natural-language search and via exact-entity search.
+
+    DEV-1549: ``description`` is included here so the lexical BM25 /
+    tantivy channels can match terms that live only in
+    ``Memory.description``. Without this, installs without the optional
+    embedding extra would lose recall for the new field.
+    """
     lines: List[str] = [memory.learning]
+    if memory.description:
+        lines.append(memory.description)
     if memory.entities:
         lines.append("Tagged entities: " + ", ".join(memory.entities))
     return "\n".join(lines)

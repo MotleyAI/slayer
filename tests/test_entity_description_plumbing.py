@@ -108,12 +108,12 @@ def test_render_datasource_pair_propagates_description() -> None:
     assert hasattr(pair, "description")
 
 
-def test_collect_model_entity_pairs_propagates_each_kind(
+@pytest.mark.asyncio
+async def test_collect_model_entity_pairs_propagates_each_kind(
     storage_rich: StorageBackend,
 ) -> None:
-    import asyncio
-
-    model = asyncio.run(storage_rich.get_model("orders", data_source="warehouse"))
+    model = await storage_rich.get_model("orders", data_source="warehouse")
+    assert model is not None
     pairs = collect_model_entity_pairs(model=model)
     by_id = {p.canonical_id: p for p in pairs}
 

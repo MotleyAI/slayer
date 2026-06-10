@@ -3155,9 +3155,12 @@ async def test_search_entity_filter_finds_memory(search_env):
     from slayer.search.service import SearchService
 
     _engine, storage = search_env
+    # DEV-1549: opt out of compact-by-default — this test pins the full
+    # learning body in ``hit.text``.
     response = await SearchService(storage=storage).search(
         entities=["test_sqlite.orders"],
         max_results=10,
+        compact=False,
     )
     memory_hits = [h for h in response.results if h.kind == "memory"]
     assert len(memory_hits) >= 1

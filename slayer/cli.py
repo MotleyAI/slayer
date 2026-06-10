@@ -789,7 +789,12 @@ def _run_search_refresh_samples(*, args, storage) -> None:
 
 
 def _print_search_response_text(response) -> None:
-    """Pretty-print a ``SearchResponse`` for the default text format."""
+    """Pretty-print a ``SearchResponse`` for the default text format.
+
+    DEV-1549: prefers ``hit.description`` for the preview line so the
+    compact-by-default output is still informative (under compact mode
+    ``hit.text`` is empty; description carries the preview).
+    """
     for w in response.warnings:
         print(f"[warning] {w}")
     if response.resolved_input_entities:
@@ -804,7 +809,9 @@ def _print_search_response_text(response) -> None:
         else:
             prefix = f"[{hit.kind}]"
         print(f"  {prefix} {hit.id} (score={hit.score:.4f})")
-        print(f"    {hit.text.splitlines()[0] if hit.text else ''}")
+        preview = hit.description or hit.text
+        preview_line = preview.splitlines()[0] if preview else ""
+        print(f"    {preview_line}")
 
 
 def _run_search_query(args, storage) -> None:

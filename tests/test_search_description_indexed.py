@@ -1,0 +1,67 @@
+"""DEV-1549 (post-merge): `Memory.description` is indexed into the
+lexical render so BM25 / Tantivy can match terms that live only in the
+description field. Without this, installs without the optional
+embedding extra would lose recall for the new field.
+"""
+
+from __future__ import annotations
+
+import tempfile
+from typing import AsyncIterator
+
+import pytest
+import pytest_asyncio
+
+from tests.search_helpers import seed_warehouse_models
+
+from slayer.memories.models import Memory
+from slayer.search.render import render_memory_text
+from slayer.search.service import SearchService
+from slayer.storage.base import StorageBackend, resolve_storage
+
+
+def test_render_memory_text_includes_description() -> None:
+    mem = Memory(
+        learning="amount in cents",
+        description="precision-critical column for billing",
+    )
+    rendered = render_memory_text(memory=mem)
+    assert "amount in cents" in rendered
+    assert "precision-critical column for billing" in rendered
+
+
+def test_render_memory_text_omits_none_description() -> None:
+    mem = Memory(learning="amount in cents", description=None)
+    rendered = render_memory_text(memory=mem)
+    assert rendered.startswith("amount in cents")
+    assert "None" not in rendered
+
+
+@pytest_asyncio.fixture
+async def storage() -> AsyncIterator[StorageBackend]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        s = resolve_storage(tmpdir)
+        await seed_warehouse_models(s)
+        yield s
+
+
+@pytest.mark.asyncio
+async def test_tantivy_matches_description_only_term(
+    storage: StorageBackend,
+) -> None:
+    """A `question=` search whose terms appear ONLY in the description
+    field surfaces the memory via the tantivy channel. Pinning the lexical
+    index parity with the embedding index."""
+    await storage.save_memory(
+        learning="orders body unrelated terms",
+        entities=["warehouse.orders.amount_paid"],
+        description="reconciliation_token_xyz keyword that lives only in description",
+    )
+    response = await SearchService(storage=storage).search(
+        question="reconciliation_token_xyz",
+        max_results=10,
+    )
+    memory_hits = [h for h in response.results if h.kind == "memory"]
+    assert memory_hits, (
+        "expected the description-only term to surface via tantivy"
+    )

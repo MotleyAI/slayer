@@ -464,7 +464,7 @@ async def test_compact_plus_lazy_column_refresh_keeps_text_empty(
 
     refreshed_calls = []
 
-    async def fake_refresh(*, model, column, engine, storage):
+    async def fake_refresh(*, model, column, engine, storage):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_column_sample_fresh(...)`)
         # Return a materially-different column so the production path
         # treats it as "refreshed" (the identity check is ``is col``).
         refreshed_calls.append((model.name, column.name))
@@ -493,7 +493,7 @@ async def test_verbose_plus_lazy_column_refresh_regenerates_text(
     engine = SlayerQueryEngine(storage=storage)
     service = SearchService(storage=storage, engine=engine)
 
-    async def fake_refresh(*, model, column, engine, storage):
+    async def fake_refresh(*, model, column, engine, storage):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_column_sample_fresh(...)`)
         return column.model_copy(update={"description": "FRESH"})
 
     monkeypatch.setattr(svc_mod, "ensure_column_sample_fresh", fake_refresh)
