@@ -86,6 +86,7 @@ def build_in_memory_index(
     memories: List[Memory],
     models: List[SlayerModel],
     datasources: List[str],
+    datasource_descriptions: Optional[Dict[str, Optional[str]]] = None,
 ) -> tantivy.Index:
     """Build a fresh in-RAM tantivy index covering the corpus.
 
@@ -93,11 +94,18 @@ def build_in_memory_index(
     expected to pass datasource names + every model in scope; this
     function does *not* call into storage.
 
+    DEV-1549: ``datasource_descriptions`` mirrors the symmetric kwarg on
+    :func:`build_in_memory_corpus` so direct callers of this helper can
+    also surface datasource-description text in the lexical index.
+
     Returns just the tantivy index for callers that don't need the
     canonical-text lookups. ``build_in_memory_corpus`` returns both.
     """
     corpus = build_in_memory_corpus(
-        memories=memories, models=models, datasources=datasources,
+        memories=memories,
+        models=models,
+        datasources=datasources,
+        datasource_descriptions=datasource_descriptions,
     )
     return corpus.index
 

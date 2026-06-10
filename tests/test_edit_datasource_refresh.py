@@ -55,7 +55,7 @@ async def test_edit_datasource_calls_refresh_datasource_with_new_description(
 
     original = svc_mod.SearchService.refresh_datasource
 
-    async def recording_refresh(self, *, name, models, description=None):
+    async def recording_refresh(self, *, name, models, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine (`await SearchService.refresh_datasource(...)`)
         refresh_calls.append({
             "name": name,
             "description": description,
@@ -98,7 +98,7 @@ async def test_edit_datasource_unknown_no_refresh(
 
     from slayer.search import service as svc_mod
 
-    async def recording_refresh(self, *, name, models, description=None):
+    async def recording_refresh(self, *, name, models, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine (`await SearchService.refresh_datasource(...)`)
         refresh_calls.append(name)
         return []
 
