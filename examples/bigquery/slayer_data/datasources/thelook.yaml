@@ -1,0 +1,7 @@
+name: thelook
+type: bigquery
+connection_string: bigquery://${GCP_PROJECT_ID}
+description: |
+  Read-only access to bigquery-public-data.thelook_ecommerce. Jobs run in the
+  GCP billing project named by $GCP_PROJECT_ID; credentials picked up from
+  $GOOGLE_APPLICATION_CREDENTIALS via Google Application Default Credentials.

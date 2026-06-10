@@ -26,16 +26,6 @@ class SnowflakeDialect(SqlDialect):
     log2_native: bool = False
 
 
-class BigqueryDialect(SqlDialect):
-    sqlglot_name: str = "bigquery"
-    ds_type_aliases: frozenset[str] = frozenset({"bigquery"})
-    # BigQuery has no SQL-level EXPLAIN.
-    explain_prefix: Optional[str] = None
-    explain_postfix: str = ""
-    log10_native: bool = True
-    log2_native: bool = True
-
-
 class RedshiftDialect(SqlDialect):
     sqlglot_name: str = "redshift"
     ds_type_aliases: frozenset[str] = frozenset({"redshift"})
