@@ -14,7 +14,13 @@ import sqlalchemy.exc
 from sqlalchemy.pool import StaticPool
 
 from slayer.core.models import DatasourceConfig
-from slayer.sql.sqlite_udfs import register_sqlite_udfs
+from slayer.sql.dialects.sqlite import SqliteDialect
+
+# Module-level singleton — its ``register_udfs`` is the SQLAlchemy
+# ``connect`` event hook for SQLite engines. The dialect class wraps
+# the module-level ``register_sqlite_udfs`` helper in ``dialects/sqlite.py``;
+# both engine factories below call into this one instance.
+_SQLITE_DIALECT = SqliteDialect()
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +62,7 @@ def _get_sync_engine(connection_string: str) -> sa.Engine:
         if engine.dialect.name == "sqlite":
             @sa_event.listens_for(engine, "connect")
             def _register_udfs(dbapi_connection, _connection_record):
-                register_sqlite_udfs(dbapi_connection)
+                _SQLITE_DIALECT.register_udfs(dbapi_connection)
         _sync_engines[connection_string] = engine
     return _sync_engines[connection_string]
 
@@ -120,7 +126,7 @@ def _create_in_memory_sqlite_engine(connection_string: str) -> sa.Engine:
     )
     @sa_event.listens_for(engine, "connect")
     def _register_udfs(dbapi_connection, _connection_record):
-        register_sqlite_udfs(dbapi_connection)
+        _SQLITE_DIALECT.register_udfs(dbapi_connection)
     return engine
 
 

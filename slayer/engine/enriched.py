@@ -225,6 +225,15 @@ class EnrichedQuery(BaseModel):
         ),
     )
 
+    distinct_dimension_values: bool = Field(
+        default=True,
+        description=(
+            "DEV-1543: pass-through of ``SlayerQuery.distinct_dimension_values``. "
+            "When ``False``, the SQL generator skips the dim-only-dedup "
+            "``GROUP BY`` clause and emits raw rows."
+        ),
+    )
+
 
 class CrossModelMeasure(BaseModel):
     """A measure from a joined model, computed as a separate sub-query.

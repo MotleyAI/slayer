@@ -114,3 +114,20 @@ class ColumnCycleError(SlayerError, ValueError):
         self.cycle: List[Tuple[str, str]] = list(cycle)
         chain = " → ".join(f"{m}.{c}" for m, c in self.cycle)
         super().__init__(f"Circular column reference detected: {chain}")
+
+
+class DistinctDimensionValuesError(SlayerError, ValueError):
+    """Raised when ``distinct_dimension_values=False`` conflicts with the
+    query shape (DEV-1543).
+
+    ``distinct_dimension_values=False`` asks for raw rows — no top-level
+    ``GROUP BY``. It is incompatible with any aggregation: a non-empty
+    ``measures`` list, a filter / order item referencing a measure
+    (colon-form ``col:agg`` / ``*:count``, a transform call like
+    ``rank(...)``, or a bare saved ``ModelMeasure`` name), or a query
+    with no projected columns at all (both ``dimensions`` and
+    ``time_dimensions`` empty).
+
+    Multi-inherits ``ValueError`` so existing ``except ValueError``
+    call sites continue to work unchanged.
+    """

@@ -22,7 +22,7 @@ A `SlayerQuery` is a JSON/dict object. The same shape works across the REST API,
 
 `order[].column` is the short alias (`count`, `revenue_sum`) — not the colon form.
 
-**Dim-only queries deduplicate.** A query with no measures and at least one dimension or time-dimension auto-emits `GROUP BY <dim/td aliases>` and returns the distinct combinations. The `GROUP BY` is applied before `LIMIT`, so a row cap can't silently drop unique tuples. There is no opt-out — if you want the raw row stream, query the underlying table outside the semantic layer.
+**Dim-only queries deduplicate.** A query with no measures and at least one dimension or time-dimension auto-emits `GROUP BY <dim/td aliases>` and returns the distinct combinations. The `GROUP BY` is applied before `LIMIT`, so a row cap can't silently drop unique tuples. To opt out, set `"distinct_dimension_values": false` on the query — emits raw rows (no top-level `GROUP BY`), with WHERE / ORDER BY / LIMIT applied as usual. Any measure reference in `measures` / `filters` / `order` raises `DistinctDimensionValuesError` in this mode.
 
 ## Measures — colon aggregation
 

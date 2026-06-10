@@ -35,41 +35,11 @@ from slayer.engine.enriched import (
 )
 from slayer.engine.enrichment import enrich_query
 from slayer.sql.client import SlayerSQLClient
-from slayer.sql.generator import BIGQUERY_ALIAS_SEP, SQLGenerator
+from slayer.sql.dialects import dialect_for_ds_type, get_dialect
+from slayer.sql.generator import SQLGenerator
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
-
-
-def _demangle_bigquery_aliases(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Reverse the BQ alias mangling on result-row keys.
-
-    Forward pass in ``_mangle_dotted_aliases_for_bigquery`` first escapes any
-    existing ``___`` in the alias to ``______`` (so a user-named measure like
-    ``my___metric`` round-trips intact), then maps ``.`` → ``___``. Reversal
-    walks the string left-to-right and consumes the longer ``______`` token
-    BEFORE the shorter ``___`` so the two encodings stay unambiguous.
-    """
-    sep = BIGQUERY_ALIAS_SEP
-    esc = sep * 2
-
-    def _decode(key: str) -> str:
-        out: List[str] = []
-        i = 0
-        n = len(key)
-        while i < n:
-            if key.startswith(esc, i):
-                out.append(sep)
-                i += len(esc)
-            elif key.startswith(sep, i):
-                out.append(".")
-                i += len(sep)
-            else:
-                out.append(key[i])
-                i += 1
-        return "".join(out)
-
-    return [{_decode(k): v for k, v in row.items()} for row in rows]
 
 
 # Per-task in-flight join-target names. Used by _resolve_join_target to break
@@ -104,27 +74,9 @@ class _NoJoinError(Exception):
         self.hop_name = hop_name
 
 
-_EXPLAIN_PREFIX = {
-    "postgres": "EXPLAIN ANALYZE",
-    "redshift": "EXPLAIN",
-    "mysql": "EXPLAIN FORMAT=JSON",
-    "sqlite": "EXPLAIN QUERY PLAN",
-    "duckdb": "EXPLAIN ANALYZE",
-    "clickhouse": "EXPLAIN",
-    "snowflake": "EXPLAIN USING JSON",
-    "bigquery": None,  # BigQuery doesn't support EXPLAIN via SQL
-    "trino": "EXPLAIN ANALYZE",
-    "presto": "EXPLAIN ANALYZE",
-    "databricks": "EXPLAIN EXTENDED",
-    "spark": "EXPLAIN EXTENDED",
-    "tsql": "SET SHOWPLAN_ALL ON;",  # SQL Server: batch prefix, needs suffix too
-    "oracle": "EXPLAIN PLAN FOR",
-}
-
-
-_EXPLAIN_POSTFIX = {
-    "tsql": "; SET SHOWPLAN_ALL OFF",
-}
+# EXPLAIN prefix/postfix moved to per-dialect classes in
+# ``slayer/sql/dialects/`` (DEV-1542). ``_build_explain_sql`` below
+# delegates via ``get_dialect``.
 
 
 _PLACEHOLDER_FILL_VALUE = "0"
@@ -161,14 +113,23 @@ def _apply_placeholder_fill(
 
 
 def _build_explain_sql(dialect: str, sql: str) -> str:
-    """Build a dialect-appropriate EXPLAIN statement."""
-    prefix = _EXPLAIN_PREFIX.get(dialect)
-    if prefix is None:
+    """Build a dialect-appropriate EXPLAIN statement.
+
+    Delegates to the dialect strategy registered in
+    ``slayer.sql.dialects`` (DEV-1542). Both branches that previously
+    raised ``ValueError`` (unsupported dialect via the None-prefix sentinel,
+    AND today's ``_EXPLAIN_PREFIX.get(...)`` miss for typo-ed dialect
+    names) preserve that exception type — the strict ``KeyError`` from
+    ``get_dialect`` is converted to ``ValueError`` to match.
+    """
+    try:
+        active = get_dialect(dialect)
+    except KeyError:
         raise ValueError(
-            f"EXPLAIN is not supported for dialect '{dialect}'. Use dry_run=True to inspect the generated SQL instead."
-        )
-    suffix = _EXPLAIN_POSTFIX.get(dialect, "")
-    return f"{prefix} {sql}{suffix}"
+            f"EXPLAIN is not supported for dialect '{dialect}'. "
+            "Use dry_run=True to inspect the generated SQL instead."
+        ) from None
+    return active.build_explain_sql(sql)
 
 
 class FieldMetadata(BaseModel):
@@ -749,12 +710,6 @@ class SlayerQueryEngine:
                 err=exc, model=model, enriched=enriched
             )
             raise
-        # BigQuery rejects dotted column names — the generator mangles ``.`` to
-        # ``___`` in emitted aliases (see ``_mangle_dotted_aliases_for_bigquery``).
-        # Reverse it on the way back so result-row keys match SLayer's universal
-        # public alias shape (``orders._count``, ``orders.products.category``).
-        if dialect == "bigquery" and rows:
-            rows = _demangle_bigquery_aliases(rows)
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
         return SlayerResponse(data=rows, columns=columns, sql=sql, attributes=attributes)
 
@@ -2502,25 +2457,11 @@ class SlayerQueryEngine:
 
     @staticmethod
     def _dialect_for_type(ds_type: Optional[str]) -> str:
-        _DIALECT_MAP = {
-            "postgres": "postgres",
-            "postgresql": "postgres",
-            "mysql": "mysql",
-            "mariadb": "mysql",
-            "clickhouse": "clickhouse",
-            "bigquery": "bigquery",
-            "snowflake": "snowflake",
-            "sqlite": "sqlite",
-            "duckdb": "duckdb",
-            "redshift": "redshift",
-            "trino": "trino",
-            "presto": "presto",
-            "athena": "presto",
-            "databricks": "databricks",
-            "spark": "spark",
-            "mssql": "tsql",
-            "sqlserver": "tsql",
-            "tsql": "tsql",
-            "oracle": "oracle",
-        }
-        return _DIALECT_MAP.get(ds_type or "", "postgres")
+        """Map a datasource-config ``type`` string to a sqlglot dialect name.
+
+        Delegates to ``dialect_for_ds_type`` in ``slayer.sql.dialects``
+        (DEV-1542). Returns a string for back-compat with the 24+ test
+        sites that assert ``_dialect_for_type("postgres") == "postgres"``.
+        Unknown / ``None`` / empty ds-types fall back to ``"postgres"``.
+        """
+        return dialect_for_ds_type(ds_type).sqlglot_name
