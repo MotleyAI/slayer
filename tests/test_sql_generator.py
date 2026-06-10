@@ -21,6 +21,7 @@ from slayer.engine.enriched import (
 )
 from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.dialects import BigqueryDialect
 from slayer.sql.generator import SQLGenerator, _cte_name_from_alias, _validate_agg_param_value
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -6658,22 +6659,46 @@ class TestBigQueryAliasMangling:
         and potentially miss public-projection columns. Pins Codex MEDIUM
         #5 — the placement contract.
 
-        Strategy: ``render_mode="outer"`` runs the trim; the rewrite then
-        fires unconditionally at the end. We verify the FINAL SQL has the
-        mangled form AND the projection is trimmed to the public aliases.
+        Strategy: spy on both ``SQLGenerator._apply_outer_projection_trim``
+        and ``BigqueryDialect.rewrite_emitted_sql`` and assert the call
+        order. Both wrappers delegate to the real implementations so the
+        test verifies the production code path, not a stubbed substitute.
         """
         gen = SQLGenerator(dialect="bigquery")
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="*:count")],
             dimensions=[ColumnRef(name="status")],
+            # Filter using a windowed transform creates a hidden hoisted
+            # column, so the trim has actual work to do (rather than being
+            # a no-op on a trivial query).
+            filters=["dense_rank(revenue:sum) <= 5"],
         )
-        sql = await _generate(gen, query, orders_model)
-        # Mangling happened — the public alias appears in mangled form.
-        assert "`orders___count`" in sql
-        # And the outer projection only carries the public columns
-        # (the trim ran before the rewrite). The trimmed projection
-        # is what gets mangled; an absent ``orders.something_hidden``
-        # would mean the trim trimmed correctly first.
-        assert "`orders___status`" in sql
+        enriched = await enrich_query(
+            query=query,
+            model=orders_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+        call_order: list[str] = []
+        real_trim = SQLGenerator._apply_outer_projection_trim
+        real_rewrite = BigqueryDialect.rewrite_emitted_sql
+
+        def trim_spy(self, *, sql, enriched):
+            call_order.append("trim")
+            return real_trim(self, sql=sql, enriched=enriched)
+
+        def rewrite_spy(self, sql):
+            call_order.append("rewrite")
+            return real_rewrite(self, sql)
+
+        with patch.object(SQLGenerator, "_apply_outer_projection_trim", trim_spy), \
+                patch.object(BigqueryDialect, "rewrite_emitted_sql", rewrite_spy):
+            gen.generate(enriched=enriched, render_mode="outer")
+        # Trim ran first; rewrite ran after.
+        assert call_order == ["trim", "rewrite"], (
+            f"_apply_outer_projection_trim must run before rewrite_emitted_sql, "
+            f"got call order: {call_order}"
+        )
 

@@ -14,20 +14,29 @@ from __future__ import annotations
 
 import re
 import tempfile
+from unittest.mock import patch
 
 import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.engine.enriched import EnrichedQuery
+from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import (
     BigqueryDialect,
+    PostgresDialect,
     SqlDialect,
     dialect_for_ds_type,
     get_dialect,
 )
+from slayer.sql.generator import SQLGenerator
 from slayer.storage.yaml_storage import YAMLStorage
+
+
+async def _noop_async(**kw):  # NOSONAR(S7503) — must remain async for the resolver-callback contract
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +47,25 @@ from slayer.storage.yaml_storage import YAMLStorage
 def test_registry_lookup_by_sqlglot_name() -> None:
     """``get_dialect("bigquery")`` returns a ``BigqueryDialect`` instance."""
     assert isinstance(get_dialect("bigquery"), BigqueryDialect)
+
+
+def test_bigquery_dialect_lives_in_dedicated_module() -> None:
+    """BigqueryDialect was promoted out of ``_tier2.py`` to its own file —
+    BigQuery is Tier 1 because it has logic (alias mangling), not just
+    scalar config. Pins plan item 2 so a future "merge it back into
+    _tier2" regression is explicit.
+    """
+    assert BigqueryDialect.__module__ == "slayer.sql.dialects.bigquery", (
+        f"BigqueryDialect must live in slayer.sql.dialects.bigquery — got "
+        f"{BigqueryDialect.__module__!r}. Tier-1 promotion plan item 2."
+    )
+    # And _tier2.py must NOT export it (the import would resolve from a
+    # different module path).
+    from slayer.sql.dialects import _tier2
+    assert not hasattr(_tier2, "BigqueryDialect"), (
+        "BigqueryDialect must not be exported from _tier2.py after the "
+        "Tier-1 promotion."
+    )
 
 
 def test_registry_lookup_by_ds_type() -> None:
@@ -116,6 +144,27 @@ def test_rewrite_emitted_sql_leaves_segmented_fq_table_refs_untouched() -> None:
     assert d.rewrite_emitted_sql(sql) == sql
 
 
+def test_rewrite_emitted_sql_false_positive_on_single_backticked_dotted_path() -> None:
+    """Characterization: a single-backticked dotted table path of word-only
+    segments DOES false-positive mangle. This is the documented constraint
+    callers must respect — in ``Column.sql`` for BigQuery, backtick each
+    segment individually (``\\`my_dataset\\`.\\`my_table\\``), not as a
+    single dotted string.
+
+    Pins the current regex behavior so a future refinement (e.g. lookbehind
+    on FROM/JOIN) is an explicit, reviewable change rather than a silent
+    docstring-vs-behavior drift.
+    """
+    d = BigqueryDialect()
+    sql = "SELECT 1 FROM `my_dataset.my_table`"
+    # Known false positive — the regex matches dot-bearing backticked text
+    # regardless of position. Users must avoid this form in Column.sql.
+    out = d.rewrite_emitted_sql(sql)
+    assert out == "SELECT 1 FROM `my_dataset___my_table`", (
+        f"Documented constraint changed (now safer or different shape?): {out}"
+    )
+
+
 def test_rewrite_emitted_sql_idempotent_on_already_mangled() -> None:
     """An already-mangled alias (no dots inside backticks) is left alone.
 
@@ -148,15 +197,34 @@ def test_decode_result_keys_empty_rows() -> None:
     assert BigqueryDialect().decode_result_keys([]) == []
 
 
-def test_decode_result_keys_no_dotted_keys_identity() -> None:
+def test_decode_result_keys_keys_without_separator_are_identity() -> None:
     """Keys that contain neither ``___`` nor a dot are passed through.
 
-    Engine-side dedup-relevant invariant: a key that was never mangled by
-    ``rewrite_emitted_sql`` round-trips unchanged.
+    Narrower than "no dot in key" — see ``test_decode_corrupts_no_dot_key_with_triple_underscore``
+    for the documented out-of-domain corruption case.
     """
     d = BigqueryDialect()
     rows = [{"plain_col": 1, "another_col": "x"}]
     assert d.decode_result_keys(rows) == rows
+
+
+def test_decode_corrupts_no_dot_key_with_triple_underscore() -> None:
+    """Characterization: ``decode_result_keys`` is the inverse of
+    ``rewrite_emitted_sql`` ONLY on the latter's image. A hypothetical key
+    like ``my___metric`` (no dot in the original alias) is OUTSIDE that
+    image and would be decoded to ``my.metric`` — corrupted.
+
+    This case CANNOT arise in SLayer's emitted SQL because every projection
+    alias is model-qualified with at least one dot prefix
+    (``orders._count``, ``orders.my___metric``, etc.). The test pins the
+    current behavior so if SLayer ever starts producing un-prefixed aliases,
+    this becomes reachable and we need context-aware decode (Codex HIGH #3
+    option B — thread expected_aliases through the hook).
+    """
+    d = BigqueryDialect()
+    rows = [{"my___metric": 42}]
+    # Documented corruption: ``___`` is decoded to ``.``.
+    assert d.decode_result_keys(rows) == [{"my.metric": 42}]
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +282,108 @@ def test_base_default_decode_result_keys_is_identity() -> None:
     invariant on the read side."""
     rows = [{"orders.count": 42, "orders.products.category": "shoes"}, {}]
     assert SqlDialect().decode_result_keys(rows) == rows
+
+
+# ---------------------------------------------------------------------------
+# Generic-hook dispatch — prove the generator/engine call the dialect hook,
+# not a hard-coded ``if dialect == "bigquery":`` branch. Codex HIGH #1.
+# ---------------------------------------------------------------------------
+
+
+async def _build_minimal_enriched_query() -> EnrichedQuery:
+    """Helper: produce an EnrichedQuery suitable for SQLGenerator.generate()."""
+    model = SlayerModel(
+        name="orders",
+        sql_table="public.orders",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+        ],
+    )
+    query = SlayerQuery(
+        source_model="orders",
+        dimensions=[ColumnRef(name="status")],
+    )
+    return await enrich_query(
+        query=query,
+        model=model,
+        resolve_dimension_via_joins=_noop_async,
+        resolve_cross_model_measure=_noop_async,
+        resolve_join_target=_noop_async,
+    )
+
+
+async def test_generator_dispatches_through_rewrite_emitted_sql_hook() -> None:
+    """``SQLGenerator.generate()`` must call ``self._dialect.rewrite_emitted_sql``
+    on the active dialect — not a hard-coded ``if dialect == "bigquery":``
+    branch. Pins the generic hook contract; a future regression that
+    re-introduces a string-keyed dispatch in the generator would fail this.
+
+    Strategy: instantiate the generator with a non-BigQuery dialect
+    (Postgres) and assert the dialect's ``rewrite_emitted_sql`` is invoked.
+    """
+    enriched = await _build_minimal_enriched_query()
+    gen = SQLGenerator(dialect="postgres")
+    with patch.object(
+        type(gen._dialect),
+        "rewrite_emitted_sql",
+        autospec=True,
+        side_effect=lambda self, sql: sql,
+    ) as spy:
+        gen.generate(enriched=enriched)
+    assert spy.called, (
+        "SQLGenerator.generate() must dispatch through self._dialect."
+        "rewrite_emitted_sql — a hard-coded `if dialect == ...:` would "
+        "bypass this. Plan item 5."
+    )
+
+
+async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
+    """``SlayerQueryEngine.execute()`` must call the active dialect's
+    ``decode_result_keys`` — not a hard-coded ``if dialect == "bigquery":``
+    branch.
+
+    Strategy: stub the SQL client; wire a Postgres datasource (default
+    identity hook); patch ``PostgresDialect.decode_result_keys`` and assert
+    it was called.
+    """
+    tmp = tempfile.TemporaryDirectory()
+    try:
+        storage = YAMLStorage(base_dir=tmp.name)
+        ds = DatasourceConfig(name="pg", type="postgres", database=":memory:")
+        await storage.save_datasource(ds)
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders_t",
+            data_source="pg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+            ],
+        )
+        await storage.save_model(model)
+        engine = SlayerQueryEngine(storage=storage)
+        engine._sql_clients[ds.get_connection_string()] = _FakeBigQueryClient(
+            rows=[{"orders.status": "paid"}]
+        )
+        with patch.object(
+            PostgresDialect,
+            "decode_result_keys",
+            autospec=True,
+            side_effect=lambda self, rows: rows,
+        ) as spy:
+            await engine.execute(SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+            ))
+        assert spy.called, (
+            "SlayerQueryEngine.execute() must dispatch through the active "
+            "dialect's decode_result_keys — a hard-coded `if dialect == "
+            "...:` would bypass this. Plan item 6."
+        )
+    finally:
+        tmp.cleanup()
 
 
 # ---------------------------------------------------------------------------
