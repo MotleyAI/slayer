@@ -8,6 +8,12 @@ because they're data-shaped, not logic-shaped.
 Values codify today's behaviour from
 ``query_engine.py:_EXPLAIN_PREFIX`` / ``_EXPLAIN_POSTFIX`` and
 ``generator.py:_LOG10_NATIVE_DIALECTS`` / ``_LOG2_NATIVE_DIALECTS``.
+
+DEV-1551 promoted ``SnowflakeDialect`` out of this file and into
+``slayer/sql/dialects/snowflake.py`` — it gained runtime methods
+(connection URL builder, ``creator=`` engine bridge, per-connection
+session overrides, statement timeout, cursor type-code map) that are
+Snowflake-specific and don't fit the data-shaped Tier-2 layout.
 """
 
 from __future__ import annotations
@@ -15,15 +21,6 @@ from __future__ import annotations
 from typing import Optional
 
 from slayer.sql.dialects.base import SqlDialect
-
-
-class SnowflakeDialect(SqlDialect):
-    sqlglot_name: str = "snowflake"
-    ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
-    explain_prefix: Optional[str] = "EXPLAIN USING JSON"
-    explain_postfix: str = ""
-    log10_native: bool = True
-    log2_native: bool = False
 
 
 class BigqueryDialect(SqlDialect):

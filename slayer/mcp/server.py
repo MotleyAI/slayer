@@ -71,11 +71,11 @@ def _ambiguous_with_mcp_hint(exc: AmbiguousModelError) -> str:
 def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
     """Test a datasource connection. Returns (success, message)."""
     try:
-        conn_str = ds.resolve_env_vars().get_connection_string()
-        engine = sa.create_engine(conn_str)
+        from slayer.sql import engine_factory
+        engine = engine_factory.get_engine(ds.resolve_env_vars())
         with engine.connect() as conn:
             conn.execute(sa.text("SELECT 1"))
-        engine.dispose()
+        # Cached engine — engine_factory owns lifecycle; don't dispose.
         return True, "Connection successful."
     except Exception as e:
         return False, _friendly_db_error(e)
@@ -84,11 +84,10 @@ def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
 def _get_schemas(ds: DatasourceConfig) -> list[str]:
     """List available schemas for a datasource."""
     try:
-        conn_str = ds.resolve_env_vars().get_connection_string()
-        engine = sa.create_engine(conn_str)
+        from slayer.sql import engine_factory
+        engine = engine_factory.get_engine(ds.resolve_env_vars())
         inspector = sa.inspect(engine)
         schemas = inspector.get_schema_names()
-        engine.dispose()
         return schemas
     except Exception:
         return []
@@ -103,11 +102,10 @@ def _fetch_tables(
     on failure. ``schema_name=None`` uses the dialect's default schema.
     """
     try:
-        conn_str = ds.resolve_env_vars().get_connection_string()
-        sa_engine = sa.create_engine(conn_str)
+        from slayer.sql import engine_factory
+        sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
         inspector = sa.inspect(sa_engine)
         tables = inspector.get_table_names(schema=schema_name)
-        sa_engine.dispose()
         return sorted(tables), None
     except Exception as e:
         if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):

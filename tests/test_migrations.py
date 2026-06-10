@@ -142,8 +142,10 @@ def test_slayer_model_synthetic_migration_runs_via_validator(monkeypatch) -> Non
 
 
 def test_datasource_config_validates_v1_dict() -> None:
+    """A v1 dict is migrated forward to the current version. The new
+    v2 fields (connection_name, warehouse, role) default to None."""
     ds = DatasourceConfig.model_validate({"name": "pg", "type": "postgres"})
-    assert ds.version == 1
+    assert ds.version == mig.CURRENT_VERSIONS["DatasourceConfig"]
 
 
 def test_datasource_config_user_alias_still_works() -> None:
@@ -152,7 +154,64 @@ def test_datasource_config_user_alias_still_works() -> None:
         {"name": "pg", "type": "postgres", "user": "alice"}
     )
     assert ds.username == "alice"
-    assert ds.version == 1
+    assert ds.version == mig.CURRENT_VERSIONS["DatasourceConfig"]
+
+
+def test_datasource_config_current_version_is_at_least_v2() -> None:
+    """DEV-1551: bump from v1 to v2 for the three Snowflake-relevant
+    fields (connection_name, warehouse, role)."""
+    assert mig.CURRENT_VERSIONS["DatasourceConfig"] >= 2
+
+
+def test_datasource_config_v1_to_v2_is_noop_forward() -> None:
+    """The v1→v2 converter is a pure no-op forward (additive optional
+    fields). A v1 dict with no Snowflake fields passes through unchanged
+    except for the version bump."""
+    raw = {
+        "version": 1,
+        "name": "pg",
+        "type": "postgres",
+        "host": "localhost",
+        "username": "alice",
+        "password": "secret",
+        "database": "db",
+    }
+    ds = DatasourceConfig.model_validate(raw)
+    assert ds.version >= 2
+    # All v1 fields preserved
+    assert ds.name == "pg"
+    assert ds.type == "postgres"
+    assert ds.host == "localhost"
+    assert ds.username == "alice"
+    assert ds.password == "secret"
+    assert ds.database == "db"
+    # New v2 fields default to None
+    assert ds.connection_name is None
+    assert ds.warehouse is None
+    assert ds.role is None
+
+
+def test_datasource_config_v1_to_v2_dump_emits_current_version() -> None:
+    """After load+save round-trip, the version field is the current one."""
+    ds = DatasourceConfig.model_validate({"version": 1, "name": "pg", "type": "postgres"})
+    dumped = ds.model_dump(mode="json", exclude_none=True)
+    assert dumped["version"] == mig.CURRENT_VERSIONS["DatasourceConfig"]
+
+
+def test_datasource_config_v2_dict_preserves_snowflake_fields() -> None:
+    """Loading a v2 dict with the new fields present preserves them."""
+    raw = {
+        "version": 2,
+        "name": "sf",
+        "type": "snowflake",
+        "connection_name": "default",
+        "warehouse": "WH",
+        "role": "ROLE",
+    }
+    ds = DatasourceConfig.model_validate(raw)
+    assert ds.connection_name == "default"
+    assert ds.warehouse == "WH"
+    assert ds.role == "ROLE"
 
 
 def test_slayer_query_validates_v1_dict() -> None:

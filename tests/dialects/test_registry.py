@@ -28,10 +28,10 @@ from slayer.sql.dialects._tier2 import (
     OracleDialect,
     PrestoDialect,
     RedshiftDialect,
-    SnowflakeDialect,
     SparkDialect,
     TrinoDialect,
 )
+from slayer.sql.dialects.snowflake import SnowflakeDialect
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
 from slayer.sql.dialects.duckdb import DuckdbDialect

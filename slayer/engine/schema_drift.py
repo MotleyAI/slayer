@@ -1625,9 +1625,8 @@ def _live_schema_for_datasource(
     using SQLAlchemy ``Inspector`` and the same fallback path as
     auto-ingestion (``slayer/engine/ingestion.py``).
     """
-    sa_engine = sa.create_engine(
-        datasource.resolve_env_vars().get_connection_string()
-    )
+    from slayer.sql import engine_factory
+    sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     try:
         inspector = sa.inspect(sa_engine)
         table_names = list(inspector.get_table_names(schema=schema))
@@ -1688,8 +1687,10 @@ def _introspect_one_table(
                 if referred_table:
                     fks.append((src, referred_table, tgt))
     except Exception:
-        # Some dialects (ClickHouse, BigQuery, Snowflake) don't surface FK
-        # metadata. Skip silently — joins are still validated by name.
+        # Some dialects (ClickHouse, BigQuery) don't surface FK metadata
+        # via Inspector. Skip silently — joins are still validated by name.
+        # Snowflake DOES expose declarative FK constraints; see
+        # docs/configuration/datasources.md.
         pass
 
     return LiveTable(columns=columns, pk_columns=pk_columns, fk_relationships=fks)
@@ -1871,9 +1872,8 @@ async def _sqlite_probe_drifts_for_models(
         return {m.name: [] for m in sql_table_models}
 
     def _run() -> Dict[str, List[Tuple[str, DataType, DeleteReason]]]:
-        sa_engine = sa.create_engine(
-            datasource.resolve_env_vars().get_connection_string()
-        )
+        from slayer.sql import engine_factory
+        sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
         try:
             out: Dict[str, List[Tuple[str, DataType, DeleteReason]]] = {}
             default_schema = datasource.schema_name or None
@@ -1885,7 +1885,8 @@ async def _sqlite_probe_drifts_for_models(
                 )
             return out
         finally:
-            sa_engine.dispose()
+            # Cached engine — do not dispose; engine_factory owns lifecycle.
+            pass
 
     return await asyncio.to_thread(_run)
 

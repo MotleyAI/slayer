@@ -12,12 +12,17 @@ fields use class-level defaults (``sqlglot_name: str = "postgres"``).
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
+
+if TYPE_CHECKING:
+    import sqlalchemy as sa
+
+    from slayer.core.models import DatasourceConfig
 
 
 # ---------------------------------------------------------------------------
@@ -344,3 +349,80 @@ class SqlDialect(BaseModel):
                 "Use dry_run=True to inspect the generated SQL instead."
             )
         return f"{self.explain_prefix} {sql}{self.explain_postfix}"
+
+    # ------------------------------------------------------------------
+    # Engine / connection / runtime hooks
+    #
+    # These let a dialect carry its own runtime quirks (connection-string
+    # form, engine-creation bridge, per-connection session setup, per-
+    # statement timeout, cursor-type-code mapping) without spilling
+    # dialect-specific conditionals into ``slayer/sql/engine_factory.py``
+    # or ``slayer/sql/client.py``. Defaults are all no-op — concrete
+    # dialects override what's relevant.
+    # ------------------------------------------------------------------
+
+    def build_connection_url(
+        self,
+        datasource: "DatasourceConfig",
+    ) -> Optional[str]:
+        """Hook: dialect-specific connection-string builder.
+
+        Returning ``None`` (the default) means: defer to
+        ``DatasourceConfig.get_connection_string()``'s standard branches
+        (sqlite / duckdb / tsql / generic URL form). SnowflakeDialect
+        overrides this to emit either the
+        ``snowflake://?connection_name=<name>`` sentinel or the inline
+        ``snowflake-sqlalchemy`` URL.
+        """
+        return None
+
+    def build_engine(
+        self,
+        datasource: "DatasourceConfig",
+        *,
+        connection_string: str,
+    ) -> Optional["sa.Engine"]:
+        """Hook: build a dialect-specific SQLAlchemy engine.
+
+        Returning ``None`` (the default) means: ``engine_factory`` falls
+        back to ``sa.create_engine(connection_string, pool_pre_ping=True)``.
+        SnowflakeDialect overrides this when the sentinel URL is in play,
+        wiring the ``creator=`` kwarg to delegate to
+        ``snowflake.connector.connect(connection_name=...)``.
+        """
+        return None
+
+    def apply_session_overrides(
+        self,
+        dbapi_connection: Any,
+        datasource: "DatasourceConfig",
+    ) -> None:
+        """Hook: per-connection session setup (e.g. ``USE WAREHOUSE``).
+
+        Called by ``engine_factory``'s ``connect`` event listener on every
+        new pooled connection. SnowflakeDialect overrides this to issue
+        ``USE WAREHOUSE / USE ROLE / USE DATABASE / USE SCHEMA`` from the
+        DatasourceConfig's typed fields.
+        """
+        return None
+
+    def statement_timeout_sql(self, timeout_seconds: int) -> Optional[str]:
+        """Hook: SQL to set a per-statement timeout, or ``None`` if the
+        dialect doesn't expose one or the existing client.py path handles
+        it via a hardcoded branch (mysql / clickhouse / postgres).
+
+        SnowflakeDialect returns
+        ``ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = N``.
+        """
+        return None
+
+    def map_cursor_type_code(self, type_code: int) -> Optional[str]:
+        """Hook: dialect-specific cursor-type-code → SLayer category
+        (one of ``"number"``, ``"string"``, ``"time"``, ``"boolean"``).
+
+        Returning ``None`` (the default) means: ``client._map_type_code``
+        falls back to the Postgres OID map. SnowflakeDialect overrides
+        this to return the snowflake-connector ``FieldType`` integer
+        codes' mapping.
+        """
+        return None

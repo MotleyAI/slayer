@@ -68,6 +68,10 @@ numpy = {version = ">=1.24", optional = true}
 # the original KuzuDB repo was archived post-acquisition). Import name is
 # ``ladybug``.
 ladybug = {version = ">=0.1", optional = true}
+# Snowflake support (DEV-1551). snowflake-sqlalchemy >= 1.7 is the first
+# release with SQLAlchemy 2.x support (a hard repo dep).
+snowflake-connector-python = {version = ">=3.13", optional = true}
+snowflake-sqlalchemy = {version = ">=1.7", optional = true}
 
 [tool.poetry.extras]
 client = ["httpx", "pandas"]
@@ -75,6 +79,7 @@ postgres = ["psycopg2-binary", "asyncpg"]
 mysql = ["pymysql", "aiomysql"]
 clickhouse = ["clickhouse-sqlalchemy"]
 sqlserver = ["pyodbc"]
+snowflake = ["snowflake-connector-python", "snowflake-sqlalchemy"]
 dbt = ["dbt-core"]
 docs = ["mkdocs-material"]
 flight = ["pyarrow"]
@@ -83,7 +88,7 @@ flight = ["pyarrow"]
 pg_facade = []
 advanced_search = ["litellm", "numpy", "ladybug"]
 embedding_search = ["litellm", "numpy"]  # legacy alias for advanced_search without graph support
-all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "dbt-core", "pyarrow", "litellm", "numpy", "ladybug"]
+all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "dbt-core", "pyarrow", "litellm", "numpy", "ladybug"]
 
 [project.scripts]
 slayer = "slayer.cli:main"
