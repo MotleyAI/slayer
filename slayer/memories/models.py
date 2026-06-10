@@ -74,6 +74,12 @@ def is_valid_memory_id(value: str) -> bool:
     return True
 
 
+#: DEV-1549: hard cap on Memory.description length. The compact-mode
+#: first-paragraph fallback of learning shares the same cap so the two
+#: code paths never disagree on payload size.
+MEMORY_DESCRIPTION_MAX_CHARS = 500
+
+
 class Memory(BaseModel):
     """A single agent memory: a note plus its canonical entity tags,
     optionally bundled with a ``SlayerQuery`` example."""
@@ -81,6 +87,7 @@ class Memory(BaseModel):
     version: int = 2
     id: str = ""
     learning: str
+    description: Optional[str] = None
     entities: List[str] = Field(default_factory=list)
     query: Optional[SlayerQuery] = None
     created_at: datetime = Field(default_factory=_utcnow)
@@ -109,6 +116,41 @@ class Memory(BaseModel):
         if value == "":
             return value
         _validate_memory_id_charset(value)
+        return value
+
+    @field_validator("learning")
+    @classmethod
+    def _check_learning_non_whitespace(cls, value: str) -> str:
+        """DEV-1549 Codex#4: reject whitespace-only learning at the model
+        layer so direct construction can never persist an unusable
+        memory."""
+        if not value.strip():
+            raise ValueError("learning must be a non-empty string.")
+        return value
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _normalise_description(cls, value: Any) -> Any:
+        """DEV-1549 Codex#1: empty / whitespace-only ``description`` is
+        not a deliberate empty preview — coerce to ``None`` so the
+        downstream compact-mode renderer falls back to the first
+        paragraph of ``learning``."""
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def _check_description_length(cls, value: Optional[str]) -> Optional[str]:
+        """DEV-1549: hard cap so a single memory hit can never balloon
+        the search payload."""
+        if value is not None and len(value) > MEMORY_DESCRIPTION_MAX_CHARS:
+            raise ValueError(
+                f"description must be <= {MEMORY_DESCRIPTION_MAX_CHARS} "
+                f"chars; got {len(value)}."
+            )
         return value
 
 

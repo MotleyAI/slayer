@@ -257,6 +257,9 @@ class TestInspectModelLearningsSection:
             learning="amount is in cents",
             entities=["mydb.orders.amount"],
         )
+        # DEV-1549: compact-by-default JSON Learnings emits ``description``
+        # (with first-paragraph fallback). Opt out with compact=False to
+        # exercise the verbose ``learning`` contract this test pins.
         result = await _call(
             mcp_server,
             name="inspect_model",
@@ -265,6 +268,7 @@ class TestInspectModelLearningsSection:
                 "data_source": "mydb",
                 "format": "json",
                 "sections": ["learnings"],
+                "compact": False,
             },
         )
         payload = json.loads(result)

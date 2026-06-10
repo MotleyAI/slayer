@@ -335,7 +335,10 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         # written on int-id v1, then re-saved as str on v2). The plan's
         # "fail loud if content differs" rule covers the actually-lossy
         # case (different learning / entities / attached query).
-        keys = ("learning", "entities", "query")
+        # DEV-1549: ``description`` is part of the persisted content too —
+        # without comparing it, a v1 / v2 dedupe could silently pick the
+        # row that's missing the preview field.
+        keys = ("learning", "description", "entities", "query")
         return all(a.get(k) == b.get(k) for k in keys)
 
     async def _save_memory_row(self, memory: Memory) -> None:

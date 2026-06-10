@@ -86,6 +86,7 @@ def build_in_memory_index(
     memories: List[Memory],
     models: List[SlayerModel],
     datasources: List[str],
+    datasource_descriptions: Optional[Dict[str, Optional[str]]] = None,
 ) -> tantivy.Index:
     """Build a fresh in-RAM tantivy index covering the corpus.
 
@@ -93,11 +94,18 @@ def build_in_memory_index(
     expected to pass datasource names + every model in scope; this
     function does *not* call into storage.
 
+    DEV-1549: ``datasource_descriptions`` mirrors the symmetric kwarg on
+    :func:`build_in_memory_corpus` so direct callers of this helper can
+    also surface datasource-description text in the lexical index.
+
     Returns just the tantivy index for callers that don't need the
     canonical-text lookups. ``build_in_memory_corpus`` returns both.
     """
     corpus = build_in_memory_corpus(
-        memories=memories, models=models, datasources=datasources,
+        memories=memories,
+        models=models,
+        datasources=datasources,
+        datasource_descriptions=datasource_descriptions,
     )
     return corpus.index
 
@@ -106,13 +114,19 @@ class Corpus(BaseModel):
     """The tantivy index plus the parallel ``canonical_id → text`` and
     ``canonical_id → kind`` maps. The embedding channel (DEV-1386) uses
     the maps to recover hit text without re-rendering the entity or
-    round-tripping through the raw ``canonical`` tantivy field."""
+    round-tripping through the raw ``canonical`` tantivy field.
+
+    DEV-1549: ``canonical_to_description`` lets the search service
+    surface the entity's structured description on ``SearchHit`` without
+    re-loading the entity at hit-construction time.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     index: "tantivy.Index"
     canonical_to_text: Dict[str, str]
     canonical_to_kind: Dict[str, str]
+    canonical_to_description: Dict[str, Optional[str]] = {}
 
 
 def _collect_render_pairs(
@@ -120,27 +134,41 @@ def _collect_render_pairs(
     memories: List[Memory],
     visible_models: List[SlayerModel],
     datasources: List[str],
-) -> List[Tuple[str, str, str]]:
-    """Return ``[(canonical_id, kind, rendered_text), ...]`` for every
-    doc that goes into the index. Routes through the unified dispatch
-    helpers in ``slayer.search.render`` (DEV-1513). Hidden models and
-    hidden columns are skipped inside the helpers."""
-    out: List[Tuple[str, str, str]] = []
+    datasource_descriptions: Optional[Dict[str, Optional[str]]] = None,
+) -> List[Tuple[str, str, str, Optional[str]]]:
+    """Return ``[(canonical_id, kind, rendered_text, description), ...]``
+    for every doc that goes into the index. Routes through the unified
+    dispatch helpers in ``slayer.search.render`` (DEV-1513). Hidden
+    models and hidden columns are skipped inside the helpers.
+
+    DEV-1549: the fourth tuple element carries the entity's structured
+    ``description`` field (``None`` when absent) so callers can build a
+    ``canonical_id → description`` map symmetrical to the existing
+    canonical-text map.
+    """
+    out: List[Tuple[str, str, str, Optional[str]]] = []
     models_by_ds: Dict[str, List[SlayerModel]] = {}
     for m in visible_models:
         models_by_ds.setdefault(m.data_source, []).append(m)
+    descriptions = datasource_descriptions or {}
     for ds in datasources:
         pair = render_datasource_pair(
-            name=ds, models=models_by_ds.get(ds, []),
+            name=ds,
+            models=models_by_ds.get(ds, []),
+            description=descriptions.get(ds),
         )
-        out.append((pair.canonical_id, pair.kind, pair.text))
+        out.append((pair.canonical_id, pair.kind, pair.text, pair.description))
     for model in visible_models:
         for re in collect_model_entity_pairs(model=model):
-            out.append((re.canonical_id, re.kind, re.text))
+            out.append((re.canonical_id, re.kind, re.text, re.description))
     for memory in memories:
+        # Memories surface ``Memory.description`` directly so the search
+        # service can flip on compact rendering without re-loading the
+        # memory.
         out.append((
             f"memory:{memory.id}", "memory",
             render_memory_text(memory=memory),
+            memory.description,
         ))
     return out
 
@@ -150,12 +178,18 @@ def build_in_memory_corpus(
     memories: List[Memory],
     models: List[SlayerModel],
     datasources: List[str],
+    datasource_descriptions: Optional[Dict[str, Optional[str]]] = None,
 ) -> Corpus:
     """Build the index AND the parallel canonical lookup maps in one walk.
 
     The embedding channel (DEV-1386) reads from the same render pipeline
     as tantivy, so rendering once here keeps the two channels in sync
     without paying for two traversals.
+
+    DEV-1549: ``datasource_descriptions`` is an optional
+    ``{ds_name → description}`` map (``None`` description when the
+    datasource has none). When omitted, datasource hits get
+    ``description=None``.
     """
     schema = _build_schema()
     index = tantivy.Index(schema=schema)
@@ -174,10 +208,12 @@ def build_in_memory_corpus(
         memories=memories,
         visible_models=visible_models,
         datasources=datasources,
+        datasource_descriptions=datasource_descriptions,
     )
     canonical_to_text: Dict[str, str] = {}
     canonical_to_kind: Dict[str, str] = {}
-    for canonical, kind, text in pairs:
+    canonical_to_description: Dict[str, Optional[str]] = {}
+    for canonical, kind, text, description in pairs:
         # Memory docs use ``id="memory:<int>"`` and ``canonical="<int>"``
         # to match the DEV-1375 tantivy schema; entity docs use the same
         # canonical string for both ``id`` and ``canonical`` fields.
@@ -194,6 +230,7 @@ def build_in_memory_corpus(
             )
         canonical_to_text[canonical] = text
         canonical_to_kind[canonical] = kind
+        canonical_to_description[canonical] = description
 
     writer.commit()
     index.reload()
@@ -201,6 +238,7 @@ def build_in_memory_corpus(
         index=index,
         canonical_to_text=canonical_to_text,
         canonical_to_kind=canonical_to_kind,
+        canonical_to_description=canonical_to_description,
     )
 
 

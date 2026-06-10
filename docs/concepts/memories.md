@@ -60,7 +60,7 @@ Memory retrieval is part of [`search`](search.md) (one tool covers
 both memories and canonical entity discovery). This page covers only
 the write side.
 
-### `save_memory(learning, linked_entities, id=None)`
+### `save_memory(learning, linked_entities, id=None, description=None)`
 
 Persist a memory. `linked_entities` accepts either form:
 
@@ -78,6 +78,13 @@ user-controlled id (`"kb.policy.42"`) — useful for knowledge-base
 ingestion pipelines. Charset excludes `:`, `/`, `?`, `#`, whitespace,
 and ASCII control characters. Duplicate id → unconditional **upsert**,
 `created_at` preserved.
+
+`description` is optional (≤ 500 chars). When set, `search(compact=True)`
+and `inspect_model(compact=True)` surface this short preview instead of
+the full `learning` body — the token-saving counterpart of the verbose
+body. Empty / whitespace-only `description` is normalized to `None` at
+save time. When unset, compact rendering falls back to the first
+non-empty paragraph of `learning` (capped at 500 chars).
 
 Returns `memory_id` (a non-empty string), the canonical entities
 stored, and any non-fatal warnings.

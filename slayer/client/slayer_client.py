@@ -344,15 +344,21 @@ class SlayerClient:
         learning: str,
         linked_entities: Union[List[str], SlayerQuery, Dict[str, Any]],
         id: Optional[str] = None,  # noqa: A002 — public kwarg matching MCP / REST
+        description: Optional[str] = None,
     ) -> SaveMemoryResponse:
         """Save a memory: a learning text + linked entities (or an
         inline SlayerQuery to extract entities from). DEV-1428:
-        optional ``id`` lets callers pin the canonical memory id."""
+        optional ``id`` lets callers pin the canonical memory id.
+
+        DEV-1549: optional ``description`` is a ≤ 500-char preview
+        surfaced by ``search(compact=True)`` and ``inspect_model``.
+        """
         if self._storage is not None:
             response = await self._memory_service().save_memory(
                 learning=learning,
                 linked_entities=self._coerce_linked_entities(linked_entities),
                 id=id,
+                description=description,
             )
             return response
         body: Dict[str, Any] = {
@@ -361,6 +367,8 @@ class SlayerClient:
         }
         if id is not None:
             body["id"] = id
+        if description is not None:
+            body["description"] = description
         result = await self._request(method="POST", path="/memories", json=body)
         return SaveMemoryResponse.model_validate(result)
 
@@ -391,6 +399,7 @@ class SlayerClient:
         datasource: Optional[str] = None,
         max_results: int = 10,
         cypher_filter: Optional[str] = None,
+        compact: bool = True,
     ) -> "SearchResponse":
         """Up to three-channel semantic search over memories + canonical
         entities.
@@ -435,9 +444,11 @@ class SlayerClient:
                 datasource=datasource,
                 max_results=max_results,
                 cypher_filter=cypher_filter,
+                compact=compact,
             )
         body: Dict[str, Any] = {
             "max_results": max_results,
+            "compact": compact,
         }
         if entities is not None:
             body["entities"] = entities

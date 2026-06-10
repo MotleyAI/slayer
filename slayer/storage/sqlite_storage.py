@@ -406,6 +406,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         learning: str,
         entities: List[str],
         query: Optional[SlayerQuery],
+        description: Optional[str] = None,
     ) -> Memory:
         """Reserve / accept an id and persist the new memory inside one
         SQLite transaction. Returns the persisted :class:`Memory`.
@@ -445,6 +446,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                 kwargs: Dict[str, Any] = {
                     "id": memory_id,
                     "learning": learning,
+                    "description": description,
                     "entities": list(entities),
                     "query": query,
                 }
@@ -493,6 +495,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         entities: List[str],
         query: Optional[SlayerQuery] = None,
         id: Optional[str] = None,  # noqa: A002 — public kwarg
+        description: Optional[str] = None,
     ) -> Memory:
         if id is not None:
             _validate_memory_id_charset(id)
@@ -502,6 +505,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             learning=learning,
             entities=list(entities),
             query=query,
+            description=description,
         )
 
     # ``_save_memory_row`` and ``_next_memory_seq`` are kept to satisfy

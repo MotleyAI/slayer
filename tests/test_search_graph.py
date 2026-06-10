@@ -391,6 +391,95 @@ async def test_model_description_property(rich_storage: YAMLStorage) -> None:
 
 
 # ---------------------------------------------------------------------------
+# DEV-1549 round 6: Memory.description and Datasource.description
+# expose the new fields on the graph so cypher_filter can match them.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def descriptions_storage() -> AsyncIterator[YAMLStorage]:
+    """A datasource with description + a memory with description, so the
+    graph schema can be exercised on both Memory.description and
+    Datasource.description."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        storage = YAMLStorage(base_dir=tmpdir)
+        await storage.save_datasource(DatasourceConfig(
+            name="warehouse",
+            type="sqlite",
+            database=":memory:",
+            description="warehouse_reconciliation_alpha unique term",
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders", data_source="warehouse",
+            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        ))
+        await storage.save_memory(
+            learning="orders body",
+            entities=["warehouse.orders.id"],
+            description="memory_token_beta unique description term",
+        )
+        clear_cache()
+        yield storage
+
+
+@pytest.mark.skipif(not is_available(), reason="ladybug not installed")
+@pytest.mark.asyncio
+async def test_memory_description_property(
+    descriptions_storage: YAMLStorage,
+) -> None:
+    ids = await get_filtered_ids(
+        "MATCH (m:Memory) WHERE m.description CONTAINS 'memory_token_beta' "
+        "RETURN m.id AS id",
+        descriptions_storage,
+    )
+    assert len(ids) == 1
+
+
+@pytest.mark.skipif(not is_available(), reason="ladybug not installed")
+@pytest.mark.asyncio
+async def test_datasource_description_property(
+    descriptions_storage: YAMLStorage,
+) -> None:
+    ids = await get_filtered_ids(
+        "MATCH (d:Datasource) WHERE d.description CONTAINS 'warehouse_reconciliation_alpha' "
+        "RETURN d.id AS id",
+        descriptions_storage,
+    )
+    assert "warehouse" in ids
+    assert len(ids) == 1
+
+
+@pytest.mark.skipif(not is_available(), reason="ladybug not installed")
+@pytest.mark.asyncio
+async def test_aggregation_description_property(
+    rich_storage: YAMLStorage,
+) -> None:
+    """DEV-1549 (round-7 codex): Aggregation nodes carry their
+    ``description`` so cypher_filter can match on aggregation
+    descriptions in parity with model/column/measure."""
+    # The rich_storage fixture seeds shop.orders with a custom
+    # aggregation ``weighted_avg`` that has no description; create a
+    # second, described aggregation on the same model to exercise the
+    # description column.
+    orders = await rich_storage.get_model("orders", data_source="shop")
+    assert orders is not None
+    orders.aggregations.append(Aggregation(
+        name="distinctive_agg",
+        formula="SUM({col})",
+        description="aggregation_token_omega unique description term",
+    ))
+    await rich_storage.save_model(orders)
+    clear_cache()  # invalidate the prior graph build
+
+    ids = await get_filtered_ids(
+        "MATCH (a:Aggregation) WHERE a.description CONTAINS 'aggregation_token_omega' "
+        "RETURN a.id AS id",
+        rich_storage,
+    )
+    assert "shop.orders.distinctive_agg" in ids
+
+
+# ---------------------------------------------------------------------------
 # MENTIONS edges (requires ladybug)
 # ---------------------------------------------------------------------------
 

@@ -169,6 +169,7 @@ search(
     datasource: Optional[str] = None,
     max_results: int = 10,
     cypher_filter: Optional[str] = None,
+    compact: bool = True,
 ) -> SearchResponse
 ```
 
@@ -176,8 +177,31 @@ search(
 |---|---|
 | MCP | `search(entities=[...], question="...")` tool |
 | REST | `POST /search` with `SearchRequest` body |
-| CLI  | `slayer search --entity <e> --question "..." [--format json]` |
+| CLI  | `slayer search --entity <e> --question "..." [--format json] [--verbose]` |
 | Python client | `await client.search(entities=[...], question="...")` |
+
+### `compact=True` default (0.7.3)
+
+Compact-by-default trims per-hit payloads so a normal `search` call
+returns ~10× less text than the pre-0.7.3 verbose shape. The trim is
+symmetric across hit kinds:
+
+- **Memory hits** — `SearchHit.description` holds `Memory.description`
+  when the user set it on `save_memory`, otherwise the first non-empty
+  paragraph of `Memory.learning` capped at 500 chars. `SearchHit.text`
+  is empty (`""`). `query` is preserved for example-query memories.
+- **Entity hits** (datasource / model / column / measure / aggregation)
+  — `SearchHit.description` holds the entity's structured
+  `description` field (`None` when the entity has none). `SearchHit.text`
+  is empty.
+- `matched_entities` is identical across modes.
+
+Pass `compact=False` (CLI: `--verbose`) to restore the full per-hit
+render — useful when drilling into a single memory:
+
+```json
+{"entities": ["memory:42"], "max_results": 1, "compact": false}
+```
 
 ### `datasource` filter (DEV-1409)
 
@@ -318,7 +342,10 @@ class SearchHit(BaseModel):
     id: str            # memory id OR canonical entity string
     kind: str          # "memory"|"datasource"|"model"|"column"|"measure"|"aggregation"
     score: float       # RRF-fused score
-    text: str          # full indexed text (no truncation)
+    text: str          # full indexed text under compact=False; "" under compact=True
+    description: Optional[str]    # compact preview (always populated for
+                                  # entity hits with descriptions; populated
+                                  # for memory hits in compact mode)
     matched_entities: List[str]   # channel-1 overlap (memory hits only;
                                   # stale tags filtered, DEV-1428)
     query: Optional[SlayerQuery]  # set on query-bearing memory hits

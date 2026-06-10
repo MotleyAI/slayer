@@ -146,7 +146,11 @@ def test_collect_render_pairs_uses_unified_helper() -> None:
     model_canonicals = {
         re.canonical_id for re in collect_model_entity_pairs(model=model)
     }
-    corpus_subset = [(c, k, t) for c, k, t in corpus_pairs if c in model_canonicals]
+    # DEV-1549: _collect_render_pairs now yields 4-tuples
+    # (canonical, kind, text, description). Strip description for parity.
+    corpus_subset = [
+        (c, k, t) for c, k, t, _d in corpus_pairs if c in model_canonicals
+    ]
     unified = [
         (re.canonical_id, re.kind, re.text)
         for re in collect_model_entity_pairs(model=model)
@@ -237,7 +241,9 @@ async def test_render_datasource_pair_used_by_index_and_embedding_paths(
         visible_models=[orders],  # hidden model already filtered upstream
         datasources=["warehouse"],
     )
-    corpus_ws_text = next(t for c, k, t in corpus_pairs if c == "warehouse")
+    corpus_ws_text = next(
+        t for c, k, t, _d in corpus_pairs if c == "warehouse"
+    )
     assert pair_ws.text == corpus_ws_text
 
     # Embedding-side: stub embed_batch and inspect the captured text.
@@ -316,7 +322,11 @@ def test_index_corpus_path_actually_calls_collect_model_entity_pairs(
         visible_models=[_model_with_full_subtree()],
         datasources=[],
     )
-    assert any(c == "SENTINEL.x" and t == "SENTINEL_TEXT" for c, k, t in pairs)
+    # DEV-1549: 4-tuples (canonical, kind, text, description).
+    assert any(
+        c == "SENTINEL.x" and t == "SENTINEL_TEXT"
+        for c, k, t, _d in pairs
+    )
 
 
 async def test_embedding_path_actually_calls_collect_model_entity_pairs(
@@ -369,15 +379,22 @@ def test_index_corpus_path_actually_calls_render_datasource_pair(
         text="SENTINEL_DS_TEXT",
     )
 
-    def stub(*, name: str, models: List[SlayerModel]) -> RenderedEntity:  # noqa: ARG001
+    def stub(
+        *,
+        name: str,
+        models: List[SlayerModel],
+        description: Optional[str] = None,
+    ) -> RenderedEntity:  # noqa: ARG001
         return sentinel
 
     monkeypatch.setattr(index_mod, "render_datasource_pair", stub)
     pairs = index_mod._collect_render_pairs(
         memories=[], visible_models=[], datasources=["anything"],
     )
+    # DEV-1549: 4-tuples.
     assert any(
-        c == "SENTINEL_DS" and t == "SENTINEL_DS_TEXT" for c, k, t in pairs
+        c == "SENTINEL_DS" and t == "SENTINEL_DS_TEXT"
+        for c, k, t, _d in pairs
     )
 
 
@@ -395,7 +412,12 @@ async def test_embedding_path_actually_calls_render_datasource_pair(
         canonical_id="SENTINEL_DS", kind="datasource", text=sentinel_text,
     )
 
-    def stub(*, name: str, models: List[SlayerModel]) -> RenderedEntity:  # noqa: ARG001
+    def stub(
+        *,
+        name: str,
+        models: List[SlayerModel],
+        description: Optional[str] = None,
+    ) -> RenderedEntity:  # noqa: ARG001
         return sentinel
 
     monkeypatch.setattr(emb_mod, "render_datasource_pair", stub)
