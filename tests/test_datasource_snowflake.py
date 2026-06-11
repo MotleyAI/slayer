@@ -69,7 +69,7 @@ class TestDatasourceDelegatesToDialect:
             type="postgres",
             host="localhost",
             username="u",
-            password="p",
+            password="p",  # NOSONAR(S2068) — test fixture; obvious placeholder value
             database="db",
             connection_name="should_be_ignored",
             warehouse="should_be_ignored",

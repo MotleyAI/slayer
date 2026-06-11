@@ -116,7 +116,7 @@ def test_build_connection_url_inline_partial_omits_unset() -> None:
     pytest.importorskip("snowflake.sqlalchemy")
     ds = DatasourceConfig(
         name="sf", type="snowflake",
-        host="jp13593", username="u", password="p",
+        host="jp13593", username="u", password="p",  # NOSONAR(S2068) — test fixture; obvious placeholder value
     )
     url = SnowflakeDialect().build_connection_url(ds)
     assert url is not None
@@ -128,7 +128,7 @@ def test_build_connection_url_inline_partial_omits_unset() -> None:
 def test_build_connection_url_inline_requires_host() -> None:
     ds = DatasourceConfig(
         name="sf", type="snowflake",
-        username="u", password="p",  # no host, no connection_name
+        username="u", password="p",  # NOSONAR(S2068) — test fixture; obvious placeholder value (no host, no connection_name)
     )
     with pytest.raises(ValueError, match=r"(?i)connection_name|host|account"):
         SnowflakeDialect().build_connection_url(ds)
@@ -140,7 +140,7 @@ def test_build_connection_url_connection_name_wins_over_inline() -> None:
     ds = DatasourceConfig(
         name="sf", type="snowflake",
         connection_name="default",
-        host="ignored.account", username="ignored", password="ignored",
+        host="ignored.account", username="ignored", password="ignored",  # NOSONAR(S2068) — test fixture; obvious placeholder value
     )
     url = SnowflakeDialect().build_connection_url(ds)
     assert url == "snowflake://?connection_name=default"
@@ -151,7 +151,7 @@ def test_build_connection_url_inline_missing_extra_raises_actionable_error() -> 
     the pip extra install hint."""
     ds = DatasourceConfig(
         name="sf", type="snowflake",
-        host="acct", username="u", password="p",
+        host="acct", username="u", password="p",  # NOSONAR(S2068) — test fixture; obvious placeholder value
     )
     with patch.dict("sys.modules", {"snowflake.sqlalchemy": None}):
         with pytest.raises(ImportError, match=r"motley-slayer\[snowflake\]"):
@@ -190,7 +190,7 @@ def test_build_engine_inline_returns_none() -> None:
     pytest.importorskip("snowflake.sqlalchemy")
     ds = DatasourceConfig(
         name="sf", type="snowflake",
-        host="acct", username="u", password="p",
+        host="acct", username="u", password="p",  # NOSONAR(S2068) — test fixture; obvious placeholder value
     )
     inline_url = "snowflake://u:p@acct/?warehouse=wh"
     result = SnowflakeDialect().build_engine(ds, connection_string=inline_url)

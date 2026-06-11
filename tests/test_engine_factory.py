@@ -29,7 +29,7 @@ class TestGetEngine:
     def test_postgres_uses_standard_create_engine(self) -> None:
         engine_factory.reset_cache()
         ds = DatasourceConfig(
-            name="pg", type="postgres", host="h", username="u", password="p", database="db",
+            name="pg", type="postgres", host="h", username="u", password="p", database="db",  # NOSONAR(S2068) — test fixture; obvious placeholder value
         )
         eng = engine_factory.get_engine(ds)
         assert isinstance(eng, sa.Engine)
@@ -64,7 +64,7 @@ class TestGetEngine:
         with the connection_string."""
         engine_factory.reset_cache()
         ds = DatasourceConfig(
-            name="pg", type="postgres", host="h", username="u", password="p", database="db",
+            name="pg", type="postgres", host="h", username="u", password="p", database="db",  # NOSONAR(S2068) — test fixture; obvious placeholder value
         )
         with patch("slayer.sql.engine_factory.sa.create_engine") as create_engine_mock:
             fake = MagicMock()
@@ -105,7 +105,7 @@ class TestSessionOverridesListener:
         engine_factory.reset_cache()
         ds = DatasourceConfig(
             name="pg", type="postgres",
-            host="h", username="u", password="p", database="db",
+            host="h", username="u", password="p", database="db",  # NOSONAR(S2068) — test fixture; obvious placeholder value
             warehouse="should_not_fire",
             role="should_not_fire",
         )
@@ -132,7 +132,7 @@ class TestSessionOverridesListener:
             ) as apply_mock:
                 engine = engine_factory.get_engine(ds)
                 with engine.connect() as _:
-                    pass
+                    pass  # NOSONAR(S108) — empty body is intentional; opening + closing fires the connect-event listener under test
         assert apply_mock.call_count >= 1
         # Listener calls ``apply_session_overrides(dbapi_connection=..., datasource=...)``
         # by name; the datasource is the kwarg, not a positional arg.
@@ -144,7 +144,7 @@ class TestCacheKeying:
     def test_same_datasource_returns_same_engine(self) -> None:
         engine_factory.reset_cache()
         ds = DatasourceConfig(
-            name="pg", type="postgres", host="h", username="u", password="p", database="db",
+            name="pg", type="postgres", host="h", username="u", password="p", database="db",  # NOSONAR(S2068) — test fixture; obvious placeholder value
         )
         eng1 = engine_factory.get_engine(ds)
         eng2 = engine_factory.get_engine(ds)

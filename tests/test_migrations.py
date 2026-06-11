@@ -173,7 +173,7 @@ def test_datasource_config_v1_to_v2_is_noop_forward() -> None:
         "type": "postgres",
         "host": "localhost",
         "username": "alice",
-        "password": "secret",
+        "password": "secret",  # NOSONAR(S2068) — test fixture; obvious placeholder value
         "database": "db",
     }
     ds = DatasourceConfig.model_validate(raw)

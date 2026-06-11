@@ -298,7 +298,7 @@ def test_basic_query(sf_storage_with_models) -> None:
     rows = result.data
     assert len(rows) == 1
     # 6 orders, quantities 2+1+5+3+1+4 = 16
-    val = list(rows[0].values())[0]
+    val = next(iter(rows[0].values()))
     assert int(val) == 16
 
 
