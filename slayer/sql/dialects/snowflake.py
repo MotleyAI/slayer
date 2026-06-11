@@ -21,6 +21,7 @@ from the base is ``log2_native=False`` (Snowflake has no native LOG2).
 
 from __future__ import annotations
 
+import re as _re
 from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import quote
 
@@ -86,17 +87,33 @@ def _import_snowflake_sqlalchemy_url():
         ) from exc
 
 
-def _quote_identifier(name: str) -> str:
-    """Wrap ``name`` in double quotes for Snowflake, escaping embedded quotes.
+# Snowflake identifier characters allowed unquoted: letters, digits,
+# underscores, dollar signs. Anything else (whitespace, semicolons,
+# quotes, parentheses) is rejected up front rather than emitted into a
+# ``USE WAREHOUSE/ROLE/DATABASE/SCHEMA`` statement.
+_SAFE_SNOWFLAKE_IDENT = _re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
+
+
+def _validate_unquoted_identifier(*, field: str, value: str) -> str:
+    """Reject Snowflake identifier values that aren't safe to emit unquoted.
 
     The values that flow into ``USE WAREHOUSE / ROLE / DATABASE / SCHEMA``
-    statements come from typed ``DatasourceConfig`` fields — trusted input
-    — but quoting is defence-in-depth: it preserves identifiers that
-    contain mixed case or special characters (Snowflake folds unquoted
-    refs to uppercase) and removes any SQL-injection surface in the event
-    a downstream caller starts accepting these as user input.
+    statements come from typed ``DatasourceConfig`` fields. We deliberately
+    emit them **unquoted** so Snowflake's case-folding rules apply (the
+    common ``warehouse: compute_wh`` config matches the uppercase storage
+    ``COMPUTE_WH``); always-quoting would silently break those configs.
+    To keep that path safe we reject any character that could change the
+    statement's meaning (whitespace, semicolons, quotes, parens, dots).
     """
-    return '"' + name.replace('"', '""') + '"'
+    if not _SAFE_SNOWFLAKE_IDENT.match(value):
+        raise ValueError(
+            f"Invalid Snowflake identifier for DatasourceConfig.{field}: "
+            f"{value!r}. Only letters, digits, underscores, and '$' are allowed; "
+            f"the first character must be a letter or underscore. (If you have "
+            f"a quoted/mixed-case Snowflake object, create the datasource with "
+            f"the uppercase or canonical form.)"
+        )
+    return value
 
 
 def _is_connection_name_sentinel(connection_string: str) -> bool:
@@ -244,16 +261,39 @@ class SnowflakeDialect(SqlDialect):
             datasource.schema_name,
         )):
             return
+        # Validate every value up front; reject anything that isn't a
+        # safe-to-emit-unquoted Snowflake identifier (catches embedded
+        # semicolons, quotes, whitespace).
+        warehouse = (
+            _validate_unquoted_identifier(field="warehouse", value=datasource.warehouse)
+            if datasource.warehouse else None
+        )
+        role = (
+            _validate_unquoted_identifier(field="role", value=datasource.role)
+            if datasource.role else None
+        )
+        database = (
+            _validate_unquoted_identifier(field="database", value=datasource.database)
+            if datasource.database else None
+        )
+        schema_name = (
+            _validate_unquoted_identifier(field="schema_name", value=datasource.schema_name)
+            if datasource.schema_name else None
+        )
         cur = dbapi_connection.cursor()
         try:
-            if datasource.warehouse:
-                cur.execute(f"USE WAREHOUSE {_quote_identifier(datasource.warehouse)}")
-            if datasource.role:
-                cur.execute(f"USE ROLE {_quote_identifier(datasource.role)}")
-            if datasource.database:
-                cur.execute(f"USE DATABASE {_quote_identifier(datasource.database)}")
-            if datasource.schema_name:
-                cur.execute(f"USE SCHEMA {_quote_identifier(datasource.schema_name)}")
+            # Order: USE ROLE first — role determines warehouse / database
+            # privileges. A role granted via ``DatasourceConfig.role`` that
+            # has access to a warehouse the profile's default role doesn't
+            # see would otherwise fail at USE WAREHOUSE.
+            if role:
+                cur.execute(f"USE ROLE {role}")
+            if warehouse:
+                cur.execute(f"USE WAREHOUSE {warehouse}")
+            if database:
+                cur.execute(f"USE DATABASE {database}")
+            if schema_name:
+                cur.execute(f"USE SCHEMA {schema_name}")
         finally:
             cur.close()
 

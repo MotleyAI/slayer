@@ -134,9 +134,9 @@ class TestSessionOverridesListener:
                 with engine.connect() as _:
                     pass
         assert apply_mock.call_count >= 1
-        call_args = apply_mock.call_args
-        # Second positional arg is the datasource (first is dbapi_connection).
-        assert call_args.args[1] is ds
+        # Listener calls ``apply_session_overrides(dbapi_connection=..., datasource=...)``
+        # by name; the datasource is the kwarg, not a positional arg.
+        assert apply_mock.call_args.kwargs["datasource"] is ds
 
 
 class TestCacheKeying:

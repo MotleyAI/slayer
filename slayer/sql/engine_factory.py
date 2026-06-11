@@ -82,7 +82,10 @@ def _attach_session_overrides_listener(
 
     @sa_event.listens_for(engine, "connect")
     def _slayer_session_overrides(dbapi_connection, _connection_record):
-        dialect.apply_session_overrides(dbapi_connection, datasource)
+        dialect.apply_session_overrides(
+            dbapi_connection=dbapi_connection,
+            datasource=datasource,
+        )
 
 
 def _attach_register_udfs_listener(

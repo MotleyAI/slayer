@@ -253,7 +253,7 @@ def test_apply_session_overrides_emits_use_schema() -> None:
     fake_conn.cursor.return_value = fake_cur
     SnowflakeDialect().apply_session_overrides(fake_conn, ds)
     sqls = [c.args[0] for c in fake_cur.execute.call_args_list]
-    assert sqls == ['USE SCHEMA "MY_TRANSIENT_SCHEMA"']
+    assert sqls == ["USE SCHEMA MY_TRANSIENT_SCHEMA"]
 
 
 def test_apply_session_overrides_runs_all_four_in_order() -> None:
@@ -271,11 +271,15 @@ def test_apply_session_overrides_runs_all_four_in_order() -> None:
     # Order: warehouse → role → database → schema. Some Snowflake accounts
     # require an active warehouse before USE SCHEMA can resolve, and
     # USE DATABASE must precede USE SCHEMA for bare schema names.
+    # Order matters: USE ROLE precedes USE WAREHOUSE because a role
+    # granted by the typed DatasourceConfig.role may scope warehouse
+    # visibility — running USE WAREHOUSE under the profile's default
+    # role would otherwise fail.
     assert sqls == [
-        'USE WAREHOUSE "MY_WH"',
-        'USE ROLE "MY_ROLE"',
-        'USE DATABASE "MY_DB"',
-        'USE SCHEMA "MY_SCHEMA"',
+        "USE ROLE MY_ROLE",
+        "USE WAREHOUSE MY_WH",
+        "USE DATABASE MY_DB",
+        "USE SCHEMA MY_SCHEMA",
     ]
 
 
@@ -289,7 +293,7 @@ def test_apply_session_overrides_skips_unset_fields() -> None:
     fake_conn.cursor.return_value = fake_cur
     SnowflakeDialect().apply_session_overrides(fake_conn, ds)
     sqls = [c.args[0] for c in fake_cur.execute.call_args_list]
-    assert sqls == ['USE WAREHOUSE "WH"']
+    assert sqls == ["USE WAREHOUSE WH"]
 
 
 def test_apply_session_overrides_noop_when_nothing_set() -> None:
@@ -301,6 +305,44 @@ def test_apply_session_overrides_noop_when_nothing_set() -> None:
     assert fake_cur.execute.call_count == 0
     # No-op should also not even open a cursor.
     assert fake_conn.cursor.call_count == 0
+
+
+@pytest.mark.parametrize("bad_value", [
+    "MY_WH; DROP TABLE foo",  # semicolon
+    'MY_"WH',                  # quote
+    "MY WH",                   # whitespace
+    "MY-WH",                   # hyphen
+    "MY.WH",                   # dot
+    "1MY_WH",                  # leading digit
+])
+def test_apply_session_overrides_rejects_unsafe_warehouse(bad_value: str) -> None:
+    """Snowflake identifier values are emitted UNQUOTED so common
+    lowercase configs (``warehouse: compute_wh``) match the uppercase
+    storage. The trade-off: unsafe characters get rejected up-front so
+    no SQL-injection surface opens up if a future caller starts
+    accepting these from untrusted sources."""
+    ds = DatasourceConfig(name="sf", type="snowflake", warehouse=bad_value)
+    fake_conn = MagicMock()
+    fake_cur = MagicMock()
+    fake_conn.cursor.return_value = fake_cur
+    with pytest.raises(ValueError, match="warehouse"):
+        SnowflakeDialect().apply_session_overrides(fake_conn, ds)
+    # Cursor should never have been opened — the validator runs first.
+    assert fake_conn.cursor.call_count == 0
+
+
+def test_apply_session_overrides_accepts_lowercase_value() -> None:
+    """Common case: ``warehouse: compute_wh`` (lowercase config) is
+    emitted UNQUOTED so Snowflake folds it to ``COMPUTE_WH`` and
+    matches the stored uppercase object name. Always-quoting would
+    silently break this."""
+    ds = DatasourceConfig(name="sf", type="snowflake", warehouse="compute_wh")
+    fake_conn = MagicMock()
+    fake_cur = MagicMock()
+    fake_conn.cursor.return_value = fake_cur
+    SnowflakeDialect().apply_session_overrides(fake_conn, ds)
+    sqls = [c.args[0] for c in fake_cur.execute.call_args_list]
+    assert sqls == ["USE WAREHOUSE compute_wh"]
 
 
 def test_apply_session_overrides_closes_cursor_on_failure() -> None:

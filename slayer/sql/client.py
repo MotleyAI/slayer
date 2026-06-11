@@ -221,6 +221,14 @@ def _map_type_code(type_code, db_type: Optional[str] = None) -> str:
             return _MYSQL_TYPE_MAP.get(type_code, "string")
         if db_type and any(t in db_type.lower() for t in ("mssql", "sqlserver", "tsql")):
             return _ODBC_SQL_TYPE_MAP.get(type_code, "string")
+        # DEV-1551: Snowflake had its first crack at the integer code via
+        # ``SqlDialect.map_cursor_type_code`` above. If we land here with
+        # ``db_type='snowflake'`` it means the code wasn't recognised by
+        # ``_SNOWFLAKE_TYPE_MAP``; default to ``"string"`` rather than
+        # mis-classifying it through ``_PG_OID_MAP`` (Postgres OID 16 is
+        # ``boolean`` but undefined on Snowflake).
+        if db_type and "snowflake" in db_type.lower():
+            return "string"
         return _PG_OID_MAP.get(type_code, "string")
     return "string"
 

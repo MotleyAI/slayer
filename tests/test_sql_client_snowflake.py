@@ -49,12 +49,13 @@ class TestMapTypeCodeDelegatesToDialect:
     def test_known_snowflake_codes_routed_to_dialect(self, code: int, expected: str) -> None:
         assert client._map_type_code(code, db_type="snowflake") == expected
 
-    def test_unknown_snowflake_code_falls_through_to_pg_oid_fallback(self) -> None:
-        """Unknown Snowflake codes return None from the dialect, so
-        ``_map_type_code`` falls through to the existing _PG_OID_MAP
-        path. Code 16 is "boolean" in PG-OID, so the fallback returns
-        "boolean" — even though Snowflake never emits code 16."""
-        assert client._map_type_code(16, db_type="snowflake") == "boolean"
+    def test_unknown_snowflake_code_defaults_to_string(self) -> None:
+        """Unknown Snowflake codes return None from the dialect; the
+        ``snowflake``-specific branch in ``_map_type_code`` then defaults
+        to ``"string"`` rather than falling through to ``_PG_OID_MAP``.
+        Code 16 is ``"boolean"`` in PG-OID but undefined on Snowflake —
+        a fall-through would mis-classify."""
+        assert client._map_type_code(16, db_type="snowflake") == "string"
 
     def test_unknown_snowflake_code_with_no_pg_match_defaults_to_string(self) -> None:
         """A code that's unknown to both Snowflake AND Postgres OIDs
