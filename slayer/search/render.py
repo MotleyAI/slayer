@@ -27,7 +27,7 @@ Spec rules pinned by ``tests/test_search_render.py``:
 from __future__ import annotations
 
 import json
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -47,11 +47,17 @@ class RenderedEntity(BaseModel):
     surfacing). Single source of truth for "what counts as an indexable
     entity" — filter rules (hidden model -> empty list, hidden column
     skipped, unnamed measure skipped) live in ``collect_model_entity_pairs``
-    and ``render_datasource_pair`` only."""
+    and ``render_datasource_pair`` only.
+
+    DEV-1549: ``description`` carries the entity's structured description
+    field (``None`` when the entity has none). The search service surfaces
+    it as ``SearchHit.description`` under compact mode.
+    """
 
     canonical_id: str
     kind: str
     text: str
+    description: Optional[str] = None
 
 
 def _named_children_csv(items: List[tuple[str, str]]) -> str:
@@ -64,12 +70,26 @@ def _named_children_csv(items: List[tuple[str, str]]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def render_datasource_text(*, name: str, models: List[SlayerModel]) -> str:
-    """Datasource doc: name + named-child mentions for each model.
+def render_datasource_text(
+    *,
+    name: str,
+    models: List[SlayerModel],
+    description: Optional[str] = None,
+) -> str:
+    """Datasource doc: name + own description (when set) + named-child
+    mentions for each model.
 
-    No model descriptions — each model has its own indexed doc.
+    No model descriptions are included here — each model has its own
+    indexed doc.
+
+    DEV-1549: ``description`` is included so the lexical BM25 / tantivy
+    channels can match terms that live only in the datasource's
+    ``DatasourceConfig.description`` field, in parity with the other
+    entity render helpers.
     """
     lines: List[str] = [f"Datasource: {name}"]
+    if description:
+        lines.append(f"Description: {description}")
     visible = [m for m in models if not m.hidden]
     if visible:
         lines.append(
@@ -81,15 +101,27 @@ def render_datasource_text(*, name: str, models: List[SlayerModel]) -> str:
 
 
 def render_datasource_pair(
-    *, name: str, models: List[SlayerModel],
+    *,
+    name: str,
+    models: List[SlayerModel],
+    description: Optional[str] = None,
 ) -> RenderedEntity:
     """Unified dispatch (DEV-1513) for the datasource doc. Used by both
     the tantivy corpus builder and the embedding refresh path so the
-    visibility filter is applied in exactly one place."""
+    visibility filter is applied in exactly one place.
+
+    DEV-1549: ``description`` is the datasource's free-form description
+    (DatasourceConfig.description), surfaced as ``SearchHit.description``
+    under compact mode AND woven into the indexed text so lexical /
+    embedding channels can match terms that live only there.
+    """
     return RenderedEntity(
         canonical_id=name,
         kind="datasource",
-        text=render_datasource_text(name=name, models=models),
+        text=render_datasource_text(
+            name=name, models=models, description=description,
+        ),
+        description=description,
     )
 
 
@@ -262,24 +294,56 @@ def render_aggregation_text(*, model: SlayerModel, aggregation: Aggregation) -> 
 
 
 def render_memory_text(*, memory: Memory) -> str:
-    """Memory doc for tantivy: learning text + tagged canonical entities
-    so the memory surfaces both via natural-language search and via
-    exact-entity search."""
+    """Memory doc for tantivy: learning text + optional description +
+    tagged canonical entities so the memory surfaces both via
+    natural-language search and via exact-entity search.
+
+    DEV-1549: ``description`` is included here so the lexical BM25 /
+    tantivy channels can match terms that live only in
+    ``Memory.description``. Without this, installs without the optional
+    embedding extra would lose recall for the new field.
+    """
     lines: List[str] = [memory.learning]
+    if memory.description:
+        lines.append(memory.description)
     if memory.entities:
         lines.append("Tagged entities: " + ", ".join(memory.entities))
     return "\n".join(lines)
 
 
-def render_memory_text_for_embedding(*, memory: Memory) -> str:
-    """Memory doc for embeddings: learning text ONLY.
+def compact_description_from_learning(learning: str) -> str:
+    """DEV-1549 compact-mode fallback: take the first non-empty
+    paragraph (text up to the first blank line) of ``learning`` and
+    cap at 500 chars (suffix-truncated, no ellipsis).
 
-    DEV-1428: by excluding the entity tags from the embedded text, the
-    cascade-strip path (which rewrites the tag list) does not change the
-    embedding content hash, so the per-memory refresh hash-skips. This
-    is what lets the cascade live entirely in the storage layer with
-    zero embedding cost per deleted entity.
+    No special-case for ``description:`` keyword lines (the user
+    explicitly rejected that during spec review).
     """
+    para: List[str] = []
+    started = False
+    for line in learning.splitlines():
+        if line.strip():
+            para.append(line)
+            started = True
+        elif started:
+            break
+    return "\n".join(para)[:500]
+
+
+def render_memory_text_for_embedding(*, memory: Memory) -> str:
+    """Memory doc for embeddings: learning text + optional description.
+
+    DEV-1428: entity tags are excluded so the cascade-strip path (which
+    only rewrites ``entities``) does not change the embedding content
+    hash. The cascade still skips embedding work for free.
+
+    DEV-1549 (Codex#5): when ``description`` is set, append it so the
+    user-supplied summary contributes to semantic recall. Cascade-strip
+    only touches ``entities``, so the hash skip on tag-only mutations is
+    preserved.
+    """
+    if memory.description:
+        return f"{memory.learning}\n\n{memory.description}"
     return memory.learning
 
 
@@ -312,6 +376,7 @@ def collect_model_entity_pairs(*, model: SlayerModel) -> List[RenderedEntity]:
         canonical_id=qualifier,
         kind="model",
         text=render_model_text(model=model),
+        description=model.description,
     )]
     for column in model.columns:
         if column.hidden:
@@ -320,6 +385,7 @@ def collect_model_entity_pairs(*, model: SlayerModel) -> List[RenderedEntity]:
             canonical_id=f"{qualifier}.{column.name}",
             kind="column",
             text=render_column_text(model=model, column=column),
+            description=column.description,
         ))
     for measure in model.measures:
         if measure.name is None:
@@ -328,11 +394,13 @@ def collect_model_entity_pairs(*, model: SlayerModel) -> List[RenderedEntity]:
             canonical_id=f"{qualifier}.{measure.name}",
             kind="measure",
             text=render_measure_text(model=model, measure=measure),
+            description=measure.description,
         ))
     for aggregation in model.aggregations:
         out.append(RenderedEntity(
             canonical_id=f"{qualifier}.{aggregation.name}",
             kind="aggregation",
             text=render_aggregation_text(model=model, aggregation=aggregation),
+            description=aggregation.description,
         ))
     return out

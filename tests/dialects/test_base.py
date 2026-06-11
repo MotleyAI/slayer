@@ -18,8 +18,9 @@ from sqlglot import exp
 import pytest
 
 from slayer.core.enums import TimeGranularity
-from slayer.sql.dialects._tier2 import BigqueryDialect, OracleDialect
+from slayer.sql.dialects._tier2 import OracleDialect
 from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.bigquery import BigqueryDialect
 
 
 # ---------------------------------------------------------------------------

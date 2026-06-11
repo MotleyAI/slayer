@@ -327,6 +327,42 @@ class SqlDialect(BaseModel):
         the function-call form (DEV-1331)."""
         return tree
 
+    def rewrite_emitted_sql(self, sql: str) -> str:
+        """Default: identity. Post-pass string-level rewrite of the final
+        generator output.
+
+        Symmetric companion to ``rewrite_parsed_ast`` (the input-side
+        hook): write-side, applied at the end of
+        ``SQLGenerator.generate()`` AFTER ``_apply_outer_projection_trim``.
+
+        Contract: preserve query semantics. Suitable for alias renames,
+        identifier mangling/escape, dialect-quoting fixes. Do NOT change
+        query shape — use the typed ``build_*`` methods on this class for
+        that.
+
+        Overrides today: ``BigqueryDialect`` mangles dotted aliases that
+        would otherwise be rejected by BigQuery's output column-name
+        grammar.
+        """
+        return sql
+
+    def decode_result_keys(
+        self,
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Default: identity. Reverse-pass on result-row keys to undo any
+        write-side mangling applied by ``rewrite_emitted_sql``.
+
+        Called at the end of ``SlayerQueryEngine.execute()`` so consumers
+        always see SLayer's universal alias shape (``orders._count``,
+        ``orders.products.category``) regardless of which dialect a
+        query ran on.
+
+        Overrides today: ``BigqueryDialect`` decodes the ``___`` mangling
+        back to dots.
+        """
+        return rows
+
     def register_udfs(self, dbapi_connection) -> None:
         """Default: no-op. SQLite overrides to register Python aggregate
         / scalar UDFs on every fresh connection."""

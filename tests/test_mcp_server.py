@@ -122,7 +122,11 @@ Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE)
             ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
-        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
+        # DEV-1549: pin the verbose markdown shape; compact-by-default
+        # drops the per-column table this test was written for.
+        result = await _call(mcp_server, name="models_summary", arguments={
+            "datasource_name": "mydb", "compact": False,
+        })
         assert result.startswith("# Datasource: `mydb` — 1 model(s)")
         assert "## `orders`" in result
         assert "Orders fact table." in result
@@ -144,7 +148,10 @@ Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE)
     async def test_joins_none_marker(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
         await storage.save_model(SlayerModel(name="solo", sql_table="t", data_source="mydb"))
-        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
+        # DEV-1549: verbose markdown contract.
+        result = await _call(mcp_server, name="models_summary", arguments={
+            "datasource_name": "mydb", "compact": False,
+        })
         assert "**Joins to:** _(none)_" in result
 
     async def test_columns_table_includes_type(
@@ -159,7 +166,10 @@ Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE)
                 Column(name="y", type=DataType.DOUBLE),
             ],
         ))
-        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
+        # DEV-1549: verbose markdown contract.
+        result = await _call(mcp_server, name="models_summary", arguments={
+            "datasource_name": "mydb", "compact": False,
+        })
         col_section = result.split("**Columns")[1].split("**Measures")[0]
         assert "| x | TEXT |" in col_section
         assert "| y | DOUBLE |" in col_section

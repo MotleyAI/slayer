@@ -239,9 +239,12 @@ async def test_text_by_id_precedence_first_declared_wins(
         text_by_id={"1": "r2-text"},
     )
     service = SearchService(storage=seeded_storage, retrievers=[r1, r2])
+    # DEV-1549: opt out of compact-by-default — this test is about the
+    # text_by_id precedence rule for the verbose ``hit.text`` shape.
     response = await service.search(
         entities=["mydb.orders.amount"], question="amount",
         max_results=12,
+        compact=False,
     )
     # Memory id 1 surfaced with r1's text (first-declared).
     matched = [

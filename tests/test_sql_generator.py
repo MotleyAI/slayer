@@ -21,6 +21,7 @@ from slayer.engine.enriched import (
 )
 from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.dialects import BigqueryDialect
 from slayer.sql.generator import SQLGenerator, _cte_name_from_alias, _validate_agg_param_value
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -6557,4 +6558,147 @@ class TestFilterOuterParenWrapDev1539:
         # Also verify the inverse — that the bare `foo` IS substituted.
         assert "SUM(amount)" in result
 
+
+class TestBigQueryAliasMangling:
+    """BigQuery rejects column names containing dots — SLayer's universal
+    ``<model>.<column>`` alias convention has to be mangled to ``___`` on the
+    way out (and reversed on the way back at the engine).
+
+    These two tests assert the SQLGenerator-level behavior (full SQL output
+    across dialects). Pure unit tests of BigqueryDialect.rewrite_emitted_sql
+    / decode_result_keys live in tests/dialects/test_bigquery.py.
+    """
+
+    async def test_no_dotted_aliases_in_bigquery_sql(self, orders_model: SlayerModel) -> None:
+        gen = SQLGenerator(dialect="bigquery")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="status")],
+            order=[{"column": "count", "direction": "desc"}],
+        )
+        sql = await _generate(gen, query, orders_model)
+        # Every backtick-quoted COLUMN ALIAS emitted by SLayer must NOT
+        # contain a dot — that's what BigQuery rejects. Scope to ``AS `...```
+        # and ORDER/GROUP BY positions so dotted table FQ refs (which use
+        # backticked SEGMENTS like ``\`bigquery-public-data\`.x.y``, not a
+        # single backticked-string with dots inside) don't trip the check.
+        ALIAS_PATTERNS = [
+            r"\bAS\s+`([^`]+)`",            # SELECT expr AS `<alias>`
+            r"\bORDER\s+BY[^\n]*`([^`]+)`",  # ORDER BY `<alias>`
+            r"\bGROUP\s+BY[^\n]*`([^`]+)`",  # GROUP BY `<alias>` (when sqlglot quotes it)
+        ]
+        found_any = False
+        for pat in ALIAS_PATTERNS:
+            for m in _re.findall(pat, sql, flags=_re.IGNORECASE):
+                found_any = True
+                assert "." not in m, (
+                    f"BigQuery output rejects dotted column aliases, but found "
+                    f"`{m}` in:\n{sql}"
+                )
+        assert found_any, f"expected at least one backticked alias in:\n{sql}"
+        # Cross-check the mangled separator made it through.
+        assert "___" in sql, f"expected ___ alias mangling in:\n{sql}"
+
+    async def test_other_dialects_keep_dotted_aliases(self, orders_model: SlayerModel) -> None:
+        # Mangling is bigquery-only; postgres / sqlite / etc. must keep
+        # the dotted alias form (which clients and ORDER BY resolvers
+        # depend on).
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        sql = await _generate(gen, query, orders_model)
+        assert '"orders._count"' in sql
+        assert "___" not in sql
+
+    async def test_wrapped_render_mode_also_mangles_aliases(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """``render_mode="wrapped"`` (used for ``_query_as_model.inner_sql``
+        and inner stages of ``source_queries``) must mangle aliases too —
+        otherwise the outer stage's references to inner-CTE columns would
+        mismatch what the inner CTE actually emits.
+
+        Pins Codex HIGH #1: the consistency of multi-stage BigQuery SQL
+        rests on the rewrite firing on BOTH render modes. The rewrite is
+        deterministic, so as long as it fires on both, the inner emit and
+        the outer reference resolve to the same ``___``-form alias.
+        """
+        gen = SQLGenerator(dialect="bigquery")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+        sql = gen.generate(enriched=enriched, render_mode="wrapped")
+        # Wrapped mode keeps every alias (so the outer stage can reach
+        # them); all aliases must be mangled.
+        for m in _re.findall(r"`([^`]+)`", sql):
+            assert "." not in m, (
+                f"BigQuery wrapped-mode SQL still has dotted alias `{m}`:\n{sql}"
+            )
+        # And the mangle separator is present (the rewrite actually fired).
+        assert "___" in sql, f"wrapped-mode rewrite did not fire:\n{sql}"
+
+    async def test_rewrite_fires_after_outer_projection_trim(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """The BigQuery alias rewrite must fire AFTER
+        ``_apply_outer_projection_trim`` (and not before). Mangling before
+        the trim would let the trim's parser see already-mangled aliases
+        and potentially miss public-projection columns. Pins Codex MEDIUM
+        #5 — the placement contract.
+
+        Strategy: spy on both ``SQLGenerator._apply_outer_projection_trim``
+        and ``BigqueryDialect.rewrite_emitted_sql`` and assert the call
+        order. Both wrappers delegate to the real implementations so the
+        test verifies the production code path, not a stubbed substitute.
+        """
+        gen = SQLGenerator(dialect="bigquery")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+            # Filter using a windowed transform creates a hidden hoisted
+            # column, so the trim has actual work to do (rather than being
+            # a no-op on a trivial query).
+            filters=["dense_rank(revenue:sum) <= 5"],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+        call_order: list[str] = []
+        real_trim = SQLGenerator._apply_outer_projection_trim
+        real_rewrite = BigqueryDialect.rewrite_emitted_sql
+
+        def trim_spy(self, *, sql, enriched):
+            call_order.append("trim")
+            return real_trim(self, sql=sql, enriched=enriched)
+
+        def rewrite_spy(self, sql):
+            call_order.append("rewrite")
+            return real_rewrite(self, sql)
+
+        with patch.object(SQLGenerator, "_apply_outer_projection_trim", trim_spy), \
+                patch.object(BigqueryDialect, "rewrite_emitted_sql", rewrite_spy):
+            gen.generate(enriched=enriched, render_mode="outer")
+        # Trim ran first; rewrite ran after.
+        assert call_order == ["trim", "rewrite"], (
+            f"_apply_outer_projection_trim must run before rewrite_emitted_sql, "
+            f"got call order: {call_order}"
+        )
 

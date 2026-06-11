@@ -93,6 +93,7 @@ async def test_filter_keeps_memory_tagged_only_at_datasource(
         entities=["prod.orders.amount"],
         datasource="prod",
         max_results=20,
+        compact=False,
     )
     memory_hits = [h for h in response.results if h.kind == "memory"]
     learnings = {h.text for h in memory_hits}
@@ -110,6 +111,7 @@ async def test_filter_keeps_cross_datasource_memory(
         entities=["prod.orders.amount"],
         datasource="prod",
         max_results=20,
+        compact=False,
     )
     learnings_prod = {h.text for h in response_prod.results if h.kind == "memory"}
     assert "cross: amount is gross" in learnings_prod
@@ -118,6 +120,7 @@ async def test_filter_keeps_cross_datasource_memory(
         entities=["staging.orders.amount"],
         datasource="staging",
         max_results=20,
+        compact=False,
     )
     learnings_staging = {h.text for h in response_staging.results if h.kind == "memory"}
     assert "cross: amount is gross" in learnings_staging
@@ -134,6 +137,7 @@ async def test_filter_drops_other_datasource_memory(
         entities=["prod.orders.amount"],
         datasource="prod",
         max_results=20,
+        compact=False,
     )
     learnings = {h.text for h in response.results if h.kind == "memory"}
     assert "staging-only: amount includes tax" not in learnings
@@ -149,6 +153,7 @@ async def test_filter_drops_untagged_memory(
         entities=["prod.orders.amount"],
         datasource="prod",
         max_results=20,
+        compact=False,
     )
     learnings = {h.text for h in response.results if h.kind == "memory"}
     assert "free-floating note" not in learnings
@@ -240,7 +245,7 @@ async def test_filter_with_recency_fallback(
     """No entities, no query, no question → recency fallback. The
     datasource filter still applies to which memories are eligible."""
     response = await service.search(
-        datasource="prod", max_results=20,
+        datasource="prod", max_results=20, compact=False,
     )
     learnings = {h.text for h in response.results if h.kind == "memory"}
     # The prod-only and cross memories surface; staging-only and untagged don't.
@@ -260,6 +265,7 @@ async def test_none_datasource_is_no_filter(
         entities=["prod.orders.amount", "staging.orders.amount"],
         datasource=None,
         max_results=20,
+        compact=False,
     )
     learnings = {h.text for h in response_none.results if h.kind == "memory"}
     # All three tagged memories should be eligible.

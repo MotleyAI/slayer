@@ -32,6 +32,7 @@ from slayer.engine.profiling import (
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.help import TOPIC_SUMMARY_LINE, render_help
 from slayer.memories.service import MemoryService
+from slayer.search.render import compact_description_from_learning
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 
@@ -1065,21 +1066,28 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     # -----------------------------------------------------------------------
 
     @mcp.tool()
-    async def models_summary(datasource_name: str, format: str = "markdown") -> str:
+    async def models_summary(
+        datasource_name: str,
+        format: str = "markdown",
+        compact: bool = True,
+    ) -> str:
         """Brief summary of all (non-hidden) models in a datasource.
 
-        For each model: name, description, a table of its columns (name +
-        type + description), a table of its named-formula measures (name
-        + formula + description), and a comma-separated list of the model
-        names it joins to. No distinct values, no sample data, and no
-        expansion of joined models' fields — call inspect_model for any
-        of that.
+        DEV-1549: compact-by-default rendering. Under ``compact=True``
+        each model section emits its name, description, the column count
+        (``Columns: N``), the comma-separated measure NAMES
+        (``Measures: a, b, c``) and the ``Joins to:`` list — no
+        per-column table, no per-measure formula block. Pass
+        ``compact=False`` to restore the verbose markdown / JSON shape
+        with full column and measure payloads.
 
         Args:
             datasource_name: Name of the datasource (from list_datasources).
             format: Output format — "markdown" (default, compact and
                 LLM-friendly) or "json" (structured array of model summaries).
                 Case-insensitive.
+            compact: Default True — drop per-column / per-measure detail.
+                Set False to surface the full per-model tables.
         """
         fmt = format.lower().strip()
         if fmt not in ("markdown", "json"):
@@ -1111,6 +1119,28 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             return f"Datasource '{datasource_name}' has no models."
 
         if fmt == "json":
+            if compact:
+                return json.dumps(
+                    {
+                        "datasource_name": datasource_name,
+                        "model_count": len(matched),
+                        "models": [
+                            {
+                                "name": m.name,
+                                "description": m.description,
+                                "column_count": sum(
+                                    1 for c in m.columns if not c.hidden
+                                ),
+                                "measure_names": [mm.name for mm in m.measures],
+                                "joins_to": sorted(
+                                    {j.target_model for j in m.joins}
+                                ),
+                            }
+                            for m in matched
+                        ],
+                    },
+                    indent=2,
+                )
             return json.dumps(
                 {
                     "datasource_name": datasource_name,
@@ -1142,6 +1172,22 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             model_lines: List[str] = [f"## `{m.name}`"]
             if m.description:
                 model_lines.append(m.description)
+
+            if compact:
+                visible_col_count = sum(1 for c in m.columns if not c.hidden)
+                model_lines.append(f"Columns: {visible_col_count}")
+                measure_names = ", ".join(
+                    mm.name for mm in m.measures if mm.name is not None
+                )
+                model_lines.append(f"Measures: {measure_names}")
+                if m.joins:
+                    targets = sorted({j.target_model for j in m.joins})
+                    rendered = ", ".join(f"`{t}`" for t in targets)
+                    model_lines.append(f"Joins to: {rendered}")
+                else:
+                    model_lines.append("Joins to: _(none)_")
+                sections.append("\n".join(model_lines))
+                continue
 
             col_rows = [
                 {"name": c.name, "type": str(c.type), "description": c.description}
@@ -1186,6 +1232,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         descriptions_max_chars: Optional[int] = None,
         reachable_fields_depth: int = 5,
         data_source: Optional[str] = None,
+        compact: bool = True,
     ) -> str:
         """Return a complete-yet-compact view of a semantic model.
 
@@ -1710,8 +1757,19 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 for memory in relevant_learnings:
                     matched = sorted(set(wanted) & set(memory.entities))
                     matched_md = ", ".join(f"`{e}`" for e in matched)
+                    # DEV-1549: compact mode emits Memory.description (or
+                    # the first-paragraph fallback computed from learning);
+                    # verbose dumps the full learning body.
+                    if compact:
+                        body = (
+                            memory.description
+                            if memory.description
+                            else compact_description_from_learning(memory.learning)
+                        )
+                    else:
+                        body = memory.learning
                     lines.append(
-                        f"- **M{memory.id}** ({matched_md}): {memory.learning}"
+                        f"- **M{memory.id}** ({matched_md}): {body}"
                     )
                 out_sections.append("\n".join(lines))
 
@@ -1846,16 +1904,38 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             # the moment a memory matches and the caller asked for JSON
             # output.
             if "learnings" in included_set and relevant_learnings:
-                payload["learnings"] = [
-                    {
-                        "id": memory.id,
-                        "learning": memory.learning,
-                        "matched_entities": sorted(
-                            set(wanted) & set(memory.entities)
-                        ),
-                    }
-                    for memory in relevant_learnings
-                ]
+                # DEV-1549: compact JSON Learnings drops ``learning`` and
+                # surfaces ``description`` (Memory.description or the
+                # first-paragraph fallback). Verbose JSON keeps the full
+                # learning key as today.
+                if compact:
+                    payload["learnings"] = [
+                        {
+                            "id": memory.id,
+                            "description": (
+                                memory.description
+                                if memory.description
+                                else compact_description_from_learning(
+                                    memory.learning,
+                                )
+                            ),
+                            "matched_entities": sorted(
+                                set(wanted) & set(memory.entities)
+                            ),
+                        }
+                        for memory in relevant_learnings
+                    ]
+                else:
+                    payload["learnings"] = [
+                        {
+                            "id": memory.id,
+                            "learning": memory.learning,
+                            "matched_entities": sorted(
+                                set(wanted) & set(memory.entities)
+                            ),
+                        }
+                        for memory in relevant_learnings
+                    ]
 
             # Top-level gating-state arrays (only when non-empty)
             if names_only_sections:
@@ -2573,10 +2653,45 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if ds is None:
             return f"Datasource '{name}' not found."
 
+        old_description = ds.description
         if description is not None:
             ds.description = description
 
         await storage.save_datasource(ds)
+
+        # DEV-1549: the datasource embedding text now includes
+        # ``DatasourceConfig.description``, so an edit to the
+        # description must refresh the embedding inline — otherwise the
+        # persisted row stays stale until the next ``slayer ingest``
+        # and description-only semantic matches silently miss.
+        #
+        # The save is already committed at this point. Per CodeRabbit
+        # round-7 review: the refresh is post-save and best-effort —
+        # log a warning if it raises and surface a partial-success
+        # message rather than telling the agent the save itself failed.
+        refresh_warning: Optional[str] = None
+        if description is not None and description != old_description:
+            models_in_ds: List[SlayerModel] = []
+            for model_name in await storage.list_models(data_source=name):
+                m = await storage.get_model(model_name, data_source=name)
+                if m is not None:
+                    models_in_ds.append(m)
+            try:
+                await search_service.refresh_datasource(
+                    name=name,
+                    models=models_in_ds,
+                    description=ds.description,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort post-save refresh
+                logger.warning(
+                    "edit_datasource refresh failed for %r: %s", name, exc,
+                )
+                refresh_warning = str(exc)
+        if refresh_warning:
+            return (
+                f"Datasource '{name}' updated. "
+                f"Warning: embedding refresh failed: {refresh_warning}"
+            )
         return f"Datasource '{name}' updated."
 
     # -----------------------------------------------------------------------
@@ -2729,6 +2844,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         learning: str,
         linked_entities: Any,
         id: Optional[str] = None,  # noqa: A002 — MCP arg name
+        description: Optional[str] = None,
     ) -> str:
         """Save an agent memory: a free-form note plus the SLayer
         entities it concerns.
@@ -2794,6 +2910,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 learning=learning,
                 linked_entities=linked_entities,
                 id=id,
+                description=description,
             )
         except (
             EntityResolutionError,
@@ -2842,6 +2959,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         datasource: Optional[str] = None,
         max_results: int = 10,
         cypher_filter: Optional[str] = None,
+        compact: bool = True,
     ) -> str:
         """Up to three-channel semantic search over memories + canonical entities.
 
@@ -2904,6 +3022,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 datasource=datasource,
                 max_results=max_results,
                 cypher_filter=cypher_filter,
+                compact=compact,
             )
         except (SlayerError, ValueError) as exc:
             return _format_resolution_error(exc)

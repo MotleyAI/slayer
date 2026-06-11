@@ -105,6 +105,7 @@ class MemoryService:
         learning: str,
         linked_entities: LinkedEntities,
         id: Optional[str] = None,  # noqa: A002 — public kwarg
+        description: Optional[str] = None,
     ) -> SaveMemoryResponse:
         if not learning or not learning.strip():
             raise ValueError("learning text must be a non-empty string.")
@@ -145,6 +146,7 @@ class MemoryService:
             entities=canonical,
             query=attached_query,
             id=id,
+            description=description,
         )
         # DEV-1514: fan out the upsert through SearchService so every
         # registered retriever gets a chance to react. SearchService

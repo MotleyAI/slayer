@@ -9,11 +9,13 @@ Values codify today's behaviour from
 ``query_engine.py:_EXPLAIN_PREFIX`` / ``_EXPLAIN_POSTFIX`` and
 ``generator.py:_LOG10_NATIVE_DIALECTS`` / ``_LOG2_NATIVE_DIALECTS``.
 
-DEV-1551 promoted ``SnowflakeDialect`` out of this file and into
-``slayer/sql/dialects/snowflake.py`` — it gained runtime methods
-(connection URL builder, ``creator=`` engine bridge, per-connection
-session overrides, statement timeout, cursor type-code map) that are
-Snowflake-specific and don't fit the data-shaped Tier-2 layout.
+Two dialects were promoted out of this file to their own Tier 1 modules:
+
+* ``BigqueryDialect`` — see ``slayer/sql/dialects/bigquery.py`` (alias
+  mangling for joined-column references and per-statement quota tweaks).
+* ``SnowflakeDialect`` (DEV-1551) — see ``slayer/sql/dialects/snowflake.py``
+  (connection URL builder, ``creator=`` engine bridge, per-connection
+  session overrides, statement timeout, cursor type-code map).
 """
 
 from __future__ import annotations
@@ -21,16 +23,6 @@ from __future__ import annotations
 from typing import Optional
 
 from slayer.sql.dialects.base import SqlDialect
-
-
-class BigqueryDialect(SqlDialect):
-    sqlglot_name: str = "bigquery"
-    ds_type_aliases: frozenset[str] = frozenset({"bigquery"})
-    # BigQuery has no SQL-level EXPLAIN.
-    explain_prefix: Optional[str] = None
-    explain_postfix: str = ""
-    log10_native: bool = True
-    log2_native: bool = True
 
 
 class RedshiftDialect(SqlDialect):

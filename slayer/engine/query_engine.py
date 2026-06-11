@@ -710,6 +710,10 @@ class SlayerQueryEngine:
                 err=exc, model=model, enriched=enriched
             )
             raise
+        # Dialect-driven read-side decode: BigQuery reverses its alias
+        # mangling here so the response keys match SLayer's universal
+        # dotted shape. Default hook is identity for every other dialect.
+        rows = get_dialect(dialect).decode_result_keys(rows)
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
         return SlayerResponse(data=rows, columns=columns, sql=sql, attributes=attributes)
 

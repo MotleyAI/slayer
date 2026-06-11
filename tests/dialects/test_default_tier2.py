@@ -22,7 +22,6 @@ from __future__ import annotations
 import pytest
 
 from slayer.sql.dialects._tier2 import (
-    BigqueryDialect,
     DatabricksDialect,
     OracleDialect,
     PrestoDialect,
@@ -31,31 +30,10 @@ from slayer.sql.dialects._tier2 import (
     TrinoDialect,
 )
 
-
-# ---------------------------------------------------------------------------
-# BigQuery — no EXPLAIN
-# ---------------------------------------------------------------------------
-
-
-def test_bigquery_sqlglot_name() -> None:
-    assert BigqueryDialect().sqlglot_name == "bigquery"
-
-
-def test_bigquery_explain_prefix_is_none() -> None:
-    """BigQuery has no EXPLAIN — ``explain_prefix`` is None, signalling
-    ``build_explain_sql`` to raise."""
-    assert BigqueryDialect().explain_prefix is None
-
-
-def test_bigquery_log_native_flags() -> None:
-    d = BigqueryDialect()
-    assert d.should_use_native_log(10) is True
-    assert d.should_use_native_log(2) is True
-
-
-def test_bigquery_build_explain_sql_raises() -> None:
-    with pytest.raises(ValueError, match="EXPLAIN is not supported"):
-        BigqueryDialect().build_explain_sql("SELECT 1")
+# BigqueryDialect was promoted out of _tier2 to its own file (Tier 1) — see
+# slayer/sql/dialects/bigquery.py and tests/dialects/test_bigquery.py.
+# SnowflakeDialect was likewise promoted (DEV-1551) — see
+# slayer/sql/dialects/snowflake.py and tests/dialects/test_snowflake.py.
 
 
 # ---------------------------------------------------------------------------

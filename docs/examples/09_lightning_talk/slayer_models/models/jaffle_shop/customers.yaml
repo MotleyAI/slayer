@@ -1,4 +1,4 @@
-version: 6
+version: 7
 name: customers
 sql_table: customers
 query_variables: {}

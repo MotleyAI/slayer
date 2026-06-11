@@ -587,6 +587,7 @@ class StorageBackend(ABC):
         entities: List[str],
         query: Optional[SlayerQuery] = None,
         id: Optional[str] = None,  # noqa: A002 — public kwarg matching MCP / REST
+        description: Optional[str] = None,
     ) -> Memory:
         """Persist a memory.
 
@@ -594,6 +595,10 @@ class StorageBackend(ABC):
         * ``id="some-string"`` → user-supplied; rejected on bad charset
           or empty. Duplicate id → unconditional upsert; ``created_at``
           of the original row is preserved.
+
+        DEV-1549: ``description`` is an optional compact preview shown
+        by ``search(compact=True)`` and ``inspect_model(compact=True)``.
+        Length is hard-capped on the ``Memory`` model.
         """
         if id is not None:
             _validate_memory_id_charset(id)
@@ -608,6 +613,7 @@ class StorageBackend(ABC):
         kwargs: Dict[str, Any] = {
             "id": assigned_id,
             "learning": learning,
+            "description": description,
             "entities": list(entities),
             "query": query,
         }

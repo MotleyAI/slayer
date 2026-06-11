@@ -17,7 +17,6 @@ from __future__ import annotations
 from typing import Optional
 
 from slayer.sql.dialects._tier2 import (
-    BigqueryDialect,
     DatabricksDialect,
     OracleDialect,
     PrestoDialect,
@@ -26,6 +25,7 @@ from slayer.sql.dialects._tier2 import (
     TrinoDialect,
 )
 from slayer.sql.dialects.base import SqlDialect
+from slayer.sql.dialects.bigquery import BigqueryDialect
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
 from slayer.sql.dialects.duckdb import DuckdbDialect
 from slayer.sql.dialects.mysql import MysqlDialect
