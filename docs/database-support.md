@@ -111,7 +111,7 @@ Snowflake is a fully managed cloud warehouse — no Docker, no local instance.
 The integration suite skips by default unless `~/.snowflake/connections.toml`
 contains a profile named `slayer_test` (override with
 `$SLAYER_SNOWFLAKE_CONNECTION`). See [Datasources →
-Snowflake](../configuration/datasources.md#snowflake) for connection setup.
+Snowflake](configuration/datasources.md#snowflake) for connection setup.
 
 - **`LIMIT 0` type probes still compile.** SLayer infers column types via
   `LIMIT 0` wrapper queries. Snowflake compiles those — consuming a small

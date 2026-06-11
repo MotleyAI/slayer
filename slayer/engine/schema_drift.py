@@ -2009,13 +2009,19 @@ async def _collect_sql_diffs(
     *,
     datasource: DatasourceConfig,
     sql_models: List[SlayerModel],
-    sql_clients: Optional[Dict[str, SlayerSQLClient]],
+    sql_clients: Optional[Dict[Tuple[str, str], SlayerSQLClient]],
 ) -> Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]]:
     """Trial-execute each sql-mode model concurrently and produce its diff."""
     out: Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]] = {}
     if not sql_models:
         return out
-    client = (sql_clients or {}).get(datasource.get_connection_string())
+    # DEV-1551: SlayerQueryEngine._sql_clients is tuple-keyed
+    # (connection_string, runtime_fingerprint) so Snowflake datasources
+    # sharing a connection_name but differing in warehouse/role get
+    # distinct clients. Mirror that key shape here via the shared
+    # ``_sql_client_cache_key`` helper.
+    from slayer.engine.query_engine import _sql_client_cache_key  # noqa: PLC0415
+    client = (sql_clients or {}).get(_sql_client_cache_key(datasource))
     if client is None:
         client = SlayerSQLClient(datasource=datasource)
 
@@ -2031,7 +2037,7 @@ async def validate_datasource(
     *,
     datasource: DatasourceConfig,
     models: List[SlayerModel],
-    sql_clients: Optional[Dict[str, SlayerSQLClient]] = None,
+    sql_clients: Optional[Dict[Tuple[str, str], SlayerSQLClient]] = None,
 ) -> List[ToDeleteEntry]:
     """Validate every persisted model in ``models`` (all in the same DS)
     against the live schema of ``datasource``. Read-only.
