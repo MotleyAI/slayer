@@ -1649,8 +1649,11 @@ def _live_schema_for_datasource(
                 )
         return out
     finally:
-        # Cached engine — engine_factory owns lifecycle; don't dispose.
-        pass
+        # Same rationale as ``ingest_datasource``: this is a one-shot
+        # admin path. Disposing releases the underlying connection so
+        # external direct file access (e.g. ``duckdb.connect(file)``)
+        # in the same process isn't blocked.
+        sa_engine.dispose()
 
 
 def _introspect_one_table(

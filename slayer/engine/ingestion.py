@@ -887,7 +887,13 @@ def ingest_datasource(
 
         models.append(model)
 
-    # Cached engine — engine_factory owns lifecycle; don't dispose.
+    # ingest_datasource is a one-shot admin operation, not a hot query
+    # path. Disposing here releases the underlying connection so other
+    # consumers (notably ``duckdb.connect(file)`` in notebooks) can open
+    # the same file. The engine_factory cache will rebuild on the next
+    # call; the cost is one extra ``sa.create_engine`` per ingest, which
+    # is negligible compared to the actual schema-introspection work.
+    sa_engine.dispose()
     return models
 
 

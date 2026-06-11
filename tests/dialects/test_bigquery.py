@@ -375,7 +375,7 @@ async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
         )
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
-        engine._sql_clients[ds.get_connection_string()] = _FakeBigQueryClient(
+        engine._sql_clients[(ds.get_connection_string(), "")] = _FakeBigQueryClient(
             rows=[{"orders.status": "paid"}]
         )
         with patch.object(
@@ -441,7 +441,7 @@ async def _build_bigquery_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, t
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    engine._sql_clients[ds.get_connection_string()] = _FakeBigQueryClient(rows)
+    engine._sql_clients[(ds.get_connection_string(), "")] = _FakeBigQueryClient(rows)
     return engine, tmp, ds
 
 
