@@ -1649,7 +1649,8 @@ def _live_schema_for_datasource(
                 )
         return out
     finally:
-        sa_engine.dispose()
+        # Cached engine — engine_factory owns lifecycle; don't dispose.
+        pass
 
 
 def _introspect_one_table(

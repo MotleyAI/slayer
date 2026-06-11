@@ -887,7 +887,7 @@ def ingest_datasource(
 
         models.append(model)
 
-    sa_engine.dispose()
+    # Cached engine — engine_factory owns lifecycle; don't dispose.
     return models
 
 

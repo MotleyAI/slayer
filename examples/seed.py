@@ -280,8 +280,30 @@ ORDERS = [
 
 
 def seed(connection_string: str) -> None:
-    """Create tables and insert seed data."""
-    engine = sa.create_engine(connection_string)
+    """Create tables and insert seed data.
+
+    Goes through ``engine_factory.get_engine`` (not raw
+    ``sa.create_engine``) so dialect runtime hooks fire — in particular
+    Snowflake's ``creator=`` bridge for the
+    ``snowflake://?connection_name=<name>`` sentinel URL and the SQLite
+    UDF registration listener.
+    """
+    from slayer.core.models import DatasourceConfig
+    from slayer.sql import engine_factory
+
+    # Build a minimal DatasourceConfig from the URL so the dialect
+    # strategy class can route correctly.
+    from urllib.parse import urlparse
+    parsed = urlparse(connection_string)
+    ds_type = parsed.scheme.split("+", 1)[0].lower()
+    if ds_type == "postgresql":
+        ds_type = "postgres"
+    ds = DatasourceConfig(
+        name="seed_target",
+        type=ds_type,
+        connection_string=connection_string,
+    )
+    engine = engine_factory.get_engine(ds)
 
     create_sql = _get_create_sql(connection_string)
 

@@ -1502,6 +1502,22 @@ def _parse_connection_string(url: str) -> tuple[str, str]:
             )
         return ds_type, stem
 
+    # DEV-1551: Snowflake connection_name sentinel URL has no path segment —
+    # all routing lives in the query string + the TOML profile. Use the
+    # connection_name itself as the derived datasource name fallback so
+    # ``slayer datasources create "snowflake://?connection_name=default"``
+    # works without --name.
+    if ds_type == "snowflake":
+        connection_name = ""
+        if parsed.query:
+            from urllib.parse import parse_qs  # noqa: PLC0415
+            params = parse_qs(parsed.query)
+            connection_name = (params.get("connection_name") or [""])[0]
+        if connection_name:
+            return ds_type, connection_name
+        # Inline form: snowflake://user:pw@account/db/schema?warehouse=... —
+        # take the first path segment (database) like other networked dialects.
+
     # Networked: take the first non-empty path segment (Postgres/MySQL/ClickHouse all put db there).
     segments = [s for s in parsed.path.split("/") if s]
     if not segments:

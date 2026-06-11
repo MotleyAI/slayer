@@ -60,6 +60,7 @@ def _runtime_fingerprint(datasource: DatasourceConfig) -> str:
 
 
 def _attach_session_overrides_listener(
+    *,
     engine: sa.Engine,
     datasource: DatasourceConfig,
 ) -> None:
@@ -84,7 +85,32 @@ def _attach_session_overrides_listener(
         dialect.apply_session_overrides(dbapi_connection, datasource)
 
 
-def _build_engine(datasource: DatasourceConfig, connection_string: str) -> sa.Engine:
+def _attach_register_udfs_listener(
+    *,
+    engine: sa.Engine,
+    datasource: DatasourceConfig,
+) -> None:
+    """Register a ``connect`` event listener that calls the dialect's
+    ``register_udfs`` hook on every new pooled connection.
+
+    Skipped when the dialect's hook is the base-class no-op (every
+    dialect except SQLite). SQLite needs this to register the median /
+    percentile_cont / stddev / corr / log10 / log2 / ... UDFs without
+    which generated SQL like ``STDDEV_SAMP(x)`` fails with
+    ``sqlite3.OperationalError: no such function``.
+    """
+    dialect = dialect_for_ds_type(datasource.type)
+    base_method = SqlDialect.register_udfs
+    dialect_method = type(dialect).register_udfs
+    if dialect_method is base_method:
+        return
+
+    @sa_event.listens_for(engine, "connect")
+    def _slayer_register_udfs(dbapi_connection, _connection_record):
+        dialect.register_udfs(dbapi_connection)
+
+
+def _build_engine(*, datasource: DatasourceConfig, connection_string: str) -> sa.Engine:
     """Construct a new SA engine for the datasource without consulting
     the cache. Delegates engine-build to the dialect's ``build_engine``
     hook; falls back to vanilla ``sa.create_engine`` when the dialect
@@ -94,7 +120,8 @@ def _build_engine(datasource: DatasourceConfig, connection_string: str) -> sa.En
     engine = dialect.build_engine(datasource, connection_string=connection_string)
     if engine is None:
         engine = sa.create_engine(connection_string, pool_pre_ping=True)
-    _attach_session_overrides_listener(engine, datasource)
+    _attach_register_udfs_listener(engine=engine, datasource=datasource)
+    _attach_session_overrides_listener(engine=engine, datasource=datasource)
     return engine
 
 
@@ -110,7 +137,9 @@ def get_engine(datasource: DatasourceConfig) -> sa.Engine:
     connection_string = datasource.get_connection_string()
     cache_key = (connection_string, _runtime_fingerprint(datasource))
     if cache_key not in _engine_cache:
-        _engine_cache[cache_key] = _build_engine(datasource, connection_string)
+        _engine_cache[cache_key] = _build_engine(
+            datasource=datasource, connection_string=connection_string,
+        )
     return _engine_cache[cache_key]
 
 

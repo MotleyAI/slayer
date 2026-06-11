@@ -253,7 +253,7 @@ def test_apply_session_overrides_emits_use_schema() -> None:
     fake_conn.cursor.return_value = fake_cur
     SnowflakeDialect().apply_session_overrides(fake_conn, ds)
     sqls = [c.args[0] for c in fake_cur.execute.call_args_list]
-    assert sqls == ["USE SCHEMA MY_TRANSIENT_SCHEMA"]
+    assert sqls == ['USE SCHEMA "MY_TRANSIENT_SCHEMA"']
 
 
 def test_apply_session_overrides_runs_all_four_in_order() -> None:
@@ -272,10 +272,10 @@ def test_apply_session_overrides_runs_all_four_in_order() -> None:
     # require an active warehouse before USE SCHEMA can resolve, and
     # USE DATABASE must precede USE SCHEMA for bare schema names.
     assert sqls == [
-        "USE WAREHOUSE MY_WH",
-        "USE ROLE MY_ROLE",
-        "USE DATABASE MY_DB",
-        "USE SCHEMA MY_SCHEMA",
+        'USE WAREHOUSE "MY_WH"',
+        'USE ROLE "MY_ROLE"',
+        'USE DATABASE "MY_DB"',
+        'USE SCHEMA "MY_SCHEMA"',
     ]
 
 
@@ -289,7 +289,7 @@ def test_apply_session_overrides_skips_unset_fields() -> None:
     fake_conn.cursor.return_value = fake_cur
     SnowflakeDialect().apply_session_overrides(fake_conn, ds)
     sqls = [c.args[0] for c in fake_cur.execute.call_args_list]
-    assert sqls == ["USE WAREHOUSE WH"]
+    assert sqls == ['USE WAREHOUSE "WH"']
 
 
 def test_apply_session_overrides_noop_when_nothing_set() -> None:

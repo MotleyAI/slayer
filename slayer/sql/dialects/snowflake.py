@@ -86,6 +86,19 @@ def _import_snowflake_sqlalchemy_url():
         ) from exc
 
 
+def _quote_identifier(name: str) -> str:
+    """Wrap ``name`` in double quotes for Snowflake, escaping embedded quotes.
+
+    The values that flow into ``USE WAREHOUSE / ROLE / DATABASE / SCHEMA``
+    statements come from typed ``DatasourceConfig`` fields — trusted input
+    — but quoting is defence-in-depth: it preserves identifiers that
+    contain mixed case or special characters (Snowflake folds unquoted
+    refs to uppercase) and removes any SQL-injection surface in the event
+    a downstream caller starts accepting these as user input.
+    """
+    return '"' + name.replace('"', '""') + '"'
+
+
 def _is_connection_name_sentinel(connection_string: str) -> bool:
     """True iff ``connection_string`` is the
     ``snowflake://?connection_name=<name>`` sentinel.
@@ -178,7 +191,9 @@ class SnowflakeDialect(SqlDialect):
             kwargs["warehouse"] = datasource.warehouse
         if datasource.role:
             kwargs["role"] = datasource.role
-        return URL(**kwargs)
+        # ``snowflake.sqlalchemy.URL`` returns a ``URL`` object; cast to
+        # ``str`` so the ``Optional[str]`` return-type annotation is honest.
+        return str(URL(**kwargs))
 
     def build_engine(
         self,
@@ -232,13 +247,13 @@ class SnowflakeDialect(SqlDialect):
         cur = dbapi_connection.cursor()
         try:
             if datasource.warehouse:
-                cur.execute(f"USE WAREHOUSE {datasource.warehouse}")
+                cur.execute(f"USE WAREHOUSE {_quote_identifier(datasource.warehouse)}")
             if datasource.role:
-                cur.execute(f"USE ROLE {datasource.role}")
+                cur.execute(f"USE ROLE {_quote_identifier(datasource.role)}")
             if datasource.database:
-                cur.execute(f"USE DATABASE {datasource.database}")
+                cur.execute(f"USE DATABASE {_quote_identifier(datasource.database)}")
             if datasource.schema_name:
-                cur.execute(f"USE SCHEMA {datasource.schema_name}")
+                cur.execute(f"USE SCHEMA {_quote_identifier(datasource.schema_name)}")
         finally:
             cur.close()
 
