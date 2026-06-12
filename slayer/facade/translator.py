@@ -7,18 +7,21 @@ whose subclass tells the handler which kind of response to send; raises
 ``TranslationError`` on user-visible failures (parse error, unknown table,
 ``SELECT *``, DML/DDL, etc.).
 
-The pipeline (see §6 of DEV-1390):
+The pipeline (see §6 of DEV-1390; DEV-1558 swapped catalog-matchers for a
+DuckDB-backed executor on the Postgres path):
 
 1. Parse with sqlglot (optionally with a dialect).
 2. Probe-query whitelist → canned ``RowBatch``.
 3. Classify AST root → reject DML/DDL, no-op SET/SHOW/BEGIN/COMMIT
    (carrying a ``command_tag`` so the Postgres facade can drive its
    transaction state machine), continue on SELECT.
-4. INFORMATION_SCHEMA dispatch → canned ``RowBatch``.
-5. Injected ``catalog_matchers`` (e.g. the Postgres ``pg_catalog`` builder)
-   → ``PgCatalogResult``.
-6. ``SELECT *`` rejection (on real models).
-7. SLayer-table translation → ``SlayerQuery`` + column-name mapping.
+4. If ``catalog_sql_executor`` is provided (Postgres facade) and
+   ``is_catalog_only(parsed)`` is True, execute the SQL against the
+   in-memory DuckDB and return a ``PgCatalogResult``. Otherwise
+   (Flight facade) dispatch INFORMATION_SCHEMA queries to the canned
+   ``match_info_schema`` builder.
+5. ``SELECT *`` rejection (on real models).
+6. SLayer-table translation → ``SlayerQuery`` + column-name mapping.
 
 The translator never touches the engine or storage — it produces a
 ``SlayerQuery`` description and lets the handler decide when to call
@@ -84,9 +87,6 @@ logging.getLogger("sqlglot").addFilter(_SuppressCommandFallbackWarning())
 # None. The Flight facade uses the default ``match_probe``; the Postgres facade
 # injects its own (datasource-aware version()/current_database()/SHOW/etc.).
 ProbeMatcher = Callable[[exp.Expression], Optional[RowBatch]]
-# A catalog matcher takes (parsed, catalog) and returns a canned RowBatch or
-# None. The Postgres facade injects its ``pg_catalog`` matcher here.
-CatalogMatcher = Callable[[exp.Expression, FacadeCatalog], Optional[RowBatch]]
 
 
 # --- result types (tagged union via subclassing) -----------------------------
@@ -229,12 +229,21 @@ _COMPARATOR_SQL: Dict[type, str] = {
 }
 
 
-def _column_to_dotted(col: exp.Column) -> str:
+def _column_to_dotted(
+    col: exp.Column, *, strip_prefix: Optional[Tuple[str, str]] = None,
+) -> str:
     """Reconstruct the dotted reference from a sqlglot ``Column``.
 
     ``customers.regions.name`` (3-part) → ``"customers.regions.name"``
     ``customers.row_count`` (2-part)    → ``"customers.row_count"``
     ``revenue_sum``         (bare)      → ``"revenue_sum"``
+
+    DEV-1558 B5: when ``strip_prefix=(schema, table)`` is given and the
+    leading two qualifiers on the column reference are exactly
+    ``schema.table.`` (case-insensitive, or with ``schema='public'`` since
+    the pg facade always exposes models under ``public``), drop them so
+    three-part refs like ``"public"."orders"."customer_id"`` resolve to the
+    bare ``customer_id`` dimension.
     """
     parts: List[str] = []
     for key in ("catalog", "db", "table"):
@@ -244,6 +253,20 @@ def _column_to_dotted(col: exp.Column) -> str:
         parts.append(str(node.this) if hasattr(node, "this") else str(node))
     leaf = col.this
     parts.append(str(leaf.this) if hasattr(leaf, "this") else str(leaf))
+    if strip_prefix is not None:
+        schema_p, table_p = strip_prefix
+        if len(parts) >= 3:
+            # Three-part: [..., schema, table, col]. Strip the leading
+            # schema.table. prefix when it matches the FROM table.
+            s = parts[-3].lower()
+            t = parts[-2].lower()
+            if t == table_p.lower() and s in {"public", schema_p.lower()}:
+                parts = parts[:-3] + parts[-1:]
+        elif len(parts) == 2:
+            # Two-part: [table, col]. Standard SQL — strip table prefix if
+            # it matches the FROM table.
+            if parts[0].lower() == table_p.lower():
+                parts = parts[1:]
     return ".".join(parts)
 
 
@@ -432,6 +455,12 @@ def _unwrap_identifier(node: Optional[exp.Expression]) -> Optional[str]:
 def _resolve_qualified_table(
     *, schema_str: str, table_name: str, catalog: FacadeCatalog,
 ) -> Tuple[str, FacadeTable]:
+    # The Postgres facade always exposes models under the ``public`` schema
+    # (cf. ``pg_namespace`` row). Metabase emits ``"public"."orders"`` —
+    # accept ``public`` as a synonym for the bare-name lookup so a single
+    # catalog-schema match still resolves cleanly.
+    if schema_str.lower() == "public":
+        return _resolve_bare_table(table_name=table_name, catalog=catalog)
     for sch in catalog.schemas:
         if sch.name != schema_str:
             continue
@@ -563,8 +592,9 @@ def _resolve_column_projection(
     table: FacadeTable,
     metrics_by_name: Dict[str, FacadeMetric],
     dims_by_name: Dict[str, FacadeDimension],
+    strip_prefix: Optional[Tuple[str, str]] = None,
 ) -> _ProjectionItem:
-    dotted = _column_to_dotted(body)
+    dotted = _column_to_dotted(body, strip_prefix=strip_prefix)
     if dotted in metrics_by_name:
         return _ProjectionItem(
             projected_name=alias_name or dotted,
@@ -580,13 +610,60 @@ def _resolve_column_projection(
     )
 
 
+# DEV-1558 B5: hygiene-scalar wrappers Metabase uses for fingerprint queries.
+# Each maps a sqlglot AST class to a human-readable name for the WARNING log.
+_HYGIENE_FUNC_CLASSES: Dict[type, str] = {
+    exp.Substring: "SUBSTRING",
+    exp.Upper: "UPPER",
+    exp.Lower: "LOWER",
+    exp.Trim: "TRIM",
+    exp.Length: "LENGTH",
+    # exp.Left / exp.Right exist for some dialects; check at runtime.
+}
+for _cls_name in ("Left", "Right"):
+    _cls = getattr(exp, _cls_name, None)
+    if _cls is not None:
+        _HYGIENE_FUNC_CLASSES[_cls] = _cls_name.upper()
+
+# Anonymous-form hygiene calls (sqlglot doesn't always lift them to a Func
+# subclass) — names match `_function_name_lower` output.
+_HYGIENE_ANONYMOUS_NAMES = {"substr", "substring", "left", "right",
+                            "upper", "lower", "trim", "length"}
+
+
+def _detect_hygiene_wrapper(body: exp.Expression) -> Optional[Tuple[str, exp.Column]]:
+    """If ``body`` is a hygiene-scalar wrapper around exactly one column
+    reference, return ``(printable_func_name, inner_col)``. Otherwise None.
+    """
+    for cls, name in _HYGIENE_FUNC_CLASSES.items():
+        if isinstance(body, cls):
+            inner = body.this
+            if isinstance(inner, exp.Column):
+                return name, inner
+            return None
+    if isinstance(body, exp.Anonymous):
+        fname = str(body.this).lower()
+        if fname in _HYGIENE_ANONYMOUS_NAMES:
+            args = body.args.get("expressions") or []
+            if args and isinstance(args[0], exp.Column):
+                return fname.upper(), args[0]
+    return None
+
+
 def _resolve_projection(
     expressions: Sequence[exp.Expression], table: FacadeTable,
+    *, schema_name: Optional[str] = None,
 ) -> List[_ProjectionItem]:
     """Walk the projection list, classifying each item against the table."""
     metrics_by_name = {m.name: m for m in table.metrics}
     metrics_by_formula = {m.measure_formula: m for m in table.metrics}
     dims_by_name = {d.name: d for d in table.dimensions}
+    # DEV-1558 B5: when the FROM was schema-qualified (e.g. "public"."orders"),
+    # let column refs that lead with the same `schema.table.` prefix resolve
+    # to the bare column.
+    strip_prefix: Optional[Tuple[str, str]] = (
+        (schema_name, table.name) if schema_name else None
+    )
 
     out: List[_ProjectionItem] = []
     for expr in expressions:
@@ -620,6 +697,26 @@ def _resolve_projection(
             out.append(_resolve_column_projection(
                 body=body, alias_name=alias_name, table=table,
                 metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
+                strip_prefix=strip_prefix,
+            ))
+            continue
+
+        # DEV-1558 B5: hygiene-scalar projection wrappers. Metabase's
+        # field-value rescan emits SUBSTRING("public"."customers"."name",
+        # 1, 1234) AS "..." — we drop the wrapper and project the bare
+        # column under the user's alias.
+        hygiene = _detect_hygiene_wrapper(body)
+        if hygiene is not None:
+            func_name, inner_col = hygiene
+            logger.warning(
+                "hygiene-scalar wrapper %r dropped for fingerprint projection "
+                "(column %r)",
+                func_name, _column_to_dotted(inner_col, strip_prefix=strip_prefix),
+            )
+            out.append(_resolve_column_projection(
+                body=inner_col, alias_name=alias_name, table=table,
+                metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
+                strip_prefix=strip_prefix,
             ))
             continue
 
@@ -909,15 +1006,15 @@ def translate(
     *,
     dialect: Optional[str] = None,
     probe_matcher: Optional[ProbeMatcher] = None,
-    catalog_matchers: Sequence[CatalogMatcher] = (),
+    catalog_sql_executor: "Optional[CatalogSqlExecutorProtocol]" = None,
 ) -> TranslatorResult:
     """Translate a SQL string into a TranslatorResult.
 
     ``dialect`` is passed to the sqlglot parser only. ``probe_matcher``
     overrides the default Flight probe whitelist (the Postgres facade
-    injects a datasource-aware one). ``catalog_matchers`` are extra canned-
-    table matchers tried after INFORMATION_SCHEMA (the Postgres facade
-    injects its ``pg_catalog`` matcher here).
+    injects a datasource-aware one). ``catalog_sql_executor`` routes
+    catalog SQL through an in-memory DuckDB (the Postgres facade does
+    this; Flight passes ``None`` and falls back to ``match_info_schema``).
 
     Raises ``TranslationError`` on user-visible failures.
     """
@@ -950,19 +1047,34 @@ def translate(
             f"Unsupported statement: {type(parsed).__name__}"
         )
 
-    # Step 4 — INFORMATION_SCHEMA dispatch.
-    info = match_info_schema(parsed=parsed, catalog=catalog)
-    if info is not None:
-        return InfoSchemaResult(batch=info)
+    # Step 4 — DuckDB catalog executor (Postgres facade) OR info-schema
+    # dispatch (Flight facade). The executor handles BOTH pg_catalog AND
+    # information_schema queries via materialised tables; when it's not
+    # provided we keep the canned info-schema answer for Flight.
+    if catalog_sql_executor is not None:
+        from slayer.facade.catalog_sql import is_catalog_only
+        if is_catalog_only(parsed):
+            return PgCatalogResult(batch=catalog_sql_executor.execute(
+                parsed=parsed, sql=sql,
+            ))
+    else:
+        info = match_info_schema(parsed=parsed, catalog=catalog)
+        if info is not None:
+            return InfoSchemaResult(batch=info)
 
-    # Step 5 — injected catalog matchers (e.g. pg_catalog).
-    for matcher in catalog_matchers:
-        matched = matcher(parsed, catalog)
-        if matched is not None:
-            return PgCatalogResult(batch=matched)
-
-    # Step 6 / 7 — SLayer-table translation.
+    # Step 5 / 6 — SLayer-table translation.
     return _translate_slayer_select(parsed, catalog)
+
+
+# Lightweight Protocol so the translator doesn't pull catalog_sql at import
+# time (which would create a duckdb-at-import dependency for Flight).
+class CatalogSqlExecutorProtocol:
+    """Protocol the catalog SQL executor must satisfy. Defined here so
+    ``translate`` can type-annotate its parameter without importing
+    catalog_sql (which imports duckdb)."""
+
+    def execute(self, *, parsed: exp.Expression, sql: str) -> RowBatch:
+        raise NotImplementedError
 
 
 class _ProjectionPlan(BaseModel):
@@ -1064,7 +1176,7 @@ def _translate_slayer_select(
     if any(isinstance(e, exp.Star) for e in proj_exprs):
         raise TranslationError(SELECT_STAR_MESSAGE)
 
-    items = _resolve_projection(proj_exprs, table)
+    items = _resolve_projection(proj_exprs, table, schema_name=schema_name)
     plan = _build_projection_plan(items, table)
 
     _validate_group_by(parsed.args.get("group"), plan.derived_dims)

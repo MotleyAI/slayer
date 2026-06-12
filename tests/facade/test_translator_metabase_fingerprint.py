@@ -212,5 +212,9 @@ def test_metabase_gui_question_count_orders_corpus_20() -> None:
     assert aliases == ["count"]
     assert result.query.source_model == "orders"
     # Underlying engine measure is `*:count` (the canonical count-all form).
-    measure_formulas = [m.get("formula") for m in (result.query.measures or [])]
+    # The measures list carries pydantic ModelMeasure-shaped entries; accept
+    # both dict and attribute access.
+    def _formula(m):
+        return m["formula"] if isinstance(m, dict) else m.formula
+    measure_formulas = [_formula(m) for m in (result.query.measures or [])]
     assert "*:count" in measure_formulas

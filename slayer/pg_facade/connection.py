@@ -39,10 +39,10 @@ from slayer.facade.translator import (
     TranslationError,
     translate,
 )
+from slayer.facade.catalog_sql import executor_for
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.auth import verify_password
 from slayer.pg_facade.identity import parameter_status_defaults, version_string
-from slayer.pg_facade.pg_catalog import match_pg_catalog
 from slayer.pg_facade.probes import match_pg_probe
 from slayer.pg_facade.types import (
     datatype_to_oid,
@@ -516,7 +516,7 @@ class PgConnection:
             self._catalog,
             dialect="postgres",
             probe_matcher=self._probe_matcher,
-            catalog_matchers=[match_pg_catalog],
+            catalog_sql_executor=executor_for(self._catalog, self._datasource),
         )
 
     def _probe_matcher(self, parsed: exp.Expression) -> Optional[RowBatch]:

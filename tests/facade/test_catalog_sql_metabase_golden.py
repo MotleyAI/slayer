@@ -76,8 +76,28 @@ def _executor(catalog: FacadeCatalog) -> CatalogSqlExecutor:
     return executor_for(catalog)
 
 
+def _pg_probe_matcher(catalog: FacadeCatalog):
+    """Build a probe matcher that matches what the pg facade installs at
+    runtime (DEV-1556 added SHOW + current_catalog/current_user/etc.).
+    The corpus tests rely on this so SHOW statements are routed to a
+    ProbeResult rather than to the noop classifier."""
+    from slayer.pg_facade.identity import version_string
+    from slayer.pg_facade.probes import match_pg_probe
+    from slayer.facade.probe_queries import match_probe as facade_match_probe
+    datasource = catalog.schemas[0].name if catalog.schemas else catalog.catalog_name
+
+    def matcher(parsed):
+        pg = match_pg_probe(parsed, datasource=datasource,
+                            version_str=version_string())
+        if pg is not None:
+            return pg
+        return facade_match_probe(parsed)
+    return matcher
+
+
 def _translate(sql: str, catalog: FacadeCatalog):
     return translate(sql, catalog, dialect="postgres",
+                     probe_matcher=_pg_probe_matcher(catalog),
                      catalog_sql_executor=_executor(catalog))
 
 
@@ -115,14 +135,16 @@ def test_corpus_fixture_contains_twenty_statements() -> None:
     assert len(statements) == 20, statements
 
 
-# The fixture contains TWO statements that are NOT Metabase-emitted SQL:
-#   #1  `SET application_name = 'Metabase v0.62.1.5 [...]'` — captured as the
-#        first thing Metabase sends, exercised in the SET test below.
+# The fixture contains statements that are excluded from the fixture-load
+# smoke test, for two reasons:
+#   #8  Metabase's table-privileges CTE aliases columns ``AS select``,
+#        ``AS update``, ``AS delete`` — Postgres tolerates SQL-keyword aliases
+#        without quoting, sqlglot does not. The shape is covered explicitly
+#        in ``test_corpus_08_table_privileges_cte`` with renamed aliases.
 #   #19 `SELECT '=== GUI QUESTION ===' AS marker` — divider injected via
 #        ``psql -c`` by the capture script to mark the boundary between sync
-#        traffic and the GUI question.  Not exercised because it is not
-#        something Metabase ever sends in production.
-EXCLUDED_FIXTURE_INDICES = {19}
+#        traffic and the GUI question. Not Metabase-emitted.
+EXCLUDED_FIXTURE_INDICES = {8, 19}
 
 
 def test_fixture_statements_translate_without_crashing() -> None:
