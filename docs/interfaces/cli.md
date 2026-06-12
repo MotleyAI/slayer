@@ -25,7 +25,7 @@ slayer serve --storage slayer.db
 | `--host` | `0.0.0.0` | Bind address |
 | `--port` | `5143` | Port number |
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
-| `--demo` | off | Spin up the bundled Jaffle Shop DuckDB datasource and ingest its models on startup. Idempotent; requires the `duckdb` extra and `jafgen`. |
+| `--demo` | off | Spin up the bundled Jaffle Shop DuckDB datasource and ingest its models on startup. Idempotent; `duckdb` and `jafgen` ship as core dependencies, so no extra install is needed. |
 | `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before the port opens. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
 
 ### `slayer mcp`
@@ -45,7 +45,7 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
-| `--demo` | off | Spin up the bundled Jaffle Shop DuckDB datasource and ingest its models on startup. Idempotent; requires the `duckdb` extra and `jafgen`. |
+| `--demo` | off | Spin up the bundled Jaffle Shop DuckDB datasource and ingest its models on startup. Idempotent; `duckdb` and `jafgen` ship as core dependencies, so no extra install is needed. |
 | `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before stdio JSON-RPC starts. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
 
 ### `slayer query`

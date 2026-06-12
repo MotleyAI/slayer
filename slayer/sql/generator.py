@@ -505,6 +505,12 @@ class SQLGenerator:
 
         if render_mode == "outer":
             sql = self._apply_outer_projection_trim(sql=sql, enriched=enriched)
+        # Dialect-driven post-pass: BigQuery mangles dotted aliases here.
+        # Default hook is identity for every other dialect (Postgres-shaped
+        # SqlDialect base). Fires for BOTH render modes — inner CTE column
+        # names are subject to the same dialect alias rules as the outer
+        # projection.
+        sql = self._dialect.rewrite_emitted_sql(sql)
         return sql
 
     def _apply_outer_projection_trim(

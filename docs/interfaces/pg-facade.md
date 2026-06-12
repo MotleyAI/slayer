@@ -60,20 +60,50 @@ Any tool with a PostgreSQL connector works. End-to-end with the bundled demo and
 
 ```bash
 # 1. Start SLayer speaking Postgres, with the Jaffle Shop demo preloaded.
-slayer pg-serve --demo                 # listens on 127.0.0.1:5145
+#    The BI tool connects over the network (e.g. from a Docker container), so
+#    bind all interfaces — a non-loopback bind requires a token.
+slayer pg-serve --demo --host 0.0.0.0 --token pick-a-secret
 
 # 2. Run Metabase (any BI tool works — Superset, Tableau, Power BI, Grafana, …).
-docker run -d -p 3000:3000 --name metabase metabase/metabase
+#    --add-host makes `host.docker.internal` resolve to the Docker host on
+#    every platform (built into Docker Desktop; required on Linux, Docker ≥ 20.10).
+#    The volume keeps Metabase's own settings/dashboards across container re-creates.
+docker run -d -p 3000:3000 --name metabase \
+  --add-host=host.docker.internal:host-gateway \
+  -e MB_DB_FILE=/metabase.data/metabase.db \
+  -v metabase-data:/metabase.data \
+  metabase/metabase
 ```
 
 In Metabase: **Admin → Databases → Add database → PostgreSQL** and fill in:
 
 | Field | Value |
 |---|---|
-| Host | `host.docker.internal` (or your host's IP) |
+| Host | `host.docker.internal` |
 | Port | `5145` |
 | Database name | the SLayer **datasource** (e.g. `jaffle_shop`) |
-| Username / Password | anything when no `--token` is set; otherwise the token as the password |
+| Username | anything non-empty (ignored) |
+| Password | the `--token` value (`pick-a-secret`) |
+| SSL | off (unless you started with `--tls-cert`/`--tls-key`) |
+
+Or as a single JDBC connection string:
+
+```text
+jdbc:postgresql://host.docker.internal:5145/jaffle_shop?user=metabase&password=pick-a-secret&sslmode=disable
+```
+
+> **Connection refused / name not resolving?** Two common causes:
+>
+> 1. The server was started without `--host 0.0.0.0` — the default demo bind is
+>    `127.0.0.1`, which containers cannot reach.
+> 2. The BI container runs on Linux Docker without the `--add-host` mapping —
+>    `host.docker.internal` only exists out of the box on Docker Desktop. Either
+>    re-create the container with the flag (compose: `extra_hosts:
+>    ["host.docker.internal:host-gateway"]`), or use the container's default
+>    gateway IP as Host instead — find it with
+>    `docker exec <container> ip route | awk '/default/ {print $3}'`
+>    (typically `172.17.0.1` on the default bridge network, but it differs per
+>    compose network and daemon config, so don't hard-code it).
 
 Metabase introspects the schema (via `INFORMATION_SCHEMA` + `pg_catalog`), lists each
 SLayer model as a table under schema `public`, and lets you build questions/dashboards
