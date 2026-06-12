@@ -767,18 +767,35 @@ def _references_catalog_function(parsed: exp.Expression) -> bool:
     ``information_schema.<fn>`` qualified function call, or a bare known
     stub function name. Used by ``is_catalog_only`` to admit tableless
     SELECTs only when they explicitly target catalog metadata."""
+    return (
+        _has_catalog_cast(parsed)
+        or _has_catalog_qualified_dot(parsed)
+        or _has_catalog_function_call(parsed)
+    )
+
+
+_CATALOG_CAST_KINDS = frozenset({"regclass", "regproc", "regtype"})
+_CATALOG_DOT_SCHEMAS = frozenset({"pg_catalog", "information_schema"})
+
+
+def _has_catalog_cast(parsed: exp.Expression) -> bool:
     for cast in parsed.find_all(exp.Cast):
         to = cast.args.get("to")
-        if to is not None:
-            kind = getattr(to, "this", None)
-            if kind is not None and str(kind).lower() in {"regclass", "regproc", "regtype"}:
-                return True
+        kind = getattr(to, "this", None) if to is not None else None
+        if kind is not None and str(kind).lower() in _CATALOG_CAST_KINDS:
+            return True
+    return False
+
+
+def _has_catalog_qualified_dot(parsed: exp.Expression) -> bool:
     for dot in parsed.find_all(exp.Dot):
         lhs = dot.this
-        if isinstance(lhs, exp.Identifier):
-            lhs_name = str(lhs.this).lower()
-            if lhs_name in {"pg_catalog", "information_schema"}:
-                return True
+        if isinstance(lhs, exp.Identifier) and str(lhs.this).lower() in _CATALOG_DOT_SCHEMAS:
+            return True
+    return False
+
+
+def _has_catalog_function_call(parsed: exp.Expression) -> bool:
     for node in parsed.walk():
         if _function_name_lower(node) in _CATALOG_FUNCTION_NAMES:
             return True
