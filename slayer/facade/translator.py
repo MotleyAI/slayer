@@ -32,6 +32,7 @@ which the engine parses as Mode B DSL.
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import sqlglot
@@ -58,6 +59,25 @@ from slayer.facade.probe_queries import match_probe
 from slayer.facade.rows import RowBatch
 
 logger = logging.getLogger(__name__)
+
+_IN_FACADE_PARSE: ContextVar[bool] = ContextVar("slayer_facade_parse", default=False)
+_COMMAND_FALLBACK_MARKER = "Falling back to parsing as a 'Command'"
+
+
+class _SuppressCommandFallbackWarning(logging.Filter):
+    """sqlglot warns whenever a statement parses to the generic ``Command``
+    node. For facade traffic that fallback is the expected, handled path
+    (``SHOW TRANSACTION ISOLATION LEVEL`` etc. — one warning per BI
+    connection), so it is suppressed while ``translate`` is parsing.
+    Engine/user parse paths keep the warning."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (
+            _IN_FACADE_PARSE.get() and _COMMAND_FALLBACK_MARKER in record.getMessage()
+        )
+
+
+logging.getLogger("sqlglot").addFilter(_SuppressCommandFallbackWarning())
 
 
 # A probe matcher takes the parsed statement and returns a canned RowBatch or
@@ -875,7 +895,10 @@ def _classify_noop_root(parsed: exp.Expression) -> Optional[NoOpResult]:
         return NoOpResult(command_tag="START TRANSACTION")
     if isinstance(parsed, exp.Command):
         verb = str(parsed.this).upper() if parsed.this else ""
-        if verb in {"SHOW", "USE", "RESET"}:
+        # "SET" covers spellings sqlglot cannot parse into exp.Set, e.g.
+        # pgjdbc's setTransactionIsolation() emitting `SET SESSION
+        # CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL ...`.
+        if verb in {"SET", "SHOW", "USE", "RESET"}:
             return NoOpResult(command_tag=verb)
     return None
 
@@ -898,10 +921,13 @@ def translate(
 
     Raises ``TranslationError`` on user-visible failures.
     """
+    token = _IN_FACADE_PARSE.set(True)
     try:
         parsed = sqlglot.parse_one(sql, dialect=dialect)
     except sqlglot.errors.ParseError as exc:
         raise TranslationError(f"SQL parse error: {exc}") from exc
+    finally:
+        _IN_FACADE_PARSE.reset(token)
 
     # Step 2 — probe-query whitelist (runs first so facade-specific probes,
     # e.g. SHOW for Postgres, win before generic root classification).

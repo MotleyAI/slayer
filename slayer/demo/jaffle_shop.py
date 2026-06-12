@@ -14,10 +14,12 @@ the existing DuckDB file instead of regenerating.
 import datetime as dt
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 from collections import deque
+from importlib.util import find_spec
 from typing import IO, TYPE_CHECKING, List, Optional, Tuple
 
 from slayer.async_utils import run_sync
@@ -142,6 +144,29 @@ def _stream_fileno(stream) -> Optional[int]:
         return None
 
 
+def _jafgen_cmd(years: int) -> List[str]:
+    """Build the jafgen invocation without relying on PATH exposure.
+
+    ``uv tool install motley-slayer`` (and pipx) link only slayer's own entry
+    points onto PATH; the ``jafgen`` console script of the dependency stays
+    inside the tool venv's ``bin/``, so a bare ``jafgen`` subprocess fails
+    with FileNotFoundError. Since jafgen is a core dependency, prefer running
+    its CLI through the current interpreter; fall back to a PATH lookup for
+    environments where the package somehow isn't importable.
+    """
+    years_arg = str(max(1, years))
+    if find_spec("jafgen") is not None:
+        return [sys.executable, "-c", "from jafgen.cli import app; app()", years_arg]
+    exe = shutil.which("jafgen")
+    if exe is not None:
+        return [exe, years_arg]
+    raise RuntimeError(
+        "jafgen is required to generate the demo data but was not found. "
+        "It ships with motley-slayer — reinstall the package, or run "
+        "`pip install jafgen` in the environment running slayer."
+    )
+
+
 def generate_data(
     output_dir: str,
     years: int = 1,
@@ -158,7 +183,7 @@ def generate_data(
     shim without ``fileno()`` (Jupyter ``OutStream``, ``io.StringIO``, …), we
     pump the child's output line by line into ``stream`` instead.
     """
-    cmd = ["jafgen", str(max(1, years))]
+    cmd = _jafgen_cmd(years)
     out = stream if stream is not None else sys.stderr
     # Force the child into Python UTF-8 mode (PEP 540). jafgen's Rich progress
     # bars emit non-Latin-1 glyphs (e.g. the 🥪 emoji); on Windows the child's
@@ -425,11 +450,15 @@ def ensure_demo_datasource(
         return ds, [], db_built
 
     # Fast path: DB was reused and models are already stored — return what's
-    # on disk so callers can report the real count.
-    existing_model_names = set(run_sync(storage.list_models()))
+    # on disk so callers can report the real count. All lookups are scoped to
+    # the demo datasource: bare-name calls raise on storages whose models span
+    # multiple datasources (DEV-1330).
+    existing_model_names = set(run_sync(storage.list_models(data_source=name)))
     if not db_built and all(t in existing_model_names for t in TABLE_NAMES):
         jaffle_models = [
-            run_sync(storage.get_model(t)) for t in TABLE_NAMES if t in existing_model_names
+            run_sync(storage.get_model(name=t, data_source=name))
+            for t in TABLE_NAMES
+            if t in existing_model_names
         ]
         return ds, [m for m in jaffle_models if m is not None], db_built
 
@@ -440,7 +469,9 @@ def ensure_demo_datasource(
     for model in models:
         if model.name in DEFAULT_TIME_DIMENSIONS:
             model.default_time_dimension = DEFAULT_TIME_DIMENSIONS[model.name]
-        existing_model: Optional[SlayerModel] = run_sync(storage.get_model(model.name))
+        existing_model: Optional[SlayerModel] = run_sync(
+            storage.get_model(name=model.name, data_source=name)
+        )
         if existing_model is not None and not assume_yes:
             written.append(existing_model)
             continue

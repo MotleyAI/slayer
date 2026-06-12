@@ -8,6 +8,8 @@ mapping, command_tag, dialect-only parse acceptance) is exercised explicitly.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
@@ -104,6 +106,11 @@ def test_info_schema_returns_info_schema_result(dialect) -> None:
         ("COMMIT", "COMMIT"),
         ("ROLLBACK", "ROLLBACK"),
         ("SET timezone = 'UTC'", "SET"),
+        # pgjdbc setTransactionIsolation() — parses only as a Command fallback.
+        (
+            "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ UNCOMMITTED",
+            "SET",
+        ),
     ],
 )
 def test_no_op_statements_carry_command_tag(sql: str, expected_tag: str, dialect) -> None:
@@ -116,6 +123,18 @@ def test_show_statement_is_noop_with_tag(dialect) -> None:
     result = translate(sql="SHOW search_path", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, NoOpResult)
     assert result.command_tag == "SHOW"
+
+
+def test_command_fallback_warning_suppressed_during_translate(dialect, caplog) -> None:
+    # sqlglot warns when a statement parses to the generic Command node; for
+    # facade traffic that path is expected and handled, so translate() must
+    # not leak one warning line per BI connection.
+    with caplog.at_level(logging.WARNING, logger="sqlglot"):
+        result = translate(
+            sql="SHOW TRANSACTION ISOLATION LEVEL", catalog=_catalog(), dialect=dialect
+        )
+    assert isinstance(result, NoOpResult)
+    assert not [r for r in caplog.records if "Falling back" in r.getMessage()]
 
 
 @pytest.mark.parametrize(

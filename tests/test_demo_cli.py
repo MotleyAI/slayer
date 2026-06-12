@@ -1,6 +1,8 @@
 """Unit tests for the Jaffle Shop demo CLI affordances."""
 
 import argparse
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -128,6 +130,83 @@ class TestServeMcpDemoHook:
         cli._run_mcp(args=args)
 
         assert calls == ["prepare", "mcp.run"]
+
+
+class TestJafgenCmdResolution:
+    def test_prefers_current_interpreter_when_package_importable(self, monkeypatch):
+        monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: object())
+        monkeypatch.setattr(
+            jaffle_shop.shutil,
+            "which",
+            lambda name: pytest.fail("PATH lookup should not run when jafgen is importable"),
+        )
+
+        cmd = jaffle_shop._jafgen_cmd(3)
+
+        assert cmd[0] == sys.executable
+        assert cmd[1] == "-c"
+        assert "jafgen" in cmd[2]
+        assert cmd[-1] == "3"
+
+    def test_falls_back_to_path_lookup(self, monkeypatch):
+        monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: None)
+        monkeypatch.setattr(jaffle_shop.shutil, "which", lambda name: "/usr/bin/jafgen")
+
+        assert jaffle_shop._jafgen_cmd(2) == ["/usr/bin/jafgen", "2"]
+
+    def test_missing_everywhere_raises_install_hint(self, monkeypatch):
+        monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: None)
+        monkeypatch.setattr(jaffle_shop.shutil, "which", lambda name: None)
+
+        with pytest.raises(RuntimeError, match="pip install jafgen"):
+            jaffle_shop._jafgen_cmd(1)
+
+    def test_years_clamped_to_minimum_one(self, monkeypatch):
+        monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: object())
+
+        assert jaffle_shop._jafgen_cmd(0)[-1] == "1"
+        assert jaffle_shop._jafgen_cmd(-5)[-1] == "1"
+
+    def test_interpreter_entrypoint_import_path_is_valid(self):
+        # Pins the `from jafgen.cli import app` import path used by the -c
+        # fallback against future jafgen version bumps.
+        result = subprocess.run(
+            [sys.executable, "-c", "from jafgen.cli import app"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+
+class TestEnsureDemoDatasourceScoping:
+    def test_fast_path_with_models_in_multiple_datasources(self, tmp_path, monkeypatch):
+        # Bare list_models()/get_model() raise on storages whose models span
+        # several datasources (DEV-1330); the demo must scope every lookup to
+        # its own datasource.
+        from slayer.core.models import SlayerModel
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        for table in jaffle_shop.TABLE_NAMES:
+            jaffle_shop.run_sync(
+                storage.save_model(
+                    SlayerModel(name=table, sql_table=table, data_source="jaffle_shop")
+                )
+            )
+        jaffle_shop.run_sync(
+            storage.save_model(
+                SlayerModel(name="unrelated", sql_table="unrelated", data_source="other_ds")
+            )
+        )
+        monkeypatch.setattr(jaffle_shop, "build_jaffle_shop", lambda **kwargs: False)
+
+        ds, models, db_built = jaffle_shop.ensure_demo_datasource(
+            storage, storage_path=str(tmp_path)
+        )
+
+        assert db_built is False
+        assert ds.name == "jaffle_shop"
+        assert sorted(m.name for m in models) == sorted(jaffle_shop.TABLE_NAMES)
 
 
 class TestResolveDemoDbPath:
