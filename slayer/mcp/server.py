@@ -47,13 +47,12 @@ _SAFE_SAMPLE_AGGS = frozenset({"avg", "sum", "min", "max", "count", "count_disti
 
 # Section-level budgeting for inspect_model output.
 # columns/measures/aggregations/joins fall back to a names-only CSV when the
-# caller drops the section from `sections`; reachable_fields/samples are fully
+# caller drops the section from `sections`; samples/learnings are fully
 # omitted (they have no natural "names" to list).
 _INSPECT_SECTIONS_NAMES_ONLY = ("columns", "measures", "aggregations", "joins")
-_INSPECT_SECTIONS_OMITTABLE = ("reachable_fields", "samples", "learnings")
+_INSPECT_SECTIONS_OMITTABLE = ("samples", "learnings")
 _VALID_INSPECT_SECTIONS = _INSPECT_SECTIONS_NAMES_ONLY + _INSPECT_SECTIONS_OMITTABLE
 _TRUNCATION_MARKER = " ... [truncated]"
-_MAX_REACHABLE_FIELDS_DEPTH = 20
 
 
 def _ambiguous_with_mcp_hint(exc: AmbiguousModelError) -> str:
@@ -574,70 +573,6 @@ async def _collect_measure_profile(
         else:
             result[c.name] = f"{mn} .. {mx}"
     return result
-
-
-async def _collect_reachable_fields(
-    model: SlayerModel,
-    storage: StorageBackend,
-    *,
-    max_depth: int = 5,
-) -> Tuple[List[str], List[str]]:
-    """BFS the join graph from ``model``; return sorted fully-qualified dotted
-    paths for every reachable non-hidden, non-pk dimension and non-hidden
-    measure (excluding the root model's own fields — those live in the main
-    Dimensions/Measures tables). Depth is measured in path segments and capped
-    at ``max_depth``. Cycles are broken by a visited-path set.
-    """
-    reachable_dims: set[str] = set()
-    reachable_measures: set[str] = set()
-    visited: set[str] = set()
-    queue: List[Tuple[str, str]] = []  # (full_path, target_model_name)
-
-    def _derive_path(base: str, join: ModelJoin) -> str:
-        if base:
-            return f"{base}.{join.target_model}"
-        return join.target_model
-
-    for j in model.joins:
-        path = _derive_path("", j)
-        if path not in visited:
-            queue.append((path, j.target_model))
-
-    while queue:
-        path, target_name = queue.pop(0)
-        if path in visited:
-            continue
-        visited.add(path)
-        if path.count(".") + 1 > max_depth:
-            continue
-        # v4 (DEV-1330): walk the join graph within the *root* model's
-        # data_source. Cross-datasource joins aren't auto-mirrored, so any
-        # bare-name resolution that crosses a datasource boundary would be
-        # picking up a sibling model that isn't actually reachable from
-        # ``model``.
-        try:
-            target = await storage.get_model(target_name, data_source=model.data_source or None)
-        except Exception:  # noqa: BLE001 — AmbiguousModelError or storage misses
-            target = None
-        if target is None:
-            continue
-        for c in target.columns:
-            if c.hidden:
-                continue
-            if not c.primary_key:
-                reachable_dims.add(f"{path}.{c.name}")
-            reachable_measures.add(f"{path}.{c.name}")
-        for j in target.joins:
-            sub_path = _derive_path(path, j)
-            # Per-path cycle check: don't revisit any model already on this
-            # path (prevents bounce-backs from peer joins while preserving
-            # diamond joins where the same model is reached via independent paths).
-            path_models = set(path.split("."))
-            path_models.add(model.name)  # include root
-            if sub_path not in visited and j.target_model not in path_models:
-                queue.append((sub_path, j.target_model))
-
-    return sorted(reachable_dims), sorted(reachable_measures)
 
 
 def _build_backing_query_info(model: SlayerModel) -> Optional[dict]:
@@ -1232,7 +1167,6 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         format: str = "markdown",
         sections: Optional[List[str]] = None,
         descriptions_max_chars: Optional[int] = None,
-        reachable_fields_depth: int = 5,
         data_source: Optional[str] = None,
         compact: bool = True,
     ) -> str:
@@ -1255,13 +1189,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
           column and the ``sql`` field of each ``params[]`` entry are gated
           by ``show_sql``.
         - ``joins`` — join definitions.
-        - ``reachable_fields`` — BFS-walked fields reachable via joins.
         - ``samples`` — live sample-data query (``COUNT(*)`` plus one
           aggregation per column).
+        - ``learnings`` — learning-only memories whose canonical entities
+          reference this model.
 
         When a section is omitted from ``sections``: ``columns``, ``measures``,
         ``aggregations`` and ``joins`` collapse to a one-line backticked CSV
-        of names; ``reachable_fields`` and ``samples`` are dropped entirely.
+        of names; ``samples`` and ``learnings`` are dropped entirely.
         A footer at the end of the response lists what was trimmed and how
         to fetch more.
 
@@ -1274,7 +1209,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             format: Output format — ``"markdown"`` (default) or ``"json"``.
                 Case-insensitive.
             sections: Subset of ``["columns", "measures", "aggregations",
-                "joins", "reachable_fields", "samples"]``. Default (``None``
+                "joins", "samples", "learnings"]``. Default (``None``
                 or empty list) renders all six. Unknown names are ignored
                 with a warning line at the end of the response. A non-empty
                 list of *only* unknown names resolves to no sections (not
@@ -1284,10 +1219,6 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 column, measure, aggregation) longer than this is truncated
                 with a ``... [truncated]`` suffix. Must be ``>= 0``. ``None``
                 (default) means no truncation.
-            reachable_fields_depth: Max BFS depth (in path segments) for the
-                reachable-fields walk. Default 5; allowed range
-                ``[0, 20]``. Ignored when ``reachable_fields`` is not in
-                ``sections``.
         """
         fmt = format.lower().strip()
         if fmt not in ("markdown", "json"):
@@ -1297,11 +1228,6 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if descriptions_max_chars is not None and descriptions_max_chars < 0:
             raise ValueError(
                 f"descriptions_max_chars must be >= 0, got {descriptions_max_chars}."
-            )
-        if reachable_fields_depth < 0 or reachable_fields_depth > _MAX_REACHABLE_FIELDS_DEPTH:
-            raise ValueError(
-                f"reachable_fields_depth must be between 0 and {_MAX_REACHABLE_FIELDS_DEPTH}, "
-                f"got {reachable_fields_depth}."
             )
 
         try:
@@ -1668,27 +1594,6 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             )
 
         # ------------------------------------------------------------------
-        # Reachable via joins (fully omitted when not in sections)
-        # ------------------------------------------------------------------
-        reach_dims: List[str] = []
-        reach_measures: List[str] = []
-        if "reachable_fields" in included_set:
-            reach_dims, reach_measures = await _collect_reachable_fields(
-                model=model, storage=storage, max_depth=reachable_fields_depth,
-            )
-            if reach_dims or reach_measures:
-                lines = [
-                    f"## Reachable via joins (max depth: {reachable_fields_depth})", "",
-                ]
-                if reach_dims:
-                    rendered = ", ".join(f"`{d}`" for d in reach_dims)
-                    lines.append(f"**Dimensions ({len(reach_dims)}):** {rendered}")
-                if reach_measures:
-                    rendered = ", ".join(f"`{m}`" for m in reach_measures)
-                    lines.append(f"**Measures ({len(reach_measures)}):** {rendered}")
-                out_sections.append("\n".join(lines))
-
-        # ------------------------------------------------------------------
         # Sample data (fully omitted when not in sections)
         # ------------------------------------------------------------------
         sample_sql: Optional[str] = None
@@ -1888,11 +1793,6 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 ]
             elif model.joins:
                 payload["joins_names"] = [j.target_model for j in model.joins]
-
-            # Reachable fields
-            if "reachable_fields" in included_set:
-                payload["reachable_dimensions"] = reach_dims
-                payload["reachable_measures"] = reach_measures
 
             # Samples
             if "samples" in included_set:
