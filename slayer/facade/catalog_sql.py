@@ -976,11 +976,37 @@ class _AstRewriter:
     def _substitute_context_functions(self, node: exp.Expression) -> exp.Expression:
         # Try each substitution branch in order; first hit wins.
         substituted = (
-            self._substitute_dedicated_func(node)
+            self._substitute_qualified_context_call(node)
+            or self._substitute_dedicated_func(node)
             or self._substitute_bareword_column(node)
             or self._substitute_anonymous_function(node)
         )
         return substituted if substituted is not None else node
+
+    def _substitute_qualified_context_call(
+        self, node: exp.Expression,
+    ) -> Optional[exp.Expression]:
+        """Replace ``pg_catalog.<ctx-fn>`` (and ``pg_catalog.<ctx-fn>()``)
+        as a whole so the outer ``Dot`` doesn't end up wrapping a string
+        literal (``pg_catalog.'jaffle'`` — invalid SQL).
+
+        sqlglot parses ``pg_catalog.current_database()`` as
+        ``Dot(Identifier('pg_catalog'), CurrentDatabase(...))``; without
+        this branch the inner-node rewrite would leave the Dot intact.
+        """
+        if not isinstance(node, exp.Dot):
+            return None
+        lhs = node.this
+        if not isinstance(lhs, exp.Identifier):
+            return None
+        if str(lhs.this).lower() != "pg_catalog":
+            return None
+        rhs = node.expression
+        return (
+            self._substitute_dedicated_func(rhs)
+            or self._substitute_bareword_column(rhs)
+            or self._substitute_anonymous_function(rhs)
+        )
 
     def _substitute_dedicated_func(self, node: exp.Expression) -> Optional[exp.Expression]:
         """Dedicated sqlglot Func subclasses (typed nodes for niladic ctx fns)."""

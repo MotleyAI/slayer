@@ -435,6 +435,30 @@ def test_current_database_full_tree_walk_inside_projection() -> None:
     assert batch.rows[0]["current_database"] == "jaffle"
 
 
+@pytest.mark.parametrize("call", [
+    "pg_catalog.current_database()",
+    "pg_catalog.current_catalog",
+    "pg_catalog.current_user",
+    "pg_catalog.current_schema()",
+])
+def test_pg_catalog_qualified_context_functions_substitute(call: str) -> None:
+    """Postgres clients commonly qualify built-ins via ``pg_catalog.``.
+    The whole ``Dot(pg_catalog, <ctx-fn>)`` node must collapse to the
+    literal — otherwise the substitution leaves the outer Dot wrapping
+    a string and DuckDB parses ``pg_catalog.'jaffle'``."""
+    batch = _run(f"SELECT {call} AS v")
+    val = batch.rows[0]["v"]
+    if "current_database" in call or "current_catalog" in call:
+        assert val == "jaffle"
+    elif "current_user" in call:
+        assert val == "slayer"
+    elif "current_schema" in call:
+        # current_schema() is handled by the pg-facade probe matcher in
+        # production, but inside the executor we just need the AST
+        # rewrite to not crash. Any string value is acceptable here.
+        assert isinstance(val, str)
+
+
 @pytest.mark.parametrize("expr", ["current_user", "session_user", "current_role"])
 def test_current_user_role_resolve_to_slayer(expr: str) -> None:
     batch = _run(f"SELECT {expr} AS u")
