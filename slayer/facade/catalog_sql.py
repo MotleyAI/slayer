@@ -131,8 +131,17 @@ class CatalogRelation(BaseModel):
 # --- corpus builder ---------------------------------------------------------
 
 
-def build_catalog_relations(catalog: FacadeCatalog) -> List[CatalogRelation]:
+def build_catalog_relations(
+    catalog: FacadeCatalog, datasource: Optional[str] = None,
+) -> List[CatalogRelation]:
     """Build every catalog table from ``catalog``.
+
+    ``datasource`` is used as the ``catalog_name`` / ``table_catalog``
+    value in the ``information_schema.*`` relations so queries that
+    filter by ``current_database()`` (which the AST rewrite substitutes
+    with the connection's datasource) see consistent rows. When omitted,
+    falls back to the catalog's static name (``slayer``) for backward
+    compatibility.
 
     Returns ``CatalogRelation`` rows for the 6 existing pg_catalog tables
     plus the 9 new ones (``pg_description`` / ``pg_stat_user_tables`` /
@@ -140,6 +149,7 @@ def build_catalog_relations(catalog: FacadeCatalog) -> List[CatalogRelation]:
     ``pg_constraint`` / ``pg_index`` / ``pg_attrdef``), plus the 7
     ``_is_*`` information_schema relations.
     """
+    ds = datasource or catalog.catalog_name
     out: List[CatalogRelation] = []
     out.append(_build_pg_namespace())
     out.append(_build_pg_class(catalog))
@@ -156,13 +166,13 @@ def build_catalog_relations(catalog: FacadeCatalog) -> List[CatalogRelation]:
     out.append(_build_pg_constraint())
     out.append(_build_pg_index())
     out.append(_build_pg_attrdef())
-    out.append(_build_is_columns(catalog))
+    out.append(_build_is_columns(catalog, ds))
     out.append(_build_is_table_constraints())
     out.append(_build_is_key_column_usage())
-    out.append(_build_is_schemata(catalog))
-    out.append(_build_is_tables(catalog))
-    out.append(_build_is_metrics(catalog))
-    out.append(_build_is_dimensions(catalog))
+    out.append(_build_is_schemata(catalog, ds))
+    out.append(_build_is_tables(catalog, ds))
+    out.append(_build_is_metrics(catalog, ds))
+    out.append(_build_is_dimensions(catalog, ds))
     return out
 
 
@@ -464,7 +474,7 @@ def _build_pg_attrdef() -> CatalogRelation:
     ], rows=[])
 
 
-def _build_is_columns(catalog: FacadeCatalog) -> CatalogRelation:
+def _build_is_columns(catalog: FacadeCatalog, datasource: str) -> CatalogRelation:
     """Postgres-shape information_schema.columns with SLayer extension fields.
 
     Materialised as ``_is_columns`` in DuckDB; the AST rewrite pass strips
@@ -494,7 +504,7 @@ def _build_is_columns(catalog: FacadeCatalog) -> CatalogRelation:
         for d in tbl.dimensions:
             udt = _UDT_NAME_BY_DATATYPE.get(d.data_type, "text")
             rows.append({
-                "table_catalog": "slayer", "table_schema": "public",
+                "table_catalog": datasource, "table_schema": "public",
                 "table_name": tbl.name, "column_name": d.name,
                 "ordinal_position": position, "column_default": None,
                 "is_nullable": "YES", "data_type": udt,
@@ -507,7 +517,7 @@ def _build_is_columns(catalog: FacadeCatalog) -> CatalogRelation:
         for m in tbl.metrics:
             udt = _UDT_NAME_BY_DATATYPE.get(m.data_type, "text") if m.data_type else "text"
             rows.append({
-                "table_catalog": "slayer", "table_schema": "public",
+                "table_catalog": datasource, "table_schema": "public",
                 "table_name": tbl.name, "column_name": m.name,
                 "ordinal_position": position, "column_default": None,
                 "is_nullable": "YES", "data_type": udt,
@@ -547,30 +557,36 @@ def _build_is_key_column_usage() -> CatalogRelation:
     ], rows=[])
 
 
-def _build_is_schemata(catalog: FacadeCatalog) -> CatalogRelation:
+def _build_is_schemata(
+    catalog: FacadeCatalog, datasource: str,
+) -> CatalogRelation:
     columns = [
         FacadeColumn(name="catalog_name", type=DataType.TEXT),
         FacadeColumn(name="schema_name", type=DataType.TEXT),
     ]
-    rows = [{"catalog_name": catalog.catalog_name, "schema_name": sch.name}
+    rows = [{"catalog_name": datasource, "schema_name": sch.name}
             for sch in catalog.schemas]
     return CatalogRelation(name="_is_schemata", columns=columns, rows=rows)
 
 
-def _build_is_tables(catalog: FacadeCatalog) -> CatalogRelation:
+def _build_is_tables(
+    catalog: FacadeCatalog, datasource: str,
+) -> CatalogRelation:
     columns = [
         FacadeColumn(name="table_catalog", type=DataType.TEXT),
         FacadeColumn(name="table_schema", type=DataType.TEXT),
         FacadeColumn(name="table_name", type=DataType.TEXT),
         FacadeColumn(name="table_type", type=DataType.TEXT),
     ]
-    rows = [{"table_catalog": catalog.catalog_name, "table_schema": sch.name,
+    rows = [{"table_catalog": datasource, "table_schema": sch.name,
              "table_name": tbl.name, "table_type": tbl.table_type}
             for sch in catalog.schemas for tbl in sch.tables]
     return CatalogRelation(name="_is_tables", columns=columns, rows=rows)
 
 
-def _build_is_metrics(catalog: FacadeCatalog) -> CatalogRelation:
+def _build_is_metrics(
+    catalog: FacadeCatalog, datasource: str,
+) -> CatalogRelation:
     """SLayer's INFORMATION_SCHEMA.METRICS extension — JDBC-style type
     names (``DOUBLE`` / ``BIGINT`` / ``TIMESTAMP``) to match the contract
     the canned ``match_info_schema._serve_metrics`` previously emitted."""
@@ -589,7 +605,7 @@ def _build_is_metrics(catalog: FacadeCatalog) -> CatalogRelation:
         for tbl in sch.tables:
             for m in tbl.metrics:
                 rows.append({
-                    "catalog_name": catalog.catalog_name,
+                    "catalog_name": datasource,
                     "schema_name": sch.name, "table_name": tbl.name,
                     "metric_name": m.name, "description": m.description,
                     "data_type": (
@@ -600,7 +616,9 @@ def _build_is_metrics(catalog: FacadeCatalog) -> CatalogRelation:
     return CatalogRelation(name="_is_metrics", columns=columns, rows=rows)
 
 
-def _build_is_dimensions(catalog: FacadeCatalog) -> CatalogRelation:
+def _build_is_dimensions(
+    catalog: FacadeCatalog, datasource: str,
+) -> CatalogRelation:
     """SLayer's INFORMATION_SCHEMA.DIMENSIONS extension — JDBC-style type
     names to match the contract the canned ``_serve_dimensions``
     previously emitted."""
@@ -620,7 +638,7 @@ def _build_is_dimensions(catalog: FacadeCatalog) -> CatalogRelation:
         for tbl in sch.tables:
             for d in tbl.dimensions:
                 rows.append({
-                    "catalog_name": catalog.catalog_name,
+                    "catalog_name": datasource,
                     "schema_name": sch.name, "table_name": tbl.name,
                     "dimension_name": d.name, "description": d.description,
                     "data_type": datatype_to_jdbc(d.data_type),
@@ -1247,7 +1265,7 @@ class CatalogSqlExecutor:
         self._rewriter = _AstRewriter(
             datasource=datasource, regclass_map=self._regclass_map,
         )
-        relations = build_catalog_relations(catalog)
+        relations = build_catalog_relations(catalog, datasource)
         for relation in relations:
             self._register_relation(relation)
         self._register_stubs()
@@ -1316,19 +1334,36 @@ class CatalogSqlExecutor:
         if description is None:
             return RowBatch(columns=[], rows=[])
         columns: List[FacadeColumn] = []
-        col_names: List[str] = []
+        col_keys: List[str] = []
+        seen_keys: Dict[str, int] = {}
         for col in description:
             name = col[0]
             typename = col[1] if len(col) > 1 else "VARCHAR"
+            # CR/Codex review: Postgres allows duplicate output names
+            # (``SELECT oid AS x, relname AS x``); the row-as-dict shape
+            # would collapse them. Keep the user-visible ``name`` on the
+            # FacadeColumn (so the wire RowDescription still reports the
+            # duplicate name) but disambiguate the per-row dict key by
+            # appending ``__<n>`` to the second and later occurrences.
+            base_key = name
+            n = seen_keys.get(base_key, 0)
+            seen_keys[base_key] = n + 1
+            key = base_key if n == 0 else f"{base_key}__{n + 1}"
             columns.append(FacadeColumn(
                 name=name, type=_duckdb_typename_to_datatype(str(typename)),
             ))
-            col_names.append(name)
+            col_keys.append(key)
         rows = [
-            {col_names[i]: value for i, value in enumerate(row)}
+            {col_keys[i]: value for i, value in enumerate(row)}
             for row in data_rows
         ]
-        return RowBatch(columns=columns, rows=rows)
+        # Stash the row-key list on the batch so wire emitters can look
+        # up values by position-aware key even when names duplicate.
+        batch = RowBatch(columns=columns, rows=rows)
+        # Pydantic v2 model_extra lets us attach a non-schema attribute;
+        # consumers that don't care about duplicates still read via name.
+        object.__setattr__(batch, "_row_keys", col_keys)
+        return batch
 
 
 # --- caching ----------------------------------------------------------------

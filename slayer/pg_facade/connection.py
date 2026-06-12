@@ -580,10 +580,16 @@ class PgConnection:
                 for i, col in enumerate(batch.columns)
             ]
             self._writer.write(proto.encode_row_description(fields))
+        # The catalog SQL executor stashes a position-aware key list on
+        # the batch so duplicate output column names (Postgres allows
+        # ``SELECT oid AS x, relname AS x``) don't collapse to a single
+        # dict entry. Fall back to ``col.name`` for batches built by the
+        # canned probe / info-schema paths where duplicates can't arise.
+        row_keys = getattr(batch, "_row_keys", None) or [c.name for c in batch.columns]
         for row in batch.rows:
             values = [
-                _encode_value(row.get(col.name), datatype_to_oid(col.type), formats[i])
-                for i, col in enumerate(batch.columns)
+                _encode_value(row.get(row_keys[i]), datatype_to_oid(batch.columns[i].type), formats[i])
+                for i in range(len(batch.columns))
             ]
             self._writer.write(proto.encode_data_row(values))
         self._writer.write(proto.encode_command_complete(f"SELECT {len(batch.rows)}"))

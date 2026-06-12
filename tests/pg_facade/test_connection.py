@@ -409,10 +409,13 @@ async def test_extended_query_with_bound_param_substitutes() -> None:
     # `SELECT $1` → the bound literal becomes the projection. The probe path
     # won't match, but INFORMATION_SCHEMA filtering with a param is the real
     # use; here we assert the bind succeeds and a row is produced.
+    # DEV-1558: `catalog_name` in INFORMATION_SCHEMA rows is the
+    # connection's datasource (jaffle here), not the static `slayer`
+    # name — Postgres-compatible semantics for `current_database()`.
     inp = (
         _startup(user="u", database="jaffle")
         + _parse("", "SELECT * FROM INFORMATION_SCHEMA.SCHEMATA WHERE catalog_name = $1")
-        + _bind("", "", values=(b"slayer",), result_formats=(proto.FORMAT_TEXT,))
+        + _bind("", "", values=(b"jaffle",), result_formats=(proto.FORMAT_TEXT,))
         + _execute("")
         + _sync()
         + _terminate()

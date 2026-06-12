@@ -506,6 +506,49 @@ def test_current_schemas_non_first_index_does_not_collapse_to_public() -> None:
     )
 
 
+def test_information_schema_catalog_name_is_datasource() -> None:
+    """CR/Codex review: PostgreSQL clients filter
+    ``information_schema.*`` by ``current_database()`` (which the AST
+    rewrite substitutes with the connection's datasource). The
+    ``table_catalog`` / ``catalog_name`` columns must therefore carry the
+    same datasource value — not the hardcoded ``slayer`` catalog name."""
+    relations = {
+        r.name: r for r in build_catalog_relations(_demo_catalog(), datasource="jaffle")
+    }
+    cols_rows = relations["_is_columns"].rows
+    assert cols_rows
+    assert all(r["table_catalog"] == "jaffle" for r in cols_rows)
+    tables_rows = relations["_is_tables"].rows
+    assert tables_rows
+    assert all(r["table_catalog"] == "jaffle" for r in tables_rows)
+    schemata_rows = relations["_is_schemata"].rows
+    assert schemata_rows
+    assert all(r["catalog_name"] == "jaffle" for r in schemata_rows)
+    metrics_rows = relations["_is_metrics"].rows
+    assert all(r["catalog_name"] == "jaffle" for r in metrics_rows)
+    dims_rows = relations["_is_dimensions"].rows
+    assert all(r["catalog_name"] == "jaffle" for r in dims_rows)
+
+
+def test_executor_distinguishes_duplicate_output_column_names() -> None:
+    """CR/Codex review: PostgreSQL allows duplicate output column names
+    (``SELECT oid AS x, relname AS x FROM pg_class``). The previous
+    row-as-dict shape collapsed them. The executor now disambiguates
+    per-row keys via a ``__N`` suffix on the second-and-later
+    occurrences, while the wire-visible RowDescription preserves the
+    duplicate name; the wire emitter uses the position-aware keys."""
+    batch = _run('SELECT 1 AS x, 2 AS x')
+    # RowDescription preserves the duplicate name.
+    assert [c.name for c in batch.columns] == ["x", "x"]
+    # The row stores both values under disambiguated keys.
+    assert len(batch.rows) == 1
+    row = batch.rows[0]
+    assert set(row.values()) == {1, 2}
+    # The position-aware key list is exposed for the wire emitter.
+    keys = getattr(batch, "_row_keys", None)
+    assert keys == ["x", "x__2"]
+
+
 def test_is_metrics_emits_jdbc_type_names() -> None:
     """The SLayer ``INFORMATION_SCHEMA.METRICS`` extension preserves the
     JDBC-style type contract from the pre-DEV-1558 ``match_info_schema``
