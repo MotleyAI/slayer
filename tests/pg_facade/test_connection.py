@@ -769,3 +769,100 @@ async def test_execute_with_max_rows_returns_all_rows_no_suspend() -> None:
     # All rows returned despite max_rows=1; no PortalSuspended ('s').
     assert type_seq.count("D") == 2
     assert "s" not in type_seq
+
+
+# ----- lexer-aware $N walker --------------------------------------------------
+# Covers _iter_param_placeholders' disambiguation between $N placeholders and
+# Postgres lexical contexts that may contain literal $N tokens (string
+# literals, quoted identifiers, dollar-quoted strings, line/block comments,
+# unquoted identifiers with $ in them). See Codex review on PR #153.
+
+
+class TestIterParamPlaceholders:
+    @staticmethod
+    def _placeholders(sql: str) -> List[Tuple[int, int, int]]:
+        from slayer.pg_facade.connection import _iter_param_placeholders
+        return list(_iter_param_placeholders(sql))
+
+    def test_plain_placeholder(self) -> None:
+        out = self._placeholders("SELECT $1, $2 FROM t WHERE id = $1")
+        assert [idx for idx, _, _ in out] == [1, 2, 1]
+
+    def test_placeholder_with_cast(self) -> None:
+        out = self._placeholders("SELECT $1::int FROM t")
+        assert [idx for idx, _, _ in out] == [1]
+
+    def test_unquoted_identifier_with_dollar(self) -> None:
+        # Postgres allows ``$`` in unquoted identifiers after the first
+        # character, so ``metric$1`` is ONE identifier, not metric + $1.
+        out = self._placeholders("SELECT metric$1 FROM t")
+        assert out == []
+
+    def test_e_prefix_identifier_not_e_string(self) -> None:
+        # ``Etable$1`` is an identifier; only ``E'`` opens an E-string.
+        out = self._placeholders("SELECT Etable$1 FROM t")
+        assert out == []
+
+    def test_e_string_blocks_placeholder(self) -> None:
+        out = self._placeholders("SELECT E'has $1 inside' FROM t")
+        assert out == []
+
+    def test_single_quoted_string_blocks_placeholder(self) -> None:
+        out = self._placeholders("SELECT 'has $1 inside' FROM t")
+        assert out == []
+
+    def test_doubled_quote_escape_in_string(self) -> None:
+        # ``'a''b $1 c'`` is one string with an embedded ``''`` escape.
+        out = self._placeholders("SELECT 'a''b $1 c' FROM t")
+        assert out == []
+
+    def test_double_quoted_identifier_blocks_placeholder(self) -> None:
+        out = self._placeholders('SELECT "col $1" FROM t')
+        assert out == []
+
+    def test_dollar_quoted_string_blocks_placeholder(self) -> None:
+        out = self._placeholders("SELECT $tag$ has $1 inside $tag$ FROM t")
+        assert out == []
+
+    def test_anonymous_dollar_quote_blocks_placeholder(self) -> None:
+        out = self._placeholders("SELECT $$ has $1 inside $$ FROM t")
+        assert out == []
+
+    def test_line_comment_blocks_placeholder(self) -> None:
+        out = self._placeholders("SELECT 1 -- has $1 inside\nFROM t WHERE id = $2")
+        assert [idx for idx, _, _ in out] == [2]
+
+    def test_block_comment_blocks_placeholder(self) -> None:
+        out = self._placeholders("SELECT 1 /* has $1 inside */ FROM t WHERE id = $2")
+        assert [idx for idx, _, _ in out] == [2]
+
+    def test_nested_block_comment_blocks_placeholder(self) -> None:
+        # Postgres allows nested ``/* ... */``.
+        sql = "SELECT 1 /* outer /* nested $1 */ still in $2 */ FROM t WHERE id = $3"
+        out = self._placeholders(sql)
+        assert [idx for idx, _, _ in out] == [3]
+
+    def test_mixed_literal_and_real_placeholder(self) -> None:
+        # The Codex-flagged repro: ``WHERE note = '$1' AND status = $1`` —
+        # only ONE real placeholder, the literal stays untouched.
+        out = self._placeholders("WHERE note = '$1' AND status = $1")
+        assert [idx for idx, _, _ in out] == [1]
+
+    def test_substitute_params_preserves_literal_dollar(self) -> None:
+        # End-to-end: the literal ``$1`` inside the quoted string must NOT
+        # be substituted; only the real placeholder gets bound.
+        from slayer.pg_facade.connection import _PreparedStatement
+        conn = PgConnection.__new__(PgConnection)
+        stmt = _PreparedStatement(
+            sql="WHERE note = '$1' AND status = $1",
+            parameter_oids=[proto.OID_TEXT],
+        )
+        bind = proto.BindMessage(
+            portal="",
+            statement="",
+            parameter_format_codes=[],
+            parameter_values=[b"active"],
+            result_format_codes=[],
+        )
+        out = conn._substitute_params(stmt, bind)
+        assert out == "WHERE note = '$1' AND status = 'active'"

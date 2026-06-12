@@ -156,6 +156,22 @@ def _try_skip_dollar_quoted(sql: str, i: int) -> Optional[int]:
     return n if end < 0 else end + len(tag)
 
 
+def _handle_dollar(
+    sql: str, i: int,
+) -> Tuple[int, Optional[Tuple[int, int, int]]]:
+    """Resolve a ``$`` at ``i`` to either a dollar-quoted-string skip or a
+    ``$N`` placeholder match (or a single-char advance if neither). Returns
+    ``(new_i, placeholder_or_None)`` so the main walker stays a flat
+    dispatch."""
+    dq_end = _try_skip_dollar_quoted(sql, i)
+    if dq_end is not None:
+        return dq_end, None
+    m = _PARAM_PLACEHOLDER.match(sql, i)
+    if m:
+        return m.end(), (int(m.group(1)), m.start(), m.end())
+    return i + 1, None
+
+
 def _iter_param_placeholders(sql: str) -> Iterator[Tuple[int, int, int]]:
     """Yield ``(param_index, start, end)`` for every ``$N`` placeholder in
     ``sql`` that is **not** inside a string literal, quoted identifier,
@@ -164,8 +180,8 @@ def _iter_param_placeholders(sql: str) -> Iterator[Tuple[int, int, int]]:
     Mirrors Postgres' tokenizer well enough for standard-shape SQL coming
     from libpq / asyncpg / psql / JDBC clients. Closes the regex-only path
     that rewrote ``$N`` tokens inside literals and comments (Codex review on
-    PR #153). Per-lexical-context skip helpers (``_skip_*``) own the
-    state-machine; the main loop is a flat dispatch.
+    PR #153). Per-lexical-context skip helpers (``_skip_*`` / ``_handle_*``)
+    own the state-machine; the main loop is a flat ``c → helper`` dispatch.
     """
     i = 0
     n = len(sql)
@@ -184,16 +200,9 @@ def _iter_param_placeholders(sql: str) -> Iterator[Tuple[int, int, int]]:
         elif c == '"':
             i = _skip_double_quoted_identifier(sql, i)
         elif c == "$":
-            dq_end = _try_skip_dollar_quoted(sql, i)
-            if dq_end is not None:
-                i = dq_end
-                continue
-            m = _PARAM_PLACEHOLDER.match(sql, i)
-            if m:
-                yield int(m.group(1)), m.start(), m.end()
-                i = m.end()
-            else:
-                i += 1
+            i, ph = _handle_dollar(sql, i)
+            if ph is not None:
+                yield ph
         else:
             i += 1
 # The single schema the facade advertises (matches pg_namespace / current_schema).

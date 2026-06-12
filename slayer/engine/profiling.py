@@ -198,9 +198,14 @@ async def _profile_numeric_temporal_columns(
     """Profile every numeric/temporal column in a single batched min/max query."""
     if not columns:
         return {}
+    # Deliberately omit ``type`` on the ext columns: DEV-1361's CAST wrap
+    # on the aggregation expression (``CAST(MIN(ordered_at) AS TIMESTAMP)``)
+    # is harmful on SQLite, which has no TIMESTAMP type and falls back to
+    # NUMERIC affinity — coercing ``'2025-01-15'`` to the int ``2025``. The
+    # profile query only needs the raw min/max value, so we keep the column
+    # untyped and let the backend return whatever native shape it stores.
     ext_columns = [
-        {"name": f"_slayer_range_{c.name}", "sql": c.sql if c.sql else c.name,
-         "type": str(c.type)}
+        {"name": f"_slayer_range_{c.name}", "sql": c.sql if c.sql else c.name}
         for c in columns
     ]
     measures_payload: List[Dict[str, str]] = []
