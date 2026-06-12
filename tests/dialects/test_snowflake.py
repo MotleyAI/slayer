@@ -345,6 +345,41 @@ def test_apply_session_overrides_accepts_lowercase_value() -> None:
     assert sqls == ["USE WAREHOUSE compute_wh"]
 
 
+# ---------------------------------------------------------------------------
+# _is_connection_name_sentinel / _extract_connection_name — URL parsing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("url,expected_name", [
+    # Standard sentinel form.
+    ("snowflake://?connection_name=default", "default"),
+    # Param order independence — ``warehouse`` before ``connection_name``.
+    ("snowflake://?warehouse=WH&connection_name=prod", "prod"),
+    # Percent-encoded value with a literal ``%2F`` (already escaped by the
+    # caller) — ``make_url`` decodes once; we don't double-decode.
+    ("snowflake://?connection_name=my%20prod%2Fqa", "my prod/qa"),
+])
+def test_is_connection_name_sentinel_accepts_any_param_order(url: str, expected_name: str) -> None:
+    """``_is_connection_name_sentinel`` and ``_extract_connection_name``
+    use ``make_url`` so query-string param order doesn't matter and the
+    URL-decoded value isn't double-decoded (DEV-1551 round-6 fix)."""
+    from slayer.sql.dialects.snowflake import _extract_connection_name, _is_connection_name_sentinel
+    assert _is_connection_name_sentinel(url) is True
+    assert _extract_connection_name(url) == expected_name
+
+
+@pytest.mark.parametrize("url", [
+    "snowflake://user:pw@account/db?warehouse=wh",  # inline form, no connection_name
+    "snowflake://",                                  # bare scheme
+    "snowflake://?connection_name=",                 # empty connection_name
+    "postgres://?connection_name=default",           # wrong scheme
+    "",
+])
+def test_is_connection_name_sentinel_rejects_non_sentinels(url: str) -> None:
+    from slayer.sql.dialects.snowflake import _is_connection_name_sentinel
+    assert _is_connection_name_sentinel(url) is False
+
+
 def test_apply_session_overrides_closes_cursor_on_failure() -> None:
     """If a USE statement fails (e.g. role doesn't exist), the cursor
     must still be closed."""

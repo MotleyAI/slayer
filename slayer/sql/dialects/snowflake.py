@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import quote
 
 import sqlalchemy as sa
+import sqlalchemy.engine.url as _sa_url
 
 from slayer.sql.dialects.base import SqlDialect
 
@@ -126,19 +127,30 @@ def _is_connection_name_sentinel(connection_string: str) -> bool:
     ``slayer datasources create snowflake://?connection_name=default``).
     Both paths must route through ``creator=``.
     """
-    if not connection_string.startswith(_CONNECTION_NAME_PREFIX):
+    if not connection_string.startswith("snowflake://"):
         return False
-    # Reject empty connection_name values up front so the failure surfaces
-    # at engine-build time, not deep inside the connector.
-    return bool(connection_string[len(_CONNECTION_NAME_PREFIX):].strip("&"))
+    # Use ``make_url`` so the recognition is order-independent: a URL
+    # like ``snowflake://?warehouse=WH&connection_name=default`` is
+    # semantically equivalent to ``?connection_name=default&warehouse=WH``
+    # and both must route through the ``creator=`` bridge.
+    try:
+        url = _sa_url.make_url(connection_string)
+    except sa.exc.ArgumentError:
+        return False
+    return bool(url.query.get("connection_name"))
 
 
 def _extract_connection_name(connection_string: str) -> str:
-    """Parse + URL-decode the ``connection_name=`` value from the sentinel URL."""
-    import sqlalchemy.engine.url as sa_url  # noqa: PLC0415
+    """Parse the ``connection_name=`` value from the sentinel URL.
+
+    ``sa.engine.url.make_url`` already URL-decodes query-string values,
+    so the value is returned as-is. (Calling ``unquote`` again would
+    double-decode literal percent-encoded text such as ``%2F`` in
+    profile names.)
+    """
     try:
-        url = sa_url.make_url(connection_string)
-    except Exception as exc:
+        url = _sa_url.make_url(connection_string)
+    except sa.exc.ArgumentError as exc:
         raise ValueError(
             f"Could not parse Snowflake sentinel URL: {connection_string!r}"
         ) from exc
@@ -148,8 +160,7 @@ def _extract_connection_name(connection_string: str) -> str:
             f"Snowflake URL is missing the 'connection_name' query parameter: "
             f"{connection_string!r}"
         )
-    from urllib.parse import unquote  # noqa: PLC0415
-    return unquote(name)
+    return name
 
 
 class SnowflakeDialect(SqlDialect):
