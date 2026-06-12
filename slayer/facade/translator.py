@@ -474,12 +474,9 @@ def _unwrap_identifier(node: Optional[exp.Expression]) -> Optional[str]:
 def _resolve_qualified_table(
     *, schema_str: str, table_name: str, catalog: FacadeCatalog,
 ) -> Tuple[str, FacadeTable]:
-    # The Postgres facade always exposes models under the ``public`` schema
-    # (cf. ``pg_namespace`` row). Metabase emits ``"public"."orders"`` —
-    # accept ``public`` as a synonym for the bare-name lookup so a single
-    # catalog-schema match still resolves cleanly.
-    if schema_str.lower() == "public":
-        return _resolve_bare_table(table_name=table_name, catalog=catalog)
+    # Try the exact schema match first — if a catalog actually carries a
+    # ``public`` schema (or whatever name the user passed), honour the
+    # explicit qualifier.
     for sch in catalog.schemas:
         if sch.name != schema_str:
             continue
@@ -489,6 +486,13 @@ def _resolve_qualified_table(
         raise TranslationError(
             f"Unknown table {table_name!r} in schema {schema_str!r}"
         )
+    # Pg-facade alias fall-back. The Postgres facade always advertises
+    # ``public`` as its single schema (cf. ``pg_namespace`` row); when no
+    # real ``public`` schema exists in the catalog (e.g. when the catalog
+    # is keyed by the actual datasource name), accept ``public`` as a
+    # synonym so Metabase's ``"public"."orders"`` keeps working.
+    if schema_str.lower() == "public":
+        return _resolve_bare_table(table_name=table_name, catalog=catalog)
     raise TranslationError(f"Unknown schema: {schema_str!r}")
 
 
@@ -672,6 +676,47 @@ def _detect_hygiene_wrapper(body: exp.Expression) -> Optional[Tuple[str, exp.Col
     return None
 
 
+def _is_fingerprint_shape_wrap(
+    inner_col: exp.Column, *, strip_prefix: Optional[Tuple[str, str]],
+) -> bool:
+    """True iff ``inner_col`` is shaped like Metabase's fingerprint
+    projection — a 3-part qualified column reference whose
+    ``<schema>.<table>.`` prefix matches the FROM-table prefix.
+
+    The full pattern (e.g. ``SUBSTRING("public"."customers"."name", 1,
+    1234)``) is exclusive to Metabase's field-value rescan: hand-written
+    SQL like ``LENGTH(name)`` or ``UPPER(orders.status)`` does NOT match
+    and stays an error so the user notices the unsupported projection
+    instead of silently getting bare column values back.
+    """
+    if strip_prefix is None:
+        return False
+    # Count qualifier parts on the column ref: catalog + db + table + leaf.
+    qualifier_parts = sum(
+        1 for k in ("catalog", "db", "table") if inner_col.args.get(k) is not None
+    )
+    if qualifier_parts < 2:
+        return False  # not a 3-part (or deeper) qualified ref
+    # Confirm the leading schema.table prefix matches the FROM table by
+    # checking that strip_prefix would actually drop something.
+    raw = _raw_column_parts(inner_col)
+    stripped = _apply_strip_prefix(list(raw), strip_prefix)
+    return len(stripped) < len(raw)
+
+
+def _raw_column_parts(col: exp.Column) -> List[str]:
+    """The qualifier parts plus leaf identifier of ``col``, in order."""
+    parts: List[str] = []
+    for key in ("catalog", "db", "table"):
+        node = col.args.get(key)
+        if node is None:
+            continue
+        parts.append(str(node.this) if hasattr(node, "this") else str(node))
+    leaf = col.this
+    parts.append(str(leaf.this) if hasattr(leaf, "this") else str(leaf))
+    return parts
+
+
 def _resolve_projection(
     expressions: Sequence[exp.Expression], table: FacadeTable,
     *, schema_name: Optional[str] = None,
@@ -728,8 +773,17 @@ def _resolve_projection(
         # field-value rescan emits SUBSTRING("public"."customers"."name",
         # 1, 1234) AS "..." — we drop the wrapper and project the bare
         # column under the user's alias.
+        #
+        # The drop is gated to the exact Metabase fingerprint shape:
+        # the inner column must be 3-part qualified AND its
+        # ``schema.table.`` prefix must match the FROM-table prefix.
+        # Otherwise expressions like ``LENGTH(name)`` would silently
+        # become ``name`` projections, breaking user-written queries
+        # that compute a scalar (CR review).
         hygiene = _detect_hygiene_wrapper(body)
-        if hygiene is not None:
+        if hygiene is not None and _is_fingerprint_shape_wrap(
+            hygiene[1], strip_prefix=strip_prefix,
+        ):
             func_name, inner_col = hygiene
             logger.warning(
                 "hygiene-scalar wrapper %r dropped for fingerprint projection "
@@ -810,6 +864,14 @@ def _classify_where_conjunct(
     Returns ``((time_dim, date_range_lo, date_range_hi), None)`` if this is
     a time-dim filter that should lift to ``time_dimensions[*].date_range``.
     Returns ``(None, verbatim_sql)`` for the everything-else case.
+
+    DEV-1558 B5: the engine's Mode-B DSL parses ``SlayerQuery.filters``
+    and only accepts single-dot dotted paths. Before serialising the
+    verbatim fallback, normalise any ``exp.Column`` nodes in the
+    predicate via ``strip_prefix`` so a WHERE clause like
+    ``"public"."orders"."total" > 0`` lands as ``"total" > 0`` in
+    SlayerQuery.filters, not as the original 3-part-qualified form that
+    the DSL parser would reject.
     """
     if isinstance(conj, exp.Between):
         lifted = _lift_time_between(conj, time_dim_names, strip_prefix=strip_prefix)
@@ -819,7 +881,37 @@ def _classify_where_conjunct(
         lifted = _lift_time_comparator(conj, time_dim_names, strip_prefix=strip_prefix)
         if lifted is not None:
             return lifted, None
-    return None, _rewrite_neq(conj.sql())
+    normalised = _normalise_predicate_columns(conj, strip_prefix=strip_prefix)
+    return None, _rewrite_neq(normalised.sql())
+
+
+def _normalise_predicate_columns(
+    node: exp.Expression, *, strip_prefix: Optional[Tuple[str, str]],
+) -> exp.Expression:
+    """Walk ``node`` and apply ``strip_prefix`` to every ``exp.Column``
+    so qualifier prefixes that match the FROM-table drop before SQL
+    serialisation."""
+    if strip_prefix is None:
+        return node
+
+    def rewrite(child: exp.Expression) -> exp.Expression:
+        if not isinstance(child, exp.Column):
+            return child
+        original = _raw_column_parts(child)
+        stripped = _apply_strip_prefix(list(original), strip_prefix)
+        if stripped == original:
+            return child
+        # Rebuild the Column without the stripped qualifier parts.
+        new = exp.Column(this=exp.Identifier(this=stripped[-1], quoted=False))
+        if len(stripped) >= 2:
+            new.set("table", exp.Identifier(this=stripped[-2], quoted=False))
+        if len(stripped) >= 3:
+            new.set("db", exp.Identifier(this=stripped[-3], quoted=False))
+        if len(stripped) >= 4:
+            new.set("catalog", exp.Identifier(this=stripped[-4], quoted=False))
+        return new
+
+    return node.transform(rewrite)
 
 
 def _literal_str(node: Optional[exp.Expression]) -> Optional[str]:

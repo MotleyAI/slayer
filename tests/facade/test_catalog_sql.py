@@ -446,6 +446,51 @@ def test_current_schemas_true_indexed_rewrites_to_public() -> None:
     assert batch.rows == [{"first_schema": "public"}]
 
 
+def test_current_schemas_non_first_index_does_not_collapse_to_public() -> None:
+    # CR review: ``current_schemas(true)[2]`` must NOT collapse to
+    # 'public'; only the literal first index represents the advertised
+    # facade schema. Inspect the rewritten AST directly so the test
+    # doesn't depend on DuckDB's evaluation of the non-collapsed call.
+    from slayer.facade.catalog_sql import _AstRewriter
+    rewriter = _AstRewriter(datasource="jaffle", regclass_map={})
+    parsed = _parse("SELECT (current_schemas(true))[2] AS s")
+    rewritten = rewriter.rewrite(parsed.copy())
+    # If a literal 'public' string snuck into the rewritten AST, the
+    # collapse fired when it shouldn't have.
+    public_literals = [
+        n for n in rewritten.find_all(sqlglot.exp.Literal)
+        if n.is_string and str(n.this) == "public"
+    ]
+    assert not public_literals, (
+        "current_schemas(...)[N] with N != 1 must not collapse to 'public'"
+    )
+
+
+def test_is_metrics_emits_jdbc_type_names() -> None:
+    """The SLayer ``INFORMATION_SCHEMA.METRICS`` extension preserves the
+    JDBC-style type contract from the pre-DEV-1558 ``match_info_schema``
+    path (DOUBLE / BIGINT / TIMESTAMP rather than Postgres-internal
+    float8 / int8 / timestamp)."""
+    relations = {r.name: r for r in build_catalog_relations(_demo_catalog())}
+    rows = relations["_is_metrics"].rows
+    types = {r["data_type"] for r in rows if r["data_type"] is not None}
+    # No Postgres-internal spellings.
+    assert "float8" not in types
+    assert "int8" not in types
+    assert "timestamp" not in types
+    # Has JDBC-style spellings for what the demo carries.
+    assert types & {"DOUBLE", "BIGINT", "TIMESTAMP"}
+
+
+def test_is_dimensions_emits_jdbc_type_names() -> None:
+    relations = {r.name: r for r in build_catalog_relations(_demo_catalog())}
+    rows = relations["_is_dimensions"].rows
+    types = {r["data_type"] for r in rows if r["data_type"] is not None}
+    assert "float8" not in types
+    assert "int8" not in types
+    assert types & {"DOUBLE", "BIGINT", "TIMESTAMP"}
+
+
 @pytest.mark.parametrize(("op", "pattern", "value", "matches"), [
     ("~", "^pg_", "pg_class", True),
     ("~", "^pg_", "orders", False),

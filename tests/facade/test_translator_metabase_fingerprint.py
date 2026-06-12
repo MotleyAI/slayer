@@ -102,6 +102,37 @@ def test_two_part_qualified_unchanged_behaviour() -> None:
     assert isinstance(result, QueryResult)
 
 
+def test_qualified_table_exact_match_wins_over_public_alias() -> None:
+    """CR review: when a catalog has a real ``public`` schema with a
+    distinct table, ``public.X`` must resolve via exact match instead of
+    short-circuiting to the bare-name lookup (which would silently pick
+    a different schema's same-named table)."""
+    from slayer.core.enums import DataType
+    from slayer.core.models import Column, SlayerModel
+    from slayer.facade.catalog import build_catalog
+    public_orders = SlayerModel(
+        name="orders", data_source="public", sql_table="orders",
+        columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                 Column(name="public_only_col", type=DataType.TEXT)],
+    )
+    jaffle_orders = SlayerModel(
+        name="orders", data_source="jaffle", sql_table="orders",
+        columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                 Column(name="jaffle_only_col", type=DataType.TEXT)],
+    )
+    catalog = build_catalog(models_by_datasource={
+        "public": [public_orders], "jaffle": [jaffle_orders],
+    })
+    # ``public.orders`` should resolve to the actual ``public`` schema
+    # entry — i.e. carry the ``public_only_col`` dimension.
+    result = translate(
+        'SELECT "public"."orders"."public_only_col" FROM "public"."orders"',
+        catalog, dialect="postgres",
+    )
+    assert isinstance(result, QueryResult)
+    assert result.schema_name == "public"
+
+
 # --- Hygiene-scalar projection wrappers -------------------------------------
 
 
@@ -227,15 +258,44 @@ def test_order_by_three_part_qualified_column() -> None:
 
 
 def test_where_filter_on_three_part_qualified_column_passes_through() -> None:
-    """WHERE filters on 3-part-qualified columns are emitted verbatim
-    into SlayerQuery.filters; the engine's Mode-B parser then resolves
-    them against the model."""
+    """WHERE filters on 3-part-qualified columns are normalised via
+    strip_prefix before they land in SlayerQuery.filters, because the
+    engine's Mode-B DSL only accepts single-dot paths. Pin the resulting
+    filter so a regression where the unstripped 3-part form leaks
+    through would fail loudly."""
     sql = (
         'SELECT "public"."orders"."customer_id" AS "customer_id" '
         'FROM "public"."orders" WHERE "public"."orders"."total" > 0'
     )
     result = _translate(sql)
     assert isinstance(result, QueryResult)
+    filters = result.query.filters or []
+    # The serialised filter must NOT carry the 3-part-qualified column
+    # ref; the leading public.orders prefix is stripped.
+    assert filters
+    assert all("public" not in f for f in filters)
+    assert all("orders.total" not in f for f in filters)
+    # The bare column name survives.
+    assert any("total" in f for f in filters)
+
+
+def test_hygiene_wrapper_around_bare_column_rejected() -> None:
+    """CR review: dropping ``LENGTH(name)`` would silently change query
+    results. The gate now requires the inner column to be 3-part
+    qualified AND match the FROM table prefix, so bare-column wrappers
+    are rejected just like any other unsupported projection."""
+    sql = 'SELECT LENGTH("name") FROM "public"."customers"'
+    with pytest.raises(TranslationError):
+        _translate(sql)
+
+
+def test_hygiene_wrapper_around_two_part_column_rejected() -> None:
+    """A 2-part-qualified column ref doesn't carry enough information
+    to disambiguate fingerprint shape from user computation, so it's
+    also rejected."""
+    sql = 'SELECT UPPER(customers.name) FROM customers'
+    with pytest.raises(TranslationError):
+        _translate(sql)
 
 
 def test_metabase_gui_question_count_orders_corpus_20() -> None:

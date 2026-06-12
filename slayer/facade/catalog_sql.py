@@ -571,6 +571,10 @@ def _build_is_tables(catalog: FacadeCatalog) -> CatalogRelation:
 
 
 def _build_is_metrics(catalog: FacadeCatalog) -> CatalogRelation:
+    """SLayer's INFORMATION_SCHEMA.METRICS extension — JDBC-style type
+    names (``DOUBLE`` / ``BIGINT`` / ``TIMESTAMP``) to match the contract
+    the canned ``match_info_schema._serve_metrics`` previously emitted."""
+    from slayer.facade.datatypes import datatype_to_jdbc
     columns = [
         FacadeColumn(name="catalog_name", type=DataType.TEXT),
         FacadeColumn(name="schema_name", type=DataType.TEXT),
@@ -584,17 +588,23 @@ def _build_is_metrics(catalog: FacadeCatalog) -> CatalogRelation:
     for sch in catalog.schemas:
         for tbl in sch.tables:
             for m in tbl.metrics:
-                udt = _UDT_NAME_BY_DATATYPE.get(m.data_type, "text") if m.data_type else None
                 rows.append({
                     "catalog_name": catalog.catalog_name,
                     "schema_name": sch.name, "table_name": tbl.name,
                     "metric_name": m.name, "description": m.description,
-                    "data_type": udt, "label": m.label,
+                    "data_type": (
+                        datatype_to_jdbc(m.data_type) if m.data_type else None
+                    ),
+                    "label": m.label,
                 })
     return CatalogRelation(name="_is_metrics", columns=columns, rows=rows)
 
 
 def _build_is_dimensions(catalog: FacadeCatalog) -> CatalogRelation:
+    """SLayer's INFORMATION_SCHEMA.DIMENSIONS extension — JDBC-style type
+    names to match the contract the canned ``_serve_dimensions``
+    previously emitted."""
+    from slayer.facade.datatypes import datatype_to_jdbc
     columns = [
         FacadeColumn(name="catalog_name", type=DataType.TEXT),
         FacadeColumn(name="schema_name", type=DataType.TEXT),
@@ -609,12 +619,12 @@ def _build_is_dimensions(catalog: FacadeCatalog) -> CatalogRelation:
     for sch in catalog.schemas:
         for tbl in sch.tables:
             for d in tbl.dimensions:
-                udt = _UDT_NAME_BY_DATATYPE.get(d.data_type, "text")
                 rows.append({
                     "catalog_name": catalog.catalog_name,
                     "schema_name": sch.name, "table_name": tbl.name,
                     "dimension_name": d.name, "description": d.description,
-                    "data_type": udt, "label": d.label, "is_time": d.is_time,
+                    "data_type": datatype_to_jdbc(d.data_type),
+                    "label": d.label, "is_time": d.is_time,
                 })
     return CatalogRelation(name="_is_dimensions", columns=columns, rows=rows)
 
@@ -889,15 +899,31 @@ class _AstRewriter:
     @staticmethod
     def _rewrite_current_schemas_indexed(node: exp.Expression) -> exp.Expression:
         # Match Bracket(this=Paren?(CurrentSchemas|Anonymous("current_schemas")))
+        # AND a single literal index ``[1]`` — other indices are not
+        # safely collapsible to 'public' because the facade only advertises
+        # one schema (cf. CR review feedback). sqlglot normalises 1-based
+        # SQL array indices to 0-based internally, so user-level ``[1]``
+        # arrives as ``Literal(0)``.
         if not isinstance(node, exp.Bracket):
             return node
         inner = node.this
-        # Unwrap a Paren wrapper if sqlglot grouped the function call.
         if isinstance(inner, exp.Paren):
             inner = inner.this
-        if isinstance(inner, exp.CurrentSchemas) or _function_name_lower(inner) == "current_schemas":
-            return exp.Literal.string("public")
-        return node
+        if not (isinstance(inner, exp.CurrentSchemas)
+                or _function_name_lower(inner) == "current_schemas"):
+            return node
+        indices = node.args.get("expressions") or []
+        if len(indices) != 1:
+            return node
+        index = indices[0]
+        if not (isinstance(index, exp.Literal) and not index.is_string):
+            return node
+        try:
+            if int(str(index.this)) != 0:  # 0-based — user's [1]
+                return node
+        except ValueError:
+            return node
+        return exp.Literal.string("public")
 
     # ----- 3. regclass casts ------------------------------------------------
 
