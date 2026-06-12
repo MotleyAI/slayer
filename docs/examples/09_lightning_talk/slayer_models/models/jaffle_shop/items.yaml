@@ -1,4 +1,4 @@
-version: 6
+version: 7
 name: items
 sql_table: items
 query_variables: {}

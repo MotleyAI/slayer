@@ -175,11 +175,23 @@ See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/
 View your SLayer models from any BI tool — no Java or custom driver needed. Start the Postgres facade and point a dashboard's **PostgreSQL** connector at it:
 
 ```bash
-# Start SLayer speaking the Postgres wire protocol (Jaffle Shop demo)
-poetry run slayer pg-serve --demo            # listens on 127.0.0.1:5145
+# Start SLayer speaking the Postgres wire protocol (Jaffle Shop demo).
+# Containerized BI tools connect over the network, so bind all interfaces
+# (non-loopback binds require a token).
+slayer pg-serve --demo --host 0.0.0.0 --token pick-a-secret
 
-# e.g. Metabase: Add database -> PostgreSQL
-#   host=host.docker.internal  port=5145  database=jaffle_shop  (user/password: anything)
+# Run the BI tool with host.docker.internal mapped to the Docker host
+# (built into Docker Desktop; the flag makes it work on Linux too). The
+# volume keeps Metabase's settings/dashboards across container re-creates.
+docker run -d -p 3000:3000 --name metabase \
+  --add-host=host.docker.internal:host-gateway \
+  -e MB_DB_FILE=/metabase.data/metabase.db \
+  -v metabase-data:/metabase.data \
+  metabase/metabase
+
+# Metabase: Add database -> PostgreSQL
+#   host=host.docker.internal  port=5145  database=jaffle_shop
+#   user=anything  password=pick-a-secret  SSL=off
 ```
 
 The connection's `database` selects the SLayer datasource; its models appear as tables under schema `public`. There's also an [Arrow Flight SQL](https://motley-slayer.readthedocs.io/en/latest/interfaces/flight-sql/) facade for JDBC clients. See the [Postgres facade docs](https://motley-slayer.readthedocs.io/en/latest/interfaces/pg-facade/) for auth, TLS, and the supported SQL surface.
