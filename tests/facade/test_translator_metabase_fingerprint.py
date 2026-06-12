@@ -127,8 +127,28 @@ def test_hygiene_wrapper_dropped_around_bare_column(fn: str, caplog) -> None:
     # bare `name` dimension; the engine response key is `customers.name`.
     engine_alias = next(a for a, _ in result.column_name_mapping)
     assert engine_alias.endswith(".name")
-    # WARNING logged so a downstream operator notices.
-    assert any("hygiene" in r.getMessage().lower() for r in caplog.records)
+    # Plan: WARNING includes the specific function name; exactly one warning
+    # per dropped wrapper (so a multi-projection SQL gets multiple lines).
+    hygiene_warnings = [
+        r for r in caplog.records
+        if "hygiene" in r.getMessage().lower() and fn.lower() in r.getMessage().lower()
+    ]
+    assert len(hygiene_warnings) == 1
+
+
+def test_hygiene_wrapper_logs_one_warning_per_projection(caplog) -> None:
+    """Two SUBSTRINGs in one SELECT → two WARNING lines."""
+    sql = (
+        'SELECT SUBSTRING("public"."customers"."name", 1, 1234) AS "n", '
+        'SUBSTRING("public"."customers"."email", 1, 1234) AS "e" '
+        'FROM "public"."customers" LIMIT 10000'
+    )
+    with caplog.at_level(logging.WARNING):
+        _translate(sql)
+    hygiene_warnings = [
+        r for r in caplog.records if "hygiene" in r.getMessage().lower()
+    ]
+    assert len(hygiene_warnings) == 2
 
 
 def test_hygiene_wrapper_around_unknown_column_errors() -> None:
@@ -175,3 +195,22 @@ def test_metabase_fingerprint_orders_corpus_17() -> None:
     aliases = [projected for _alias, projected in result.column_name_mapping]
     assert aliases == ["customer_id", "total", "created_at"]
     assert result.query.limit == 10000
+
+
+def test_metabase_gui_question_count_orders_corpus_20() -> None:
+    """Corpus #20 — Metabase's compiled GUI question (`COUNT of orders`):
+    ``SELECT COUNT(*) AS "count" FROM "public"."orders"``.  This rides on
+    DEV-1486's aggregate-SQL → metric mapping (`COUNT(*)` → `*:count`) plus
+    the 3-part / 2-part qualified `"public"."orders"` table reference."""
+    sql = (
+        '-- Metabase:: userID: 1 queryType: MBQL queryHash: a54de39466cbf3e8\n'
+        'SELECT COUNT(*) AS "count" FROM "public"."orders"'
+    )
+    result = _translate(sql)
+    assert isinstance(result, QueryResult)
+    aliases = [projected for _alias, projected in result.column_name_mapping]
+    assert aliases == ["count"]
+    assert result.query.source_model == "orders"
+    # Underlying engine measure is `*:count` (the canonical count-all form).
+    measure_formulas = [m.get("formula") for m in (result.query.measures or [])]
+    assert "*:count" in measure_formulas

@@ -27,6 +27,7 @@ from slayer.facade.catalog_sql import CatalogSqlExecutor, executor_for
 from slayer.facade.translator import (
     NoOpResult,
     PgCatalogResult,
+    ProbeResult,
     translate,
 )
 
@@ -114,26 +115,85 @@ def test_corpus_fixture_contains_twenty_statements() -> None:
     assert len(statements) == 20, statements
 
 
+# The fixture contains TWO statements that are NOT Metabase-emitted SQL:
+#   #1  `SET application_name = 'Metabase v0.62.1.5 [...]'` — captured as the
+#        first thing Metabase sends, exercised in the SET test below.
+#   #19 `SELECT '=== GUI QUESTION ===' AS marker` — divider injected via
+#        ``psql -c`` by the capture script to mark the boundary between sync
+#        traffic and the GUI question.  Not exercised because it is not
+#        something Metabase ever sends in production.
+EXCLUDED_FIXTURE_INDICES = {19}
+
+
+def test_fixture_statements_translate_without_crashing() -> None:
+    """Smoke test — every fixture statement (minus the divider) must reach
+    a `TranslatorResult` of some kind via the unified translate() entry
+    point. Catches drift between the corpus and the inline hand-written tests
+    above (which substitute observed param values; the smoke test does NOT —
+    so #N statements containing `$1` will skip if the substitution can't be
+    made)."""
+    statements = _load_corpus_statements()
+    catalog = _demo_catalog()
+    failures: list[tuple[int, str]] = []
+    for idx, sql in enumerate(statements, start=1):
+        if idx in EXCLUDED_FIXTURE_INDICES:
+            continue
+        if "$" in sql:
+            # Bound-parameter statements: the pg facade's _handle_bind does the
+            # literal substitution before translate(), so a raw $N here would
+            # never reach the executor. Skip — the inline tests cover these.
+            continue
+        try:
+            _translate(sql, catalog)
+        except Exception as exc:  # noqa: BLE001 — we want any failure surfaced
+            failures.append((idx, f"{type(exc).__name__}: {exc}"))
+    assert not failures, "Fixture statements failed translate():\n" + \
+        "\n".join(f"  #{n}: {msg}" for n, msg in failures)
+
+
 # --- NoOp statements (SET / SHOW) go through translator, not executor -------
 
 
 @pytest.mark.parametrize(("sql", "tag"), [
     ("SET application_name = 'x'", "SET"),
-    ("SHOW TRANSACTION ISOLATION LEVEL", "SHOW"),
     ("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED", "SET"),
-    ("show timezone", "SHOW"),
+    ("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ UNCOMMITTED", "SET"),
 ])
-def test_corpus_noop_statements_route_to_noop_result(sql: str, tag: str) -> None:
+def test_corpus_set_statements_route_to_noop_result(sql: str, tag: str) -> None:
+    """SET goes through `_classify_noop_root`; the executor never sees it."""
     result = _translate(sql, _demo_catalog())
     assert isinstance(result, NoOpResult)
     assert result.command_tag == tag
 
 
-def test_corpus_select_1_routes_to_probe_or_executor() -> None:
-    # SELECT 1 is handled by the probe matcher; assert it doesn't fail.
+@pytest.mark.parametrize("sql", [
+    "SHOW TRANSACTION ISOLATION LEVEL",
+    "show timezone",
+])
+def test_corpus_show_statements_route_to_probe_result(sql: str) -> None:
+    """SHOW is intercepted by the probe matcher (DEV-1556) before the
+    executor; result is a ProbeResult with a single-row setting payload."""
+    result = _translate(sql, _demo_catalog())
+    assert isinstance(result, ProbeResult)
+    assert len(result.batch.rows) == 1
+
+
+def test_corpus_select_1_routes_to_probe_with_one_row() -> None:
+    # SELECT 1 — handled by the probe matcher (returns a single one-row batch
+    # carrying the integer 1). Tighter than `is not None` so a broken impl
+    # returning an empty result would still fail.
     result = _translate("SELECT 1", _demo_catalog())
-    # Whichever surface picks it up, the result is one row.
-    assert result is not None
+    assert isinstance(result, ProbeResult)
+    assert len(result.batch.rows) == 1
+    assert list(result.batch.rows[0].values()) == [1]
+
+
+def test_corpus_select_current_catalog_routes_to_probe() -> None:
+    # DEV-1556 added a probe for `select current_catalog`; the datasource
+    # name (`jaffle`) surfaces verbatim.
+    result = _translate("select current_catalog", _demo_catalog())
+    assert isinstance(result, ProbeResult)
+    assert result.batch.rows == [{"current_catalog": "jaffle"}]
 
 
 # --- catalog SQL via the executor ------------------------------------------
@@ -421,8 +481,14 @@ def test_corpus_15_fk_introspection_zero_rows() -> None:
 
 
 def test_corpus_18_field_type_lookup_substitutes_slayer_oid() -> None:
-    # #18 has the hardcoded postgres OID 16384. We substitute SLayer's actual OID
-    # for `public.orders` (from pg_class) so the WHERE clause matches.
+    """Corpus #18 has a hardcoded Postgres OID `16384` — that's the OID
+    Metabase observed back from #13 against the REAL Postgres.  Inside SLayer
+    the equivalent OID is the deterministic ``stable_oid('jaffle', 'orders')``
+    value, which is what Metabase would have read from SLayer's pg_class in
+    a live #13 run.  So the test substitutes SLayer's OID BEFORE sending the
+    query — exactly what Metabase does end-to-end.  No in-SLayer rewriting
+    of the captured literal 16384 happens; the captured literal is a property
+    of the original Postgres, not of SLayer's catalog."""
     catalog = _demo_catalog()
     from slayer.facade.catalog_sql import build_catalog_relations
     relations = {r.name: r for r in build_catalog_relations(catalog)}

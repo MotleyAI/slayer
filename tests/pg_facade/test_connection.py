@@ -830,6 +830,12 @@ async def test_extended_protocol_catalog_query_text_format() -> None:
         assert oid in allowed_oids
     # Format-code is text.
     assert all(fmt == proto.FORMAT_TEXT for _n, _o, fmt in fields)
+    # DataRow payload contains the actual text values returned by the executor.
+    # `public` (one of the two pg_namespace rows) must appear in some DataRow.
+    data_bodies = [body for t, body in msgs if t == "D"]
+    payloads = b"".join(data_bodies)
+    assert b"public" in payloads
+    assert b"jaffle" in payloads  # current_database() resolved to the datasource name
 
 
 async def test_extended_protocol_catalog_query_binary_format() -> None:

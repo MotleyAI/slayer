@@ -146,15 +146,20 @@ def test_pg_tables_one_row_per_table_typed_model() -> None:
 
 
 def test_pg_tables_excludes_view_typed_models() -> None:
+    # M1 — VIEW-typed models (sql-mode) are filtered out of pg_tables. The plan
+    # leaves pg_views and pg_matviews empty regardless, so a VIEW-typed model
+    # shows up in pg_class (relkind='r') but in NONE of the three views.
     sql_model = SlayerModel(
         name="custom_view", data_source="jaffle", sql="SELECT 1 AS id",
         columns=[Column(name="id", type=DataType.INT)],
     )
     cat = build_catalog(models_by_datasource={"jaffle": [sql_model]})
     relations = {r.name: r for r in build_catalog_relations(cat)}
-    assert relations["pg_tables"].rows == []  # VIEW-typed model excluded
-    assert any(r["matviewname"] == "custom_view" for r in relations["pg_matviews"].rows) or \
-           any(r["viewname"] == "custom_view" for r in relations["pg_views"].rows)
+    assert relations["pg_tables"].rows == []
+    assert relations["pg_views"].rows == []
+    assert relations["pg_matviews"].rows == []
+    # The model still appears in pg_class so #9's join JOIN against pg_class works.
+    assert any(r["relname"] == "custom_view" for r in relations["pg_class"].rows)
 
 
 def test_is_columns_has_postgres_shape_plus_slayer_extensions() -> None:
@@ -187,6 +192,35 @@ def test_pg_attrdef_pg_index_pg_constraint_carry_required_columns() -> None:
     assert {"adrelid", "adnum", "adbin"} <= attrdef_cols
     assert {"indrelid", "indexrelid", "indkey", "indisprimary", "indnkeyatts"} <= index_cols
     assert {"conrelid", "confrelid", "connamespace", "contype", "conkey", "confkey"} <= constraint_cols
+
+
+def test_empty_catalog_relations_project_metabase_referenced_columns() -> None:
+    """Each empty catalog relation must declare every column Metabase v0.62
+    queries reference, so DuckDB binds the SELECT successfully and returns
+    zero rows (rather than erroring with 'column not found').  Smoke-test
+    by selecting the actual referenced columns from the corpus."""
+    # Drawn from the corpus statements (#12, #14, #15) — these are the columns
+    # Metabase joins/filters/projects on the empty relations.
+    queries = [
+        ("pg_views", "SELECT schemaname, viewname, viewowner, definition FROM pg_views"),
+        ("pg_matviews", "SELECT schemaname, matviewname, matviewowner, "
+                        "hasindexes, ispopulated FROM pg_matviews"),
+        ("pg_constraint", "SELECT oid, conname, contype, conrelid, confrelid, "
+                          "connamespace, conkey, confkey FROM pg_constraint"),
+        ("pg_index", "SELECT indexrelid, indrelid, indkey, indisprimary, "
+                     "indnkeyatts FROM pg_index"),
+        ("pg_attrdef", "SELECT oid, adrelid, adnum, adbin FROM pg_attrdef"),
+        ("information_schema.table_constraints",
+         "SELECT constraint_name, constraint_schema, constraint_name, table_schema, "
+         "table_name, constraint_type FROM information_schema.table_constraints"),
+        ("information_schema.key_column_usage",
+         "SELECT constraint_name, table_schema, table_name, column_name "
+         "FROM information_schema.key_column_usage"),
+    ]
+    ex = _executor()
+    for _label, sql in queries:
+        batch = ex.execute(parsed=_parse(sql), sql=sql)
+        assert batch.rows == [], f"{_label!r} should be empty but returned {batch.rows!r}"
 
 
 def test_pg_type_carries_typnotnull_typbasetype_typtypmod() -> None:
@@ -231,6 +265,21 @@ def test_is_catalog_only_skips_cte_names() -> None:
     SELECT t.* FROM table_privileges t
     """
     assert is_catalog_only(_parse(sql)) is True
+
+
+def test_is_catalog_only_cte_body_user_table_still_false() -> None:
+    # A CTE that references a user model in its body — outer 'x' is exempt
+    # because it's CTE-defined, but the CTE BODY's reference to `orders`
+    # must still disqualify (otherwise an exemption-everything implementation
+    # would mark all unknown refs as catalog-only).
+    sql = "WITH x AS (SELECT * FROM orders) SELECT * FROM x"
+    assert is_catalog_only(_parse(sql)) is False
+
+
+def test_is_catalog_only_unknown_table_false() -> None:
+    # Guard against an over-broad implementation that treats every Table node
+    # as if it were CTE-defined.
+    assert is_catalog_only(_parse("SELECT * FROM totally_unknown_thing")) is False
 
 
 def test_is_catalog_only_skips_subquery_aliases() -> None:
@@ -285,11 +334,34 @@ def test_regclass_dynamic_via_udf() -> None:
 
 def test_regclass_well_known_system_oids_map_contract() -> None:
     # Contract pinned: pg_description.classoid = 1259 → 'pg_class'::regclass must = 1259.
+    # The full set Codex's prior round required is enumerated here so a
+    # partial implementation cannot pass.
     assert KNOWN_SYSTEM_OIDS["pg_class"] == 1259
     assert KNOWN_SYSTEM_OIDS["pg_namespace"] == 2615
     assert KNOWN_SYSTEM_OIDS["pg_attribute"] == 1249
     assert KNOWN_SYSTEM_OIDS["pg_type"] == 1247
+    assert KNOWN_SYSTEM_OIDS["pg_proc"] == 1255
     assert KNOWN_SYSTEM_OIDS["pg_description"] == 2609
+    assert KNOWN_SYSTEM_OIDS["pg_constraint"] == 2606
+    assert KNOWN_SYSTEM_OIDS["pg_index"] == 2610
+    assert KNOWN_SYSTEM_OIDS["pg_attrdef"] == 2604
+
+
+def test_regclass_dynamic_udf_is_row_dependent() -> None:
+    # A constant-folding implementation that special-cases FORMAT(literal, literal)
+    # would still pass test_regclass_dynamic_via_udf. Use VALUES so the cast input
+    # is genuinely row-dependent.
+    batch = _run(
+        "SELECT slayer_regclass_oid(FORMAT('%I.%I', schema, tbl)) AS oid "
+        "FROM (VALUES ('public', 'orders'), ('public', 'customers'), "
+        "             ('public', 'nope')) AS v(schema, tbl)"
+    )
+    rows = batch.rows
+    assert len(rows) == 3
+    # Two known → non-zero OIDs that match pg_class; one unknown → 0.
+    nonzero = [r["oid"] for r in rows[:2]]
+    assert all(n != 0 for n in nonzero)
+    assert rows[2]["oid"] == 0
 
 
 def test_regproc_cast_to_zero() -> None:
@@ -482,6 +554,21 @@ def test_unknown_function_translation_error_carries_sql(caplog) -> None:
     assert "this_function_does_not_exist" in str(excinfo.value).lower()
     # The offending SQL is in the WARNING log.
     assert any("this_function_does_not_exist" in r.getMessage() for r in caplog.records)
+
+
+def test_translate_wraps_catalog_executor_error_with_warning(caplog) -> None:
+    """The plan: executor errors → TranslationError(...) after logger.warning.
+    Test the translate() entry point, not the executor directly, so the
+    wrapping behaviour is the asserted contract."""
+    from slayer.facade.translator import translate
+    catalog = _demo_catalog()
+    sql = "SELECT no_such_fn() FROM pg_catalog.pg_namespace"
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(TranslationError):
+            translate(sql, catalog, dialect="postgres",
+                      catalog_sql_executor=_executor(catalog))
+    # WARNING log carries the offending SQL.
+    assert any(sql in r.getMessage() for r in caplog.records)
 
 
 # --- executor_for cache -----------------------------------------------------
