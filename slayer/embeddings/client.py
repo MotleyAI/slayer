@@ -19,6 +19,7 @@ embedding each text individually so good inputs survive.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import logging
 import os
@@ -103,7 +104,9 @@ def is_available() -> bool:
 # for very large caps (Voyage's 32K → 31744-token budget).
 _TRUNCATE_MARGIN_TOKENS = 256
 _CAP_FALLBACK = 8192
-_PREVIEW_CHARS = 80
+# Hash bytes logged on truncation events. SHA-256 prefix is enough to
+# correlate two log lines without leaking the embedded user content.
+_HASH_PREFIX_CHARS = 16
 
 
 _CAP_CACHE: Dict[str, int] = {}
@@ -192,7 +195,16 @@ def truncate_text_for_model(
     except Exception:  # noqa: BLE001 — tiktoken missing / unknown failure
         return text
 
-    tokens = encoder.encode(text)
+    # ``disallowed_special=()`` keeps tiktoken from raising on literal
+    # ``<|endoftext|>`` and similar markers that a user-controlled
+    # memory / entity description might happen to contain — without
+    # this, a single such input would propagate the ValueError out
+    # past embed_batch's per-input retry and regress to the all-None
+    # batch-killer this PR is supposed to fix.
+    try:
+        tokens = encoder.encode(text, disallowed_special=())
+    except Exception:  # noqa: BLE001 — tokenisation failure → degrade gracefully
+        return text
     cap = _resolve_model_cap(resolved_model) or _CAP_FALLBACK
     budget = max(0, cap - _TRUNCATE_MARGIN_TOKENS)
 
@@ -201,11 +213,19 @@ def truncate_text_for_model(
 
     truncated_tokens = tokens[:budget]
     truncated = encoder.decode(truncated_tokens) if truncated_tokens else ""
+    # Log a content hash, not a preview. The preview was originally
+    # there for operator correlation, but it leaks embedded user
+    # content into application logs — the hash gives correlation
+    # (two log lines for the same input share a digest) without
+    # leaking the content.
+    text_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[
+        :_HASH_PREFIX_CHARS
+    ]
     _log.warning(
         "truncated text for model=%s: original_tokens=%d post_tokens=%d "
-        "original_chars=%d post_chars=%d preview=%r",
+        "original_chars=%d post_chars=%d sha256_prefix=%s",
         resolved_model, len(tokens), len(truncated_tokens),
-        len(text), len(truncated), text[:_PREVIEW_CHARS],
+        len(text), len(truncated), text_digest,
     )
     return truncated
 

@@ -8,7 +8,7 @@ mocked at the import boundary — no live API calls are made.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 import pytest
 
@@ -336,17 +336,19 @@ def test_truncate_text_for_model_warns_on_truncation(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Codex finding #6: the warning carries enough context for an
-    operator to correlate it back to the source memory/entity —
-    model, original token count, post-truncation token count, and a
-    text preview must all appear in the formatted message."""
+    """The warning carries enough context for an operator to correlate
+    it back to the source memory/entity — model, original token count,
+    post-truncation token count, and a sha256 prefix of the input —
+    without leaking the embedded content itself."""
     pytest.importorskip("litellm")
     tiktoken = pytest.importorskip("tiktoken")
+    import hashlib
     import litellm
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 300)
     long_text = ("PREVIEWABLE_TOKEN " * 2000).strip()
     enc = tiktoken.get_encoding("cl100k_base")
     original_token_count = len(enc.encode(long_text))
+    expected_hash_prefix = hashlib.sha256(long_text.encode("utf-8")).hexdigest()[:16]
     caplog.set_level("WARNING", logger="slayer.embeddings.client")
     embedding_client.truncate_text_for_model(
         long_text, model="openai/text-embedding-3-small",
@@ -365,8 +367,13 @@ def test_truncate_text_for_model_warns_on_truncation(
     assert str(300 - 256) in msg, (
         f"post-truncation token count {300 - 256} missing: {msg}"
     )
-    assert "PREVIEWABLE_TOKEN" in msg, (
-        f"text preview missing from warning message: {msg}"
+    assert expected_hash_prefix in msg, (
+        f"sha256 prefix {expected_hash_prefix} missing: {msg}"
+    )
+    # The warning must NOT include any of the original text content —
+    # privacy regression guard.
+    assert "PREVIEWABLE_TOKEN" not in msg, (
+        f"warning message leaked text content: {msg}"
     )
 
 
@@ -408,7 +415,6 @@ def test_truncate_text_for_model_tiktoken_import_failure_is_identity(
     pytest.importorskip("litellm")
     import litellm
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 300)
-    sentinel = object()
 
     def boom(_name: str) -> Any:
         raise ImportError("tiktoken missing")
@@ -422,7 +428,57 @@ def test_truncate_text_for_model_tiktoken_import_failure_is_identity(
         long_text, model="openai/text-embedding-3-small",
     )
     assert out == long_text  # identity passthrough on encoder failure
-    assert sentinel is sentinel  # silence "unused" warnings
+
+
+def test_truncate_text_for_model_handles_tiktoken_special_token_literal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex PR-#177 finding: tiktoken's default ``encode`` raises on
+    strings containing reserved special tokens like ``<|endoftext|>``.
+    A user-controlled memory description could trip it, propagating
+    the exception out of ``embed_batch`` and regressing the all-None
+    contract. Implementation must pass ``disallowed_special=()`` so
+    these literals are tokenised as regular text and don't poison the
+    batch."""
+    pytest.importorskip("litellm")
+    import litellm
+    monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 300)
+    # Long enough that truncation actually fires; contains the
+    # offending literal that default tiktoken would reject.
+    payload = ("hello <|endoftext|> world " * 500)
+    # Must not raise. Identity or truncated output both acceptable —
+    # the contract is "no exception".
+    out = embedding_client.truncate_text_for_model(
+        payload, model="openai/text-embedding-3-small",
+    )
+    assert isinstance(out, str)
+
+
+async def test_embed_batch_survives_special_token_literal_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end companion to the truncation test above. A memory
+    text containing ``<|endoftext|>`` must not poison the whole
+    batch — pre-DEV-1557 the bare ``except Exception`` saved us; with
+    truncation now in front of the call, we have to make sure the
+    pre-pass doesn't reintroduce a hard crash."""
+    monkeypatch.setattr(embedding_client, "is_available", lambda: True)
+    litellm = pytest.importorskip("litellm")
+    monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 300)
+
+    class _Resp:
+        def __init__(self, n: int) -> None:
+            self.data = [{"embedding": [float(i)] * 3} for i in range(n)]
+
+    async def fake_aembedding(*, model: str, input: List[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
+        return _Resp(len(input))
+
+    monkeypatch.setattr(litellm, "aembedding", fake_aembedding)
+    result = await embedding_client.embed_batch(
+        ["normal", "hello <|endoftext|> world " * 500],
+        model="openai/text-embedding-3-small",
+    )
+    assert all(v is not None for v in result), result
 
 
 def test_truncate_text_for_model_get_max_tokens_raises_then_bare_used(
@@ -536,6 +592,47 @@ def _make_bad_request_error() -> Exception:
     )
 
 
+class _EmbeddingResp:
+    """Tiny response shape that mirrors what ``litellm.aembedding``
+    returns — ``.data`` is a list of ``{"embedding": [...]}`` dicts.
+    Shared by the per-input retry tests."""
+
+    def __init__(self, n: int) -> None:
+        self.data = [{"embedding": [float(i)] * 3} for i in range(n)]
+
+
+def _install_per_input_aembedding_stub(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    on_single: Any,
+) -> Tuple[List[List[str]], List[str]]:
+    """Wire up a fake ``litellm.aembedding`` for per-input-retry tests.
+
+    The fake records every (input, model) the implementation calls it
+    with into the returned lists, and dispatches to ``on_single`` for
+    per-input retry calls. Multi-element batch calls always raise the
+    shared ``BadRequestError`` sentinel so the retry path kicks in.
+    ``on_single(text)`` returns either a vector list (success) or
+    raises an exception that the implementation will route per its
+    retry policy.
+    """
+    litellm = pytest.importorskip("litellm")
+    bad = _make_bad_request_error()
+    seen_inputs: List[List[str]] = []
+    seen_models: List[str] = []
+
+    async def fake_aembedding(*, model: str, input: List[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
+        seen_inputs.append(list(input))
+        seen_models.append(model)
+        if len(input) > 1:
+            raise bad
+        on_single(input[0])
+        return _EmbeddingResp(1)
+
+    monkeypatch.setattr(litellm, "aembedding", fake_aembedding)
+    return seen_inputs, seen_models
+
+
 async def test_embed_batch_truncates_over_cap_inputs_happy_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -586,25 +683,15 @@ async def test_embed_batch_per_input_retry_on_bad_request(
     litellm = pytest.importorskip("litellm")
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 8191)
 
-    seen_inputs: List[List[str]] = []
-    seen_models: List[str] = []
     bad = _make_bad_request_error()
 
-    class _Resp:
-        def __init__(self, n: int) -> None:
-            self.data = [{"embedding": [float(i)] * 3} for i in range(n)]
-
-    async def fake_aembedding(*, model: str, input: List[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
-        seen_inputs.append(list(input))
-        seen_models.append(model)
-        if len(input) > 1:
-            # Batch call → raise so the per-input retry kicks in.
+    def on_single(text: str) -> None:
+        if text == "BAD":
             raise bad
-        if input[0] == "BAD":
-            raise bad
-        return _Resp(1)
 
-    monkeypatch.setattr(litellm, "aembedding", fake_aembedding)
+    seen_inputs, seen_models = _install_per_input_aembedding_stub(
+        monkeypatch, on_single=on_single,
+    )
     result = await embedding_client.embed_batch(
         ["good 1", "BAD", "good 2"],
         model="openai/text-embedding-3-small",
@@ -631,32 +718,21 @@ async def test_embed_batch_per_input_retry_breaks_on_non_bad_request(
     litellm = pytest.importorskip("litellm")
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 8191)
 
-    seen_inputs: List[List[str]] = []
-    seen_models: List[str] = []
-    bad = _make_bad_request_error()
-
-    class _Resp:
-        def __init__(self, n: int) -> None:
-            self.data = [{"embedding": [float(i)] * 3} for i in range(n)]
-
-    async def fake_aembedding(*, model: str, input: List[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
-        seen_inputs.append(list(input))
-        seen_models.append(model)
-        if len(input) > 1:
-            raise bad
-        if input[0] == "RATE_LIMIT":
+    def on_single(text: str) -> None:
+        if text == "RATE_LIMIT":
             raise RuntimeError("rate limit, please retry")
-        return _Resp(1)
 
-    monkeypatch.setattr(litellm, "aembedding", fake_aembedding)
+    seen_inputs, seen_models = _install_per_input_aembedding_stub(
+        monkeypatch, on_single=on_single,
+    )
     result = await embedding_client.embed_batch(
         ["good 1", "RATE_LIMIT", "good 2", "good 3"],
         model="openai/text-embedding-3-small",
     )
     assert result[0] is not None
     assert result[1] is None
-    assert result[2] is None  # not attempted; broken-out
-    assert result[3] is None  # not attempted; broken-out
+    assert result[2] is None  # NOSONAR(S125) — explanatory comment: not attempted; broken-out
+    assert result[3] is None  # NOSONAR(S125) — explanatory comment: not attempted; broken-out
     per_input_inputs = [c[0] for c in seen_inputs if len(c) == 1]
     # Stop after the rate-limit error; "good 2" and "good 3" never tried.
     assert per_input_inputs == ["good 1", "RATE_LIMIT"]
@@ -713,14 +789,14 @@ async def test_embed_batch_all_bad_requests_returns_all_none(
     litellm = pytest.importorskip("litellm")
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 8191)
 
-    seen_inputs: List[List[str]] = []
     bad = _make_bad_request_error()
 
-    async def fake_aembedding(*, model: str, input: List[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
-        seen_inputs.append(list(input))
+    def on_single(_text: str) -> None:
         raise bad
 
-    monkeypatch.setattr(litellm, "aembedding", fake_aembedding)
+    seen_inputs, _ = _install_per_input_aembedding_stub(
+        monkeypatch, on_single=on_single,
+    )
     result = await embedding_client.embed_batch(
         ["a", "b", "c"], model="openai/text-embedding-3-small",
     )
