@@ -126,18 +126,29 @@ def _is_connection_name_sentinel(connection_string: str) -> bool:
     URL into the ``connection_string`` field (e.g. the CLI form
     ``slayer datasources create snowflake://?connection_name=default``).
     Both paths must route through ``creator=``.
+
+    The recognition is **strict**: the URL must contain exactly one
+    non-empty query parameter, ``connection_name``. Extra params like
+    ``warehouse=WH`` are rejected up front because ``build_engine`` only
+    forwards ``connection_name`` to ``snowflake.connector.connect`` —
+    silently accepting other params would route the user to the profile
+    defaults instead of the requested session context. To override
+    warehouse / role / database / schema, use the typed
+    ``DatasourceConfig`` fields; those fire via ``apply_session_overrides``.
     """
     if not connection_string.startswith("snowflake://"):
         return False
-    # Use ``make_url`` so the recognition is order-independent: a URL
-    # like ``snowflake://?warehouse=WH&connection_name=default`` is
-    # semantically equivalent to ``?connection_name=default&warehouse=WH``
-    # and both must route through the ``creator=`` bridge.
     try:
         url = _sa_url.make_url(connection_string)
     except sa.exc.ArgumentError:
         return False
-    return bool(url.query.get("connection_name"))
+    name = url.query.get("connection_name")
+    if not name:
+        return False
+    # Reject sentinel URLs with extra query params — they would silently
+    # be ignored by build_engine's creator= bridge.
+    extra = {k for k, v in url.query.items() if k != "connection_name" and v != ""}
+    return not extra
 
 
 def _extract_connection_name(connection_string: str) -> str:

@@ -64,15 +64,25 @@ def _attach_session_overrides_listener(
     engine: sa.Engine,
     datasource: DatasourceConfig,
 ) -> None:
-    """Register a ``connect`` event listener that calls the dialect's
-    ``apply_session_overrides`` hook on every new pooled connection.
+    """Register a ``checkout`` event listener that calls the dialect's
+    ``apply_session_overrides`` hook every time a connection is taken
+    from the pool.
+
+    The ``checkout`` event is used (not ``connect``) so the session
+    state is re-applied on every query — not just on the first physical
+    connection creation. Without this, anything that mutates Snowflake
+    session state mid-flight (an inspector probe issuing its own ``USE``,
+    or a user-issued ``client.execute("USE SCHEMA other")``) would
+    silently persist on the pooled connection and leak into the next
+    query. Cost: ~1-4 ``USE`` round-trips per query, dominated by
+    network latency to Snowflake. Acceptable trade-off for correctness.
 
     The listener's name is ``_slayer_session_overrides`` so tests can
     verify registration without coupling to a private API.
 
     Skipped when the dialect's hook is the base-class no-op; detection
     is by class identity so the no-op default doesn't trigger a
-    ``connect`` listener that does nothing.
+    ``checkout`` listener that does nothing.
     """
     dialect = dialect_for_ds_type(datasource.type)
     base_method = SqlDialect.apply_session_overrides
@@ -80,8 +90,8 @@ def _attach_session_overrides_listener(
     if dialect_method is base_method:
         return
 
-    @sa_event.listens_for(engine, "connect")
-    def _slayer_session_overrides(dbapi_connection, _connection_record):
+    @sa_event.listens_for(engine, "checkout")
+    def _slayer_session_overrides(dbapi_connection, _connection_record, _connection_proxy):
         dialect.apply_session_overrides(
             dbapi_connection=dbapi_connection,
             datasource=datasource,

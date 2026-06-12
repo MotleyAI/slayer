@@ -197,3 +197,65 @@ jobs:
             kill "$SLAYER_PID" 2>/dev/null || true
           fi
           rm -f "$RUNNER_TEMP/sa-key.json"
+
+  snowflake-integration:
+    # Skip on forked-PR runs where the Snowflake secret isn't available — the
+    # job would fail otherwise and we'd rather not nag external contributors.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip if Snowflake secret is unset
+        id: gate
+        env:
+          SNOWFLAKE_CONNECTIONS_TOML: ${{ secrets.SNOWFLAKE_CONNECTIONS_TOML }}
+        run: |
+          if [[ -z "$SNOWFLAKE_CONNECTIONS_TOML" ]]; then
+            echo "Snowflake secret unset — skipping the integration suite."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        if: steps.gate.outputs.skip != 'true'
+        run: pip install poetry
+
+      - name: Install dependencies (with snowflake extra)
+        if: steps.gate.outputs.skip != 'true'
+        run: poetry install -E snowflake
+
+      - name: Write ~/.snowflake/connections.toml from secret
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          SNOWFLAKE_CONNECTIONS_TOML: ${{ secrets.SNOWFLAKE_CONNECTIONS_TOML }}
+        run: |
+          mkdir -p ~/.snowflake
+          # `printf '%s'` is literal — no backslash mangling, no extra trailing
+          # newline. `chmod 600` is required: snowflake-connector-python
+          # refuses to load a TOML that's world-/group-readable.
+          printf '%s' "$SNOWFLAKE_CONNECTIONS_TOML" > ~/.snowflake/connections.toml
+          chmod 600 ~/.snowflake/connections.toml
+
+      - name: Run Snowflake integration tests
+        if: steps.gate.outputs.skip != 'true'
+        timeout-minutes: 15
+        # SLAYER_SNOWFLAKE_CONNECTION names the profile in the TOML the
+        # integration suite should use. The default in the test file is
+        # `slayer_test` — match the section header in
+        # `secrets.SNOWFLAKE_CONNECTIONS_TOML`.
+        env:
+          SLAYER_SNOWFLAKE_CONNECTION: slayer_test
+        run: poetry run pytest tests/integration/test_integration_snowflake.py -v -m integration --timeout=300
+
+      - name: Wipe Snowflake credentials
+        if: always()
+        run: rm -f ~/.snowflake/connections.toml

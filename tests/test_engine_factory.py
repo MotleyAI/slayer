@@ -97,7 +97,10 @@ class TestSessionOverridesListener:
                 engine_factory.get_engine(ds)
         listens_for_mock.assert_called_once()
         _engine_arg, event_name = listens_for_mock.call_args.args
-        assert event_name == "connect"
+        # DEV-1551: use ``checkout`` (not ``connect``) so session state
+        # is re-applied on every pool checkout, not just on the first
+        # physical connection.
+        assert event_name == "checkout"
 
     def test_non_snowflake_engine_skips_session_overrides_listener(self) -> None:
         """Postgres / SQLite / etc. don't override apply_session_overrides,
@@ -132,7 +135,7 @@ class TestSessionOverridesListener:
             ) as apply_mock:
                 engine = engine_factory.get_engine(ds)
                 with engine.connect() as _:
-                    pass  # NOSONAR(S108) — empty body is intentional; opening + closing fires the connect-event listener under test
+                    pass  # NOSONAR(S108) — empty body is intentional; opening + closing fires the checkout-event listener under test
         assert apply_mock.call_count >= 1
         # Listener calls ``apply_session_overrides(dbapi_connection=..., datasource=...)``
         # by name; the datasource is the kwarg, not a positional arg.

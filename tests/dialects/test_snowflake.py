@@ -353,16 +353,14 @@ def test_apply_session_overrides_accepts_lowercase_value() -> None:
 @pytest.mark.parametrize("url,expected_name", [
     # Standard sentinel form.
     ("snowflake://?connection_name=default", "default"),
-    # Param order independence — ``warehouse`` before ``connection_name``.
-    ("snowflake://?warehouse=WH&connection_name=prod", "prod"),
     # Percent-encoded value with a literal ``%2F`` (already escaped by the
     # caller) — ``make_url`` decodes once; we don't double-decode.
     ("snowflake://?connection_name=my%20prod%2Fqa", "my prod/qa"),
 ])
-def test_is_connection_name_sentinel_accepts_any_param_order(url: str, expected_name: str) -> None:
+def test_is_connection_name_sentinel_accepts_clean_sentinel(url: str, expected_name: str) -> None:
     """``_is_connection_name_sentinel`` and ``_extract_connection_name``
-    use ``make_url`` so query-string param order doesn't matter and the
-    URL-decoded value isn't double-decoded (DEV-1551 round-6 fix)."""
+    use ``make_url`` so the URL-decoded value isn't double-decoded
+    (DEV-1551 round-6 fix)."""
     from slayer.sql.dialects.snowflake import _extract_connection_name, _is_connection_name_sentinel
     assert _is_connection_name_sentinel(url) is True
     assert _extract_connection_name(url) == expected_name
@@ -374,6 +372,12 @@ def test_is_connection_name_sentinel_accepts_any_param_order(url: str, expected_
     "snowflake://?connection_name=",                 # empty connection_name
     "postgres://?connection_name=default",           # wrong scheme
     "",
+    # Extra params alongside connection_name MUST be rejected — build_engine
+    # would silently ignore them and route to the profile defaults
+    # (DEV-1551 round-7 strict recognition).
+    "snowflake://?connection_name=prod&warehouse=WH",
+    "snowflake://?warehouse=WH&connection_name=prod",
+    "snowflake://?connection_name=prod&role=ADMIN&database=DB",
 ])
 def test_is_connection_name_sentinel_rejects_non_sentinels(url: str) -> None:
     from slayer.sql.dialects.snowflake import _is_connection_name_sentinel
