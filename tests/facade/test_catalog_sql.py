@@ -237,13 +237,29 @@ def test_pg_type_carries_typnotnull_typbasetype_typtypmod() -> None:
     "SELECT * FROM pg_namespace",
     "SELECT * FROM information_schema.columns",
     "SELECT * FROM information_schema.tables",
-    "SELECT 1",
+    # Tableless SELECTs are catalog-only only when they explicitly
+    # reference a catalog function (CR review feedback).
     "SELECT current_database()",
+    "SELECT pg_catalog.current_database()",
+    "SELECT 'pg_class'::regclass",
     "SELECT c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n "
     "ON c.relnamespace = n.oid",
 ])
 def test_is_catalog_only_true_for_catalog_or_tableless(sql: str) -> None:
     assert is_catalog_only(_parse(sql)) is True
+
+
+@pytest.mark.parametrize("sql", [
+    # Tableless SELECTs without any catalog reference no longer route
+    # through the executor — the probe matcher handles SELECT 1 etc.,
+    # and routing unknown tableless SQL through DuckDB would expand the
+    # facade's accepted SQL surface (CR review feedback).
+    "SELECT 1",
+    "SELECT 1 + 1",
+    "SELECT NOW()",
+])
+def test_is_catalog_only_false_for_unannotated_tableless(sql: str) -> None:
+    assert is_catalog_only(_parse(sql)) is False
 
 
 def test_is_catalog_only_false_for_user_model() -> None:
@@ -712,6 +728,31 @@ def test_executor_for_invalidates_on_catalog_change() -> None:
     ]})
     b = executor_for(extended)
     assert a is not b
+
+
+def test_executor_for_distinguishes_column_order() -> None:
+    """CR review: column position drives ``attnum`` / ``ordinal_position``
+    / ``pg_description.objsubid``, so reordering a model's columns under
+    the same name set MUST produce a new executor — otherwise the cache
+    serves stale catalog metadata."""
+    model_a = SlayerModel(
+        name="t", data_source="ds_order_test", sql_table="t",
+        columns=[
+            Column(name="x", type=DataType.INT),
+            Column(name="y", type=DataType.TEXT),
+        ],
+    )
+    model_b = SlayerModel(
+        name="t", data_source="ds_order_test", sql_table="t",
+        columns=[
+            # Same column names, swapped order.
+            Column(name="y", type=DataType.TEXT),
+            Column(name="x", type=DataType.INT),
+        ],
+    )
+    cat_a = build_catalog(models_by_datasource={"ds_order_test": [model_a]})
+    cat_b = build_catalog(models_by_datasource={"ds_order_test": [model_b]})
+    assert executor_for(cat_a) is not executor_for(cat_b)
 
 
 def test_executor_for_evicts_at_four_entries() -> None:

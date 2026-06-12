@@ -694,24 +694,77 @@ def _is_known_catalog_table(tbl: exp.Table) -> bool:
 
 
 def is_catalog_only(parsed: exp.Expression) -> bool:
-    """True iff every Table node in ``parsed`` resolves to a known catalog
-    relation OR is the name of a CTE defined inside the same statement.
+    """True iff ``parsed`` references at least one known catalog relation
+    or qualified catalog function, AND every Table node it walks resolves
+    to a known catalog relation (or a same-statement CTE).
 
-    Tableless SELECTs (e.g. ``SELECT NOW()``) are catalog-only — the
-    executor handles them via DuckDB's expression evaluator (and any
-    Postgres-only function calls are rewritten/stubbed in the pre-pass).
+    Tableless SELECTs are NOT auto-routed to the executor (CR review
+    feedback): the probe matcher already handles the standard tableless
+    probes (``SELECT 1``, ``SELECT current_database()``, ``SHOW …``),
+    and routing unknown tableless SQL through DuckDB would expand the
+    facade's accepted SQL surface with DuckDB semantics. Only tableless
+    SELECTs that explicitly reference catalog functions
+    (``::regclass``, ``pg_catalog.<fn>``, ``information_schema.<fn>``)
+    are accepted here.
     """
     cte_names = {
         str(cte.alias).lower() for cte in parsed.find_all(exp.CTE)
         if cte.alias
     }
+    saw_catalog_table = False
     for tbl in parsed.find_all(exp.Table):
         name = str(tbl.name).lower()
         if name in cte_names:
             continue
         if not _is_known_catalog_table(tbl):
             return False
-    return True
+        saw_catalog_table = True
+    if saw_catalog_table:
+        return True
+    # Tableless: only catalog-only if the statement references a catalog
+    # function explicitly (regclass cast, qualified pg_catalog/info_schema
+    # function call, or a known stub function name).
+    return _references_catalog_function(parsed)
+
+
+_CATALOG_FUNCTION_NAMES = frozenset({
+    # Underscored spellings (Anonymous + bare-word Column refs).
+    "current_database", "current_catalog", "current_user", "session_user",
+    "current_role", "current_schemas",
+    "format_type", "obj_description", "col_description", "pg_get_userbyid",
+    "pg_table_is_visible", "pg_get_expr", "pg_total_relation_size",
+    "has_table_privilege", "has_any_column_privilege", "has_schema_privilege",
+    "_pg_expandarray",
+    # sqlglot's class-key forms for the dedicated Func subclasses
+    # (``type(node).key`` returns e.g. ``currentdatabase`` without the
+    # underscore — they appear here via ``_function_name_lower``).
+    "currentdatabase", "currentcatalog", "currentuser", "sessionuser",
+    "currentrole", "currentschema", "currentschemas",
+})
+
+
+def _references_catalog_function(parsed: exp.Expression) -> bool:
+    """True iff ``parsed`` contains a ``::regclass``/``::regproc``/
+    ``::regtype`` cast, a ``pg_catalog.<fn>`` or
+    ``information_schema.<fn>`` qualified function call, or a bare known
+    stub function name. Used by ``is_catalog_only`` to admit tableless
+    SELECTs only when they explicitly target catalog metadata."""
+    for cast in parsed.find_all(exp.Cast):
+        to = cast.args.get("to")
+        if to is not None:
+            kind = getattr(to, "this", None)
+            if kind is not None and str(kind).lower() in {"regclass", "regproc", "regtype"}:
+                return True
+    for dot in parsed.find_all(exp.Dot):
+        lhs = dot.this
+        if isinstance(lhs, exp.Identifier):
+            lhs_name = str(lhs.this).lower()
+            if lhs_name in {"pg_catalog", "information_schema"}:
+                return True
+    for node in parsed.walk():
+        if _function_name_lower(node) in _CATALOG_FUNCTION_NAMES:
+            return True
+    return False
 
 
 # --- AST pre-rewrite pass ---------------------------------------------------
@@ -1286,20 +1339,29 @@ _EXECUTOR_CACHE: "collections.OrderedDict[str, CatalogSqlExecutor]" = collection
 
 
 def _fingerprint(catalog: FacadeCatalog, datasource: str) -> str:
+    """Stable cache key for an executor.
+
+    Tables are sorted for cross-build determinism (table order doesn't
+    affect any catalog row content). Dimensions and metrics WITHIN each
+    table are NOT sorted because their position drives ``attnum``,
+    ``ordinal_position``, and ``pg_description.objsubid`` — reordering
+    columns under the same name set is a real catalog change that the
+    fingerprint must distinguish.
+    """
     summary = [
         catalog.catalog_name,
         datasource,
         sorted([(
             sch.name, tbl.name, tbl.table_type, tbl.description,
-            sorted([
+            [
                 (d.name, d.data_type.value, d.description, d.label, d.is_time)
                 for d in tbl.dimensions
-            ]),
-            sorted([
+            ],
+            [
                 (m.name, m.data_type.value if m.data_type else None,
                  m.description, m.label)
                 for m in tbl.metrics
-            ]),
+            ],
         ) for sch in catalog.schemas for tbl in sch.tables]),
     ]
     payload = json.dumps(summary, sort_keys=True, default=str)
