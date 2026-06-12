@@ -137,8 +137,16 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         path = self._model_path(data_source, name)
         if not os.path.exists(path):  # NOSONAR(S6549) — name/data_source were sanitized by _resolve_target_or_none above (rejects '..', path separators, NULs); SlayerModel Pydantic validators sanitize the save path
             return None
-        with open(path) as f:
-            data = yaml.safe_load(f)
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f)
+        except yaml.YAMLError as exc:
+            # e.g. a file truncated mid-write by a full disk.
+            raise ValueError(
+                f"Model {name!r} in datasource {data_source!r}: invalid YAML in "
+                f"{path} — {exc}. Delete the file and re-run `slayer ingest` to "
+                f"recreate it."
+            ) from exc
         return await self._migrate_and_refine_on_load(
             name=name, data=data, data_source=data_source,
         )

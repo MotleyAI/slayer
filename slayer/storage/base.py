@@ -361,15 +361,25 @@ class StorageBackend(ABC):
         a warning and skips. Models with no refineable or widenable
         columns load without needing a live datasource.
         """
+        if not isinstance(data, dict):
+            # e.g. a zero-byte YAML file (yaml.safe_load -> None) left behind
+            # by a full disk or interrupted write. Fail with the remediation
+            # instead of a bare Pydantic model_type error.
+            raise ValueError(
+                f"Model {name!r} in datasource {data_source!r} has an empty or "
+                f"corrupt stored definition (got {type(data).__name__} instead "
+                f"of a mapping). Delete the stored entry (YAML layout: "
+                f"models/{data_source}/{name}.yaml) and re-run `slayer ingest` "
+                f"to recreate it."
+            )
         write_back = False
-        if isinstance(data, dict):
-            pre_version = int(data.get("version", 1))
-            if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
-                data = _mig.migrate("SlayerModel", data)
-                write_back = True
-                await self._apply_refinement_or_raise(
-                    name=name, data=data, data_source=data_source,
-                )
+        pre_version = int(data.get("version", 1))
+        if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
+            data = _mig.migrate("SlayerModel", data)
+            write_back = True
+            await self._apply_refinement_or_raise(
+                name=name, data=data, data_source=data_source,
+            )
         model = SlayerModel.model_validate(data)
         if write_back:
             # DEV-1410: legacy on-disk models may contain derived-column

@@ -34,6 +34,40 @@ def test_current_schema_returns_public() -> None:
     assert batch.rows == [{"current_schema": "public"}]
 
 
+def test_show_transaction_isolation_level_multiword() -> None:
+    # pgjdbc's getTransactionIsolation() spelling; c3p0 calls it at pool init.
+    batch = _probe("SHOW TRANSACTION ISOLATION LEVEL")
+    assert batch is not None
+    assert batch.rows == [{"transaction_isolation": "read committed"}]
+
+
+def test_show_time_zone_multiword() -> None:
+    batch = _probe("SHOW TIME ZONE")
+    assert batch is not None
+    assert batch.rows == [{"timezone": "UTC"}]
+
+
+def test_current_catalog_niladic_returns_datasource() -> None:
+    # pgjdbc's PgConnection.getCatalog() — called by Metabase's c3p0 pool on
+    # every new connection — issues the no-parens spelling.
+    batch = _probe("SELECT current_catalog", datasource="analytics")
+    assert batch is not None
+    assert batch.rows == [{"current_catalog": "analytics"}]
+
+
+def test_current_schema_niladic_returns_public() -> None:
+    batch = _probe("SELECT current_schema")
+    assert batch is not None
+    assert batch.rows == [{"current_schema": "public"}]
+
+
+def test_current_user_and_session_user_return_constant() -> None:
+    for column in ("current_user", "session_user"):
+        batch = _probe(f"SELECT {column}")
+        assert batch is not None, column
+        assert batch.rows == [{column: "slayer"}]
+
+
 def test_show_search_path() -> None:
     batch = _probe("SHOW search_path")
     assert batch is not None

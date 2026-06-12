@@ -31,6 +31,16 @@ _SHOW_DEFAULTS = {
     "client_encoding": "UTF8",
     "datestyle": "ISO, MDY",
     "timezone": "UTC",
+    "session_authorization": "slayer",
+}
+
+# Multi-word SHOW spellings → the canonical setting they report. pgjdbc's
+# Connection.getTransactionIsolation() issues `SHOW TRANSACTION ISOLATION
+# LEVEL` on every pooled connection (c3p0 caches it at pool-init).
+_SHOW_ALIASES = {
+    "transaction isolation level": "transaction_isolation",
+    "time zone": "timezone",
+    "session authorization": "session_authorization",
 }
 
 
@@ -80,8 +90,10 @@ def match_pg_probe(
     # ParameterStatus / pg_settings), NOT the full version() string.
     setting = _show_setting_name(parsed)
     if setting is not None:
-        value = _SHOW_DEFAULTS.get(setting.lower(), "")
-        return _single(setting, value)
+        key = setting.lower()
+        key = _SHOW_ALIASES.get(key, key)
+        value = _SHOW_DEFAULTS.get(key, "")
+        return _single(key, value)
 
     body = _single_projection(parsed)
     if body is None:
@@ -91,8 +103,18 @@ def match_pg_probe(
         return _single("version", version_str)
     if isinstance(body, exp.CurrentDatabase) or _anonymous_name(body) == "current_database":
         return _single("current_database", datasource)
+    # pgjdbc's PgConnection.getCatalog() issues the niladic `SELECT
+    # current_catalog`; Metabase's c3p0 pool calls it on every new connection.
+    if isinstance(body, exp.CurrentCatalog):
+        return _single("current_catalog", datasource)
     if isinstance(body, exp.CurrentSchema) or _anonymous_name(body) == "current_schema":
         return _single("current_schema", "public")
+    # The facade does not track per-connection login identity; a constant
+    # satisfies driver probes (the username is ignored at auth anyway).
+    if isinstance(body, exp.SessionUser):
+        return _single("session_user", "slayer")
+    if isinstance(body, exp.CurrentUser):
+        return _single("current_user", "slayer")
 
     name = _anonymous_name(body)
     if name == "current_setting":

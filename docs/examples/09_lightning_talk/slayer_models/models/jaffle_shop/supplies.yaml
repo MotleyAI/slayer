@@ -1,4 +1,4 @@
-version: 6
+version: 7
 name: supplies
 sql_table: supplies
 query_variables: {}

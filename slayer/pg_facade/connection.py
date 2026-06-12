@@ -535,6 +535,9 @@ class PgConnection:
         try:
             result = self._translate(sql)
         except TranslationError as exc:
+            # Clients (BI pools especially) often swallow the statement that
+            # failed; log it server-side so unsupported-SQL gaps are visible.
+            logger.warning("pg facade: cannot translate %r: %s", sql, exc)
             await self._send_error(code=_sqlstate_for(exc), message=str(exc))
             self._fail_tx()
             return False
