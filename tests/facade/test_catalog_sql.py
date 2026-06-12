@@ -441,6 +441,25 @@ def test_current_database_and_catalog_resolve_to_datasource(expr: str) -> None:
     assert batch.rows == [{"db": "jaffle"}]
 
 
+@pytest.mark.parametrize("expr", ["current_schema()", "current_schema"])
+def test_current_schema_resolves_to_public(expr: str) -> None:
+    """DuckDB's built-in current_schema returns 'main'; we must rewrite
+    to 'public' to match the single schema the pg facade advertises
+    (CR/Codex review)."""
+    batch = _run(f"SELECT {expr} AS s")
+    assert batch.rows == [{"s": "public"}]
+
+
+def test_pg_catalog_query_filters_by_current_schema() -> None:
+    """End-to-end shape exercising the current_schema substitution
+    inside a catalog query (mixes both rewrite paths)."""
+    batch = _run(
+        "SELECT nspname FROM pg_catalog.pg_namespace "
+        "WHERE nspname = current_schema()"
+    )
+    assert batch.rows == [{"nspname": "public"}]
+
+
 def test_current_database_full_tree_walk_inside_projection() -> None:
     # #13 shape: current_database() inside a SELECT projection of a JOINed query.
     sql = (

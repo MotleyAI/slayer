@@ -61,6 +61,33 @@ def _translate(sql: str):
 # --- 3-part qualified column refs -------------------------------------------
 
 
+def test_four_part_catalog_qualified_column_resolves() -> None:
+    """CR/Codex review: ``slayer.<schema>.<table>.<col>`` 4-part refs
+    must strip the leading 3 elements (catalog + schema + table) and
+    leave just the bare column. Previously the strip removed only the
+    last schema.table pair, leaving ``slayer.col`` which broke
+    everything."""
+    sql = (
+        'SELECT slayer.jaffle.orders.customer_id AS "customer_id" '
+        'FROM jaffle.orders'
+    )
+    result = _translate(sql)
+    assert isinstance(result, QueryResult)
+    aliases = [projected for _alias, projected in result.column_name_mapping]
+    assert aliases == ["customer_id"]
+
+
+def test_four_part_foreign_catalog_rejected() -> None:
+    """A 4-part ref naming a non-SLayer catalog is NOT this catalog's
+    column — leave it unstripped so resolution fails loudly."""
+    sql = (
+        'SELECT other_catalog.jaffle.orders.customer_id '
+        'FROM jaffle.orders'
+    )
+    with pytest.raises(TranslationError):
+        _translate(sql)
+
+
 def test_three_part_qualified_column_in_select_resolves() -> None:
     sql = 'SELECT "public"."orders"."customer_id" AS "customer_id" FROM "public"."orders" LIMIT 10000'
     result = _translate(sql)

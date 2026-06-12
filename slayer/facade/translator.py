@@ -261,12 +261,25 @@ def _apply_strip_prefix(
     parts: List[str], strip_prefix: Optional[Tuple[str, str]],
 ) -> List[str]:
     """Drop the leading ``schema.table.`` qualifier from ``parts`` when it
-    matches ``strip_prefix``. Three-part column refs drop the leading 2
-    elements; two-part drops the leading 1. Bare and unrelated refs pass
-    through unchanged."""
+    matches ``strip_prefix``. Four-part catalog-qualified refs drop the
+    leading 3; three-part drops the leading 2; two-part drops the
+    leading 1. Bare and unrelated refs pass through unchanged.
+
+    For 4-part refs, the leading catalog must match the SLayer catalog
+    name (``slayer``) — otherwise we leave the ref alone (a foreign
+    catalog reference is not addressable here).
+    """
     if strip_prefix is None:
         return parts
     schema_p, table_p = strip_prefix
+    if len(parts) >= 4:
+        c = parts[-4].lower()
+        s = parts[-3].lower()
+        t = parts[-2].lower()
+        if (c == CATALOG_NAME.lower()
+                and t == table_p.lower()
+                and s in {"public", schema_p.lower()}):
+            return parts[:-4] + parts[-1:]
     if len(parts) >= 3:
         s = parts[-3].lower()
         t = parts[-2].lower()

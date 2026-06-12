@@ -1085,6 +1085,8 @@ class _AstRewriter:
             return exp.Literal.string(self.datasource)
         if isinstance(node, (exp.CurrentUser, exp.SessionUser)):
             return exp.Literal.string("slayer")
+        if isinstance(node, exp.CurrentSchema):
+            return exp.Literal.string("public")
         return None
 
     def _substitute_bareword_column(self, node: exp.Expression) -> Optional[exp.Expression]:
@@ -1107,10 +1109,18 @@ class _AstRewriter:
         return self._literal_for_context_name(name)
 
     def _literal_for_context_name(self, name: str) -> Optional[exp.Expression]:
-        if name in {"current_database", "current_catalog"}:
+        if name in {"current_database", "current_catalog",
+                    "currentdatabase", "currentcatalog"}:
             return exp.Literal.string(self.datasource)
-        if name in {"current_user", "session_user", "current_role"}:
+        if name in {"current_user", "session_user", "current_role",
+                    "currentuser", "sessionuser", "currentrole"}:
             return exp.Literal.string("slayer")
+        # current_schema() / current_schema → 'public' (the single schema
+        # the pg facade advertises). DuckDB has its own current_schema
+        # (returning 'main'), so we must rewrite explicitly even inside
+        # catalog SQL.
+        if name in {"current_schema", "currentschema"}:
+            return exp.Literal.string("public")
         return None
 
     # ----- 6. rename stub functions to private names ------------------------
