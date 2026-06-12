@@ -35,6 +35,7 @@ which the engine parses as Mode B DSL.
 from __future__ import annotations
 
 import logging
+import re
 from contextvars import ContextVar
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -927,6 +928,43 @@ def _rewrite_neq(sql: str) -> str:
     return sql.replace("!=", "<>")
 
 
+# SQL reserved words Metabase v0.62 uses as unquoted column aliases in its
+# captured corpus (e.g. ``AS select``, ``AS update``, ``AS delete`` in the
+# table-privileges CTE). sqlglot rejects these without quotes; we
+# preprocess by quoting them on a parse-fail retry.
+_KEYWORD_ALIAS_QUOTE = re.compile(
+    r"\b(AS)\s+(select|update|insert|delete|create|drop|alter|grant|revoke)\b",
+    re.IGNORECASE,
+)
+
+
+def _quote_keyword_aliases(sql: str) -> str:
+    """Quote unquoted SQL-keyword aliases. ``AS select`` → ``AS "select"``."""
+    return _KEYWORD_ALIAS_QUOTE.sub(
+        lambda m: f'{m.group(1)} "{m.group(2)}"', sql,
+    )
+
+
+def _parse_with_keyword_alias_fallback(
+    sql: str, *, dialect: Optional[str],
+) -> exp.Expression:
+    """Parse ``sql`` with sqlglot. On failure, retry once with unquoted
+    SQL keyword aliases auto-quoted — Metabase's table-privileges CTE
+    (corpus #8) uses ``AS select`` / ``AS update`` / ``AS delete`` which
+    sqlglot rejects, but Postgres accepts. Raises ``TranslationError``
+    with the original parse error if both attempts fail."""
+    try:
+        return sqlglot.parse_one(sql, dialect=dialect)
+    except sqlglot.errors.ParseError as primary:
+        retry_sql = _quote_keyword_aliases(sql)
+        if retry_sql == sql:
+            raise TranslationError(f"SQL parse error: {primary}") from primary
+        try:
+            return sqlglot.parse_one(retry_sql, dialect=dialect)
+        except sqlglot.errors.ParseError:
+            raise TranslationError(f"SQL parse error: {primary}") from primary
+
+
 def _apply_where(
     where: Optional[exp.Where],
     time_dims_built: Dict[str, TimeDimension],
@@ -1149,9 +1187,7 @@ def translate(
     """
     token = _IN_FACADE_PARSE.set(True)
     try:
-        parsed = sqlglot.parse_one(sql, dialect=dialect)
-    except sqlglot.errors.ParseError as exc:
-        raise TranslationError(f"SQL parse error: {exc}") from exc
+        parsed = _parse_with_keyword_alias_fallback(sql, dialect=dialect)
     finally:
         _IN_FACADE_PARSE.reset(token)
 

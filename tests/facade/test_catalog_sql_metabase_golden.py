@@ -135,16 +135,17 @@ def test_corpus_fixture_contains_twenty_statements() -> None:
     assert len(statements) == 20, statements
 
 
-# The fixture contains statements that are excluded from the fixture-load
-# smoke test, for two reasons:
-#   #8  Metabase's table-privileges CTE aliases columns ``AS select``,
-#        ``AS update``, ``AS delete`` — Postgres tolerates SQL-keyword aliases
-#        without quoting, sqlglot does not. The shape is covered explicitly
-#        in ``test_corpus_08_table_privileges_cte`` with renamed aliases.
+# The fixture contains one statement that is excluded from the fixture-load
+# smoke test:
 #   #19 `SELECT '=== GUI QUESTION ===' AS marker` — divider injected via
 #        ``psql -c`` by the capture script to mark the boundary between sync
 #        traffic and the GUI question. Not Metabase-emitted.
-EXCLUDED_FIXTURE_INDICES = {8, 19}
+#
+# Corpus #8 (table-privileges CTE) uses unquoted SQL-keyword aliases (`AS
+# select` / `AS update` / `AS delete`) which sqlglot rejects on its first
+# pass. The translator's `_parse_with_keyword_alias_fallback` quotes them
+# and retries, so the smoke test runs cleanly across all 19 statements.
+EXCLUDED_FIXTURE_INDICES = {19}
 
 
 def test_fixture_statements_translate_without_crashing() -> None:
@@ -243,6 +244,31 @@ def test_corpus_07_get_schemas_pgjdbc() -> None:
     assert "public" in schemas
     # current_database() rewritten to the datasource name.
     assert all(r["TABLE_CATALOG"] == "jaffle" for r in result.batch.rows)
+
+
+def test_corpus_08_table_privileges_cte_raw_keyword_aliases() -> None:
+    """Verbatim corpus #8 uses unquoted SQL-keyword aliases
+    (``AS select`` / ``AS update`` / ``AS delete``). sqlglot rejects
+    these on the first parse; the translator's
+    ``_parse_with_keyword_alias_fallback`` quotes them and retries so
+    the actual Metabase SQL — not just our rename-aliased rewrite —
+    routes successfully through the executor."""
+    statements = _load_corpus_statements()
+    sql_eight = statements[7]  # 1-based #8 → 0-based 7
+    # Sanity-pin: the captured SQL really does contain the bare keyword
+    # aliases we are testing the fallback against.
+    assert " as select" in sql_eight.lower()
+    assert " as update" in sql_eight.lower()
+    assert " as delete" in sql_eight.lower()
+    catalog = _demo_catalog()
+    result = _translate(sql_eight, catalog)
+    assert isinstance(result, PgCatalogResult)
+    rows = result.batch.rows
+    # Privilege stubs return True in the parsed columns.
+    table_col_name = next(
+        (k for k in (rows[0] or {}) if k == "table"), None
+    ) if rows else None
+    assert table_col_name is not None or rows == []
 
 
 def test_corpus_08_table_privileges_cte() -> None:
