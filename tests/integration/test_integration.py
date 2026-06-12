@@ -1354,7 +1354,7 @@ async def test_transform_on_cross_model(cross_model_env):
 # Query as model (multistage queries)
 # ---------------------------------------------------------------------------
 
-async def test_query_as_model_count(integration_env):
+async def test_query_backed_model_count(integration_env):
     """A named query can be used as the model for another query via list."""
     engine = integration_env
 
@@ -1376,7 +1376,7 @@ async def test_query_as_model_count(integration_env):
     assert response.data[0]["monthly._count"] == 3
 
 
-async def test_query_as_model_aggregate(integration_env):
+async def test_query_backed_model_aggregate(integration_env):
     """Outer query can aggregate over inner query's computed values."""
     engine = integration_env
 
@@ -1483,7 +1483,7 @@ async def test_sibling_stage_joins_dag(cross_model_env):
     population.
 
     Pre-fix this raises ``ValueError: Model 'kpis' not found`` at
-    enrichment time because ``_query_as_model`` dropped the named_queries
+    enrichment time because ``the legacy query-backed wrap`` dropped the named_queries
     dict when enriching a non-final stage.
     """
     from slayer.core.query import ModelExtension
@@ -3512,3 +3512,181 @@ async def test_filter_renamed_measure_colon_syntax(integration_env):
     assert surviving == {"completed": 2, "pending": 2}, (
         f"unexpected rows from renamed-measure HAVING filter: {response.data}"
     )
+
+
+async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
+    """DEV-1501 integration: ORDER BY two ``last()`` aggregates over
+    different explicit time columns must execute end-to-end against real
+    SQLite and return rows ordered by the correct distinct rank keys
+    (no dangling ``_last_rn``, no collapsed ranks). Uses a tied primary
+    rank so the secondary ASC tie-break actually engages.
+    """
+
+    db_path = tmp_path / "dev1501.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            status TEXT NOT NULL,
+            amount REAL NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    # Per-group last(created_at) is tied at 50 across A and B; the
+    # secondary ORDER BY last(updated_at) ASC must break the tie with
+    # B (10) before A (99). The expected order intentionally CONTRADICTS
+    # natural alphabetical status ordering so a silently-dropped secondary
+    # ORDER BY would surface as a test failure (CR PR #153 thread
+    # r3350000263).
+    rows = [
+        # Status A: last(created_at)=50, last(updated_at)=99.
+        (1, "A", 50.0, "2025-03-01", "2025-01-01"),
+        (2, "A", 99.0, "2025-02-01", "2025-04-01"),
+        # Status B: last(created_at)=50 (tied), last(updated_at)=10.
+        (3, "B", 50.0, "2025-03-01", "2025-02-01"),
+        (4, "B", 10.0, "2025-01-15", "2025-04-01"),
+    ]
+    cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", rows)
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage_dev1501"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="dev1501_sqlite", type="sqlite", database=str(db_path))
+    )
+    orders_model = SlayerModel(
+        name="orders", sql_table="orders", data_source="dev1501_sqlite",
+        # Intentionally no default_time_dimension — exercises the
+        # no-default + explicit-time-arg branch end-to-end.
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+        ],
+    )
+    await storage.save_model(orders_model)
+    engine = SlayerQueryEngine(storage=storage)
+
+    query = SlayerQuery(
+        source_model="orders",
+        measures=["*:count"],
+        dimensions=[ColumnRef(name="status")],
+        order=[
+            OrderItem(column="amount:last(created_at)", direction="desc"),
+            OrderItem(column="amount:last(updated_at)", direction="asc"),
+        ],
+    )
+    response: SlayerResponse = await engine.execute(query)
+
+    # Hidden materialised aliases must not leak into result columns.
+    assert set(response.columns) == {"orders.status", "orders._count"}, (
+        f"Hidden last() aliases leaked: {response.columns!r}"
+    )
+    # Two rows, both count 2; B before A because primary lc is tied (50)
+    # and secondary lu ASC puts B (lu=10) before A (lu=99). Expected order
+    # contradicts natural alphabetical so any drop of the secondary key fails.
+    assert len(response.data) == 2, response.data
+    assert response.data[0]["orders.status"] == "B", response.data
+    assert response.data[1]["orders.status"] == "A", response.data
+    assert response.data[0]["orders._count"] == 2, response.data
+    assert response.data[1]["orders._count"] == 2, response.data
+
+
+# ---------------------------------------------------------------------------
+# DEV-1502: measure-source Column.sql with __-delimited path alias must
+# (a) execute end-to-end on SQLite (no `no such column` error from a
+# missing JOIN) and (b) return the right cardinality.
+# ---------------------------------------------------------------------------
+
+
+async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
+    """orders → customers → regions chain; a derived column on orders
+    references the deep ``customers__regions.population`` path. The
+    typed pipeline must pull both LEFT JOINs so the aggregate evaluates
+    against real columns.
+    """
+    db_path = tmp_path / "orders_customers_regions.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, population REAL)")
+    cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER)")
+    cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER)")
+    cur.executemany(
+        "INSERT INTO regions VALUES (?, ?)",
+        [(1, 100.0), (2, 50.0)],
+    )
+    cur.executemany(
+        "INSERT INTO customers VALUES (?, ?)",
+        # 3 customers; 2 in region 1 (pop 100), 1 in region 2 (pop 50).
+        [(1, 1), (2, 1), (3, 2)],
+    )
+    cur.executemany(
+        "INSERT INTO orders VALUES (?, ?)",
+        # 4 orders: 2 by customer 1 (region 1), 1 by customer 2 (region 1),
+        # 1 by customer 3 (region 2).
+        [(10, 1), (11, 1), (12, 2), (13, 3)],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage_ocr"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="ds", type="sqlite", database=str(db_path))
+    )
+    await storage.save_model(SlayerModel(
+        name="regions", data_source="ds", sql_table="regions",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="population", sql="population", type=DataType.DOUBLE),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="customers", data_source="ds", sql_table="customers",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+    ))
+    await storage.save_model(SlayerModel(
+        name="orders", data_source="ds", sql_table="orders",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(
+                name="region_pop",
+                sql="customers__regions.population",
+                type=DataType.DOUBLE,
+            ),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    ))
+    engine = SlayerQueryEngine(storage=storage)
+
+    # SUM over per-order region populations:
+    #   order 10 → customer 1 → region 1 (100)
+    #   order 11 → customer 1 → region 1 (100)
+    #   order 12 → customer 2 → region 1 (100)
+    #   order 13 → customer 3 → region 2 (50)
+    # Total: 350.
+    response = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="region_pop:sum")],
+    ))
+    assert response.row_count == 1
+    assert response.data[0]["orders.region_pop_sum"] == pytest.approx(350.0), (
+        f"expected SUM=350 over per-order regions, got "
+        f"{response.data[0].get('orders.region_pop_sum')!r}; row: "
+        f"{response.data[0]!r}"
+    )
+    _sync_engines.clear()

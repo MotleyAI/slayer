@@ -2,7 +2,7 @@
 
 ``plan_stages`` returns a ``List[PlannedQuery]`` (root last). The legacy
 engine renders a multi-stage DAG as nested rename-subqueries via
-``_query_as_model``; the typed pipeline chains the stages as CTEs through
+``the legacy query-backed wrap``; the typed pipeline chains the stages as CTEs through
 ``generate_planned_stages``. SQL strings therefore differ from legacy, so
 these tests are execution-based: render the new SQL, run it against the same
 seeded SQLite the legacy ``engine.execute([...])`` ran against, and assert

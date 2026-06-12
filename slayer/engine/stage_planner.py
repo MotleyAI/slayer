@@ -208,13 +208,14 @@ def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
     return None
 
 
-def plan_query(
+def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-1503 addition is a small trigger-predicate branch + a kwarg pass-through; the function's pre-existing complexity is owned by the multi-stage scope / bundle / projection / filter-routing wiring it orchestrates and is tracked as a separate refactor.
     *,
     query: SlayerQuery,
     bundle: ResolvedSourceBundle,
     scope: Optional[Union[ModelScope, StageSchema]] = None,
     cross_model_planner: Optional[CrossModelPlanner] = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
+    disable_dev1503_isolation: bool = False,
 ) -> PlannedQuery:
     """Compile one ``SlayerQuery`` into a typed ``PlannedQuery``.
 
@@ -222,6 +223,14 @@ def plan_query(
     pass an explicit ``StageSchema`` to bind against an upstream stage.
     ``stage_schemas`` is a name → StageSchema map used by
     ``plan_stages`` to wire multi-stage references.
+
+    ``disable_dev1503_isolation`` (DEV-1503) suppresses the trigger that
+    isolates cross-model-FILTERED local measures into a per-measure CTE.
+    Threaded through ``subplan_builder`` whenever a cross-model strategy
+    recurses for a host-rooted (or target-rooted) nested sub-plan, so the
+    sub-plan's same filtered measure is rendered inline (not infinitely
+    re-isolated) and so re-rooting of a genuine cross-model aggregate
+    doesn't redundantly DEV-1503-isolate the target's own filter joins.
     """
     stage_schemas = stage_schemas or {}
     cross_model_planner = (
@@ -302,6 +311,14 @@ def plan_query(
     # appended directly to ``filters_by_phase`` between the two
     # bound-filter buckets.
     bound_filters: List[BoundFilter] = []
+    # Parallel to bound_filters — original query-filter text for user
+    # filters (None for date_range bounds, which are synthesized from
+    # TimeDimension.date_range and have no caller-visible source string).
+    # Wired into HostFilterRouting.text below so cross_model_planner can
+    # recover ROW-phase user-filter text WITHOUT slicing host_query.filters
+    # (which has not been deduped, unlike bound_filters) — CR PR #153
+    # thread r3350000254.
+    bound_filter_texts: List[Optional[str]] = []
     text_filter_entries: List[FilterPhase] = []
 
     # 1. date_range filters (one per TD with a 2-element date_range)
@@ -312,6 +329,7 @@ def plan_query(
             continue
         bf = _build_date_range_filter(td=td, scope=scope, bundle=bundle)
         bound_filters.append(bf)
+        bound_filter_texts.append(None)
     n_date_range = len(bound_filters)
 
     # 2. SlayerModel.filters — Mode-A SQL, always-applied WHERE.
@@ -341,6 +359,7 @@ def plan_query(
         if any(existing.value_key == bf.value_key for existing in bound_filters):
             continue
         bound_filters.append(bf)
+        bound_filter_texts.append(f)
 
     order_specs = []
     for o in (query.order or []):
@@ -574,14 +593,16 @@ def plan_query(
     # are always row-phase host-local WHERE and never need to be routed
     # to a cross-model CTE — they're skipped here.
     host_filter_routings: List[HostFilterRouting] = []
-    for fid, bf in zip(bound_filter_ids, bound_filters):
+    for fid, bf, ftext in zip(
+        bound_filter_ids, bound_filters, bound_filter_texts,
+    ):
         host_filter_routings.append(HostFilterRouting(
             filter_id=fid,
             phase=bf.phase,
             referenced_slot_ids=sorted(filter_referenced_slot_ids(
                 bf, projection.registry,
             )),
-            text=None,
+            text=ftext,
         ))
 
     cross_model_plans = []
@@ -591,7 +612,19 @@ def plan_query(
         if not isinstance(key, AggregateKey):
             continue
         agg_path = getattr(key.source, "path", ())
-        if not agg_path:
+        # DEV-1503 — extended trigger predicate. Invoke the cross-model planner
+        # when the aggregate's source carries a non-empty join path (cross-
+        # model aggregate, existing behaviour) OR when the aggregate's
+        # ``column_filter_key`` references a non-anchor join path (cross-
+        # model-FILTERED local measure — the new filtered-local isolation
+        # case). The typed ``referenced_join_paths`` field is computed at
+        # binder time by ``compute_column_filter_join_paths``.
+        has_cross_model_filter = (
+            not disable_dev1503_isolation
+            and key.column_filter_key is not None
+            and bool(key.column_filter_key.referenced_join_paths)
+        )
+        if not agg_path and not has_cross_model_filter:
             continue
         # DEV-1450 #2: re-rooting (C1) is owned by the strategy. We hand it
         # the host query, the public projection, and a sub-plan builder so it
@@ -600,6 +633,13 @@ def plan_query(
         # otherwise it returns the forward plan unchanged. The builder is the
         # same ``plan_query`` recursion the post-hoc pass used, injected here
         # so cross_model_planner.py needn't import stage_planner.
+        #
+        # DEV-1503 — the subplan_builder ALWAYS suppresses DEV-1503 isolation:
+        # for filtered-local isolation, the host-rooted sub-plan contains the
+        # same filtered measure and would otherwise recurse infinitely; for
+        # the existing cross-model re-rooting case, the sub-plan's target-
+        # rooted local aggregate would redundantly DEV-1503-isolate its own
+        # filter joins (already handled by the surrounding cross-model CTE).
         reroot_enabled = (
             isinstance(scope, ModelScope) and scope.source_model is not None
         )
@@ -618,6 +658,7 @@ def plan_query(
             subplan_builder=(
                 (lambda q, b: plan_query(
                     query=q, bundle=b, cross_model_planner=cross_model_planner,
+                    disable_dev1503_isolation=True,
                 ))
                 if reroot_enabled else None
             ),

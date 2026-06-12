@@ -72,6 +72,7 @@ from slayer.core.keys import (
 from slayer.core.models import SlayerModel
 from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema
+from slayer.engine.column_filter_paths import compute_column_filter_join_paths
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import (
     AggCall,
@@ -875,7 +876,19 @@ def _resolve_column_filter_key(
     col = next((c for c in current.columns if c.name == leaf), None)
     if col is None or not col.filter:
         return None
-    return SqlExprKey(canonical_sql=col.filter)
+    # DEV-1503 — stamp the typed non-anchor join paths on the SqlExprKey so
+    # the planner's isolation trigger reads typed data, not parsed SQL. The
+    # anchor is the model the filter is bound against — the joined target for
+    # cross-model aggregates, the host for filtered-local. The anchor relation
+    # uses the ``__``-canonical path alias when the anchor is a joined model.
+    anchor_relation = "__".join(path) if path else current.name
+    paths = compute_column_filter_join_paths(
+        canonical_sql=col.filter,
+        anchor_model=current,
+        anchor_relation=anchor_relation,
+        bundle=bundle,
+    )
+    return SqlExprKey(canonical_sql=col.filter, referenced_join_paths=paths)
 
 
 def _validate_agg_eligibility(
@@ -1229,6 +1242,11 @@ def _bind_scalar(
                 f"Mode-B scalar calls are restricted to "
                 f"{sorted(SCALAR_FUNCTIONS)}."
             ),
+        )
+    if parsed.name == "like" and len(parsed.args) != 2:
+        raise ValueError(
+            f"Scalar function 'like' takes exactly 2 arguments "
+            f"(value, pattern); got {len(parsed.args)}."
         )
     args = tuple(
         _bind(a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map)

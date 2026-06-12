@@ -40,6 +40,7 @@ from slayer.core.errors import (
 from slayer.core.models import SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.core.refs import strip_agg_suffix as _strip_agg_suffix
+from slayer.engine.enrichment import _collect_reachable_agg_names
 from slayer.engine.normalization import func_style_agg_to_colon
 from slayer.engine.syntax import (
     AggCall,
@@ -550,9 +551,34 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
 
     # 4. measures — parse each formula (Mode-B DSL) and resolve each
     # referenced entity token. Function-style aggregations are rewritten to
-    # colon syntax first (quiet FUNC_STYLE_AGG slack helper), including the
-    # source model's custom aggregations — matching the legacy parse path.
-    custom_agg_names = frozenset(a.name for a in source_model.aggregations)
+    # colon syntax first (quiet FUNC_STYLE_AGG slack helper). DEV-1500 — the
+    # custom-agg name set includes aggregations defined on *joined* models
+    # too, so entity extraction over a formula like
+    # ``rolling_avg(customers.score)`` (where ``rolling_avg`` lives on
+    # ``customers``) still produces the ``customers.score`` token instead of
+    # falling through to the unknown-function branch.
+    async def _resolve_join_target_for_resolver(
+        target_model_name: str, named_queries,  # noqa: ARG001
+    ):
+        try:
+            target = await storage.get_model(
+                target_model_name, data_source=source_model.data_source,
+            )
+        except Exception:  # noqa: BLE001 — best-effort; resolver must not raise
+            return None
+        if target is None:
+            return None
+        return (None, target)
+
+    try:
+        reachable_agg_names = await _collect_reachable_agg_names(
+            model=source_model,
+            resolve_join_target=_resolve_join_target_for_resolver,
+            named_queries={},
+        )
+    except Exception:  # noqa: BLE001 — never let the walk break extraction
+        reachable_agg_names = None
+    custom_agg_names = reachable_agg_names or frozenset()
     for m in query.measures or []:
         if m.formula is None:
             continue

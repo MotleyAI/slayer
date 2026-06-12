@@ -4,7 +4,7 @@ The TransformLowerer desugars sugar transforms into their underlying
 form so the planner and SQL generator see a uniform shape:
 
 * ``change(x)`` → ``x - time_shift(x, periods=1)``
-* ``change_pct(x)`` → ``(x - time_shift(x, periods=1)) / time_shift(x, periods=1)``
+* ``change_pct(x)`` → ``(x - time_shift(x, periods=1)) / NULLIF(time_shift(x, periods=1), 0)``
 
 The inner ``time_shift`` carries any ``partition_by`` kwarg that the
 sugar form was called with (C6 — DEV-1450). Crucially, the inner ``x``
@@ -16,11 +16,14 @@ occurrences, so the ValueRegistry interns it once and downstream
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
     ColumnKey,
     Phase,
+    ScalarCallKey,
     TransformKey,
 )
 from slayer.engine.planning import desugar_change, desugar_change_pct
@@ -76,7 +79,9 @@ class TestDesugarChange:
 
 class TestDesugarChangePct:
     def test_change_pct_becomes_division(self):
-        # change_pct(amount:sum) → (amount:sum - time_shift(amount:sum)) / time_shift(amount:sum)
+        # change_pct(amount:sum)
+        #   → (amount:sum - time_shift(amount:sum))
+        #       / NULLIF(time_shift(amount:sum), 0)
         change_pct = TransformKey(op="change_pct", input=_amount_sum())
         lowered = desugar_change_pct(change_pct)
         assert isinstance(lowered, ArithmeticKey)
@@ -84,8 +89,14 @@ class TestDesugarChangePct:
         numerator, denominator = lowered.operands
         assert isinstance(numerator, ArithmeticKey)
         assert numerator.op == "-"
-        # Denominator is the same time_shift expression as the right
-        # operand of the numerator.
-        assert isinstance(denominator, TransformKey)
-        assert denominator.op == "time_shift"
-        assert denominator.input == _amount_sum()
+        # Divisor is NULLIF(<time_shift>, 0) — the divide-by-zero guard.
+        assert isinstance(denominator, ScalarCallKey)
+        assert denominator.name == "nullif"
+        shifted, zero = denominator.args
+        assert isinstance(shifted, TransformKey)
+        assert shifted.op == "time_shift"
+        assert shifted.input == _amount_sum()
+        assert zero == Decimal(0)
+        # The guarded divisor's time_shift is the SAME instance the numerator
+        # subtracts (identity preserved → one CTE).
+        assert numerator.operands[1] is shifted

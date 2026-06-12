@@ -4,7 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    # Run CI for every PR regardless of base branch — stacked PRs
+    # targeting feature branches (e.g. `egor/dev-1450-…`) need the
+    # same lint + test gate as PRs to main.
+    branches: ['**']
 
 jobs:
   lint-and-test:

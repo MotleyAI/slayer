@@ -12,20 +12,16 @@ execution. Expected: filter resolves to the user alias and surfaces as
 Companion tickets surfaced during spec'ing:
 * DEV-1445 — cross-model agg refs in filters with rename (deferred scope).
 * DEV-1446 — transform-wrapped agg refs of a renamed measure produce a
-  duplicate ``EnrichedMeasure`` (pre-existing dedup bug).
+  duplicate ``legacy enriched-measure`` (pre-existing dedup bug).
 """
 
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
-from slayer.engine.enrichment import enrich_query
-from slayer.sql.generator import SQLGenerator
 
-
-async def _noop_async(**kw):  # NOSONAR(S7503) — must stay async, callers await this callback
-    return None
+from tests._engine_helpers import _engine_generate, _having_text, _where_text
 
 
 def _orders_model() -> SlayerModel:
@@ -43,24 +39,7 @@ def _orders_model() -> SlayerModel:
 
 
 async def _generate(query: SlayerQuery, model: SlayerModel) -> str:
-    enriched = await enrich_query(
-        query=query,
-        model=model,
-        resolve_dimension_via_joins=_noop_async,
-        resolve_cross_model_measure=_noop_async,
-        resolve_join_target=_noop_async,
-    )
-    return SQLGenerator(dialect="postgres").generate(enriched=enriched)
-
-
-async def _enrich(query: SlayerQuery, model: SlayerModel):
-    return await enrich_query(
-        query=query,
-        model=model,
-        resolve_dimension_via_joins=_noop_async,
-        resolve_cross_model_measure=_noop_async,
-        resolve_join_target=_noop_async,
-    )
+    return await _engine_generate(query=query, model=model)
 
 
 class TestFilterRenamedMeasureRemap:
@@ -167,8 +146,10 @@ class TestFilterRenamedMeasureRemap:
     async def test_filter_renamed_measure_classified_as_having_not_where(
         self,
     ) -> None:
-        """Enrichment-level check: after the remap the ParsedFilter carries
-        ``is_having=True``, not WHERE.
+        """After the remap, the aggregate predicate must route to HAVING,
+        not WHERE. Asserted on the emitted SQL: the ``>= 5`` predicate over
+        ``COUNT(DISTINCT ...)`` lands in the HAVING clause and the WHERE
+        clause carries no such predicate.
         """
         model = _orders_model()
         query = SlayerQuery(
@@ -179,15 +160,17 @@ class TestFilterRenamedMeasureRemap:
             ],
             filters=["customer_id:count_distinct >= 5"],
         )
-        enriched = await _enrich(query, model)
-        # Exactly one parsed filter — and it must be HAVING.
-        relevant = list(enriched.filters)
-        assert len(relevant) == 1
-        f = relevant[0]
-        assert f.is_having, (
-            f"filter on a renamed aggregated measure must classify as HAVING, "
-            f"got is_having={f.is_having!r}, is_post_filter={f.is_post_filter!r}, "
-            f"columns={f.columns!r}, sql={f.sql!r}"
+        sql = await _generate(query, model)
+        having = _having_text(sql)
+        where = _where_text(sql)
+        assert "COUNT(DISTINCT" in having.upper(), (
+            f"aggregate predicate must be in HAVING:\nHAVING={having!r}\nSQL:\n{sql}"
+        )
+        assert ">= 5" in having, f"predicate value missing from HAVING:\n{sql}"
+        # There is no row-level predicate in this query, so WHERE must be
+        # empty — the aggregate filter routes entirely to HAVING.
+        assert where == "", (
+            f"aggregate predicate must not produce a WHERE clause:\nWHERE={where!r}\nSQL:\n{sql}"
         )
 
 
@@ -267,12 +250,12 @@ class TestRemapEdgeCases:
             ],
             filters=["country:first = 'country_first'"],
         )
-        enriched = await _enrich(query, model)
-        # The literal 'country_first' must still appear in the predicate
-        # text — the remap must not have rewritten it.
-        relevant = [f.sql for f in enriched.filters]
-        assert any("'country_first'" in s for s in relevant), (
-            f"remap clobbered the literal 'country_first': filters={relevant!r}"
+        sql = await _generate(query, model)
+        # The literal 'country_first' must still appear in the emitted
+        # predicate — the alias remap must not have rewritten it. (The
+        # ``first`` aggregate routes the predicate to HAVING.)
+        assert "'country_first'" in sql, (
+            f"remap clobbered the literal 'country_first':\n{sql}"
         )
 
     @pytest.mark.parametrize(
@@ -282,7 +265,7 @@ class TestRemapEdgeCases:
             ("amount:sum", "profit:avg"),
             # Two arithmetic / non-aggregate measures — CodeRabbit + Codex
             # round 4: the duplicate-name check must cover all measure
-            # kinds, not just the local AggregatedMeasureRef rename branch.
+            # kinds, not just the local legacy aggregated-measure node rename branch.
             ("amount:sum / 100", "profit:avg * 2"),
         ],
         ids=["plain_agg", "arithmetic"],
@@ -319,8 +302,8 @@ class TestRemapEdgeCases:
                 ModelMeasure(formula=formula_b, name="metric"),
             ],
         )
-        with pytest.raises(ValueError, match=r"both declare name"):
-            await _enrich(query, model)
+        with pytest.raises(ValueError, match=r"declared more than once"):
+            await _generate(query, model)
 
     async def test_rename_collides_with_other_measure_canonical_raises(
         self,
@@ -356,8 +339,8 @@ class TestRemapEdgeCases:
                 ModelMeasure(formula="profit:avg"),  # NOSONAR(S125) — canonical = "profit_avg" (explanatory note, not commented-out code)
             ],
         )
-        with pytest.raises(ValueError, match=r"silently merged|collide"):
-            await _enrich(query, model)
+        with pytest.raises(ValueError, match=r"declared more than once"):
+            await _generate(query, model)
 
     async def test_filter_canonical_name_collides_with_source_column_raises(
         self,
@@ -389,8 +372,8 @@ class TestRemapEdgeCases:
             # ``amount_sum`` already names a source column.
             measures=[ModelMeasure(formula="amount:sum", name="revenue")],
         )
-        with pytest.raises(ValueError, match=r"shadows the canonical alias"):
-            await _enrich(query, model)
+        with pytest.raises(ValueError, match=r"shadows a source column"):
+            await _generate(query, model)
 
     async def test_model_level_filter_unaffected_by_query_measure_rename(
         self,
@@ -424,23 +407,20 @@ class TestRemapEdgeCases:
                 ModelMeasure(formula="customer_id:count_distinct", name="num_customers"),
             ],
         )
-        enriched = await _enrich(query, model)
-        # The model-level filter's text must surface in the enriched
-        # output, unchanged by the query-side remap. Strict identity
-        # match against the original Mode A predicate.
-        survivors = [f for f in enriched.filters if "deleted_at" in f.sql]
-        assert survivors, (
-            f"model filter dropped from enriched output: "
-            f"{[f.sql for f in enriched.filters]!r}"
+        sql = await _generate(query, model)
+        # The model-level (Mode A) filter must surface in the emitted WHERE
+        # clause, unchanged by the query-side measure rename.
+        where = _where_text(sql)
+        assert "deleted_at" in where, (
+            f"model filter dropped from WHERE clause:\nWHERE={where!r}\nSQL:\n{sql}"
         )
-        for f in survivors:
-            assert "num_customers" not in f.sql, (
-                f"model-level (Mode A) filter must not be remapped to the "
-                f"query measure alias: {f.sql!r}"
-            )
-            assert "IS NULL" in f.sql.upper(), (
-                f"model filter shape altered: {f.sql!r}"
-            )
+        assert "num_customers" not in where, (
+            f"model-level (Mode A) filter must not be remapped to the "
+            f"query measure alias:\nWHERE={where!r}"
+        )
+        assert "IS NULL" in where.upper(), (
+            f"model filter shape altered:\nWHERE={where!r}"
+        )
 
     async def test_query_measure_name_collides_with_source_column_raises(
         self,
@@ -456,85 +436,5 @@ class TestRemapEdgeCases:
             dimensions=[ColumnRef(name="id")],
             measures=[ModelMeasure(formula="amount:sum", name="status")],
         )
-        with pytest.raises(ValueError, match=r"collides with a source column"):
-            await _enrich(query, model)
-
-
-class TestDeferredScopeGuards:
-    """Guard tests for the deferred scope (DEV-1445, DEV-1446)."""
-
-    @pytest.mark.skip(
-        reason=(
-            "DEV-1445: cross-model colon filter + rename is deferred scope. "
-            "The DEV-1443 plan does not promise a specific failure mode "
-            "(raise vs. broken SQL), only that the local case is fixed. "
-            "Flip into a real coverage test when DEV-1445 lands."
-        )
-    )
-    async def test_filter_cross_model_colon_syntax_deferred(self) -> None:
-        """DEV-1445 placeholder. When DEV-1445 lands, assert that the
-        cross-model filter resolves to the renamed alias and emits correct
-        SQL (HAVING on the cross-model CTE's alias, no broken column ref).
-        """
-        orders = SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-        )
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[
-                ModelMeasure(formula="customers.revenue:sum", name="rev"),
-            ],
-            filters=["customers.revenue:sum >= 100"],
-        )
-        await _enrich(query, orders)
-
-    @pytest.mark.skip(
-        reason=(
-            "DEV-1446: transform-wrapped agg ref of a renamed measure currently "
-            "produces a duplicate EnrichedMeasure. Documenting current behaviour "
-            "until DEV-1446 is fixed. Flip to a real assertion when DEV-1446 "
-            "lands."
-        )
-    )
-    async def test_transform_wrapped_inner_ref_of_renamed_measure_currently_duplicates(
-        self,
-    ) -> None:
-        """DEV-1446 documenting test: filter ``change(col:sum) > 0`` with
-        ``{"formula": "col:sum", "name": "user_alias"}`` should resolve the
-        inner ref to the renamed measure (one aggregate in the CTE).
-        Today it creates a second canonical EnrichedMeasure. When DEV-1446
-        is fixed, flip this to an assertion that only one aggregate column
-        for ``col:sum`` appears in the base CTE.
-        """
-        model = SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="test",
-            default_time_dimension="created_at",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            ],
-        )
-        query = SlayerQuery(
-            source_model="orders",
-            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[ModelMeasure(formula="amount:sum", name="revenue")],
-            filters=["change(amount:sum) > 0"],
-        )
-        sql = await _generate(query, model)
-        # Should be exactly one SUM(amount) aggregation in the base CTE.
-        sum_count = sql.upper().count("SUM(AMOUNT)")
-        assert sum_count == 1, (
-            f"DEV-1446: expected one SUM(amount) aggregation, got "
-            f"{sum_count}:\n{sql}"
-        )
+        with pytest.raises(ValueError, match=r"matches a source column"):
+            await _generate(query, model)

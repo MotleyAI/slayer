@@ -6,16 +6,13 @@ whitelist. Today the cross-model path checks only ``NUMERIC_ONLY_AGGREGATIONS``
 against string columns, silently passing PK/type/whitelist violations through.
 """
 
-import tempfile
-
 import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Aggregation, Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.generator import SQLGenerator
-from slayer.storage.yaml_storage import YAMLStorage
+
+from tests._engine_helpers import _engine_generate
 
 
 def _orders_model() -> SlayerModel:
@@ -54,15 +51,14 @@ async def _generate_sql(
     customers: SlayerModel,
     measures: list,
 ) -> str:
-    """Run a real engine + SQL generator and return the SQL string."""
-    with tempfile.TemporaryDirectory() as tmp:
-        storage = YAMLStorage(base_dir=tmp)
-        await storage.save_model(orders)
-        await storage.save_model(customers)
-        engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery(source_model="orders", measures=measures)
-        enriched = await engine._enrich(query=query, model=orders, named_queries={})
-        return SQLGenerator(dialect="postgres").generate(enriched=enriched)
+    """Run the typed engine pipeline through the shared ``_engine_generate``
+    helper and return the SQL string. Mirrors the original local helper but
+    reuses the centralised storage/datasource/dry-run/assert-valid pipeline
+    (CodeRabbit PR #153 nitpick on this file)."""
+    query = SlayerQuery(source_model=orders.name, measures=measures)
+    return await _engine_generate(
+        query=query, model=orders, extra_models=[customers],
+    )
 
 
 class TestCrossModelGating:

@@ -35,7 +35,11 @@ except ImportError:  # pragma: no cover — Windows
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.memories.models import Memory
-from slayer.storage.base import StorageBackend, _validate_path_component
+from slayer.storage.base import (
+    StorageBackend,
+    _validate_path_component,
+    _write_sample_fields,
+)
 from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingsMixin,
     SidecarEmbeddingStore,
@@ -132,6 +136,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         model_name: str,
         column_name: str,
         sampled: Optional[str],
+        sampled_values: Optional[List[str]],
+        distinct_count: Optional[int],
     ) -> None:
         path = self._model_path(data_source, model_name)
         if not os.path.exists(path):
@@ -144,10 +150,12 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         cols = data.get("columns") or []
         for col in cols:
             if isinstance(col, dict) and col.get("name") == column_name:
-                if sampled is None:
-                    col.pop("sampled", None)
-                else:
-                    col["sampled"] = sampled
+                _write_sample_fields(
+                    col,
+                    sampled=sampled,
+                    sampled_values=sampled_values,
+                    distinct_count=distinct_count,
+                )
                 break
         else:
             raise ValueError(

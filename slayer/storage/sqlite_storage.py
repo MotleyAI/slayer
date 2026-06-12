@@ -15,7 +15,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory, _validate_memory_id_charset
-from slayer.storage.base import StorageBackend, _validate_path_component
+from slayer.storage.base import (
+    StorageBackend,
+    _validate_path_component,
+    _write_sample_fields,
+)
 from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingsMixin,
     SidecarEmbeddingStore,
@@ -281,6 +285,8 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     def _update_column_sampled_sync(
         self, *, data_source: str, model_name: str,
         column_name: str, sampled: Optional[str],
+        sampled_values: Optional[List[str]],
+        distinct_count: Optional[int],
     ) -> None:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
@@ -296,10 +302,12 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             cols = data.get("columns") or []
             for col in cols:
                 if isinstance(col, dict) and col.get("name") == column_name:
-                    if sampled is None:
-                        col.pop("sampled", None)
-                    else:
-                        col["sampled"] = sampled
+                    _write_sample_fields(
+                        col,
+                        sampled=sampled,
+                        sampled_values=sampled_values,
+                        distinct_count=distinct_count,
+                    )
                     break
             else:
                 raise ValueError(
@@ -318,11 +326,14 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         model_name: str,
         column_name: str,
         sampled: Optional[str],
+        sampled_values: Optional[List[str]],
+        distinct_count: Optional[int],
     ) -> None:
         await asyncio.to_thread(
             self._update_column_sampled_sync,
             data_source=data_source, model_name=model_name,
             column_name=column_name, sampled=sampled,
+            sampled_values=sampled_values, distinct_count=distinct_count,
         )
 
     async def save_datasource(self, datasource: DatasourceConfig) -> None:

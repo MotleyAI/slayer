@@ -152,6 +152,13 @@ examples:
     flight_parser = subparsers._name_parser_map["flight-serve"]
     _add_storage_arg(flight_parser)
 
+    # ── pg-serve ──────────────────────────────────────────────────────
+    # DEV-1486: Postgres wire-protocol endpoint, BI-tool compatible.
+    from slayer.pg_facade.cli import add_pg_serve_subparser
+    add_pg_serve_subparser(subparsers)
+    pg_parser = subparsers._name_parser_map["pg-serve"]
+    _add_storage_arg(pg_parser)
+
     # ── mcp ───────────────────────────────────────────────────────────
     mcp_parser = subparsers.add_parser(
         "mcp",
@@ -651,6 +658,9 @@ examples:
     elif args.command == "flight-serve":
         from slayer.flight.cli import run_flight_serve
         run_flight_serve(args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo)
+    elif args.command == "pg-serve":
+        from slayer.pg_facade.server import run_pg_serve
+        run_pg_serve(args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo)
     elif args.command == "mcp":
         _run_mcp(args)
     elif args.command == "query":

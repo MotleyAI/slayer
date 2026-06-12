@@ -33,7 +33,7 @@ from slayer.engine.enriched import (
     EnrichedMeasure,
     EnrichedQuery,
 )
-from slayer.engine.enrichment import enrich_query
+from slayer.engine.enrichment import _collect_reachable_agg_names, enrich_query
 from slayer.engine.normalization import normalize_model, normalize_query
 from slayer.engine.path_resolution import NoJoinError as _NoJoinError
 from slayer.engine.path_resolution import walk_join_chain
@@ -194,6 +194,26 @@ class SlayerResponse(BaseModel):
             cells = [self._format_value(column=c, value=row.get(c, "")) for c in self.columns]
             body_lines.append("| " + " | ".join(cells) + " |")
         return "\n".join([header, separator] + body_lines)
+
+
+def _normalize_source_query_stages(
+    model: SlayerModel,
+    *,
+    custom_aggs: Optional[frozenset[str]],
+) -> SlayerModel:
+    """For a query-backed model, run ``normalize_query`` on every stage so
+    funcstyle aggregations over joined-model custom aggs (DEV-1500) land in
+    canonical form at save time — ``normalize_model`` itself only walks
+    ``model.measures``, never ``source_queries``. No-op for table-backed
+    models. CR PR #153 thread r3330620881.
+    """
+    if not model.source_queries:
+        return model
+    new_stages = [
+        normalize_query(stage, model=None, custom_agg_names=custom_aggs).query
+        for stage in model.source_queries
+    ]
+    return model.model_copy(update={"source_queries": new_stages})
 
 
 class SlayerQueryEngine:
@@ -582,8 +602,12 @@ class SlayerQueryEngine:
         else:
             model = bundle.source_model
         custom_aggs: Optional[frozenset[str]] = None
-        if model is not None and model.aggregations:
-            custom_aggs = frozenset(a.name for a in model.aggregations)
+        if model is not None:
+            # DEV-1500: scoped per-stage BFS over the pre-resolved bundle,
+            # so funcstyle calls over joined-model custom aggregations
+            # (``rolling_avg(customers.score)`` where ``rolling_avg`` lives
+            # on ``customers``) are recognised by the slack rewrite.
+            custom_aggs = bundle.reachable_aggregation_names(start=model)
         norm = normalize_query(query, model=model, custom_agg_names=custom_aggs)
         out = norm.query if norm.query is not None else query
         return out, list(norm.warnings)
@@ -1575,6 +1599,98 @@ class SlayerQueryEngine:
         # can use the returned model directly.
         return await self._validate_and_populate_cache(model)
 
+    async def _reachable_aggs_for_save(
+        self, model: SlayerModel,
+    ) -> Optional[frozenset[str]]:
+        """Best-effort storage BFS over the join graph collecting custom
+        aggregation names (DEV-1500). Returns ``None`` when ``model`` has
+        nothing to normalise (no top-level measures AND no source_queries)
+        or when the walk yields nothing; absent join targets and storage
+        errors (incl. ``AmbiguousModelError``) are swallowed so a save
+        never aborts on a flaky join-target lookup.
+
+        For query-backed models the walk unions the reachable custom-agg
+        names across every stage's ``source_model`` so the save-time
+        FUNC_STYLE_AGG rewrite on each stage's measures sees the full
+        joined-model agg surface (CR PR #153 thread r3330620881).
+        """
+        if not model.measures and not model.source_queries:
+            return None
+
+        resolver = self._make_join_target_resolver(model.data_source)
+        collected: set[str] = set(await self._walk_reachable_aggs(model, resolver))
+        for stage in model.source_queries or []:
+            stage_model = await self._resolve_stage_source_model(
+                stage, data_source=model.data_source,
+            )
+            if stage_model is not None:
+                collected.update(
+                    await self._walk_reachable_aggs(stage_model, resolver)
+                )
+        return frozenset(collected) if collected else None
+
+    def _make_join_target_resolver(
+        self, data_source: Optional[str],
+    ):
+        """Build the best-effort `resolve_join_target` closure that
+        ``_collect_reachable_agg_names`` consumes — swallows absent targets
+        and storage errors (incl. ``AmbiguousModelError``) so a save never
+        aborts on a flaky join-target lookup."""
+        storage = self.storage
+
+        async def _resolver(
+            target_model_name: str, named_queries,  # noqa: ARG001
+        ):
+            if not storage:
+                return None
+            try:
+                if data_source:
+                    target = await storage.get_model(
+                        target_model_name, data_source=data_source,
+                    )
+                else:
+                    target = await storage.get_model(target_model_name)
+            except Exception:  # noqa: BLE001 — best-effort; AmbiguousModelError + misc
+                return None
+            return (None, target) if target is not None else None
+
+        return _resolver
+
+    @staticmethod
+    async def _walk_reachable_aggs(
+        walk_model: SlayerModel, resolver,
+    ) -> frozenset[str]:
+        """One swallow-all BFS over ``walk_model``'s join graph collecting
+        the reachable custom-aggregation names."""
+        try:
+            got = await _collect_reachable_agg_names(
+                model=walk_model,
+                resolve_join_target=resolver,
+                named_queries={},
+            )
+        except Exception:  # noqa: BLE001 — never let the walk abort a save
+            return frozenset()
+        return got or frozenset()
+
+    async def _resolve_stage_source_model(
+        self, stage: SlayerQuery, *, data_source: Optional[str],
+    ) -> Optional[SlayerModel]:
+        """For a query-backed model's stage, resolve ``stage.source_model``
+        to a concrete ``SlayerModel`` (inline → use as-is; string → look up
+        in storage; ModelExtension / dict → skip best-effort and fall back
+        to execute-time normalization)."""
+        src = stage.source_model
+        if isinstance(src, SlayerModel):
+            return src
+        if not isinstance(src, str):
+            return None
+        try:
+            if data_source:
+                return await self.storage.get_model(src, data_source=data_source)
+            return await self.storage.get_model(src)
+        except Exception:  # noqa: BLE001 — best-effort
+            return None
+
     async def save_model(self, model: SlayerModel) -> SlayerModel:
         """Persist a SlayerModel through the engine.
 
@@ -1586,10 +1702,17 @@ class SlayerQueryEngine:
         incoming model so persisted formulas land in canonical form. The
         legacy in-tree rewriters still fire during enrichment for callers
         that load and re-execute persisted models.
+
+        DEV-1500 — the FUNC_STYLE_AGG rewrite recognises custom aggregations
+        defined on joined models via ``_reachable_aggs_for_save`` (best-effort
+        storage walk; swallowed on missing target / AmbiguousModelError /
+        storage hiccup).
         """
-        norm_model = normalize_model(model)
+        custom_aggs = await self._reachable_aggs_for_save(model)
+        norm_model = normalize_model(model, custom_agg_names=custom_aggs)
         if norm_model.model is not None:
             model = norm_model.model
+        model = _normalize_source_query_stages(model, custom_aggs=custom_aggs)
         # Capture the *previous* data_source for this name so we can clean
         # up the old storage entry when a query-backed model's resolved
         # data_source changes (e.g. its backing query now points at a

@@ -10,6 +10,10 @@ The endpoint is **read-only**: catalog introspection plus a constrained SQL subs
 translates to a `SlayerQuery` and executes against the engine. SQL `INSERT` / `UPDATE` /
 `DELETE` / `CREATE` / `ALTER` / `DROP` are refused with a `read-only` error.
 
+> Prefer a no-Java option? The [Postgres facade](pg-facade.md) (`slayer pg-serve`) exposes
+> the same query surface over the Postgres wire protocol, so any Postgres-connector BI
+> tool — or `psql` / `asyncpg` — can connect without a JDBC/Arrow driver.
+
 ## Start the Server
 
 ```bash

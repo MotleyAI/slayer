@@ -5,13 +5,15 @@ SLayer provides a FastAPI-based REST API on port **5143** by default.
 ## Start the Server
 
 ```bash
-slayer serve --storage ./slayer_data
-slayer serve --host 0.0.0.0 --port 8080 --storage ./slayer_data
+slayer serve
+slayer serve --host 0.0.0.0 --port 8080
 
 # Run idempotent auto-ingestion across every configured datasource before
 # the port opens. Same as setting SLAYER_INGEST_ON_STARTUP=1.
-slayer serve --ingest-on-startup --storage ./slayer_data
+slayer serve --ingest-on-startup
 ```
+
+Storage defaults to the [platform-appropriate path](../configuration/storage.md). Override with `--storage ./slayer_data` or `$SLAYER_STORAGE`.
 
 ## Endpoints
 

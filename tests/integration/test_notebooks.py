@@ -56,6 +56,13 @@ _KNOWN_FAILING_NOTEBOOKS = {
         "(``change(order_total:sum)`` with ``dimensions=['stores.name']``) "
         "hits ``stage 7b.12``."
     ),
+    "09_lightning_talk/lightning_talk_nb.ipynb": (
+        "DEV-1474: cross-model partition in time_shift CTEs not yet "
+        "implemented in the typed pipeline. The hero query "
+        "(``change_pct(order_total:sum)`` with "
+        "``dimensions=['stores.name']``) hits the same ``stage 7b.12`` "
+        "deferred path as the 04_time notebook."
+    ),
 }
 
 

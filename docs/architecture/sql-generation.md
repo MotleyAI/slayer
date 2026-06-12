@@ -40,6 +40,11 @@ Reads from typed `PlannedQuery` fields (`row_slots` / `aggregate_slots` /
   AS _filtered WHERE …`; `time_shift` / `consecutive_periods` emit dedicated
   self-join CTE pairs;
 - otherwise → a single base SELECT with WHERE/HAVING, GROUP BY, ORDER BY, LIMIT.
+  When the base CTE materialises any hidden aggregate (an aggregate referenced
+  ONLY by ORDER BY or a filter, never declared as a measure), a conditional
+  outer-trim wrapper projects exactly the public projection — same shape as the
+  transform path's outer wrap, minus the step CTEs — so the hidden alias does
+  not leak into the result columns (DEV-1501).
 
 It builds its own `slot_id_by_key` map (the `PlannedQuery` doesn't carry the
 registry), materializes hidden aux slots referenced as transform inputs /
@@ -92,15 +97,83 @@ forward-path CTE renders (FROM bare target, grouped at the forward dims).
 `SUM(CASE WHEN <filter> THEN <col> END)`. See
 [Cross-model aggregates](cross-model-aggregates.md).
 
+## Mode-A filter inlining and join discovery (DEV-1494)
+
+A column-level `Column.filter` on an aggregated measure becomes a CASE-WHEN
+wrapper (`SUM(CASE WHEN <filter> THEN <col> END)`), and a `SlayerModel.filters`
+entry becomes a WHERE term. Both are Mode-A SQL and share one renderer,
+`_render_mode_a_predicate`, which inline-expands references to derived columns —
+bare (`is_eu` → its `CASE WHEN customers.region …`) or dotted to a derived
+column on a joined model (`loss_payment.has_flag` → its `sql`) — so the emitted
+predicate is runnable and never references a non-physical `<alias>.<derived_col>`.
+A predicate with only base refs takes the cheap qualify path
+(`_qualify_mode_a_sql_filter` regex for model filters, `_qualify_column_filter_sql`
+AST for column filters), byte-identical to before. On sqlglot parse failure the
+predicate falls through to the qualify path unchanged.
+
+Join discovery for these text filters (`_filter_join_paths`) is the **union** of
+the join paths in the **un-inlined** predicate and those in the **inline-expanded**
+predicate. Both are needed: the dbt placeholder-join idiom — a constant derived
+column such as `has_flag sql="1"` whose only purpose is to force the (inner)
+join — keeps its alias only in the un-inlined form (it inlines to the constant
+`(1)`), while a derived ref's *crossed* joins (`is_eu` → `customers`;
+`loss_payment.deep_flag` → `loss_payment__claim`) appear only after expansion.
+Discovery for column filters in the base SELECT is restricted to **local**
+aggregate sources (empty `AggregateKey.path`); a cross-model aggregate's filter
+joins are discovered inside its `_cm_*` CTE instead — `_render_cross_model_cte`
+collects the join paths of the target measure's `Column.filter` and the
+target-model filters and adds them to the CTE's own FROM. Because each `_cm_*`
+CTE is an isolated per-(target, grain) computation, adding the join resolves the
+filter's refs without affecting sibling measures. Discovery is root-scope-only,
+so a correlated ref inside an `EXISTS (...)` subquery does not pull an outer join.
+
+## Host-base join discovery (the three symmetric sources)
+
+The host base FROM at `_build_base_select_for_planned` pulls in `LEFT JOIN`s from
+three symmetric sources, each handled by a dedicated collector wired in the same
+call chain just before `_build_from_and_joins`:
+
+1. **Dimension / time-dimension `Column.sql`** (DEV-1484): `_expand_derived_row_dims`
+   pre-expands derived ROW slots (`ColumnSqlKey` dims and `TimeTruncKey` columns
+   that are themselves derived) and scans the expansion through
+   `_joined_paths_in_sql`, appending crossed paths to `needed_join_paths`.
+2. **Aggregated-measure `Column.filter`** (DEV-1494): `_collect_column_filter_join_paths`
+   recurses through AGGREGATE-phase composite keys (`ArithmeticKey` /
+   `ScalarCallKey`) and, for each `AggregateKey` with a `column_filter_key`,
+   collects the paths the predicate touches via `_filter_join_paths` (the union
+   of un-inlined and inline-expanded predicate paths, per the section above).
+3. **Aggregate-source `Column.sql`** (DEV-1502): `_collect_aggregate_source_join_paths`
+   mirrors the filter helper — recurses through the same composite keys, and for
+   each `AggregateKey` whose `source` is a `ColumnSqlKey` with `path == ()`,
+   expands the column via `_expand_derived_column_sql` and scans the result
+   through `_joined_paths_in_sql`. The render-time expansion in
+   `_build_agg_render_spec_from_planned` already produces `SUM(<expanded>)` SQL;
+   this collector closes the join-discovery loop so a measure source like
+   `customers__regions.population` emits both `LEFT JOIN`s.
+
+All three collectors restrict to **local** aggregate sources (empty
+`AggregateKey.source.path`); cross-model aggregates own their own join
+discovery inside the per-plan `_cm_*` CTE for the `Column.filter` side
+(DEV-1494 / DEV-1503). The symmetric source-`Column.sql` discovery inside
+the `_cm_*` CTE is a known gap (DEV-1526) — a cross-model aggregate whose
+target column's `Column.sql` crosses a further join does not yet have that
+join pulled into the CTE FROM. All three host-side collectors feed the
+shared `needed_join_paths` list, so repeated paths surfaced by different
+sources dedupe naturally via `_build_from_and_joins`'s `emitted_aliases`
+guard.
+
 ## Result-key contract (P10)
 
 The generator preserves the result keys byte-for-byte: `orders.revenue_sum`,
 `orders._count` (the `*` dropped, the leading `_` kept), joined dimensions as the
 full dotted path `orders.customers.regions.name`, and renamed measures as
 `orders.<user_name>`. `_full_alias_for_slot` derives these from the slot's key /
-public aliases. The one documented exception is cross-model parametric
-aggregates, which carry the kwarg suffix legacy dropped (see the cross-model
-limitations).
+public aliases. Two documented exceptions, both routed through the same
+`canonical_agg_name` helper: cross-model parametric aggregates carry the kwarg
+suffix legacy dropped, and hidden parametric `first`/`last` (DEV-1501) carry the
+explicit time-arg suffix so distinct time-column specs get distinct
+materialised aliases (`orders.revenue_last_created_at`,
+`orders.revenue_last_updated_at`).
 
 ## Response metadata (`response_meta.py`)
 

@@ -1,6 +1,7 @@
 """Abstract storage protocol and factory."""
 
 import os
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -19,6 +20,35 @@ from slayer.storage.type_refinement import (
     has_refineable_columns,
     refine_dict_with_live_schema,
 )
+
+
+def _write_sample_fields(
+    col: Dict[str, Any],
+    *,
+    sampled: Optional[str],
+    sampled_values: Optional[List[str]],
+    distinct_count: Optional[int],
+) -> None:
+    """Apply the DEV-1375 + DEV-1480 sample-field write convention to a
+    column dict in place: ``None`` pops the corresponding key, non-None
+    writes it.
+
+    Lives on the ABC module so every backend's ``update_column_sampled``
+    implementation can route through the same write logic (see
+    ``feedback_backend_agnostic.md``).
+    """
+    if sampled is None:
+        col.pop("sampled", None)
+    else:
+        col["sampled"] = sampled
+    if sampled_values is None:
+        col.pop("sampled_values", None)
+    else:
+        col["sampled_values"] = sampled_values
+    if distinct_count is None:
+        col.pop("distinct_count", None)
+    else:
+        col["distinct_count"] = distinct_count
 
 
 def storage_base_dir(path: str) -> str:
@@ -41,7 +71,7 @@ def default_storage_path() -> str:
     2. $SLAYER_MODELS_DIR environment variable (legacy, if set)
     3. Platform default:
        - Linux: $XDG_DATA_HOME/slayer (defaults to ~/.local/share/slayer)
-       - macOS: ~/Library/Application Support/slayer
+       - macOS: ~/Library/Application Support/slayer (ignores $XDG_DATA_HOME)
        - Windows: %LOCALAPPDATA%/slayer
     """
     env = os.environ.get("SLAYER_STORAGE") or os.environ.get("SLAYER_MODELS_DIR")
@@ -51,8 +81,11 @@ def default_storage_path() -> str:
     if os.name == "nt":
         # Windows
         base = Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        # macOS
+        base = Path.home() / "Library" / "Application Support"
     else:
-        # MacOS, Linux, etc.
+        # Linux, etc.
         base = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
 
     return str(base / "slayer")
@@ -225,12 +258,19 @@ class StorageBackend(ABC):
         model_name: str,
         column_name: str,
         sampled: Optional[str],
+        sampled_values: Optional[List[str]],
+        distinct_count: Optional[int],
     ) -> None:
-        """Patch a single column's ``sampled`` field in-place (DEV-1375).
+        """Patch a single column's sample-value fields in-place (DEV-1375 +
+        DEV-1480).
 
-        Avoids a full ``save_model`` per refresh — read-modify-write the
-        single field, leave every other field untouched. Raises
-        ``ValueError`` when the model or column doesn't exist.
+        Writes ``sampled``, ``sampled_values``, and ``distinct_count`` as a
+        single read-modify-write so the three stay consistent with each
+        other. ``None`` for any field drops the corresponding key from the
+        persisted dict; non-None writes it. Other column fields are
+        untouched.
+
+        Raises ``ValueError`` when the model or column doesn't exist.
         """
 
     # ---- shared model lookup / load helpers --------------------------------

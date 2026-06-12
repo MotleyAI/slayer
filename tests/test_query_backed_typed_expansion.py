@@ -493,7 +493,7 @@ class TestVirtualModelColumns:
     async def test_carries_default_time_dimension(self) -> None:
         """Inner source model has ``default_time_dimension="created_at"``;
         the virtual model returned by ``_expand_query_backed_model`` carries
-        it forward (mirrors the legacy ``_query_as_model`` contract).
+        it forward (mirrors the legacy ``the legacy query-backed wrap`` contract).
 
         Save-time persisted ``data_source.default_time_dimension`` follows
         whatever the user passes on construction — the cache populator
@@ -730,7 +730,7 @@ class TestContextVarSafety:
         self,
     ) -> None:
         """Migrated ``_expand_query_backed_model`` MUST NOT set / get the
-        two legacy ContextVars. They still exist for ``_query_as_model``
+        two legacy ContextVars. They still exist for ``the legacy query-backed wrap``
         until Stage D; this test pins that the migrated path is independent.
         """
         from slayer.engine import query_engine as qe
