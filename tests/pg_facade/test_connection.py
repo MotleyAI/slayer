@@ -907,7 +907,7 @@ async def test_extended_protocol_catalog_query_with_bound_parameter() -> None:
         _startup(user="u", database="jaffle")
         + _parse("", sql)
         + _describe("S", "")
-        + _bind("", "", values=(b"slayer",),
+        + _bind("", "", values=(b"jaffle",),
                 result_formats=(proto.FORMAT_TEXT,))
         + _execute("")
         + _sync()
@@ -924,8 +924,14 @@ async def test_extended_protocol_catalog_query_with_bound_parameter() -> None:
     assert "2" in type_seq  # BindComplete — substitution succeeded
     rd = next(body for t, body in msgs if t == "T")
     rd_fields = _parse_row_description(rd)
-    # Each DataRow's column count must equal the RowDescription's column count.
     n_cols = len(rd_fields)
-    for body in (b for t, b in msgs if t == "D"):
+    # CR/Codex round 13: require at least one DataRow so the column-count
+    # consistency loop is actually exercised. Binding the datasource
+    # ("jaffle") matches the row in `_is_schemata` whose `catalog_name`
+    # column is set to the datasource (the round-6 fix). A vacuously-
+    # passing test (0 rows) would silently hide a protocol regression.
+    data_bodies = [b for t, b in msgs if t == "D"]
+    assert data_bodies, "Expected at least one DataRow from the catalog query"
+    for body in data_bodies:
         n_data = struct.unpack_from(">h", body, 0)[0]
         assert n_data == n_cols, f"DataRow {n_data} cols vs RowDescription {n_cols}"

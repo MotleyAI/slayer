@@ -430,8 +430,11 @@ class PgConnection:
                     message=f"prepared statement {msg.name!r} does not exist",
                 )
                 return
-            self._writer.write(proto.encode_parameter_description(_resolve_param_oids(stmt)))
-            self._describe_sql(stmt.sql, result_formats=None)
+            param_oids = _resolve_param_oids(stmt)
+            self._writer.write(proto.encode_parameter_description(param_oids))
+            self._describe_sql(
+                stmt.sql, result_formats=None, param_oids=param_oids,
+            )
         else:
             portal = self._portals.get(msg.name)
             if portal is None:
@@ -440,17 +443,28 @@ class PgConnection:
                     message=f"portal {msg.name!r} does not exist",
                 )
                 return
-            self._describe_sql(portal.sql, result_formats=portal.result_format_codes)
+            # Portal-describe: the bound values have already been
+            # substituted into portal.sql by _handle_bind, so no $N
+            # remain to typed-sentinel.
+            self._describe_sql(
+                portal.sql, result_formats=portal.result_format_codes,
+            )
 
-    def _describe_sql(self, sql: str, *, result_formats: Optional[List[int]]) -> None:
+    def _describe_sql(
+        self, sql: str, *, result_formats: Optional[List[int]],
+        param_oids: Optional[List[int]] = None,
+    ) -> None:
         # DEV-1558 fix: the catalog executor's Describe path runs the SQL
         # against DuckDB to obtain the cursor's column description. When the
         # prepared-statement form still has ``$N`` placeholders (asyncpg
         # sends Parse + Describe-Statement BEFORE Bind), DuckDB raises a
-        # bind-parameter error. Substitute every ``$N`` → ``NULL`` for this
-        # describe-only translation; the real value substitution happens in
-        # ``_handle_bind`` for Execute.
-        describe_sql = _PARAM_PLACEHOLDER.sub("NULL", sql)
+        # bind-parameter error. Substitute each ``$N`` with a TYPED
+        # sentinel literal derived from the parameter's declared OID so
+        # the resulting RowDescription advertises the correct projection
+        # types even when ``$N`` appears in the projection itself. The
+        # real value substitution still happens in ``_handle_bind`` for
+        # Execute (Codex round 13 review).
+        describe_sql = _substitute_typed_sentinels(sql, param_oids or [])
         try:
             result = self._translate(describe_sql)
         except TranslationError:
@@ -680,6 +694,32 @@ class PgConnection:
 
 
 # --- module-level helpers ----------------------------------------------------
+
+
+# Typed sentinel literal per parameter OID. Used by Describe-Statement to
+# substitute ``$N`` placeholders BEFORE Bind so DuckDB can produce a
+# valid RowDescription whose column types reflect the projection's
+# dependence on the parameter (Codex round 13).
+_TYPED_SENTINEL_BY_OID: Dict[int, str] = {
+    proto.OID_TEXT: "''",
+    proto.OID_INT8: "CAST(0 AS BIGINT)",
+    proto.OID_FLOAT8: "CAST(0 AS DOUBLE)",
+    proto.OID_BOOL: "CAST(FALSE AS BOOLEAN)",
+    proto.OID_DATE: "CAST('1970-01-01' AS DATE)",
+    proto.OID_TIMESTAMP: "CAST('1970-01-01' AS TIMESTAMP)",
+}
+
+
+def _substitute_typed_sentinels(sql: str, param_oids: List[int]) -> str:
+    """Replace each ``$N`` placeholder with a typed sentinel literal
+    derived from ``param_oids[N-1]``. Falls back to ``NULL`` when the
+    OID is unknown (e.g. extra placeholders past the declared list)."""
+    def repl(match):
+        idx = int(match.group(1)) - 1
+        if 0 <= idx < len(param_oids):
+            return _TYPED_SENTINEL_BY_OID.get(param_oids[idx], "NULL")
+        return "NULL"
+    return _PARAM_PLACEHOLDER.sub(repl, sql)
 
 
 def _resolve_param_oids(stmt: _PreparedStatement) -> List[int]:
