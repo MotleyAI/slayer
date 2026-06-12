@@ -433,9 +433,34 @@ def test_regproc_cast_to_zero() -> None:
     assert batch.rows == [{"oid": 0}]
 
 
-def test_regtype_cast_to_zero() -> None:
-    batch = _run("SELECT 'any_type'::regtype AS oid")
+def test_regtype_cast_unknown_resolves_to_zero() -> None:
+    batch = _run("SELECT 'any_unknown_type'::regtype AS oid")
     assert batch.rows == [{"oid": 0}]
+
+
+@pytest.mark.parametrize(("typename", "expected_oid"), [
+    ("int8", 20),
+    ("text", 25),
+    ("bool", 16),
+    ("float8", 701),
+    ("date", 1082),
+    ("timestamp", 1114),
+])
+def test_regtype_cast_known_resolves_to_oid(typename: str, expected_oid: int) -> None:
+    """Codex review: known PostgreSQL type names resolve via
+    ``::regtype`` cast to the underlying ``pg_type.oid`` so catalog
+    queries like ``WHERE oid = 'int8'::regtype`` filter correctly."""
+    batch = _run(f"SELECT '{typename}'::regtype AS oid")
+    assert batch.rows == [{"oid": expected_oid}]
+
+
+def test_regtype_cast_filter_against_pg_type() -> None:
+    """End-to-end: ``WHERE oid = 'int8'::regtype`` matches the int8
+    row in pg_type."""
+    batch = _run(
+        "SELECT typname FROM pg_catalog.pg_type WHERE oid = 'int8'::regtype"
+    )
+    assert batch.rows == [{"typname": "int8"}]
 
 
 def test_pg_catalog_qualifier_stripped() -> None:

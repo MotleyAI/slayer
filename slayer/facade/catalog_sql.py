@@ -95,6 +95,14 @@ _TYPE_META: Dict[int, Tuple[str, int, str]] = {
     OID_TIMESTAMP: ("timestamp", 8, "D"),
 }
 
+# Inverse of _TYPE_META: type name → OID. Used to resolve ``::regtype``
+# casts to the underlying ``pg_type.oid`` so catalog queries like
+# ``WHERE oid = 'int8'::regtype`` work.
+_KNOWN_TYPE_OIDS: Dict[str, int] = {
+    typname: oid for oid, (typname, _len, _cat) in _TYPE_META.items()
+}
+
+
 _UDT_NAME_BY_DATATYPE: Dict[DataType, str] = {
     DataType.BOOLEAN: "bool",
     DataType.INT: "int8",
@@ -1069,15 +1077,26 @@ class _AstRewriter:
             or self.regclass_map.get(text.split(".")[-1].lower(), 0)
         )
 
-    # ----- 4. regproc / regtype casts → 0 -----------------------------------
+    # ----- 4. regproc / regtype casts ---------------------------------------
 
     def _rewrite_regproc_regtype_casts(self, node: exp.Expression) -> exp.Expression:
+        """``::regproc`` → ``0`` (pg_proc is empty in this facade).
+        ``::regtype`` → ``pg_type.oid`` lookup for known type names, ``0``
+        otherwise — so ``WHERE oid = 'int8'::regtype`` matches the int8
+        row in pg_type (Codex review)."""
         if not isinstance(node, exp.Cast):
             return node
         target_kind = self._cast_target_kind(node)
-        if target_kind not in {"regproc", "regtype"}:
-            return node
-        return exp.Literal.number(0)
+        if target_kind == "regproc":
+            return exp.Literal.number(0)
+        if target_kind == "regtype":
+            inner = node.this
+            if isinstance(inner, exp.Literal) and inner.is_string:
+                return exp.Literal.number(_KNOWN_TYPE_OIDS.get(
+                    str(inner.this).lower(), 0,
+                ))
+            return exp.Literal.number(0)
+        return node
 
     # ----- 5. context function substitution ---------------------------------
 
