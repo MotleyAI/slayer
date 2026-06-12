@@ -58,7 +58,7 @@ def test_mcp_doc_sections_list_matches_code(path: Path) -> None:
     assert expected_substring in text, path
 
 
-def test_mcp_introspect_notebook_drops_reachable_fields_tokens() -> None:
+def test_mcp_introspect_notebook_drops_reachable_fields_tokens() -> None:  # NOSONAR(S3776) — nested iteration walking optional JSON shape, not branching logic
     """The example notebook is published rendered output; it must not
     show a section that no longer exists. Re-execute (see
     `mcp_introspect_nb.ipynb`) refreshes the live output cells; this test
