@@ -339,8 +339,7 @@ class TestInspectModelSectionGatingIntegration:
 
     async def test_columns_only_short_circuits_samples(self, env) -> None:
         """sections=['columns'] keeps the columns table populated and skips
-        sample-data and reachable-fields entirely; the footer documents what
-        was trimmed."""
+        sample-data entirely; the footer documents what was trimmed."""
         server = create_mcp_server(storage=env["storage"])
         result = await self._call(
             server, name="inspect_model",
@@ -352,7 +351,8 @@ class TestInspectModelSectionGatingIntegration:
         col_section = result.split("## Columns")[1]
         # Profile data still in the columns table when columns is included
         assert "completed" in col_section
-        # No sample data section, no reachable-fields section
+        # No sample data section; the reachable-via-joins heading was removed
+        # entirely in DEV-1560 and must never appear.
         assert "## Sample Data" not in result
         assert "## Reachable" not in result
         # Empty list-only headings for the rest are OK (model has no measures /
@@ -360,8 +360,8 @@ class TestInspectModelSectionGatingIntegration:
         # document what was omitted.
         assert "> Sections shown: columns." in result
         # ``learnings`` joined the omittable section list when DEV-1357
-        # landed; the footer now lists every section gated out.
-        assert "> Omitted: reachable_fields, samples, learnings." in result
+        # landed; ``reachable_fields`` was removed in DEV-1560.
+        assert "> Omitted: samples, learnings." in result
 
     async def test_descriptions_max_chars_truncates_in_columns_table(self, env) -> None:
         """descriptions_max_chars trims long descriptions and appends the marker."""
