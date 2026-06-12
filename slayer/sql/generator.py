@@ -229,6 +229,21 @@ def _agg_render_spec_from_enriched(em: "EnrichedMeasure") -> AggRenderSpec:
     )
 
 
+def _render_scalar_literal(v: Any) -> exp.Expression:
+    """Render a Python scalar (None / bool / int / float / Decimal / str)
+    as a bare sqlglot literal node. Used by the POST-phase filter renderer
+    for ``LiteralKey.value`` AND any non-key arg inside ``ScalarCallKey``.
+    """
+    from decimal import Decimal
+    if v is None:
+        return exp.Null()
+    if isinstance(v, bool):
+        return exp.true() if v else exp.false()
+    if isinstance(v, (int, float, Decimal)):
+        return exp.Literal.number(str(v))
+    return exp.Literal.string(str(v))
+
+
 def _wrap_cast_for_type(expr: exp.Expression, dt: Optional[DataType]) -> exp.Expression:
     """DEV-1361: wrap ``expr`` in ``CAST(expr AS <dialect-rendered dt>)`` so the
     declared SLayer ``DataType`` is enforced in emitted SQL.
@@ -7238,10 +7253,8 @@ class SQLGenerator:
 
         Slot-worthy keys → quoted ``exp.Column`` refs to their aliases.
         ``ArithmeticKey`` / ``ScalarCallKey`` / ``BetweenKey`` /
-        ``LiteralKey`` compose recursively.
+        ``InKey`` / ``LiteralKey`` compose recursively.
         """
-        from decimal import Decimal
-
         from slayer.core.keys import (
             AggregateKey,
             ArithmeticKey,
@@ -7258,6 +7271,17 @@ class SQLGenerator:
         slotted_kinds = (
             ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey, TransformKey,
         )
+        all_key_kinds = (
+            TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey,
+            ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey, LiteralKey,
+        )
+
+        def recurse(k) -> exp.Expression:
+            return self._render_value_key_against_aliases(
+                key=k,
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            )
 
         if isinstance(key, slotted_kinds):
             sid = slot_id_by_key.get(key)
@@ -7270,90 +7294,38 @@ class SQLGenerator:
             return exp.Column(this=exp.to_identifier(alias, quoted=True))
 
         if isinstance(key, LiteralKey):
-            v = key.value
-            if v is None:
-                return exp.Null()
-            if isinstance(v, bool):
-                return exp.true() if v else exp.false()
-            if isinstance(v, (int, float, Decimal)):
-                return exp.Literal.number(str(v))
-            return exp.Literal.string(str(v))
+            return _render_scalar_literal(key.value)
 
         if isinstance(key, ArithmeticKey):
-            operands = [
-                self._render_value_key_against_aliases(
-                    key=o,
-                    slot_id_by_key=slot_id_by_key,
-                    available_alias_by_slot_id=available_alias_by_slot_id,
-                )
-                for o in key.operands
-            ]
-            return self._compose_arithmetic_op(op=key.op, operands=operands)
+            return self._compose_arithmetic_op(
+                op=key.op, operands=[recurse(o) for o in key.operands],
+            )
 
         if isinstance(key, ScalarCallKey):
-            args = []
-            for a in key.args:
-                if isinstance(
-                    a,
-                    (
-                        TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey,
-                        InKey, ColumnKey, ColumnSqlKey, TimeTruncKey,
-                        AggregateKey, LiteralKey,
-                    ),
-                ):
-                    args.append(self._render_value_key_against_aliases(
-                        key=a,
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                    ))
-                elif a is None:
-                    args.append(exp.Null())
-                elif isinstance(a, bool):
-                    args.append(exp.true() if a else exp.false())
-                elif isinstance(a, (int, float, Decimal)):
-                    args.append(exp.Literal.number(str(a)))
-                else:
-                    args.append(exp.Literal.string(str(a)))
+            args = [
+                recurse(a) if isinstance(a, all_key_kinds)
+                else _render_scalar_literal(a)
+                for a in key.args
+            ]
             if key.name == "like":
                 return exp.Like(this=args[0], expression=args[1])
             return exp.func(key.name.upper(), *args)
 
         if isinstance(key, BetweenKey):
-            col = self._render_value_key_against_aliases(
-                key=key.column,
-                slot_id_by_key=slot_id_by_key,
-                available_alias_by_slot_id=available_alias_by_slot_id,
+            return exp.Between(
+                this=recurse(key.column),
+                low=recurse(key.low),
+                high=recurse(key.high),
             )
-            low = self._render_value_key_against_aliases(
-                key=key.low,
-                slot_id_by_key=slot_id_by_key,
-                available_alias_by_slot_id=available_alias_by_slot_id,
-            )
-            high = self._render_value_key_against_aliases(
-                key=key.high,
-                slot_id_by_key=slot_id_by_key,
-                available_alias_by_slot_id=available_alias_by_slot_id,
-            )
-            return exp.Between(this=col, low=low, high=high)
 
         if isinstance(key, InKey):
             # DEV-1475: POST-phase IN filter — LHS column resolves to a
             # quoted alias materialised in the ``_filtered`` wrapper; RHS
             # literals are inlined as bare sqlglot scalars.
-            col = self._render_value_key_against_aliases(
-                key=key.column,
-                slot_id_by_key=slot_id_by_key,
-                available_alias_by_slot_id=available_alias_by_slot_id,
+            in_expr = exp.In(
+                this=recurse(key.column),
+                expressions=[recurse(lit) for lit in key.values],
             )
-            value_exprs = [
-                self._render_value_key_against_aliases(
-                    key=lit,
-                    slot_id_by_key=slot_id_by_key,
-                    available_alias_by_slot_id=available_alias_by_slot_id,
-                )
-                for lit in key.values
-            ]
-            in_expr = exp.In(this=col, expressions=value_exprs)
             return exp.Not(this=in_expr) if key.negated else in_expr
 
         raise NotImplementedError(

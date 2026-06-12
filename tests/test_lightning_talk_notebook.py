@@ -81,6 +81,34 @@ def _find_dict_literal(source: str, var_name: str) -> Dict[str, Any]:
     raise AssertionError(f"No assignment to {var_name!r} found in source")
 
 
+def _call_name(node: ast.Call) -> str:
+    """Return the called name (``obj.method`` → ``"method"``, bare ``name``
+    → ``"name"``, anything else → ``""``)."""
+    fn = node.func
+    if isinstance(fn, ast.Attribute):
+        return fn.attr
+    if isinstance(fn, ast.Name):
+        return fn.id
+    return ""
+
+
+def _literal_or_unparse(value: ast.expr) -> Any:
+    """``ast.literal_eval`` when possible; fall back to ``ast.unparse`` for
+    non-literal expressions so call sites see a stringified form they can
+    grep against."""
+    try:
+        return ast.literal_eval(value)
+    except ValueError:
+        return ast.unparse(value)
+
+
+def _iter_calls_named(source: str, callee: str):
+    """Yield every ``ast.Call`` whose callee name matches ``callee``."""
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call) and _call_name(node) == callee:
+            yield node
+
+
 def _find_kwargs_for_call(source: str, callee_suffix: str) -> Dict[str, Any]:
     """Find the first call whose dotted name ends with ``callee_suffix`` and
     return its keyword arguments (literals only).
@@ -89,25 +117,11 @@ def _find_kwargs_for_call(source: str, callee_suffix: str) -> Dict[str, Any]:
     ``client.forget_memory(...)`` cells without depending on how the
     coroutine is awaited (``run_sync`` vs top-level ``await``).
     """
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            func = node.func
-            name = ""
-            if isinstance(func, ast.Attribute):
-                name = func.attr
-            elif isinstance(func, ast.Name):
-                name = func.id
-            if name == callee_suffix:
-                kwargs: Dict[str, Any] = {}
-                for kw in node.keywords:
-                    if kw.arg is None:
-                        continue
-                    try:
-                        kwargs[kw.arg] = ast.literal_eval(kw.value)
-                    except ValueError:
-                        kwargs[kw.arg] = ast.unparse(kw.value)
-                return kwargs
+    for node in _iter_calls_named(source, callee_suffix):
+        return {
+            kw.arg: _literal_or_unparse(kw.value)
+            for kw in node.keywords if kw.arg is not None
+        }
     raise AssertionError(f"No call to {callee_suffix!r} found in source")
 
 
@@ -512,29 +526,18 @@ def test_teardown_cell_forgets_both_stable_ids():
     forgets: List[str] = []
     for c in _code_cells(nb["cells"]):
         src = _cell_source(c)
-        if "forget_memory" in src:
-            # Capture every forget_memory call's first positional or 'identifier='
-            tree = ast.parse(src)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Call):
-                    fn = node.func
-                    name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
-                    if name != "forget_memory":
-                        continue
-                    for arg in node.args:
-                        try:
-                            forgets.append(str(ast.literal_eval(arg)))
-                        except ValueError:
-                            forgets.append(ast.unparse(arg))
-                    for kw in node.keywords:
-                        try:
-                            forgets.append(str(ast.literal_eval(kw.value)))
-                        except ValueError:
-                            forgets.append(ast.unparse(kw.value))
-    assert BROOKLYN_MEMORY_ID in " ".join(forgets), (
+        if "forget_memory" not in src:
+            continue
+        for node in _iter_calls_named(src, "forget_memory"):
+            forgets.extend(str(_literal_or_unparse(a)) for a in node.args)
+            forgets.extend(
+                str(_literal_or_unparse(kw.value)) for kw in node.keywords
+            )
+    joined = " ".join(forgets)
+    assert BROOKLYN_MEMORY_ID in joined, (
         f"Teardown must forget {BROOKLYN_MEMORY_ID!r}; saw: {forgets}"
     )
-    assert TOP_CUSTOMERS_MEMORY_ID in " ".join(forgets), (
+    assert TOP_CUSTOMERS_MEMORY_ID in joined, (
         f"Teardown must forget {TOP_CUSTOMERS_MEMORY_ID!r}; saw: {forgets}"
     )
 
@@ -544,26 +547,16 @@ def test_teardown_cell_forgets_both_stable_ids():
 
 def _collect_forget_memory_call_args(source: str) -> List[str]:
     """Walk AST for every forget_memory(...) call and return literal ids
-    appearing as positional or 'identifier=' kwargs."""
+    appearing as positional or 'identifier=' kwargs. Non-literal
+    expressions are skipped (the call site only needs the stable string
+    ids for the assertion)."""
     args: List[str] = []
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        fn = node.func
-        name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
-        if name != "forget_memory":
-            continue
-        for arg in node.args:
+    for node in _iter_calls_named(source, "forget_memory"):
+        for value in (*node.args, *(kw.value for kw in node.keywords)):
             try:
-                args.append(str(ast.literal_eval(arg)))
+                args.append(str(ast.literal_eval(value)))
             except ValueError:
-                pass
-        for kw in node.keywords:
-            try:
-                args.append(str(ast.literal_eval(kw.value)))
-            except ValueError:
-                pass
+                continue
     return args
 
 
