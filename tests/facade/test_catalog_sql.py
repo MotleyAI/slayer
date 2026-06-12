@@ -145,21 +145,38 @@ def test_pg_tables_one_row_per_table_typed_model() -> None:
     assert all(r["schemaname"] == "public" for r in rows)
 
 
-def test_pg_tables_excludes_view_typed_models() -> None:
-    # M1 — VIEW-typed models (sql-mode) are filtered out of pg_tables. The plan
-    # leaves pg_views and pg_matviews empty regardless, so a VIEW-typed model
-    # shows up in pg_class (relkind='r') but in NONE of the three views.
+def test_view_typed_models_surface_as_pg_views() -> None:
+    """Codex review: SQL-backed models (``table_type='VIEW'``) must
+    surface as views to view-aware clients — emitted with
+    ``relkind='v'`` in ``pg_class`` AND one row in ``pg_views``. They
+    are NOT in ``pg_tables`` (M1)."""
     sql_model = SlayerModel(
         name="custom_view", data_source="jaffle", sql="SELECT 1 AS id",
         columns=[Column(name="id", type=DataType.INT)],
     )
     cat = build_catalog(models_by_datasource={"jaffle": [sql_model]})
     relations = {r.name: r for r in build_catalog_relations(cat)}
+    # pg_tables filters out VIEW-typed models (M1).
     assert relations["pg_tables"].rows == []
-    assert relations["pg_views"].rows == []
+    # pg_matviews unused — materialized-view abstraction not implemented.
     assert relations["pg_matviews"].rows == []
-    # The model still appears in pg_class so #9's join JOIN against pg_class works.
-    assert any(r["relname"] == "custom_view" for r in relations["pg_class"].rows)
+    # pg_class advertises relkind='v' for VIEW-typed models.
+    cls_row = next(r for r in relations["pg_class"].rows if r["relname"] == "custom_view")
+    assert cls_row["relkind"] == "v"
+    # pg_views has one row per VIEW-typed model.
+    view_rows = relations["pg_views"].rows
+    assert len(view_rows) == 1
+    assert view_rows[0]["viewname"] == "custom_view"
+    assert view_rows[0]["schemaname"] == "public"
+
+
+def test_table_typed_models_stay_as_pg_class_r() -> None:
+    """Regression: normal ``sql_table``-mode models stay relkind='r' and
+    do not bleed into pg_views."""
+    relations = {r.name: r for r in build_catalog_relations(_demo_catalog())}
+    for row in relations["pg_class"].rows:
+        assert row["relkind"] == "r"
+    assert relations["pg_views"].rows == []
 
 
 def test_is_columns_has_postgres_shape_plus_slayer_extensions() -> None:

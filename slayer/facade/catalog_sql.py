@@ -161,7 +161,7 @@ def build_catalog_relations(
     out.append(_build_pg_stat_user_tables(catalog))
     out.append(_build_pg_enum())
     out.append(_build_pg_tables(catalog))
-    out.append(_build_pg_views())
+    out.append(_build_pg_views(catalog))
     out.append(_build_pg_matviews())
     out.append(_build_pg_constraint())
     out.append(_build_pg_index())
@@ -235,10 +235,14 @@ def _build_pg_class(catalog: FacadeCatalog) -> CatalogRelation:
         oid = _table_oid(ds, tbl)
         _check_collision(seen_oids, oid, f"{ds}.{tbl.name}")
         natts = sum(1 for _ in _column_specs(tbl))
+        # SQL-backed models are advertised as views (relkind='v') so
+        # ``pg_views`` discovery and JDBC view-specific paths see them;
+        # ``sql_table``-mode models stay as regular tables ('r').
+        relkind = "v" if tbl.table_type == "VIEW" else "r"
         rows.append({
             "oid": oid, "relname": tbl.name,
             "relnamespace": PUBLIC_NAMESPACE_OID, "reltype": 0,
-            "relowner": DEFAULT_OWNER_OID, "relkind": "r",
+            "relowner": DEFAULT_OWNER_OID, "relkind": relkind,
             "relnatts": natts, "relhasindex": False, "relpersistence": "p",
             "relpages": 0, "reltuples": -1.0,
             "relhasrules": False, "relhastriggers": False,
@@ -419,13 +423,29 @@ def _build_pg_tables(catalog: FacadeCatalog) -> CatalogRelation:
     return CatalogRelation(name="pg_tables", columns=columns, rows=rows)
 
 
-def _build_pg_views() -> CatalogRelation:
-    return CatalogRelation(name="pg_views", columns=[
+def _build_pg_views(catalog: FacadeCatalog) -> CatalogRelation:
+    columns = [
         FacadeColumn(name="schemaname", type=DataType.TEXT),
         FacadeColumn(name="viewname", type=DataType.TEXT),
         FacadeColumn(name="viewowner", type=DataType.TEXT),
         FacadeColumn(name="definition", type=DataType.TEXT),
-    ], rows=[])
+    ]
+    # SQL-backed models surface here so view-aware clients
+    # (pgAdmin, dbeaver view category, JDBC ``getTables`` with
+    # ``types=['VIEW']``) discover them as views. We do NOT include the
+    # underlying SQL definition — it's a SLayer abstraction detail and
+    # exposing it would leak datasource SQL through the facade.
+    rows = []
+    for _ds, tbl in _all_tables(catalog):
+        if tbl.table_type != "VIEW":
+            continue
+        rows.append({
+            "schemaname": "public",
+            "viewname": tbl.name,
+            "viewowner": "slayer",
+            "definition": None,
+        })
+    return CatalogRelation(name="pg_views", columns=columns, rows=rows)
 
 
 def _build_pg_matviews() -> CatalogRelation:
