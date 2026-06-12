@@ -18,9 +18,10 @@ from slayer.core.models import (
     DatasourceConfig,
     SlayerModel,
 )
+from slayer.engine.profiling import _collect_dim_profile
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import (
-    _collect_dim_profile,
+    _collect_measure_profile,
     _get_row_count,
     create_mcp_server,
 )
@@ -183,13 +184,17 @@ class TestCollectDimProfile:
         assert str(ordered_at.max_value).startswith("2025-03-20")
 
     async def test_high_cardinality_overflow(self, tmp_path) -> None:
-        """A string dim with > 20 distinct values yields the overflow marker."""
+        """A string dim with > 50 distinct values yields the overflow marker.
+
+        DEV-1480: cap raised from 20 to 50, so this test now uses 60 rows so
+        it remains in the overflow regime.
+        """
         db_path = tmp_path / "hc.db"
         conn = sqlite3.connect(str(db_path))
         conn.cursor().execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
         conn.executemany(
             "INSERT INTO t(label) VALUES (?)",
-            [(f"v{i}",) for i in range(50)],
+            [(f"v{i:03d}",) for i in range(60)],
         )
         conn.commit()
         conn.close()
@@ -209,6 +214,8 @@ class TestCollectDimProfile:
         engine = SlayerQueryEngine(storage=storage)
         profile = await _collect_dim_profile(model=model, engine=engine)
         label_entry = next(e for e in profile if e.name == "label")
+        # Overflow contract on the internal _DimProfileEntry shape:
+        # values=None, distinct_count=None signal overflow to the caller.
         assert label_entry.values is None
         assert label_entry.distinct_count is None  # overflow signal
 
@@ -586,3 +593,256 @@ class TestIngestDatasourceModelsTool:
         assert "widgets" in text
         assert "columns" in text  # v2 wording
         assert "dims" not in text  # v1 leftover would crash before reaching here
+
+
+# ---------------------------------------------------------------------------
+# DEV-1480: structured sampled_values + distinct_count
+# ---------------------------------------------------------------------------
+
+
+class TestInspectModelSampledValuesAndDistinctCount:
+    """End-to-end DEV-1480 contract through ``inspect_model``."""
+
+    async def _call_json(self, server, *, model_name: str) -> dict:
+        import json as _json
+        content, _ = await server.call_tool(
+            name="inspect_model",
+            arguments={"model_name": model_name, "format": "json"},
+        )
+        return _json.loads(content[0].text)
+
+    async def test_json_output_includes_sampled_values_and_distinct_count(
+        self, env,
+    ) -> None:
+        """JSON inspect_model output carries both new fields per column."""
+        server = create_mcp_server(storage=env["storage"])
+        payload = await self._call_json(server, model_name="orders")
+        cols_by_name = {c["name"]: c for c in payload["columns"]}
+        # Categorical column: both new fields populated.
+        status = cols_by_name["status"]
+        assert "sampled_values" in status
+        assert "distinct_count" in status
+        assert isinstance(status["sampled_values"], list)
+        assert status["distinct_count"] == 3
+        # Numeric column: both new fields None.
+        amount = cols_by_name["amount"]
+        assert amount["sampled_values"] is None
+        assert amount["distinct_count"] is None
+
+    async def test_markdown_table_unchanged_no_new_column(self, env) -> None:
+        """The markdown ``## Columns`` table must not gain new headers — the
+        issue explicitly says the text format does not change. New data is
+        carried only in JSON (and in the persisted model)."""
+        server = create_mcp_server(storage=env["storage"])
+        content, _ = await server.call_tool(
+            name="inspect_model",
+            arguments={"model_name": "orders"},  # markdown by default
+        )
+        text = content[0].text
+        col_section = text.split("## Columns")[1].split("## Measures")[0]
+        # No new column headers in the markdown table.
+        assert "| sampled_values |" not in col_section
+        assert "| distinct_count |" not in col_section
+        # The single ``sampled`` header is still present.
+        assert "| sampled |" in col_section
+
+    async def test_v6_stale_cache_re_profiles_to_populate_sampled_values(
+        self, env,
+    ) -> None:
+        """A v6 model with ``sampled`` set but no ``sampled_values`` is
+        cache-miss and re-profiles on next ``inspect_model``. Pins
+        ``_is_sample_cached`` validity rule."""
+        storage = env["storage"]
+        # Simulate a v6-era persisted state: ``sampled`` set, structured field
+        # absent. Via storage so the on-disk dict matches.
+        await storage.update_column_sampled(
+            data_source="test_sqlite", model_name="orders",
+            column_name="status",
+            sampled="legacy text from v6",
+            sampled_values=None,
+            distinct_count=None,
+        )
+        server = create_mcp_server(storage=storage)
+        await self._call_json(server, model_name="orders")
+        # After inspect_model runs, the structured field has been populated.
+        reloaded = await storage.get_model("orders", data_source="test_sqlite")
+        status = reloaded.get_column("status")
+        assert status.sampled_values is not None
+        assert status.distinct_count == 3
+
+    async def test_all_null_categorical_outputs_empty_string_not_all_null(
+        self, tmp_path,
+    ) -> None:
+        """All-NULL categorical column: text ``sampled=""``, NOT ``"all NULL"``
+        (the latter is the numeric-fallback marker). JSON shows the structured
+        ``sampled_values=[]``."""
+        db_path = tmp_path / "nulls.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.cursor().execute(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, notes TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO t(id, notes) VALUES (?, ?)",
+            [(i, None) for i in range(1, 6)],
+        )
+        conn.commit()
+        conn.close()
+
+        storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+        await storage.save_datasource(DatasourceConfig(
+            name="nulls_ds", type="sqlite", database=str(db_path),
+        ))
+        model = SlayerModel(
+            name="t", sql_table="t", data_source="nulls_ds",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="notes", type=DataType.TEXT),
+            ],
+        )
+        await storage.save_model(model)
+
+        server = create_mcp_server(storage=storage)
+        import json as _json
+        content, _ = await server.call_tool(
+            name="inspect_model",
+            arguments={"model_name": "t", "format": "json"},
+        )
+        payload = _json.loads(content[0].text)
+        notes = next(c for c in payload["columns"] if c["name"] == "notes")
+        # All-NULL categorical column contract:
+        assert notes["sampled_values"] == []
+        assert notes["distinct_count"] == 0
+        # Text sampled is empty string, NOT the numeric-fallback "all NULL".
+        assert notes["sampled"] == ""
+
+    async def test_profiles_more_than_10_categorical_columns(
+        self, tmp_path,
+    ) -> None:
+        """``inspect_model`` must persist ``sampled`` for every categorical
+        column, not just the first 10. Pins the ``max_dims`` cap removal on
+        the persistence path."""
+        db_path = tmp_path / "wide.db"
+        col_count = 15
+        col_defs = ", ".join(f"c{i} TEXT" for i in range(col_count))
+        conn = sqlite3.connect(str(db_path))
+        conn.cursor().execute(
+            f"CREATE TABLE wide (id INTEGER PRIMARY KEY, {col_defs})"
+        )
+        placeholders = ", ".join(["?"] * (col_count + 1))
+        row_value = ("val",) * col_count
+        conn.execute(
+            f"INSERT INTO wide VALUES ({placeholders})",
+            (1, *row_value),
+        )
+        conn.commit()
+        conn.close()
+
+        storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+        await storage.save_datasource(DatasourceConfig(
+            name="wide_ds", type="sqlite", database=str(db_path),
+        ))
+        cols = [Column(name="id", type=DataType.INT, primary_key=True)]
+        cols.extend(
+            Column(name=f"c{i}", type=DataType.TEXT) for i in range(col_count)
+        )
+        await storage.save_model(SlayerModel(
+            name="wide", sql_table="wide", data_source="wide_ds",
+            columns=cols,
+        ))
+
+        server = create_mcp_server(storage=storage)
+        await self._call_json(server, model_name="wide")
+
+        reloaded = await storage.get_model("wide", data_source="wide_ds")
+        # Every one of the 15 categorical columns has structured profile.
+        for i in range(col_count):
+            col = reloaded.get_column(f"c{i}")
+            assert col.sampled_values is not None, (
+                f"c{i}.sampled_values is None — max_dims cap not removed"
+            )
+
+
+class TestCollectMeasureProfileTypeRestriction:
+    """DEV-1480: ``_collect_measure_profile`` is restricted to numeric/temporal
+    columns. Text/boolean columns no longer appear in its output — they're
+    served exclusively by the categorical dim profile, which now produces both
+    ``sampled`` and ``sampled_values``. Mixing the two paths for the same
+    column would otherwise create a permanent cache miss (cached text from
+    measure_profile without the structured field)."""
+
+    async def test_text_and_boolean_columns_skipped(self, env) -> None:
+        result = await _collect_measure_profile(
+            model=env["model"], engine=env["engine"],
+        )
+        # Text/boolean columns are not in the measure_profile output.
+        assert "status" not in result
+        assert "notes" not in result
+        assert "is_paid" not in result
+        # Numeric/temporal columns still appear.
+        assert "amount" in result
+        assert "quantity" in result
+        assert "ordered_at" in result
+
+
+class TestInspectModelEmptyStringSampledNotClobberedByFallback:
+    """DEV-1480: pin the row-construction "key-presence not truthiness" fix.
+
+    An all-NULL categorical column produces ``sampled=""`` from the dim profile.
+    If row construction uses ``profile_by_name.get(c.name) or measure_profile.get(c.name)``,
+    the empty string falls through to the measure_profile fallback. Even with
+    the type-restriction on ``_collect_measure_profile``, we test the row
+    construction in isolation by monkeypatching the fallback to inject a value
+    for the same column — the empty string must survive.
+    """
+
+    async def test_empty_string_sampled_survives_fallback_injection(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        db_path = tmp_path / "nulls.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.cursor().execute(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, notes TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO t(id, notes) VALUES (?, ?)",
+            [(i, None) for i in range(1, 6)],
+        )
+        conn.commit()
+        conn.close()
+
+        storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+        await storage.save_datasource(DatasourceConfig(
+            name="nulls_ds", type="sqlite", database=str(db_path),
+        ))
+        await storage.save_model(SlayerModel(
+            name="t", sql_table="t", data_source="nulls_ds",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="notes", type=DataType.TEXT),
+            ],
+        ))
+
+        # Inject a "fallback" value for the categorical column so the
+        # truthiness ``or`` bug would silently swap "" → "FALLBACK".
+        from slayer.mcp import server as mcp_server
+
+        async def injected_measure_profile(*, model, engine):  # noqa: ARG001  # NOSONAR(S7503) — must be async to replace _collect_measure_profile which the production caller awaits
+            return {"notes": "FALLBACK_VALUE_SHOULD_NOT_APPEAR"}
+
+        monkeypatch.setattr(
+            mcp_server, "_collect_measure_profile",
+            injected_measure_profile,
+        )
+
+        server = create_mcp_server(storage=storage)
+        import json as _json
+        content, _ = await server.call_tool(
+            name="inspect_model",
+            arguments={"model_name": "t", "format": "json"},
+        )
+        payload = _json.loads(content[0].text)
+        notes = next(c for c in payload["columns"] if c["name"] == "notes")
+        # The empty-string ``sampled`` from the dim profile must NOT be
+        # overwritten by the injected fallback. Pins the key-presence fix.
+        assert notes["sampled"] == ""
+        assert "FALLBACK" not in str(notes["sampled"] or "")

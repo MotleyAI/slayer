@@ -7,12 +7,12 @@
 [![Docs](https://img.shields.io/badge/docs-readthedocs-blue)](https://motley-slayer.readthedocs.io/)
 [![License](https://img.shields.io/github/license/MotleyAI/slayer)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
-[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/djtaFyXW)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/egWxMctHCA)
 
 **SLayer** is a semantic layer that lets AI agents query your database, manage data models, and learn from the data.
 
 > If you find SLayer useful, a ⭐ helps others discover it!
-> Questions, ideas, or feedback? [Join our Discord](https://discord.gg/djtaFyXW).
+> Questions, ideas, or feedback? [Join our Discord](https://discord.gg/egWxMctHCA).
 
 ---
 
@@ -31,7 +31,7 @@ SLayer naturally evolves when the agent uses it. For example, if a query require
 
 SLayer compiles queries into the correct SQL for your database, handling joins, aggregations, time-based calculations, and dialect differences. Its DSL is very expressive, [supporting](https://motley-slayer.readthedocs.io/en/latest/examples/04_time/time/) queries like _"month-on-month % increase in total revenue, compared to the previous year"_, [queries-as-models](https://motley-slayer.readthedocs.io/en/latest/examples/06_multistage_queries/multistage_queries/) and much more.
 
-SLayer exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli), [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client), and [Flight SQL](https://motley-slayer.readthedocs.io/en/latest/interfaces/flight-sql/) (JDBC, BI-tool compatible) interfaces and [supports](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/#supported-database-types) most popular databases.
+SLayer exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli), [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client), [Flight SQL](https://motley-slayer.readthedocs.io/en/latest/interfaces/flight-sql/) (JDBC, BI-tool compatible), and a [Postgres facade](https://motley-slayer.readthedocs.io/en/latest/interfaces/pg-facade/) (point any BI dashboard's Postgres connector at SLayer) interfaces and [supports](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/#supported-database-types) most popular databases.
 
 ### Example
 
@@ -45,44 +45,34 @@ Side by side, here's LLM-generated SQL and the equivalent SLayer query.
 ## Quickstart
 
 We recommend using [uv](https://docs.astral.sh/uv/), especially if you don't work in a Python project.
-
-To install:
-
 ```bash
-uv tool install motley-slayer
-
-slayer
+uv tool install 'motley-slayer[all]'
 ```
 
-Try out without installing:
+If `slayer` isn't found on PATH afterwards, run `uv tool update-shell` and reopen your terminal.
 
-```bash
-# Instant demo — spins up the bundled Jaffle Shop DuckDB and ingests it
-uvx --from 'motley-slayer[all]' slayer serve --demo
-
-# Or run without --demo and connect your own data afterwards
-uvx --from 'motley-slayer[all]' slayer serve
-
-# Already have datasource YAMLs configured? Ingest them all at boot:
-uvx --from 'motley-slayer[all]' slayer serve --ingest-on-startup
-```
-
-Or using Claude Code with an in-process MCP server:
-
+### Using demo dataset
 ```bash
 # With the Jaffle Shop demo preloaded (zero-config quickstart)
-claude mcp add slayer -- uvx --from motley-slayer slayer mcp --demo
-
-# Or with idempotent boot-time auto-ingestion across every configured datasource
-claude mcp add slayer -- uvx --from motley-slayer slayer mcp --ingest-on-startup
-
-# Or without either — manual ingestion via the ingest_datasource_models tool
-claude mcp add slayer -- uvx --from motley-slayer slayer mcp
+claude mcp add slayer_demo -- slayer mcp --demo
 ```
 
-The `--demo` flag will preload the Jaffle Shop demo on startup – this takes a few seconds. The `--ingest-on-startup` flag walks every configured datasource and runs idempotent auto-ingestion before the server begins accepting connections (also enabled via `SLAYER_INGEST_ON_STARTUP=1`).
+### Using your own data
+Set up your datasource, substituting the correct database, username, hostname, and db_name. 
 
-Then [configure a datasource](https://github.com/MotleyAI/slayer?tab=readme-ov-file#datasource-setup) or ask your agent to help you do it.
+```bash
+slayer datasources create 'postgresql://user:${DB_PASSWORD}@hostname/db_name'
+```
+
+The password will be read by SLayer at init time, not saved to disk nor exposed to Claude.
+
+Then add SLayer to Claude Code:
+
+```bash
+claude mcp add slayer -- slayer mcp --ingest-on-startup
+```
+
+Now SLayer MCP will be visible in Claude Code next time you start it. Make sure to launch Claude Code from a shell where `DB_PASSWORD` is exported — the MCP subprocess inherits its environment from the launching process.
 
 Read more on how to get started with [MCP](https://motley-slayer.readthedocs.io/en/latest/getting-started/mcp/), [CLI](https://motley-slayer.readthedocs.io/en/latest/getting-started/cli/), [REST API](https://motley-slayer.readthedocs.io/en/latest/getting-started/rest-api/), [Python](https://motley-slayer.readthedocs.io/en/latest/getting-started/python/) in the docs.
 
@@ -94,23 +84,6 @@ Adding a caching layer is on the [roadmap](https://github.com/MotleyAI/slayer?ta
 
 
 ## Interfaces
-
-### REST API
-
-```bash
-# Query
-curl -X POST http://localhost:5143/query \
-  -H "Content-Type: application/json" \
-  -d '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
-
-# List models (returns name + description)
-curl http://localhost:5143/models
-
-# Get a single datasource (credentials masked)
-curl http://localhost:5143/datasources/my_postgres
-```
-
-See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/rest-api/).
 
 ### MCP Server
 
@@ -133,6 +106,24 @@ claude mcp add slayer-remote --transport sse --url http://localhost:5143/mcp/sse
 SLayer **does not expose credentials** to consumers once created.
 
 Both transports expose the same tools, allowing to inspect, create and update datasources and models and run queries. More info in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/mcp/).
+
+
+### CLI
+
+Slayer exposes a rich CLI:
+
+```bash
+# Show help
+slayer
+
+# Run a query directly from the terminal
+slayer query '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
+
+# Or from a file
+slayer query @query.json --format json
+```
+
+These commands do not depend on a running server. See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/cli/).
 
 ### Python Client
 
@@ -160,22 +151,40 @@ df = client.query_df(query)
 print(df)
 ```
 
-### CLI
+See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/python-client/).
 
-Slayer exposes a rich CLI:
+### REST API
 
 ```bash
-# Show help
-slayer
+# Query
+curl -X POST http://localhost:5143/query \
+  -H "Content-Type: application/json" \
+  -d '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
 
-# Run a query directly from the terminal
-slayer query '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
+# List models (returns name + description)
+curl http://localhost:5143/models
 
-# Or from a file
-slayer query @query.json --format json
+# Get a single datasource (credentials masked)
+curl http://localhost:5143/datasources/my_postgres
 ```
 
-These commands do not depend on a running server.
+See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/rest-api/).
+
+### BI Dashboards
+
+View your SLayer models from any BI tool — no Java or custom driver needed. Start the Postgres facade and point a dashboard's **PostgreSQL** connector at it:
+
+```bash
+# Start SLayer speaking the Postgres wire protocol (Jaffle Shop demo)
+poetry run slayer pg-serve --demo            # listens on 127.0.0.1:5145
+
+# e.g. Metabase: Add database -> PostgreSQL
+#   host=host.docker.internal  port=5145  database=jaffle_shop  (user/password: anything)
+```
+
+The connection's `database` selects the SLayer datasource; its models appear as tables under schema `public`. There's also an [Arrow Flight SQL](https://motley-slayer.readthedocs.io/en/latest/interfaces/flight-sql/) facade for JDBC clients. See the [Postgres facade docs](https://motley-slayer.readthedocs.io/en/latest/interfaces/pg-facade/) for auth, TLS, and the supported SQL surface.
+
+
 
 ## Models
 

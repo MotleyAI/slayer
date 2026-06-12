@@ -1,0 +1,63 @@
+version: 6
+name: orders
+sql_table: orders
+query_variables: {}
+data_source: jaffle_shop
+columns:
+- name: id
+  sql: id
+  type: TEXT
+  primary_key: true
+  hidden: false
+- name: customer_id
+  sql: customer_id
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: ordered_at
+  sql: ordered_at
+  type: DATE
+  primary_key: false
+  hidden: false
+- name: store_id
+  sql: store_id
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: subtotal
+  sql: subtotal
+  type: DOUBLE
+  primary_key: false
+  hidden: false
+  format:
+    type: float
+- name: tax_paid
+  sql: tax_paid
+  type: DOUBLE
+  primary_key: false
+  hidden: false
+  format:
+    type: float
+- name: order_total
+  sql: order_total
+  type: DOUBLE
+  primary_key: false
+  hidden: false
+  format:
+    type: float
+measures: []
+aggregations: []
+joins:
+- target_model: customers
+  join_pairs:
+  - - customer_id
+    - id
+  join_type: left
+- target_model: stores
+  join_pairs:
+  - - store_id
+    - id
+  join_type: left
+filters: []
+default_time_dimension: ordered_at
+hidden: false

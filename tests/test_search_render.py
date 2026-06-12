@@ -205,6 +205,68 @@ def test_column_text_omits_sampled_when_absent() -> None:
     assert "None" not in text
 
 
+def test_column_text_omits_sampled_when_empty_string() -> None:
+    """DEV-1480: an all-NULL profiled categorical column has ``sampled=""``.
+    The render must skip the ``Sample values:`` line for empty strings so
+    the embedded text doesn't get a bare ``Sample values: `` trailer."""
+    m = _make_orders_model()
+    col = m.get_column("status")
+    col.sampled = ""
+    col.sampled_values = []
+    col.distinct_count = 0
+    text = render_column_text(model=m, column=col)
+    assert "Sample values" not in text
+
+
+def test_column_text_includes_overflow_sampled_with_total() -> None:
+    """DEV-1480 overflow case: ``sampled`` carries the top-20 + total suffix.
+    The text rendering must include the suffix so the embedded doc surfaces
+    the true cardinality at search time."""
+    m = _make_orders_model()
+    col = m.get_column("status")
+    col.sampled = "a, b, c ... (1234 distinct)"
+    text = render_column_text(model=m, column=col)
+    assert "Sample values: a, b, c ... (1234 distinct)" in text
+
+
+def test_column_text_unchanged_by_sampled_values_field() -> None:
+    """DEV-1480: only ``sampled`` (the text string) is embedded. Adding the
+    structured ``sampled_values`` list must NOT change the rendered text and
+    therefore must NOT bump the content_hash."""
+    m = _make_orders_model()
+    col_with_list = m.get_column("status")
+    col_with_list.sampled_values = ["paid", "refunded", "cancelled"]
+    col_with_list.distinct_count = 3
+    text_with_list = render_column_text(model=m, column=col_with_list)
+
+    # Build a sibling column identical except for the structured field.
+    plain = Column(
+        name=col_with_list.name,
+        type=col_with_list.type,
+        description=col_with_list.description,
+        sampled=col_with_list.sampled,
+    )
+    text_plain = render_column_text(model=m, column=plain)
+    assert text_with_list == text_plain
+
+
+def test_column_text_unchanged_by_distinct_count_field() -> None:
+    """DEV-1480: ``distinct_count`` is metadata; not embedded."""
+    m = _make_orders_model()
+    col_with_count = m.get_column("status")
+    col_with_count.distinct_count = 999
+    text_with = render_column_text(model=m, column=col_with_count)
+
+    plain = Column(
+        name=col_with_count.name,
+        type=col_with_count.type,
+        description=col_with_count.description,
+        sampled=col_with_count.sampled,
+    )
+    text_plain = render_column_text(model=m, column=plain)
+    assert text_with == text_plain
+
+
 def test_column_text_excludes_meta() -> None:
     m = _make_orders_model()
     col = m.get_column("amount")

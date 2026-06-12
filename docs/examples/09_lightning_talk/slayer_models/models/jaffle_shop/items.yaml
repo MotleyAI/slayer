@@ -1,0 +1,36 @@
+version: 6
+name: items
+sql_table: items
+query_variables: {}
+data_source: jaffle_shop
+columns:
+- name: id
+  sql: id
+  type: TEXT
+  primary_key: true
+  hidden: false
+- name: order_id
+  sql: order_id
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: sku
+  sql: sku
+  type: TEXT
+  primary_key: false
+  hidden: false
+measures: []
+aggregations: []
+joins:
+- target_model: orders
+  join_pairs:
+  - - order_id
+    - id
+  join_type: left
+- target_model: products
+  join_pairs:
+  - - sku
+    - sku
+  join_type: left
+filters: []
+hidden: false

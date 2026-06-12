@@ -1541,3 +1541,78 @@ class TestModelMeasureType:
             measures=[{"formula": "*:count / orders:count", "name": "ratio", "type": "DOUBLE"}],
         )
         assert q.measures[0].type == DataType.DOUBLE
+
+
+class TestColumnSampledValuesAndDistinctCount:
+    """DEV-1480: ``Column`` gains a structured sibling ``sampled_values`` for
+    the text ``sampled`` string, and a ``distinct_count`` integer for the
+    column's total cardinality at profile time. Both default to ``None``."""
+
+    def test_sampled_values_defaults_to_none(self) -> None:
+        col = Column(name="status", type=DataType.TEXT)
+        assert col.sampled_values is None
+
+    def test_distinct_count_defaults_to_none(self) -> None:
+        col = Column(name="status", type=DataType.TEXT)
+        assert col.distinct_count is None
+
+    def test_sampled_values_accepts_empty_list(self) -> None:
+        # All-NULL profiled categorical column.
+        col = Column(name="status", type=DataType.TEXT, sampled_values=[])
+        assert col.sampled_values == []
+
+    def test_sampled_values_accepts_populated_list(self) -> None:
+        col = Column(
+            name="status",
+            type=DataType.TEXT,
+            sampled_values=["paid", "refunded"],
+        )
+        assert col.sampled_values == ["paid", "refunded"]
+
+    def test_sampled_values_round_trip_through_dict(self) -> None:
+        col = Column(
+            name="status",
+            type=DataType.TEXT,
+            sampled_values=["a", "b", "c"],
+        )
+        dumped = col.model_dump()
+        rebuilt = Column.model_validate(dumped)
+        assert rebuilt.sampled_values == ["a", "b", "c"]
+
+    def test_distinct_count_round_trip_through_dict(self) -> None:
+        col = Column(
+            name="status",
+            type=DataType.TEXT,
+            distinct_count=42,
+        )
+        dumped = col.model_dump()
+        rebuilt = Column.model_validate(dumped)
+        assert rebuilt.distinct_count == 42
+
+    def test_distinct_count_accepts_zero(self) -> None:
+        col = Column(name="status", type=DataType.TEXT, distinct_count=0)
+        assert col.distinct_count == 0
+
+    def test_sampled_text_string_preserved_alongside_structured_fields(self) -> None:
+        col = Column(
+            name="status",
+            type=DataType.TEXT,
+            sampled="paid, refunded",
+            sampled_values=["paid", "refunded"],
+            distinct_count=2,
+        )
+        assert col.sampled == "paid, refunded"
+        assert col.sampled_values == ["paid", "refunded"]
+        assert col.distinct_count == 2
+
+
+class TestSlayerModelVersionBump:
+    """DEV-1480: SlayerModel.version bumps from 6 to 7. v6→v7 is a no-op
+    forward migration; the bump is purely about the new optional fields on
+    Column."""
+
+    def test_slayer_model_version_is_7(self) -> None:
+        from slayer.core.models import SlayerModel
+
+        m = SlayerModel(name="orders", sql_table="orders", data_source="ds")
+        assert m.version == 7

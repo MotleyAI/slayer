@@ -1,0 +1,38 @@
+version: 6
+name: products
+sql_table: products
+query_variables: {}
+data_source: jaffle_shop
+columns:
+- name: sku
+  sql: sku
+  type: TEXT
+  primary_key: true
+  hidden: false
+- name: name
+  sql: name
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: type
+  sql: type
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: price
+  sql: price
+  type: DOUBLE
+  primary_key: false
+  hidden: false
+  format:
+    type: float
+- name: description
+  sql: description
+  type: TEXT
+  primary_key: false
+  hidden: false
+measures: []
+aggregations: []
+joins: []
+filters: []
+hidden: false

@@ -4,19 +4,7 @@ SLayer provides a command-line interface for server management, querying, and mo
 
 ## Storage
 
-All commands accept a `--storage` flag to specify where models and datasources are stored:
-
-```bash
-# YAML files in a directory (default)
-slayer serve --storage ./slayer_data
-
-# SQLite database file (auto-detected by .db/.sqlite/.sqlite3 extension)
-slayer serve --storage slayer.db
-```
-
-The default is `./slayer_data` (YAML). Override with `$SLAYER_STORAGE` or `$SLAYER_MODELS_DIR` env vars.
-
-The legacy `--models-dir` flag still works but is deprecated in favor of `--storage`.
+All commands accept a `--storage` flag to specify where models and datasources are stored. When omitted, SLayer uses a platform-appropriate default (`~/.local/share/slayer` on Linux, `~/Library/Application Support/slayer` on macOS, `%LOCALAPPDATA%\slayer` on Windows). See [Storage](../configuration/storage.md) for full details on backends, resolution, and overrides.
 
 ## Commands
 
@@ -36,7 +24,7 @@ slayer serve --ingest-on-startup     # run idempotent ingest over every configur
 |------|---------|-------------|
 | `--host` | `0.0.0.0` | Bind address |
 | `--port` | `5143` | Port number |
-| `--storage` | `./slayer_data` | Storage path (directory for YAML, .db file for SQLite) |
+| `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
 | `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before the port opens. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
 
@@ -56,7 +44,7 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--storage` | `./slayer_data` | Storage path |
+| `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
 | `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before stdio JSON-RPC starts. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
 
@@ -83,7 +71,7 @@ slayer query @query.json --explain
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--storage` | `./slayer_data` | Storage path |
+| `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--format` | `table` | Output format: `table` or `json` |
 | `--dry-run` | | Generate SQL without executing |
 | `--explain` | | Run EXPLAIN ANALYZE on the query |
