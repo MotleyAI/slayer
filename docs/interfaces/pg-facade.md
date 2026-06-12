@@ -88,7 +88,7 @@ In Metabase: **Admin → Databases → Add database → PostgreSQL** and fill in
 
 Or as a single JDBC connection string:
 
-```
+```text
 jdbc:postgresql://host.docker.internal:5145/jaffle_shop?user=metabase&password=pick-a-secret&sslmode=disable
 ```
 

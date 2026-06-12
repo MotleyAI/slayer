@@ -456,7 +456,7 @@ def ensure_demo_datasource(
     existing_model_names = set(run_sync(storage.list_models(data_source=name)))
     if not db_built and all(t in existing_model_names for t in TABLE_NAMES):
         jaffle_models = [
-            run_sync(storage.get_model(t, data_source=name))
+            run_sync(storage.get_model(name=t, data_source=name))
             for t in TABLE_NAMES
             if t in existing_model_names
         ]
@@ -470,7 +470,7 @@ def ensure_demo_datasource(
         if model.name in DEFAULT_TIME_DIMENSIONS:
             model.default_time_dimension = DEFAULT_TIME_DIMENSIONS[model.name]
         existing_model: Optional[SlayerModel] = run_sync(
-            storage.get_model(model.name, data_source=name)
+            storage.get_model(name=model.name, data_source=name)
         )
         if existing_model is not None and not assume_yes:
             written.append(existing_model)

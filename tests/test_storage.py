@@ -81,7 +81,7 @@ class TestModelStorage:
         # an actionable error, not a bare Pydantic model_type failure.
         await storage.save_model(sample_model)
         path = os.path.join(storage.models_dir, "test_ds", "test_model.yaml")
-        open(path, "w").close()
+        open(path, "w").close()  # NOSONAR(S7493) — test corrupts a tiny local fixture file; sync I/O is intentional
 
         with pytest.raises(ValueError, match="empty or corrupt") as excinfo:
             await storage.get_model("test_model")
@@ -95,7 +95,7 @@ class TestModelStorage:
         # name the file and the remediation, not surface a bare yaml trace.
         await storage.save_model(sample_model)
         path = os.path.join(storage.models_dir, "test_ds", "test_model.yaml")
-        with open(path, "w") as f:
+        with open(path, "w") as f:  # NOSONAR(S7493) — test corrupts a tiny local fixture file; sync I/O is intentional
             f.write('name: "test_model\ncolumns:\n  - name: "id\n')
 
         with pytest.raises(ValueError, match="invalid YAML") as excinfo:

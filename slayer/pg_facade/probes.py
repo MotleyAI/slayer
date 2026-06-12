@@ -111,7 +111,9 @@ def match_pg_probe(
         return _single("current_schema", "public")
     # The facade does not track per-connection login identity; a constant
     # satisfies driver probes (the username is ignored at auth anyway).
-    if isinstance(body, (exp.CurrentUser, exp.SessionUser)):
+    if isinstance(body, exp.SessionUser):
+        return _single("session_user", "slayer")
+    if isinstance(body, exp.CurrentUser):
         return _single("current_user", "slayer")
 
     name = _anonymous_name(body)

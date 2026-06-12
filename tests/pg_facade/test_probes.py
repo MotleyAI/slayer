@@ -62,10 +62,10 @@ def test_current_schema_niladic_returns_public() -> None:
 
 
 def test_current_user_and_session_user_return_constant() -> None:
-    for sql in ("SELECT current_user", "SELECT session_user"):
-        batch = _probe(sql)
-        assert batch is not None, sql
-        assert batch.rows == [{"current_user": "slayer"}]
+    for column in ("current_user", "session_user"):
+        batch = _probe(f"SELECT {column}")
+        assert batch is not None, column
+        assert batch.rows == [{column: "slayer"}]
 
 
 def test_show_search_path() -> None:
