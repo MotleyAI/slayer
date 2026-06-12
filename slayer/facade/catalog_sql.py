@@ -48,7 +48,7 @@ import sqlglot.expressions as exp
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
-from slayer.facade.catalog import FacadeCatalog, FacadeTable
+from slayer.facade.catalog import CATALOG_NAME, FacadeCatalog, FacadeTable
 from slayer.facade.rows import FacadeColumn, RowBatch
 from slayer.pg_facade.types import datatype_to_oid
 
@@ -648,19 +648,38 @@ _INFO_SCHEMA_NAMES = frozenset({
 
 
 def _is_known_catalog_table(tbl: exp.Table) -> bool:
-    """True if ``tbl`` resolves to a known catalog relation."""
+    """True if ``tbl`` resolves to a known catalog relation.
+
+    Bare names resolve ONLY to ``pg_catalog`` relations (whose ``pg_``
+    prefix disambiguates them from user models). Bare
+    ``information_schema`` names like ``columns`` / ``tables`` would
+    otherwise hijack user models with the same name, so they require the
+    explicit ``information_schema.`` qualifier.
+    """
     name = str(tbl.name).lower()
     schema_part = tbl.args.get("db")
     schema = None
     if schema_part is not None:
         schema = (str(schema_part.this) if hasattr(schema_part, "this") else str(schema_part)).lower()
+    catalog_part = tbl.args.get("catalog")
+    catalog = None
+    if catalog_part is not None:
+        catalog = (
+            str(catalog_part.this) if hasattr(catalog_part, "this") else str(catalog_part)
+        ).lower()
+        # Three-part catalog-qualified refs must name the SLayer catalog.
+        # Anything else (a foreign catalog) is never our catalog SQL.
+        if catalog != CATALOG_NAME.lower():
+            return False
     if schema == "information_schema":
         return name in _INFO_SCHEMA_NAMES
     if schema == "pg_catalog":
         return name in _PG_CATALOG_NAMES
     if schema is None:
-        # Bare names — both pg_catalog and info_schema relations resolve.
-        return name in _PG_CATALOG_NAMES or name in _INFO_SCHEMA_NAMES
+        # Bare names — pg_catalog only (bare info-schema names like
+        # ``columns`` / ``tables`` are too generic and would shadow user
+        # models with those names).
+        return name in _PG_CATALOG_NAMES
     return False
 
 
@@ -823,11 +842,15 @@ class _AstRewriter:
         if schema_name == "pg_catalog":
             new = node.copy()
             new.set("db", None)
+            # Drop any outer catalog qualifier too (e.g.
+            # ``slayer.pg_catalog.pg_class`` → ``pg_class``).
+            new.set("catalog", None)
             return new
         if schema_name == "information_schema":
             # Rewrite the table name itself: information_schema.X → _is_X.
             new = node.copy()
             new.set("db", None)
+            new.set("catalog", None)
             inner_name = str(new.this.this) if hasattr(new.this, "this") else str(new.this)
             new.set("this", exp.Identifier(this=f"_is_{inner_name.lower()}", quoted=False))
             return new
@@ -925,35 +948,47 @@ class _AstRewriter:
     # ----- 5. context function substitution ---------------------------------
 
     def _substitute_context_functions(self, node: exp.Expression) -> exp.Expression:
-        # Dedicated sqlglot Func subclasses (typed nodes for the niladic
-        # context functions) — handle by isinstance.
+        # Try each substitution branch in order; first hit wins.
+        substituted = (
+            self._substitute_dedicated_func(node)
+            or self._substitute_bareword_column(node)
+            or self._substitute_anonymous_function(node)
+        )
+        return substituted if substituted is not None else node
+
+    def _substitute_dedicated_func(self, node: exp.Expression) -> Optional[exp.Expression]:
+        """Dedicated sqlglot Func subclasses (typed nodes for niladic ctx fns)."""
         if isinstance(node, (exp.CurrentDatabase, getattr(exp, "CurrentCatalog", exp.CurrentDatabase))):
             return exp.Literal.string(self.datasource)
-        if isinstance(node, exp.CurrentUser):
+        if isinstance(node, (exp.CurrentUser, exp.SessionUser)):
             return exp.Literal.string("slayer")
-        if isinstance(node, exp.SessionUser):
-            return exp.Literal.string("slayer")
-        # `current_role` is parsed as a bare Column reference by sqlglot
-        # (no parens form). Treat single-token Column refs to the known
-        # niladic names as context functions. (Note: ``node.table`` is the
-        # empty string ``""`` for an unqualified column, not None.)
-        if isinstance(node, exp.Column) and not node.table:
-            ident = node.this
-            if isinstance(ident, exp.Identifier):
-                lowered = str(ident.this).lower()
-                if lowered in {"current_database", "current_catalog"}:
-                    return exp.Literal.string(self.datasource)
-                if lowered in {"current_user", "session_user", "current_role"}:
-                    return exp.Literal.string("slayer")
-        # Anonymous fallback (less-common spellings).
+        return None
+
+    def _substitute_bareword_column(self, node: exp.Expression) -> Optional[exp.Expression]:
+        """sqlglot parses ``current_role`` (no parens) as a Column reference.
+        Treat single-token unqualified Column refs naming a known niladic ctx
+        function as that function. ``node.table`` is ``""`` (not None) for an
+        unqualified column."""
+        if not (isinstance(node, exp.Column) and not node.table):
+            return None
+        ident = node.this
+        if not isinstance(ident, exp.Identifier):
+            return None
+        return self._literal_for_context_name(str(ident.this).lower())
+
+    def _substitute_anonymous_function(self, node: exp.Expression) -> Optional[exp.Expression]:
+        """Less-common Anonymous function spellings — fallback path."""
         name = _function_name_lower(node)
         if name is None:
-            return node
+            return None
+        return self._literal_for_context_name(name)
+
+    def _literal_for_context_name(self, name: str) -> Optional[exp.Expression]:
         if name in {"current_database", "current_catalog"}:
             return exp.Literal.string(self.datasource)
         if name in {"current_user", "session_user", "current_role"}:
             return exp.Literal.string("slayer")
-        return node
+        return None
 
     # ----- 6. rename stub functions to private names ------------------------
 

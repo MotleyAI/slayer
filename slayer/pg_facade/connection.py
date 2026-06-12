@@ -443,8 +443,16 @@ class PgConnection:
             self._describe_sql(portal.sql, result_formats=portal.result_format_codes)
 
     def _describe_sql(self, sql: str, *, result_formats: Optional[List[int]]) -> None:
+        # DEV-1558 fix: the catalog executor's Describe path runs the SQL
+        # against DuckDB to obtain the cursor's column description. When the
+        # prepared-statement form still has ``$N`` placeholders (asyncpg
+        # sends Parse + Describe-Statement BEFORE Bind), DuckDB raises a
+        # bind-parameter error. Substitute every ``$N`` → ``NULL`` for this
+        # describe-only translation; the real value substitution happens in
+        # ``_handle_bind`` for Execute.
+        describe_sql = _PARAM_PLACEHOLDER.sub("NULL", sql)
         try:
-            result = self._translate(sql)
+            result = self._translate(describe_sql)
         except TranslationError:
             # Describe must not raise to the wire here; the subsequent Execute
             # surfaces the error. Report NoData so the client can proceed.

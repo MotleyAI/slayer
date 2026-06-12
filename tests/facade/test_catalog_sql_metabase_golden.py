@@ -117,7 +117,7 @@ def _load_corpus_statements() -> List[str]:
             current = []
             capturing = False
             continue
-        if line.startswith("-- ====") or line.startswith("--"):
+        if line.startswith(("-- ====", "--")):
             # Header / footer / appendix comment — skip
             continue
         capturing = True

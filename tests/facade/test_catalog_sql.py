@@ -282,6 +282,37 @@ def test_is_catalog_only_unknown_table_false() -> None:
     assert is_catalog_only(_parse("SELECT * FROM totally_unknown_thing")) is False
 
 
+@pytest.mark.parametrize("name", ["columns", "tables", "schemata"])
+def test_is_catalog_only_bare_info_schema_names_disallowed(name: str) -> None:
+    # DEV-1558 Codex review: bare info-schema names like `columns` /
+    # `tables` shadow user models with the same name. Only the qualified
+    # form `information_schema.columns` routes to the catalog executor;
+    # bare `columns` flows down to the regular SLayer translator.
+    assert is_catalog_only(_parse(f"SELECT * FROM {name}")) is False
+
+
+def test_is_catalog_only_catalog_qualified_information_schema_resolves() -> None:
+    assert is_catalog_only(_parse("SELECT * FROM slayer.information_schema.columns")) is True
+
+
+def test_is_catalog_only_catalog_qualified_pg_catalog_resolves() -> None:
+    assert is_catalog_only(_parse("SELECT * FROM slayer.pg_catalog.pg_class")) is True
+
+
+def test_is_catalog_only_foreign_catalog_disallowed() -> None:
+    # A non-slayer outer catalog is never our catalog SQL.
+    assert is_catalog_only(_parse("SELECT * FROM other.pg_catalog.pg_class")) is False
+
+
+def test_catalog_qualified_information_schema_runs() -> None:
+    # `slayer.information_schema.columns` should run cleanly — the outer
+    # catalog qualifier strips off and `information_schema.columns`
+    # rewrites to `_is_columns`.
+    batch = _run("SELECT table_name FROM slayer.information_schema.columns "
+                 "WHERE table_name = 'orders' LIMIT 5")
+    assert all(r["table_name"] == "orders" for r in batch.rows)
+
+
 def test_is_catalog_only_skips_subquery_aliases() -> None:
     # Subquery alias 'sub' is not a catalog table either, but its inner FROM is.
     sql = """
@@ -453,7 +484,7 @@ def test_pg_get_userbyid_returns_slayer() -> None:
 
 
 def test_format_type_known_oid_returns_typname() -> None:
-    batch = _run("SELECT format_type(25, NULL) AS t")  # 25 = OID_TEXT
+    batch = _run("SELECT format_type(25, NULL) AS t")  # 25 = OID_TEXT  # NOSONAR(S125) — value annotation, not commented-out code
     assert batch.rows == [{"t": "text"}]
 
 

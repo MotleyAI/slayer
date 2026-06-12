@@ -199,9 +199,12 @@ async def test_pg_attribute_has_orders_columns(pg_demo_server) -> None:
         oid = await conn.fetchval(
             "SELECT oid FROM pg_catalog.pg_class WHERE relname = 'orders'"
         )
-        # DEV-1558: WHERE is now honored server-side.
+        # DEV-1558: WHERE is now honored server-side. Inline the OID rather
+        # than binding $1: the pg facade types unannounced $N parameters as
+        # TEXT (per asyncpg's wire expectation), and asyncpg refuses to
+        # encode an int through a TEXT parameter.
         rows = await conn.fetch(
-            "SELECT * FROM pg_catalog.pg_attribute WHERE attrelid = $1", oid,
+            f"SELECT * FROM pg_catalog.pg_attribute WHERE attrelid = {oid}"
         )
         assert len(rows) > 0
         assert all(r["attrelid"] == oid for r in rows)

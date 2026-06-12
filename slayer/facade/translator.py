@@ -239,7 +239,7 @@ def _column_to_dotted(
     ``revenue_sum``         (bare)      → ``"revenue_sum"``
 
     DEV-1558 B5: when ``strip_prefix=(schema, table)`` is given and the
-    leading two qualifiers on the column reference are exactly
+    leading qualifiers on the column reference are exactly
     ``schema.table.`` (case-insensitive, or with ``schema='public'`` since
     the pg facade always exposes models under ``public``), drop them so
     three-part refs like ``"public"."orders"."customer_id"`` resolve to the
@@ -253,21 +253,27 @@ def _column_to_dotted(
         parts.append(str(node.this) if hasattr(node, "this") else str(node))
     leaf = col.this
     parts.append(str(leaf.this) if hasattr(leaf, "this") else str(leaf))
-    if strip_prefix is not None:
-        schema_p, table_p = strip_prefix
-        if len(parts) >= 3:
-            # Three-part: [..., schema, table, col]. Strip the leading
-            # schema.table. prefix when it matches the FROM table.
-            s = parts[-3].lower()
-            t = parts[-2].lower()
-            if t == table_p.lower() and s in {"public", schema_p.lower()}:
-                parts = parts[:-3] + parts[-1:]
-        elif len(parts) == 2:
-            # Two-part: [table, col]. Standard SQL — strip table prefix if
-            # it matches the FROM table.
-            if parts[0].lower() == table_p.lower():
-                parts = parts[1:]
-    return ".".join(parts)
+    return ".".join(_apply_strip_prefix(parts, strip_prefix))
+
+
+def _apply_strip_prefix(
+    parts: List[str], strip_prefix: Optional[Tuple[str, str]],
+) -> List[str]:
+    """Drop the leading ``schema.table.`` qualifier from ``parts`` when it
+    matches ``strip_prefix``. Three-part column refs drop the leading 2
+    elements; two-part drops the leading 1. Bare and unrelated refs pass
+    through unchanged."""
+    if strip_prefix is None:
+        return parts
+    schema_p, table_p = strip_prefix
+    if len(parts) >= 3:
+        s = parts[-3].lower()
+        t = parts[-2].lower()
+        if t == table_p.lower() and s in {"public", schema_p.lower()}:
+            return parts[:-3] + parts[-1:]
+    if len(parts) == 2 and parts[0].lower() == table_p.lower():
+        return parts[1:]
+    return parts
 
 
 def _detect_time_grain_date_trunc(
@@ -331,13 +337,16 @@ def _detect_time_grain(node: exp.Expression) -> Optional[Tuple[TimeGranularity, 
     return None
 
 
-def _alias_for_time_grain(grain: TimeGranularity, col: exp.Column) -> str:
+def _alias_for_time_grain(
+    grain: TimeGranularity, col: exp.Column,
+    *, strip_prefix: Optional[Tuple[str, str]] = None,
+) -> str:
     """The flat projection name we expose for ``month(ordered_at)`` etc.
 
     Format: ``"<grain>(<column-ref>)"`` lowercased so it round-trips
     cleanly through GROUP BY / ORDER BY equality checks.
     """
-    return f"{grain.value}({_column_to_dotted(col)})"
+    return f"{grain.value}({_column_to_dotted(col, strip_prefix=strip_prefix)})"
 
 
 # --- aggregate-call detection (DEV-1486 decision 21) -------------------------
@@ -354,14 +363,24 @@ class _AggCall(BaseModel):
     is_count_star: bool = False  # True only for the literal COUNT(*)
 
 
-def _detect_aggregate(node: exp.Expression) -> Optional[_AggCall]:  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; splitting hides the shape
+def _detect_aggregate(  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; splitting hides the shape
+    node: exp.Expression,
+    *, strip_prefix: Optional[Tuple[str, str]] = None,
+) -> Optional[_AggCall]:
     """If ``node`` is a SQL aggregate call, classify it; else ``None``.
 
     ``COUNT(*)`` → ``count`` / ``inner_ref=None``. ``COUNT(DISTINCT col)`` →
     ``count_distinct``. ``COUNT(col)`` → ``count``. ``SUM/AVG/MIN/MAX(col)`` →
     the matching agg. An aggregate over a non-column argument sets
     ``inner_is_column=False`` so the caller can raise the DEV-1493 error.
+
+    DEV-1558 B5: ``strip_prefix`` drops the FROM-table's ``schema.table.``
+    qualifier from the inner column ref so ``SUM("public"."orders"."revenue")``
+    resolves to the metric ``revenue:sum`` instead of
+    ``public.orders.revenue:sum``.
     """
+    def _dot(col: exp.Column) -> str:
+        return _column_to_dotted(col, strip_prefix=strip_prefix)
     if isinstance(node, exp.Count):
         inner = node.this
         if isinstance(inner, exp.Star):
@@ -371,13 +390,13 @@ def _detect_aggregate(node: exp.Expression) -> Optional[_AggCall]:  # NOSONAR(S3
             if len(exprs) == 1 and isinstance(exprs[0], exp.Column):
                 return _AggCall(
                     agg="count_distinct",
-                    inner_ref=_column_to_dotted(exprs[0]),
+                    inner_ref=_dot(exprs[0]),
                     inner_is_column=True,
                 )
             return _AggCall(agg="count_distinct", inner_is_column=False)
         if isinstance(inner, exp.Column):
             return _AggCall(
-                agg="count", inner_ref=_column_to_dotted(inner), inner_is_column=True,
+                agg="count", inner_ref=_dot(inner), inner_is_column=True,
             )
         # COUNT(<non-column expression>) — not the row-count star.
         return _AggCall(agg="count", inner_is_column=False)
@@ -386,7 +405,7 @@ def _detect_aggregate(node: exp.Expression) -> Optional[_AggCall]:  # NOSONAR(S3
             inner = node.this
             if isinstance(inner, exp.Column):
                 return _AggCall(
-                    agg=name, inner_ref=_column_to_dotted(inner), inner_is_column=True,
+                    agg=name, inner_ref=_dot(inner), inner_is_column=True,
                 )
             return _AggCall(agg=name, inner_ref=None, inner_is_column=False)
     return None
@@ -546,8 +565,9 @@ def _resolve_time_grain_projection(
     alias_name: Optional[str],
     table: FacadeTable,
     dims_by_name: Dict[str, FacadeDimension],
+    strip_prefix: Optional[Tuple[str, str]] = None,
 ) -> _ProjectionItem:
-    dotted = _column_to_dotted(col)
+    dotted = _column_to_dotted(col, strip_prefix=strip_prefix)
     dim = dims_by_name.get(dotted)
     if dim is None:
         raise TranslationError(
@@ -560,7 +580,9 @@ def _resolve_time_grain_projection(
             f"in {grain.value}()"
         )
     return _ProjectionItem(
-        projected_name=alias_name or _alias_for_time_grain(grain, col),
+        projected_name=alias_name or _alias_for_time_grain(
+            grain, col, strip_prefix=strip_prefix,
+        ),
         dimension=dim,
         time_grain=grain,
         time_grain_underlying=dim,
@@ -682,10 +704,11 @@ def _resolve_projection(
             out.append(_resolve_time_grain_projection(
                 grain=grain, col=col, alias_name=alias_name,
                 table=table, dims_by_name=dims_by_name,
+                strip_prefix=strip_prefix,
             ))
             continue
 
-        agg_call = _detect_aggregate(body)
+        agg_call = _detect_aggregate(body, strip_prefix=strip_prefix)
         if agg_call is not None:
             out.append(_resolve_aggregate_projection(
                 call=agg_call, alias_name=alias_name, table=table,
@@ -745,11 +768,12 @@ def _split_and_chain(node: exp.Expression) -> List[exp.Expression]:
 
 def _lift_time_between(
     conj: exp.Between, time_dim_names: set[str],
+    *, strip_prefix: Optional[Tuple[str, str]] = None,
 ) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
     col = conj.this
     if not isinstance(col, exp.Column):
         return None
-    dotted = _column_to_dotted(col)
+    dotted = _column_to_dotted(col, strip_prefix=strip_prefix)
     if dotted not in time_dim_names:
         return None
     lo = _literal_str(conj.args.get("low"))
@@ -761,11 +785,12 @@ def _lift_time_between(
 
 def _lift_time_comparator(
     conj: exp.Expression, time_dim_names: set[str],
+    *, strip_prefix: Optional[Tuple[str, str]] = None,
 ) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
     col = conj.this
     if not isinstance(col, exp.Column):
         return None
-    dotted = _column_to_dotted(col)
+    dotted = _column_to_dotted(col, strip_prefix=strip_prefix)
     if dotted not in time_dim_names:
         return None
     val = _literal_str(conj.expression)
@@ -778,6 +803,7 @@ def _lift_time_comparator(
 
 def _classify_where_conjunct(
     conj: exp.Expression, time_dim_names: set[str],
+    *, strip_prefix: Optional[Tuple[str, str]] = None,
 ) -> Tuple[Optional[Tuple[str, Optional[str], Optional[str]]], Optional[str]]:
     """Classify a single conjunct.
 
@@ -786,11 +812,11 @@ def _classify_where_conjunct(
     Returns ``(None, verbatim_sql)`` for the everything-else case.
     """
     if isinstance(conj, exp.Between):
-        lifted = _lift_time_between(conj, time_dim_names)
+        lifted = _lift_time_between(conj, time_dim_names, strip_prefix=strip_prefix)
         if lifted is not None:
             return lifted, None
     if isinstance(conj, (exp.GTE, exp.GT, exp.LTE, exp.LT)):
-        lifted = _lift_time_comparator(conj, time_dim_names)
+        lifted = _lift_time_comparator(conj, time_dim_names, strip_prefix=strip_prefix)
         if lifted is not None:
             return lifted, None
     return None, _rewrite_neq(conj.sql())
@@ -813,13 +839,16 @@ def _apply_where(
     where: Optional[exp.Where],
     time_dims_built: Dict[str, TimeDimension],
     filters_out: List[str],
+    *, strip_prefix: Optional[Tuple[str, str]] = None,
 ) -> None:
     """Walk the WHERE chain; lift time-dim filters, append verbatim rest."""
     if where is None:
         return
     time_dim_names = set(time_dims_built.keys())
     for conj in _split_and_chain(where.this):
-        lifted, verbatim = _classify_where_conjunct(conj, time_dim_names)
+        lifted, verbatim = _classify_where_conjunct(
+            conj, time_dim_names, strip_prefix=strip_prefix,
+        )
         if lifted is not None:
             name, lo, hi = lifted
             td = time_dims_built[name]
@@ -837,6 +866,7 @@ def _apply_having(
     having: Optional[exp.Having],
     table: FacadeTable,
     filters_out: List[str],
+    *, strip_prefix: Optional[Tuple[str, str]] = None,
 ) -> None:
     """Map ``HAVING <agg(col)> <cmp> <literal>`` conjuncts to colon-form
     filters (DEV-1486 decision 21). The engine classifies colon-form
@@ -852,8 +882,8 @@ def _apply_having(
                 f"<aggregate> <comparison> <literal>."
             )
         lhs, rhs = conj.this, conj.expression
-        agg_lhs = _detect_aggregate(lhs)
-        agg_rhs = _detect_aggregate(rhs)
+        agg_lhs = _detect_aggregate(lhs, strip_prefix=strip_prefix)
+        agg_rhs = _detect_aggregate(rhs, strip_prefix=strip_prefix)
         if agg_lhs is not None and agg_rhs is None and isinstance(rhs, exp.Literal):
             _metric_for_aggregate(call=agg_lhs, table=table, metrics_by_formula=metrics_by_formula)
             filters_out.append(f"{_agg_formula(agg_lhs)} {op_sql} {rhs.sql()}")
@@ -879,6 +909,7 @@ def _flip_comparator(op_sql: str) -> str:
 def _translate_order_by(
     order: Optional[exp.Order],
     item_by_projected_name: Dict[str, _ProjectionItem],
+    *, strip_prefix: Optional[Tuple[str, str]] = None,
 ) -> List[OrderItem]:
     if order is None:
         return []
@@ -888,7 +919,7 @@ def _translate_order_by(
             continue
         body = ord_expr.this
         direction = "desc" if ord_expr.args.get("desc") else "asc"
-        name = _order_by_name(body)
+        name = _order_by_name(body, strip_prefix=strip_prefix)
         if name not in item_by_projected_name:
             raise TranslationError(
                 f"ORDER BY column {name!r} is not in the projection list"
@@ -903,7 +934,10 @@ def _translate_order_by(
     return out
 
 
-def _order_by_name(body: exp.Expression) -> str:
+def _order_by_name(
+    body: exp.Expression,
+    *, strip_prefix: Optional[Tuple[str, str]] = None,
+) -> str:
     """Resolve an ORDER BY term to its projected name.
 
     A bare column / alias resolves by name. An aggregate term
@@ -912,8 +946,8 @@ def _order_by_name(body: exp.Expression) -> str:
     item registered for ``SUM(amount)``.
     """
     if isinstance(body, exp.Column):
-        return _column_to_dotted(body)
-    agg = _detect_aggregate(body)
+        return _column_to_dotted(body, strip_prefix=strip_prefix)
+    agg = _detect_aggregate(body, strip_prefix=strip_prefix)
     if agg is not None and agg.inner_is_column:
         return f"{agg.inner_ref}_{agg.agg}"
     if agg is not None and agg.is_count_star:
@@ -924,6 +958,7 @@ def _order_by_name(body: exp.Expression) -> str:
 def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; extraction adds indirection
     group: Optional[exp.Group],
     derived: List[str],
+    *, strip_prefix: Optional[Tuple[str, str]] = None,
 ) -> None:
     """Apply the strict-on-extras / lenient-on-omissions policy (§6.1)."""
     if group is None:
@@ -932,12 +967,14 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
     user_items: List[str] = []
     for g in group.args.get("expressions") or []:
         if isinstance(g, exp.Column):
-            user_items.append(_column_to_dotted(g))
+            user_items.append(_column_to_dotted(g, strip_prefix=strip_prefix))
         else:
             grain_match = _detect_time_grain(g)
             if grain_match is not None:
                 grain, col = grain_match
-                user_items.append(_alias_for_time_grain(grain, col))
+                user_items.append(_alias_for_time_grain(
+                    grain, col, strip_prefix=strip_prefix,
+                ))
             else:
                 user_items.append(g.sql())
     for u in user_items:
@@ -1176,17 +1213,32 @@ def _translate_slayer_select(
     if any(isinstance(e, exp.Star) for e in proj_exprs):
         raise TranslationError(SELECT_STAR_MESSAGE)
 
+    # DEV-1558 B5: every helper that resolves a column ref needs the same
+    # ``(schema, table)`` prefix-strip context as ``_resolve_projection``.
+    strip_prefix: Optional[Tuple[str, str]] = (
+        (schema_name, table.name) if schema_name else None
+    )
+
     items = _resolve_projection(proj_exprs, table, schema_name=schema_name)
     plan = _build_projection_plan(items, table)
 
-    _validate_group_by(parsed.args.get("group"), plan.derived_dims)
+    _validate_group_by(
+        parsed.args.get("group"), plan.derived_dims, strip_prefix=strip_prefix,
+    )
 
     filters: List[str] = []
-    _apply_where(parsed.args.get("where"), plan.time_dim_by_name, filters)
-    _apply_having(parsed.args.get("having"), table, filters)
+    _apply_where(
+        parsed.args.get("where"), plan.time_dim_by_name, filters,
+        strip_prefix=strip_prefix,
+    )
+    _apply_having(
+        parsed.args.get("having"), table, filters, strip_prefix=strip_prefix,
+    )
 
     item_by_projected_name = {item.projected_name: item for item in items}
-    order_items = _translate_order_by(parsed.args.get("order"), item_by_projected_name)
+    order_items = _translate_order_by(
+        parsed.args.get("order"), item_by_projected_name, strip_prefix=strip_prefix,
+    )
 
     query = SlayerQuery(
         source_model=table.name,

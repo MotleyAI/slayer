@@ -877,3 +877,52 @@ async def test_extended_protocol_catalog_query_binary_format() -> None:
     assert data_bodies
     # `public` appears in some DataRow payload.
     assert any(b"public" in body for body in data_bodies)
+
+
+async def test_extended_protocol_catalog_query_with_bound_parameter() -> None:
+    """DEV-1558 regression: asyncpg sends Parse + Describe-Statement BEFORE
+    Bind. With a $N parameter in the SQL, the catalog executor would
+    previously fail on Describe (unsubstituted $N → DuckDB bind error),
+    emit NoData, then Execute would emit a populated RowDescription —
+    causing asyncpg to raise ``ProtocolError: columns vs described``.
+
+    Fix: ``_describe_sql`` substitutes ``$N → NULL`` for the
+    describe-only translation so the executor produces a valid column
+    description; ``_handle_bind`` then substitutes real values for
+    Execute. The wire sequence:
+
+        Parse(stmt, "... WHERE catalog_name = $1") →
+        ParameterDescription + RowDescription →
+        Bind(stmt, [b'slayer']) →
+        BindComplete →
+        Execute → DataRow(s) → CommandComplete →
+        Sync → ReadyForQuery
+    """
+    sql = ('SELECT * FROM information_schema.schemata '
+           'WHERE catalog_name = $1')
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _describe("S", "")
+        + _bind("", "", values=(b"slayer",),
+                result_formats=(proto.FORMAT_TEXT,))
+        + _execute("")
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    type_seq = _types(msgs)
+    # No protocol error.
+    assert "E" not in type_seq
+    # RowDescription (from Describe) AND DataRow (from Execute) — and they
+    # MUST be consistent (catalog query, multi-column result).
+    assert "T" in type_seq  # RowDescription
+    assert "2" in type_seq  # BindComplete — substitution succeeded
+    rd = next(body for t, body in msgs if t == "T")
+    rd_fields = _parse_row_description(rd)
+    # Each DataRow's column count must equal the RowDescription's column count.
+    n_cols = len(rd_fields)
+    for body in (b for t, b in msgs if t == "D"):
+        n_data = struct.unpack_from(">h", body, 0)[0]
+        assert n_data == n_cols, f"DataRow {n_data} cols vs RowDescription {n_cols}"

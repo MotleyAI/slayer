@@ -197,6 +197,47 @@ def test_metabase_fingerprint_orders_corpus_17() -> None:
     assert result.query.limit == 10000
 
 
+def test_aggregate_over_three_part_qualified_column() -> None:
+    """DEV-1558 Codex review fold: SUM("public"."orders"."total") must
+    resolve to the `total:sum` metric on the orders model, not to a
+    bogus `public.orders.total:sum` lookup."""
+    sql = (
+        'SELECT SUM("public"."orders"."total") AS "total_sum" '
+        'FROM "public"."orders"'
+    )
+    result = _translate(sql)
+    assert isinstance(result, QueryResult)
+    aliases = [projected for _alias, projected in result.column_name_mapping]
+    assert aliases == ["total_sum"]
+    def _formula(m):
+        return m["formula"] if isinstance(m, dict) else m.formula
+    measure_formulas = [_formula(m) for m in (result.query.measures or [])]
+    assert "total:sum" in measure_formulas
+
+
+def test_order_by_three_part_qualified_column() -> None:
+    """ORDER BY through a 3-part-qualified column must resolve via
+    strip_prefix the same way the projection does."""
+    sql = (
+        'SELECT "public"."orders"."customer_id" AS "customer_id" '
+        'FROM "public"."orders" ORDER BY "public"."orders"."customer_id"'
+    )
+    result = _translate(sql)
+    assert isinstance(result, QueryResult)
+
+
+def test_where_filter_on_three_part_qualified_column_passes_through() -> None:
+    """WHERE filters on 3-part-qualified columns are emitted verbatim
+    into SlayerQuery.filters; the engine's Mode-B parser then resolves
+    them against the model."""
+    sql = (
+        'SELECT "public"."orders"."customer_id" AS "customer_id" '
+        'FROM "public"."orders" WHERE "public"."orders"."total" > 0'
+    )
+    result = _translate(sql)
+    assert isinstance(result, QueryResult)
+
+
 def test_metabase_gui_question_count_orders_corpus_20() -> None:
     """Corpus #20 — Metabase's compiled GUI question (`COUNT of orders`):
     ``SELECT COUNT(*) AS "count" FROM "public"."orders"``.  This rides on
