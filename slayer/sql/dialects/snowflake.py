@@ -246,6 +246,34 @@ class SnowflakeDialect(SqlDialect):
         use the default ``sa.create_engine(connection_string)`` path
         (snowflake-sqlalchemy understands the inline URL form natively).
         """
+        # Defence in depth: if the URL has the snowflake scheme AND a
+        # ``connection_name=`` query param BUT extra params, the strict
+        # sentinel check rejects it. Falling through to ``sa.create_engine``
+        # would then either (a) trigger a confusing snowflake-sqlalchemy
+        # parse error or (b) silently connect to the profile defaults.
+        # Raise an actionable error pointing at the typed DatasourceConfig
+        # fields instead.
+        if connection_string.startswith("snowflake://"):
+            try:
+                parsed = _sa_url.make_url(connection_string)
+            except sa.exc.ArgumentError:
+                parsed = None
+            if parsed is not None and parsed.query.get("connection_name"):
+                extras = {
+                    k for k, v in parsed.query.items()
+                    if k != "connection_name" and v
+                }
+                if extras:
+                    raise ValueError(
+                        f"Snowflake sentinel URL must contain only the "
+                        f"``connection_name`` query parameter — extra params "
+                        f"{sorted(extras)!r} would be silently dropped by the "
+                        f"snowflake-connector bridge. Set ``warehouse`` / "
+                        f"``role`` / ``database`` / ``schema_name`` on the "
+                        f"typed ``DatasourceConfig`` fields instead — those "
+                        f"fire via ``apply_session_overrides`` on every "
+                        f"pool checkout."
+                    )
         if not _is_connection_name_sentinel(connection_string):
             return None
         name = _extract_connection_name(connection_string)

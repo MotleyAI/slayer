@@ -384,6 +384,25 @@ def test_is_connection_name_sentinel_rejects_non_sentinels(url: str) -> None:
     assert _is_connection_name_sentinel(url) is False
 
 
+@pytest.mark.parametrize("url", [
+    "snowflake://?connection_name=prod&warehouse=WH",
+    "snowflake://?warehouse=WH&connection_name=prod",
+    "snowflake://?connection_name=prod&role=ADMIN&database=DB",
+])
+def test_build_engine_rejects_sentinel_with_extra_params(url: str) -> None:
+    """A URL with ``connection_name=`` plus extra query params is malformed
+    — ``build_engine`` would otherwise return ``None`` (because
+    ``_is_connection_name_sentinel`` strictly rejects extras) and the
+    engine_factory would silently fall back to plain
+    ``sa.create_engine(URL)``, ignoring the user's session-override
+    intent. Raise an actionable error pointing at the typed
+    ``DatasourceConfig`` fields instead.
+    """
+    ds = DatasourceConfig(name="sf", type="snowflake", connection_string=url)
+    with pytest.raises(ValueError, match=r"(?i)sentinel.*only.*connection_name"):
+        SnowflakeDialect().build_engine(ds, connection_string=url)
+
+
 def test_apply_session_overrides_closes_cursor_on_failure() -> None:
     """If a USE statement fails (e.g. role doesn't exist), the cursor
     must still be closed."""
