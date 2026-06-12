@@ -769,3 +769,93 @@ async def test_execute_with_max_rows_returns_all_rows_no_suspend() -> None:
     # All rows returned despite max_rows=1; no PortalSuspended ('s').
     assert type_seq.count("D") == 2
     assert "s" not in type_seq
+
+
+# --- DEV-1558: catalog SQL via the DuckDB executor over the extended protocol
+
+
+def _parse_row_description(body: bytes):
+    """Decode a RowDescription frame body into a list of (name, oid, format_code)."""
+    out = []
+    count = struct.unpack_from(">h", body, 0)[0]
+    i = 2
+    for _ in range(count):
+        end = body.index(b"\x00", i)
+        name = body[i:end].decode("utf-8")
+        i = end + 1
+        # tableoid(4) + colno(2) + typoid(4) + typsize(2) + typmod(4) + format(2)
+        _table_oid = struct.unpack_from(">i", body, i)[0]; i += 4
+        _col_no = struct.unpack_from(">h", body, i)[0]; i += 2
+        type_oid = struct.unpack_from(">i", body, i)[0]; i += 4
+        _typsize = struct.unpack_from(">h", body, i)[0]; i += 2
+        _typmod = struct.unpack_from(">i", body, i)[0]; i += 4
+        format_code = struct.unpack_from(">h", body, i)[0]; i += 2
+        out.append((name, type_oid, format_code))
+    return out
+
+
+async def test_extended_protocol_catalog_query_text_format() -> None:
+    """A pgjdbc-style getSchemas query over the extended protocol returns
+    a RowDescription carrying the quoted aliases (case preserved) and
+    text-encoded DataRows, all routed through the DuckDB catalog executor."""
+    sql = (
+        'SELECT nspname AS "TABLE_SCHEM", current_database() AS "TABLE_CATALOG" '
+        "FROM pg_catalog.pg_namespace "
+        'ORDER BY "TABLE_SCHEM"'
+    )
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _describe("S", "")
+        + _bind("", "", result_formats=(proto.FORMAT_TEXT,))
+        + _execute("")
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    type_seq = _types(msgs)
+    assert "T" in type_seq  # RowDescription
+    assert "D" in type_seq  # at least one DataRow
+    assert "E" not in type_seq
+
+    rd = next(body for t, body in msgs if t == "T")
+    fields = _parse_row_description(rd)
+    names = [n for n, _oid, _fmt in fields]
+    assert names == ["TABLE_SCHEM", "TABLE_CATALOG"]
+    # All OIDs are within the 6 the facade knows how to encode.
+    allowed_oids = {proto.OID_BOOL, proto.OID_INT8, proto.OID_TEXT,
+                    proto.OID_FLOAT8, proto.OID_DATE, proto.OID_TIMESTAMP}
+    for _name, oid, _fmt in fields:
+        assert oid in allowed_oids
+    # Format-code is text.
+    assert all(fmt == proto.FORMAT_TEXT for _n, _o, fmt in fields)
+
+
+async def test_extended_protocol_catalog_query_binary_format() -> None:
+    """Same query, but binary result format. Verifies that the catalog
+    executor's results encode via the binary path of _encode_value."""
+    sql = (
+        'SELECT nspname AS "TABLE_SCHEM" FROM pg_catalog.pg_namespace '
+        'ORDER BY "TABLE_SCHEM"'
+    )
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _describe("S", "")
+        + _bind("", "", result_formats=(proto.FORMAT_BINARY,))
+        + _execute("")
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    type_seq = _types(msgs)
+    assert "T" in type_seq
+    assert "D" in type_seq
+    assert "E" not in type_seq
+
+    rd = next(body for t, body in msgs if t == "T")
+    fields = _parse_row_description(rd)
+    assert fields[0][0] == "TABLE_SCHEM"
+    assert fields[0][2] == proto.FORMAT_BINARY  # format code propagated
