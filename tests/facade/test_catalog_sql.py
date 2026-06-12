@@ -547,24 +547,23 @@ def test_current_schemas_true_indexed_rewrites_to_public() -> None:
     assert batch.rows == [{"first_schema": "public"}]
 
 
-def test_current_schemas_non_first_index_does_not_collapse_to_public() -> None:
-    # CR review: ``current_schemas(true)[2]`` must NOT collapse to
-    # 'public'; only the literal first index represents the advertised
-    # facade schema. Inspect the rewritten AST directly so the test
-    # doesn't depend on DuckDB's evaluation of the non-collapsed call.
-    from slayer.facade.catalog_sql import _AstRewriter
-    rewriter = _AstRewriter(datasource="jaffle", regclass_map={})
-    parsed = _parse("SELECT (current_schemas(true))[2] AS s")
-    rewritten = rewriter.rewrite(parsed.copy())
-    # If a literal 'public' string snuck into the rewritten AST, the
-    # collapse fired when it shouldn't have.
-    public_literals = [
-        n for n in rewritten.find_all(sqlglot.exp.Literal)
-        if n.is_string and str(n.this) == "public"
-    ]
-    assert not public_literals, (
-        "current_schemas(...)[N] with N != 1 must not collapse to 'public'"
-    )
+def test_current_schemas_bare_returns_single_element_list() -> None:
+    """CR/Codex review: the bare ``current_schemas(...)`` call (no
+    bracket index) must return ``['public']`` — the only schema the
+    facade advertises. Without this rewrite DuckDB would emit its
+    internal schema list."""
+    batch = _run("SELECT current_schemas(true) AS s")
+    assert batch.rows == [{"s": ["public"]}]
+
+
+def test_current_schemas_non_first_index_returns_null() -> None:
+    """CR review: ``current_schemas(true)[2]`` must NOT collapse to
+    'public' — the indexed-rewrite only fires for ``[1]``. The bare
+    ``current_schemas(...)`` rewrite leaves the call as
+    ``LIST_VALUE('public')`` (a single-element list); indexing with
+    ``[2]`` then returns NULL (out of bounds) under DuckDB."""
+    batch = _run("SELECT (current_schemas(true))[2] AS s")
+    assert batch.rows == [{"s": None}]
 
 
 def test_information_schema_catalog_name_is_datasource() -> None:

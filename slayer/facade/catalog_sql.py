@@ -944,6 +944,7 @@ class _AstRewriter:
         # so subsequent passes see the canonical bare names.
         parsed = parsed.transform(self._strip_schema_qualifiers)
         parsed = parsed.transform(self._rewrite_current_schemas_indexed)
+        parsed = parsed.transform(self._rewrite_current_schemas_bare)
         parsed = parsed.transform(self._rewrite_pg_format_quoted_ident)
         parsed = parsed.transform(self._rewrite_regclass_casts)
         parsed = parsed.transform(self._rewrite_regproc_regtype_casts)
@@ -1013,20 +1014,52 @@ class _AstRewriter:
     # ----- 2. current_schemas(...)[1] → 'public' ----------------------------
 
     @staticmethod
+    def _rewrite_current_schemas_bare(node: exp.Expression) -> exp.Expression:
+        """Rewrite a bare ``current_schemas(...)`` call (no bracket index)
+        to ``['public']`` — the facade only advertises one schema, so
+        the unindexed call must return the single-element list rather
+        than fall through to DuckDB's internal schema list (CR/Codex
+        review). Handles bare and ``pg_catalog.current_schemas(...)``
+        qualified forms; the indexed form is rewritten separately by
+        ``_rewrite_current_schemas_indexed``."""
+        if _AstRewriter._is_current_schemas(node):
+            return exp.Anonymous(
+                this="list_value", expressions=[exp.Literal.string("public")],
+            )
+        return node
+
+    @staticmethod
+    def _is_current_schemas(node: exp.Expression) -> bool:
+        if isinstance(node, exp.CurrentSchemas):
+            return True
+        if _function_name_lower(node) == "current_schemas":
+            return True
+        # Qualified ``pg_catalog.current_schemas(...)`` form.
+        if isinstance(node, exp.Dot):
+            lhs = node.this
+            rhs = node.expression
+            if isinstance(lhs, exp.Identifier) and str(lhs.this).lower() == "pg_catalog":
+                if isinstance(rhs, exp.CurrentSchemas):
+                    return True
+                if _function_name_lower(rhs) == "current_schemas":
+                    return True
+        return False
+
+    @staticmethod
     def _rewrite_current_schemas_indexed(node: exp.Expression) -> exp.Expression:
         # Match Bracket(this=Paren?(CurrentSchemas|Anonymous("current_schemas")))
         # AND a single literal index ``[1]`` — other indices are not
         # safely collapsible to 'public' because the facade only advertises
         # one schema (cf. CR review feedback). sqlglot normalises 1-based
         # SQL array indices to 0-based internally, so user-level ``[1]``
-        # arrives as ``Literal(0)``.
+        # arrives as ``Literal(0)``. Handles bare and
+        # ``pg_catalog.current_schemas(...)`` qualified forms.
         if not isinstance(node, exp.Bracket):
             return node
         inner = node.this
         if isinstance(inner, exp.Paren):
             inner = inner.this
-        if not (isinstance(inner, exp.CurrentSchemas)
-                or _function_name_lower(inner) == "current_schemas"):
+        if not _AstRewriter._is_current_schemas(inner):
             return node
         indices = node.args.get("expressions") or []
         if len(indices) != 1:
