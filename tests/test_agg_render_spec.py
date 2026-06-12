@@ -401,7 +401,7 @@ class TestBuilderColumnKey:
             column_filter_key=SqlExprKey(canonical_sql="status = 'active'"),
         )
         slot = _slot(
-            key,
+            key=key,
             declared_name="active_revenue_sum",
             public_name="active_revenue_sum",
             slot_type=DataType.DOUBLE,

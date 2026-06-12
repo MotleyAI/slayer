@@ -212,7 +212,7 @@ async def _generate(
     resolvers; the typed engine resolves joins for real).
     """
     return await _engine_generate(
-        query, model, dialect=generator.dialect, validate=False,
+        query=query, model=model, dialect=generator.dialect, validate=False,
         extra_models=extra_models,
     )
 
@@ -2161,7 +2161,12 @@ class TestMultiDialectGeneration:
             ),
             model,
         )
-        assert "CAST(" not in sql.upper(), sql
+        # The time-dim column itself must not be CAST-wrapped — its live
+        # DB type is already known. A measure-level CAST elsewhere (e.g.
+        # the DEV-1361 ``CAST(COUNT(*) AS INT)`` on ``*:count``) is fine;
+        # the test pins the time-dim handling only.
+        assert "CAST(ORDERS.CREATED_AT" not in sql.upper(), sql
+        assert "CAST(CREATED_AT" not in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
     async def test_calendar_time_shift(self, dialect: str, orders_model: SlayerModel) -> None:
@@ -4126,7 +4131,7 @@ class TestFilteredMeasures:
             measures=[ModelMeasure(formula="active_balance:last")],
         )
         return await _engine_generate(
-            query, orders, dialect=generator.dialect,
+            query=query, model=orders, dialect=generator.dialect,
             extra_models=[customers], validate=False,
         )
 
@@ -7437,8 +7442,8 @@ class TestIsolatedFilteredMeasureCTEs:
         """Run ``query`` against ``claim_amount_model`` (with the related join
         targets registered) through the typed engine and return emitted SQL."""
         return await _engine_generate(
-            query,
-            claim_amount_model,
+            query=query,
+            model=claim_amount_model,
             extra_models=list(related_models.values()),
             validate=False,
         )
@@ -8890,7 +8895,7 @@ class TestIsolatedFilteredMeasureCTEs:
             dimensions=[ColumnRef(name="id")],
         )
         sql = await _engine_generate(
-            query, host_via_subquery,
+            query=query, model=host_via_subquery,
             extra_models=[loss_payment, backing_raw],
             validate=False,
         )

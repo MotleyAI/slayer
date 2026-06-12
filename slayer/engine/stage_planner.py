@@ -311,6 +311,14 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # appended directly to ``filters_by_phase`` between the two
     # bound-filter buckets.
     bound_filters: List[BoundFilter] = []
+    # Parallel to bound_filters — original query-filter text for user
+    # filters (None for date_range bounds, which are synthesized from
+    # TimeDimension.date_range and have no caller-visible source string).
+    # Wired into HostFilterRouting.text below so cross_model_planner can
+    # recover ROW-phase user-filter text WITHOUT slicing host_query.filters
+    # (which has not been deduped, unlike bound_filters) — CR PR #153
+    # thread r3350000254.
+    bound_filter_texts: List[Optional[str]] = []
     text_filter_entries: List[FilterPhase] = []
 
     # 1. date_range filters (one per TD with a 2-element date_range)
@@ -321,6 +329,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             continue
         bf = _build_date_range_filter(td=td, scope=scope, bundle=bundle)
         bound_filters.append(bf)
+        bound_filter_texts.append(None)
     n_date_range = len(bound_filters)
 
     # 2. SlayerModel.filters — Mode-A SQL, always-applied WHERE.
@@ -350,6 +359,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         if any(existing.value_key == bf.value_key for existing in bound_filters):
             continue
         bound_filters.append(bf)
+        bound_filter_texts.append(f)
 
     order_specs = []
     for o in (query.order or []):
@@ -583,14 +593,16 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # are always row-phase host-local WHERE and never need to be routed
     # to a cross-model CTE — they're skipped here.
     host_filter_routings: List[HostFilterRouting] = []
-    for fid, bf in zip(bound_filter_ids, bound_filters):
+    for fid, bf, ftext in zip(
+        bound_filter_ids, bound_filters, bound_filter_texts,
+    ):
         host_filter_routings.append(HostFilterRouting(
             filter_id=fid,
             phase=bf.phase,
             referenced_slot_ids=sorted(filter_referenced_slot_ids(
                 bf, projection.registry,
             )),
-            text=None,
+            text=ftext,
         ))
 
     cross_model_plans = []

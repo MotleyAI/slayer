@@ -39,7 +39,7 @@ def _orders_model() -> SlayerModel:
 
 
 async def _generate(query: SlayerQuery, model: SlayerModel) -> str:
-    return await _engine_generate(query, model)
+    return await _engine_generate(query=query, model=model)
 
 
 class TestFilterRenamedMeasureRemap:

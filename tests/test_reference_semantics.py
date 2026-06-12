@@ -167,7 +167,7 @@ class TestSqlModeRuntime:
         # Bug under DEV-1378: this raised "Unknown filter function
         # 'json_extract'" at enrichment time. Post-fix, it renders — the
         # Mode A model filter survives into the emitted WHERE clause.
-        sql = await _engine_generate(query, model)
+        sql = await _engine_generate(query=query, model=model)
         assert "json_extract" in _where_text(sql).lower(), (
             f"model filter dropped from WHERE clause:\n{sql}"
         )
@@ -192,7 +192,7 @@ class TestSqlModeRuntime:
             source_model="m",
             measures=[ModelMeasure(formula="active_amount:sum")],
         )
-        sql = await _engine_generate(query, model)
+        sql = await _engine_generate(query=query, model=model)
         # The Column.filter goes onto the measure as a CASE WHEN wrapper
         # inside the aggregate — the lowercase ``lower(...)`` predicate must
         # appear within the SUM expression.
@@ -220,7 +220,7 @@ class TestSqlModeRuntime:
         # No real join target on this minimal fixture, so the join
         # walker resolves nothing — we just need the filter parse to
         # not raise and the ``__``-path to survive into the emitted SQL.
-        sql = await _engine_generate(query, model)
+        sql = await _engine_generate(query=query, model=model)
         assert "customers__regions.name" in sql, (
             f"__-delimited join path dropped from emitted SQL:\n{sql}"
         )
@@ -375,7 +375,7 @@ class TestDslModeRejection:
             filters=["json_extract(data, '$.x') > 5"],
         )
         with pytest.raises(Exception, match="(?i)function|json_extract|raw SQL|unknown|transform"):
-            await _engine_generate(query, model)
+            await _engine_generate(query=query, model=model)
 
     async def test_query_filter_rejects_unknown_double_underscore_at_enrichment(self) -> None:
         """``customers__region`` is a typo (no virtual column with that name on
@@ -395,7 +395,7 @@ class TestDslModeRejection:
             filters=["customers__region = 'EU'"],
         )
         with pytest.raises(Exception, match="(?i)customers__region|unknown|not a Column"):
-            await _engine_generate(query, model)
+            await _engine_generate(query=query, model=model)
 
     def test_query_filter_rejects_raw_over(self) -> None:
         with pytest.raises(ValueError, match="(?i)window function|OVER"):
@@ -422,7 +422,7 @@ class TestDslModeRejection:
             dimensions=["id"],
         )
         with pytest.raises(Exception, match="(?i)function|json_extract|raw SQL|unknown|transform"):
-            await _engine_generate(query, model)
+            await _engine_generate(query=query, model=model)
 
 
 # ---------------------------------------------------------------------------
@@ -448,7 +448,7 @@ class TestStrictResolution:
             filters=["unknown_col > 0"],
         )
         with pytest.raises(Exception, match="(?i)unknown_col|not.*column.*measure|undefined|unknown"):
-            await _engine_generate(query, model)
+            await _engine_generate(query=query, model=model)
 
     async def test_unknown_canonical_agg_shaped_typo_raises_at_enrichment(self) -> None:
         """Regression for round-2 review: a name that *looks* like a canonical
@@ -469,7 +469,7 @@ class TestStrictResolution:
                 filters=[f"{typo} > 0"],
             )
             with pytest.raises(Exception, match=f"(?i){typo}|unknown|not a Column"):
-                await _engine_generate(query, model)
+                await _engine_generate(query=query, model=model)
 
     async def test_filter_referencing_unjoined_model_raises(self) -> None:
         """DEV-1367: a filter like ``transportation_assets.total_vehicles >= 3``
@@ -497,7 +497,7 @@ class TestStrictResolution:
             ValueError,
             match=r"no join to 'transportation_assets'|Cannot resolve reference 'transportation_assets",
         ):
-            await _engine_generate(query, households)
+            await _engine_generate(query=query, model=households)
 
     # NOTE (DEV-1484 Stage C): the two former lenient-drop tests
     # (``test_filter_referencing_unjoined_model_dropped_when_lenient`` and
@@ -525,7 +525,7 @@ class TestStrictResolution:
             filters=["status = 'active'"],
         )
         # Should not raise.
-        await _engine_generate(query, model)
+        await _engine_generate(query=query, model=model)
 
 
 # ---------------------------------------------------------------------------
@@ -547,7 +547,7 @@ class TestPredicatePromotionRemoved:
             filters=["rn <= 3"],
         )
         with pytest.raises(Exception) as excinfo:
-            await _engine_generate(query, model)
+            await _engine_generate(query=query, model=model)
         msg = str(excinfo.value).lower()
         assert "window function" in msg or "rank" in msg, (
             f"Expected message to mention 'window function' and/or 'rank' "
@@ -563,7 +563,7 @@ class TestPredicatePromotionRemoved:
             dimensions=["name", "rn"],
         )
         # Should render without error; only filter use is restricted.
-        await _engine_generate(query, model)
+        await _engine_generate(query=query, model=model)
 
 
 # ---------------------------------------------------------------------------

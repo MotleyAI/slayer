@@ -3538,14 +3538,17 @@ async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
     )
     # Per-group last(created_at) is tied at 50 across A and B; the
     # secondary ORDER BY last(updated_at) ASC must break the tie with
-    # A (10) before B (99).
+    # B (10) before A (99). The expected order intentionally CONTRADICTS
+    # natural alphabetical status ordering so a silently-dropped secondary
+    # ORDER BY would surface as a test failure (CR PR #153 thread
+    # r3350000263).
     rows = [
-        # Status A: last(created_at)=50, last(updated_at)=10.
+        # Status A: last(created_at)=50, last(updated_at)=99.
         (1, "A", 50.0, "2025-03-01", "2025-01-01"),
-        (2, "A", 10.0, "2025-02-01", "2025-04-01"),
-        # Status B: last(created_at)=50 (tied), last(updated_at)=99.
+        (2, "A", 99.0, "2025-02-01", "2025-04-01"),
+        # Status B: last(created_at)=50 (tied), last(updated_at)=10.
         (3, "B", 50.0, "2025-03-01", "2025-02-01"),
-        (4, "B", 99.0, "2025-01-15", "2025-04-01"),
+        (4, "B", 10.0, "2025-01-15", "2025-04-01"),
     ]
     cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", rows)
     conn.commit()
@@ -3587,11 +3590,12 @@ async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
     assert set(response.columns) == {"orders.status", "orders._count"}, (
         f"Hidden last() aliases leaked: {response.columns!r}"
     )
-    # Two rows, both count 2; A before B because primary lc is tied (50)
-    # and secondary lu ASC puts A (lu=10) before B (lu=99).
+    # Two rows, both count 2; B before A because primary lc is tied (50)
+    # and secondary lu ASC puts B (lu=10) before A (lu=99). Expected order
+    # contradicts natural alphabetical so any drop of the secondary key fails.
     assert len(response.data) == 2, response.data
-    assert response.data[0]["orders.status"] == "A", response.data
-    assert response.data[1]["orders.status"] == "B", response.data
+    assert response.data[0]["orders.status"] == "B", response.data
+    assert response.data[1]["orders.status"] == "A", response.data
     assert response.data[0]["orders._count"] == 2, response.data
     assert response.data[1]["orders._count"] == 2, response.data
 

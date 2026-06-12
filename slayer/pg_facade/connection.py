@@ -18,7 +18,7 @@ import asyncio
 import logging
 import re
 import struct
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import sqlglot
 import sqlglot.errors
@@ -58,6 +58,103 @@ logger = logging.getLogger(__name__)
 _BACKEND_PID = 1
 _BACKEND_SECRET = 0
 _PARAM_PLACEHOLDER = re.compile(r"\$(\d+)")
+
+
+def _iter_param_placeholders(sql: str) -> Iterator[Tuple[int, int, int]]:
+    """Yield ``(param_index, start, end)`` for every ``$N`` placeholder in
+    ``sql`` that is **not** inside a string literal, quoted identifier,
+    dollar-quoted string, or line/block comment.
+
+    Mirrors Postgres' tokenizer well enough for standard-shape SQL coming
+    from libpq / asyncpg / psql / JDBC clients. Closes the regex-only path
+    that rewrote ``$N`` tokens inside literals and comments (Codex review on
+    PR #153: a query like ``WHERE note = '$1' AND status = $1`` would have
+    BOTH ``$1`` occurrences substituted, corrupting the literal).
+    """
+    i = 0
+    n = len(sql)
+    while i < n:
+        c = sql[i]
+        # Line comment: -- ... newline (or EOF).
+        if c == "-" and i + 1 < n and sql[i + 1] == "-":
+            nl = sql.find("\n", i + 2)
+            i = n if nl < 0 else nl + 1
+            continue
+        # Block comment: /* ... */ — Postgres allows nesting.
+        if c == "/" and i + 1 < n and sql[i + 1] == "*":
+            depth = 1
+            i += 2
+            while i < n and depth > 0:
+                if sql[i] == "/" and i + 1 < n and sql[i + 1] == "*":
+                    depth += 1
+                    i += 2
+                elif sql[i] == "*" and i + 1 < n and sql[i + 1] == "/":
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+            continue
+        # E'...' or e'...' — escape string (backslash + doubled-quote).
+        if c in ("E", "e") and i + 1 < n and sql[i + 1] == "'":
+            i += 2  # skip prefix and opening quote
+            while i < n:
+                if sql[i] == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if sql[i] == "'":
+                    if i + 1 < n and sql[i + 1] == "'":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        # Standard single-quoted string (only '' escape, no backslash).
+        if c == "'":
+            i += 1
+            while i < n:
+                if sql[i] == "'":
+                    if i + 1 < n and sql[i + 1] == "'":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        # Double-quoted identifier ("foo", "" escape).
+        if c == '"':
+            i += 1
+            while i < n:
+                if sql[i] == '"':
+                    if i + 1 < n and sql[i + 1] == '"':
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        # $tag$ ... $tag$ dollar-quoted string, OR $N placeholder.
+        if c == "$":
+            # Postgres requires a word-boundary before a dollar-quote opener;
+            # without it (e.g. ``x$1``), this is a placeholder, not a tag.
+            prev = sql[i - 1] if i > 0 else ""
+            at_word_boundary = not (prev.isalnum() or prev == "_")
+            if at_word_boundary:
+                j = i + 1
+                while j < n and (sql[j].isalnum() or sql[j] == "_"):
+                    j += 1
+                if j < n and sql[j] == "$":
+                    tag = sql[i : j + 1]
+                    end = sql.find(tag, j + 1)
+                    i = n if end < 0 else end + len(tag)
+                    continue
+            # Try $N placeholder.
+            m = _PARAM_PLACEHOLDER.match(sql, i)
+            if m:
+                yield int(m.group(1)), m.start(), m.end()
+                i = m.end()
+                continue
+        i += 1
 # The single schema the facade advertises (matches pg_namespace / current_schema).
 PUBLIC_SCHEMA = "public"
 
@@ -413,13 +510,19 @@ class PgConnection:
             )
             literals.append(literal_for_substitution(value))
 
-        def repl(match: "re.Match[str]") -> str:
-            idx = int(match.group(1))
+        # Walk placeholders in lexical order, skipping ones inside string
+        # literals / quoted identifiers / dollar-quoted strings / comments.
+        parts: List[str] = []
+        last = 0
+        for idx, start, end in _iter_param_placeholders(stmt.sql):
+            parts.append(stmt.sql[last:start])
             if 1 <= idx <= len(literals):
-                return literals[idx - 1]
-            return match.group(0)
-
-        return _PARAM_PLACEHOLDER.sub(repl, stmt.sql)
+                parts.append(literals[idx - 1])
+            else:
+                parts.append(stmt.sql[start:end])
+            last = end
+        parts.append(stmt.sql[last:])
+        return "".join(parts)
 
     async def _handle_describe(self, msg: proto.DescribeMessage) -> None:
         if msg.kind == "S":
@@ -675,7 +778,7 @@ def _resolve_param_oids(stmt: _PreparedStatement) -> List[int]:
     """
     declared = stmt.parameter_oids
     max_idx = max(
-        (int(m.group(1)) for m in _PARAM_PLACEHOLDER.finditer(stmt.sql)),
+        (idx for idx, _, _ in _iter_param_placeholders(stmt.sql)),
         default=0,
     )
     count = max(len(declared), max_idx)

@@ -25,6 +25,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
+    Aggregation,
     Column,
     DatasourceConfig,
     ModelJoin,
@@ -450,8 +451,6 @@ class TestCascadeRules:
         measure away. The cascade now walks the reachable join graph for
         custom aggregation names instead of using the model's own aggs only.
         """
-        from slayer.core.models import Aggregation
-
         orders = _orders_model(
             joins=[
                 ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),

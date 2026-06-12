@@ -16,6 +16,8 @@ occurrences, so the ValueRegistry interns it once and downstream
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
@@ -94,7 +96,7 @@ class TestDesugarChangePct:
         assert isinstance(shifted, TransformKey)
         assert shifted.op == "time_shift"
         assert shifted.input == _amount_sum()
-        assert zero == 0
+        assert zero == Decimal(0)
         # The guarded divisor's time_shift is the SAME instance the numerator
         # subtracts (identity preserved → one CTE).
         assert numerator.operands[1] is shifted

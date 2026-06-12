@@ -56,8 +56,9 @@ from slayer.engine.source_bundle import ResolvedSourceBundle
 # re-parse for emission still happens on the generator side.
 _PLANNER_PARSE_DIALECT_CHAIN: Tuple[Optional[str], ...] = (
     "postgres",
-    None,        # sqlglot's permissive default — accepts ANSI SQL broadly
+    None,         # sqlglot's permissive default — accepts ANSI SQL broadly
     "mysql",
+    "clickhouse", # ClickHouse-only constructs (countIf, distinct identifier escapes) — CR PR #153 r3350000228
     "bigquery",
     "tsql",
 )

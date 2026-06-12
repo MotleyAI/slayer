@@ -6,17 +6,13 @@ whitelist. Today the cross-model path checks only ``NUMERIC_ONLY_AGGREGATIONS``
 against string columns, silently passing PK/type/whitelist violations through.
 """
 
-import tempfile
-
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import Aggregation, Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._engine_helpers import _assert_valid_sql
+from tests._engine_helpers import _engine_generate
 
 
 def _orders_model() -> SlayerModel:
@@ -55,21 +51,14 @@ async def _generate_sql(
     customers: SlayerModel,
     measures: list,
 ) -> str:
-    """Run the typed engine pipeline and return the SQL string."""
-    with tempfile.TemporaryDirectory() as tmp:
-        storage = YAMLStorage(base_dir=tmp)
-        await storage.save_datasource(
-            DatasourceConfig(name=orders.data_source, type="postgres")
-        )
-        await storage.save_model(orders)
-        await storage.save_model(customers)
-        engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery(source_model="orders", measures=measures)
-        response = await engine.execute(query, dry_run=True)
-        sql = response.sql
-        assert sql is not None, "engine.execute(dry_run=True) returned no SQL"
-        _assert_valid_sql(sql, dialect="postgres")
-        return sql
+    """Run the typed engine pipeline through the shared ``_engine_generate``
+    helper and return the SQL string. Mirrors the original local helper but
+    reuses the centralised storage/datasource/dry-run/assert-valid pipeline
+    (CodeRabbit PR #153 nitpick on this file)."""
+    query = SlayerQuery(source_model=orders.name, measures=measures)
+    return await _engine_generate(
+        query=query, model=orders, extra_models=[customers],
+    )
 
 
 class TestCrossModelGating:

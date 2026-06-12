@@ -48,7 +48,7 @@ _VALUE_ERROR_BINDING_ERRORS = [
 ]
 
 
-@pytest.mark.parametrize("cls", _VALUE_ERROR_BINDING_ERRORS)
+@pytest.mark.parametrize(argnames="cls", argvalues=_VALUE_ERROR_BINDING_ERRORS)
 def test_binding_error_is_value_error(cls: type) -> None:
     assert issubclass(cls, ValueError), (
         f"{cls.__name__} must subclass ValueError so the REST 'ValueError -> 400' "
@@ -56,6 +56,6 @@ def test_binding_error_is_value_error(cls: type) -> None:
     )
 
 
-@pytest.mark.parametrize("cls", _VALUE_ERROR_BINDING_ERRORS)
+@pytest.mark.parametrize(argnames="cls", argvalues=_VALUE_ERROR_BINDING_ERRORS)
 def test_binding_error_is_slayer_error(cls: type) -> None:
     assert issubclass(cls, SlayerError)

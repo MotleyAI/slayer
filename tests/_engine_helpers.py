@@ -55,9 +55,9 @@ def _assert_valid_sql(sql: str, dialect: str = "postgres") -> None:
 
 
 async def _engine_generate(
+    *,
     query: SlayerQuery,
     model: SlayerModel,
-    *,
     dialect: str = "postgres",
     extra_models: Optional[list] = None,
     validate: bool = True,

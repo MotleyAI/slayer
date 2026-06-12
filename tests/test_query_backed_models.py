@@ -50,9 +50,9 @@ async def _engine_with_orders(*extra_models: SlayerModel) -> tuple:
 
 
 async def _expand_stage_as_model(
+    *,
     engine: SlayerQueryEngine,
     stage: SlayerQuery,
-    *,
     name: str,
     data_source: str = "ds",
 ) -> SlayerModel:
@@ -1467,7 +1467,7 @@ class TestMultiStageMeasureRename:
                 dimensions=["region"],
                 measures=[{"formula": "amount:sum"}],  # no name
             )
-            virtual = await _expand_stage_as_model(engine, stage, name="qb_default")
+            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_default")
             col_names = [c.name for c in virtual.columns]
             assert "amount_sum" in col_names, (
                 f"unnamed measure must keep canonical 'amount_sum', got: {col_names}"
@@ -1486,7 +1486,7 @@ class TestMultiStageMeasureRename:
                 dimensions=["region"],
                 measures=[{"formula": "amount:sum", "name": "amount_sum"}],
             )
-            virtual = await _expand_stage_as_model(engine, stage, name="qb_collide")
+            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_collide")
             col_names = [c.name for c in virtual.columns]
             assert col_names.count("amount_sum") == 1, (
                 f"name=canonical must not duplicate the column, got: {col_names}"
@@ -1506,7 +1506,7 @@ class TestMultiStageMeasureRename:
                 dimensions=["region"],
                 measures=[{"formula": "amount:sum", "name": "rev"}],
             )
-            virtual = await _expand_stage_as_model(engine, stage, name="qb_alias")
+            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_alias")
             col_names = [c.name for c in virtual.columns]
             assert "rev" in col_names, (
                 f"user-supplied 'name' must surface as a virtual column, got: {col_names}"

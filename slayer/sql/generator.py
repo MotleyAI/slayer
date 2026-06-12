@@ -7189,7 +7189,7 @@ class SQLGenerator:
             f"window-transform slice scope.",
         )
 
-    def _render_post_phase_filter_conditions(
+    def _render_post_phase_filter_conditions(  # NOSONAR(S3776) — one cohesive walk of every POST-phase filter producing the outer-WHERE conditions: per-filter slot-id lookup, expr rebuild (Compare / BoolOp / UnaryOp / scalar wraps), alias resolution. Splitting hides the shared registry / alias-map state both wrap-CTE and outer-WHERE emission depend on.
         self,
         *,
         planned_query,

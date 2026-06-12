@@ -659,7 +659,7 @@ def _preprocess_colons(
     return _COLON_AGG_RE.sub(_replace, text), agg_map
 
 
-def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:
+def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:  # NOSONAR(S3776) — one-pass dispatch over ast node kinds (Constant/Name/Compare/BinOp/UnaryOp/BoolOp/Call/Attribute…) producing typed ParsedExpr; the branches are flat and short, and splitting hides the exhaustive ast-kind coverage one read scans for. Surfaces ParsedExpr.kind contract directly.
     if isinstance(node, ast.Constant):
         return _convert_constant(node, original=original)
 

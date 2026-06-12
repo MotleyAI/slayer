@@ -491,7 +491,6 @@ def _build_filtered_local_cte_schema(
 
 def _classify_subplan_filters(
     *,
-    host_query: SlayerQuery,
     host_filters: List[HostFilterRouting],
 ) -> Optional[List[str]]:
     """Decide which host-query filters propagate into the DEV-1503 sub-plan.
@@ -507,24 +506,25 @@ def _classify_subplan_filters(
     actually dropped (DEV-1503 spec).
     POST: skip — stays at the existing host post-transform wrapper.
 
-    ``host_filters`` is assembled by ``stage_planner`` as
-    ``[date_range_routings..., user_filter_routings...]`` (in order), so the
-    user portion is the trailing slice; do NOT look up by ``f"f{i}"``
-    against ``host_query.filters[i]`` — when a ``date_range``-bearing
-    time_dimension is present the index is off by ``n_date_range`` and
-    aggregate-phase user filters get classified against a leading
-    date_range routing (Codex review).
+    Consume ``routing.text`` directly — it carries the original user-filter
+    string for user-filter routings (None for date_range bounds) and is
+    populated by ``stage_planner`` from the deduped ``bound_filters`` list,
+    so it stays in lock-step with ``host_filters`` even after Mode-B
+    dedup-by-bound-key collapses two textually-different filter spellings
+    onto one routing (CR PR #153 thread r3350000254). Slicing
+    ``host_query.filters`` here would mis-pair phases when a ``date_range``-
+    bearing time_dimension is present (Codex review) OR when dedup drops
+    user-filter entries.
     """
-    user_query_filters = host_query.filters or []
-    if not user_query_filters:
-        return None
-    user_routings = list(host_filters[-len(user_query_filters):])
     sub_filter_texts: List[str] = []
-    for routing, filt in zip(user_routings, user_query_filters):
+    for routing in host_filters:
+        if routing.text is None:
+            # date_range bound — not a user filter, do not propagate.
+            continue
         if routing.phase in (Phase.POST, Phase.AGGREGATE):
             continue
         # ROW phase — propagate.
-        sub_filter_texts.append(filt)
+        sub_filter_texts.append(routing.text)
     return sub_filter_texts or None
 
 
@@ -790,10 +790,7 @@ class IsolatedCteCrossModelPlanner:
         # ``latest_payment_last_updated_at`` form.
         formula = _local_agg_formula(aggregate_key)
         measure_name_for_subplan = public_alias
-        sub_filters = _classify_subplan_filters(
-            host_query=host_query,
-            host_filters=host_filters,
-        )
+        sub_filters = _classify_subplan_filters(host_filters=host_filters)
         rerooted_query = SlayerQuery(
             source_model=host_model.name,
             measures=[ModelMeasure(

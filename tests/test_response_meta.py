@@ -1,7 +1,7 @@
 """DEV-1450 stage 7b.15d — response_meta.build_response_metadata.
 
 Asserts the typed-plan-derived ``attributes`` + ``expected_columns`` match
-what the legacy legacy enriched-query path produced: result keys read straight from
+what the legacy enriched-query path produced: result keys read straight from
 the rendered SQL, dimensions vs measures split by phase, measure format
 inferred (currency inheritance, count→integer), labels propagated.
 """

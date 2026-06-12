@@ -89,7 +89,7 @@ async def _generate(query: SlayerQuery, model: SlayerModel, *, dialect: str = "p
     pipeline emits the outer projection trim directly — the legacy
     ``render_mode`` parameter is gone, so callers just inspect the emitted SQL.
     """
-    return await _engine_generate(query, model, dialect=dialect)
+    return await _engine_generate(query=query, model=model, dialect=dialect)
 
 
 @pytest.fixture

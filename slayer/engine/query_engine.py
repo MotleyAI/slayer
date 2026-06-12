@@ -1583,12 +1583,18 @@ class SlayerQueryEngine:
         self, model: SlayerModel,
     ) -> Optional[frozenset[str]]:
         """Best-effort storage BFS over the join graph collecting custom
-        aggregation names (DEV-1500). Returns ``None`` when ``model`` has no
-        measures to normalise or when the walk yields nothing; absent join
-        targets and storage errors (incl. ``AmbiguousModelError``) are
-        swallowed so a save never aborts on a flaky join-target lookup.
+        aggregation names (DEV-1500). Returns ``None`` when ``model`` has
+        nothing to normalise (no top-level measures AND no source_queries)
+        or when the walk yields nothing; absent join targets and storage
+        errors (incl. ``AmbiguousModelError``) are swallowed so a save
+        never aborts on a flaky join-target lookup.
+
+        For query-backed models the walk unions the reachable custom-agg
+        names across every stage's ``source_model`` so the save-time
+        FUNC_STYLE_AGG rewrite on each stage's measures sees the full
+        joined-model agg surface (CodeRabbit PR #153 thread r3330620881).
         """
-        if not model.measures:
+        if not model.measures and not model.source_queries:
             return None
 
         storage = self.storage
@@ -1610,14 +1616,39 @@ class SlayerQueryEngine:
                 return None
             return (None, target) if target is not None else None
 
-        try:
-            return await _collect_reachable_agg_names(
-                model=model,
-                resolve_join_target=_resolver,
-                named_queries={},
-            )
-        except Exception:  # noqa: BLE001 — never let the walk abort a save
-            return None
+        async def _walk(walk_model: SlayerModel) -> frozenset[str]:
+            try:
+                got = await _collect_reachable_agg_names(
+                    model=walk_model,
+                    resolve_join_target=_resolver,
+                    named_queries={},
+                )
+            except Exception:  # noqa: BLE001 — never let the walk abort a save
+                return frozenset()
+            return got or frozenset()
+
+        collected: set[str] = set(await _walk(model))
+        for stage in model.source_queries or []:
+            src = stage.source_model
+            if isinstance(src, SlayerModel):
+                stage_model = src
+            elif isinstance(src, str):
+                try:
+                    stage_model = (
+                        await storage.get_model(src, data_source=data_source)
+                        if data_source else await storage.get_model(src)
+                    )
+                except Exception:  # noqa: BLE001 — best-effort
+                    stage_model = None
+                if stage_model is None:
+                    continue
+            else:
+                # ModelExtension or dict — too much to resolve at save time;
+                # the stage's reachable aggs are best-effort and will fall
+                # back to execute-time normalization if missed here.
+                continue
+            collected.update(await _walk(stage_model))
+        return frozenset(collected) if collected else None
 
     async def save_model(self, model: SlayerModel) -> SlayerModel:
         """Persist a SlayerModel through the engine.
@@ -1640,6 +1671,18 @@ class SlayerQueryEngine:
         norm_model = normalize_model(model, custom_agg_names=custom_aggs)
         if norm_model.model is not None:
             model = norm_model.model
+        # For query-backed models, normalize each stage's measures + filters
+        # too so funcstyle aggregations over joined-model custom aggs land in
+        # canonical form before persistence (CR PR #153 thread r3330620881 —
+        # normalize_model itself only walks model.measures, not source_queries).
+        if model.source_queries:
+            new_stages = []
+            for stage in model.source_queries:
+                stage_norm = normalize_query(
+                    stage, model=None, custom_agg_names=custom_aggs,
+                )
+                new_stages.append(stage_norm.query)
+            model = model.model_copy(update={"source_queries": new_stages})
         # Capture the *previous* data_source for this name so we can clean
         # up the old storage entry when a query-backed model's resolved
         # data_source changes (e.g. its backing query now points at a
