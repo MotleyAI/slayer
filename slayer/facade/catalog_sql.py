@@ -1282,6 +1282,23 @@ class CatalogSqlExecutor:
     def __init__(self, *, catalog: FacadeCatalog, datasource: str) -> None:
         self._datasource = datasource
         self._conn = duckdb.connect(":memory:")
+        # DEV-1558 security hardening (Codex round 9): lock down the
+        # DuckDB instance so a catalog-shaped query can't pivot through
+        # built-ins like ``read_text('/etc/hostname')`` to exfiltrate
+        # local files. ``enable_external_access=false`` is DuckDB's
+        # one-shot kill switch — it blocks all filesystem / HTTP / S3
+        # readers at bind time (BinderException). The setting cannot be
+        # re-enabled within the same connection by an authenticated
+        # client. ``lock_configuration`` (DuckDB 1.x) further prevents
+        # any later SET from re-opening the door if a future code path
+        # registers something risky.
+        self._conn.execute("SET enable_external_access = false")
+        try:
+            self._conn.execute("SET lock_configuration = true")
+        except duckdb.Error:
+            # Older DuckDB versions don't have lock_configuration;
+            # enable_external_access alone is still binding.
+            pass
         # OID lookup for the regclass UDF: maps both schema-qualified and
         # bare names to OIDs (system catalogs + user tables).
         self._regclass_map: Dict[str, int] = dict(KNOWN_SYSTEM_OIDS)

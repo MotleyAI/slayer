@@ -549,6 +549,39 @@ def test_information_schema_catalog_name_is_datasource() -> None:
     assert all(r["catalog_name"] == "jaffle" for r in dims_rows)
 
 
+@pytest.mark.parametrize("dangerous_fn", [
+    "read_text", "read_csv", "read_blob", "read_parquet",
+])
+def test_executor_blocks_filesystem_readers(dangerous_fn: str) -> None:
+    """Codex round 9 critical: an authenticated catalog query must not
+    be able to read local files via DuckDB's filesystem built-ins.
+
+    The DuckDB session is locked into
+    ``enable_external_access = false`` at construction; every FS / HTTP
+    reader raises a BinderException at bind time, which the executor
+    surfaces as a ``TranslationError``."""
+    sql = (
+        f"SELECT {dangerous_fn}('/etc/hostname') AS x "
+        "FROM pg_catalog.pg_class LIMIT 1"
+    )
+    with pytest.raises(TranslationError):
+        _run(sql)
+
+
+def test_executor_cannot_re_enable_external_access() -> None:
+    """``lock_configuration`` (where available) prevents a clever
+    catalog-shaped query from re-enabling external access mid-session
+    via ``SET enable_external_access = true``."""
+    # The executor's `_translate` rejects unsupported statements, and a
+    # bare SET would be classified as a NoOp at the translator level
+    # anyway — but route a raw `SET` through the executor's `execute`
+    # path directly to pin DuckDB's behaviour.
+    ex = _executor()
+    parsed = _parse("SET enable_external_access = true")
+    with pytest.raises(TranslationError):
+        ex.execute(parsed=parsed, sql="SET enable_external_access = true")
+
+
 def test_executor_distinguishes_duplicate_output_column_names() -> None:
     """CR/Codex review: PostgreSQL allows duplicate output column names
     (``SELECT oid AS x, relname AS x FROM pg_class``). The previous
