@@ -181,7 +181,18 @@ def _map_type_code(type_code, db_type: Optional[str] = None) -> str:
     Handles DuckDB (string type names), SQLite (Python types),
     asyncpg (Postgres OID integers), and aiomysql (MySQL field-type codes).
     When ``db_type`` is provided, the correct OID/field-type map is selected.
+
+    DEV-1551: dialect-specific cursor type-code mappings (currently only
+    Snowflake's snowflake-connector ``FieldType`` integer codes) are
+    consulted FIRST via ``SqlDialect.map_cursor_type_code``. The base
+    class returns ``None`` so other dialects fall through to the
+    Postgres-OID / MySQL-fieldtype / ODBC paths below.
     """
+    if isinstance(type_code, int) and db_type:
+        from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
+        dialect_category = dialect_for_ds_type(db_type).map_cursor_type_code(type_code)
+        if dialect_category is not None:
+            return dialect_category
     if isinstance(type_code, str):
         # DuckDB returns type name strings like 'INTEGER', 'VARCHAR', etc.
         tc = type_code.upper()
@@ -210,6 +221,14 @@ def _map_type_code(type_code, db_type: Optional[str] = None) -> str:
             return _MYSQL_TYPE_MAP.get(type_code, "string")
         if db_type and any(t in db_type.lower() for t in ("mssql", "sqlserver", "tsql")):
             return _ODBC_SQL_TYPE_MAP.get(type_code, "string")
+        # DEV-1551: Snowflake had its first crack at the integer code via
+        # ``SqlDialect.map_cursor_type_code`` above. If we land here with
+        # ``db_type='snowflake'`` it means the code wasn't recognised by
+        # ``_SNOWFLAKE_TYPE_MAP``; default to ``"string"`` rather than
+        # mis-classifying it through ``_PG_OID_MAP`` (Postgres OID 16 is
+        # ``boolean`` but undefined on Snowflake).
+        if db_type and "snowflake" in db_type.lower():
+            return "string"
         return _PG_OID_MAP.get(type_code, "string")
     return "string"
 
@@ -366,6 +385,39 @@ def _build_type_probe_sql(sql: str, db_type: Optional[str]) -> str:
     return f"SELECT * FROM ({sql}) AS _types LIMIT {limit}"
 
 
+def _apply_type_probe_timeout(conn, db_type: Optional[str], timeout_seconds: int) -> None:
+    """DEV-1551: apply the dialect's statement-timeout SQL ahead of a
+    type-probe execution. Snowflake's ``LIMIT 0`` still compiles and
+    consumes warehouse compute, so an unbounded probe can stall on a
+    suspended warehouse or a runaway plan compilation. Only fires for
+    dialects whose ``SqlDialect.statement_timeout_sql`` returns non-None
+    — base no-op for postgres/mysql/clickhouse (their query-path
+    timeout SET is handled inline by ``_execute_sql_sync`` and isn't
+    needed for cursor-metadata probes).
+    """
+    if not db_type:
+        return
+    from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
+    timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
+    if timeout_sql:
+        conn.execute(sa.text(timeout_sql))
+
+
+async def _apply_type_probe_timeout_async(conn, db_type: Optional[str], timeout_seconds: int) -> None:
+    """Async sibling of ``_apply_type_probe_timeout``."""
+    if not db_type:
+        return
+    from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
+    timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
+    if timeout_sql:
+        await conn.execute(sa.text(timeout_sql))
+
+
+# Default timeout for type probes. Type-probe statements only compile
+# (LIMIT 0 / LIMIT 1); 60s is generous for any reasonable query.
+_TYPE_PROBE_TIMEOUT_SECONDS = 60
+
+
 def _get_column_types_sync(
     sql: str,
     connection_string: str,
@@ -377,6 +429,7 @@ def _get_column_types_sync(
     engine = _resolve_sync_engine(connection_string, override_engine=engine)
     limit_sql = _build_type_probe_sql(sql, db_type)
     with engine.connect() as conn:
+        _apply_type_probe_timeout(conn, db_type, _TYPE_PROBE_TIMEOUT_SECONDS)
         result = conn.execute(sa.text(limit_sql))
         return _extract_types_from_cursor(result, db_type=db_type)
 
@@ -390,6 +443,7 @@ async def _get_column_types_async(
     T-SQL uses SELECT TOP N instead of LIMIT."""
     limit_sql = _build_type_probe_sql(sql, db_type)
     async with engine.connect() as conn:
+        await _apply_type_probe_timeout_async(conn, db_type, _TYPE_PROBE_TIMEOUT_SECONDS)
         result = await conn.execute(sa.text(limit_sql))
         return _extract_types_from_cursor(result, db_type=db_type)
 
@@ -422,14 +476,17 @@ class SlayerSQLClient:
         return self._async_engine
 
     def _get_sync_engine_for_client(self) -> Optional[sa.Engine]:
-        """Return a per-client sync engine for in-memory SQLite, else None.
+        """Return a per-client sync engine.
 
         For ``sqlite:///:memory:`` (and equivalent URI-form variants) every
         ``SlayerSQLClient`` instance owns its own ``StaticPool`` engine so
         the single pinned connection is shared across all sync/async paths
-        on this client — but isolated from other clients. For every other
-        connection string this returns ``None`` and the helpers fall back
-        to the module-level engine cache via ``_resolve_sync_engine``.
+        on this client — but isolated from other clients.
+
+        DEV-1551: every other case delegates to
+        ``engine_factory.get_engine(self.datasource)`` so dialect runtime
+        hooks (Snowflake's ``creator=`` bridge and per-connection USE
+        WAREHOUSE/SCHEMA listener) fire uniformly across consumers.
         """
         if self._sync_engine is not None:
             return self._sync_engine
@@ -437,7 +494,10 @@ class SlayerSQLClient:
         if _is_in_memory_sqlite(conn_str):
             self._sync_engine = _create_in_memory_sqlite_engine(conn_str)
             return self._sync_engine
-        return None
+        # Cached factory engine — dialect hooks attach listeners + creator=.
+        from slayer.sql import engine_factory  # noqa: PLC0415
+        self._sync_engine = engine_factory.get_engine(self.datasource)
+        return self._sync_engine
 
     async def execute(
         self,
@@ -627,6 +687,15 @@ async def _execute_sql_async(
                 await conn.execute(sa.text(f"SET statement_timeout = {timeout_ms}"))
             except Exception:
                 pass
+        else:
+            # Dialect-specific timeout statement (DEV-1551). The base
+            # SqlDialect returns None — only dialects with a custom
+            # statement_timeout_sql (currently SnowflakeDialect) emit a
+            # SET.
+            from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
+            timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
+            if timeout_sql:
+                await conn.execute(sa.text(timeout_sql))
         result = await conn.execute(sa.text(sql))
         columns = list(result.keys())
         return [dict(zip(columns, row)) for row in result.fetchall()]
@@ -720,6 +789,15 @@ def _execute_sql_sync(
                 conn.execute(sa.text(f"SET statement_timeout = {timeout_ms}"))
             except Exception:
                 pass
+        else:
+            # Dialect-specific timeout statement (DEV-1551). The base
+            # SqlDialect returns None — only dialects with a custom
+            # statement_timeout_sql (currently SnowflakeDialect) emit a
+            # SET.
+            from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
+            timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
+            if timeout_sql:
+                conn.execute(sa.text(timeout_sql))
         result = conn.execute(sa.text(sql))
         columns = list(result.keys())
         return [dict(zip(columns, row)) for row in result.fetchall()]

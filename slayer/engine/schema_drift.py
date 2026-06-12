@@ -1625,9 +1625,8 @@ def _live_schema_for_datasource(
     using SQLAlchemy ``Inspector`` and the same fallback path as
     auto-ingestion (``slayer/engine/ingestion.py``).
     """
-    sa_engine = sa.create_engine(
-        datasource.resolve_env_vars().get_connection_string()
-    )
+    from slayer.sql import engine_factory
+    sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     try:
         inspector = sa.inspect(sa_engine)
         table_names = list(inspector.get_table_names(schema=schema))
@@ -1650,6 +1649,10 @@ def _live_schema_for_datasource(
                 )
         return out
     finally:
+        # Same rationale as ``ingest_datasource``: this is a one-shot
+        # admin path. Disposing releases the underlying connection so
+        # external direct file access (e.g. ``duckdb.connect(file)``)
+        # in the same process isn't blocked.
         sa_engine.dispose()
 
 
@@ -1688,8 +1691,10 @@ def _introspect_one_table(
                 if referred_table:
                     fks.append((src, referred_table, tgt))
     except Exception:
-        # Some dialects (ClickHouse, BigQuery, Snowflake) don't surface FK
-        # metadata. Skip silently — joins are still validated by name.
+        # Some dialects (ClickHouse, BigQuery) don't surface FK metadata
+        # via Inspector. Skip silently — joins are still validated by name.
+        # Snowflake DOES expose declarative FK constraints; see
+        # docs/configuration/datasources.md.
         pass
 
     return LiveTable(columns=columns, pk_columns=pk_columns, fk_relationships=fks)
@@ -1871,9 +1876,8 @@ async def _sqlite_probe_drifts_for_models(
         return {m.name: [] for m in sql_table_models}
 
     def _run() -> Dict[str, List[Tuple[str, DataType, DeleteReason]]]:
-        sa_engine = sa.create_engine(
-            datasource.resolve_env_vars().get_connection_string()
-        )
+        from slayer.sql import engine_factory
+        sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
         try:
             out: Dict[str, List[Tuple[str, DataType, DeleteReason]]] = {}
             default_schema = datasource.schema_name or None
@@ -1885,7 +1889,8 @@ async def _sqlite_probe_drifts_for_models(
                 )
             return out
         finally:
-            sa_engine.dispose()
+            # Cached engine — do not dispose; engine_factory owns lifecycle.
+            pass
 
     return await asyncio.to_thread(_run)
 
@@ -2004,13 +2009,19 @@ async def _collect_sql_diffs(
     *,
     datasource: DatasourceConfig,
     sql_models: List[SlayerModel],
-    sql_clients: Optional[Dict[str, SlayerSQLClient]],
+    sql_clients: Optional[Dict[Tuple[str, str], SlayerSQLClient]],
 ) -> Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]]:
     """Trial-execute each sql-mode model concurrently and produce its diff."""
     out: Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]] = {}
     if not sql_models:
         return out
-    client = (sql_clients or {}).get(datasource.get_connection_string())
+    # DEV-1551: SlayerQueryEngine._sql_clients is tuple-keyed
+    # (connection_string, runtime_fingerprint) so Snowflake datasources
+    # sharing a connection_name but differing in warehouse/role get
+    # distinct clients. Mirror that key shape here via the shared
+    # ``_sql_client_cache_key`` helper.
+    from slayer.engine.query_engine import _sql_client_cache_key  # noqa: PLC0415
+    client = (sql_clients or {}).get(_sql_client_cache_key(datasource))
     if client is None:
         client = SlayerSQLClient(datasource=datasource)
 
@@ -2026,7 +2037,7 @@ async def validate_datasource(
     *,
     datasource: DatasourceConfig,
     models: List[SlayerModel],
-    sql_clients: Optional[Dict[str, SlayerSQLClient]] = None,
+    sql_clients: Optional[Dict[Tuple[str, str], SlayerSQLClient]] = None,
 ) -> List[ToDeleteEntry]:
     """Validate every persisted model in ``models`` (all in the same DS)
     against the live schema of ``datasource``. Read-only.

@@ -706,7 +706,7 @@ class SlayerModel(BaseModel):
 
 
 class DatasourceConfig(BaseModel):
-    version: int = 1
+    version: int = 2
     name: str
     type: Optional[str] = None
     host: Optional[str] = None
@@ -717,6 +717,16 @@ class DatasourceConfig(BaseModel):
     connection_string: Optional[str] = None
     schema_name: Optional[str] = None
     description: Optional[str] = None
+    # Snowflake-specific (v2, DEV-1551). Other dialects ignore them.
+    # ``connection_name`` is the primary auth path — when set, all credentials
+    # come from ``~/.snowflake/connections.toml`` via
+    # ``snowflake.connector.connect(connection_name=...)``. Inline form
+    # (host as account, username, password, database, schema_name) is the
+    # secondary path; ``warehouse`` and ``role`` populate the URL's query
+    # string for that path. See docs/configuration/datasources.md#snowflake.
+    connection_name: Optional[str] = None
+    warehouse: Optional[str] = None
+    role: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -765,6 +775,16 @@ class DatasourceConfig(BaseModel):
     def get_connection_string(self) -> str:
         if self.connection_string:
             return self.connection_string
+        # Dialect-specific hook (DEV-1551): SnowflakeDialect builds the
+        # sentinel ``snowflake://?connection_name=<name>`` URL or the
+        # full snowflake-sqlalchemy URL from inline fields. Tier-1
+        # dialects without a custom hook return None and fall through
+        # to the standard branches below.
+        from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
+        dialect = dialect_for_ds_type(self.type)
+        url_from_dialect = dialect.build_connection_url(self)
+        if url_from_dialect is not None:
+            return str(url_from_dialect)
         if self.type in ("sqlite", "duckdb"):
             return f"{self.type}:///{self.database}"
         if self.type in ("mssql", "sqlserver", "tsql"):
