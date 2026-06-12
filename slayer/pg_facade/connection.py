@@ -60,6 +60,102 @@ _BACKEND_SECRET = 0
 _PARAM_PLACEHOLDER = re.compile(r"\$(\d+)")
 
 
+def _skip_line_comment(sql: str, i: int) -> int:
+    """``-- … newline`` (or EOF)."""
+    nl = sql.find("\n", i + 2)
+    return len(sql) if nl < 0 else nl + 1
+
+
+def _skip_block_comment(sql: str, i: int) -> int:
+    """``/* … */``, Postgres-style nested."""
+    n = len(sql)
+    depth = 1
+    i += 2
+    while i < n and depth > 0:
+        if sql[i] == "/" and i + 1 < n and sql[i + 1] == "*":
+            depth += 1
+            i += 2
+        elif sql[i] == "*" and i + 1 < n and sql[i + 1] == "/":
+            depth -= 1
+            i += 2
+        else:
+            i += 1
+    return i
+
+
+def _skip_unquoted_identifier(sql: str, i: int) -> int:
+    """Postgres: letter|_ then alnum|_|$. Treats ``metric$1`` as one token."""
+    n = len(sql)
+    i += 1
+    while i < n and (sql[i].isalnum() or sql[i] in ("_", "$")):
+        i += 1
+    return i
+
+
+def _skip_e_string(sql: str, i: int) -> int:
+    """``E'…'`` / ``e'…'`` — backslash escapes AND ``''`` escape."""
+    n = len(sql)
+    i += 2  # skip prefix + opening quote
+    while i < n:
+        if sql[i] == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if sql[i] == "'":
+            if i + 1 < n and sql[i + 1] == "'":
+                i += 2
+                continue
+            return i + 1
+        i += 1
+    return i
+
+
+def _skip_single_quoted_string(sql: str, i: int) -> int:
+    """``'…'`` — only the ``''`` doubled-quote escape (no backslash)."""
+    n = len(sql)
+    i += 1
+    while i < n:
+        if sql[i] == "'":
+            if i + 1 < n and sql[i + 1] == "'":
+                i += 2
+                continue
+            return i + 1
+        i += 1
+    return i
+
+
+def _skip_double_quoted_identifier(sql: str, i: int) -> int:
+    """``"…"`` — only the ``""`` escape."""
+    n = len(sql)
+    i += 1
+    while i < n:
+        if sql[i] == '"':
+            if i + 1 < n and sql[i + 1] == '"':
+                i += 2
+                continue
+            return i + 1
+        i += 1
+    return i
+
+
+def _try_skip_dollar_quoted(sql: str, i: int) -> Optional[int]:
+    """If sql[i:] opens a ``$tag$ … $tag$`` literal, return the index just
+    past the closing tag; otherwise return None (so the caller can fall
+    through to ``$N`` placeholder matching). Requires a word boundary
+    before the opening ``$`` — otherwise ``ident$1`` would be misread."""
+    n = len(sql)
+    prev = sql[i - 1] if i > 0 else ""
+    if prev.isalnum() or prev == "_":
+        return None
+    j = i + 1
+    while j < n and (sql[j].isalnum() or sql[j] == "_"):
+        j += 1
+    if j >= n or sql[j] != "$":
+        return None
+    tag = sql[i : j + 1]
+    end = sql.find(tag, j + 1)
+    return n if end < 0 else end + len(tag)
+
+
 def _iter_param_placeholders(sql: str) -> Iterator[Tuple[int, int, int]]:
     """Yield ``(param_index, start, end)`` for every ``$N`` placeholder in
     ``sql`` that is **not** inside a string literal, quoted identifier,
@@ -68,93 +164,38 @@ def _iter_param_placeholders(sql: str) -> Iterator[Tuple[int, int, int]]:
     Mirrors Postgres' tokenizer well enough for standard-shape SQL coming
     from libpq / asyncpg / psql / JDBC clients. Closes the regex-only path
     that rewrote ``$N`` tokens inside literals and comments (Codex review on
-    PR #153: a query like ``WHERE note = '$1' AND status = $1`` would have
-    BOTH ``$1`` occurrences substituted, corrupting the literal).
+    PR #153). Per-lexical-context skip helpers (``_skip_*``) own the
+    state-machine; the main loop is a flat dispatch.
     """
     i = 0
     n = len(sql)
     while i < n:
         c = sql[i]
-        # Line comment: -- ... newline (or EOF).
         if c == "-" and i + 1 < n and sql[i + 1] == "-":
-            nl = sql.find("\n", i + 2)
-            i = n if nl < 0 else nl + 1
-            continue
-        # Block comment: /* ... */ — Postgres allows nesting.
-        if c == "/" and i + 1 < n and sql[i + 1] == "*":
-            depth = 1
-            i += 2
-            while i < n and depth > 0:
-                if sql[i] == "/" and i + 1 < n and sql[i + 1] == "*":
-                    depth += 1
-                    i += 2
-                elif sql[i] == "*" and i + 1 < n and sql[i + 1] == "/":
-                    depth -= 1
-                    i += 2
-                else:
-                    i += 1
-            continue
-        # E'...' or e'...' — escape string (backslash + doubled-quote).
-        if c in ("E", "e") and i + 1 < n and sql[i + 1] == "'":
-            i += 2  # skip prefix and opening quote
-            while i < n:
-                if sql[i] == "\\" and i + 1 < n:
-                    i += 2
-                    continue
-                if sql[i] == "'":
-                    if i + 1 < n and sql[i + 1] == "'":
-                        i += 2
-                        continue
-                    i += 1
-                    break
-                i += 1
-            continue
-        # Standard single-quoted string (only '' escape, no backslash).
-        if c == "'":
-            i += 1
-            while i < n:
-                if sql[i] == "'":
-                    if i + 1 < n and sql[i + 1] == "'":
-                        i += 2
-                        continue
-                    i += 1
-                    break
-                i += 1
-            continue
-        # Double-quoted identifier ("foo", "" escape).
-        if c == '"':
-            i += 1
-            while i < n:
-                if sql[i] == '"':
-                    if i + 1 < n and sql[i + 1] == '"':
-                        i += 2
-                        continue
-                    i += 1
-                    break
-                i += 1
-            continue
-        # $tag$ ... $tag$ dollar-quoted string, OR $N placeholder.
-        if c == "$":
-            # Postgres requires a word-boundary before a dollar-quote opener;
-            # without it (e.g. ``x$1``), this is a placeholder, not a tag.
-            prev = sql[i - 1] if i > 0 else ""
-            at_word_boundary = not (prev.isalnum() or prev == "_")
-            if at_word_boundary:
-                j = i + 1
-                while j < n and (sql[j].isalnum() or sql[j] == "_"):
-                    j += 1
-                if j < n and sql[j] == "$":
-                    tag = sql[i : j + 1]
-                    end = sql.find(tag, j + 1)
-                    i = n if end < 0 else end + len(tag)
-                    continue
-            # Try $N placeholder.
+            i = _skip_line_comment(sql, i)
+        elif c == "/" and i + 1 < n and sql[i + 1] == "*":
+            i = _skip_block_comment(sql, i)
+        elif c in ("E", "e") and i + 1 < n and sql[i + 1] == "'":
+            i = _skip_e_string(sql, i)
+        elif c.isalpha() or c == "_":
+            i = _skip_unquoted_identifier(sql, i)
+        elif c == "'":
+            i = _skip_single_quoted_string(sql, i)
+        elif c == '"':
+            i = _skip_double_quoted_identifier(sql, i)
+        elif c == "$":
+            dq_end = _try_skip_dollar_quoted(sql, i)
+            if dq_end is not None:
+                i = dq_end
+                continue
             m = _PARAM_PLACEHOLDER.match(sql, i)
             if m:
                 yield int(m.group(1)), m.start(), m.end()
                 i = m.end()
-                continue
-        i += 1
+            else:
+                i += 1
+        else:
+            i += 1
 # The single schema the facade advertises (matches pg_namespace / current_schema).
 PUBLIC_SCHEMA = "public"
 
