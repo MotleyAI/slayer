@@ -492,6 +492,37 @@ def test_current_schema_resolves_to_public(expr: str) -> None:
     assert batch.rows == [{"s": "public"}]
 
 
+@pytest.mark.parametrize("sql", [
+    "SELECT current_role",
+    "SELECT current_user",
+    "SELECT current_catalog",
+])
+def test_tableless_context_function_routes_to_executor_via_translator(sql: str) -> None:
+    """CR/Codex round 15: ``SELECT current_role`` (and the niladic
+    siblings) are parsed by sqlglot as bare Column refs without a
+    FROM clause. The translator must classify them as catalog-only
+    (via is_catalog_only) so they reach the executor instead of
+    falling through to the SLayer model-query path with a 'no FROM
+    clause' error."""
+    parsed = _parse(sql)
+    assert is_catalog_only(parsed) is True
+
+
+def test_pg_catalog_qualified_column_projection_resolves() -> None:
+    """Codex round 15: a catalog query that fully qualifies a Column
+    ref (e.g. ``SELECT pg_catalog.pg_namespace.nspname FROM
+    pg_catalog.pg_namespace``) is legal Postgres SQL. The FROM-side
+    strip already turns the table into bare ``pg_namespace``; the
+    column-side strip must remove the matching catalog qualifier from
+    the projection so DuckDB binds cleanly."""
+    batch = _run(
+        "SELECT pg_catalog.pg_namespace.nspname FROM pg_catalog.pg_namespace "
+        "WHERE pg_catalog.pg_namespace.nspname = 'public'"
+    )
+    names = {r["nspname"] for r in batch.rows}
+    assert names == {"public"}
+
+
 def test_pg_catalog_query_filters_by_current_schema() -> None:
     """End-to-end shape exercising the current_schema substitution
     inside a catalog query (mixes both rewrite paths)."""

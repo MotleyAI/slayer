@@ -827,6 +827,18 @@ def _has_catalog_function_call(parsed: exp.Expression) -> bool:
     for node in parsed.walk():
         if _function_name_lower(node) in _CATALOG_FUNCTION_NAMES:
             return True
+        # sqlglot parses bareword niladic context functions
+        # (``current_role``, ``current_user``, ``current_catalog`` …) as
+        # an unqualified ``Column``. Treat those as catalog-only too so
+        # ``SELECT current_role`` routes to the executor instead of
+        # falling through to the SLayer model-query path (which then
+        # errors with "no FROM clause"). CR/Codex review.
+        if isinstance(node, exp.Column) and not node.table:
+            ident = node.this
+            if isinstance(ident, exp.Identifier):
+                name = str(ident.this).lower()
+                if name in _CATALOG_FUNCTION_NAMES:
+                    return True
     return False
 
 
@@ -943,6 +955,7 @@ class _AstRewriter:
         # Strip schema qualifiers AND rewrite information_schema names first
         # so subsequent passes see the canonical bare names.
         parsed = parsed.transform(self._strip_schema_qualifiers)
+        parsed = parsed.transform(self._strip_column_schema_qualifiers)
         parsed = parsed.transform(self._rewrite_current_schemas_indexed)
         parsed = parsed.transform(self._rewrite_current_schemas_bare)
         parsed = parsed.transform(self._rewrite_pg_format_quoted_ident)
@@ -1012,6 +1025,42 @@ class _AstRewriter:
         return node
 
     # ----- 2. current_schemas(...)[1] → 'public' ----------------------------
+
+    @staticmethod
+    def _strip_column_schema_qualifiers(node: exp.Expression) -> exp.Expression:
+        """Drop ``pg_catalog`` / ``information_schema`` qualifiers from
+        Column references so legal projections like
+        ``SELECT pg_catalog.pg_namespace.nspname FROM pg_catalog.pg_namespace``
+        bind cleanly after the FROM-side strip (Codex review). The
+        rewrite turns ``pg_catalog.pg_namespace.nspname`` into the
+        2-part ``pg_namespace.nspname``; ``information_schema.X.Y``
+        becomes the bare leaf (DuckDB only has the underlying
+        ``_is_X`` table, not a real ``information_schema`` schema)."""
+        if not isinstance(node, exp.Column):
+            return node
+        db_part = node.args.get("db")
+        catalog_part = node.args.get("catalog")
+        # Three-part column: <catalog>.<table>.<leaf> where catalog is
+        # pg_catalog or information_schema.
+        if catalog_part is not None and db_part is not None:
+            cat = (str(catalog_part.this) if hasattr(catalog_part, "this") else str(catalog_part)).lower()
+            if cat in {"pg_catalog", "information_schema"}:
+                new = node.copy()
+                new.set("catalog", None)
+                # Keep db (the table-qualifier) and leaf intact.
+                return new
+        # Two-part column: <schema>.<leaf>. Looking at one of the
+        # qualifiers — if either is pg_catalog/info_schema, drop it.
+        for key in ("db",):
+            ident = node.args.get(key)
+            if ident is None:
+                continue
+            name = (str(ident.this) if hasattr(ident, "this") else str(ident)).lower()
+            if name in {"pg_catalog", "information_schema"}:
+                new = node.copy()
+                new.set(key, None)
+                return new
+        return node
 
     @staticmethod
     def _rewrite_current_schemas_bare(node: exp.Expression) -> exp.Expression:
