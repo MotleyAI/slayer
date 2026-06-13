@@ -704,20 +704,32 @@ class PgConnection:
 # substitute ``$N`` placeholders BEFORE Bind so DuckDB can produce a
 # valid RowDescription whose column types reflect the projection's
 # dependence on the parameter (Codex round 13).
+#
+# Each sentinel is a typed NULL (``CAST(NULL AS <type>)``) rather than a
+# concrete literal: NULL is universally comparable (``col = CAST(NULL AS
+# TEXT)`` always returns NULL/FALSE under DuckDB's standard SQL
+# semantics), so we never trigger a conversion error like
+# ``Conversion Error: Could not convert string '' to INT64`` when the
+# parameter appears in a comparison against a column of a different
+# type than the pgjdbc-declared OID — Metabase corpus #9 had pgjdbc
+# declaring text OIDs for parameters that compared against int columns
+# (``objsubid = $N``), which the literal ``''`` sentinel turned into
+# an unanswerable text-vs-int comparison.
 _TYPED_SENTINEL_BY_OID: Dict[int, str] = {
-    proto.OID_TEXT: "''",
-    proto.OID_INT8: "CAST(0 AS BIGINT)",
-    proto.OID_FLOAT8: "CAST(0 AS DOUBLE)",
-    proto.OID_BOOL: "CAST(FALSE AS BOOLEAN)",
-    proto.OID_DATE: "CAST('1970-01-01' AS DATE)",
-    proto.OID_TIMESTAMP: "CAST('1970-01-01' AS TIMESTAMP)",
+    proto.OID_TEXT: "CAST(NULL AS VARCHAR)",
+    proto.OID_INT8: "CAST(NULL AS BIGINT)",
+    proto.OID_FLOAT8: "CAST(NULL AS DOUBLE)",
+    proto.OID_BOOL: "CAST(NULL AS BOOLEAN)",
+    proto.OID_DATE: "CAST(NULL AS DATE)",
+    proto.OID_TIMESTAMP: "CAST(NULL AS TIMESTAMP)",
 }
 
 
 def _substitute_typed_sentinels(sql: str, param_oids: List[int]) -> str:
     """Replace each ``$N`` placeholder with a typed sentinel literal
-    derived from ``param_oids[N-1]``. Falls back to ``NULL`` when the
-    OID is unknown (e.g. extra placeholders past the declared list)."""
+    derived from ``param_oids[N-1]``. Falls back to bare ``NULL`` when
+    the OID is unknown (e.g. extra placeholders past the declared list)
+    so DuckDB picks the most permissive coercion path."""
     def repl(match):
         idx = int(match.group(1)) - 1
         if 0 <= idx < len(param_oids):

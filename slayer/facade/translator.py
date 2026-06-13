@@ -1222,15 +1222,19 @@ def translate(
     noop = _classify_noop_root(parsed)
     if noop is not None:
         return noop
-    if not isinstance(parsed, exp.Select):
-        raise TranslationError(
-            f"Unsupported statement: {type(parsed).__name__}"
-        )
 
     # Step 4 — DuckDB catalog executor (Postgres facade) OR info-schema
     # dispatch (Flight facade). The executor handles BOTH pg_catalog AND
     # information_schema queries via materialised tables; when it's not
     # provided we keep the canned info-schema answer for Flight.
+    #
+    # This check runs BEFORE the "must be exp.Select" gate so catalog
+    # queries that aren't a plain Select — UNION/UNION ALL (Metabase
+    # corpus #12), set-ops, WITH-only constructs — route to the
+    # executor when every Table node resolves to a catalog relation.
+    # Non-catalog Selects continue to the SLayer-table translation
+    # below; non-catalog UNIONs etc. surface the unsupported-statement
+    # error from the gate.
     if catalog_sql_executor is not None:
         from slayer.facade.catalog_sql import is_catalog_only
         if is_catalog_only(parsed):
@@ -1245,10 +1249,15 @@ def translate(
                 else catalog_sql_executor
             )
             return PgCatalogResult(batch=executor.execute(parsed=parsed, sql=sql))
-    else:
+    elif isinstance(parsed, exp.Select):
         info = match_info_schema(parsed=parsed, catalog=catalog)
         if info is not None:
             return InfoSchemaResult(batch=info)
+
+    if not isinstance(parsed, exp.Select):
+        raise TranslationError(
+            f"Unsupported statement: {type(parsed).__name__}"
+        )
 
     # Step 5 / 6 — SLayer-table translation.
     return _translate_slayer_select(parsed, catalog)

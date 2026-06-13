@@ -935,3 +935,65 @@ async def test_extended_protocol_catalog_query_with_bound_parameter() -> None:
     for body in data_bodies:
         n_data = struct.unpack_from(">h", body, 0)[0]
         assert n_data == n_cols, f"DataRow {n_data} cols vs RowDescription {n_cols}"
+
+
+async def test_describe_int_param_against_int_column_no_conversion_error() -> None:
+    """DEV-1558 live-Metabase repro (round 19): when pgjdbc binds a
+    parameter against an INT column (e.g. ``WHERE objsubid = $1``) but
+    didn't declare the param OID, ``_resolve_param_oids`` defaults to
+    ``OID_TEXT``. The round-13 literal sentinel ``''`` then made the
+    describe-time SQL ``objsubid = ''`` which DuckDB rejected with
+    ``Conversion Error: Could not convert string '' to INT64``.
+
+    Fix: the typed-NULL sentinel
+    (``CAST(NULL AS VARCHAR)``) is universally comparable, so the
+    describe step succeeds regardless of how the parameter is used
+    downstream."""
+    sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = $1"
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _describe("S", "")
+        + _bind("", "", values=(b"0",),
+                result_formats=(proto.FORMAT_TEXT,))
+        + _execute("")
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    type_seq = _types(msgs)
+    # Critical: no ErrorResponse during Describe (would surface as 'E').
+    assert "E" not in type_seq, (
+        "Describe with unannounced $N against an INT column "
+        "must not produce an ErrorResponse"
+    )
+    # The full extended sequence still completes through Sync.
+    assert "T" in type_seq  # RowDescription
+    assert "2" in type_seq  # BindComplete
+    assert "Z" in type_seq  # ReadyForQuery
+
+
+async def test_simple_query_catalog_union_routes_to_executor() -> None:
+    """DEV-1558 round 19: Metabase corpus #12 is a top-level
+    ``UNION ALL`` between info-schema and pg_catalog branches. Before
+    the fix the translator rejected ``exp.Union`` as ``Unsupported
+    statement: Union`` before the catalog-executor branch fired.
+    Verify a simple-query round-trip lands DataRows and no error."""
+    sql = (
+        "SELECT n.nspname FROM pg_catalog.pg_namespace n "
+        "WHERE n.nspname = 'public' "
+        "UNION ALL "
+        "SELECT 'public' AS nspname"
+    )
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query(sql)
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    type_seq = _types(msgs)
+    assert "E" not in type_seq, "UNION ALL must route to executor, not error"
+    assert "T" in type_seq  # RowDescription
+    assert "D" in type_seq  # at least one DataRow

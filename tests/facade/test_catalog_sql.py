@@ -560,6 +560,36 @@ def test_current_database_full_tree_walk_inside_projection() -> None:
     assert batch.rows[0]["current_database"] == "jaffle"
 
 
+def test_catalog_union_all_routes_to_executor() -> None:
+    """Live-Metabase repro: corpus #12 (describe-fields) is a top-level
+    ``UNION ALL`` between an info-schema branch and a pg_catalog
+    branch. The translator must route ``exp.Union`` through the
+    catalog executor when every leaf Table resolves to a catalog
+    relation — previously the Select-only gate raised
+    ``Unsupported statement: Union`` before the executor branch
+    ever fired."""
+    from slayer.facade.translator import (
+        PgCatalogResult, translate,
+    )
+    sql = (
+        "SELECT n.nspname, c.relname FROM pg_catalog.pg_class c "
+        "INNER JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid "
+        "WHERE n.nspname = 'public' "
+        "UNION ALL "
+        "SELECT 'public' AS nspname, t.table_name AS relname "
+        "FROM information_schema.tables t"
+    )
+    catalog = _demo_catalog()
+    result = translate(sql, catalog, dialect="postgres",
+                      catalog_sql_executor=_executor(catalog))
+    assert isinstance(result, PgCatalogResult)
+    # Both branches contribute rows; orders + customers from the
+    # pg_class half, plus the info-schema tables half.
+    relnames = {r["relname"] for r in result.batch.rows}
+    assert "orders" in relnames
+    assert "customers" in relnames
+
+
 @pytest.mark.parametrize("call", [
     "pg_catalog.current_database()",
     "pg_catalog.current_catalog",
