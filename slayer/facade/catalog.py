@@ -211,8 +211,39 @@ def _path_dotted(path: List[str]) -> str:
     return ".".join(path)
 
 
-def _eligible_aggregations(*, column: Column) -> Set[str]:
-    """Per §5.1.3: default-by-type ∩ explicit whitelist, with PK clamp."""
+# first / last are SLayer's "value at earliest / latest time" aggregations —
+# the engine resolves them against the query's time dimension (or the
+# model's default). Exposing the corresponding ``<col>_first`` / ``_last``
+# pseudo-columns through pg_attribute on a model with no time dimension
+# leaves BI tools (Metabase fingerprint, dbt schema scan) discovering
+# them as queryable columns whose execution then fails with
+# "Aggregation 'first' on measure '<col>' requires a time column".
+_TIME_DEPENDENT_AGGREGATIONS: FrozenSet[str] = frozenset({"first", "last"})
+
+
+def _model_has_resolvable_time_dimension(model: SlayerModel) -> bool:
+    """True if the engine can resolve ``first`` / ``last`` aggregations
+    on this model without an explicit time-dimension argument.
+
+    The engine auto-picks a time dimension only when the QUERY already
+    includes one. For ``<col>:first`` referenced as a flat metric (which
+    is how every BI tool's flat ``SELECT <col>_first FROM <model>``
+    fingerprint scan emits it), the engine falls back to
+    ``model.default_time_dimension`` and errors if it's unset. So the
+    facade only exposes ``<col>_first`` / ``<col>_last`` when the model
+    declares ``default_time_dimension`` explicitly."""
+    return bool(model.default_time_dimension)
+
+
+def _eligible_aggregations(
+    *, column: Column, model: Optional[SlayerModel] = None,
+) -> Set[str]:
+    """Per §5.1.3: default-by-type ∩ explicit whitelist, with PK clamp.
+
+    When ``model`` is given AND it has no time dimension, time-dependent
+    aggregations (``first``, ``last``) are dropped — they would expose
+    pseudo-columns the engine then refuses to execute against.
+    """
     if column.primary_key:
         base = set(PRIMARY_KEY_AGGREGATIONS)
     else:
@@ -220,7 +251,10 @@ def _eligible_aggregations(*, column: Column) -> Set[str]:
     if column.allowed_aggregations is not None:
         base &= set(column.allowed_aggregations)
     # Strip parametric built-ins — they need named args (§5.1.3).
-    return base - _PARAMETRIC_BUILTIN_AGGS
+    base -= _PARAMETRIC_BUILTIN_AGGS
+    if model is not None and not _model_has_resolvable_time_dimension(model):
+        base -= _TIME_DEPENDENT_AGGREGATIONS
+    return base
 
 
 def _eligible_custom_aggregations(*, model: SlayerModel) -> List[Aggregation]:
@@ -308,7 +342,7 @@ def _column_x_builtin_aggs(model: SlayerModel) -> List[FacadeMetric]:
         )
         for col in model.columns
         if not col.hidden
-        for agg in sorted(_eligible_aggregations(column=col))
+        for agg in sorted(_eligible_aggregations(column=col, model=model))
     ]
 
 

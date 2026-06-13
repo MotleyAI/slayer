@@ -799,7 +799,13 @@ def _resolve_projection(
             hygiene[1], strip_prefix=strip_prefix,
         ):
             func_name, inner_col = hygiene
-            logger.warning(
+            # DEBUG — not WARNING — because Metabase's field-value rescan
+            # emits these once per (column × aggregate) for every model,
+            # so a single sync produces hundreds of these per-call lines.
+            # The fact that the wrapper was dropped is normal-and-handled;
+            # operators only care if a sync as a whole fails, which would
+            # surface as a TranslationError up the stack.
+            logger.debug(
                 "hygiene-scalar wrapper %r dropped for fingerprint projection "
                 "(column %r)",
                 func_name, _column_to_dotted(inner_col, strip_prefix=strip_prefix),

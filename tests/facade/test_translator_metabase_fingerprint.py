@@ -176,7 +176,7 @@ def test_hygiene_wrapper_dropped_around_bare_column(fn: str, caplog) -> None:
         else:
             args += ", 1234"
     sql = f'SELECT {fn}({args}) AS "out" FROM "public"."customers" LIMIT 10000'
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.DEBUG, logger="slayer.facade.translator"):
         result = _translate(sql)
     assert isinstance(result, QueryResult)
     aliases = [projected for _alias, projected in result.column_name_mapping]
@@ -185,28 +185,33 @@ def test_hygiene_wrapper_dropped_around_bare_column(fn: str, caplog) -> None:
     # bare `name` dimension; the engine response key is `customers.name`.
     engine_alias = next(a for a, _ in result.column_name_mapping)
     assert engine_alias.endswith(".name")
-    # Plan: WARNING includes the specific function name; exactly one warning
+    # Plan: log includes the specific function name; exactly one entry
     # per dropped wrapper (so a multi-projection SQL gets multiple lines).
-    hygiene_warnings = [
+    # Emitted at DEBUG — not WARNING — because Metabase's field-value
+    # rescan triggers hundreds of these per sync (one per column × agg).
+    hygiene_logs = [
         r for r in caplog.records
         if "hygiene" in r.getMessage().lower() and fn.lower() in r.getMessage().lower()
     ]
-    assert len(hygiene_warnings) == 1
+    assert len(hygiene_logs) == 1
+    assert hygiene_logs[0].levelno == logging.DEBUG
 
 
-def test_hygiene_wrapper_logs_one_warning_per_projection(caplog) -> None:
-    """Two SUBSTRINGs in one SELECT → two WARNING lines."""
+def test_hygiene_wrapper_logs_one_entry_per_projection(caplog) -> None:
+    """Two SUBSTRINGs in one SELECT → two DEBUG-level log lines (one per
+    dropped wrapper)."""
     sql = (
         'SELECT SUBSTRING("public"."customers"."name", 1, 1234) AS "n", '
         'SUBSTRING("public"."customers"."email", 1, 1234) AS "e" '
         'FROM "public"."customers" LIMIT 10000'
     )
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.DEBUG, logger="slayer.facade.translator"):
         _translate(sql)
-    hygiene_warnings = [
+    hygiene_logs = [
         r for r in caplog.records if "hygiene" in r.getMessage().lower()
     ]
-    assert len(hygiene_warnings) == 2
+    assert len(hygiene_logs) == 2
+    assert all(r.levelno == logging.DEBUG for r in hygiene_logs)
 
 
 def test_hygiene_wrapper_around_unknown_column_errors() -> None:
