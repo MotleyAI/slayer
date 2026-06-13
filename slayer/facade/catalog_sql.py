@@ -588,12 +588,18 @@ def _build_is_key_column_usage() -> CatalogRelation:
 def _build_is_schemata(
     catalog: FacadeCatalog, datasource: str,
 ) -> CatalogRelation:
+    """The pg facade advertises exactly one schema, ``public``, so the
+    INFORMATION_SCHEMA.SCHEMATA relation contains exactly one row —
+    regardless of how many datasources / SLayer schemas are folded
+    into the underlying ``FacadeCatalog`` (Codex round 17)."""
     columns = [
         FacadeColumn(name="catalog_name", type=DataType.TEXT),
         FacadeColumn(name="schema_name", type=DataType.TEXT),
     ]
-    rows = [{"catalog_name": datasource, "schema_name": "public"}
-            for sch in catalog.schemas]
+    rows = (
+        [{"catalog_name": datasource, "schema_name": "public"}]
+        if catalog.schemas else []
+    )
     return CatalogRelation(name="_is_schemata", columns=columns, rows=rows)
 
 

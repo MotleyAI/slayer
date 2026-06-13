@@ -612,6 +612,28 @@ def test_current_schemas_non_first_index_returns_null() -> None:
     assert batch.rows == [{"s": None}]
 
 
+def test_is_schemata_is_single_row_for_multi_schema_catalog() -> None:
+    """Codex round 17: the pg facade advertises exactly one schema
+    (``public``), regardless of how many SLayer schemas / datasources
+    fold into the underlying FacadeCatalog. Verify
+    ``information_schema.schemata`` has exactly one row even when the
+    catalog carries multiple schemas."""
+    cat = build_catalog(models_by_datasource={
+        "dsA": [SlayerModel(
+            name="t1", data_source="dsA", sql_table="t1",
+            columns=[Column(name="x", type=DataType.INT)],
+        )],
+        "dsB": [SlayerModel(
+            name="t2", data_source="dsB", sql_table="t2",
+            columns=[Column(name="y", type=DataType.INT)],
+        )],
+    })
+    relations = {r.name: r for r in build_catalog_relations(cat, datasource="dsX")}
+    rows = relations["_is_schemata"].rows
+    assert len(rows) == 1
+    assert rows[0] == {"catalog_name": "dsX", "schema_name": "public"}
+
+
 def test_information_schema_schema_name_is_public_not_datasource() -> None:
     """Codex round 14: PostgreSQL clients filter
     ``information_schema.schemata`` / ``information_schema.tables`` by
