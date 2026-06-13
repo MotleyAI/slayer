@@ -540,6 +540,36 @@ def test_pg_catalog_qualified_column_projection_resolves() -> None:
     assert names == {"public"}
 
 
+def test_pg_catalog_four_part_qualified_column_resolves() -> None:
+    """Round 20 follow-up (Codex review): a 4-part column ref
+    ``slayer.pg_catalog.pg_namespace.nspname`` keeps a stale ``slayer``
+    catalog qualifier on the column AST even after the schema part is
+    stripped, breaking DuckDB binding against ``main.pg_namespace``.
+    ``_strip_column_schema_qualifiers`` must drop the catalog qualifier
+    symmetrically with the FROM-side ``_strip_schema_qualifiers``."""
+    batch = _run(
+        "SELECT slayer.pg_catalog.pg_namespace.nspname "
+        "FROM slayer.pg_catalog.pg_namespace "
+        "WHERE slayer.pg_catalog.pg_namespace.nspname = 'public'"
+    )
+    assert {r["nspname"] for r in batch.rows} == {"public"}
+
+
+def test_information_schema_four_part_qualified_column_resolves() -> None:
+    """Companion to the pg_catalog case: a 4-part column ref through
+    ``information_schema`` must lose both the outer catalog qualifier
+    AND have its table-side qualifier rewritten to the ``_is_<X>``
+    materialised form."""
+    batch = _run(
+        "SELECT slayer.information_schema.columns.column_name "
+        "FROM slayer.information_schema.columns "
+        "WHERE slayer.information_schema.columns.table_name = 'orders' "
+        "ORDER BY slayer.information_schema.columns.ordinal_position "
+        "LIMIT 1"
+    )
+    assert batch.rows and "column_name" in batch.rows[0]
+
+
 def test_pg_catalog_query_filters_by_current_schema() -> None:
     """End-to-end shape exercising the current_schema substitution
     inside a catalog query (mixes both rewrite paths)."""

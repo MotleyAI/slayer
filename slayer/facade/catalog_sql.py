@@ -1065,6 +1065,13 @@ class _AstRewriter:
             return node
         new = node.copy()
         new.set("db", None)
+        # Drop any outer catalog qualifier too (e.g.
+        # ``slayer.pg_catalog.pg_class.oid``) — symmetric with the
+        # FROM-side strip in ``_strip_schema_qualifiers``. Otherwise the
+        # 4-part column ref keeps a stale ``slayer.pg_class.oid`` form
+        # that fails to bind against DuckDB's ``main.pg_class`` (Codex
+        # round-20 follow-up).
+        new.set("catalog", None)
         if schema == "information_schema" and table_part is not None:
             tbl_name = (
                 str(table_part.this) if hasattr(table_part, "this") else str(table_part)
