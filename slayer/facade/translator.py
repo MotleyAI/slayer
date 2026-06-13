@@ -1186,7 +1186,9 @@ def translate(
     *,
     dialect: Optional[str] = None,
     probe_matcher: Optional[ProbeMatcher] = None,
-    catalog_sql_executor: "Optional[CatalogSqlExecutorProtocol]" = None,
+    catalog_sql_executor: (
+        "Optional[CatalogSqlExecutorProtocol | Callable[[], CatalogSqlExecutorProtocol]]"
+    ) = None,
 ) -> TranslatorResult:
     """Translate a SQL string into a TranslatorResult.
 
@@ -1232,9 +1234,17 @@ def translate(
     if catalog_sql_executor is not None:
         from slayer.facade.catalog_sql import is_catalog_only
         if is_catalog_only(parsed):
-            return PgCatalogResult(batch=catalog_sql_executor.execute(
-                parsed=parsed, sql=sql,
-            ))
+            # ``catalog_sql_executor`` accepts either the executor itself
+            # or a zero-arg factory — lazy construction lets the pg
+            # facade skip the DuckDB materialisation cost on
+            # non-catalog (model) queries (Codex round 16). Resolve the
+            # factory only inside this branch.
+            executor = (
+                catalog_sql_executor()
+                if callable(catalog_sql_executor)
+                else catalog_sql_executor
+            )
+            return PgCatalogResult(batch=executor.execute(parsed=parsed, sql=sql))
     else:
         info = match_info_schema(parsed=parsed, catalog=catalog)
         if info is not None:

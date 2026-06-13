@@ -538,7 +538,11 @@ class PgConnection:
             self._catalog,
             dialect="postgres",
             probe_matcher=self._probe_matcher,
-            catalog_sql_executor=executor_for(self._catalog, self._datasource),
+            # Pass a lazy factory so the DuckDB executor is only
+            # materialised when ``is_catalog_only(parsed)`` is True
+            # (Codex round 16). Non-catalog model queries skip the
+            # construction cost entirely.
+            catalog_sql_executor=lambda: executor_for(self._catalog, self._datasource),
         )
 
     def _probe_matcher(self, parsed: exp.Expression) -> Optional[RowBatch]:

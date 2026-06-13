@@ -239,6 +239,42 @@ def test_metabase_fingerprint_customers_corpus_16() -> None:
     assert result.query.limit == 10000
 
 
+def test_translate_accepts_lazy_catalog_executor_factory() -> None:
+    """Codex round 16: ``translate(catalog_sql_executor=...)`` accepts
+    a zero-arg factory so the pg facade doesn't pay the DuckDB
+    materialisation cost on non-catalog (model) queries. The factory
+    is only invoked when ``is_catalog_only(parsed)`` is True."""
+    call_count = {"n": 0}
+
+    class _RecordingExecutor:
+        def execute(self, *, parsed, sql):
+            from slayer.facade.rows import FacadeColumn, RowBatch
+            return RowBatch(
+                columns=[FacadeColumn(name="x", type=DataType.INT)],
+                rows=[{"x": 1}],
+            )
+
+    def factory():
+        call_count["n"] += 1
+        return _RecordingExecutor()
+
+    # Model-path query — must NOT instantiate the executor.
+    translate(
+        "SELECT customer_id FROM orders",
+        _catalog(), dialect="postgres",
+        catalog_sql_executor=factory,
+    )
+    assert call_count["n"] == 0
+
+    # Catalog query — DOES instantiate the executor on first hit.
+    translate(
+        "SELECT * FROM pg_catalog.pg_namespace",
+        _catalog(), dialect="postgres",
+        catalog_sql_executor=factory,
+    )
+    assert call_count["n"] == 1
+
+
 def test_metabase_fingerprint_orders_corpus_17() -> None:
     """The literal #17 from the captured Metabase corpus."""
     sql = (

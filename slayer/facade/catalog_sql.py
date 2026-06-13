@@ -1028,39 +1028,43 @@ class _AstRewriter:
 
     @staticmethod
     def _strip_column_schema_qualifiers(node: exp.Expression) -> exp.Expression:
-        """Drop ``pg_catalog`` / ``information_schema`` qualifiers from
-        Column references so legal projections like
-        ``SELECT pg_catalog.pg_namespace.nspname FROM pg_catalog.pg_namespace``
-        bind cleanly after the FROM-side strip (Codex review). The
-        rewrite turns ``pg_catalog.pg_namespace.nspname`` into the
-        2-part ``pg_namespace.nspname``; ``information_schema.X.Y``
-        becomes the bare leaf (DuckDB only has the underlying
-        ``_is_X`` table, not a real ``information_schema`` schema)."""
+        """Rewrite ``pg_catalog.<X>.<col>`` / ``information_schema.<X>.<col>``
+        column refs so they match the underlying DuckDB table names
+        after the FROM-side strip (Codex review).
+
+        sqlglot's ``exp.Column`` represents the dotted qualifiers as
+        ``this`` (leaf), ``table`` (the table-qualifier), ``db`` (the
+        schema-qualifier), ``catalog`` (the catalog-qualifier — only
+        for 4-part refs).
+
+        * For ``pg_catalog`` the underlying table keeps the same name
+          (``pg_namespace.nspname``); we drop ``db`` so the column
+          resolves as a 2-part ``pg_namespace.nspname`` ref.
+        * For ``information_schema`` the table is renamed to ``_is_<X>``
+          by ``_strip_schema_qualifiers``; here we apply the same
+          rename to the column's ``table`` qualifier so
+          ``information_schema.columns.column_name`` resolves to
+          ``_is_columns.column_name``.
+        """
         if not isinstance(node, exp.Column):
             return node
         db_part = node.args.get("db")
-        catalog_part = node.args.get("catalog")
-        # Three-part column: <catalog>.<table>.<leaf> where catalog is
-        # pg_catalog or information_schema.
-        if catalog_part is not None and db_part is not None:
-            cat = (str(catalog_part.this) if hasattr(catalog_part, "this") else str(catalog_part)).lower()
-            if cat in {"pg_catalog", "information_schema"}:
-                new = node.copy()
-                new.set("catalog", None)
-                # Keep db (the table-qualifier) and leaf intact.
-                return new
-        # Two-part column: <schema>.<leaf>. Looking at one of the
-        # qualifiers — if either is pg_catalog/info_schema, drop it.
-        for key in ("db",):
-            ident = node.args.get(key)
-            if ident is None:
-                continue
-            name = (str(ident.this) if hasattr(ident, "this") else str(ident)).lower()
-            if name in {"pg_catalog", "information_schema"}:
-                new = node.copy()
-                new.set(key, None)
-                return new
-        return node
+        table_part = node.args.get("table")
+        if db_part is None:
+            return node
+        schema = (
+            str(db_part.this) if hasattr(db_part, "this") else str(db_part)
+        ).lower()
+        if schema not in {"pg_catalog", "information_schema"}:
+            return node
+        new = node.copy()
+        new.set("db", None)
+        if schema == "information_schema" and table_part is not None:
+            tbl_name = (
+                str(table_part.this) if hasattr(table_part, "this") else str(table_part)
+            ).lower()
+            new.set("table", exp.Identifier(this=f"_is_{tbl_name}", quoted=False))
+        return new
 
     @staticmethod
     def _rewrite_current_schemas_bare(node: exp.Expression) -> exp.Expression:

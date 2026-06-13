@@ -508,6 +508,21 @@ def test_tableless_context_function_routes_to_executor_via_translator(sql: str) 
     assert is_catalog_only(parsed) is True
 
 
+def test_information_schema_qualified_column_projection_resolves() -> None:
+    """Codex round 16: a fully-qualified
+    ``information_schema.columns.column_name`` column ref must rename
+    its table-qualifier to ``_is_columns`` to match the FROM-side
+    strip, not just drop the ``information_schema`` qualifier."""
+    batch = _run(
+        "SELECT information_schema.columns.column_name "
+        "FROM information_schema.columns "
+        "WHERE information_schema.columns.table_name = 'orders'"
+    )
+    assert batch.rows
+    cols = {r["column_name"] for r in batch.rows}
+    assert "id" in cols or "revenue" in cols
+
+
 def test_pg_catalog_qualified_column_projection_resolves() -> None:
     """Codex round 15: a catalog query that fully qualifies a Column
     ref (e.g. ``SELECT pg_catalog.pg_namespace.nspname FROM
