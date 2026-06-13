@@ -520,7 +520,9 @@ def test_information_schema_qualified_column_projection_resolves() -> None:
     )
     assert batch.rows
     cols = {r["column_name"] for r in batch.rows}
-    assert "id" in cols or "revenue" in cols
+    # The demo catalog's ``orders`` model defines four dimension columns;
+    # all four must surface so a partial qualifier-strip would fail loudly.
+    assert {"id", "revenue", "status", "ordered_at"} <= cols
 
 
 def test_pg_catalog_qualified_column_projection_resolves() -> None:
@@ -671,8 +673,11 @@ def test_information_schema_catalog_name_is_datasource() -> None:
     assert schemata_rows
     assert all(r["catalog_name"] == "jaffle" for r in schemata_rows)
     metrics_rows = relations["_is_metrics"].rows
+    # CR review: assert non-empty before all(...) — all([]) is True.
+    assert metrics_rows
     assert all(r["catalog_name"] == "jaffle" for r in metrics_rows)
     dims_rows = relations["_is_dimensions"].rows
+    assert dims_rows
     assert all(r["catalog_name"] == "jaffle" for r in dims_rows)
 
 
