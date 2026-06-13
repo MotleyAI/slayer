@@ -59,10 +59,24 @@ def datatype_to_oid(dt: Optional[DataType]) -> int:
 # --- text-format output ------------------------------------------------------
 
 
-def value_to_text(value: Any) -> Optional[bytes]:  # NOSONAR(S3776) — flat per-Python-type dispatch
-    """Encode an engine value as Postgres text-format bytes (``None`` → SQL NULL)."""
+def value_to_text(  # NOSONAR(S3776) — flat per-Python-type dispatch
+    value: Any, oid: int = OID_TEXT,
+) -> Optional[bytes]:
+    """Encode an engine value as Postgres text-format bytes (``None`` → SQL NULL).
+
+    ``oid`` lets the encoder coerce values to match the declared column type.
+    Notably, DuckDB returns ``DATE``-typed columns as ``datetime.datetime``
+    when the value is produced by ``date_trunc(...) :: date``; without
+    coercion the text-format wire payload becomes ``"2024-06-01 00:00:00"``
+    which pgjdbc's ``TimestampUtils.toLocalDate`` mis-parses for a column
+    declared with OID 1082 (DATE).
+    """
     if value is None:
         return None
+    # OID-driven coercion runs first so a datetime in a DATE column is
+    # narrowed to a date before the per-Python-type dispatch below.
+    if oid == OID_DATE and isinstance(value, _dt.datetime):
+        value = value.date()
     if isinstance(value, bool):
         return b"t" if value else b"f"
     if isinstance(value, float):

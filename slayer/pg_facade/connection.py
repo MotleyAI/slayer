@@ -788,4 +788,4 @@ def _sqlstate_for(exc: TranslationError) -> str:
 def _encode_value(value, oid: int, fmt: int) -> Optional[bytes]:
     if fmt == proto.FORMAT_BINARY:
         return value_to_binary(value, oid)
-    return value_to_text(value)
+    return value_to_text(value, oid)
