@@ -452,6 +452,24 @@ def test_date_trunc_creates_time_dimension(dialect) -> None:
     assert result.query.time_dimensions[0].granularity == TimeGranularity.MONTH
 
 
+def test_cast_wrapped_time_trunc_creates_time_dimension(dialect) -> None:
+    """Live Metabase repro: when ``ordered_at`` is DATE-typed Metabase
+    emits ``CAST(TIMESTAMP_TRUNC(ordered_at, MONTH) AS DATE)`` because
+    the truncation function widens to TIMESTAMP. The outer CAST is
+    semantically irrelevant; the translator must unwrap it and still
+    recognise the inner time-grain shape."""
+    result = translate(
+        sql="SELECT CAST(date_trunc('month', ordered_at) AS DATE), revenue_sum FROM orders",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.time_dimensions is not None
+    assert len(result.query.time_dimensions) == 1
+    td = result.query.time_dimensions[0]
+    assert td.granularity == TimeGranularity.MONTH
+    assert td.dimension.full_name == "ordered_at"
+
+
 def test_time_grain_on_non_time_column_errors(dialect) -> None:
     with pytest.raises(TranslationError) as exc_info:
         translate(sql="SELECT month(status) FROM orders", catalog=_catalog(), dialect=dialect)

@@ -338,7 +338,19 @@ def _detect_time_grain_anonymous(
 def _detect_time_grain(node: exp.Expression) -> Optional[Tuple[TimeGranularity, exp.Column]]:
     """If ``node`` is ``<grain>(<column>)`` or ``date_trunc('<grain>', <column>)``,
     return ``(granularity, column)``. Otherwise ``None``.
+
+    Also unwraps an outer ``CAST(...)`` — Metabase emits
+    ``CAST(TIMESTAMP_TRUNC(col, MONTH) AS DATE)`` when the column is
+    DATE-typed (the truncation function widens to TIMESTAMP and Metabase
+    casts back). The cast is irrelevant to the semantic time-grain
+    classification.
     """
+    if isinstance(node, exp.Cast):
+        # Unwrap the cast and recurse — the inner expression is what
+        # carries the time-grain semantics.
+        unwrapped = _detect_time_grain(node.this)
+        if unwrapped is not None:
+            return unwrapped
     if isinstance(node, (exp.DateTrunc, exp.TimestampTrunc)):
         match = _detect_time_grain_date_trunc(node)
         if match is not None:
