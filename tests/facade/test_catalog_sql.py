@@ -566,6 +566,24 @@ def test_current_schemas_non_first_index_returns_null() -> None:
     assert batch.rows == [{"s": None}]
 
 
+def test_information_schema_schema_name_is_public_not_datasource() -> None:
+    """Codex round 14: PostgreSQL clients filter
+    ``information_schema.schemata`` / ``information_schema.tables`` by
+    ``current_schema()`` (which returns ``'public'``) or by joining
+    against ``pg_namespace`` (where the schema is also ``'public'``).
+    The schema columns in our INFORMATION_SCHEMA rows must therefore
+    be ``'public'`` too — not the SLayer-side datasource name."""
+    relations = {
+        r.name: r for r in build_catalog_relations(_demo_catalog(), datasource="jaffle")
+    }
+    assert all(r["schema_name"] == "public" for r in relations["_is_schemata"].rows)
+    assert all(r["table_schema"] == "public" for r in relations["_is_tables"].rows)
+    assert all(r["schema_name"] == "public" for r in relations["_is_metrics"].rows)
+    assert all(r["schema_name"] == "public" for r in relations["_is_dimensions"].rows)
+    # _is_columns was already 'public' since round 1.
+    assert all(r["table_schema"] == "public" for r in relations["_is_columns"].rows)
+
+
 def test_information_schema_catalog_name_is_datasource() -> None:
     """CR/Codex review: PostgreSQL clients filter
     ``information_schema.*`` by ``current_database()`` (which the AST

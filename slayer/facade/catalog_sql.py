@@ -592,7 +592,7 @@ def _build_is_schemata(
         FacadeColumn(name="catalog_name", type=DataType.TEXT),
         FacadeColumn(name="schema_name", type=DataType.TEXT),
     ]
-    rows = [{"catalog_name": datasource, "schema_name": sch.name}
+    rows = [{"catalog_name": datasource, "schema_name": "public"}
             for sch in catalog.schemas]
     return CatalogRelation(name="_is_schemata", columns=columns, rows=rows)
 
@@ -606,7 +606,7 @@ def _build_is_tables(
         FacadeColumn(name="table_name", type=DataType.TEXT),
         FacadeColumn(name="table_type", type=DataType.TEXT),
     ]
-    rows = [{"table_catalog": datasource, "table_schema": sch.name,
+    rows = [{"table_catalog": datasource, "table_schema": "public",
              "table_name": tbl.name, "table_type": tbl.table_type}
             for sch in catalog.schemas for tbl in sch.tables]
     return CatalogRelation(name="_is_tables", columns=columns, rows=rows)
@@ -634,7 +634,7 @@ def _build_is_metrics(
             for m in tbl.metrics:
                 rows.append({
                     "catalog_name": datasource,
-                    "schema_name": sch.name, "table_name": tbl.name,
+                    "schema_name": "public", "table_name": tbl.name,
                     "metric_name": m.name, "description": m.description,
                     "data_type": (
                         datatype_to_jdbc(m.data_type) if m.data_type else None
@@ -667,7 +667,7 @@ def _build_is_dimensions(
             for d in tbl.dimensions:
                 rows.append({
                     "catalog_name": datasource,
-                    "schema_name": sch.name, "table_name": tbl.name,
+                    "schema_name": "public", "table_name": tbl.name,
                     "dimension_name": d.name, "description": d.description,
                     "data_type": datatype_to_jdbc(d.data_type),
                     "label": d.label, "is_time": d.is_time,
