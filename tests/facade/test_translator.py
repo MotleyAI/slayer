@@ -470,6 +470,30 @@ def test_cast_wrapped_time_trunc_creates_time_dimension(dialect) -> None:
     assert td.dimension.full_name == "ordered_at"
 
 
+def test_metabase_aliased_cast_time_trunc_group_by_validates(dialect) -> None:
+    """Round 20 follow-up: the SELECT aliases the time-truncated column
+    back to its bare name (``AS "ordered_at"``) AND the GROUP BY repeats
+    the same CAST/DATE_TRUNC expression unaliased. The projection's
+    derived dim set must register both the user alias and the canonical
+    ``month(ordered_at)`` form so the GROUP BY validator finds the match."""
+    result = translate(
+        sql=(
+            'SELECT CAST(date_trunc(\'month\', "orders"."ordered_at") AS DATE) '
+            'AS "ordered_at", "orders"."status", COUNT(*) AS "count" '
+            'FROM "orders" '
+            'GROUP BY CAST(date_trunc(\'month\', "orders"."ordered_at") AS DATE), '
+            '"orders"."status" '
+            'ORDER BY CAST(date_trunc(\'month\', "orders"."ordered_at") AS DATE) ASC, '
+            '"orders"."status" ASC'
+        ),
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.time_dimensions is not None
+    assert len(result.query.time_dimensions) == 1
+    assert result.query.time_dimensions[0].granularity == TimeGranularity.MONTH
+
+
 def test_time_grain_on_non_time_column_errors(dialect) -> None:
     with pytest.raises(TranslationError) as exc_info:
         translate(sql="SELECT month(status) FROM orders", catalog=_catalog(), dialect=dialect)

@@ -1113,6 +1113,10 @@ def _order_by_name(
         return f"{agg.inner_ref}_{agg.agg}"
     if agg is not None and agg.is_count_star:
         return "row_count"
+    grain_match = _detect_time_grain(body)
+    if grain_match is not None:
+        grain, col = grain_match
+        return _alias_for_time_grain(grain, col, strip_prefix=strip_prefix)
     return body.sql()
 
 
@@ -1331,6 +1335,15 @@ def _record_time_grain(
     plan.time_dims.append(td)
     plan.time_dim_by_name[dotted] = td
     plan.derived_dims.append(item.projected_name)
+    # When the projection aliases the time-grain expression (Metabase emits
+    # ``SELECT CAST(DATE_TRUNC('month', ordered_at) AS DATE) AS "ordered_at"``
+    # together with ``GROUP BY CAST(DATE_TRUNC('month', ordered_at) AS DATE)``)
+    # the GROUP BY validator computes the canonical ``month(ordered_at)`` form
+    # for the unaliased GROUP BY expression. Register both forms so either one
+    # validates against the projection's derived dimension set.
+    canonical = f"{item.time_grain.value}({dotted})"
+    if canonical != item.projected_name:
+        plan.derived_dims.append(canonical)
     engine_alias = f"{table.name}.{dotted}"
     plan.column_name_mapping.append((engine_alias, item.projected_name))
     plan.projection_types.append(item.time_grain_underlying.data_type)
@@ -1414,6 +1427,17 @@ def _translate_slayer_select(
     )
 
     item_by_projected_name = {item.projected_name: item for item in items}
+    # Also index time-grain items under their canonical ``grain(col)`` form so
+    # an unaliased Metabase-style GROUP BY / ORDER BY (``ORDER BY CAST(
+    # DATE_TRUNC('month', ordered_at) AS DATE)``) resolves against the
+    # aliased projection (``... AS "ordered_at"``).
+    for item in items:
+        if item.time_grain is None or item.time_grain_underlying is None:
+            continue
+        canonical = (
+            f"{item.time_grain.value}({item.time_grain_underlying.dimension_ref})"
+        )
+        item_by_projected_name.setdefault(canonical, item)
     order_items = _translate_order_by(
         parsed.args.get("order"), item_by_projected_name, strip_prefix=strip_prefix,
     )
