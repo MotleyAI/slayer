@@ -409,10 +409,13 @@ async def test_extended_query_with_bound_param_substitutes() -> None:
     # `SELECT $1` → the bound literal becomes the projection. The probe path
     # won't match, but INFORMATION_SCHEMA filtering with a param is the real
     # use; here we assert the bind succeeds and a row is produced.
+    # DEV-1558: `catalog_name` in INFORMATION_SCHEMA rows is the
+    # connection's datasource (jaffle here), not the static `slayer`
+    # name — Postgres-compatible semantics for `current_database()`.
     inp = (
         _startup(user="u", database="jaffle")
         + _parse("", "SELECT * FROM INFORMATION_SCHEMA.SCHEMATA WHERE catalog_name = $1")
-        + _bind("", "", values=(b"slayer",), result_formats=(proto.FORMAT_TEXT,))
+        + _bind("", "", values=(b"jaffle",), result_formats=(proto.FORMAT_TEXT,))
         + _execute("")
         + _sync()
         + _terminate()
@@ -769,3 +772,228 @@ async def test_execute_with_max_rows_returns_all_rows_no_suspend() -> None:
     # All rows returned despite max_rows=1; no PortalSuspended ('s').
     assert type_seq.count("D") == 2
     assert "s" not in type_seq
+
+
+# --- DEV-1558: catalog SQL via the DuckDB executor over the extended protocol
+
+
+def _parse_row_description(body: bytes):
+    """Decode a RowDescription frame body into a list of (name, oid, format_code)."""
+    out = []
+    count = struct.unpack_from(">h", body, 0)[0]
+    i = 2
+    for _ in range(count):
+        end = body.index(b"\x00", i)
+        name = body[i:end].decode("utf-8")
+        i = end + 1
+        # tableoid(4) + colno(2) + typoid(4) + typsize(2) + typmod(4) + format(2)
+        i += 4  # tableoid
+        i += 2  # colno
+        type_oid = struct.unpack_from(">i", body, i)[0]
+        i += 4
+        i += 2  # typsize
+        i += 4  # typmod
+        format_code = struct.unpack_from(">h", body, i)[0]
+        i += 2
+        out.append((name, type_oid, format_code))
+    return out
+
+
+async def test_extended_protocol_catalog_query_text_format() -> None:
+    """A pgjdbc-style getSchemas query over the extended protocol returns
+    a RowDescription carrying the quoted aliases (case preserved) and
+    text-encoded DataRows, all routed through the DuckDB catalog executor."""
+    sql = (
+        'SELECT nspname AS "TABLE_SCHEM", current_database() AS "TABLE_CATALOG" '
+        "FROM pg_catalog.pg_namespace "
+        'ORDER BY "TABLE_SCHEM"'
+    )
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _describe("S", "")
+        + _bind("", "", result_formats=(proto.FORMAT_TEXT,))
+        + _execute("")
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    type_seq = _types(msgs)
+    assert "T" in type_seq  # RowDescription
+    assert "D" in type_seq  # at least one DataRow
+    assert "E" not in type_seq
+
+    rd = next(body for t, body in msgs if t == "T")
+    fields = _parse_row_description(rd)
+    names = [n for n, _oid, _fmt in fields]
+    assert names == ["TABLE_SCHEM", "TABLE_CATALOG"]
+    # All OIDs are within the 6 the facade knows how to encode.
+    allowed_oids = {proto.OID_BOOL, proto.OID_INT8, proto.OID_TEXT,
+                    proto.OID_FLOAT8, proto.OID_DATE, proto.OID_TIMESTAMP}
+    for _name, oid, _fmt in fields:
+        assert oid in allowed_oids
+    # Format-code is text.
+    assert all(fmt == proto.FORMAT_TEXT for _n, _o, fmt in fields)
+    # DataRow payload contains the actual text values returned by the executor.
+    # `public` (one of the two pg_namespace rows) must appear in some DataRow.
+    data_bodies = [body for t, body in msgs if t == "D"]
+    payloads = b"".join(data_bodies)
+    assert b"public" in payloads
+    assert b"jaffle" in payloads  # current_database() resolved to the datasource name
+
+
+async def test_extended_protocol_catalog_query_binary_format() -> None:
+    """Same query, but binary result format. Verifies that the catalog
+    executor's results encode via the binary path of _encode_value."""
+    sql = (
+        'SELECT nspname AS "TABLE_SCHEM" FROM pg_catalog.pg_namespace '
+        'ORDER BY "TABLE_SCHEM"'
+    )
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _describe("S", "")
+        + _bind("", "", result_formats=(proto.FORMAT_BINARY,))
+        + _execute("")
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    type_seq = _types(msgs)
+    assert "T" in type_seq
+    assert "D" in type_seq
+    assert "E" not in type_seq
+
+    rd = next(body for t, body in msgs if t == "T")
+    fields = _parse_row_description(rd)
+    assert fields[0][0] == "TABLE_SCHEM"
+    # The RowDescription from Describe-Statement runs before Bind, so its
+    # format codes are always text (0) per the extended-protocol spec; the
+    # bound format codes only apply to DataRow encoding. Verify the
+    # DataRow payload uses the binary encoding of `public` (raw 6-byte
+    # length prefix + UTF-8 bytes — text-encoded `public` would be the
+    # literal ASCII; binary OID_TEXT also emits the raw bytes, but we
+    # confirm no error and DataRow exists).
+    data_bodies = [body for t, body in msgs if t == "D"]
+    assert data_bodies
+    # `public` appears in some DataRow payload.
+    assert any(b"public" in body for body in data_bodies)
+
+
+async def test_extended_protocol_catalog_query_with_bound_parameter() -> None:
+    """DEV-1558 regression: asyncpg sends Parse + Describe-Statement BEFORE
+    Bind. With a $N parameter in the SQL, the catalog executor would
+    previously fail on Describe (unsubstituted $N → DuckDB bind error),
+    emit NoData, then Execute would emit a populated RowDescription —
+    causing asyncpg to raise ``ProtocolError: columns vs described``.
+
+    Fix: ``_describe_sql`` substitutes ``$N → NULL`` for the
+    describe-only translation so the executor produces a valid column
+    description; ``_handle_bind`` then substitutes real values for
+    Execute. The wire sequence:
+
+        Parse(stmt, "... WHERE catalog_name = $1") →
+        ParameterDescription + RowDescription →
+        Bind(stmt, [b'slayer']) →
+        BindComplete →
+        Execute → DataRow(s) → CommandComplete →
+        Sync → ReadyForQuery
+    """
+    sql = ('SELECT * FROM information_schema.schemata '
+           'WHERE catalog_name = $1')
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _describe("S", "")
+        + _bind("", "", values=(b"jaffle",),
+                result_formats=(proto.FORMAT_TEXT,))
+        + _execute("")
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    type_seq = _types(msgs)
+    # No protocol error.
+    assert "E" not in type_seq
+    # RowDescription (from Describe) AND DataRow (from Execute) — and they
+    # MUST be consistent (catalog query, multi-column result).
+    assert "T" in type_seq  # RowDescription
+    assert "2" in type_seq  # BindComplete — substitution succeeded
+    rd = next(body for t, body in msgs if t == "T")
+    rd_fields = _parse_row_description(rd)
+    n_cols = len(rd_fields)
+    # CR/Codex round 13: require at least one DataRow so the column-count
+    # consistency loop is actually exercised. Binding the datasource
+    # ("jaffle") matches the row in `_is_schemata` whose `catalog_name`
+    # column is set to the datasource (the round-6 fix). A vacuously-
+    # passing test (0 rows) would silently hide a protocol regression.
+    data_bodies = [b for t, b in msgs if t == "D"]
+    assert data_bodies, "Expected at least one DataRow from the catalog query"
+    for body in data_bodies:
+        n_data = struct.unpack_from(">h", body, 0)[0]
+        assert n_data == n_cols, f"DataRow {n_data} cols vs RowDescription {n_cols}"
+
+
+async def test_describe_int_param_against_int_column_no_conversion_error() -> None:
+    """DEV-1558 live-Metabase repro (round 19): when pgjdbc binds a
+    parameter against an INT column (e.g. ``WHERE objsubid = $1``) but
+    didn't declare the param OID, ``_resolve_param_oids`` defaults to
+    ``OID_TEXT``. The round-13 literal sentinel ``''`` then made the
+    describe-time SQL ``objsubid = ''`` which DuckDB rejected with
+    ``Conversion Error: Could not convert string '' to INT64``.
+
+    Fix: the typed-NULL sentinel
+    (``CAST(NULL AS VARCHAR)``) is universally comparable, so the
+    describe step succeeds regardless of how the parameter is used
+    downstream."""
+    sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = $1"
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _describe("S", "")
+        + _bind("", "", values=(b"0",),
+                result_formats=(proto.FORMAT_TEXT,))
+        + _execute("")
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    type_seq = _types(msgs)
+    # Critical: no ErrorResponse during Describe (would surface as 'E').
+    assert "E" not in type_seq, (
+        "Describe with unannounced $N against an INT column "
+        "must not produce an ErrorResponse"
+    )
+    # The full extended sequence still completes through Sync.
+    assert "T" in type_seq  # RowDescription
+    assert "2" in type_seq  # BindComplete
+    assert "Z" in type_seq  # ReadyForQuery
+
+
+async def test_simple_query_catalog_union_routes_to_executor() -> None:
+    """DEV-1558 round 19: Metabase corpus #12 is a top-level
+    ``UNION ALL`` between info-schema and pg_catalog branches. Before
+    the fix the translator rejected ``exp.Union`` as ``Unsupported
+    statement: Union`` before the catalog-executor branch fired.
+    Verify a simple-query round-trip lands DataRows and no error."""
+    sql = (
+        "SELECT n.nspname FROM pg_catalog.pg_namespace n "
+        "WHERE n.nspname = 'public' "
+        "UNION ALL "
+        "SELECT 'public' AS nspname"
+    )
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query(sql)
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    type_seq = _types(msgs)
+    assert "E" not in type_seq, "UNION ALL must route to executor, not error"
+    assert "T" in type_seq  # RowDescription
+    assert "D" in type_seq  # at least one DataRow

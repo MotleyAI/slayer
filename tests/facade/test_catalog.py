@@ -338,6 +338,52 @@ def test_multiple_datasources_keep_disjoint_schemas() -> None:
     assert {t.name for t in schemas["dsB"].tables} == {"t"}
 
 
+def test_no_time_dimension_drops_first_last_aggregations() -> None:
+    """DEV-1558 live-Metabase repro: a model with no time dimension
+    must NOT expose ``<col>_first`` / ``<col>_last`` aggregations
+    because the engine can't resolve them — Metabase's flat fingerprint
+    scan ``SELECT name_first FROM products`` would error with
+    ``Aggregation 'first' requires a time column``."""
+    no_time = _model(
+        name="products",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="name", type=DataType.TEXT),
+            Column(name="price", type=DataType.DOUBLE),
+        ],
+    )
+    cat = build_catalog(models_by_datasource={"ds1": [no_time]})
+    table = _find_table(cat, schema="ds1", table="products")
+    metric_names = {m.name for m in table.metrics}
+    assert "name_first" not in metric_names
+    assert "name_last" not in metric_names
+    assert "price_first" not in metric_names
+    assert "price_last" not in metric_names
+    # Non-time-dependent aggregations survive — sanity.
+    assert "name_count" in metric_names
+    assert "name_min" in metric_names
+    assert "price_sum" in metric_names
+
+
+def test_default_time_dimension_keeps_first_last_aggregations() -> None:
+    """When ``default_time_dimension`` is set, the engine can resolve
+    flat ``<col>:first`` calls, so the facade exposes them."""
+    with_default = SlayerModel(
+        name="orders", data_source="ds1", sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="name", type=DataType.TEXT),
+            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        ],
+        default_time_dimension="ordered_at",
+    )
+    cat = build_catalog(models_by_datasource={"ds1": [with_default]})
+    table = _find_table(cat, schema="ds1", table="orders")
+    metric_names = {m.name for m in table.metrics}
+    assert "name_first" in metric_names
+    assert "name_last" in metric_names
+
+
 def test_metric_data_type_for_aggregations_uses_coarse_inference() -> None:
     model = _model(
         name="orders",

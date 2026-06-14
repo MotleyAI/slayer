@@ -162,8 +162,9 @@ async def test_information_schema_metrics(pg_demo_server) -> None:
         rows = await conn.fetch(
             "SELECT * FROM INFORMATION_SCHEMA.METRICS WHERE table_name = 'orders'"
         )
-        # WHERE is ignored (client-side filter); orders metrics must be present.
-        assert any(r["table_name"] == "orders" for r in rows)
+        # DEV-1558: WHERE is now honored server-side; result is filtered.
+        assert rows  # at least one row
+        assert all(r["table_name"] == "orders" for r in rows)
         assert any(r["metric_name"] == "row_count" for r in rows)
     finally:
         await conn.close()
@@ -184,9 +185,9 @@ async def test_pg_class_orders_present(pg_demo_server) -> None:
     conn = await _connect(host, port)
     try:
         rows = await conn.fetch("SELECT * FROM pg_catalog.pg_class WHERE relname = 'orders'")
-        by_name = {r["relname"]: r for r in rows}
-        assert "orders" in by_name
-        assert by_name["orders"]["relkind"] == "r"
+        # DEV-1558: WHERE is now honored; only `orders` comes back.
+        assert {r["relname"] for r in rows} == {"orders"}
+        assert rows[0]["relkind"] == "r"
     finally:
         await conn.close()
 
@@ -198,10 +199,171 @@ async def test_pg_attribute_has_orders_columns(pg_demo_server) -> None:
         oid = await conn.fetchval(
             "SELECT oid FROM pg_catalog.pg_class WHERE relname = 'orders'"
         )
-        # WHERE ignored, so filter client-side on attrelid.
-        rows = await conn.fetch("SELECT * FROM pg_catalog.pg_attribute")
-        orders_attrs = [r for r in rows if r["attrelid"] == oid]
-        assert len(orders_attrs) > 0
+        # DEV-1558: WHERE is now honored server-side. Inline the OID rather
+        # than binding $1: the pg facade types unannounced $N parameters as
+        # TEXT (per asyncpg's wire expectation), and asyncpg refuses to
+        # encode an int through a TEXT parameter.
+        rows = await conn.fetch(
+            f"SELECT * FROM pg_catalog.pg_attribute WHERE attrelid = {oid}"
+        )
+        assert len(rows) > 0
+        assert all(r["attrelid"] == oid for r in rows)
+    finally:
+        await conn.close()
+
+
+# --- DEV-1558 Metabase v0.62 schema-sync queries (live asyncpg) -------------
+
+
+async def test_metabase_get_tables_4way_join(pg_demo_server) -> None:
+    """Corpus #9 — Metabase's describe-tables join across pg_class +
+    pg_namespace + pg_description + pg_stat_user_tables. All demo tables
+    surface with descriptions; estimated_row_count is NULL."""
+    host, port = pg_demo_server
+    conn = await _connect(host, port)
+    try:
+        rows = await conn.fetch(
+            '''
+            SELECT "n"."nspname" AS "schema",
+                   "c"."relname" AS "name",
+                   CASE "c"."relkind"
+                        WHEN 'r' THEN 'TABLE'
+                        WHEN 'p' THEN 'PARTITIONED TABLE'
+                        WHEN 'v' THEN 'VIEW'
+                        WHEN 'f' THEN 'FOREIGN TABLE'
+                        WHEN 'm' THEN 'MATERIALIZED VIEW'
+                        ELSE NULL END AS "type",
+                   "d"."description" AS "description",
+                   NULLIF("stat"."n_live_tup", 0) AS "estimated_row_count"
+            FROM "pg_catalog"."pg_class" AS "c"
+            INNER JOIN "pg_catalog"."pg_namespace" AS "n"
+                ON "c"."relnamespace" = "n"."oid"
+            LEFT JOIN "pg_catalog"."pg_description" AS "d"
+                ON ("c"."oid" = "d"."objoid") AND ("d"."objsubid" = 0)
+                AND ("d"."classoid" = 'pg_class'::regclass)
+            LEFT JOIN "pg_stat_user_tables" AS "stat"
+                ON ("n"."nspname" = "stat"."schemaname")
+                AND ("c"."relname" = "stat"."relname")
+            WHERE ("n"."nspname" !~ '^pg_')
+              AND ("n"."nspname" <> 'information_schema')
+              AND c.relkind in ('r', 'p', 'v', 'f', 'm')
+              AND ("n"."nspname" IN ('public'))
+            ORDER BY "type" ASC, "schema" ASC, "name" ASC
+            '''
+        )
+        assert len(rows) >= 1
+        assert all(r["estimated_row_count"] is None for r in rows)
+        assert all(r["schema"] == "public" for r in rows)
+        # Columns came back with the aliased names exactly.
+        assert set(rows[0].keys()) == {
+            "schema", "name", "type", "description", "estimated_row_count",
+        }
+    finally:
+        await conn.close()
+
+
+async def test_metabase_describe_fields_columns_join(pg_demo_server) -> None:
+    """Corpus #12 — describe-fields via information_schema.columns +
+    table_constraints + key_column_usage with the COL_DESCRIPTION
+    REGCLASS double-cast."""
+    host, port = pg_demo_server
+    conn = await _connect(host, port)
+    try:
+        rows = await conn.fetch(
+            '''
+            SELECT "c"."column_name" AS "name",
+                   "c"."udt_name" AS "database-type",
+                   "c"."table_schema" AS "table-schema",
+                   "c"."table_name" AS "table-name",
+                   COL_DESCRIPTION(
+                       CAST(CAST(FORMAT('%I.%I',
+                           CAST("c"."table_schema" AS TEXT),
+                           CAST("c"."table_name" AS TEXT)) AS REGCLASS) AS OID),
+                       "c"."ordinal_position"
+                   ) AS "field-comment"
+            FROM "information_schema"."columns" AS "c"
+            WHERE c.table_schema !~ '^information_schema|catalog_history|pg_'
+              AND ("c"."table_schema" IN ('public'))
+            '''
+        )
+        assert rows
+        # Every row's table-schema is 'public'.
+        assert all(r["table-schema"] == "public" for r in rows)
+    finally:
+        await conn.close()
+
+
+async def test_metabase_table_privileges_cte(pg_demo_server) -> None:
+    """Corpus #8 — the table_privileges CTE. Exercises CTE recognition
+    in is_catalog_only + the privilege stub macros."""
+    host, port = pg_demo_server
+    conn = await _connect(host, port)
+    try:
+        rows = await conn.fetch(
+            '''
+            WITH table_privileges AS (
+                SELECT
+                    NULL as role,
+                    t.schemaname as schema,
+                    t.objectname as table,
+                    pg_catalog.has_any_column_privilege(current_user,
+                        t.schemaname || '.' || t.objectname, 'select') as select_priv,
+                    pg_catalog.has_table_privilege(current_user,
+                        t.schemaname || '.' || t.objectname, 'delete') as delete_priv
+                FROM (
+                    SELECT schemaname, tablename AS objectname FROM pg_catalog.pg_tables
+                    UNION
+                    SELECT schemaname, viewname AS objectname FROM pg_catalog.pg_views
+                    UNION
+                    SELECT schemaname, matviewname AS objectname FROM pg_catalog.pg_matviews
+                ) t
+                WHERE t.schemaname !~ '^pg_'
+                  AND t.schemaname <> 'information_schema'
+            )
+            SELECT t.* FROM table_privileges t
+            '''
+        )
+        assert rows
+        assert all(r["select_priv"] is True for r in rows)
+        assert all(r["delete_priv"] is True for r in rows)
+    finally:
+        await conn.close()
+
+
+async def test_metabase_fingerprint_three_part_qualified_column(pg_demo_server) -> None:
+    """Corpus #17 shape — Metabase fingerprint queries against the model
+    path use ``"public"."orders"."customer_id"`` three-part qualified column
+    refs. The translator must strip the schema/table prefix."""
+    host, port = pg_demo_server
+    conn = await _connect(host, port)
+    try:
+        rows = await conn.fetch(
+            '''
+            SELECT "public"."orders"."id" AS "id"
+            FROM "public"."orders" LIMIT 5
+            '''
+        )
+        assert rows
+        assert all("id" in r.keys() for r in rows)
+    finally:
+        await conn.close()
+
+
+async def test_metabase_fingerprint_substring_wrapper(pg_demo_server) -> None:
+    """Corpus #16 shape — Metabase fingerprint queries wrap text columns in
+    SUBSTRING(col, 1, 1234). The translator silently drops the wrapper and
+    projects the bare column under the user's alias."""
+    host, port = pg_demo_server
+    conn = await _connect(host, port)
+    try:
+        rows = await conn.fetch(
+            '''
+            SELECT SUBSTRING("public"."customers"."name", 1, 1234) AS "name_sub"
+            FROM "public"."customers" LIMIT 5
+            '''
+        )
+        assert rows
+        assert all("name_sub" in r.keys() for r in rows)
     finally:
         await conn.close()
 

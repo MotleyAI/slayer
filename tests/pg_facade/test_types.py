@@ -83,6 +83,25 @@ def test_value_to_text_date() -> None:
     assert t.value_to_text(dt.date(2026, 5, 27)) == b"2026-05-27"
 
 
+def test_value_to_text_datetime_in_date_column_is_narrowed() -> None:
+    """Round-20c live Metabase repro: DuckDB returns
+    ``CAST(date_trunc('month', ordered_at) AS DATE)`` as a
+    ``datetime.datetime``. With the column declared OID DATE, the wire
+    payload must be ``"2024-06-01"`` (date-only), not the timestamp
+    string — pgjdbc's ``TimestampUtils.toLocalDate`` rejects the latter
+    with ``DateTimeException`` for a DATE-typed column."""
+    ts = dt.datetime(2024, 6, 1, 0, 0, 0)
+    assert t.value_to_text(ts, OID_DATE) == b"2024-06-01"
+    # Default (no oid / OID_TEXT) preserves the timestamp shape — the
+    # caller decides what the column is.
+    assert t.value_to_text(ts) == b"2024-06-01 00:00:00"
+
+
+def test_value_to_text_datetime_in_timestamp_column_is_preserved() -> None:
+    ts = dt.datetime(2024, 6, 1, 12, 30, 45)
+    assert t.value_to_text(ts, OID_TIMESTAMP) == b"2024-06-01 12:30:45"
+
+
 def test_value_to_text_str_and_bytes() -> None:
     assert t.value_to_text("hello") == b"hello"
     assert t.value_to_text(b"raw") == b"raw"

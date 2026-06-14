@@ -39,10 +39,10 @@ from slayer.facade.translator import (
     TranslationError,
     translate,
 )
+from slayer.facade.catalog_sql import executor_for
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.auth import verify_password
 from slayer.pg_facade.identity import parameter_status_defaults, version_string
-from slayer.pg_facade.pg_catalog import match_pg_catalog
 from slayer.pg_facade.probes import match_pg_probe
 from slayer.pg_facade.types import (
     datatype_to_oid,
@@ -430,8 +430,11 @@ class PgConnection:
                     message=f"prepared statement {msg.name!r} does not exist",
                 )
                 return
-            self._writer.write(proto.encode_parameter_description(_resolve_param_oids(stmt)))
-            self._describe_sql(stmt.sql, result_formats=None)
+            param_oids = _resolve_param_oids(stmt)
+            self._writer.write(proto.encode_parameter_description(param_oids))
+            self._describe_sql(
+                stmt.sql, result_formats=None, param_oids=param_oids,
+            )
         else:
             portal = self._portals.get(msg.name)
             if portal is None:
@@ -440,11 +443,30 @@ class PgConnection:
                     message=f"portal {msg.name!r} does not exist",
                 )
                 return
-            self._describe_sql(portal.sql, result_formats=portal.result_format_codes)
+            # Portal-describe: the bound values have already been
+            # substituted into portal.sql by _handle_bind, so no $N
+            # remain to typed-sentinel.
+            self._describe_sql(
+                portal.sql, result_formats=portal.result_format_codes,
+            )
 
-    def _describe_sql(self, sql: str, *, result_formats: Optional[List[int]]) -> None:
+    def _describe_sql(
+        self, sql: str, *, result_formats: Optional[List[int]],
+        param_oids: Optional[List[int]] = None,
+    ) -> None:
+        # DEV-1558 fix: the catalog executor's Describe path runs the SQL
+        # against DuckDB to obtain the cursor's column description. When the
+        # prepared-statement form still has ``$N`` placeholders (asyncpg
+        # sends Parse + Describe-Statement BEFORE Bind), DuckDB raises a
+        # bind-parameter error. Substitute each ``$N`` with a TYPED
+        # sentinel literal derived from the parameter's declared OID so
+        # the resulting RowDescription advertises the correct projection
+        # types even when ``$N`` appears in the projection itself. The
+        # real value substitution still happens in ``_handle_bind`` for
+        # Execute (Codex round 13 review).
+        describe_sql = _substitute_typed_sentinels(sql, param_oids or [])
         try:
-            result = self._translate(sql)
+            result = self._translate(describe_sql)
         except TranslationError:
             # Describe must not raise to the wire here; the subsequent Execute
             # surfaces the error. Report NoData so the client can proceed.
@@ -516,7 +538,11 @@ class PgConnection:
             self._catalog,
             dialect="postgres",
             probe_matcher=self._probe_matcher,
-            catalog_matchers=[match_pg_catalog],
+            # Pass a lazy factory so the DuckDB executor is only
+            # materialised when ``is_catalog_only(parsed)`` is True
+            # (Codex round 16). Non-catalog model queries skip the
+            # construction cost entirely.
+            catalog_sql_executor=lambda: executor_for(self._catalog, self._datasource),
         )
 
     def _probe_matcher(self, parsed: exp.Expression) -> Optional[RowBatch]:
@@ -572,10 +598,16 @@ class PgConnection:
                 for i, col in enumerate(batch.columns)
             ]
             self._writer.write(proto.encode_row_description(fields))
+        # The catalog SQL executor stashes a position-aware key list on
+        # the batch so duplicate output column names (Postgres allows
+        # ``SELECT oid AS x, relname AS x``) don't collapse to a single
+        # dict entry. Fall back to ``col.name`` for batches built by the
+        # canned probe / info-schema paths where duplicates can't arise.
+        row_keys = getattr(batch, "_row_keys", None) or [c.name for c in batch.columns]
         for row in batch.rows:
             values = [
-                _encode_value(row.get(col.name), datatype_to_oid(col.type), formats[i])
-                for i, col in enumerate(batch.columns)
+                _encode_value(row.get(row_keys[i]), datatype_to_oid(batch.columns[i].type), formats[i])
+                for i in range(len(batch.columns))
             ]
             self._writer.write(proto.encode_data_row(values))
         self._writer.write(proto.encode_command_complete(f"SELECT {len(batch.rows)}"))
@@ -668,6 +700,44 @@ class PgConnection:
 # --- module-level helpers ----------------------------------------------------
 
 
+# Typed sentinel literal per parameter OID. Used by Describe-Statement to
+# substitute ``$N`` placeholders BEFORE Bind so DuckDB can produce a
+# valid RowDescription whose column types reflect the projection's
+# dependence on the parameter (Codex round 13).
+#
+# Each sentinel is a typed NULL (``CAST(NULL AS <type>)``) rather than a
+# concrete literal: NULL is universally comparable (``col = CAST(NULL AS
+# TEXT)`` always returns NULL/FALSE under DuckDB's standard SQL
+# semantics), so we never trigger a conversion error like
+# ``Conversion Error: Could not convert string '' to INT64`` when the
+# parameter appears in a comparison against a column of a different
+# type than the pgjdbc-declared OID — Metabase corpus #9 had pgjdbc
+# declaring text OIDs for parameters that compared against int columns
+# (``objsubid = $N``), which the literal ``''`` sentinel turned into
+# an unanswerable text-vs-int comparison.
+_TYPED_SENTINEL_BY_OID: Dict[int, str] = {
+    proto.OID_TEXT: "CAST(NULL AS VARCHAR)",
+    proto.OID_INT8: "CAST(NULL AS BIGINT)",
+    proto.OID_FLOAT8: "CAST(NULL AS DOUBLE)",
+    proto.OID_BOOL: "CAST(NULL AS BOOLEAN)",
+    proto.OID_DATE: "CAST(NULL AS DATE)",
+    proto.OID_TIMESTAMP: "CAST(NULL AS TIMESTAMP)",
+}
+
+
+def _substitute_typed_sentinels(sql: str, param_oids: List[int]) -> str:
+    """Replace each ``$N`` placeholder with a typed sentinel literal
+    derived from ``param_oids[N-1]``. Falls back to bare ``NULL`` when
+    the OID is unknown (e.g. extra placeholders past the declared list)
+    so DuckDB picks the most permissive coercion path."""
+    def repl(match):
+        idx = int(match.group(1)) - 1
+        if 0 <= idx < len(param_oids):
+            return _TYPED_SENTINEL_BY_OID.get(param_oids[idx], "NULL")
+        return "NULL"
+    return _PARAM_PLACEHOLDER.sub(repl, sql)
+
+
 def _resolve_param_oids(stmt: _PreparedStatement) -> List[int]:
     """The parameter OIDs to report in ParameterDescription.
 
@@ -718,4 +788,4 @@ def _sqlstate_for(exc: TranslationError) -> str:
 def _encode_value(value, oid: int, fmt: int) -> Optional[bytes]:
     if fmt == proto.FORMAT_BINARY:
         return value_to_binary(value, oid)
-    return value_to_text(value)
+    return value_to_text(value, oid)
