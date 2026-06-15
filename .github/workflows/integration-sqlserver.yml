@@ -1,0 +1,141 @@
+name: Integration - SQL Server
+
+# DEV-1564: per-dialect CI for SQL Server — pytest suite + verify.py
+# end-to-end check. Path-gated to T-SQL dialect file, the SQL Server
+# example, the shared SQL generator + dialect base, and this file.
+#
+# SQL Server is the only Tier-1 dialect that had no CI before this
+# workflow existed.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'slayer/sql/dialects/tsql.py'
+      - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/generator.py'
+      - 'examples/sqlserver/**'
+      - 'tests/integration/test_integration_sqlserver.py'
+      - '.github/workflows/integration-sqlserver.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'slayer/sql/dialects/tsql.py'
+      - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/generator.py'
+      - 'examples/sqlserver/**'
+      - 'tests/integration/test_integration_sqlserver.py'
+      - '.github/workflows/integration-sqlserver.yml'
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ODBC Driver 18 for SQL Server
+        # The pytest suite uses pyodbc IN-PROCESS on the runner host (unlike
+        # verify-example, where pyodbc lives only inside Docker containers
+        # built from examples/sqlserver/Dockerfile). Microsoft's apt repo
+        # is the canonical install path on Ubuntu.
+        run: |
+          curl -sSL https://packages.microsoft.com/keys/microsoft.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc > /dev/null
+          curl -sSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list \
+            | sudo tee /etc/apt/sources.list.d/mssql-release.list > /dev/null
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Install dependencies
+        run: poetry install -E all --with dev
+
+      - name: Verify testcontainers[mssql] extra is importable
+        run: poetry run python -c "import testcontainers.mssql"
+
+      - name: Verify ODBC Driver 18 is visible to pyodbc
+        run: |
+          poetry run python -c "import pyodbc; \
+            drivers = pyodbc.drivers(); \
+            assert 'ODBC Driver 18 for SQL Server' in drivers, \
+              f'Missing ODBC Driver 18 — installed: {drivers!r}'; \
+            print('ODBC drivers:', drivers)"
+
+      - name: Run SQL Server integration tests
+        timeout-minutes: 25
+        run: |
+          poetry run pytest tests/integration/test_integration_sqlserver.py \
+            -v -m integration --timeout=300
+
+  verify-example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install verify.py dependencies
+        # verify.py talks HTTP to the slayer container; the ODBC driver lives
+        # inside the container (built from examples/sqlserver/Dockerfile) so
+        # the runner host doesn't need msodbcsql18 here.
+        run: pip install sqlalchemy
+
+      - name: Make slayer_data writable for container user
+        working-directory: examples/sqlserver
+        run: chmod -R 777 slayer_data
+
+      - name: Build images
+        working-directory: examples/sqlserver
+        run: docker compose build
+
+      - name: Start DB + seed
+        working-directory: examples/sqlserver
+        run: docker compose up -d --wait --wait-timeout 300 seed
+
+      - name: Start slayer service
+        working-directory: examples/sqlserver
+        run: docker compose up -d slayer
+
+      - name: Wait for SLayer API to accept connections
+        working-directory: examples/sqlserver
+        run: |
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:5143/datasources >/dev/null; then
+              echo "SLayer API ready after ${i} attempts"
+              exit 0
+            fi
+            if [ "$(docker compose ps -q slayer | xargs -r docker inspect -f '{{.State.Running}}')" = "false" ]; then
+              echo "slayer container exited before becoming ready — logs:" >&2
+              docker compose logs --no-color slayer
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "SLayer API never came up — logs:" >&2
+          docker compose logs --no-color slayer
+          exit 1
+
+      - name: Run verify.py
+        timeout-minutes: 5
+        run: python examples/sqlserver/verify.py
+
+      - name: Dump all container logs
+        if: always()
+        working-directory: examples/sqlserver
+        run: docker compose logs --no-color
+
+      - name: Tear down stack
+        if: always()
+        working-directory: examples/sqlserver
+        run: docker compose down -v
