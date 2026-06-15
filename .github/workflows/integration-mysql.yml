@@ -22,6 +22,9 @@ on:
       - 'slayer/engine/**'
       - 'slayer/core/**'
       - 'slayer/storage/**'
+      - 'slayer/api/**'
+      - 'slayer/mcp/**'
+      - 'slayer/cli.py'
       # Dependency / lock-file changes
       - 'pyproject.toml'
       - 'poetry.lock'
@@ -36,6 +39,9 @@ on:
       - 'slayer/engine/**'
       - 'slayer/core/**'
       - 'slayer/storage/**'
+      - 'slayer/api/**'
+      - 'slayer/mcp/**'
+      - 'slayer/cli.py'
       - 'pyproject.toml'
       - 'poetry.lock'
   workflow_dispatch:
