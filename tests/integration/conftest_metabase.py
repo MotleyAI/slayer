@@ -1,8 +1,11 @@
 """Session-scoped fixture stack for the live-Metabase e2e suite (DEV-1562).
 
-Boots one Metabase Docker container (Metabase v0.62.1.5) plus two pg-serve
-instances — one no-token used by Metabase via the loopback fallback, one
-token-protected used for auth-related tests — and yields a small typed
+Boots one Metabase Docker container (Metabase v0.62.1.5) plus two
+token-protected pg-serve instances (both bound to ``0.0.0.0`` with
+per-session random tokens so the Metabase container can reach them via
+``host.docker.internal``). The primary instance backs Metabase + most
+tests; the second is used by the auth-error tests (L.2 / L.3) where the
+test deliberately presents a wrong password. Yields a small typed
 ``MetabaseE2EEnv`` to every test.
 
 Skips cleanly when Docker is unavailable or the container never reaches a

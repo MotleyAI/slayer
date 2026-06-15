@@ -1107,7 +1107,7 @@ def test_date_psycopg_text_round_trip(metabase_e2e_env: MetabaseE2EEnv) -> None:
     # psycopg2 imported at module top via importorskip
 
     conn = psycopg2.connect(
-        host=host, port=port, dbname="jaffle_shop", user="tester", password="x",  # NOSONAR(S6437, S2068) — fixture credential; no-token pg-serve loopback fallback
+        host=host, port=port, dbname="jaffle_shop", user="tester", password=metabase_e2e_env.pg_primary_password,
         connect_timeout=10,
     )
     try:
@@ -1140,7 +1140,7 @@ async def test_timestamp_round_trip_both_formats(metabase_e2e_env: MetabaseE2EEn
 
     # psycopg2 imported at module top via importorskip
     conn2 = psycopg2.connect(
-        host=host, port=port, dbname="jaffle_shop", user="tester", password="x",  # NOSONAR(S6437, S2068) — fixture credential; no-token pg-serve loopback fallback
+        host=host, port=port, dbname="jaffle_shop", user="tester", password=metabase_e2e_env.pg_primary_password,
         connect_timeout=10,
     )
     try:
@@ -1175,7 +1175,7 @@ async def test_boolean_double_int_round_trip_both_formats(metabase_e2e_env: Meta
 
     # psycopg2 imported at module top via importorskip
     conn2 = psycopg2.connect(
-        host=host, port=port, dbname="jaffle_shop", user="tester", password="x",  # NOSONAR(S6437, S2068) — fixture credential; no-token pg-serve loopback fallback
+        host=host, port=port, dbname="jaffle_shop", user="tester", password=metabase_e2e_env.pg_primary_password,
         connect_timeout=10,
     )
     try:

@@ -243,7 +243,7 @@ poetry run pytest -m metabase_e2e tests/integration/test_metabase_e2e.py -v
 - Integration tests (SQLite): `tests/integration/test_integration.py`
 - Integration tests (Postgres): `tests/integration/test_integration_postgres.py` — uses pytest-postgresql (auto-spawns temp Postgres)
 - Integration tests (DuckDB): `tests/integration/test_integration_duckdb.py` — uses duckdb directly (no Docker)
-- **Live-Metabase e2e (DEV-1562)**: `tests/integration/test_metabase_e2e.py` (marker: `metabase_e2e`). Boots one `metabase/metabase:v0.62.1.5` container alongside two pg-serve instances (no-token for Metabase, token-protected for auth-error tests) and drives ~62 cases against the real Metabase REST API + pgjdbc protocol. Skips cleanly when Docker is unavailable. Local one-shot ≈ 4 minutes. CI runs only on PRs that touch `slayer/pg_facade/`, `slayer/facade/`, `slayer/demo/`, the e2e test files, or `pyproject.toml` / `poetry.lock` (see `.github/workflows/pg-facade-e2e.yml`).
+- **Live-Metabase e2e (DEV-1562)**: `tests/integration/test_metabase_e2e.py` (marker: `metabase_e2e`). Boots one `metabase/metabase:v0.62.1.5` container alongside two token-protected pg-serve instances (per-session random tokens, both bound on `0.0.0.0` so the container reaches them via `host.docker.internal`; the second instance backs the L.2 / L.3 bad-password tests). Drives ~62 cases against the real Metabase REST API + pgjdbc protocol. Skips cleanly when Docker is unavailable. Local one-shot ≈ 4 minutes. CI runs only on PRs that touch `slayer/pg_facade/`, `slayer/facade/`, `slayer/demo/`, the e2e test files, or `pyproject.toml` / `poetry.lock` (see `.github/workflows/pg-facade-e2e.yml`).
 - Shared fixtures in `tests/conftest.py`
 
 ## Linting
