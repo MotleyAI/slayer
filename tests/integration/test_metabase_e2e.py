@@ -37,7 +37,7 @@ pytestmark = [pytest.mark.metabase_e2e, pytest.mark.integration]
 # ---------------------------------------------------------------------------
 
 
-async def _asyncpg_connect(host: str, port: int, *, password: str = "x", database: str = "jaffle_shop"):
+async def _asyncpg_connect(host: str, port: int, *, password: str = "x", database: str = "jaffle_shop"):  # NOSONAR(S2068) — fixture credential; no-token pg-serve accepts any password via loopback fallback
     return await asyncpg.connect(
         host=host, port=port, user="tester", password=password, database=database, timeout=10,
     )
@@ -932,7 +932,7 @@ def test_date_psycopg_text_round_trip(metabase_e2e_env: MetabaseE2EEnv) -> None:
     import psycopg2
 
     conn = psycopg2.connect(
-        host=host, port=port, dbname="jaffle_shop", user="tester", password="x",
+        host=host, port=port, dbname="jaffle_shop", user="tester", password="x",  # NOSONAR(S6437, S2068) — fixture credential; no-token pg-serve loopback fallback
         connect_timeout=10,
     )
     try:
@@ -961,7 +961,7 @@ async def test_timestamp_round_trip_both_formats(metabase_e2e_env: MetabaseE2EEn
 
     import psycopg2
     conn2 = psycopg2.connect(
-        host=host, port=port, dbname="jaffle_shop", user="tester", password="x",
+        host=host, port=port, dbname="jaffle_shop", user="tester", password="x",  # NOSONAR(S6437, S2068) — fixture credential; no-token pg-serve loopback fallback
         connect_timeout=10,
     )
     try:
@@ -993,7 +993,7 @@ async def test_boolean_double_int_round_trip_both_formats(metabase_e2e_env: Meta
 
     import psycopg2
     conn2 = psycopg2.connect(
-        host=host, port=port, dbname="jaffle_shop", user="tester", password="x",
+        host=host, port=port, dbname="jaffle_shop", user="tester", password="x",  # NOSONAR(S6437, S2068) — fixture credential; no-token pg-serve loopback fallback
         connect_timeout=10,
     )
     try:
@@ -1029,7 +1029,7 @@ def test_unsupported_sql_returns_error_envelope(metabase_e2e_env: MetabaseE2EEnv
     assert "error" in body or body.get("status") != "completed"
 
 
-async def test_bad_password_returns_28P01(metabase_e2e_env: MetabaseE2EEnv) -> None:
+async def test_bad_password_returns_28P01(metabase_e2e_env: MetabaseE2EEnv) -> None:  # NOSONAR(S1542) — SQLSTATE codes are conventionally uppercase; the test name is clearer this way
     host, port, _token = metabase_e2e_env.pg_token
     with pytest.raises(Exception) as exc:
         await _asyncpg_connect(host, port, password="wrong-password")
@@ -1039,7 +1039,7 @@ async def test_bad_password_returns_28P01(metabase_e2e_env: MetabaseE2EEnv) -> N
     assert "28P01" in str(sqlstate) or isinstance(err, asyncpg.InvalidPasswordError)
 
 
-async def test_nonexistent_database_returns_3D000(metabase_e2e_env: MetabaseE2EEnv) -> None:
+async def test_nonexistent_database_returns_3D000(metabase_e2e_env: MetabaseE2EEnv) -> None:  # NOSONAR(S1542) — SQLSTATE codes are conventionally uppercase
     host, port, token = metabase_e2e_env.pg_token
     with pytest.raises(Exception) as exc:
         await asyncpg.connect(
@@ -1057,12 +1057,17 @@ async def test_nonexistent_database_returns_3D000(metabase_e2e_env: MetabaseE2EE
 
 
 def test_concurrent_dataset_requests(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    client = metabase_e2e_env.client
+    primary = metabase_e2e_env.client
     table_names = ["orders", "customers", "products", "stores", "items", "tweets"]
-    table_ids = [client.table_id_by_name(n) for n in table_names]
+    table_ids = [primary.table_id_by_name(n) for n in table_names]
 
     def run_one(tid: int) -> int:
-        payload = client.dataset(encode_mbql_query(source_table=tid, aggregation=[["count"]]))
+        # Per-worker MetabaseClient so each thread carries its own
+        # ``requests.Session`` (Session is not guaranteed thread-safe). Without
+        # this, transport contention can show up as a pg-serve concurrency
+        # failure when the real fault is on the client side.
+        worker = metabase_e2e_env.make_client(primary.db_id)
+        payload = worker.dataset(encode_mbql_query(source_table=tid, aggregation=[["count"]]))
         return _dataset_rows(payload)[0][0]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:

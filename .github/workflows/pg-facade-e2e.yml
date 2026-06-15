@@ -74,7 +74,13 @@ jobs:
       - name: Dump Metabase container logs on failure
         if: failure()
         run: |
-          for cid in $(docker ps -aq --filter ancestor=metabase/metabase:v0.62.1.5); do
-            echo "=== container $cid ==="
-            docker logs --tail=400 "$cid" || true
-          done
+          if [ -f /tmp/slayer-metabase-e2e-container.log ]; then
+            echo "=== /tmp/slayer-metabase-e2e-container.log ==="
+            cat /tmp/slayer-metabase-e2e-container.log
+          else
+            echo "No fixture-side log dump found — falling back to docker logs."
+            for cid in $(docker ps -aq --filter ancestor=metabase/metabase:v0.62.1.5); do
+              echo "=== container $cid ==="
+              docker logs --tail=400 "$cid" || true
+            done
+          fi

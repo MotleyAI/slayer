@@ -19,6 +19,10 @@ from typing import List, Optional, Tuple
 
 import pytest
 
+from slayer.cli import _prepare_demo, _resolve_storage
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.pg_facade.connection import PgConnection
+
 DEMO_DATASOURCE = "jaffle_shop"
 
 
@@ -27,6 +31,7 @@ def start_pg_demo_server(
     token: Optional[str],
     log_records: Optional[List[logging.LogRecord]] = None,
     storage_sink: Optional[list] = None,
+    bind_host: str = "127.0.0.1",
 ) -> Tuple[asyncio.AbstractEventLoop, threading.Thread, str, int]:
     """Boot a Postgres-facade server backed by the Jaffle Shop demo.
 
@@ -43,11 +48,17 @@ def start_pg_demo_server(
     appended to it after boot so tests can mutate stored ``SlayerModel``s
     (e.g. flip ``Column.hidden`` for the B.3 isolation test) and trigger
     re-sync.
-    """
-    from slayer.cli import _prepare_demo, _resolve_storage
-    from slayer.engine.query_engine import SlayerQueryEngine
-    from slayer.pg_facade.connection import PgConnection
 
+    ``bind_host`` controls which interface the asyncio server listens on.
+    Default ``"127.0.0.1"`` matches the legacy behaviour of the asyncpg
+    integration suite (everything in the same host network namespace). The
+    Metabase e2e suite passes ``"0.0.0.0"`` so a Metabase container reaching
+    in via ``host.docker.internal`` (resolved by ``--add-host
+    host.docker.internal:host-gateway`` on Linux runners) finds the socket
+    accepting on the host's external interface. The returned tuple always
+    reports ``"127.0.0.1"`` as the host string so loopback-based callers
+    (asyncpg, psycopg in-process) keep using the cleaner address.
+    """
     args = argparse.Namespace(
         storage=tempfile.mkdtemp(prefix="slayer-pg-it-"),
         models_dir=None,
@@ -91,7 +102,7 @@ def start_pg_demo_server(
                 writer.close()
 
         async def _setup():
-            server = await asyncio.start_server(handle, host="127.0.0.1", port=0)
+            server = await asyncio.start_server(handle, host=bind_host, port=0)
             holder["port"] = server.sockets[0].getsockname()[1]
             holder["server"] = server
             ready.set()

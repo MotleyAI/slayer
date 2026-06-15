@@ -45,7 +45,7 @@ jobs:
 
       - name: Run integration tests
         timeout-minutes: 20
-        run: poetry run pytest tests/ -v -m integration --timeout=180
+        run: poetry run pytest tests/ -v -m "integration and not metabase_e2e" --timeout=180
 
   integration-examples:
     runs-on: ubuntu-latest

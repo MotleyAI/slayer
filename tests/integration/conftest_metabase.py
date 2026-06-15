@@ -213,6 +213,14 @@ def _dump_container_logs(container_id: str, tail: int = 200) -> str:
         return f"<log dump failed: {exc}>"
 
 
+# Where the fixture parks the Metabase container's tail logs on teardown so
+# the CI workflow's ``if: failure()`` step can surface them. The container
+# is started with ``--rm`` and stopped during fixture teardown, so by the
+# time the workflow's log-dump step runs the container is already gone —
+# we dump the logs to a file ahead of ``docker stop``.
+CONTAINER_LOG_DUMP_PATH = "/tmp/slayer-metabase-e2e-container.log"  # NOSONAR(S5443) — fixed path for CI workflow to read
+
+
 def _wait_for_health(base_url: str, timeout_s: int) -> bool:
     import requests
 
@@ -376,9 +384,15 @@ def metabase_e2e_env() -> Iterator[MetabaseE2EEnv]:
 
     try:
         loop_a, thread_a, host_a, port_a = start_pg_demo_server(
-            token=None, log_records=log_records, storage_sink=storage_sink,
+            token=None,
+            log_records=log_records,
+            storage_sink=storage_sink,
+            bind_host="0.0.0.0",  # NOSONAR(S104) — required so Metabase-in-container reaches pg-serve via host.docker.internal
         )
-        loop_b, thread_b, host_b, port_b = start_pg_demo_server(token=TOKEN_VALUE)
+        loop_b, thread_b, host_b, port_b = start_pg_demo_server(
+            token=TOKEN_VALUE,
+            bind_host="0.0.0.0",  # NOSONAR(S104) — same; Metabase auth path test (A.5) drives it via host.docker.internal too
+        )
 
         container_id, host_port = _run_metabase_container()
         base_url = f"http://127.0.0.1:{host_port}"
@@ -435,6 +449,11 @@ def metabase_e2e_env() -> Iterator[MetabaseE2EEnv]:
         yield env
     finally:
         if container_id:
+            try:
+                with open(CONTAINER_LOG_DUMP_PATH, "w") as f:
+                    f.write(_dump_container_logs(container_id, tail=400))
+            except Exception:
+                pass
             _stop_container(container_id)
         for loop, thread in ((loop_b, thread_b), (loop_a, thread_a)):
             if loop is None or thread is None:
