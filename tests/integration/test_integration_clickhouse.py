@@ -108,7 +108,7 @@ def _create_module_db(clickhouse_container) -> str:
 
 def _drop_module_db(clickhouse_container, db_name: str) -> None:
     """Dispose cached SA engines, then drop the database."""
-    for engine in list(engine_factory._engine_cache.values()):
+    for engine in engine_factory._engine_cache.values():
         engine.dispose()
     engine_factory.reset_cache()
 
@@ -229,7 +229,7 @@ class TestClickHouseQueries:
     async def test_sum_measure(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
         result = await clickhouse_env.execute(query=query)
-        assert float(result.data[0]["orders.total_sum"]) == 875.0
+        assert float(result.data[0]["orders.total_sum"]) == 875.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
     async def test_avg_measure(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "avg_amount:avg"}])
@@ -296,7 +296,7 @@ class TestClickHouseQueries:
         result = await clickhouse_env.execute(query=query)
         completed = next(r for r in result.data if r["orders.status"] == "completed")
         assert completed["orders._count"] == 3
-        assert float(completed["orders.total_sum"]) == 450.0
+        assert float(completed["orders.total_sum"]) == 450.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
     async def test_time_dimension_month_granularity(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
@@ -495,7 +495,7 @@ def clickhouse_cross_model_env(clickhouse_container):
 
 
 @pytest.mark.integration
-class TestCrossModelAndMultistage_ClickHouse:
+class TestCrossModelAndMultistageClickHouse:
     async def test_cross_model_measure(self, clickhouse_cross_model_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -569,15 +569,19 @@ class TestClickHouseMedianPercentile:
         result = await clickhouse_env.execute(query=query)
         assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0, abs=50.0)
 
-    async def test_median_emits_native_function(self, clickhouse_env: SlayerQueryEngine) -> None:
-        """ClickhouseDialect.build_median emits literal median(x) — not
-        sqlglot's percentile_cont fallback. Pin via dry_run."""
+    async def test_median_emits_native_aggregate(self, clickhouse_env: SlayerQueryEngine) -> None:
+        """ClickhouseDialect.build_median routes through sqlglot's ClickHouse
+        dialect which emits ``quantile(0.5)(x)`` natively. Pin the SQL shape
+        via dry_run so a regression to ``percentile_cont`` is caught."""
         query = SlayerQuery(source_model="orders", measures=[{"formula": "total:median"}])
         dry = await clickhouse_env.execute(query=query, dry_run=True)
         assert dry.sql is not None
         sql_lower = dry.sql.lower()
-        assert "median(" in sql_lower, (
-            f"ClickHouse must emit native median(x) call. Got:\n{dry.sql}"
+        assert "quantile(0.5)(" in sql_lower or "median(" in sql_lower, (
+            f"ClickHouse median must emit native quantile(0.5)(x) or median(x). Got:\n{dry.sql}"
+        )
+        assert "percentile_cont" not in sql_lower, (
+            f"ClickHouse median must not fall through to PERCENTILE_CONT. Got:\n{dry.sql}"
         )
 
     async def test_percentile_uses_parametric_quantile(self, clickhouse_env: SlayerQueryEngine) -> None:

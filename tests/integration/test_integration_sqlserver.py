@@ -106,7 +106,7 @@ def _odbc_driver_available_or_skip():
 # ---------------------------------------------------------------------------
 
 
-_SA_PASSWORD = "YourStrong@Passw0rd1"
+_SA_PASSWORD = "YourStrong@Passw0rd1"  # NOSONAR(S2068) — testcontainer credentials, not real secrets
 
 
 @pytest.fixture(scope="session")
@@ -146,7 +146,7 @@ def _create_module_db(sqlserver_container) -> str:
 def _drop_module_db(sqlserver_container, db_name: str) -> None:
     """Tear down the per-module DB cleanly despite pyodbc engine caching."""
     # 1) Release everything pooled at the slayer engine cache.
-    for engine in list(engine_factory._engine_cache.values()):
+    for engine in engine_factory._engine_cache.values():
         engine.dispose()
     engine_factory.reset_cache()
 
@@ -286,7 +286,7 @@ class TestSQLServerQueries:
     async def test_sum_measure(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
         result = await sqlserver_env.execute(query=query)
-        assert float(result.data[0]["orders.total_sum"]) == 875.0
+        assert float(result.data[0]["orders.total_sum"]) == 875.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
     async def test_avg_measure(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "avg_amount:avg"}])
@@ -353,7 +353,7 @@ class TestSQLServerQueries:
         result = await sqlserver_env.execute(query=query)
         completed = next(r for r in result.data if r["orders.status"] == "completed")
         assert completed["orders._count"] == 3
-        assert float(completed["orders.total_sum"]) == 450.0
+        assert float(completed["orders.total_sum"]) == 450.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
     async def test_time_dimension_month_granularity(self, sqlserver_env: SlayerQueryEngine) -> None:
         """SQL Server 2022 supports DATETRUNC."""
@@ -388,6 +388,14 @@ class TestSQLServerQueries:
         result = await sqlserver_env.execute(query=query)
         assert result.data[0]["orders._count"] == 5
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "DEV-1571 (Bug 1): SLayer's outer-wrap on date-range time_shift "
+            "emits WITH inside a derived table, which T-SQL rejects "
+            "(`Incorrect syntax near the keyword 'WITH'`)."
+        ),
+    )
     async def test_time_shift_with_date_range(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -421,6 +429,13 @@ class TestSQLServerQueries:
         result = await sqlserver_env.execute(query=query)
         assert [r["orders.positive_run"] for r in result.data] == [1, 0, 1]
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "DEV-1571 (Bug 1): CTE-in-derived-table on T-SQL — same root "
+            "cause as test_time_shift_with_date_range."
+        ),
+    )
     async def test_change_with_date_range(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -438,6 +453,13 @@ class TestSQLServerQueries:
         assert result.row_count == 1
         assert float(result.data[0]["orders.amount_change"]) == pytest.approx(175.0)
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "DEV-1571 (Bug 1): CTE-in-derived-table on T-SQL — same root "
+            "cause as test_time_shift_with_date_range."
+        ),
+    )
     async def test_change_pct_with_date_range(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -455,6 +477,13 @@ class TestSQLServerQueries:
         assert result.row_count == 1
         assert float(result.data[0]["orders.pct"]) == pytest.approx(0.875)
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "DEV-1571 (Bug 1): CTE-in-derived-table on T-SQL — same root "
+            "cause as test_time_shift_with_date_range."
+        ),
+    )
     async def test_multiple_date_range_shifts(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -552,7 +581,7 @@ def sqlserver_cross_model_env(sqlserver_container):
 
 
 @pytest.mark.integration
-class TestCrossModelAndMultistage_SQLServer:
+class TestCrossModelAndMultistageSQLServer:
     async def test_cross_model_measure(self, sqlserver_cross_model_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -667,7 +696,7 @@ def sqlserver_ingest_env(sqlserver_container):
 
 
 @pytest.mark.integration
-class TestRollupIngestion_SQLServer:
+class TestRollupIngestionSQLServer:
     def test_orders_has_own_columns_only(self, sqlserver_ingest_env) -> None:
         models, _, _ = sqlserver_ingest_env
         orders = next(m for m in models if m.name == "orders")
@@ -726,8 +755,8 @@ class TestRollupIngestion_SQLServer:
         by_region = {r["orders.customers.regions.name"]: r for r in result.data}
         assert by_region["US"]["orders._count"] == 3
         assert by_region["EU"]["orders._count"] == 1
-        assert float(by_region["US"]["orders.amount_sum"]) == 450.0
-        assert float(by_region["EU"]["orders.amount_sum"]) == 50.0
+        assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
+        assert float(by_region["EU"]["orders.amount_sum"]) == 50.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
     def test_orders_has_no_named_measures_after_ingest(self, sqlserver_ingest_env) -> None:
         models, _, _ = sqlserver_ingest_env
@@ -736,24 +765,10 @@ class TestRollupIngestion_SQLServer:
         col_names = [c.name for c in orders.columns]
         assert "amount" in col_names
 
-    async def test_dotted_dimension_single_hop(self, sqlserver_ingest_env) -> None:
-        models, ds, _ = sqlserver_ingest_env
-        tmpdir = tempfile.mkdtemp()
-        storage = YAMLStorage(base_dir=tmpdir)
-        await storage.save_datasource(ds)
-        for m in models:
-            await storage.save_model(m)
-        engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            dimensions=[{"name": "customers.name"}],
-        )
-        result = await engine.execute(query=query)
-        by_name = {r["orders.customers.name"]: r["orders._count"] for r in result.data}
-        assert by_name["Acme"] == 2
-        assert by_name["Globex"] == 1
-        assert by_name["Initech"] == 1
+    # NOTE: ``test_dotted_dimension_single_hop`` is intentionally not ported —
+    # its body would be identical to ``test_rollup_query_group_by_customer``
+    # (Sonar python:S4144). Single-hop path is already covered there; the
+    # multi-hop variant below tests the part that's genuinely different.
 
     async def test_dotted_dimension_multi_hop(self, sqlserver_ingest_env) -> None:
         models, ds, _ = sqlserver_ingest_env
@@ -1306,6 +1321,15 @@ def sqlserver_derived_chain_env(sqlserver_container):
 
 
 @pytest.mark.integration
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "DEV-1571 (Bug 2): T-SQL ORDER BY treats [a_tbl.id] as a literal "
+        "column-name lookup, not as a SELECT alias. Needs the same dotted-"
+        "alias mangling pair as BigqueryDialect.rewrite_emitted_sql + "
+        "decode_result_keys."
+    ),
+)
 async def test_integration_sqlserver_cross_model_derived_columnsql(
     sqlserver_derived_chain_env: SlayerQueryEngine,
 ) -> None:

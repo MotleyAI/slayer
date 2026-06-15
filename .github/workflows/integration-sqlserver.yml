@@ -11,21 +11,34 @@ on:
   pull_request:
     branches: [main]
     paths:
+      # T-SQL specific
       - 'slayer/sql/dialects/tsql.py'
-      - 'slayer/sql/dialects/base.py'
-      - 'slayer/sql/generator.py'
       - 'examples/sqlserver/**'
       - 'tests/integration/test_integration_sqlserver.py'
       - '.github/workflows/integration-sqlserver.yml'
+      # Shared runtime — changes to query execution, engine wiring, storage,
+      # ingestion, or datasource construction can break dialect suites with
+      # no other CI signal (since the main ci.yml --ignores them).
+      - 'slayer/sql/**'
+      - 'slayer/engine/**'
+      - 'slayer/core/**'
+      - 'slayer/storage/**'
+      # Dependency / lock-file changes
+      - 'pyproject.toml'
+      - 'poetry.lock'
   push:
     branches: [main]
     paths:
       - 'slayer/sql/dialects/tsql.py'
-      - 'slayer/sql/dialects/base.py'
-      - 'slayer/sql/generator.py'
       - 'examples/sqlserver/**'
       - 'tests/integration/test_integration_sqlserver.py'
       - '.github/workflows/integration-sqlserver.yml'
+      - 'slayer/sql/**'
+      - 'slayer/engine/**'
+      - 'slayer/core/**'
+      - 'slayer/storage/**'
+      - 'pyproject.toml'
+      - 'poetry.lock'
   workflow_dispatch:
 
 jobs:
@@ -43,11 +56,15 @@ jobs:
         # The pytest suite uses pyodbc IN-PROCESS on the runner host (unlike
         # verify-example, where pyodbc lives only inside Docker containers
         # built from examples/sqlserver/Dockerfile). Microsoft's apt repo
-        # is the canonical install path on Ubuntu.
+        # is the canonical install path on Ubuntu — derive the version from
+        # /etc/os-release so this keeps working when `ubuntu-latest` rolls
+        # from 24.04 → 26.04 etc.
         run: |
+          UBUNTU_VERSION="$(. /etc/os-release && echo "$VERSION_ID")"
+          echo "Installing msodbcsql18 for Ubuntu ${UBUNTU_VERSION}"
           curl -sSL https://packages.microsoft.com/keys/microsoft.asc \
             | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc > /dev/null
-          curl -sSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list \
+          curl -sSL "https://packages.microsoft.com/config/ubuntu/${UBUNTU_VERSION}/prod.list" \
             | sudo tee /etc/apt/sources.list.d/mssql-release.list > /dev/null
           sudo apt-get update
           sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
