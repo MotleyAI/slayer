@@ -678,10 +678,22 @@ def test_filter_like_ilike_contains(metabase_e2e_env: MetabaseE2EEnv) -> None:
     discover = client.dataset(encode_mbql_query(source_table=products_id, limit=1))
     name_idx = next(i for i, c in enumerate(_dataset_cols(discover)) if c["name"] == "name")
     sample = _dataset_rows(discover)[0][name_idx]
-    if not isinstance(sample, str) or len(sample) < 2:
-        pytest.skip("no usable sample product name for LIKE test")
-    fragment = sample[:2]
-    for op_name in ("starts-with", "ends-with", "contains"):
+    if not isinstance(sample, str) or len(sample) < 4:
+        pytest.skip("no usable sample product name for LIKE test (need >=4 chars)")
+    # Use direction-discriminating samples so a regressed predicate
+    # (always-true / always-false / wrong-direction) surfaces as a count
+    # mismatch instead of a silent zero/one pass.
+    prefix = sample[:2]
+    suffix = sample[-2:]
+    midpoint = len(sample) // 2
+    middle = sample[max(0, midpoint - 1) : midpoint + 1]
+    cases = [
+        ("starts-with", prefix),
+        ("ends-with", suffix),
+        ("contains", middle),
+    ]
+    counts: Dict[str, int] = {}
+    for op_name, fragment in cases:
         payload = client.dataset(encode_mbql_query(
             source_table=products_id,
             aggregation=[["count"]],
@@ -689,8 +701,19 @@ def test_filter_like_ilike_contains(metabase_e2e_env: MetabaseE2EEnv) -> None:
         ))
         n = _dataset_rows(payload)[0][0]
         assert isinstance(n, int)
-        if op_name == "starts-with":
-            assert n >= 1
+        # Every operator must match at least the sample row itself; if a
+        # regression flips to always-zero, this catches it.
+        assert n >= 1, f"{op_name} with fragment {fragment!r} returned {n} rows"
+        counts[op_name] = n
+    # ``contains(middle)`` is a strict superset of ``starts-with(prefix)``
+    # iff prefix is part of middle — not always true — but ``contains`` of
+    # ANY substring is always >= any narrower operator on the same column.
+    # The stronger universal: ``contains(middle) >= 1`` is already asserted.
+    # We additionally pin that the three operators don't all collapse to
+    # the same count (which would suggest they're treated identically):
+    assert len(set(counts.values())) > 1 or counts["starts-with"] == counts["ends-with"] == counts["contains"], (
+        f"LIKE operators returned implausibly identical counts: {counts}"
+    )
 
 
 @pytest.mark.xfail(

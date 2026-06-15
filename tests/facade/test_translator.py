@@ -545,27 +545,23 @@ def test_one_day_offset_on_non_week_is_preserved(dialect) -> None:
         )
 
 
-def test_inner_week_day_offset_direction_aware(dialect) -> None:
-    """Direction matters on the column side: ``date_trunc('week', col +
-    INTERVAL '1 day')`` is Metabase's Sunday-week shape and should unwrap
-    to WEEK(col), but the inverse — ``date_trunc('week', col - INTERVAL
-    '1 day')`` — is a different bucketing decision (Friday-week) and must
-    NOT be silently collapsed to WEEK(col).
+def test_partial_sunday_week_wrapper_is_rejected(dialect) -> None:
+    """The Sunday-week unwrap requires BOTH the outer ``-1 day`` shift and
+    the inner ``+1 day`` shift to be present together. Half a wrapper is
+    user intent (a deliberately-shifted bucket) and must NOT silently
+    collapse to plain ``WEEK(col)``.
     """
-    # The +1 day form unwraps cleanly.
-    result = translate(
-        sql=(
-            'SELECT date_trunc(\'week\', '
-            '("orders"."ordered_at" + INTERVAL \'1 day\')), '
-            'COUNT(*) FROM "orders"'
-        ),
-        catalog=_catalog(), dialect=dialect,
-    )
-    assert isinstance(result, QueryResult)
-    assert result.query.time_dimensions[0].granularity == TimeGranularity.WEEK
-
-    # The -1 day form is NOT Metabase's Sunday-week wrapper. The inner
-    # argument isn't a bare column ref, so the translator must reject it.
+    # Inner +1 day alone — no outer wrapper. Not Sunday-week; reject.
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                'SELECT date_trunc(\'week\', '
+                '("orders"."ordered_at" + INTERVAL \'1 day\')), '
+                'COUNT(*) FROM "orders"'
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+    # Inner -1 day alone — also not Sunday-week (wrong direction).
     with pytest.raises(TranslationError):
         translate(
             sql=(

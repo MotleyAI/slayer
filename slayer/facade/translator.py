@@ -293,6 +293,16 @@ def _apply_strip_prefix(
 def _detect_time_grain_date_trunc(
     node: exp.Expression,
 ) -> Optional[Tuple[TimeGranularity, exp.Column]]:
+    """Plain ``DATE_TRUNC(<unit>, <col>)`` detector.
+
+    Does NOT unwrap any day offsets on the column side — a bare
+    ``DATE_TRUNC('week', col + INTERVAL '1 day')`` is a user-written
+    shifted bucket, not the Metabase Sunday-week wrapper, and must
+    fall through to the regular "unsupported projection" error.
+    The full Sunday-week pattern is handled by
+    ``_detect_sunday_week_wrapper`` which requires BOTH the outer ``-1
+    day`` shift and the inner ``+1 day`` shift to be present together.
+    """
     unit = node.args.get("unit")
     col = node.this
     if unit is None:
@@ -306,21 +316,66 @@ def _detect_time_grain_date_trunc(
     grain = _TIME_GRAIN_NAMES.get(unit_str)
     if grain is None:
         return None
-    # DEV-1562 / DEV-1558 round-20 follow-up: Metabase emits Sunday-based
-    # week truncation as ``DATE_TRUNC('week', col + INTERVAL '1 day') -
-    # INTERVAL '1 day'``. The column-side offset is part of the Sunday-week
-    # wrapper, only safe to unwrap when:
-    #   * the grain is WEEK (other grains' day offsets are user intent), AND
-    #   * the offset is specifically ``+1 day`` (Metabase shifts FORWARD on
-    #     the column side; a ``-1 day`` shift here is a different bucketing
-    #     decision we must preserve).
     if isinstance(col, exp.Cast):
         col = col.this
-    if grain == TimeGranularity.WEEK:
-        col = _unwrap_signed_day_offset(col, expected_sign=1)
     if not isinstance(col, exp.Column):
         return None
     return grain, col
+
+
+def _date_trunc_unit(node: exp.Expression) -> Optional[str]:
+    """Return the lowercase unit string of a ``DATE_TRUNC``/``TIMESTAMP_TRUNC``
+    node, or ``None`` if not a trunc call. Used by the Sunday-week wrapper
+    detector below."""
+    if not isinstance(node, (exp.DateTrunc, exp.TimestampTrunc)):
+        return None
+    unit = node.args.get("unit")
+    if unit is None:
+        return None
+    if isinstance(unit, (exp.Literal, exp.Var)):
+        return str(unit.this).lower()
+    return str(unit).lower()
+
+
+def _detect_sunday_week_wrapper(
+    node: exp.Expression,
+) -> Optional[Tuple[TimeGranularity, exp.Column]]:
+    """Recognise the complete Metabase Sunday-week wrapper as a single shape.
+
+    Full pattern (the one Metabase emits for a week breakout on a DATE
+    column)::
+
+        (CAST(DATE_TRUNC('week', <col> + INTERVAL '1 day') AS DATE)
+         + INTERVAL '-1 day')
+
+    Both halves must be present together — a bare DATE_TRUNC with a +1-day
+    inner offset and no outer wrapper, OR an outer -1-day wrapper around a
+    grain other than WEEK, are NOT Sunday-week and must NOT be silently
+    collapsed (they're either user intent we must preserve or other
+    translator gaps that should keep raising). Returns ``(WEEK, col)`` on
+    match, ``None`` otherwise. Outer CAST is already peeled by
+    ``_detect_time_grain``.
+    """
+    inner = _unwrap_signed_day_offset(node, expected_sign=-1)
+    if inner is node:
+        return None  # no outer -1-day shift
+    if isinstance(inner, exp.Cast):
+        inner = inner.this
+    if isinstance(inner, exp.Paren):
+        inner = inner.this
+    if _date_trunc_unit(inner) is None:
+        return None
+    if _TIME_GRAIN_NAMES.get(_date_trunc_unit(inner) or "") != TimeGranularity.WEEK:
+        return None
+    col = inner.this
+    if isinstance(col, exp.Cast):
+        col = col.this
+    unwrapped_col = _unwrap_signed_day_offset(col, expected_sign=1)
+    if unwrapped_col is col:
+        return None  # no inner +1-day shift — partial wrapper, not Sunday-week
+    if not isinstance(unwrapped_col, exp.Column):
+        return None
+    return TimeGranularity.WEEK, unwrapped_col
 
 
 def _day_interval_sign(node: exp.Expression) -> Optional[int]:
@@ -435,17 +490,12 @@ def _detect_time_grain(node: exp.Expression) -> Optional[Tuple[TimeGranularity, 
     # DEV-1562 / DEV-1558 round-20 follow-up: Metabase emits Sunday-based
     # week truncation as the full wrapper
     # ``CAST((CAST(DATE_TRUNC('week', col + INTERVAL '1 day') AS DATE) +
-    # INTERVAL '-1 day') AS DATE)``. Peel the outer ``-1 day`` offset
-    # (direction-specific — a ``+1 day`` outer offset is NOT the Sunday-week
-    # shape and would be a different bucketing transform we must preserve).
-    # The inner CAST(DATE_TRUNC(...)) is then handled by the existing
-    # recursion; the column-side offset is unwrapped in
-    # ``_detect_time_grain_date_trunc`` with the matching direction guard.
-    unwrapped_offset = _unwrap_signed_day_offset(node, expected_sign=-1)
-    if unwrapped_offset is not node:
-        recur = _detect_time_grain(unwrapped_offset)
-        if recur is not None:
-            return recur
+    # INTERVAL '-1 day') AS DATE)``. Detect the complete pattern as a single
+    # match — partial wrappers (just the outer -1d, or just the inner +1d)
+    # are NOT Sunday-week and must keep raising as unsupported projections.
+    sunday_week = _detect_sunday_week_wrapper(node)
+    if sunday_week is not None:
+        return sunday_week
     if isinstance(node, exp.Paren):
         recur = _detect_time_grain(node.this)
         if recur is not None:
