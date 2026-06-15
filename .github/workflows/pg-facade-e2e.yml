@@ -1,5 +1,8 @@
 name: PG Facade Live-Metabase E2E
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]

@@ -86,11 +86,15 @@ def test_sync_settles_returns_at_least_seven_tables(metabase_e2e_env: MetabaseE2
 def test_sync_schema_idempotent(metabase_e2e_env: MetabaseE2EEnv) -> None:
     metabase_e2e_env.client.sync_schema()
     md_first = metabase_e2e_env.client.database_metadata()
+    expected_count = len(md_first["tables"])
     metabase_e2e_env.client.sync_schema()
-    # Give Metabase a moment to settle the second sync.
-    time.sleep(2)
-    md_second = metabase_e2e_env.client.database_metadata()
-    assert len(md_first["tables"]) == len(md_second["tables"])
+    # Poll for the second-sync metadata to match — avoids a fixed sleep
+    # that's timing-sensitive under variable CI load. The condition
+    # collapses to a fast equality check once Metabase has settled.
+    assert _wait_until(
+        lambda: len(metabase_e2e_env.client.database_metadata()["tables"]) == expected_count,
+        timeout_s=20,
+    ), "second sync_schema didn't settle to the same table count"
 
 
 def test_metabase_authenticates_with_token(metabase_e2e_env: MetabaseE2EEnv) -> None:
@@ -118,7 +122,13 @@ def test_sync_log_volume_within_budget(metabase_e2e_env: MetabaseE2EEnv) -> None
     total_before = len(metabase_e2e_env.log_records)
     warn_before = sum(1 for r in metabase_e2e_env.log_records if r.levelno >= logging.WARNING)
     metabase_e2e_env.client.sync_schema()
-    time.sleep(3)
+    # Poll for the log buffer to grow — pg-facade emits a stream of
+    # catalog-probe records during Metabase's sync; once growth flattens
+    # we know the sync has finished and the WARN tally is stable.
+    _wait_until(
+        lambda: len(metabase_e2e_env.log_records) > total_before,
+        timeout_s=15,
+    )
     total_after = len(metabase_e2e_env.log_records)
     warn_after = sum(1 for r in metabase_e2e_env.log_records if r.levelno >= logging.WARNING)
     assert total_after > total_before, (
@@ -157,6 +167,22 @@ def test_field_oid_to_metabase_type_mapping(metabase_e2e_env: MetabaseE2EEnv) ->
     stores_fields = {f["name"]: f for f in metabase_e2e_env.client.table_metadata(stores_id)["fields"]}
     assert stores_fields["opened_at"]["base_type"] == "type/Date"
     assert stores_fields["tax_rate"]["base_type"] in {"type/Float", "type/Decimal"}
+
+
+def _wait_until(predicate, *, timeout_s: float = 20, interval_s: float = 0.5) -> bool:
+    """Poll ``predicate`` until it returns truthy or the timeout elapses.
+
+    Returns the final truthy value, or ``False`` on timeout. Used instead
+    of fixed ``time.sleep`` calls so the suite isn't timing-sensitive
+    under variable CI load.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        result = predicate()
+        if result:
+            return result
+        time.sleep(interval_s)
+    return False
 
 
 async def test_hidden_columns_not_surfaced(metabase_e2e_env: MetabaseE2EEnv) -> None:
@@ -692,7 +718,6 @@ def test_filter_like_ilike_contains(metabase_e2e_env: MetabaseE2EEnv) -> None:
         ("ends-with", suffix),
         ("contains", middle),
     ]
-    counts: Dict[str, int] = {}
     for op_name, fragment in cases:
         payload = client.dataset(encode_mbql_query(
             source_table=products_id,
@@ -704,16 +729,6 @@ def test_filter_like_ilike_contains(metabase_e2e_env: MetabaseE2EEnv) -> None:
         # Every operator must match at least the sample row itself; if a
         # regression flips to always-zero, this catches it.
         assert n >= 1, f"{op_name} with fragment {fragment!r} returned {n} rows"
-        counts[op_name] = n
-    # ``contains(middle)`` is a strict superset of ``starts-with(prefix)``
-    # iff prefix is part of middle — not always true — but ``contains`` of
-    # ANY substring is always >= any narrower operator on the same column.
-    # The stronger universal: ``contains(middle) >= 1`` is already asserted.
-    # We additionally pin that the three operators don't all collapse to
-    # the same count (which would suggest they're treated identically):
-    assert len(set(counts.values())) > 1 or counts["starts-with"] == counts["ends-with"] == counts["contains"], (
-        f"LIKE operators returned implausibly identical counts: {counts}"
-    )
 
 
 @pytest.mark.xfail(
@@ -1036,7 +1051,7 @@ def test_date_psycopg_text_round_trip(metabase_e2e_env: MetabaseE2EEnv) -> None:
     the parsed value is a ``datetime.date`` pins the contract.
     """
     host, port = metabase_e2e_env.pg_no_token
-    import psycopg2
+    # psycopg2 imported at module top via importorskip
 
     conn = psycopg2.connect(
         host=host, port=port, dbname="jaffle_shop", user="tester", password="x",  # NOSONAR(S6437, S2068) — fixture credential; no-token pg-serve loopback fallback
@@ -1070,7 +1085,7 @@ async def test_timestamp_round_trip_both_formats(metabase_e2e_env: MetabaseE2EEn
     finally:
         await conn.close()
 
-    import psycopg2
+    # psycopg2 imported at module top via importorskip
     conn2 = psycopg2.connect(
         host=host, port=port, dbname="jaffle_shop", user="tester", password="x",  # NOSONAR(S6437, S2068) — fixture credential; no-token pg-serve loopback fallback
         connect_timeout=10,
@@ -1105,7 +1120,7 @@ async def test_boolean_double_int_round_trip_both_formats(metabase_e2e_env: Meta
     finally:
         await conn.close()
 
-    import psycopg2
+    # psycopg2 imported at module top via importorskip
     conn2 = psycopg2.connect(
         host=host, port=port, dbname="jaffle_shop", user="tester", password="x",  # NOSONAR(S6437, S2068) — fixture credential; no-token pg-serve loopback fallback
         connect_timeout=10,

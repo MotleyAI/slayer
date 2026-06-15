@@ -22,6 +22,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pytest
 import requests
+from pydantic import BaseModel, ConfigDict
 
 from tests.integration._pg_serve_helpers import start_pg_demo_server
 
@@ -123,29 +124,28 @@ class MetabaseClient:
         raise LookupError(f"field {table_name}.{field_name!r} not present")
 
 
-class MetabaseE2EEnv:
-    """Shared state yielded by the ``metabase_e2e_env`` fixture."""
+class MetabaseE2EEnv(BaseModel):
+    """Shared state yielded by the ``metabase_e2e_env`` fixture.
 
-    def __init__(
-        self,
-        *,
-        base_url: str,
-        session_token: str,
-        client: MetabaseClient,
-        token_db_id: int,
-        pg_no_token: Tuple[str, int],
-        pg_token: Tuple[str, int, str],
-        log_records: List[logging.LogRecord],
-        pg_no_token_storage: Any,
-    ) -> None:
-        self.base_url = base_url
-        self.session_token = session_token
-        self.client = client
-        self.token_db_id = token_db_id
-        self.pg_no_token = pg_no_token
-        self.pg_token = pg_token
-        self.log_records = log_records
-        self.pg_no_token_storage = pg_no_token_storage
+    ``arbitrary_types_allowed`` because the fields carry runtime resources
+    (``MetabaseClient`` wraps a ``requests.Session``; ``log_records`` is a
+    live ``LogRecord`` list mutated by the in-process pg-serve handler;
+    ``pg_no_token_storage`` is the SLayer ``StorageBackend`` handle for
+    B.3 / B.4 mutation tests). The model is yielded once per session and
+    never serialised — Pydantic gives us the field declarations + repr +
+    consistency with the rest of the codebase, nothing more.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    base_url: str
+    session_token: str
+    client: MetabaseClient
+    token_db_id: int
+    pg_no_token: Tuple[str, int]
+    pg_token: Tuple[str, int, str]
+    log_records: List[logging.LogRecord]
+    pg_no_token_storage: Any
 
     def make_client(self, db_id: int) -> MetabaseClient:
         """Return a MetabaseClient bound to a different db_id (same session)."""
@@ -194,20 +194,28 @@ def _run_metabase_container() -> Tuple[str, int]:
         )
     container_id = result.stdout.strip()
 
-    inspect = subprocess.run(
-        [
-            "docker", "inspect",
-            "--format",
-            '{{(index (index .NetworkSettings.Ports "' + str(METABASE_INTERNAL_PORT) + '/tcp") 0).HostPort}}',
-            container_id,
-        ],
-        capture_output=True, text=True, timeout=10,
-    )
-    if inspect.returncode != 0 or not inspect.stdout.strip().isdigit():
-        raise RuntimeError(
-            f"docker inspect failed to surface host port: {inspect.stderr.strip()}"
+    # If anything fails between ``docker run`` returning and us returning
+    # ``container_id`` to the caller, the fixture's ``finally`` block never
+    # sees the id and can't call _stop_container — leaking the container.
+    # Wrap the inspect call so any failure cleans up before propagating.
+    try:
+        inspect = subprocess.run(
+            [
+                "docker", "inspect",
+                "--format",
+                '{{(index (index .NetworkSettings.Ports "' + str(METABASE_INTERNAL_PORT) + '/tcp") 0).HostPort}}',
+                container_id,
+            ],
+            capture_output=True, text=True, timeout=10,
         )
-    host_port = int(inspect.stdout.strip())
+        if inspect.returncode != 0 or not inspect.stdout.strip().isdigit():
+            raise RuntimeError(
+                f"docker inspect failed to surface host port: {inspect.stderr.strip()}"
+            )
+        host_port = int(inspect.stdout.strip())
+    except Exception:
+        _stop_container(container_id)
+        raise
     return container_id, host_port
 
 
