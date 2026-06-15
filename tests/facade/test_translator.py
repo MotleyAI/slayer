@@ -545,6 +545,58 @@ def test_one_day_offset_on_non_week_is_preserved(dialect) -> None:
         )
 
 
+def test_inner_week_day_offset_direction_aware(dialect) -> None:
+    """Direction matters on the column side: ``date_trunc('week', col +
+    INTERVAL '1 day')`` is Metabase's Sunday-week shape and should unwrap
+    to WEEK(col), but the inverse — ``date_trunc('week', col - INTERVAL
+    '1 day')`` — is a different bucketing decision (Friday-week) and must
+    NOT be silently collapsed to WEEK(col).
+    """
+    # The +1 day form unwraps cleanly.
+    result = translate(
+        sql=(
+            'SELECT date_trunc(\'week\', '
+            '("orders"."ordered_at" + INTERVAL \'1 day\')), '
+            'COUNT(*) FROM "orders"'
+        ),
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.time_dimensions[0].granularity == TimeGranularity.WEEK
+
+    # The -1 day form is NOT Metabase's Sunday-week wrapper. The inner
+    # argument isn't a bare column ref, so the translator must reject it.
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                'SELECT date_trunc(\'week\', '
+                '("orders"."ordered_at" - INTERVAL \'1 day\')), '
+                'COUNT(*) FROM "orders"'
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
+def test_outer_week_day_offset_direction_aware(dialect) -> None:
+    """Direction matters on the outer wrapper too: Metabase emits
+    ``(date_trunc('week', col + INTERVAL '1 day') + INTERVAL '-1 day')``
+    — outer net is ``-1 day``. The inverse shape with a ``+1 day`` outer
+    offset is not Metabase's shape and must NOT collapse to a plain WEEK
+    grain.
+    """
+    # Matching +1 outer offset on top of a Sunday-week inner is NOT the
+    # Metabase shape; treat the whole thing as an unsupported projection.
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                'SELECT (date_trunc(\'week\', '
+                '("orders"."ordered_at" + INTERVAL \'1 day\')) + INTERVAL \'1 day\'), '
+                'COUNT(*) FROM "orders"'
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
 # --- dialect-only parse acceptance ------------------------------------------
 
 

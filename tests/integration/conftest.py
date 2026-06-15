@@ -23,7 +23,17 @@ from typing import Any, Callable, Iterator, Optional, Tuple
 
 import pytest
 
-from tests.integration.conftest_metabase import metabase_e2e_env  # noqa: F401
+# Import the metabase fixture conditionally: ``conftest_metabase`` top-imports
+# ``requests``, which is in the ``all`` poetry extra but not in narrower dev
+# installs (e.g. ``-E postgres`` only). Failing to import here would break
+# collection of every integration test, not just the metabase_e2e ones. The
+# fallback makes the metabase fixture unavailable to pytest, which is fine —
+# the suite that uses it carries its own ``pytest.importorskip("requests")``
+# guard and would skip cleanly.
+try:
+    from tests.integration.conftest_metabase import metabase_e2e_env  # noqa: F401
+except ImportError:
+    pass
 
 JDBC_DRIVER_VERSION = "18.3.0"
 JDBC_DRIVER_URL = (

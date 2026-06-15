@@ -308,53 +308,85 @@ def _detect_time_grain_date_trunc(
         return None
     # DEV-1562 / DEV-1558 round-20 follow-up: Metabase emits Sunday-based
     # week truncation as ``DATE_TRUNC('week', col + INTERVAL '1 day') -
-    # INTERVAL '1 day'``. The day offset on the column side is part of the
-    # Sunday-week wrapper and only safe to unwrap when the grain is WEEK —
-    # other grains' day-offset wrappers are user-intent we must preserve.
+    # INTERVAL '1 day'``. The column-side offset is part of the Sunday-week
+    # wrapper, only safe to unwrap when:
+    #   * the grain is WEEK (other grains' day offsets are user intent), AND
+    #   * the offset is specifically ``+1 day`` (Metabase shifts FORWARD on
+    #     the column side; a ``-1 day`` shift here is a different bucketing
+    #     decision we must preserve).
     if isinstance(col, exp.Cast):
         col = col.this
     if grain == TimeGranularity.WEEK:
-        col = _unwrap_one_day_offset(col)
+        col = _unwrap_signed_day_offset(col, expected_sign=1)
     if not isinstance(col, exp.Column):
         return None
     return grain, col
 
 
-def _is_one_day_interval(node: exp.Expression) -> bool:
-    """True iff ``node`` is ``INTERVAL '1 day'`` / ``INTERVAL '-1 day'``."""
+def _day_interval_sign(node: exp.Expression) -> Optional[int]:
+    """Return ``+1`` for ``INTERVAL '1 day'``, ``-1`` for ``INTERVAL '-1 day'``,
+    or ``None`` if ``node`` isn't a one-day interval at all.
+
+    Recognised forms:
+    * Dialect-less parse: ``INTERVAL '1 day'`` / ``INTERVAL '-1 day'`` — the
+      literal carries the unit string.
+    * Postgres dialect: ``INTERVAL '1' DAY`` — literal is the magnitude,
+      unit is a separate ``DAY`` node.
+    """
     if not isinstance(node, exp.Interval):
-        return False
+        return None
     val = node.this
+    if not isinstance(val, exp.Literal):
+        return None
+    s = str(val.this).strip().lower().replace("'", "")
     unit = node.args.get("unit")
     unit_str = ""
     if unit is not None:
         unit_str = str(unit.this if hasattr(unit, "this") else unit).lower()
-    if isinstance(val, exp.Literal):
-        s = str(val.this).strip().lower().replace("'", "")
-        # Accept "1 day", "-1 day", "1", "-1" (when unit is the separate node).
-        if s in {"1", "-1"}:
-            return unit_str.startswith("day")
-        return s in {"1 day", "-1 day"}
-    return False
+    if s in {"1", "-1"}:
+        if not unit_str.startswith("day"):
+            return None
+        return 1 if s == "1" else -1
+    if s == "1 day":
+        return 1
+    if s == "-1 day":
+        return -1
+    return None
 
 
-def _unwrap_one_day_offset(node: exp.Expression) -> exp.Expression:
-    """If ``node`` is ``<expr> +/- INTERVAL '1 day'``, return ``<expr>``.
+def _unwrap_signed_day_offset(
+    node: exp.Expression, *, expected_sign: int,
+) -> exp.Expression:
+    """If ``node`` shifts by exactly ``expected_sign`` days (``+1`` or ``-1``)
+    via a single ADD/SUB of ``INTERVAL '1 day'`` / ``INTERVAL '-1 day'``,
+    return the inner expression. Otherwise return ``node`` unchanged.
 
-    Otherwise return ``node`` unchanged. Used to peel Metabase's Sunday-week
-    offset wrappers off both the outer projection and the DATE_TRUNC's
-    inner column argument.
+    Direction matters: ``expected_sign=-1`` matches Metabase's outer
+    Sunday-week wrapper (``<expr> + INTERVAL '-1 day'`` or
+    ``<expr> - INTERVAL '1 day'``) but NOT the inverse, so a legitimate
+    user-written ``DATE_TRUNC('week', x + INTERVAL '1 day')`` outside the
+    Sunday-week wrapper stays preserved (would not match
+    ``expected_sign=-1``). ``expected_sign=+1`` matches the inner
+    column-side shift (``<col> + INTERVAL '1 day'`` or
+    ``<col> - INTERVAL '-1 day'``).
     """
     if isinstance(node, exp.Paren):
-        inner = _unwrap_one_day_offset(node.this)
+        inner = _unwrap_signed_day_offset(node.this, expected_sign=expected_sign)
         if inner is not node.this:
             return inner
-    if isinstance(node, (exp.Add, exp.Sub)):
-        left, right = node.this, node.expression
-        if _is_one_day_interval(right):
-            return left
-        if _is_one_day_interval(left):
-            return right
+    if isinstance(node, exp.Add):
+        # Adding +1 day → net +1; adding -1 day → net -1.
+        right_sign = _day_interval_sign(node.expression)
+        if right_sign is not None and right_sign == expected_sign:
+            return node.this
+        left_sign = _day_interval_sign(node.this)
+        if left_sign is not None and left_sign == expected_sign:
+            return node.expression
+    if isinstance(node, exp.Sub):
+        # Subtracting +1 day → net -1; subtracting -1 day → net +1.
+        right_sign = _day_interval_sign(node.expression)
+        if right_sign is not None and -right_sign == expected_sign:
+            return node.this
     return node
 
 
@@ -403,11 +435,13 @@ def _detect_time_grain(node: exp.Expression) -> Optional[Tuple[TimeGranularity, 
     # DEV-1562 / DEV-1558 round-20 follow-up: Metabase emits Sunday-based
     # week truncation as the full wrapper
     # ``CAST((CAST(DATE_TRUNC('week', col + INTERVAL '1 day') AS DATE) +
-    # INTERVAL '-1 day') AS DATE)``. Peeling the outer ``-1 day`` offset
-    # leaves the inner CAST(DATE_TRUNC(...)) which the existing recursion
-    # already handles; the day-offset on the column side is unwrapped in
-    # ``_detect_time_grain_date_trunc``.
-    unwrapped_offset = _unwrap_one_day_offset(node)
+    # INTERVAL '-1 day') AS DATE)``. Peel the outer ``-1 day`` offset
+    # (direction-specific — a ``+1 day`` outer offset is NOT the Sunday-week
+    # shape and would be a different bucketing transform we must preserve).
+    # The inner CAST(DATE_TRUNC(...)) is then handled by the existing
+    # recursion; the column-side offset is unwrapped in
+    # ``_detect_time_grain_date_trunc`` with the matching direction guard.
+    unwrapped_offset = _unwrap_signed_day_offset(node, expected_sign=-1)
     if unwrapped_offset is not node:
         recur = _detect_time_grain(unwrapped_offset)
         if recur is not None:
