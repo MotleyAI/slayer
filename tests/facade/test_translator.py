@@ -500,32 +500,31 @@ def test_time_grain_on_non_time_column_errors(dialect) -> None:
     assert "not a time column" in str(exc_info.value)
 
 
-def test_metabase_sunday_week_wrapper_recognised(dialect) -> None:
-    """DEV-1562 follow-up: when Metabase issues a week breakout on a DATE
-    column, it wraps the truncation to shift Monday-based DATE_TRUNC to
-    Sunday-based: ``CAST((CAST(DATE_TRUNC('week', col + INTERVAL '1 day')
-    AS DATE) + INTERVAL '-1 day') AS DATE)``. The translator must peel the
-    day-offset wrappers on both ends and end up at the WEEK grain over
-    the bare column.
+def test_metabase_sunday_week_wrapper_rejected_pending_dev_1572(dialect) -> None:
+    """DEV-1572 follow-up: when Metabase issues a week breakout on a DATE
+    column, it emits the Sunday-week wrapper
+    ``CAST((CAST(DATE_TRUNC('week', col + INTERVAL '1 day') AS DATE)
+    + INTERVAL '-1 day') AS DATE)``. SLayer's existing ``WEEK``
+    granularity is Monday-based, so silently collapsing this wrapper to
+    plain ``WEEK(col)`` would shift bucket boundaries by a day. Until
+    SLayer grows a real ``WEEK_SUNDAY`` granularity (DEV-1572), the
+    translator rejects the wrapper outright — failing loudly is the
+    right behaviour vs. returning wrong-bucketed data.
     """
-    result = translate(
-        sql=(
-            'SELECT CAST((CAST(date_trunc(\'week\', '
-            '("orders"."ordered_at" + INTERVAL \'1 day\')) AS DATE) '
-            '+ INTERVAL \'-1 day\') AS DATE) AS "ordered_at", '
-            'COUNT(*) AS "count" '
-            'FROM "orders" '
-            'GROUP BY CAST((CAST(date_trunc(\'week\', '
-            '("orders"."ordered_at" + INTERVAL \'1 day\')) AS DATE) '
-            '+ INTERVAL \'-1 day\') AS DATE)'
-        ),
-        catalog=_catalog(), dialect=dialect,
-    )
-    assert isinstance(result, QueryResult)
-    assert result.query.time_dimensions is not None
-    assert len(result.query.time_dimensions) == 1
-    assert result.query.time_dimensions[0].granularity == TimeGranularity.WEEK
-    assert result.query.time_dimensions[0].dimension.full_name == "ordered_at"
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                'SELECT CAST((CAST(date_trunc(\'week\', '
+                '("orders"."ordered_at" + INTERVAL \'1 day\')) AS DATE) '
+                '+ INTERVAL \'-1 day\') AS DATE) AS "ordered_at", '
+                'COUNT(*) AS "count" '
+                'FROM "orders" '
+                'GROUP BY CAST((CAST(date_trunc(\'week\', '
+                '("orders"."ordered_at" + INTERVAL \'1 day\')) AS DATE) '
+                '+ INTERVAL \'-1 day\') AS DATE)'
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
 
 
 def test_one_day_offset_on_non_week_is_preserved(dialect) -> None:

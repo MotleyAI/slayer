@@ -182,6 +182,16 @@ so the container reaches them via `host.docker.internal`; the second backs the L
 bad-password tests) and drives ~62 cases through the real `pgjdbc` protocol — bootstrap +
 sync, MBQL aggregations and time-grain breakouts, native-SQL probes, wire-format
 round-trips, transactions, concurrency, and error envelopes. Skips cleanly when Docker is
-unavailable. CI fires automatically on PRs touching `slayer/pg_facade/`, `slayer/facade/`,
+unavailable.
+
+Known limitations (each tracked by a strict-`xfail` against a Linear ticket — the day the
+referenced gap is fixed, the test XPASSes and CI flips red, prompting a lift):
+LEFT JOIN-with-subquery projection (DEV-1565), CAST(col AS type) projection (DEV-1566),
+catalog fingerprint measure leak (DEV-1567), MBQL aggregation-ordinal refs in HAVING /
+ORDER BY (DEV-1568), per-connection `SET` state (DEV-1569), Bind-path typed-sentinel for
+INT-vs-empty-string (DEV-1570), and **Metabase week breakouts** (DEV-1572 — Metabase emits
+a Sunday-week wrapper that doesn't match SLayer's Monday-based `WEEK` granularity).
+
+CI fires automatically on PRs touching `slayer/pg_facade/`, `slayer/facade/`,
 `slayer/demo/`, the
 e2e test files, or `pyproject.toml` / `poetry.lock`.

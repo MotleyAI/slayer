@@ -323,59 +323,28 @@ def _detect_time_grain_date_trunc(
     return grain, col
 
 
-def _date_trunc_unit(node: exp.Expression) -> Optional[str]:
-    """Return the lowercase unit string of a ``DATE_TRUNC``/``TIMESTAMP_TRUNC``
-    node, or ``None`` if not a trunc call. Used by the Sunday-week wrapper
-    detector below."""
-    if not isinstance(node, (exp.DateTrunc, exp.TimestampTrunc)):
-        return None
-    unit = node.args.get("unit")
-    if unit is None:
-        return None
-    if isinstance(unit, (exp.Literal, exp.Var)):
-        return str(unit.this).lower()
-    return str(unit).lower()
-
-
 def _detect_sunday_week_wrapper(
-    node: exp.Expression,
+    node: exp.Expression,  # NOSONAR(S1172) — placeholder until DEV-1572 lands
 ) -> Optional[Tuple[TimeGranularity, exp.Column]]:
-    """Recognise the complete Metabase Sunday-week wrapper as a single shape.
+    """Stub — Sunday-week wrapper recognition is deferred to DEV-1572.
 
-    Full pattern (the one Metabase emits for a week breakout on a DATE
-    column)::
+    DEV-1562 PR #182 rounds 4-5 added detection of Metabase's full
+    Sunday-week shape — ``(CAST(DATE_TRUNC('week', col + INTERVAL '1 day')
+    AS DATE) + INTERVAL '-1 day')`` — and mapped it to ``WEEK(col)``.
+    Codex round-10 flagged that as a correctness bug: SLayer's existing
+    ``WEEK`` granularity is Monday-based (``date.weekday()``) and silently
+    swapping Metabase's Sunday buckets for Monday ones shifts row labels
+    by a day and reshuffles the row→bucket assignment.
 
-        (CAST(DATE_TRUNC('week', <col> + INTERVAL '1 day') AS DATE)
-         + INTERVAL '-1 day')
-
-    Both halves must be present together — a bare DATE_TRUNC with a +1-day
-    inner offset and no outer wrapper, OR an outer -1-day wrapper around a
-    grain other than WEEK, are NOT Sunday-week and must NOT be silently
-    collapsed (they're either user intent we must preserve or other
-    translator gaps that should keep raising). Returns ``(WEEK, col)`` on
-    match, ``None`` otherwise. Outer CAST is already peeled by
-    ``_detect_time_grain``.
+    Until SLayer grows a real ``WEEK_SUNDAY`` granularity per dialect
+    (tracked in DEV-1572), this stub returns ``None`` so the wrapper
+    falls through to the existing "Unsupported projection expression"
+    error — failing loudly with a clear message is better than silently
+    bucketing the wrong way. The Metabase week-breakout test in the e2e
+    suite is xfail(strict=True) referencing DEV-1572 and will XPASS the
+    day the real granularity lands.
     """
-    inner = _unwrap_signed_day_offset(node, expected_sign=-1)
-    if inner is node:
-        return None  # no outer -1-day shift
-    if isinstance(inner, exp.Cast):
-        inner = inner.this
-    if isinstance(inner, exp.Paren):
-        inner = inner.this
-    if _date_trunc_unit(inner) is None:
-        return None
-    if _TIME_GRAIN_NAMES.get(_date_trunc_unit(inner) or "") != TimeGranularity.WEEK:
-        return None
-    col = inner.this
-    if isinstance(col, exp.Cast):
-        col = col.this
-    unwrapped_col = _unwrap_signed_day_offset(col, expected_sign=1)
-    if unwrapped_col is col:
-        return None  # no inner +1-day shift — partial wrapper, not Sunday-week
-    if not isinstance(unwrapped_col, exp.Column):
-        return None
-    return TimeGranularity.WEEK, unwrapped_col
+    return None
 
 
 def _day_interval_sign(node: exp.Expression) -> Optional[int]:
