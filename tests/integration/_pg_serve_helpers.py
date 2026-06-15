@@ -21,6 +21,7 @@ import pytest
 
 from slayer.cli import _prepare_demo, _resolve_storage
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.pg_facade.auth import validate_bind_address
 from slayer.pg_facade.connection import PgConnection
 
 DEMO_DATASOURCE = "jaffle_shop"
@@ -58,7 +59,13 @@ def start_pg_demo_server(
     accepting on the host's external interface. The returned tuple always
     reports ``"127.0.0.1"`` as the host string so loopback-based callers
     (asyncpg, psycopg in-process) keep using the cleaner address.
+
+    The helper enforces ``pg_facade.auth.validate_bind_address`` — binding
+    to a non-loopback address without a configured ``token`` raises, so a
+    caller can't accidentally expose unauthenticated query access on a
+    network-facing interface (CLI startup applies the same guard).
     """
+    validate_bind_address(host=bind_host, token=token)
     args = argparse.Namespace(
         storage=tempfile.mkdtemp(prefix="slayer-pg-it-"),
         models_dir=None,

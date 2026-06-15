@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import shutil
 import subprocess
 import time
@@ -41,7 +42,16 @@ DOCKER_INFO_TIMEOUT_S = 5
 DOCKER_RUN_TIMEOUT_S = 240  # generous: covers first-time image pull
 DOCKER_STOP_TIMEOUT_S = 15
 
-TOKEN_VALUE = "metabase-e2e-token"  # NOSONAR(S2068) — fixture credential
+# Per-session random tokens. Module-level so they're picked up by every
+# helper without threading args, but evaluated once per pytest process,
+# never persisted to disk. Both pg-serves are bound to 0.0.0.0 (so a
+# Metabase container can reach them via host.docker.internal), and the
+# `validate_bind_address` guard in `_pg_serve_helpers.start_pg_demo_server`
+# refuses to start either server unless a real token is configured —
+# i.e. defence-in-depth so the helper can't accidentally expose
+# unauthenticated query access on a network-facing interface.
+PRIMARY_TOKEN_VALUE = secrets.token_urlsafe(32)
+AUTH_TEST_TOKEN_VALUE = secrets.token_urlsafe(32)
 
 
 class MetabaseClient:
@@ -130,10 +140,16 @@ class MetabaseE2EEnv(BaseModel):
     ``arbitrary_types_allowed`` because the fields carry runtime resources
     (``MetabaseClient`` wraps a ``requests.Session``; ``log_records`` is a
     live ``LogRecord`` list mutated by the in-process pg-serve handler;
-    ``pg_no_token_storage`` is the SLayer ``StorageBackend`` handle for
+    ``pg_primary_storage`` is the SLayer ``StorageBackend`` handle for
     B.3 / B.4 mutation tests). The model is yielded once per session and
     never serialised — Pydantic gives us the field declarations + repr +
     consistency with the rest of the codebase, nothing more.
+
+    Both pg-serves are token-protected and bound to ``0.0.0.0`` (so the
+    Metabase container reaches them via ``host.docker.internal``). The
+    primary server backs Metabase + most tests; the auth-test server
+    backs L.2 / L.3 (bad-password / bogus-database scenarios) where the
+    test deliberately presents a wrong credential.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -142,10 +158,11 @@ class MetabaseE2EEnv(BaseModel):
     session_token: str
     client: MetabaseClient
     token_db_id: int
-    pg_no_token: Tuple[str, int]
-    pg_token: Tuple[str, int, str]
+    pg_primary: Tuple[str, int]
+    pg_primary_password: str
+    pg_auth: Tuple[str, int, str]
     log_records: List[logging.LogRecord]
-    pg_no_token_storage: Any
+    pg_primary_storage: Any
 
     def make_client(self, db_id: int) -> MetabaseClient:
         """Return a MetabaseClient bound to a different db_id (same session)."""
@@ -412,7 +429,7 @@ def _bootstrap_metabase_session(
         base_url, session_token,
         name="slayer-jaffle",
         host="host.docker.internal", port=port_a, dbname="jaffle_shop",
-        user="tester", password="x",  # NOSONAR(S2068) — fixture credential
+        user="tester", password=PRIMARY_TOKEN_VALUE,
     )
     _wait_for_metadata(
         base_url, session_token, db_id_no_token,
@@ -423,7 +440,7 @@ def _bootstrap_metabase_session(
         base_url, session_token,
         name="slayer-jaffle-token",
         host="host.docker.internal", port=port_b, dbname="jaffle_shop",
-        user="tester", password=TOKEN_VALUE,
+        user="tester", password=AUTH_TEST_TOKEN_VALUE,
     )
     _wait_for_metadata(
         base_url, session_token, db_id_token,
@@ -449,13 +466,13 @@ def metabase_e2e_env() -> Iterator[MetabaseE2EEnv]:
 
     try:
         loop_a, thread_a, host_a, port_a = start_pg_demo_server(
-            token=None,
+            token=PRIMARY_TOKEN_VALUE,
             log_records=log_records,
             storage_sink=storage_sink,
-            bind_host="0.0.0.0",  # NOSONAR(S104) — required so Metabase-in-container reaches pg-serve via host.docker.internal
+            bind_host="0.0.0.0",  # NOSONAR(S104) — required so Metabase-in-container reaches pg-serve via host.docker.internal; token-protected per validate_bind_address
         )
         loop_b, thread_b, host_b, port_b = start_pg_demo_server(
-            token=TOKEN_VALUE,
+            token=AUTH_TEST_TOKEN_VALUE,
             bind_host="0.0.0.0",  # NOSONAR(S104) — same; Metabase auth path test (A.5) drives it via host.docker.internal too
         )
 
@@ -473,10 +490,11 @@ def metabase_e2e_env() -> Iterator[MetabaseE2EEnv]:
             session_token=session_token,
             client=client,
             token_db_id=db_id_token,
-            pg_no_token=(host_a, port_a),
-            pg_token=(host_b, port_b, TOKEN_VALUE),
+            pg_primary=(host_a, port_a),
+            pg_primary_password=PRIMARY_TOKEN_VALUE,
+            pg_auth=(host_b, port_b, AUTH_TEST_TOKEN_VALUE),
             log_records=log_records,
-            pg_no_token_storage=storage_sink[0] if storage_sink else None,
+            pg_primary_storage=storage_sink[0] if storage_sink else None,
         )
         yield env
     finally:

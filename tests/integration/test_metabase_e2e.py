@@ -37,14 +37,24 @@ pytestmark = [pytest.mark.metabase_e2e, pytest.mark.integration]
 # ---------------------------------------------------------------------------
 
 
-async def _asyncpg_connect(host: str, port: int, *, password: str = "x", database: str = "jaffle_shop"):  # NOSONAR(S2068) — fixture credential; no-token pg-serve accepts any password via loopback fallback
+async def _asyncpg_connect(
+    host: str, port: int, *, password: str, database: str = "jaffle_shop",
+):
+    """asyncpg connection helper — password is required, no default.
+
+    Both pg-serves in the e2e fixture are token-protected per
+    ``pg_facade.auth.validate_bind_address`` (network-facing binds must
+    carry a token). Callers thread the right token via
+    ``env.pg_primary_password`` for the primary server or the third
+    tuple element of ``env.pg_auth`` for the auth-test server.
+    """
     return await asyncpg.connect(
         host=host, port=port, user="tester", password=password, database=database, timeout=10,
     )
 
 
-async def _scalar(host: str, port: int, sql: str) -> Any:
-    conn = await _asyncpg_connect(host, port)
+async def _scalar(host: str, port: int, password: str, sql: str) -> Any:
+    conn = await _asyncpg_connect(host, port, password=password)
     try:
         return await conn.fetchval(sql)
     finally:
@@ -244,9 +254,9 @@ async def test_hidden_columns_not_surfaced(metabase_e2e_env: MetabaseE2EEnv) -> 
     """
     from slayer.async_utils import run_sync
 
-    storage = metabase_e2e_env.pg_no_token_storage
-    assert storage is not None, "pg_no_token storage handle not wired through fixture"
-    host, port = metabase_e2e_env.pg_no_token
+    storage = metabase_e2e_env.pg_primary_storage
+    assert storage is not None, "pg_primary storage handle not wired through fixture"
+    host, port = metabase_e2e_env.pg_primary
 
     model = run_sync(storage.get_model(name="products", data_source="jaffle_shop"))
     target = next(c for c in model.columns if c.name == "description")
@@ -254,7 +264,7 @@ async def test_hidden_columns_not_surfaced(metabase_e2e_env: MetabaseE2EEnv) -> 
     target.hidden = True
     run_sync(storage.save_model(model))
     try:
-        conn = await _asyncpg_connect(host, port)
+        conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
         try:
             rows = await conn.fetch(
                 "SELECT column_name FROM INFORMATION_SCHEMA.COLUMNS "
@@ -284,9 +294,9 @@ async def test_descriptions_surface_in_metadata(metabase_e2e_env: MetabaseE2EEnv
     """
     from slayer.async_utils import run_sync
 
-    storage = metabase_e2e_env.pg_no_token_storage
+    storage = metabase_e2e_env.pg_primary_storage
     assert storage is not None
-    host, port = metabase_e2e_env.pg_no_token
+    host, port = metabase_e2e_env.pg_primary
 
     model = run_sync(storage.get_model(name="orders", data_source="jaffle_shop"))
     target = next(c for c in model.columns if c.name == "order_total")
@@ -295,7 +305,7 @@ async def test_descriptions_surface_in_metadata(metabase_e2e_env: MetabaseE2EEnv
     target.description = marker
     run_sync(storage.save_model(model))
     try:
-        conn = await _asyncpg_connect(host, port)
+        conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
         try:
             # pg_description.description holds the freeform text; the
             # objoid/objsubid pair anchors it to a relation/column.
@@ -339,8 +349,8 @@ async def test_pg_namespace_table_schem_column_name(metabase_e2e_env: MetabaseE2
     The original DEV-1558 bug 1 was a lookup failure on this exact alias.
     Drive the canonical query directly via asyncpg.
     """
-    host, port = metabase_e2e_env.pg_no_token
-    conn = await _asyncpg_connect(host, port)
+    host, port = metabase_e2e_env.pg_primary
+    conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
     try:
         rows = await conn.fetch(
             'SELECT nspname AS "TABLE_SCHEM" FROM pg_namespace ORDER BY nspname'
@@ -405,8 +415,8 @@ async def test_pg_description_objsubid_empty_string_predicate(metabase_e2e_env: 
     would bypass the parameterised path the actual bug 2 fix lives on,
     so we deliberately drive the $1 form pgjdbc uses.
     """
-    host, port = metabase_e2e_env.pg_no_token
-    conn = await _asyncpg_connect(host, port)
+    host, port = metabase_e2e_env.pg_primary
+    conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
     try:
         stmt = await conn.prepare("SELECT * FROM pg_description WHERE objsubid = $1")
         rows = await stmt.fetch("")
@@ -420,8 +430,8 @@ async def test_union_all_catalog_query_routed(metabase_e2e_env: MetabaseE2EEnv) 
     ``exp.Union``, not ``exp.Select``; the router missed it before round 19.
     Drive a UNION-ALL probe to pin the routing path.
     """
-    host, port = metabase_e2e_env.pg_no_token
-    conn = await _asyncpg_connect(host, port)
+    host, port = metabase_e2e_env.pg_primary
+    conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
     try:
         rows = await conn.fetch(
             "SELECT relname AS name, 'r' AS kind FROM pg_class WHERE relkind = 'r' "
@@ -549,8 +559,8 @@ async def test_aggregation_matches_direct_sql(
     assert rows, f"empty result for {agg_name}"
     mb_value = rows[0][0]
 
-    host, port = metabase_e2e_env.pg_no_token
-    direct = await _scalar(host, port, native_sql)
+    host, port = metabase_e2e_env.pg_primary
+    direct = await _scalar(host, port, metabase_e2e_env.pg_primary_password, native_sql)
     if isinstance(direct, (int,)) and isinstance(mb_value, (int,)):
         assert mb_value == direct, f"{agg_name}: metabase={mb_value} direct={direct}"
     else:
@@ -797,9 +807,10 @@ def test_filter_having_on_aggregate(metabase_e2e_env: MetabaseE2EEnv) -> None:
 async def test_filter_categorical_comma_bearing_value(metabase_e2e_env: MetabaseE2EEnv) -> None:
     """F.8 — filter literal containing a comma must not break SQL escaping."""
     client = metabase_e2e_env.client
-    host, port = metabase_e2e_env.pg_no_token
+    host, port = metabase_e2e_env.pg_primary
     sample_value = await _scalar(
-        host, port, "SELECT content FROM tweets WHERE content LIKE '%,%' LIMIT 1"
+        host, port, metabase_e2e_env.pg_primary_password,
+        "SELECT content FROM tweets WHERE content LIKE '%,%' LIMIT 1",
     )
     if sample_value is None:
         pytest.skip("no comma-bearing tweet content in this jafgen dataset")
@@ -1026,8 +1037,8 @@ def test_field_values_response_shape_valid(metabase_e2e_env: MetabaseE2EEnv) -> 
 
 
 async def test_tx_begin_select_commit_single_q(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    host, port = metabase_e2e_env.pg_no_token
-    conn = await _asyncpg_connect(host, port)
+    host, port = metabase_e2e_env.pg_primary
+    conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
     try:
         # asyncpg executes simple-Q statements via .execute(); chained statements
         # in one string are accepted iff pg-serve emits exactly one final
@@ -1038,8 +1049,8 @@ async def test_tx_begin_select_commit_single_q(metabase_e2e_env: MetabaseE2EEnv)
 
 
 async def test_tx_error_blocks_until_rollback(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    host, port = metabase_e2e_env.pg_no_token
-    conn = await _asyncpg_connect(host, port)
+    host, port = metabase_e2e_env.pg_primary
+    conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
     try:
         await conn.execute("BEGIN")
         try:
@@ -1059,8 +1070,8 @@ async def test_tx_error_blocks_until_rollback(metabase_e2e_env: MetabaseE2EEnv) 
 
 
 async def test_set_application_name_succeeds(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    host, port = metabase_e2e_env.pg_no_token
-    conn = await _asyncpg_connect(host, port)
+    host, port = metabase_e2e_env.pg_primary
+    conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
     try:
         await conn.execute("SET application_name = 'dev-1562-test'")
     finally:
@@ -1073,8 +1084,8 @@ async def test_set_application_name_succeeds(metabase_e2e_env: MetabaseE2EEnv) -
 
 
 async def test_date_asyncpg_binary_round_trip(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    host, port = metabase_e2e_env.pg_no_token
-    conn = await _asyncpg_connect(host, port)
+    host, port = metabase_e2e_env.pg_primary
+    conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
     try:
         val = await conn.fetchval("SELECT ordered_at FROM orders LIMIT 1")
         assert isinstance(val, dt.date)
@@ -1092,7 +1103,7 @@ def test_date_psycopg_text_round_trip(metabase_e2e_env: MetabaseE2EEnv) -> None:
     here or return a string the parser silently coerces wrong. Asserting
     the parsed value is a ``datetime.date`` pins the contract.
     """
-    host, port = metabase_e2e_env.pg_no_token
+    host, port = metabase_e2e_env.pg_primary
     # psycopg2 imported at module top via importorskip
 
     conn = psycopg2.connect(
@@ -1118,8 +1129,8 @@ def test_date_psycopg_text_round_trip(metabase_e2e_env: MetabaseE2EEnv) -> None:
     reason="DEV-1566: pg-facade rejects CAST(<col> AS TIMESTAMP) in projection; no SLayer-query primitive for per-query type coercion",
 )
 async def test_timestamp_round_trip_both_formats(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    host, port = metabase_e2e_env.pg_no_token
-    conn = await _asyncpg_connect(host, port)
+    host, port = metabase_e2e_env.pg_primary
+    conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
     try:
         # No native TIMESTAMP column in jaffle; coerce a DATE through TIMESTAMP.
         val_bin = await conn.fetchval("SELECT CAST(ordered_at AS TIMESTAMP) FROM orders LIMIT 1")
@@ -1144,8 +1155,8 @@ async def test_timestamp_round_trip_both_formats(metabase_e2e_env: MetabaseE2EEn
 
 
 async def test_boolean_double_int_round_trip_both_formats(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    host, port = metabase_e2e_env.pg_no_token
-    conn = await _asyncpg_connect(host, port)
+    host, port = metabase_e2e_env.pg_primary
+    conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
     try:
         # DOUBLE
         d = await conn.fetchval("SELECT order_total FROM orders LIMIT 1")
@@ -1199,7 +1210,7 @@ def test_unsupported_sql_returns_error_envelope(metabase_e2e_env: MetabaseE2EEnv
 
 
 async def test_bad_password_returns_28P01(metabase_e2e_env: MetabaseE2EEnv) -> None:  # NOSONAR(S1542) — SQLSTATE codes are conventionally uppercase; the test name is clearer this way
-    host, port, _token = metabase_e2e_env.pg_token
+    host, port, _token = metabase_e2e_env.pg_auth
     with pytest.raises(Exception) as exc:
         await _asyncpg_connect(host, port, password="wrong-password")
     # asyncpg surfaces sqlstate on InvalidPasswordError.
@@ -1209,7 +1220,7 @@ async def test_bad_password_returns_28P01(metabase_e2e_env: MetabaseE2EEnv) -> N
 
 
 async def test_nonexistent_database_returns_3D000(metabase_e2e_env: MetabaseE2EEnv) -> None:  # NOSONAR(S1542) — SQLSTATE codes are conventionally uppercase
-    host, port, token = metabase_e2e_env.pg_token
+    host, port, token = metabase_e2e_env.pg_auth
     with pytest.raises(Exception) as exc:
         await asyncpg.connect(
             host=host, port=port, user="tester", password=token,
@@ -1252,10 +1263,10 @@ def test_concurrent_dataset_requests(metabase_e2e_env: MetabaseE2EEnv) -> None:
     reason="DEV-1569: pg-facade doesn't preserve per-connection SET state; concurrent SET application_name = '...' followed by SHOW returns empty for every connection",
 )
 async def test_asyncpg_concurrent_connections(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    host, port = metabase_e2e_env.pg_no_token
+    host, port = metabase_e2e_env.pg_primary
 
     async def one(idx: int) -> Tuple[int, str]:
-        conn = await _asyncpg_connect(host, port)
+        conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
         try:
             # Each connection sets its own application_name marker so we can
             # verify per-connection state isolation. The COUNT(*) is shared
