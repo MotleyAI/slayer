@@ -122,12 +122,14 @@ def test_sync_log_volume_within_budget(metabase_e2e_env: MetabaseE2EEnv) -> None
     total_before = len(metabase_e2e_env.log_records)
     warn_before = sum(1 for r in metabase_e2e_env.log_records if r.levelno >= logging.WARNING)
     metabase_e2e_env.client.sync_schema()
-    # Poll for the log buffer to grow — pg-facade emits a stream of
-    # catalog-probe records during Metabase's sync; once growth flattens
-    # we know the sync has finished and the WARN tally is stable.
-    _wait_until(
-        lambda: len(metabase_e2e_env.log_records) > total_before,
-        timeout_s=15,
+    # Wait for the log buffer to STABILISE — pg-facade emits a stream of
+    # catalog-probe records during Metabase's sync; sampling on first
+    # growth would under-count the WARN tally and miss the DEV-1558
+    # "170+ WARN lines per sync" regression. Use a stability poll so we
+    # only sample once new records stop arriving.
+    _wait_until_stable(
+        lambda: len(metabase_e2e_env.log_records),
+        timeout_s=20, settle_s=2.0,
     )
     total_after = len(metabase_e2e_env.log_records)
     warn_after = sum(1 for r in metabase_e2e_env.log_records if r.levelno >= logging.WARNING)
@@ -183,6 +185,32 @@ def _wait_until(predicate, *, timeout_s: float = 20, interval_s: float = 0.5) ->
             return result
         time.sleep(interval_s)
     return False
+
+
+def _wait_until_stable(
+    getter, *, timeout_s: float = 20, settle_s: float = 2.0, interval_s: float = 0.5,
+):
+    """Poll ``getter()`` until its value stops changing for ``settle_s``
+    seconds, then return that stable value. On timeout, returns whatever
+    the last observed value was.
+
+    Use this when the right post-action wait is "Metabase has finished
+    streaming events" — polling for the first change (``_wait_until``)
+    can return mid-burst and under-sample. Stability check converges as
+    soon as the upstream activity quiesces.
+    """
+    deadline = time.monotonic() + timeout_s
+    last_val = getter()
+    last_change = time.monotonic()
+    while time.monotonic() < deadline:
+        time.sleep(interval_s)
+        current = getter()
+        if current != last_val:
+            last_val = current
+            last_change = time.monotonic()
+        elif time.monotonic() - last_change >= settle_s:
+            return last_val
+    return last_val
 
 
 async def test_hidden_columns_not_surfaced(metabase_e2e_env: MetabaseE2EEnv) -> None:
