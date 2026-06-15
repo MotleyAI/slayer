@@ -295,7 +295,7 @@ def _detect_time_grain_date_trunc(
 ) -> Optional[Tuple[TimeGranularity, exp.Column]]:
     unit = node.args.get("unit")
     col = node.this
-    if unit is None or not isinstance(col, exp.Column):
+    if unit is None:
         return None
     # The unit is a string literal under the dialect-less parse and a bare
     # identifier (``exp.Var``) under the Postgres dialect's TIMESTAMP_TRUNC.
@@ -306,7 +306,56 @@ def _detect_time_grain_date_trunc(
     grain = _TIME_GRAIN_NAMES.get(unit_str)
     if grain is None:
         return None
+    # DEV-1562 / DEV-1558 round-20 follow-up: Metabase emits Sunday-based
+    # week truncation as ``DATE_TRUNC('week', col + INTERVAL '1 day') -
+    # INTERVAL '1 day'``. The day offset on the column side is part of the
+    # Sunday-week wrapper and only safe to unwrap when the grain is WEEK —
+    # other grains' day-offset wrappers are user-intent we must preserve.
+    if isinstance(col, exp.Cast):
+        col = col.this
+    if grain == TimeGranularity.WEEK:
+        col = _unwrap_one_day_offset(col)
+    if not isinstance(col, exp.Column):
+        return None
     return grain, col
+
+
+def _is_one_day_interval(node: exp.Expression) -> bool:
+    """True iff ``node`` is ``INTERVAL '1 day'`` / ``INTERVAL '-1 day'``."""
+    if not isinstance(node, exp.Interval):
+        return False
+    val = node.this
+    unit = node.args.get("unit")
+    unit_str = ""
+    if unit is not None:
+        unit_str = str(unit.this if hasattr(unit, "this") else unit).lower()
+    if isinstance(val, exp.Literal):
+        s = str(val.this).strip().lower().replace("'", "")
+        # Accept "1 day", "-1 day", "1", "-1" (when unit is the separate node).
+        if s in {"1", "-1"}:
+            return unit_str.startswith("day")
+        return s in {"1 day", "-1 day"}
+    return False
+
+
+def _unwrap_one_day_offset(node: exp.Expression) -> exp.Expression:
+    """If ``node`` is ``<expr> +/- INTERVAL '1 day'``, return ``<expr>``.
+
+    Otherwise return ``node`` unchanged. Used to peel Metabase's Sunday-week
+    offset wrappers off both the outer projection and the DATE_TRUNC's
+    inner column argument.
+    """
+    if isinstance(node, exp.Paren):
+        inner = _unwrap_one_day_offset(node.this)
+        if inner is not node.this:
+            return inner
+    if isinstance(node, (exp.Add, exp.Sub)):
+        left, right = node.this, node.expression
+        if _is_one_day_interval(right):
+            return left
+        if _is_one_day_interval(left):
+            return right
+    return node
 
 
 def _detect_time_grain_single_arg(
@@ -351,6 +400,22 @@ def _detect_time_grain(node: exp.Expression) -> Optional[Tuple[TimeGranularity, 
         unwrapped = _detect_time_grain(node.this)
         if unwrapped is not None:
             return unwrapped
+    # DEV-1562 / DEV-1558 round-20 follow-up: Metabase emits Sunday-based
+    # week truncation as the full wrapper
+    # ``CAST((CAST(DATE_TRUNC('week', col + INTERVAL '1 day') AS DATE) +
+    # INTERVAL '-1 day') AS DATE)``. Peeling the outer ``-1 day`` offset
+    # leaves the inner CAST(DATE_TRUNC(...)) which the existing recursion
+    # already handles; the day-offset on the column side is unwrapped in
+    # ``_detect_time_grain_date_trunc``.
+    unwrapped_offset = _unwrap_one_day_offset(node)
+    if unwrapped_offset is not node:
+        recur = _detect_time_grain(unwrapped_offset)
+        if recur is not None:
+            return recur
+    if isinstance(node, exp.Paren):
+        recur = _detect_time_grain(node.this)
+        if recur is not None:
+            return recur
     if isinstance(node, (exp.DateTrunc, exp.TimestampTrunc)):
         match = _detect_time_grain_date_trunc(node)
         if match is not None:

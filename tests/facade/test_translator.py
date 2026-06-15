@@ -500,6 +500,51 @@ def test_time_grain_on_non_time_column_errors(dialect) -> None:
     assert "not a time column" in str(exc_info.value)
 
 
+def test_metabase_sunday_week_wrapper_recognised(dialect) -> None:
+    """DEV-1562 follow-up: when Metabase issues a week breakout on a DATE
+    column, it wraps the truncation to shift Monday-based DATE_TRUNC to
+    Sunday-based: ``CAST((CAST(DATE_TRUNC('week', col + INTERVAL '1 day')
+    AS DATE) + INTERVAL '-1 day') AS DATE)``. The translator must peel the
+    day-offset wrappers on both ends and end up at the WEEK grain over
+    the bare column.
+    """
+    result = translate(
+        sql=(
+            'SELECT CAST((CAST(date_trunc(\'week\', '
+            '("orders"."ordered_at" + INTERVAL \'1 day\')) AS DATE) '
+            '+ INTERVAL \'-1 day\') AS DATE) AS "ordered_at", '
+            'COUNT(*) AS "count" '
+            'FROM "orders" '
+            'GROUP BY CAST((CAST(date_trunc(\'week\', '
+            '("orders"."ordered_at" + INTERVAL \'1 day\')) AS DATE) '
+            '+ INTERVAL \'-1 day\') AS DATE)'
+        ),
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.time_dimensions is not None
+    assert len(result.query.time_dimensions) == 1
+    assert result.query.time_dimensions[0].granularity == TimeGranularity.WEEK
+    assert result.query.time_dimensions[0].dimension.full_name == "ordered_at"
+
+
+def test_one_day_offset_on_non_week_is_preserved(dialect) -> None:
+    """The day-offset unwrap is scoped to WEEK only: a ``date_trunc('month',
+    col + INTERVAL '1 day')`` query is NOT a Sunday-week wrapper, so the
+    column-side offset must be treated as user intent (the column is not a
+    bare ``ordered_at`` ref) and rejected with the existing translator error.
+    """
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                'SELECT date_trunc(\'month\', '
+                '("orders"."ordered_at" + INTERVAL \'1 day\')), '
+                'COUNT(*) FROM "orders"'
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
 # --- dialect-only parse acceptance ------------------------------------------
 
 

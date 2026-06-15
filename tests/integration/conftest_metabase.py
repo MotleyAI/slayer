@@ -21,6 +21,7 @@ import uuid
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pytest
+import requests
 
 from tests.integration._pg_serve_helpers import start_pg_demo_server
 
@@ -46,8 +47,6 @@ class MetabaseClient:
     """Thin synchronous wrapper around the Metabase REST API."""
 
     def __init__(self, *, base_url: str, session_token: str, db_id: int) -> None:
-        import requests
-
         self.base_url = base_url.rstrip("/")
         self.session_token = session_token
         self.db_id = db_id
@@ -57,14 +56,36 @@ class MetabaseClient:
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
 
+    @staticmethod
+    def _raise_with_body(resp: "requests.Response", path: str) -> None:
+        """``raise_for_status`` but with the response body in the message.
+
+        ``requests.exceptions.HTTPError`` defaults to status + URL only; for
+        Metabase 4xx debugging we need the JSON body (the ``message`` /
+        ``error`` / ``via`` fields name the actual MBQL or SQL rejection
+        reason), otherwise CI failures look like opaque ``400 Client Error``.
+        """
+        if resp.ok:
+            return
+        body_preview = (resp.text or "").strip()[:2000]
+        raise requests.HTTPError(
+            f"{resp.status_code} {resp.reason} from {path}: {body_preview}",
+            response=resp,
+        )
+
     def post(self, path: str, json_body: Optional[dict] = None, *, timeout: int = 30) -> dict:
         resp = self._session.post(self._url(path), json=json_body or {}, timeout=timeout)
-        resp.raise_for_status()
+        self._raise_with_body(resp, path)
         return resp.json() if resp.content else {}
 
     def get(self, path: str, params: Optional[dict] = None, *, timeout: int = 30) -> Any:
         resp = self._session.get(self._url(path), params=params, timeout=timeout)
-        resp.raise_for_status()
+        self._raise_with_body(resp, path)
+        return resp.json() if resp.content else {}
+
+    def put(self, path: str, json_body: Optional[dict] = None, *, timeout: int = 30) -> dict:
+        resp = self._session.put(self._url(path), json=json_body or {}, timeout=timeout)
+        self._raise_with_body(resp, path)
         return resp.json() if resp.content else {}
 
     def post_raw(self, path: str, json_body: Optional[dict] = None, *, timeout: int = 30):
@@ -222,8 +243,6 @@ CONTAINER_LOG_DUMP_PATH = "/tmp/slayer-metabase-e2e-container.log"  # NOSONAR(S5
 
 
 def _wait_for_health(base_url: str, timeout_s: int) -> bool:
-    import requests
-
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
@@ -237,8 +256,6 @@ def _wait_for_health(base_url: str, timeout_s: int) -> bool:
 
 
 def _fetch_setup_token(base_url: str) -> Optional[str]:
-    import requests
-
     r = requests.get(f"{base_url}/api/session/properties", timeout=10)
     r.raise_for_status()
     props = r.json()
@@ -248,8 +265,6 @@ def _fetch_setup_token(base_url: str) -> Optional[str]:
 
 def _run_setup(base_url: str, setup_token: str) -> str:
     """Walk Metabase's first-boot setup; return the admin session id."""
-    import requests
-
     body = {
         "token": setup_token,
         "user": {
@@ -276,8 +291,6 @@ def _run_setup(base_url: str, setup_token: str) -> str:
 
 def _login(base_url: str) -> str:
     """Fallback login when the instance is already set up."""
-    import requests
-
     r = requests.post(
         f"{base_url}/api/session",
         json={"username": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
@@ -301,8 +314,6 @@ def _register_database(
     user: str,
     password: str,
 ) -> int:
-    import requests
-
     body = {
         "engine": "postgres",
         "name": name,
@@ -339,8 +350,6 @@ def _register_database(
 def _wait_for_metadata(
     base_url: str, session_token: str, db_id: int, *, min_tables: int, timeout_s: int
 ) -> Dict[str, Any]:
-    import requests
-
     deadline = time.monotonic() + timeout_s
     headers = {"X-Metabase-Session": session_token}
     last_payload: Dict[str, Any] = {}
@@ -367,10 +376,58 @@ def _wait_for_metadata(
 # ---------------------------------------------------------------------------
 
 
+def _bootstrap_metabase_session(
+    *, container_id: str, host_port: int, port_a: int, port_b: int,
+) -> Tuple[str, str, int, int]:
+    """Boot Metabase, run first-time setup, register both pg-serve databases.
+
+    Returns ``(base_url, session_token, db_id_no_token, db_id_token)``.
+    Extracted out of ``metabase_e2e_env`` to keep the fixture's Cognitive
+    Complexity below Sonar's S3776 threshold (15).
+    """
+    base_url = f"http://127.0.0.1:{host_port}"
+
+    if not _wait_for_health(base_url, HEALTH_TIMEOUT_S):
+        logs = _dump_container_logs(container_id)
+        pytest.skip(
+            f"Metabase container never reached healthy state within {HEALTH_TIMEOUT_S}s. "
+            f"Last logs:\n{logs}"
+        )
+
+    setup_token = _fetch_setup_token(base_url)
+    if setup_token:
+        session_token = _run_setup(base_url, setup_token)
+    else:
+        session_token = _login(base_url)
+
+    db_id_no_token = _register_database(
+        base_url, session_token,
+        name="slayer-jaffle",
+        host="host.docker.internal", port=port_a, dbname="jaffle_shop",
+        user="tester", password="x",  # NOSONAR(S2068) — fixture credential
+    )
+    _wait_for_metadata(
+        base_url, session_token, db_id_no_token,
+        min_tables=7, timeout_s=METADATA_TIMEOUT_S,
+    )
+
+    db_id_token = _register_database(
+        base_url, session_token,
+        name="slayer-jaffle-token",
+        host="host.docker.internal", port=port_b, dbname="jaffle_shop",
+        user="tester", password=TOKEN_VALUE,
+    )
+    _wait_for_metadata(
+        base_url, session_token, db_id_token,
+        min_tables=7, timeout_s=METADATA_TIMEOUT_S,
+    )
+
+    return base_url, session_token, db_id_no_token, db_id_token
+
+
 @pytest.fixture(scope="session")
 def metabase_e2e_env() -> Iterator[MetabaseE2EEnv]:
     """Session-scoped Metabase + dual pg-serve bootstrap."""
-    pytest.importorskip("requests")
     pytest.importorskip("asyncpg")
 
     if not _docker_available():
@@ -395,41 +452,8 @@ def metabase_e2e_env() -> Iterator[MetabaseE2EEnv]:
         )
 
         container_id, host_port = _run_metabase_container()
-        base_url = f"http://127.0.0.1:{host_port}"
-
-        if not _wait_for_health(base_url, HEALTH_TIMEOUT_S):
-            logs = _dump_container_logs(container_id)
-            pytest.skip(
-                f"Metabase container never reached healthy state within {HEALTH_TIMEOUT_S}s. "
-                f"Last logs:\n{logs}"
-            )
-
-        setup_token = _fetch_setup_token(base_url)
-        if setup_token:
-            session_token = _run_setup(base_url, setup_token)
-        else:
-            session_token = _login(base_url)
-
-        db_id_no_token = _register_database(
-            base_url, session_token,
-            name="slayer-jaffle",
-            host="host.docker.internal", port=port_a, dbname="jaffle_shop",
-            user="tester", password="x",  # NOSONAR(S2068) — fixture credential
-        )
-        _wait_for_metadata(
-            base_url, session_token, db_id_no_token,
-            min_tables=7, timeout_s=METADATA_TIMEOUT_S,
-        )
-
-        db_id_token = _register_database(
-            base_url, session_token,
-            name="slayer-jaffle-token",
-            host="host.docker.internal", port=port_b, dbname="jaffle_shop",
-            user="tester", password=TOKEN_VALUE,
-        )
-        _wait_for_metadata(
-            base_url, session_token, db_id_token,
-            min_tables=7, timeout_s=METADATA_TIMEOUT_S,
+        base_url, session_token, db_id_no_token, db_id_token = _bootstrap_metabase_session(
+            container_id=container_id, host_port=host_port, port_a=port_a, port_b=port_b,
         )
 
         client = MetabaseClient(
