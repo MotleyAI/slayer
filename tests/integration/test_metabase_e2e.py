@@ -119,23 +119,36 @@ def test_sync_log_volume_within_budget(metabase_e2e_env: MetabaseE2EEnv) -> None
     Self-validating: also asserts the log-capture buffer is non-empty after
     the sync, so the test can't false-pass when the handler isn't wired up.
     """
-    total_before = len(metabase_e2e_env.log_records)
     warn_before = sum(1 for r in metabase_e2e_env.log_records if r.levelno >= logging.WARNING)
     metabase_e2e_env.client.sync_schema()
     # Wait for the log buffer to STABILISE — pg-facade emits a stream of
     # catalog-probe records during Metabase's sync; sampling on first
     # growth would under-count the WARN tally and miss the DEV-1558
     # "170+ WARN lines per sync" regression. Use a stability poll so we
-    # only sample once new records stop arriving.
-    _wait_until_stable(
+    # only sample once new records stop arriving. If we time out before
+    # stabilising, the WARN delta below is unreliable — assert the
+    # stabilisation explicitly rather than reading a partial sample.
+    stabilised, _ = _wait_until_stable(
         lambda: len(metabase_e2e_env.log_records),
         timeout_s=20, settle_s=2.0,
     )
-    total_after = len(metabase_e2e_env.log_records)
+    assert stabilised, (
+        "log buffer never stabilised within 20s — WARN tally below would "
+        "sample mid-burst; bump timeout or investigate sync emission stream"
+    )
     warn_after = sum(1 for r in metabase_e2e_env.log_records if r.levelno >= logging.WARNING)
-    assert total_after > total_before, (
-        "log capture appears inactive: sync_schema emitted no records — "
-        "the WARN budget assertion below would false-pass without this guard"
+    # Capture-wiring sanity check: the session-scoped log buffer must
+    # have collected SOME records by the time this test runs (prior
+    # bootstrap + sync tests always emit them). If it's empty the
+    # handler isn't wired and the WARN-budget assertion below would
+    # silently false-pass at 0 < 20. We can't tighten this to "the
+    # current sync emitted records" because Metabase no-ops a sync
+    # when nothing has changed — a test running after a prior sync
+    # legitimately sees zero new records.
+    assert len(metabase_e2e_env.log_records) > 0, (
+        "log capture appears inactive: buffer empty after the suite's "
+        "bootstrap + sync sequence — the WARN budget assertion below "
+        "would false-pass without this guard"
     )
     delta = warn_after - warn_before
     assert delta < 20, f"sync_schema produced {delta} WARN+ records (budget 20)"
@@ -189,10 +202,11 @@ def _wait_until(predicate, *, timeout_s: float = 20, interval_s: float = 0.5) ->
 
 def _wait_until_stable(
     getter, *, timeout_s: float = 20, settle_s: float = 2.0, interval_s: float = 0.5,
-):
+) -> Tuple[bool, Any]:
     """Poll ``getter()`` until its value stops changing for ``settle_s``
-    seconds, then return that stable value. On timeout, returns whatever
-    the last observed value was.
+    seconds. Returns ``(stabilized, last_value)`` so callers can
+    distinguish a real settle from a timeout — silently returning the
+    last partial value would let a test sample mid-burst and false-pass.
 
     Use this when the right post-action wait is "Metabase has finished
     streaming events" — polling for the first change (``_wait_until``)
@@ -209,8 +223,8 @@ def _wait_until_stable(
             last_val = current
             last_change = time.monotonic()
         elif time.monotonic() - last_change >= settle_s:
-            return last_val
-    return last_val
+            return True, last_val
+    return False, last_val
 
 
 async def test_hidden_columns_not_surfaced(metabase_e2e_env: MetabaseE2EEnv) -> None:
