@@ -3,6 +3,11 @@
 Currently hosts the Flight SQL demo-server fixture used by both
 ``test_integration_flight.py`` (JayDeBeAPI) and
 ``test_integration_flight_pyarrow_client.py``.
+
+Also re-exports the ``metabase_e2e_env`` fixture from
+``conftest_metabase.py`` so the live-Metabase suite (DEV-1562) can pick it
+up via pytest's auto-discovery without an explicit import (which would
+shadow it via parameter binding in every test).
 """
 
 from __future__ import annotations
@@ -17,6 +22,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, Tuple
 
 import pytest
+
+from tests.integration.conftest_metabase import metabase_e2e_env  # noqa: F401
 
 JDBC_DRIVER_VERSION = "18.3.0"
 JDBC_DRIVER_URL = (

@@ -165,3 +165,21 @@ The facade is pure-stdlib; the extra exists only to keep the install path consis
 ```bash
 pip install "motley-slayer[pg_facade]"
 ```
+
+## Testing your changes
+
+For wire-level / translator changes, the unit suite under `tests/test_pg_facade*.py` covers
+each component in isolation. Behaviour at the *interaction boundary* with a real BI client
+is covered by the live-Metabase end-to-end suite (DEV-1562):
+
+```bash
+poetry run pytest -m metabase_e2e tests/integration/test_metabase_e2e.py -v
+```
+
+The suite needs Docker; it boots `metabase/metabase:v0.62.1.5` alongside two pg-serve
+processes (one no-token for Metabase, one token-protected for auth-error tests) and drives
+~62 cases through the real `pgjdbc` protocol — bootstrap + sync, MBQL aggregations and
+time-grain breakouts, native-SQL probes, wire-format round-trips, transactions,
+concurrency, and error envelopes. Skips cleanly when Docker is unavailable. CI fires
+automatically on PRs touching `slayer/pg_facade/`, `slayer/facade/`, `slayer/demo/`, the
+e2e test files, or `pyproject.toml` / `poetry.lock`.

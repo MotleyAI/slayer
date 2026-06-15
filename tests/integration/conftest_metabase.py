@@ -1,0 +1,473 @@
+"""Session-scoped fixture stack for the live-Metabase e2e suite (DEV-1562).
+
+Boots one Metabase Docker container (Metabase v0.62.1.5) plus two pg-serve
+instances — one no-token used by Metabase via the loopback fallback, one
+token-protected used for auth-related tests — and yields a small typed
+``MetabaseE2EEnv`` to every test.
+
+Skips cleanly when Docker is unavailable or the container never reaches a
+healthy state within the boot budget; never fails the suite for environmental
+reasons.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import shutil
+import subprocess
+import time
+import uuid
+from typing import Any, Dict, Iterator, List, Optional, Tuple
+
+import pytest
+
+from tests.integration._pg_serve_helpers import start_pg_demo_server
+
+METABASE_IMAGE = "metabase/metabase:v0.62.1.5"
+METABASE_INTERNAL_PORT = 3000
+
+ADMIN_EMAIL = "admin@slayer.test"
+ADMIN_PASSWORD = "slayer-pg-e2e-pw"  # NOSONAR(S2068) — fixture credential
+ADMIN_FIRST = "SLayer"
+ADMIN_LAST = "Tester"
+ADMIN_SITE_NAME = "SLayer PG E2E"
+
+HEALTH_TIMEOUT_S = 180
+METADATA_TIMEOUT_S = 90
+DOCKER_INFO_TIMEOUT_S = 5
+DOCKER_RUN_TIMEOUT_S = 240  # generous: covers first-time image pull
+DOCKER_STOP_TIMEOUT_S = 15
+
+TOKEN_VALUE = "metabase-e2e-token"  # NOSONAR(S2068) — fixture credential
+
+
+class MetabaseClient:
+    """Thin synchronous wrapper around the Metabase REST API."""
+
+    def __init__(self, *, base_url: str, session_token: str, db_id: int) -> None:
+        import requests
+
+        self.base_url = base_url.rstrip("/")
+        self.session_token = session_token
+        self.db_id = db_id
+        self._session = requests.Session()
+        self._session.headers.update({"X-Metabase-Session": session_token})
+
+    def _url(self, path: str) -> str:
+        return f"{self.base_url}{path}"
+
+    def post(self, path: str, json_body: Optional[dict] = None, *, timeout: int = 30) -> dict:
+        resp = self._session.post(self._url(path), json=json_body or {}, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+    def get(self, path: str, params: Optional[dict] = None, *, timeout: int = 30) -> Any:
+        resp = self._session.get(self._url(path), params=params, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+    def post_raw(self, path: str, json_body: Optional[dict] = None, *, timeout: int = 30):
+        """POST without raise_for_status — for error-envelope tests."""
+        return self._session.post(self._url(path), json=json_body or {}, timeout=timeout)
+
+    # Convenience helpers -----------------------------------------------------
+
+    def dataset(self, query: dict, *, timeout: int = 60) -> dict:
+        return self.post("/api/dataset", {"database": self.db_id, **query}, timeout=timeout)
+
+    def database_metadata(self) -> dict:
+        return self.get(f"/api/database/{self.db_id}/metadata")
+
+    def sync_schema(self) -> dict:
+        return self.post(f"/api/database/{self.db_id}/sync_schema")
+
+    def table_metadata(self, table_id: int) -> dict:
+        return self.get(f"/api/table/{table_id}/query_metadata")
+
+    def field_values(self, field_id: int) -> dict:
+        return self.get(f"/api/field/{field_id}/values")
+
+    def table_id_by_name(self, table_name: str) -> int:
+        for tbl in self.database_metadata().get("tables", []):
+            if tbl.get("name") == table_name:
+                return int(tbl["id"])
+        raise LookupError(f"table {table_name!r} not present in Metabase metadata")
+
+    def field_id_by_name(self, table_name: str, field_name: str) -> int:
+        tid = self.table_id_by_name(table_name)
+        for f in self.table_metadata(tid).get("fields", []):
+            if f.get("name") == field_name:
+                return int(f["id"])
+        raise LookupError(f"field {table_name}.{field_name!r} not present")
+
+
+class MetabaseE2EEnv:
+    """Shared state yielded by the ``metabase_e2e_env`` fixture."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        session_token: str,
+        client: MetabaseClient,
+        token_db_id: int,
+        pg_no_token: Tuple[str, int],
+        pg_token: Tuple[str, int, str],
+        log_records: List[logging.LogRecord],
+        pg_no_token_storage: Any,
+    ) -> None:
+        self.base_url = base_url
+        self.session_token = session_token
+        self.client = client
+        self.token_db_id = token_db_id
+        self.pg_no_token = pg_no_token
+        self.pg_token = pg_token
+        self.log_records = log_records
+        self.pg_no_token_storage = pg_no_token_storage
+
+    def make_client(self, db_id: int) -> MetabaseClient:
+        """Return a MetabaseClient bound to a different db_id (same session)."""
+        return MetabaseClient(
+            base_url=self.base_url, session_token=self.session_token, db_id=db_id
+        )
+
+
+# ---------------------------------------------------------------------------
+# Docker probes / Metabase bootstrap
+# ---------------------------------------------------------------------------
+
+
+def _docker_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            capture_output=True,
+            timeout=DOCKER_INFO_TIMEOUT_S,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and result.stdout.strip() != ""
+
+
+def _run_metabase_container() -> Tuple[str, int]:
+    """Start the Metabase container; return ``(container_id, host_port)``."""
+    container_name = f"slayer-mb-e2e-{uuid.uuid4().hex[:8]}"
+    cmd = [
+        "docker", "run",
+        "-d", "--rm",
+        "--name", container_name,
+        "--add-host", "host.docker.internal:host-gateway",
+        "-p", f"127.0.0.1::{METABASE_INTERNAL_PORT}",
+        METABASE_IMAGE,
+    ]
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=DOCKER_RUN_TIMEOUT_S
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"docker run failed (exit {result.returncode}): {result.stderr.strip()}"
+        )
+    container_id = result.stdout.strip()
+
+    inspect = subprocess.run(
+        [
+            "docker", "inspect",
+            "--format",
+            '{{(index (index .NetworkSettings.Ports "' + str(METABASE_INTERNAL_PORT) + '/tcp") 0).HostPort}}',
+            container_id,
+        ],
+        capture_output=True, text=True, timeout=10,
+    )
+    if inspect.returncode != 0 or not inspect.stdout.strip().isdigit():
+        raise RuntimeError(
+            f"docker inspect failed to surface host port: {inspect.stderr.strip()}"
+        )
+    host_port = int(inspect.stdout.strip())
+    return container_id, host_port
+
+
+def _stop_container(container_id: Optional[str]) -> None:
+    if not container_id:
+        return
+    try:
+        subprocess.run(
+            ["docker", "stop", container_id],
+            capture_output=True, timeout=DOCKER_STOP_TIMEOUT_S,
+        )
+    except Exception:
+        pass
+
+
+def _dump_container_logs(container_id: str, tail: int = 200) -> str:
+    try:
+        result = subprocess.run(
+            ["docker", "logs", "--tail", str(tail), container_id],
+            capture_output=True, text=True, timeout=10,
+        )
+        return (result.stdout or "") + (result.stderr or "")
+    except Exception as exc:
+        return f"<log dump failed: {exc}>"
+
+
+def _wait_for_health(base_url: str, timeout_s: int) -> bool:
+    import requests
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            r = requests.get(f"{base_url}/api/health", timeout=5)
+            if r.status_code == 200 and r.json().get("status") == "ok":
+                return True
+        except Exception:
+            pass
+        time.sleep(2)
+    return False
+
+
+def _fetch_setup_token(base_url: str) -> Optional[str]:
+    import requests
+
+    r = requests.get(f"{base_url}/api/session/properties", timeout=10)
+    r.raise_for_status()
+    props = r.json()
+    token = props.get("setup-token")
+    return token if token else None
+
+
+def _run_setup(base_url: str, setup_token: str) -> str:
+    """Walk Metabase's first-boot setup; return the admin session id."""
+    import requests
+
+    body = {
+        "token": setup_token,
+        "user": {
+            "first_name": ADMIN_FIRST,
+            "last_name": ADMIN_LAST,
+            "email": ADMIN_EMAIL,
+            "password": ADMIN_PASSWORD,
+            "password_confirm": ADMIN_PASSWORD,
+            "site_name": ADMIN_SITE_NAME,
+        },
+        "prefs": {
+            "site_name": ADMIN_SITE_NAME,
+            "allow_tracking": False,
+        },
+    }
+    r = requests.post(f"{base_url}/api/setup", json=body, timeout=60)
+    r.raise_for_status()
+    payload = r.json()
+    sid = payload.get("id") or payload.get("session_id")
+    if not sid:
+        raise RuntimeError(f"Metabase /api/setup returned no session id: {payload}")
+    return sid
+
+
+def _login(base_url: str) -> str:
+    """Fallback login when the instance is already set up."""
+    import requests
+
+    r = requests.post(
+        f"{base_url}/api/session",
+        json={"username": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+        timeout=30,
+    )
+    r.raise_for_status()
+    sid = r.json().get("id")
+    if not sid:
+        raise RuntimeError("Metabase /api/session returned no session id")
+    return sid
+
+
+def _register_database(
+    base_url: str,
+    session_token: str,
+    *,
+    name: str,
+    host: str,
+    port: int,
+    dbname: str,
+    user: str,
+    password: str,
+) -> int:
+    import requests
+
+    body = {
+        "engine": "postgres",
+        "name": name,
+        "details": {
+            "host": host,
+            "port": port,
+            "dbname": dbname,
+            "user": user,
+            "password": password,
+            "ssl": False,
+            "tunnel-enabled": False,
+            "advanced-options": False,
+        },
+        "is_full_sync": True,
+        "is_on_demand": False,
+    }
+    r = requests.post(
+        f"{base_url}/api/database",
+        json=body,
+        headers={"X-Metabase-Session": session_token},
+        timeout=60,
+    )
+    if r.status_code >= 400:
+        raise RuntimeError(
+            f"POST /api/database failed (status {r.status_code}): {r.text}"
+        )
+    payload = r.json()
+    db_id = payload.get("id")
+    if not isinstance(db_id, int):
+        raise RuntimeError(f"POST /api/database returned no integer id: {payload}")
+    return db_id
+
+
+def _wait_for_metadata(
+    base_url: str, session_token: str, db_id: int, *, min_tables: int, timeout_s: int
+) -> Dict[str, Any]:
+    import requests
+
+    deadline = time.monotonic() + timeout_s
+    headers = {"X-Metabase-Session": session_token}
+    last_payload: Dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        r = requests.get(
+            f"{base_url}/api/database/{db_id}/metadata",
+            headers=headers,
+            timeout=30,
+        )
+        if r.status_code == 200:
+            last_payload = r.json()
+            tables = last_payload.get("tables") or []
+            if len(tables) >= min_tables:
+                return last_payload
+        time.sleep(2)
+    raise RuntimeError(
+        f"Metabase metadata never reached {min_tables}+ tables on db {db_id}. "
+        f"Last payload table count: {len(last_payload.get('tables') or [])}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def metabase_e2e_env() -> Iterator[MetabaseE2EEnv]:
+    """Session-scoped Metabase + dual pg-serve bootstrap."""
+    pytest.importorskip("requests")
+    pytest.importorskip("asyncpg")
+
+    if not _docker_available():
+        pytest.skip("Docker is unavailable; the metabase_e2e suite needs a working Docker daemon")
+
+    log_records: List[logging.LogRecord] = []
+    storage_sink: list = []
+    loop_a = thread_a = None
+    loop_b = thread_b = None
+    container_id: Optional[str] = None
+
+    try:
+        loop_a, thread_a, host_a, port_a = start_pg_demo_server(
+            token=None, log_records=log_records, storage_sink=storage_sink,
+        )
+        loop_b, thread_b, host_b, port_b = start_pg_demo_server(token=TOKEN_VALUE)
+
+        container_id, host_port = _run_metabase_container()
+        base_url = f"http://127.0.0.1:{host_port}"
+
+        if not _wait_for_health(base_url, HEALTH_TIMEOUT_S):
+            logs = _dump_container_logs(container_id)
+            pytest.skip(
+                f"Metabase container never reached healthy state within {HEALTH_TIMEOUT_S}s. "
+                f"Last logs:\n{logs}"
+            )
+
+        setup_token = _fetch_setup_token(base_url)
+        if setup_token:
+            session_token = _run_setup(base_url, setup_token)
+        else:
+            session_token = _login(base_url)
+
+        db_id_no_token = _register_database(
+            base_url, session_token,
+            name="slayer-jaffle",
+            host="host.docker.internal", port=port_a, dbname="jaffle_shop",
+            user="tester", password="x",  # NOSONAR(S2068) — fixture credential
+        )
+        _wait_for_metadata(
+            base_url, session_token, db_id_no_token,
+            min_tables=7, timeout_s=METADATA_TIMEOUT_S,
+        )
+
+        db_id_token = _register_database(
+            base_url, session_token,
+            name="slayer-jaffle-token",
+            host="host.docker.internal", port=port_b, dbname="jaffle_shop",
+            user="tester", password=TOKEN_VALUE,
+        )
+        _wait_for_metadata(
+            base_url, session_token, db_id_token,
+            min_tables=7, timeout_s=METADATA_TIMEOUT_S,
+        )
+
+        client = MetabaseClient(
+            base_url=base_url, session_token=session_token, db_id=db_id_no_token,
+        )
+
+        env = MetabaseE2EEnv(
+            base_url=base_url,
+            session_token=session_token,
+            client=client,
+            token_db_id=db_id_token,
+            pg_no_token=(host_a, port_a),
+            pg_token=(host_b, port_b, TOKEN_VALUE),
+            log_records=log_records,
+            pg_no_token_storage=storage_sink[0] if storage_sink else None,
+        )
+        yield env
+    finally:
+        if container_id:
+            _stop_container(container_id)
+        for loop, thread in ((loop_b, thread_b), (loop_a, thread_a)):
+            if loop is None or thread is None:
+                continue
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except Exception:
+                pass
+            try:
+                thread.join(timeout=5)
+            except Exception:
+                pass
+
+
+# Used by tests that re-emit the env in a per-test mutation context.
+def encode_native_query(sql: str) -> Dict[str, Any]:
+    """Convenience helper used by native-SQL tests (E.7, G.4, etc.)."""
+    return {"type": "native", "native": {"query": sql, "template-tags": {}}}
+
+
+def encode_mbql_query(*, source_table: int, **extras: Any) -> Dict[str, Any]:
+    """Build an MBQL ``query`` body for ``/api/dataset``."""
+    inner: Dict[str, Any] = {"source-table": source_table}
+    inner.update(extras)
+    return {"type": "query", "query": inner}
+
+
+# Re-export the JSON dump shim used by tests so they don't need to import json themselves.
+__all__ = [
+    "MetabaseClient",
+    "MetabaseE2EEnv",
+    "encode_mbql_query",
+    "encode_native_query",
+    "metabase_e2e_env",
+    "json",
+]

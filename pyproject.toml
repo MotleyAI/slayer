@@ -118,6 +118,7 @@ testpaths = ["tests"]
 addopts = "--ignore=tests/perf"
 markers = [
     "integration: marks tests as integration tests (require a real database)",
+    "metabase_e2e: live-Metabase end-to-end suite (requires Docker)",
 ]
 asyncio_mode = "auto"
 

@@ -1,0 +1,80 @@
+name: PG Facade Live-Metabase E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'slayer/pg_facade/**'
+      - 'slayer/facade/**'
+      - 'slayer/demo/**'
+      - 'tests/integration/test_metabase_e2e.py'
+      - 'tests/integration/conftest_metabase.py'
+      - 'tests/integration/_pg_serve_helpers.py'
+      - 'tests/integration/conftest.py'
+      - 'pyproject.toml'
+      - 'poetry.lock'
+      - '.github/workflows/pg-facade-e2e.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'slayer/pg_facade/**'
+      - 'slayer/facade/**'
+      - 'slayer/demo/**'
+      - 'tests/integration/test_metabase_e2e.py'
+      - 'tests/integration/conftest_metabase.py'
+      - 'tests/integration/_pg_serve_helpers.py'
+      - 'tests/integration/conftest.py'
+      - 'pyproject.toml'
+      - 'poetry.lock'
+      - '.github/workflows/pg-facade-e2e.yml'
+
+jobs:
+  metabase-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Install dependencies
+        run: poetry install -E all --with dev
+
+      - name: Install jafgen (for demo data generation)
+        run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b
+
+      - name: Cache Metabase image
+        id: mb_cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/metabase-image.tar
+          key: metabase-image-v0.62.1.5-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Load Metabase image from cache
+        if: steps.mb_cache.outputs.cache-hit == 'true'
+        run: docker load -i /tmp/metabase-image.tar
+
+      - name: Pull and save Metabase image
+        if: steps.mb_cache.outputs.cache-hit != 'true'
+        run: |
+          docker pull metabase/metabase:v0.62.1.5
+          docker save metabase/metabase:v0.62.1.5 -o /tmp/metabase-image.tar
+
+      - name: Run live-Metabase e2e suite
+        timeout-minutes: 15
+        run: poetry run pytest -m metabase_e2e tests/integration/test_metabase_e2e.py -v --timeout=300
+
+      - name: Dump Metabase container logs on failure
+        if: failure()
+        run: |
+          for cid in $(docker ps -aq --filter ancestor=metabase/metabase:v0.62.1.5); do
+            echo "=== container $cid ==="
+            docker logs --tail=400 "$cid" || true
+          done
