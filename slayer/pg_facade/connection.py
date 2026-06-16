@@ -18,13 +18,15 @@ import asyncio
 import logging
 import re
 import struct
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import sqlglot
 import sqlglot.errors
 import sqlglot.expressions as exp
 from pydantic import BaseModel, ConfigDict
+from sqlglot.optimizer.scope import traverse_scope
 
+from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
 from slayer.facade.catalog import FacadeCatalog, build_catalog
 from slayer.facade.probe_queries import match_probe as facade_match_probe
@@ -39,7 +41,7 @@ from slayer.facade.translator import (
     TranslationError,
     translate,
 )
-from slayer.facade.catalog_sql import executor_for
+from slayer.facade.catalog_sql import build_catalog_relations, executor_for
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.auth import verify_password
 from slayer.pg_facade.identity import parameter_status_defaults, version_string
@@ -60,6 +62,12 @@ _BACKEND_SECRET = 0
 _PARAM_PLACEHOLDER = re.compile(r"\$(\d+)")
 # The single schema the facade advertises (matches pg_namespace / current_schema).
 PUBLIC_SCHEMA = "public"
+
+# DEV-1570 type aliases — populated by ``_build_column_type_index`` below and
+# cached per-connection. Declared here so the ``__init__`` annotation can
+# reference them without a forward-ref dance.
+ColumnTypeKey = Tuple[str, str, str]  # (schema_lower, table_lower, column_lower)
+ColumnTypeIndex = Dict[ColumnTypeKey, DataType]
 
 
 class _PreparedStatement(BaseModel):
@@ -100,6 +108,11 @@ class PgConnection:
         self._catalog: Optional[FacadeCatalog] = None
         self._statements: Dict[str, _PreparedStatement] = {}
         self._portals: Dict[str, _Portal] = {}
+        # Lazily-built (schema, table, column) -> DataType lookup, used by the
+        # DEV-1570 empty-string-vs-non-text Bind rewrite. Built once per
+        # connection on first need; ``None`` until then so connections that
+        # never bind candidates pay zero cost.
+        self._column_type_index: Optional[ColumnTypeIndex] = None
         # Extended protocol: after an error the backend discards every message
         # until the next Sync, then resumes with ReadyForQuery.
         self._skip_until_sync = False
@@ -402,9 +415,34 @@ class PgConnection:
             return stmt.sql
         formats = proto.parse_result_format_codes(bind.parameter_format_codes, n)
         oids = list(resolved)
+        # DEV-1570: pre-classify $N indices whose bound value is an empty
+        # text-OID payload AND whose AST occurrence targets a non-TEXT
+        # catalog column. Those positions emit ``NULL`` rather than ``''``
+        # so DuckDB doesn't trip a ``Could not convert string '' to INT64``
+        # conversion at Execute. The cache is built lazily on first need.
+        empty_string_null_params: Set[int] = set()
+        candidates = [
+            i + 1 for i, (raw, oid) in enumerate(zip(bind.parameter_values, oids))
+            if oid == proto.OID_TEXT and raw == b""
+        ]
+        if candidates and self._catalog is not None and self._datasource is not None:
+            if self._column_type_index is None:
+                self._column_type_index = _build_column_type_index(
+                    self._catalog, self._datasource,
+                )
+            empty_string_null_params = _classify_empty_string_param_targets(
+                sql=stmt.sql,
+                column_type_index=self._column_type_index,
+                candidate_param_indices=candidates,
+            )
         literals: List[str] = []
-        for raw, fmt, oid in zip(bind.parameter_values, formats, oids):
+        for i, (raw, fmt, oid) in enumerate(
+            zip(bind.parameter_values, formats, oids), start=1,
+        ):
             if raw is None:
+                literals.append("NULL")
+                continue
+            if i in empty_string_null_params:
                 literals.append("NULL")
                 continue
             value = (
@@ -736,6 +774,219 @@ def _substitute_typed_sentinels(sql: str, param_oids: List[int]) -> str:
             return _TYPED_SENTINEL_BY_OID.get(param_oids[idx], "NULL")
         return "NULL"
     return _PARAM_PLACEHOLDER.sub(repl, sql)
+
+
+# DEV-1570: empty-string-vs-non-text Bind rewrite -----------------------------
+#
+# Symmetric with the Describe-side typed-NULL substitution above. pgjdbc /
+# Metabase binds an empty string (``b""``) for "null" against text-OID
+# parameters; when that parameter targets a non-TEXT catalog column the
+# resulting ``WHERE int_col = ''`` previously tripped DuckDB's
+# ``Conversion Error: Could not convert string '' to INT64`` at Execute.
+# The classifier below identifies $N indices whose AST occurrences land in a
+# comparison / IN / BETWEEN predicate against a column that resolves via the
+# FacadeCatalog to a non-TEXT DataType, so ``_substitute_params`` can swap
+# their literal to NULL for those positions.
+
+# Mirrors slayer.facade.catalog_sql._PG_CATALOG_NAMES — duplicating here keeps
+# the classifier independent of catalog_sql internals. Bare names in user SQL
+# resolve to pg_catalog only when they match a known relation (per the
+# catalog executor's convention at slayer/facade/catalog_sql.py:712).
+_PG_CATALOG_RELATIONS: frozenset = frozenset({
+    "pg_namespace", "pg_class", "pg_attribute", "pg_type", "pg_proc",
+    "pg_settings", "pg_description", "pg_stat_user_tables", "pg_enum",
+    "pg_tables", "pg_views", "pg_matviews", "pg_constraint", "pg_index",
+    "pg_attrdef",
+})
+
+# Binary-comparison sqlglot node classes the classifier walks. Excludes LIKE /
+# ILIKE (text-only operators; collision with the empty-string-vs-non-text bug
+# is not possible).
+_COMPARISON_NODE_TYPES: tuple = (
+    exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE,
+    exp.NullSafeEQ, exp.NullSafeNEQ,
+)
+
+
+def _build_column_type_index(
+    catalog: FacadeCatalog, datasource: str,
+) -> ColumnTypeIndex:
+    """Build the (schema_lower, table_lower, column_lower) -> DataType lookup
+    used by the Bind-time empty-string-to-NULL rewrite (DEV-1570).
+
+    Covers pg_catalog.*, information_schema.* (via the ``_is_<name>``
+    builder-name remap), and user-model tables under ``PUBLIC_SCHEMA``.
+    """
+    out: ColumnTypeIndex = {}
+    for rel in build_catalog_relations(catalog, datasource):
+        if rel.name.startswith("_is_"):
+            schema = "information_schema"
+            table = rel.name[len("_is_"):]
+        else:
+            schema = "pg_catalog"
+            table = rel.name
+        table_lower = table.lower()
+        for col in rel.columns:
+            out[(schema, table_lower, col.name.lower())] = col.type
+    for sch in catalog.schemas:
+        schema_lower = sch.name.lower()
+        for tbl in sch.tables:
+            tbl_lower = tbl.name.lower()
+            for d in tbl.dimensions:
+                out[(schema_lower, tbl_lower, d.name.lower())] = d.data_type
+            for m in tbl.metrics:
+                dt = m.data_type if m.data_type is not None else DataType.TEXT
+                out[(schema_lower, tbl_lower, m.name.lower())] = dt
+    return out
+
+
+def _classify_empty_string_param_targets(
+    sql: str,
+    column_type_index: ColumnTypeIndex,
+    candidate_param_indices: Iterable[int],
+) -> Set[int]:
+    """Return the subset of ``candidate_param_indices`` whose AST occurrences
+    appear in a comparison / IN / BETWEEN predicate against a column that
+    resolves via ``column_type_index`` to a non-TEXT ``DataType``.
+
+    Whole-parameter granularity: if ANY occurrence of $N targets a non-text
+    column, $N is in the result set so ``_substitute_params`` substitutes
+    ``NULL`` everywhere $N appears.
+
+    Returns the empty set on parse failure or unexpected AST shape; the
+    helper never raises (per Codex round 1, finding #1).
+    """
+    candidates = set(candidate_param_indices)
+    if not candidates:
+        return set()
+    try:
+        parsed = sqlglot.parse_one(sql, dialect="postgres")
+    except sqlglot.errors.SqlglotError:
+        return set()
+    if parsed is None:
+        return set()
+    try:
+        column_to_table: Dict[int, Optional[Tuple[str, str]]] = {}
+        for scope in traverse_scope(parsed):
+            sources = _resolved_table_sources(scope.sources)
+            for col in scope.find_all(exp.Column):
+                column_to_table[id(col)] = _resolve_column_table(
+                    col=col, scope_sources=sources,
+                    column_type_index=column_type_index,
+                )
+        result: Set[int] = set()
+        for node in parsed.walk():
+            for col, param_idx in _column_param_pairs_from_node(node):
+                if param_idx not in candidates:
+                    continue
+                table = column_to_table.get(id(col))
+                if table is None:
+                    continue
+                key: ColumnTypeKey = (table[0], table[1], col.name.lower())
+                dt = column_type_index.get(key)
+                if dt is not None and dt != DataType.TEXT:
+                    result.add(param_idx)
+        return result
+    except Exception:  # NOSONAR(S110) — defensive: never raise out of bind path
+        logger.debug("DEV-1570 classifier defensive catch", exc_info=True)
+        return set()
+
+
+def _column_param_pairs_from_node(node) -> Iterable[Tuple[exp.Column, int]]:
+    """Yield (Column, param_index) pairs for each comparison-shape node."""
+    if isinstance(node, _COMPARISON_NODE_TYPES):
+        yield from _pair_column_and_param(node.this, node.expression)
+        return
+    if isinstance(node, exp.Between):
+        value = node.this
+        for bound_key in ("low", "high"):
+            bound = node.args.get(bound_key)
+            if bound is not None:
+                yield from _pair_column_and_param(value, bound)
+        return
+    if isinstance(node, exp.In):
+        value = node.this
+        for el in (node.expressions or []):
+            yield from _pair_column_and_param(value, el)
+
+
+def _pair_column_and_param(left, right) -> Iterable[Tuple[exp.Column, int]]:
+    """Two operands where one is a bare Column and the other is a $N
+    Parameter -> yield (Column, $N). Returns nothing if both sides are
+    the same kind or if neither is a Column / Parameter."""
+    col: Optional[exp.Column] = None
+    param_idx: Optional[int] = None
+    for op in (left, right):
+        if isinstance(op, exp.Column):
+            if col is not None:
+                return
+            col = op
+        elif isinstance(op, exp.Parameter):
+            try:
+                idx = int(op.name)
+            except (ValueError, AttributeError, TypeError):
+                continue
+            if param_idx is not None:
+                return
+            param_idx = idx
+    if col is not None and param_idx is not None:
+        yield col, param_idx
+
+
+def _resolved_table_sources(sources) -> Dict[str, Tuple[str, str]]:
+    """Given ``Scope.sources``, return ``{alias_lower: (schema_lower, table_lower)}``.
+
+    Sources whose value is another ``Scope`` (CTE / derived subquery)
+    are skipped — they lose physical-column lineage so the classifier
+    can't resolve their column types.
+
+    Bare table names (no schema qualifier) are inferred to ``pg_catalog``
+    when the name matches a known relation, otherwise to ``PUBLIC_SCHEMA``.
+    information_schema requires an explicit qualifier — bare names like
+    ``columns`` never resolve there (Codex round 1, finding #4).
+    """
+    result: Dict[str, Tuple[str, str]] = {}
+    for alias, src in sources.items():
+        if not isinstance(src, exp.Table):
+            continue
+        tbl_name = src.name.lower()
+        db_part = src.args.get("db")
+        schema: Optional[str] = None
+        if db_part is not None:
+            schema_raw = db_part.name if hasattr(db_part, "name") else str(db_part)
+            schema = schema_raw.lower()
+        if schema is None:
+            schema = (
+                "pg_catalog" if tbl_name in _PG_CATALOG_RELATIONS else PUBLIC_SCHEMA
+            )
+        result[alias.lower()] = (schema, tbl_name)
+    return result
+
+
+def _resolve_column_table(
+    *, col: exp.Column,
+    scope_sources: Dict[str, Tuple[str, str]],
+    column_type_index: ColumnTypeIndex,
+) -> Optional[Tuple[str, str]]:
+    """Resolve a Column node to ``(schema, table_name)`` via its owning
+    scope's sources. Returns ``None`` if unresolvable (no scope match,
+    ambiguous bare name, or table not in scope)."""
+    table_q = (col.table or "").lower()
+    db_q = (col.db or "").lower()
+    if table_q:
+        if db_q:
+            return (db_q, table_q)
+        if table_q in scope_sources:
+            return scope_sources[table_q]
+        return None
+    name_lower = col.name.lower()
+    matches: List[Tuple[str, str]] = []
+    for _alias, (schema, tbl) in scope_sources.items():
+        if (schema, tbl, name_lower) in column_type_index:
+            matches.append((schema, tbl))
+    if len(matches) == 1:
+        return matches[0]
+    return None
 
 
 def _resolve_param_oids(stmt: _PreparedStatement) -> List[int]:
