@@ -77,6 +77,21 @@ def value_to_text(  # NOSONAR(S3776) — flat per-Python-type dispatch
     # narrowed to a date before the per-Python-type dispatch below.
     if oid == OID_DATE and isinstance(value, _dt.datetime):
         value = value.date()
+    # DEV-1566: symmetric widening for CAST(<DATE col> AS TIMESTAMP). The
+    # bare `dt.date` branch below emits `YYYY-MM-DD`, which pgjdbc /
+    # psycopg2 mis-parse for an OID_TIMESTAMP-declared column. Widen to
+    # `dt.datetime` so the timestamp formatter emits `YYYY-MM-DD HH:MM:SS`.
+    if (
+        oid == OID_TIMESTAMP
+        and isinstance(value, _dt.date)
+        and not isinstance(value, _dt.datetime)
+    ):
+        value = _dt.datetime(value.year, value.month, value.day)
+    # DEV-1566: CAST(<bool> AS TEXT) must emit `true`/`false` (Postgres
+    # text shape), not the BOOL wire shape `t`/`f` the next branch would
+    # produce. Check OID_TEXT BEFORE the bool branch.
+    if oid == OID_TEXT and isinstance(value, bool):
+        return b"true" if value else b"false"
     if isinstance(value, bool):
         return b"t" if value else b"f"
     if isinstance(value, float):

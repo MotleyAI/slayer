@@ -9,6 +9,9 @@ from decimal import Decimal
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.models import Column, SlayerModel
+from slayer.facade.catalog import build_catalog
+from slayer.facade.translator import QueryResult, translate
 from slayer.pg_facade import types as t
 from slayer.pg_facade.protocol import (
     OID_BOOL,
@@ -42,6 +45,32 @@ def test_datatype_to_oid_none_falls_back_to_text() -> None:
     assert t.datatype_to_oid(None) == OID_TEXT
 
 
+def test_query_result_oid_overridden_by_cast() -> None:
+    """DEV-1566: end-to-end — a CAST(<DATE col> AS TIMESTAMP) translation
+    yields a projection_types entry that maps to OID_TIMESTAMP, not the
+    column's declared OID_DATE."""
+    orders = SlayerModel(
+        name="orders", data_source="jaffle", sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="delivered_at", type=DataType.DATE),
+        ],
+    )
+    catalog = build_catalog(models_by_datasource={"jaffle": [orders]})
+
+    # Baseline: bare projection → OID_DATE.
+    bare = translate(sql="SELECT delivered_at FROM orders", catalog=catalog)
+    assert isinstance(bare, QueryResult)
+    assert t.datatype_to_oid(bare.projection_types[0]) == OID_DATE
+
+    # CAST projection → OID_TIMESTAMP (wire layer rewritten).
+    casted = translate(
+        sql="SELECT CAST(delivered_at AS TIMESTAMP) FROM orders", catalog=catalog,
+    )
+    assert isinstance(casted, QueryResult)
+    assert t.datatype_to_oid(casted.projection_types[0]) == OID_TIMESTAMP
+
+
 # --- value_to_text -----------------------------------------------------------
 
 
@@ -50,8 +79,18 @@ def test_value_to_text_none_is_sql_null() -> None:
 
 
 def test_value_to_text_bool() -> None:
-    assert t.value_to_text(True) == b"t"
-    assert t.value_to_text(False) == b"f"
+    # DEV-1566: the default oid is OID_TEXT, which is the Postgres text shape
+    # for booleans (``true``/``false``). The BOOL-wire ``t``/``f`` shape is
+    # covered separately by test_value_to_text_bool_in_bool_column.
+    assert t.value_to_text(True) == b"true"
+    assert t.value_to_text(False) == b"false"
+
+
+def test_value_to_text_bool_in_bool_column() -> None:
+    """OID_BOOL keeps the wire-format ``t``/``f`` shape — that's what the
+    Postgres binary protocol carries on the text-format path for BOOL."""
+    assert t.value_to_text(True, OID_BOOL) == b"t"
+    assert t.value_to_text(False, OID_BOOL) == b"f"
 
 
 def test_value_to_text_int_and_decimal() -> None:
@@ -100,6 +139,27 @@ def test_value_to_text_datetime_in_date_column_is_narrowed() -> None:
 def test_value_to_text_datetime_in_timestamp_column_is_preserved() -> None:
     ts = dt.datetime(2024, 6, 1, 12, 30, 45)
     assert t.value_to_text(ts, OID_TIMESTAMP) == b"2024-06-01 12:30:45"
+
+
+def test_value_to_text_date_in_timestamp_column_is_widened() -> None:
+    """DEV-1566: symmetric widening to the existing OID_DATE-driven narrowing.
+    CAST(<DATE col> AS TIMESTAMP) needs the wire text payload to look like a
+    Postgres TIMESTAMP literal (``YYYY-MM-DD HH:MM:SS``) — without the widen
+    step pgjdbc/psycopg2 mis-parse a bare ``YYYY-MM-DD`` value for a column
+    declared with OID 1114."""
+    d = dt.date(2024, 6, 1)
+    assert t.value_to_text(d, OID_TIMESTAMP) == b"2024-06-01 00:00:00"
+    # Default (no oid / OID_TEXT) preserves the bare date shape.
+    assert t.value_to_text(d) == b"2024-06-01"
+
+
+def test_value_to_text_bool_in_text_column_uses_true_false() -> None:
+    """DEV-1566: CAST(<bool> AS TEXT) must surface Postgres-shaped boolean
+    text (``true``/``false``), not the BOOL wire shape (``t``/``f``).
+    Default oid == OID_TEXT so the explicit and default forms agree;
+    BOOL-wire ``t``/``f`` is reachable only via explicit OID_BOOL."""
+    assert t.value_to_text(True, OID_TEXT) == b"true"
+    assert t.value_to_text(False, OID_TEXT) == b"false"
 
 
 def test_value_to_text_str_and_bytes() -> None:

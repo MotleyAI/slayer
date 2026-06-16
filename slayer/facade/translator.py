@@ -229,6 +229,79 @@ _COMPARATOR_SQL: Dict[type, str] = {
     exp.NEQ: "<>",
 }
 
+# DEV-1566: sqlglot DataType.Type → SLayer DataType for CAST(<col> AS <type>)
+# projection support. Aliases sqlglot canonicalises at parse time (STRING→TEXT,
+# INTEGER→INT, NUMERIC→DECIMAL, BOOL→BOOLEAN, FLOAT→DOUBLE) need no entry;
+# REAL parses to exp.DataType.Type.FLOAT (not normalised), so DOUBLE coverage
+# routes through here. Parameterised forms (VARCHAR(255), DECIMAL(10,2))
+# collapse onto the same base member at parse time — precision is dropped at
+# the SLayer boundary because SLayer wire types don't carry it.
+_SQLGLOT_TYPE_TO_DATATYPE: Dict[exp.DataType.Type, DataType] = {
+    exp.DataType.Type.TEXT: DataType.TEXT,
+    exp.DataType.Type.VARCHAR: DataType.TEXT,
+    exp.DataType.Type.CHAR: DataType.TEXT,
+    exp.DataType.Type.NCHAR: DataType.TEXT,
+    exp.DataType.Type.NVARCHAR: DataType.TEXT,
+    exp.DataType.Type.INT: DataType.INT,
+    exp.DataType.Type.BIGINT: DataType.INT,
+    exp.DataType.Type.SMALLINT: DataType.INT,
+    exp.DataType.Type.TINYINT: DataType.INT,
+    exp.DataType.Type.MEDIUMINT: DataType.INT,
+    exp.DataType.Type.DOUBLE: DataType.DOUBLE,
+    exp.DataType.Type.FLOAT: DataType.DOUBLE,
+    exp.DataType.Type.DECIMAL: DataType.DOUBLE,
+    exp.DataType.Type.BOOLEAN: DataType.BOOLEAN,
+    exp.DataType.Type.DATE: DataType.DATE,
+    exp.DataType.Type.TIMESTAMP: DataType.TIMESTAMP,
+    exp.DataType.Type.DATETIME: DataType.TIMESTAMP,
+    exp.DataType.Type.TIMESTAMPTZ: DataType.TIMESTAMP,
+    exp.DataType.Type.TIMESTAMPLTZ: DataType.TIMESTAMP,
+}
+
+# DEV-1566: per-pair allowlist of CAST coercions admitted in projection.
+# Each pair is one the wire encoders in slayer/pg_facade/types.py handle
+# losslessly. The unknown-source (None) case admits ONLY TEXT — for every
+# other target we'd push the failure into value_to_text / value_to_binary at
+# response time, surfacing as an opaque connection error instead of a clean
+# translation error. Identity (X→X) is always admitted; computed implicitly.
+_CAST_ADMITTED_TARGETS: Dict[DataType, frozenset] = {
+    DataType.DATE: frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TEXT}),
+    DataType.TIMESTAMP: frozenset({DataType.TIMESTAMP, DataType.DATE, DataType.TEXT}),
+    DataType.INT: frozenset({DataType.INT, DataType.DOUBLE, DataType.TEXT}),
+    # DOUBLE → INT intentionally dropped (Python int(x) truncates toward zero;
+    # Postgres rounds half-to-even). Round-2 Codex review.
+    DataType.DOUBLE: frozenset({DataType.DOUBLE, DataType.TEXT}),
+    DataType.BOOLEAN: frozenset({DataType.BOOLEAN, DataType.TEXT}),
+    DataType.TEXT: frozenset({DataType.TEXT}),
+}
+
+
+def _sqlglot_type_to_datatype(node: exp.DataType) -> Optional[DataType]:
+    """Map a sqlglot ``DataType`` node to a SLayer ``DataType``.
+
+    Returns ``None`` when the type member isn't in the mapping (UUID, JSON,
+    ARRAY, STRUCT, …) — caller falls through to the existing
+    'Unsupported projection expression' error.
+    """
+    return _SQLGLOT_TYPE_TO_DATATYPE.get(node.this)
+
+
+def _is_admitted_cast(source: Optional[DataType], target: DataType) -> bool:
+    """Strict per-pair admission. ``None`` source admits only ``TEXT``."""
+    if source is None:
+        return target is DataType.TEXT
+    if source == target:
+        return True
+    return target in _CAST_ADMITTED_TARGETS.get(source, frozenset())
+
+
+def _alias_for_column_cast(dotted: str, target: DataType) -> str:
+    """Canonical ORDER BY / GROUP BY key for an unaliased ``CAST(col AS T)``
+    projection. Mirrors ``_alias_for_time_grain`` — lowercase, dotted,
+    unquoted, no precision — so the equality lookup in ``_translate_slayer_select``
+    matches what ``_order_by_name`` / ``_validate_group_by`` produce."""
+    return f"cast({dotted} as {target.value.lower()})"
+
 
 def _column_to_dotted(
     col: exp.Column, *, strip_prefix: Optional[Tuple[str, str]] = None,
@@ -735,6 +808,10 @@ class _ProjectionItem(BaseModel):
     dimension: Optional[FacadeDimension] = None
     time_grain: Optional[TimeGranularity] = None
     time_grain_underlying: Optional[FacadeDimension] = None
+    # DEV-1566: target type when the projection was CAST(<column> AS <type>).
+    # Overrides projection_types[i] at _record_metric / _record_dimension time,
+    # leaving engine_alias and the SlayerQuery measure/dimension untouched.
+    cast_target: Optional[DataType] = None
 
 
 def _resolve_time_grain_projection(
@@ -809,6 +886,61 @@ def _resolve_column_projection(
     raise TranslationError(
         f"Unknown projection item {dotted!r} on table {table.name!r}"
     )
+
+
+def _detect_column_cast(
+    body: exp.Expression,
+) -> Optional[Tuple[exp.Column, DataType]]:
+    """If ``body`` is ``CAST(<bare or qualified Column> AS <supported_type>)``,
+    return ``(inner_col, target_data_type)``. Otherwise ``None``.
+
+    The detector REQUIRES ``body.this`` to be an ``exp.Column`` — aggregates,
+    hygiene wrappers, function calls, and arithmetic stay outside scope.
+    ``exp.TryCast`` is rejected (Postgres has no native TRY_CAST equivalent).
+    """
+    if not isinstance(body, exp.Cast) or isinstance(body, exp.TryCast):
+        return None
+    inner = body.this
+    if not isinstance(inner, exp.Column):
+        return None
+    target = _sqlglot_type_to_datatype(body.to)
+    if target is None:
+        return None
+    return inner, target
+
+
+def _resolve_column_cast_projection(
+    *,
+    body: exp.Column,
+    cast_target: DataType,
+    alias_name: Optional[str],
+    table: FacadeTable,
+    metrics_by_name: Dict[str, FacadeMetric],
+    dims_by_name: Dict[str, FacadeDimension],
+    strip_prefix: Optional[Tuple[str, str]] = None,
+) -> _ProjectionItem:
+    """Resolve ``CAST(<column> AS <type>)`` to a projection item that runs
+    the bare column through the engine and overrides the wire OID via
+    ``cast_target``. Enforces the strict per-pair coercion allowlist.
+    """
+    inner = _resolve_column_projection(
+        body=body, alias_name=alias_name, table=table,
+        metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
+        strip_prefix=strip_prefix,
+    )
+    source: Optional[DataType] = (
+        inner.metric.data_type if inner.metric is not None
+        else inner.dimension.data_type if inner.dimension is not None
+        else None
+    )
+    if not _is_admitted_cast(source=source, target=cast_target):
+        offending = exp.Cast(this=body, to=exp.DataType.build(cast_target.value)).sql()
+        raise TranslationError(
+            f"Unsupported CAST: cannot project {source!s} column as "
+            f"{cast_target!s} ({offending!r}). Admitted coercions: see "
+            f"docs/interfaces/pg-facade.md."
+        )
+    return inner.model_copy(update={"cast_target": cast_target})
 
 
 # DEV-1558 B5: hygiene-scalar wrappers Metabase uses for fingerprint queries.
@@ -933,6 +1065,21 @@ def _resolve_projection(
             out.append(_resolve_aggregate_projection(
                 call=agg_call, alias_name=alias_name, table=table,
                 metrics_by_formula=metrics_by_formula,
+            ))
+            continue
+
+        # DEV-1566: CAST(<column> AS <type>) projection. Runs AFTER the
+        # time-grain unwrap (preserves Metabase's CAST(DATE_TRUNC(...) AS DATE))
+        # and AFTER the aggregate detector (CAST(SUM(...) AS T) is out of
+        # scope — the detector requires the inner to be a bare Column).
+        cast_match = _detect_column_cast(body)
+        if cast_match is not None:
+            inner_col, cast_target = cast_match
+            out.append(_resolve_column_cast_projection(
+                body=inner_col, cast_target=cast_target,
+                alias_name=alias_name, table=table,
+                metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
+                strip_prefix=strip_prefix,
             ))
             continue
 
@@ -1266,6 +1413,14 @@ def _order_by_name(
     if grain_match is not None:
         grain, col = grain_match
         return _alias_for_time_grain(grain, col, strip_prefix=strip_prefix)
+    # DEV-1566: CAST(<column> AS <type>) ORDER BY resolves via the same
+    # lowercase canonical key the projection-time registration emits.
+    cast_match = _detect_column_cast(body)
+    if cast_match is not None:
+        inner_col, target = cast_match
+        return _alias_for_column_cast(
+            _column_to_dotted(inner_col, strip_prefix=strip_prefix), target,
+        )
     return body.sql()
 
 
@@ -1289,8 +1444,19 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
                 user_items.append(_alias_for_time_grain(
                     grain, col, strip_prefix=strip_prefix,
                 ))
-            else:
-                user_items.append(g.sql())
+                continue
+            # DEV-1566: CAST(<column> AS <type>) GROUP BY canonicalises to
+            # the same lowercase form _record_dimension registers in
+            # derived_dims, so dim-only `GROUP BY CAST(col AS T)` validates.
+            cast_match = _detect_column_cast(g)
+            if cast_match is not None:
+                inner_col, target = cast_match
+                user_items.append(_alias_for_column_cast(
+                    _column_to_dotted(inner_col, strip_prefix=strip_prefix),
+                    target,
+                ))
+                continue
+            user_items.append(g.sql())
     for u in user_items:
         if u not in derived_set:
             # GROUP BY positional refs (GROUP BY 1) and aggregate terms are
@@ -1469,7 +1635,8 @@ def _record_metric(
     })
     engine_alias = f"{table.name}.{item.projected_name}"
     plan.column_name_mapping.append((engine_alias, item.projected_name))
-    plan.projection_types.append(item.metric.data_type)
+    # DEV-1566: CAST(<metric_ref> AS T) overrides the declared metric type.
+    plan.projection_types.append(item.cast_target or item.metric.data_type)
 
 
 def _record_time_grain(
@@ -1504,9 +1671,18 @@ def _record_dimension(
     assert item.dimension is not None
     plan.dimension_refs.append(ColumnRef.from_string(item.dimension.dimension_ref))
     plan.derived_dims.append(item.projected_name)
+    # DEV-1566: register the canonical CAST form as a derived dim so a
+    # `GROUP BY CAST(col AS T)` validates (mirrors the time-grain pattern).
+    if item.cast_target is not None:
+        canonical = _alias_for_column_cast(
+            item.dimension.dimension_ref, item.cast_target,
+        )
+        if canonical != item.projected_name:
+            plan.derived_dims.append(canonical)
     engine_alias = f"{table.name}.{item.dimension.dimension_ref}"
     plan.column_name_mapping.append((engine_alias, item.projected_name))
-    plan.projection_types.append(item.dimension.data_type)
+    # DEV-1566: CAST(<dim_ref> AS T) overrides the declared dim type.
+    plan.projection_types.append(item.cast_target or item.dimension.data_type)
 
 
 def _build_projection_plan(
@@ -1587,6 +1763,24 @@ def _translate_slayer_select(
             f"{item.time_grain.value}({item.time_grain_underlying.dimension_ref})"
         )
         item_by_projected_name.setdefault(canonical, item)
+    # DEV-1566: same canonical-form registration for column CAST projections.
+    # Lets ``SELECT CAST(col AS T) AS user_alias ... ORDER BY CAST(col AS T)``
+    # resolve via the lowercase canonical key (`cast(<dotted> as <t>)`) even
+    # when the projection has a different user alias. ``setdefault`` so an
+    # explicit projection of the canonical form (rare) still wins.
+    for item in items:
+        if item.cast_target is None:
+            continue
+        dotted = (
+            item.dimension.dimension_ref if item.dimension is not None
+            else item.metric.name if item.metric is not None
+            else None
+        )
+        if dotted is None:
+            continue
+        item_by_projected_name.setdefault(
+            _alias_for_column_cast(dotted, item.cast_target), item,
+        )
     order_items = _translate_order_by(
         parsed.args.get("order"), item_by_projected_name, strip_prefix=strip_prefix,
     )

@@ -1124,10 +1124,6 @@ def test_date_psycopg_text_round_trip(metabase_e2e_env: MetabaseE2EEnv) -> None:
         conn.close()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1566: pg-facade rejects CAST(<col> AS TIMESTAMP) in projection; no SLayer-query primitive for per-query type coercion",
-)
 async def test_timestamp_round_trip_both_formats(metabase_e2e_env: MetabaseE2EEnv) -> None:
     host, port = metabase_e2e_env.pg_primary
     conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)

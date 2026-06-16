@@ -142,6 +142,45 @@ Postgres-specific predicates that aren't valid SLayer DSL (`ILIKE`, `::cast`, re
 `ANY`/`ALL`) parse but are rejected at execution — use the standard comparison / `IN` /
 `BETWEEN` forms.
 
+### `CAST(<column> AS <type>)` in projection
+
+A projection of the shape `CAST(<column> AS <type>)` (and the equivalent `col::type`
+sugar) is accepted when the inner expression is a bare or qualified column reference
+**and** the (source, target) pair is in the allowlist below. The engine still executes
+the bare column — the cast is a pure wire-layer type rewrite. The projected column's
+Postgres OID is overridden to match the casted type.
+
+Common BI shapes covered: `SELECT CAST(ordered_at AS TIMESTAMP) FROM orders` (DATE
+column promoted for a TIMESTAMP-aware client), `SELECT CAST(amount AS TEXT) AS s
+FROM orders` (stringification), `SELECT CAST(customers.region AS TEXT) FROM orders`
+(joined column).
+
+Out of scope: `CAST` around aggregates (`CAST(SUM(amount) AS DOUBLE)`), `TRY_CAST`,
+and `CAST` around expressions that aren't a bare column (`CAST(SUBSTRING(...) AS T)`).
+`CAST` wrapping a `DATE_TRUNC(...)` continues to route through the time-grain unwrap.
+
+Admitted (source, target) coercions:
+
+| Source type   | Admitted target types        |
+|---------------|------------------------------|
+| `DATE`        | `DATE`, `TIMESTAMP`, `TEXT`  |
+| `TIMESTAMP`   | `TIMESTAMP`, `DATE`, `TEXT`  |
+| `INT`         | `INT`, `DOUBLE`, `TEXT`      |
+| `DOUBLE`      | `DOUBLE`, `TEXT`             |
+| `BOOLEAN`     | `BOOLEAN`, `TEXT`            |
+| `TEXT`        | `TEXT`                       |
+| *(unknown)*   | `TEXT`                       |
+
+Pairs outside the allowlist (e.g. `CAST(name AS INT)`, `CAST(amount AS BOOLEAN)`)
+raise `Unsupported CAST: cannot project <SOURCE> column as <TARGET> (...). Admitted
+coercions: see docs/interfaces/pg-facade.md.` Unsupported target types (`UUID`, `JSON`,
+`ARRAY`, `STRUCT`, …) raise the standard `Unsupported projection expression` error.
+
+`DOUBLE → INT` is intentionally excluded: Python's `int(<float>)` truncates toward zero
+while Postgres rounds half-to-even, so silently admitting the pair would diverge from
+`psql` semantics. Pre-aggregate or pre-round on your side when an integer-typed result
+is required.
+
 ## Introspection
 
 * `INFORMATION_SCHEMA.METRICS` / `DIMENSIONS` / `SCHEMATA` / `TABLES` / `COLUMNS`.
