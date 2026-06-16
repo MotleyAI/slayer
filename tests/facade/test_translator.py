@@ -15,13 +15,17 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.facade.catalog import FacadeCatalog, build_catalog
+from slayer.facade.rows import FacadeColumn, RowBatch
 from slayer.facade.translator import (
     AGG_OVER_MEASURE_MESSAGE,
     InfoSchemaResult,
     NoOpResult,
+    ProbeMatcherOutcome,
     ProbeResult,
     QueryResult,
     READ_ONLY_MESSAGE,
+    ResetSettingOp,
+    SetSettingOp,
     TranslationError,
     translate,
 )
@@ -123,6 +127,200 @@ def test_show_statement_is_noop_with_tag(dialect) -> None:
     result = translate(sql="SHOW search_path", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, NoOpResult)
     assert result.command_tag == "SHOW"
+
+
+# --- DEV-1569: SET / RESET capture on NoOpResult, set_config mutation tunneling ---
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected_name", "expected_value"),
+    [
+        ("SET application_name = 'foo'", "application_name", "foo"),
+        ("SET application_name TO 'foo'", "application_name", "foo"),
+        # Postgres clients commonly emit unquoted RHS (`SET client_encoding TO UTF8`);
+        # sqlglot parses that as a Var, not a Literal. Both must round-trip.
+        ("SET client_encoding TO UTF8", "client_encoding", "UTF8"),
+        # SESSION qualifier still resolves the same name/value pair.
+        ("SET SESSION application_name = 'foo'", "application_name", "foo"),
+        # LOCAL qualifier is captured but treated as session-scope (no
+        # transaction-bound restore, per spec).
+        ("SET LOCAL application_name = 'foo'", "application_name", "foo"),
+        # Case-insensitive name (lowercased on capture).
+        ("SET Application_Name = 'foo'", "application_name", "foo"),
+        # DEFAULT keyword is a Var literally named "DEFAULT" — captured as the
+        # string "DEFAULT" (no special reset semantics; users wanting reset use
+        # RESET).
+        ("SET application_name = DEFAULT", "application_name", "DEFAULT"),
+        # Empty-string value — Postgres accepts; we accept too.
+        ("SET application_name = ''", "application_name", ""),
+    ],
+)
+def test_classify_set_populates_set_setting(
+    sql: str, expected_name: str, expected_value: str, dialect,
+) -> None:
+    result = translate(sql=sql, catalog=_catalog(), dialect=dialect)
+    assert isinstance(result, NoOpResult)
+    assert result.command_tag == "SET"
+    assert result.set_setting == SetSettingOp(name=expected_name, value=expected_value)
+    assert result.reset_setting is None
+
+
+def test_classify_multi_item_set_does_not_capture(dialect) -> None:
+    """`SET a = 1, b = 2` (multi-item SetItem list) is not a recognized shape;
+    set_setting=None, command_tag='SET'. Forces the classifier's
+    'single SetItem' restriction."""
+    result = translate(
+        sql="SET application_name = 'x', search_path = 'y'",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, NoOpResult)
+    assert result.command_tag == "SET"
+    # Multi-item SET is not captured — too uncertain which mutation to apply.
+    # The connection silently no-ops it (the same outcome as Command-form SET).
+    assert result.set_setting is None
+    assert result.reset_setting is None
+
+
+def test_classify_command_form_set_does_not_capture(dialect) -> None:
+    """sqlglot falls back to ``exp.Command`` for `SET TIME ZONE 'UTC'` and
+    `SET SESSION CHARACTERISTICS …`. Per spec, those acknowledge silently
+    with no setting capture."""
+    for sql in [
+        "SET TIME ZONE 'UTC'",
+        "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ UNCOMMITTED",
+    ]:
+        result = translate(sql=sql, catalog=_catalog(), dialect=dialect)
+        assert isinstance(result, NoOpResult)
+        assert result.command_tag == "SET"
+        assert result.set_setting is None
+        assert result.reset_setting is None
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected_name", "expected_reset_all"),
+    [
+        ("RESET application_name", "application_name", False),
+        ("RESET Application_Name", "application_name", False),  # lowercased
+        ("RESET ALL", None, True),
+        ("RESET all", None, True),  # case-insensitive ALL keyword
+    ],
+)
+def test_classify_reset_populates_reset_setting(
+    sql: str, expected_name, expected_reset_all: bool,
+) -> None:
+    """RESET is a Postgres-ism — only parses to exp.Command under the
+    `postgres` dialect; the dialect-less parser treats `RESET <name>` as
+    an Alias node. We restrict the test to the dialect that actually
+    sees RESET traffic."""
+    result = translate(sql=sql, catalog=_catalog(), dialect="postgres")
+    assert isinstance(result, NoOpResult)
+    assert result.command_tag == "RESET"
+    assert result.set_setting is None
+    assert result.reset_setting == ResetSettingOp(
+        name=expected_name, reset_all=expected_reset_all,
+    )
+
+
+def test_classify_bare_reset_has_no_setting_capture() -> None:
+    """`RESET` with no argument acknowledges silently with no setting capture
+    (defensive — drivers don't emit this in practice). PG-only."""
+    result = translate(sql="RESET", catalog=_catalog(), dialect="postgres")
+    assert isinstance(result, NoOpResult)
+    assert result.command_tag == "RESET"
+    assert result.set_setting is None
+    assert result.reset_setting is None
+
+
+def test_classify_begin_commit_rollback_have_no_setting_capture(dialect) -> None:
+    """Transaction control commands populate command_tag but not set/reset
+    setting fields."""
+    for sql, tag in [
+        ("BEGIN", "BEGIN"),
+        ("COMMIT", "COMMIT"),
+        ("ROLLBACK", "ROLLBACK"),
+    ]:
+        result = translate(sql=sql, catalog=_catalog(), dialect=dialect)
+        assert isinstance(result, NoOpResult)
+        assert result.command_tag == tag
+        assert result.set_setting is None
+        assert result.reset_setting is None
+
+
+def _row_batch(name: str, value: str) -> RowBatch:
+    from slayer.core.enums import DataType
+    return RowBatch(
+        columns=[FacadeColumn(name=name, type=DataType.TEXT)],
+        rows=[{name: value}],
+    )
+
+
+def test_probe_matcher_can_return_outcome_with_settings_mutation(dialect) -> None:
+    """When a probe matcher returns a ``ProbeMatcherOutcome`` (rather than the
+    legacy bare ``RowBatch``), the mutation is tunneled through to the
+    ``ProbeResult.settings_mutation`` field. The PG facade uses this to
+    apply `set_config()` mutations on Execute (but not Describe).
+    """
+    captured = {"name": "application_name", "value": "foo"}
+
+    def matcher(parsed) -> ProbeMatcherOutcome | None:
+        return ProbeMatcherOutcome(
+            batch=_row_batch("set_config", captured["value"]),
+            settings_mutation=SetSettingOp(
+                name=captured["name"], value=captured["value"],
+            ),
+        )
+
+    result = translate(
+        sql="SELECT set_config('application_name', 'foo', false)",
+        catalog=_catalog(), dialect=dialect, probe_matcher=matcher,
+    )
+    assert isinstance(result, ProbeResult)
+    assert result.batch.rows == [{"set_config": "foo"}]
+    assert result.settings_mutation == SetSettingOp(
+        name="application_name", value="foo",
+    )
+
+
+def test_probe_matcher_returning_bare_row_batch_still_works(dialect) -> None:
+    """Backwards compatibility: matchers that return a ``RowBatch`` directly
+    (the Flight default ``match_probe`` shape) produce a ``ProbeResult``
+    with no mutation. Required for the shared facade not to break Flight."""
+    def matcher(parsed) -> RowBatch | None:
+        return _row_batch("ok", "1")
+
+    result = translate(
+        sql="SELECT 1", catalog=_catalog(), dialect=dialect, probe_matcher=matcher,
+    )
+    assert isinstance(result, ProbeResult)
+    assert result.batch.rows == [{"ok": "1"}]
+    assert result.settings_mutation is None
+
+
+def test_probe_result_settings_mutation_defaults_none(dialect) -> None:
+    """When the default probe matcher (Flight) handles a probe like
+    `SELECT 1`, no mutation is attached."""
+    result = translate(sql="SELECT 1", catalog=_catalog(), dialect=dialect)
+    assert isinstance(result, ProbeResult)
+    assert result.settings_mutation is None
+
+
+def test_set_setting_op_is_pydantic_model() -> None:
+    """SetSettingOp must be a Pydantic BaseModel (frozen-ish; equal by value).
+    Per project convention — never dataclasses."""
+    from pydantic import BaseModel
+    assert issubclass(SetSettingOp, BaseModel)
+    assert SetSettingOp(name="x", value="y") == SetSettingOp(name="x", value="y")
+    assert SetSettingOp(name="x", value="y") != SetSettingOp(name="x", value="z")
+
+
+def test_reset_setting_op_is_pydantic_model() -> None:
+    from pydantic import BaseModel
+    assert issubclass(ResetSettingOp, BaseModel)
+    assert ResetSettingOp(reset_all=True) == ResetSettingOp(reset_all=True)
+    assert (
+        ResetSettingOp(name="x", reset_all=False)
+        != ResetSettingOp(reset_all=True)
+    )
 
 
 def test_command_fallback_warning_suppressed_during_translate(dialect, caplog) -> None:

@@ -997,3 +997,709 @@ async def test_simple_query_catalog_union_routes_to_executor() -> None:
     assert "E" not in type_seq, "UNION ALL must route to executor, not error"
     assert "T" in type_seq  # RowDescription
     assert "D" in type_seq  # at least one DataRow
+
+
+# --- DEV-1569: per-connection SET state ---
+
+
+def _show_value(msgs: List[Tuple[str, bytes]]) -> str:
+    """Pull the single-text-column value out of the last DataRow in `msgs`.
+
+    The format is: ``count(i16) | length(i32) | bytes``. SHOW always returns
+    one column of TEXT.
+    """
+    body = next(b for t, b in reversed(msgs) if t == "D")
+    length = struct.unpack_from(">i", body, 2)[0]
+    return body[6:6 + length].decode()
+
+
+def _parameter_status(msgs: List[Tuple[str, bytes]]) -> List[Tuple[str, str]]:
+    """Decode every ParameterStatus message (``S``) in the stream into
+    ``[(name, value), …]``. Note that startup ParameterStatus burst messages
+    are included too — callers filter by name."""
+    out: List[Tuple[str, str]] = []
+    for t, body in msgs:
+        if t != "S":
+            continue
+        # Two C-strings: name\x00 value\x00
+        parts = body.split(b"\x00")
+        if len(parts) >= 2:
+            out.append((parts[0].decode(), parts[1].decode()))
+    return out
+
+
+def _command_complete_tags(msgs: List[Tuple[str, bytes]]) -> List[str]:
+    out: List[str] = []
+    for t, body in msgs:
+        if t != "C":
+            continue
+        # Body is the tag as a C-string.
+        out.append(body.rstrip(b"\x00").decode())
+    return out
+
+
+async def test_set_show_round_trip_returns_set_value() -> None:
+    """A single connection: SET app_name='foo' then SHOW app_name returns 'foo'.
+
+    Pins the core fix: the per-connection map must persist the SET value.
+    """
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'foo'")
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "foo"
+
+
+async def test_set_to_spelling_round_trip() -> None:
+    """`SET name TO 'value'` (Postgres docs spelling)."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name TO 'bar'")
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "bar"
+
+
+async def test_set_unquoted_var_round_trip() -> None:
+    """`SET client_encoding TO UTF8` (unquoted rhs — pgjdbc default)."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET client_encoding TO UTF16")
+        + _query("SHOW client_encoding")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "UTF16"
+
+
+async def test_show_returns_seeded_default_on_fresh_connection() -> None:
+    """Without any SET, SHOW returns the seeded default (search_path here)."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SHOW search_path")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == '"$user", public'
+
+
+async def test_show_unknown_setting_returns_empty_string() -> None:
+    """Cut: unknown settings return '' (current behavior preserved)."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SHOW some_made_up_thing")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == ""
+
+
+async def test_set_followed_by_show_in_one_simple_query_burst() -> None:
+    """A single Q message containing `SET ...; SHOW ...;` — the second
+    statement must see the first's write."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'one-q'; SHOW application_name;")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "one-q"
+
+
+async def test_set_then_set_overwrites() -> None:
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'first'")
+        + _query("SET application_name = 'second'")
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "second"
+
+
+async def test_set_then_current_setting_through_connection() -> None:
+    """current_setting() consults the per-connection map, not the seed."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'metabase'")
+        + _query("SELECT current_setting('application_name')")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "metabase"
+
+
+async def test_two_connections_have_isolated_session_settings() -> None:
+    """In-process xfail-flip target: two PgConnections set distinct values,
+    each reads its own back. The integration test pins the cross-asyncio
+    version of this."""
+    inp_a = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'conn-A'")
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    inp_b = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'conn-B'")
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer_a, writer_b = await asyncio.gather(_run(inp_a), _run(inp_b))
+    assert _show_value(_messages(writer_a.buffer)) == "conn-A"
+    assert _show_value(_messages(writer_b.buffer)) == "conn-B"
+
+
+async def test_two_connections_isolated_for_current_setting() -> None:
+    inp_a = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'cs-A'")
+        + _query("SELECT current_setting('application_name')")
+        + _terminate()
+    )
+    inp_b = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'cs-B'")
+        + _query("SELECT current_setting('application_name')")
+        + _terminate()
+    )
+    writer_a, writer_b = await asyncio.gather(_run(inp_a), _run(inp_b))
+    assert _show_value(_messages(writer_a.buffer)) == "cs-A"
+    assert _show_value(_messages(writer_b.buffer)) == "cs-B"
+
+
+async def test_reset_named_setting_restores_seed() -> None:
+    """RESET <name> for a seeded setting reverts to the seeded value."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET search_path = 'mything'")
+        + _query("RESET search_path")
+        + _query("SHOW search_path")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == '"$user", public'
+
+
+async def test_reset_unseeded_setting_clears() -> None:
+    """RESET <name> for a custom-non-seeded name clears (SHOW returns '')."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET my_custom = 'x'")
+        + _query("RESET my_custom")
+        + _query("SHOW my_custom")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == ""
+
+
+async def test_reset_all_restores_all_seeds() -> None:
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'x'")
+        + _query("SET search_path = 'y'")
+        + _query("RESET ALL")
+        + _query("SHOW application_name")
+        + _query("SHOW search_path")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    data_rows = [b for t, b in msgs if t == "D"]
+    # Two DataRow messages after RESET ALL.
+    assert len(data_rows) >= 2
+    # First SHOW (application_name) → seeded "".
+    app_body = data_rows[-2]
+    app_length = struct.unpack_from(">i", app_body, 2)[0]
+    assert app_body[6:6 + app_length].decode() == ""
+    # Second SHOW (search_path) → seeded '"$user", public'.
+    sp_body = data_rows[-1]
+    sp_length = struct.unpack_from(">i", sp_body, 2)[0]
+    assert sp_body[6:6 + sp_length].decode() == '"$user", public'
+
+
+async def test_set_pushes_parameter_status_for_application_name() -> None:
+    """After SET of a GUC_REPORT setting, a ParameterStatus message must be
+    pushed to the client. Real-Postgres behaviour; asyncpg / pgjdbc latch
+    onto this for connection identity."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'datadog-tagger'")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    pushes = _parameter_status(msgs)
+    # Filter out startup-burst ParameterStatus messages (which DON'T include
+    # `application_name` since the seed is empty).
+    post_set = [(n, v) for (n, v) in pushes if n == "application_name"]
+    assert post_set == [("application_name", "datadog-tagger")]
+
+
+async def test_set_does_not_push_parameter_status_for_non_reportable() -> None:
+    """`work_mem` is NOT in the GUC_REPORT class — no ParameterStatus push."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET work_mem = '64MB'")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    pushes = _parameter_status(msgs)
+    post_set = [(n, v) for (n, v) in pushes if n == "work_mem"]
+    assert post_set == []
+
+
+async def test_set_datestyle_pushes_canonical_wire_case() -> None:
+    """`SET datestyle = ...` pushes ParameterStatus with the canonical
+    Postgres wire-case name `DateStyle` (not the lowercased internal key)."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET datestyle = 'ISO, DMY'")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    pushes = _parameter_status(msgs)
+    # The wire name must be the canonical `DateStyle`, value the just-SET value.
+    # Filter out the startup burst (which already includes DateStyle=ISO, MDY).
+    post = [(n, v) for (n, v) in pushes if n == "DateStyle"]
+    # Two: the startup burst + the post-SET push.
+    assert post[-1] == ("DateStyle", "ISO, DMY")
+
+
+async def test_set_timezone_pushes_canonical_wire_case() -> None:
+    """`SET timezone = ...` pushes ParameterStatus with the canonical
+    Postgres wire-case name `TimeZone`."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET timezone = 'America/New_York'")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    pushes = _parameter_status(msgs)
+    post = [(n, v) for (n, v) in pushes if n == "TimeZone"]
+    assert post[-1] == ("TimeZone", "America/New_York")
+
+
+async def test_command_form_set_time_zone_is_silent_noop() -> None:
+    """`SET TIME ZONE 'X'` (Command-form fallback) acknowledges with
+    CommandComplete but does NOT capture; subsequent SHOW returns the
+    seeded default."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET TIME ZONE 'America/New_York'")
+        + _query("SHOW timezone")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    # SET acknowledged.
+    assert any(tag.startswith("SET") for tag in _command_complete_tags(msgs))
+    # No ParameterStatus push for TimeZone (because Command-form not captured).
+    pushes = _parameter_status(msgs)
+    post = [(n, v) for (n, v) in pushes if n == "TimeZone"]
+    # Only the startup burst — no post-SET push.
+    assert len(post) == 1
+    # SHOW returns the seeded value (UTC), not 'America/New_York'.
+    assert _show_value(msgs) == "UTC"
+
+
+async def test_set_session_qualifier_round_trip() -> None:
+    """`SET SESSION name = value` round-trips identically to bare SET."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET SESSION application_name = 'sess'")
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "sess"
+
+
+async def test_set_local_treated_as_session_scope() -> None:
+    """Scope cut: `SET LOCAL` is NOT restored at transaction end. Pins the
+    current behavior — DEV-1569 doesn't implement transaction-bound SET."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET LOCAL application_name = 'localval'")
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "localval"
+
+
+async def test_set_then_rollback_does_not_revert() -> None:
+    """Scope cut: real Postgres rolls back `SET` inside BEGIN; ROLLBACK; we don't.
+    Pins the cut so a future change here is intentional."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("BEGIN")
+        + _query("SET application_name = 'in_tx'")
+        + _query("ROLLBACK")
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "in_tx"
+
+
+async def test_show_all_returns_empty_for_unknown_setting() -> None:
+    """Scope cut: `SHOW ALL` falls into the unknown-setting silent-empty path
+    (key 'all' → ''). Documents the current behaviour."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SHOW ALL")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == ""
+
+
+async def test_session_settings_isolated_after_first_use() -> None:
+    """Two fresh connections both seed from SESSION_SETTING_SEED. Setting on
+    one doesn't pollute the other's view, even later in the same test."""
+    from slayer.pg_facade.probes import SESSION_SETTING_SEED
+    seed_snapshot = dict(SESSION_SETTING_SEED)
+
+    inp_a = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'A'")
+        + _terminate()
+    )
+    inp_b = (
+        _startup(user="u", database="jaffle")
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer_a, writer_b = await asyncio.gather(_run(inp_a), _run(inp_b))
+    # B's SHOW returns seeded "" (NOT 'A').
+    assert _show_value(_messages(writer_b.buffer)) == ""
+    # Module-level seed unchanged.
+    assert SESSION_SETTING_SEED == seed_snapshot
+
+
+async def test_extended_query_set_round_trip() -> None:
+    """SET via the extended-query protocol (Parse/Bind/Execute) must update
+    the connection's session settings just like a simple Q SET."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("st", "SET application_name = 'extp'")
+        + _bind("", "st")
+        + _execute("")
+        + _sync()
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "extp"
+
+
+async def test_extended_query_describe_does_not_mutate_session_settings() -> None:
+    """The riskiest extended-protocol path: Parse + Describe for a
+    `SELECT set_config(...)` triggers a translator pass that could
+    in-principle mutate the session_settings map. The spec is: Describe
+    is pure; mutation only happens on Execute.
+    """
+    # Parse + Describe-Statement runs translate() → match_pg_probe; the
+    # mutation hint MUST NOT be applied until Execute.
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse(
+            "st",
+            "SELECT set_config('application_name', 'via_set_config', false)",
+        )
+        + _describe("S", "st")
+        + _sync()
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    # After Describe (no Execute), SHOW returns the seeded default "".
+    assert _show_value(msgs) == ""
+
+
+async def test_extended_query_set_config_round_trip() -> None:
+    """`SELECT set_config(...)` via Parse/Bind/Execute mutates the connection's
+    session settings AND returns the new value."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("sc", "SELECT set_config('application_name', 'via_exec', false)")
+        + _bind("", "sc")
+        + _execute("")
+        + _sync()
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "via_exec"
+
+
+async def test_simple_query_set_config_then_show_through_connection() -> None:
+    """`SELECT set_config(...)` in simple-Q mode mutates the per-connection
+    map AND pushes ParameterStatus for reportable settings."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SELECT set_config('application_name', 'sq_cfg', false)")
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "sq_cfg"
+    # ParameterStatus push since application_name is GUC_REPORT-class.
+    pushes = _parameter_status(msgs)
+    post = [(n, v) for (n, v) in pushes if n == "application_name"]
+    assert post == [("application_name", "sq_cfg")]
+
+
+async def test_two_connections_isolated_under_set_config() -> None:
+    """set_config-driven mutation is per-connection."""
+    inp_a = (
+        _startup(user="u", database="jaffle")
+        + _query("SELECT set_config('application_name', 'sc-A', false)")
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    inp_b = (
+        _startup(user="u", database="jaffle")
+        + _query("SELECT set_config('application_name', 'sc-B', false)")
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer_a, writer_b = await asyncio.gather(_run(inp_a), _run(inp_b))
+    assert _show_value(_messages(writer_a.buffer)) == "sc-A"
+    assert _show_value(_messages(writer_b.buffer)) == "sc-B"
+
+
+# --- DEV-1569 Codex round 2 follow-ups ---
+
+
+def _index_of_first(msgs: List[Tuple[str, bytes]], pred) -> int:
+    for i, (t, body) in enumerate(msgs):
+        if pred(t, body):
+            return i
+    return -1
+
+
+async def test_set_wire_order_command_complete_then_param_status_then_ready() -> None:
+    """Pins the wire order for a simple-Q `SET application_name = 'x'`:
+
+      ... CommandComplete -> ParameterStatus(application_name) -> ReadyForQuery
+
+    (Real Postgres allows ParameterStatus at any time, but we pin the
+    specific position so future refactors don't accidentally drop the push
+    before ReadyForQuery.)
+    """
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'wire'")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    # Find the indices of the post-SET CC, the post-SET ParameterStatus, and
+    # the trailing ReadyForQuery for this simple-Q message.
+    cc_idx = _index_of_first(
+        msgs, lambda t, b: t == "C" and b.startswith(b"SET"),
+    )
+    ps_idx = _index_of_first(
+        msgs, lambda t, b: t == "S" and b.split(b"\x00")[0] == b"application_name"
+                                     and b.split(b"\x00")[1] == b"wire",
+    )
+    z_idx = max(i for i, (t, _b) in enumerate(msgs) if t == "Z")
+    assert cc_idx != -1, "missing CommandComplete for SET"
+    assert ps_idx != -1, "missing ParameterStatus(application_name=wire)"
+    assert cc_idx < ps_idx < z_idx, (
+        f"wire order wrong: CC@{cc_idx} PS@{ps_idx} Z@{z_idx}"
+    )
+
+
+async def test_reset_named_pushes_parameter_status_to_seed() -> None:
+    """RESET <reportable_name> pushes ParameterStatus(name, seeded_value).
+
+    After SET application_name = 'x' then RESET application_name, the
+    second push reports the seeded "" value.
+    """
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'x'")
+        + _query("RESET application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    pushes = _parameter_status(msgs)
+    post = [(n, v) for (n, v) in pushes if n == "application_name"]
+    # Expect TWO post-startup pushes: SET → 'x', then RESET → '' (seed).
+    assert post == [("application_name", "x"), ("application_name", "")]
+
+
+async def test_reset_all_pushes_parameter_status_for_each_reportable() -> None:
+    """RESET ALL pushes ParameterStatus for every reportable name with its
+    seeded value. Drivers latch onto these for cache invalidation."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'x'")
+        + _query("SET timezone = 'America/New_York'")
+        + _query("RESET ALL")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    # After RESET ALL, look at the messages that follow it.
+    reset_idx = _index_of_first(
+        msgs, lambda t, b: t == "C" and b.startswith(b"RESET"),
+    )
+    assert reset_idx != -1, "missing CommandComplete for RESET ALL"
+    after_reset = msgs[reset_idx:]
+    pushes_after = []
+    for t, body in after_reset:
+        if t != "S":
+            continue
+        parts = body.split(b"\x00")
+        if len(parts) >= 2:
+            pushes_after.append((parts[0].decode(), parts[1].decode()))
+    # Among them, both application_name and TimeZone should be reset-pushed
+    # back to their seeded values.
+    names_after = [n for (n, _v) in pushes_after]
+    assert "application_name" in names_after
+    assert "TimeZone" in names_after
+    # Values: application_name → "", TimeZone → "UTC".
+    by_name = dict(pushes_after)
+    assert by_name["application_name"] == ""
+    assert by_name["TimeZone"] == "UTC"
+
+
+async def test_extended_query_describe_does_not_apply_set_setting() -> None:
+    """Describe-statement for a SET must NOT apply the mutation. The plan
+    requires _describe_sql to be pure for both NoOpResult.set_setting and
+    ProbeResult.settings_mutation."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("st", "SET application_name = 'via_describe'")
+        + _describe("S", "st")
+        + _sync()
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    # Subsequent SHOW returns the SEED, not 'via_describe' — because Describe
+    # alone (no Execute) must not apply.
+    assert _show_value(msgs) == ""
+
+
+async def test_extended_query_execute_set_config_pushes_param_status() -> None:
+    """Mirror simple-Q set_config-pushes-ParameterStatus through the
+    extended-protocol path (Parse/Bind/Execute)."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse(
+            "sc", "SELECT set_config('application_name', 'extp_cfg', false)",
+        )
+        + _bind("", "sc")
+        + _execute("")
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    pushes = _parameter_status(msgs)
+    post = [(n, v) for (n, v) in pushes if n == "application_name"]
+    assert post == [("application_name", "extp_cfg")]
+
+
+async def test_extended_query_reset_round_trip() -> None:
+    """RESET via Parse/Bind/Execute reverts to seed."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET application_name = 'pre_reset'")
+        + _parse("rs", "RESET application_name")
+        + _bind("", "rs")
+        + _execute("")
+        + _sync()
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == ""
+
+
+async def test_set_server_version_silently_accepted() -> None:
+    """Scope cut: real Postgres rejects `SET server_version`. We silently
+    accept it (the facade is read-only-to-SLayer; `server_version` ends up
+    in the per-connection map and SHOW returns the new value). Pins the
+    cut."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET server_version = '99.0'")
+        + _query("SHOW server_version")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    # No ERROR; CommandComplete for SET emitted.
+    assert "E" not in _types(msgs), (
+        f"unexpected error: {[ _error_sqlstate(b) for t, b in msgs if t == 'E' ]}"
+    )
+    # SHOW reflects the mutated value (since server_version IS in the seed).
+    assert _show_value(msgs) == "99.0"
+
+
+@pytest.mark.parametrize(
+    ("set_sql", "expected_name", "expected_value"),
+    [
+        ("SET client_encoding = 'UTF16'", "client_encoding", "UTF16"),
+        ("SET server_encoding = 'UTF16'", "server_encoding", "UTF16"),
+        ("SET server_version = '15.0'", "server_version", "15.0"),
+        ("SET session_authorization = 'newuser'", "session_authorization", "newuser"),
+        ("SET standard_conforming_strings = 'off'", "standard_conforming_strings", "off"),
+        ("SET intervalstyle = 'iso_8601'", "IntervalStyle", "iso_8601"),
+    ],
+)
+async def test_set_pushes_parameter_status_for_all_reportable_names(
+    set_sql: str, expected_name: str, expected_value: str,
+) -> None:
+    """Sweep over the rest of the _GUC_REPORT_NAMES mapping (the application_name
+    / datestyle / timezone cases live in dedicated tests above)."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query(set_sql)
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    pushes = _parameter_status(msgs)
+    post = [(n, v) for (n, v) in pushes if n == expected_name]
+    # The startup ParameterStatus burst may have pushed the same name with
+    # the seed value; only the LAST push for this name should be the SET.
+    assert len(post) >= 1
+    assert post[-1] == (expected_name, expected_value)
