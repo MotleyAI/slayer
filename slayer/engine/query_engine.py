@@ -6,7 +6,7 @@ Flow: SlayerQuery → _enrich() → EnrichedQuery → SQLGenerator → SQL → e
 import decimal
 import logging
 from contextvars import ContextVar
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field as PydanticField, model_validator
 
@@ -36,10 +36,22 @@ from slayer.engine.enriched import (
 from slayer.engine.enrichment import enrich_query
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.dialects import dialect_for_ds_type, get_dialect
+from slayer.sql.engine_factory import _runtime_fingerprint
 from slayer.sql.generator import SQLGenerator
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
+
+
+def _sql_client_cache_key(datasource: DatasourceConfig) -> Tuple[str, str]:
+    """Cache key for ``SlayerQueryEngine._sql_clients``.
+
+    Mirrors ``engine_factory``'s cache key so two datasources differing
+    in (e.g.) Snowflake ``warehouse`` get distinct ``SlayerSQLClient``
+    instances (and therefore distinct factory-cached engines with the
+    correct per-connection ``USE`` listener).
+    """
+    return (datasource.get_connection_string(), _runtime_fingerprint(datasource))
 
 
 # Per-task in-flight join-target names. Used by _resolve_join_target to break
@@ -230,7 +242,11 @@ class SlayerQueryEngine:
 
     def __init__(self, storage: StorageBackend):
         self.storage = storage
-        self._sql_clients: Dict[str, SlayerSQLClient] = {}  # connection string → cached client
+        # Cache key: (connection_string, runtime_fingerprint) — matches
+        # ``engine_factory``'s cache so Snowflake datasources sharing a
+        # connection_name but differing in warehouse/role/database/schema
+        # get distinct clients (DEV-1551).
+        self._sql_clients: Dict[Tuple[str, str], SlayerSQLClient] = {}
 
     def _get_join_target_resolving(self) -> set:
         """Return the per-task in-flight join-target name set, allocating one
@@ -685,8 +701,14 @@ class SlayerQueryEngine:
         if dry_run:
             return SlayerResponse(data=[], columns=expected_columns, sql=sql, attributes=attributes)
 
-        # Execute — reuse SQL client (and its connection pool) per datasource
-        ds_key = datasource.get_connection_string()
+        # Execute — reuse SQL client (and its connection pool) per
+        # datasource. DEV-1551: include Snowflake runtime overrides
+        # (warehouse / role / database / schema_name) in the cache key
+        # so two datasources sharing the same connection_name but
+        # differing in (e.g.) warehouse don't accidentally share a client
+        # whose engine's per-connection ``USE WAREHOUSE`` listener was
+        # set up for the other datasource.
+        ds_key = _sql_client_cache_key(datasource)
         if ds_key not in self._sql_clients:
             self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
         client = self._sql_clients[ds_key]
@@ -933,7 +955,7 @@ class SlayerQueryEngine:
         except ValueError:
             return {}
 
-        ds_key = datasource.get_connection_string()
+        ds_key = _sql_client_cache_key(datasource)
         if ds_key not in self._sql_clients:
             self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
         client = self._sql_clients[ds_key]

@@ -1287,7 +1287,6 @@ def _run_validate_models(args):
 
 
 def _run_import_dbt(args):
-    import sqlalchemy as sa
 
     from slayer.dbt.converter import DbtToSlayerConverter
     from slayer.dbt.parser import parse_dbt_project
@@ -1313,19 +1312,17 @@ def _run_import_dbt(args):
                 "required for --include-hidden-models."
             )
             sys.exit(1)
-        sa_engine = sa.create_engine(ds.resolve_env_vars().get_connection_string())
+        from slayer.sql import engine_factory
+        sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
 
-    try:
-        converter = DbtToSlayerConverter(
-            project=project,
-            data_source=args.datasource,
-            sa_engine=sa_engine,
-            include_hidden_models=include_hidden,
-        )
-        result = converter.convert()
-    finally:
-        if sa_engine is not None:
-            sa_engine.dispose()
+    converter = DbtToSlayerConverter(
+        project=project,
+        data_source=args.datasource,
+        sa_engine=sa_engine,
+        include_hidden_models=include_hidden,
+    )
+    result = converter.convert()
+    # Cached engine — engine_factory owns its lifecycle; don't dispose.
 
     hidden_count = 0
     for model in result.models:
@@ -1454,12 +1451,13 @@ def _run_datasources(args):
             print(f"Datasource '{args.name}' not found.")
             sys.exit(1)
         import sqlalchemy as sa
+        from slayer.sql import engine_factory
 
         try:
-            engine = sa.create_engine(ds.resolve_env_vars().get_connection_string())
+            engine = engine_factory.get_engine(ds.resolve_env_vars())
             with engine.connect() as conn:
                 conn.execute(sa.text("SELECT 1"))
-            engine.dispose()
+            # Cached engine — engine_factory owns lifecycle; don't dispose.
             print(f"OK — connected to '{args.name}' ({ds.type}).")
         except Exception as e:
             print(f"FAILED — {e}")
@@ -1503,6 +1501,22 @@ def _parse_connection_string(url: str) -> tuple[str, str]:
                 f"Cannot derive a name from '{url}': empty filename. Pass --name explicitly."
             )
         return ds_type, stem
+
+    # DEV-1551: Snowflake connection_name sentinel URL has no path segment —
+    # all routing lives in the query string + the TOML profile. Use the
+    # connection_name itself as the derived datasource name fallback so
+    # ``slayer datasources create "snowflake://?connection_name=default"``
+    # works without --name.
+    if ds_type == "snowflake":
+        connection_name = ""
+        if parsed.query:
+            from urllib.parse import parse_qs  # noqa: PLC0415
+            params = parse_qs(parsed.query)
+            connection_name = (params.get("connection_name") or [""])[0]
+        if connection_name:
+            return ds_type, connection_name
+        # Inline form: snowflake://user:pw@account/db/schema?warehouse=... —
+        # take the first path segment (database) like other networked dialects.
 
     # Networked: take the first non-empty path segment (Postgres/MySQL/ClickHouse all put db there).
     segments = [s for s in parsed.path.split("/") if s]

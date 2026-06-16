@@ -367,10 +367,9 @@ class TestYamlStorageRefinementOnLoad:
         coarse types.
 
         DEV-1538 update: the SQLite branch of ``refine_dict_with_live_schema``
-        opens its own SA engine via ``sa.create_engine`` (rather than going
-        through ``_live_schema_for_datasource`` like the non-SQLite path).
-        Patch the SQLite probe's engine factory so a connect failure
-        propagates identically.
+        opens its own SA engine. DEV-1551 update: that engine now comes from
+        ``engine_factory.get_engine``. Patch the factory directly so a
+        connect failure propagates identically.
         """
         base = sqlite_with_int_double_text["tmpdir"]
         # Datasource record on disk; pointing it at the SQLite file is fine
@@ -399,15 +398,16 @@ class TestYamlStorageRefinementOnLoad:
             )
         storage = YAMLStorage(base_dir=base)
 
-        from slayer.storage import type_refinement
+        from slayer.sql import engine_factory
 
         def _boom(*_args, **_kw):
             raise sa.exc.OperationalError("simulated", None, Exception("connect refused"))  # NOSONAR(S112) — Exception(...) is the cause-of arg for the simulated SQLAlchemy connect error
 
-        # SQLite refinement runs via sa.create_engine inside type_refinement;
-        # the same engine factory that any consumer would use must surface
-        # the connect failure.
-        monkeypatch.setattr(type_refinement.sa, "create_engine", _boom)
+        # DEV-1551: every engine consumer goes through engine_factory.get_engine;
+        # patching it surfaces the same connect failure the legacy
+        # type_refinement.sa.create_engine patch used to.
+        engine_factory.reset_cache()
+        monkeypatch.setattr(engine_factory, "get_engine", _boom)
         with pytest.raises(sa.exc.OperationalError):
             await storage.get_model("items", data_source="live")
 
