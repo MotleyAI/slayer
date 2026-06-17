@@ -38,6 +38,8 @@ from slayer.engine.schema_drift import (
     LiveTable,
     RemoveSpec,
     WholeModelDelete,
+    _resolve_live_table,
+    _strip_ident_quotes,
     compute_datasource_drops,
     data_type_bucket,
     diff_sql_model,
@@ -1215,3 +1217,64 @@ class TestValidateModelsSqliteProbe:
         # Both the base column and the derived column are dropped.
         assert "tempstabidx" in entry.remove.columns
         assert "doubled" in entry.remove.columns
+
+
+class TestStripIdentQuotes:
+    def test_bare_identifier_unchanged(self) -> None:
+        assert _strip_ident_quotes("Company") == "Company"
+
+    def test_double_quoted(self) -> None:
+        assert _strip_ident_quotes('"Company"') == "Company"
+
+    def test_escaped_inner_quote(self) -> None:
+        assert _strip_ident_quotes('"Comp""any"') == 'Comp"any'
+
+    def test_unbalanced_quotes_left_alone(self) -> None:
+        assert _strip_ident_quotes('"Company') == '"Company'
+
+    def test_surrounding_whitespace_stripped(self) -> None:
+        assert _strip_ident_quotes('  "Company"  ') == "Company"
+
+
+class TestResolveLiveTable:
+    """Live-table lookup must handle schema-qualified and quoted identifiers."""
+
+    @staticmethod
+    def _live(name: str) -> LiveTable:
+        return LiveTable(columns={"id": DataType.DOUBLE}, pk_columns={"id"})
+
+    def test_bare_table_matches(self) -> None:
+        live = self._live("orders")
+        assert _resolve_live_table(
+            sql_table="orders", live_tables={"orders": live}
+        ) is live
+
+    def test_schema_qualified_falls_back_to_bare(self) -> None:
+        live = self._live("orders")
+        assert _resolve_live_table(
+            sql_table="public.orders", live_tables={"orders": live}
+        ) is live
+
+    def test_quoted_table_part_strips_quotes(self) -> None:
+        live = self._live("Company")
+        # The bug's repro: prod."Company" with introspection keyed by bare name.
+        assert _resolve_live_table(
+            sql_table='prod."Company"', live_tables={"Company": live}
+        ) is live
+
+    def test_both_parts_quoted(self) -> None:
+        live = self._live("Company")
+        assert _resolve_live_table(
+            sql_table='"prod"."Company"', live_tables={"Company": live}
+        ) is live
+
+    def test_escaped_inner_quote_in_table(self) -> None:
+        live = self._live('Comp"any')
+        assert _resolve_live_table(
+            sql_table='prod."Comp""any"', live_tables={'Comp"any': live}
+        ) is live
+
+    def test_missing_returns_none(self) -> None:
+        assert _resolve_live_table(
+            sql_table='prod."Missing"', live_tables={"orders": self._live("orders")}
+        ) is None
