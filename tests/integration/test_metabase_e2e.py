@@ -15,6 +15,7 @@ import asyncio
 import concurrent.futures
 import datetime as dt
 import logging
+import math
 import time
 from typing import Any, Dict, List, Tuple
 
@@ -564,9 +565,14 @@ async def test_aggregation_matches_direct_sql(
     if isinstance(direct, (int,)) and isinstance(mb_value, (int,)):
         assert mb_value == direct, f"{agg_name}: metabase={mb_value} direct={direct}"
     else:
-        assert abs(float(mb_value) - float(direct)) < 1e-6, (
-            f"{agg_name}: metabase={mb_value} direct={direct}"
-        )
+        # `rel_tol=1e-9` catches percentage drift on any magnitude;
+        # `abs_tol=1e-4` handles near-zero cases and one-hundredth-of-a-cent
+        # currency precision. A bare `abs(...) < 1e-6` flaked at ~3M sums
+        # because float64 reordering noise scales with magnitude
+        # (~3M * 2^-52 ≈ 7e-10 per add * ~30k orders ≈ 2e-5 worst-case).
+        assert math.isclose(
+            float(mb_value), float(direct), rel_tol=1e-9, abs_tol=1e-4,
+        ), f"{agg_name}: metabase={mb_value} direct={direct}"
 
 
 # ---------------------------------------------------------------------------
