@@ -44,9 +44,11 @@ import sqlglot.errors
 import sqlglot.expressions as exp
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import DataType, JoinType, TimeGranularity
+from slayer.core.models import ModelJoin, SlayerModel
 from slayer.core.query import (
     ColumnRef,
+    ModelExtension,
     OrderItem,
     SlayerQuery,
     TimeDimension,
@@ -57,6 +59,7 @@ from slayer.facade.catalog import (
     FacadeDimension,
     FacadeMetric,
     FacadeTable,
+    build_local_view,
 )
 from slayer.facade.info_schema import match_info_schema
 from slayer.facade.probe_queries import match_probe
@@ -231,7 +234,10 @@ _COMPARATOR_SQL: Dict[type, str] = {
 
 
 def _column_to_dotted(
-    col: exp.Column, *, strip_prefix: Optional[Tuple[str, str]] = None,
+    col: exp.Column,
+    *,
+    strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
 ) -> str:
     """Reconstruct the dotted reference from a sqlglot ``Column``.
 
@@ -245,6 +251,12 @@ def _column_to_dotted(
     the pg facade always exposes models under ``public``), drop them so
     three-part refs like ``"public"."orders"."customer_id"`` resolve to the
     bare ``customer_id`` dimension.
+
+    DEV-1565: when ``alias_map`` is given and the column's leading table
+    qualifier matches an alias entry (case-insensitive), the alias is
+    rewritten to the target SLayer model name BEFORE the dotted form is
+    built — so ``"Stores"."name"`` with ``alias_map={"Stores": "stores"}``
+    yields ``"stores.name"`` (the SLayer cross-model dotted form).
     """
     parts: List[str] = []
     for key in ("catalog", "db", "table"):
@@ -254,7 +266,37 @@ def _column_to_dotted(
         parts.append(str(node.this) if hasattr(node, "this") else str(node))
     leaf = col.this
     parts.append(str(leaf.this) if hasattr(leaf, "this") else str(leaf))
+    parts = _apply_alias_remap(parts, alias_map)
     return ".".join(_apply_strip_prefix(parts, strip_prefix))
+
+
+def _apply_alias_remap(
+    parts: List[str], alias_map: Optional[Dict[str, str]],
+) -> List[str]:
+    """If ``parts`` is at least 2-part and the table-qualifier (second-to-
+    last element) matches an entry in ``alias_map`` (case-insensitive),
+    rewrite it to the target model name. Otherwise return ``parts``
+    unchanged.
+
+    DEV-1565: maps ``<JoinAlias>.<col>`` refs (e.g. Metabase's
+    ``"Stores"."name"``) to ``<model_name>.<col>`` (``"stores"."name"``).
+    """
+    if not alias_map or len(parts) < 2:
+        return parts
+    qual = parts[-2]
+    target = alias_map.get(qual)
+    if target is None:
+        # case-insensitive fallback for quoted-identifier mismatches
+        lower = qual.lower()
+        for k, v in alias_map.items():
+            if k.lower() == lower:
+                target = v
+                break
+    if target is None:
+        return parts
+    new = list(parts)
+    new[-2] = target
+    return new
 
 
 def _apply_strip_prefix(
@@ -483,14 +525,16 @@ def _detect_time_grain(node: exp.Expression) -> Optional[Tuple[TimeGranularity, 
 
 def _alias_for_time_grain(
     grain: TimeGranularity, col: exp.Column,
-    *, strip_prefix: Optional[Tuple[str, str]] = None,
+    *,
+    strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
 ) -> str:
     """The flat projection name we expose for ``month(ordered_at)`` etc.
 
     Format: ``"<grain>(<column-ref>)"`` lowercased so it round-trips
     cleanly through GROUP BY / ORDER BY equality checks.
     """
-    return f"{grain.value}({_column_to_dotted(col, strip_prefix=strip_prefix)})"
+    return f"{grain.value}({_column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)})"
 
 
 # --- aggregate-call detection (DEV-1486 decision 21) -------------------------
@@ -509,7 +553,9 @@ class _AggCall(BaseModel):
 
 def _detect_aggregate(  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; splitting hides the shape
     node: exp.Expression,
-    *, strip_prefix: Optional[Tuple[str, str]] = None,
+    *,
+    strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
 ) -> Optional[_AggCall]:
     """If ``node`` is a SQL aggregate call, classify it; else ``None``.
 
@@ -522,9 +568,13 @@ def _detect_aggregate(  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; s
     qualifier from the inner column ref so ``SUM("public"."orders"."revenue")``
     resolves to the metric ``revenue:sum`` instead of
     ``public.orders.revenue:sum``.
+
+    DEV-1565: ``alias_map`` rewrites join-alias qualifiers (e.g.
+    ``AVG("Stores"."tax_rate")``) to the SLayer cross-model dotted form
+    (``stores.tax_rate:avg``).
     """
     def _dot(col: exp.Column) -> str:
-        return _column_to_dotted(col, strip_prefix=strip_prefix)
+        return _column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
     if isinstance(node, exp.Count):
         inner = node.this
         if isinstance(inner, exp.Star):
@@ -714,8 +764,9 @@ def _resolve_time_grain_projection(
     table: FacadeTable,
     dims_by_name: Dict[str, FacadeDimension],
     strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
 ) -> _ProjectionItem:
-    dotted = _column_to_dotted(col, strip_prefix=strip_prefix)
+    dotted = _column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
     dim = dims_by_name.get(dotted)
     if dim is None:
         raise TranslationError(
@@ -729,7 +780,7 @@ def _resolve_time_grain_projection(
         )
     return _ProjectionItem(
         projected_name=alias_name or _alias_for_time_grain(
-            grain, col, strip_prefix=strip_prefix,
+            grain, col, strip_prefix=strip_prefix, alias_map=alias_map,
         ),
         dimension=dim,
         time_grain=grain,
@@ -763,8 +814,9 @@ def _resolve_column_projection(
     metrics_by_name: Dict[str, FacadeMetric],
     dims_by_name: Dict[str, FacadeDimension],
     strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
 ) -> _ProjectionItem:
-    dotted = _column_to_dotted(body, strip_prefix=strip_prefix)
+    dotted = _column_to_dotted(body, strip_prefix=strip_prefix, alias_map=alias_map)
     if dotted in metrics_by_name:
         return _ProjectionItem(
             projected_name=alias_name or dotted,
@@ -863,12 +915,29 @@ def _raw_column_parts(col: exp.Column) -> List[str]:
 
 def _resolve_projection(
     expressions: Sequence[exp.Expression], table: FacadeTable,
-    *, schema_name: Optional[str] = None,
+    *,
+    schema_name: Optional[str] = None,
+    alias_map: Optional[Dict[str, str]] = None,
+    extra_dims_by_name: Optional[Dict[str, FacadeDimension]] = None,
+    extra_metrics_by_name: Optional[Dict[str, FacadeMetric]] = None,
+    extra_metrics_by_formula: Optional[Dict[str, FacadeMetric]] = None,
 ) -> List[_ProjectionItem]:
-    """Walk the projection list, classifying each item against the table."""
+    """Walk the projection list, classifying each item against the table.
+
+    DEV-1565: when a LEFT JOIN to a dynamic-fallback target is in play,
+    ``extra_dims_by_name`` / ``extra_metrics_by_*`` carry the materialised
+    ``<target>.<col>`` lookups so the joined dotted refs resolve without
+    needing a configured catalog join.
+    """
     metrics_by_name = {m.name: m for m in table.metrics}
     metrics_by_formula = {m.measure_formula: m for m in table.metrics}
     dims_by_name = {d.name: d for d in table.dimensions}
+    if extra_dims_by_name:
+        dims_by_name.update(extra_dims_by_name)
+    if extra_metrics_by_name:
+        metrics_by_name.update(extra_metrics_by_name)
+    if extra_metrics_by_formula:
+        metrics_by_formula.update(extra_metrics_by_formula)
     # DEV-1558 B5: when the FROM was schema-qualified (e.g. "public"."orders"),
     # let column refs that lead with the same `schema.table.` prefix resolve
     # to the bare column.
@@ -893,11 +962,11 @@ def _resolve_projection(
             out.append(_resolve_time_grain_projection(
                 grain=grain, col=col, alias_name=alias_name,
                 table=table, dims_by_name=dims_by_name,
-                strip_prefix=strip_prefix,
+                strip_prefix=strip_prefix, alias_map=alias_map,
             ))
             continue
 
-        agg_call = _detect_aggregate(body, strip_prefix=strip_prefix)
+        agg_call = _detect_aggregate(body, strip_prefix=strip_prefix, alias_map=alias_map)
         if agg_call is not None:
             out.append(_resolve_aggregate_projection(
                 call=agg_call, alias_name=alias_name, table=table,
@@ -909,7 +978,7 @@ def _resolve_projection(
             out.append(_resolve_column_projection(
                 body=body, alias_name=alias_name, table=table,
                 metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
-                strip_prefix=strip_prefix,
+                strip_prefix=strip_prefix, alias_map=alias_map,
             ))
             continue
 
@@ -917,24 +986,11 @@ def _resolve_projection(
         # field-value rescan emits SUBSTRING("public"."customers"."name",
         # 1, 1234) AS "..." — we drop the wrapper and project the bare
         # column under the user's alias.
-        #
-        # The drop is gated to the exact Metabase fingerprint shape:
-        # the inner column must be 3-part qualified AND its
-        # ``schema.table.`` prefix must match the FROM-table prefix.
-        # Otherwise expressions like ``LENGTH(name)`` would silently
-        # become ``name`` projections, breaking user-written queries
-        # that compute a scalar (CR review).
         hygiene = _detect_hygiene_wrapper(body)
         if hygiene is not None and _is_fingerprint_shape_wrap(
             hygiene[1], strip_prefix=strip_prefix,
         ):
             func_name, inner_col = hygiene
-            # DEBUG — not WARNING — because Metabase's field-value rescan
-            # emits these once per (column × aggregate) for every model,
-            # so a single sync produces hundreds of these per-call lines.
-            # The fact that the wrapper was dropped is normal-and-handled;
-            # operators only care if a sync as a whole fails, which would
-            # surface as a TranslationError up the stack.
             logger.debug(
                 "hygiene-scalar wrapper %r dropped for fingerprint projection "
                 "(column %r)",
@@ -943,7 +999,7 @@ def _resolve_projection(
             out.append(_resolve_column_projection(
                 body=inner_col, alias_name=alias_name, table=table,
                 metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
-                strip_prefix=strip_prefix,
+                strip_prefix=strip_prefix, alias_map=alias_map,
             ))
             continue
 
@@ -972,12 +1028,14 @@ def _split_and_chain(node: exp.Expression) -> List[exp.Expression]:
 
 def _lift_time_between(
     conj: exp.Between, time_dim_names: set[str],
-    *, strip_prefix: Optional[Tuple[str, str]] = None,
+    *,
+    strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
 ) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
     col = conj.this
     if not isinstance(col, exp.Column):
         return None
-    dotted = _column_to_dotted(col, strip_prefix=strip_prefix)
+    dotted = _column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
     if dotted not in time_dim_names:
         return None
     lo = _literal_str(conj.args.get("low"))
@@ -989,12 +1047,14 @@ def _lift_time_between(
 
 def _lift_time_comparator(
     conj: exp.Expression, time_dim_names: set[str],
-    *, strip_prefix: Optional[Tuple[str, str]] = None,
+    *,
+    strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
 ) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
     col = conj.this
     if not isinstance(col, exp.Column):
         return None
-    dotted = _column_to_dotted(col, strip_prefix=strip_prefix)
+    dotted = _column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
     if dotted not in time_dim_names:
         return None
     val = _literal_str(conj.expression)
@@ -1007,7 +1067,9 @@ def _lift_time_comparator(
 
 def _classify_where_conjunct(
     conj: exp.Expression, time_dim_names: set[str],
-    *, strip_prefix: Optional[Tuple[str, str]] = None,
+    *,
+    strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
 ) -> Tuple[Optional[Tuple[str, Optional[str], Optional[str]]], Optional[str]]:
     """Classify a single conjunct.
 
@@ -1024,41 +1086,54 @@ def _classify_where_conjunct(
     the DSL parser would reject.
     """
     if isinstance(conj, exp.Between):
-        lifted = _lift_time_between(conj, time_dim_names, strip_prefix=strip_prefix)
+        lifted = _lift_time_between(
+            conj, time_dim_names, strip_prefix=strip_prefix, alias_map=alias_map,
+        )
         if lifted is not None:
             return lifted, None
     if isinstance(conj, (exp.GTE, exp.GT, exp.LTE, exp.LT)):
-        lifted = _lift_time_comparator(conj, time_dim_names, strip_prefix=strip_prefix)
+        lifted = _lift_time_comparator(
+            conj, time_dim_names, strip_prefix=strip_prefix, alias_map=alias_map,
+        )
         if lifted is not None:
             return lifted, None
-    normalised = _normalise_predicate_columns(conj, strip_prefix=strip_prefix)
+    normalised = _normalise_predicate_columns(
+        conj, strip_prefix=strip_prefix, alias_map=alias_map,
+    )
     return None, _rewrite_neq(normalised.sql())
 
 
 def _normalise_predicate_columns(
-    node: exp.Expression, *, strip_prefix: Optional[Tuple[str, str]],
+    node: exp.Expression,
+    *,
+    strip_prefix: Optional[Tuple[str, str]],
+    alias_map: Optional[Dict[str, str]] = None,
 ) -> exp.Expression:
-    """Walk ``node`` and apply ``strip_prefix`` to every ``exp.Column``
-    so qualifier prefixes that match the FROM-table drop before SQL
-    serialisation."""
-    if strip_prefix is None:
+    """Walk ``node`` and rewrite every ``exp.Column``: apply ``alias_map``
+    first (so ``<JoinAlias>.<col>`` becomes ``<model>.<col>``), then
+    ``strip_prefix`` (so the parent table's ``schema.table.`` qualifier
+    drops). The reverse order would leave alias-qualified refs untouched
+    on parent strip_prefix matches that incidentally collide with the
+    alias text."""
+    if strip_prefix is None and not alias_map:
         return node
 
     def rewrite(child: exp.Expression) -> exp.Expression:
         if not isinstance(child, exp.Column):
             return child
         original = _raw_column_parts(child)
-        stripped = _apply_strip_prefix(list(original), strip_prefix)
-        if stripped == original:
+        parts = _apply_alias_remap(list(original), alias_map)
+        parts = _apply_strip_prefix(parts, strip_prefix)
+        if parts == original:
             return child
-        # Rebuild the Column without the stripped qualifier parts.
-        new = exp.Column(this=exp.Identifier(this=stripped[-1], quoted=False))
-        if len(stripped) >= 2:
-            new.set("table", exp.Identifier(this=stripped[-2], quoted=False))
-        if len(stripped) >= 3:
-            new.set("db", exp.Identifier(this=stripped[-3], quoted=False))
-        if len(stripped) >= 4:
-            new.set("catalog", exp.Identifier(this=stripped[-4], quoted=False))
+        # Rebuild the Column from the rewritten parts.
+        new = exp.Column(this=exp.Identifier(this=parts[-1], quoted=False))
+        if len(parts) >= 2:
+            new.set("table", exp.Identifier(this=parts[-2], quoted=False))
+        if len(parts) >= 3:
+            new.set("db", exp.Identifier(this=parts[-3], quoted=False))
+        if len(parts) >= 4:
+            new.set("catalog", exp.Identifier(this=parts[-4], quoted=False))
         return new
 
     return node.transform(rewrite)
@@ -1118,7 +1193,9 @@ def _apply_where(
     where: Optional[exp.Where],
     time_dims_built: Dict[str, TimeDimension],
     filters_out: List[str],
-    *, strip_prefix: Optional[Tuple[str, str]] = None,
+    *,
+    strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
 ) -> None:
     """Walk the WHERE chain; lift time-dim filters, append verbatim rest."""
     if where is None:
@@ -1126,7 +1203,7 @@ def _apply_where(
     time_dim_names = set(time_dims_built.keys())
     for conj in _split_and_chain(where.this):
         lifted, verbatim = _classify_where_conjunct(
-            conj, time_dim_names, strip_prefix=strip_prefix,
+            conj, time_dim_names, strip_prefix=strip_prefix, alias_map=alias_map,
         )
         if lifted is not None:
             name, lo, hi = lifted
@@ -1145,14 +1222,23 @@ def _apply_having(
     having: Optional[exp.Having],
     table: FacadeTable,
     filters_out: List[str],
-    *, strip_prefix: Optional[Tuple[str, str]] = None,
+    *,
+    strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
+    extra_metrics_by_formula: Optional[Dict[str, FacadeMetric]] = None,
 ) -> None:
     """Map ``HAVING <agg(col)> <cmp> <literal>`` conjuncts to colon-form
     filters (DEV-1486 decision 21). The engine classifies colon-form
-    aggregate filters as HAVING."""
+    aggregate filters as HAVING.
+
+    DEV-1565: ``extra_metrics_by_formula`` overlay covers dynamic-join
+    targets whose metrics aren't yet in the catalog's projection.
+    """
     if having is None:
         return
     metrics_by_formula = {m.measure_formula: m for m in table.metrics}
+    if extra_metrics_by_formula:
+        metrics_by_formula.update(extra_metrics_by_formula)
     for conj in _split_and_chain(having.this):
         op_sql = _COMPARATOR_SQL.get(type(conj))
         if op_sql is None:
@@ -1161,8 +1247,8 @@ def _apply_having(
                 f"<aggregate> <comparison> <literal>."
             )
         lhs, rhs = conj.this, conj.expression
-        agg_lhs = _detect_aggregate(lhs, strip_prefix=strip_prefix)
-        agg_rhs = _detect_aggregate(rhs, strip_prefix=strip_prefix)
+        agg_lhs = _detect_aggregate(lhs, strip_prefix=strip_prefix, alias_map=alias_map)
+        agg_rhs = _detect_aggregate(rhs, strip_prefix=strip_prefix, alias_map=alias_map)
         if agg_lhs is not None and agg_rhs is None and isinstance(rhs, exp.Literal):
             _metric_for_aggregate(call=agg_lhs, table=table, metrics_by_formula=metrics_by_formula)
             filters_out.append(f"{_agg_formula(agg_lhs)} {op_sql} {rhs.sql()}")
@@ -1188,7 +1274,9 @@ def _flip_comparator(op_sql: str) -> str:
 def _translate_order_by(
     order: Optional[exp.Order],
     item_by_projected_name: Dict[str, _ProjectionItem],
-    *, strip_prefix: Optional[Tuple[str, str]] = None,
+    *,
+    strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
 ) -> List[OrderItem]:
     if order is None:
         return []
@@ -1198,7 +1286,7 @@ def _translate_order_by(
             continue
         body = ord_expr.this
         direction = "desc" if ord_expr.args.get("desc") else "asc"
-        name = _order_by_name(body, strip_prefix=strip_prefix)
+        name = _order_by_name(body, strip_prefix=strip_prefix, alias_map=alias_map)
         if name not in item_by_projected_name:
             raise TranslationError(
                 f"ORDER BY column {name!r} is not in the projection list"
@@ -1215,7 +1303,9 @@ def _translate_order_by(
 
 def _order_by_name(
     body: exp.Expression,
-    *, strip_prefix: Optional[Tuple[str, str]] = None,
+    *,
+    strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
 ) -> str:
     """Resolve an ORDER BY term to its projected name.
 
@@ -1225,8 +1315,8 @@ def _order_by_name(
     item registered for ``SUM(amount)``.
     """
     if isinstance(body, exp.Column):
-        return _column_to_dotted(body, strip_prefix=strip_prefix)
-    agg = _detect_aggregate(body, strip_prefix=strip_prefix)
+        return _column_to_dotted(body, strip_prefix=strip_prefix, alias_map=alias_map)
+    agg = _detect_aggregate(body, strip_prefix=strip_prefix, alias_map=alias_map)
     if agg is not None and agg.inner_is_column:
         return f"{agg.inner_ref}_{agg.agg}"
     if agg is not None and agg.is_count_star:
@@ -1234,14 +1324,16 @@ def _order_by_name(
     grain_match = _detect_time_grain(body)
     if grain_match is not None:
         grain, col = grain_match
-        return _alias_for_time_grain(grain, col, strip_prefix=strip_prefix)
+        return _alias_for_time_grain(grain, col, strip_prefix=strip_prefix, alias_map=alias_map)
     return body.sql()
 
 
 def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; extraction adds indirection
     group: Optional[exp.Group],
     derived: List[str],
-    *, strip_prefix: Optional[Tuple[str, str]] = None,
+    *,
+    strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
 ) -> None:
     """Apply the strict-on-extras / lenient-on-omissions policy (§6.1)."""
     if group is None:
@@ -1250,13 +1342,13 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
     user_items: List[str] = []
     for g in group.args.get("expressions") or []:
         if isinstance(g, exp.Column):
-            user_items.append(_column_to_dotted(g, strip_prefix=strip_prefix))
+            user_items.append(_column_to_dotted(g, strip_prefix=strip_prefix, alias_map=alias_map))
         else:
             grain_match = _detect_time_grain(g)
             if grain_match is not None:
                 grain, col = grain_match
                 user_items.append(_alias_for_time_grain(
-                    grain, col, strip_prefix=strip_prefix,
+                    grain, col, strip_prefix=strip_prefix, alias_map=alias_map,
                 ))
             else:
                 user_items.append(g.sql())
@@ -1473,6 +1565,13 @@ def _record_dimension(
     assert item.dimension is not None
     plan.dimension_refs.append(ColumnRef.from_string(item.dimension.dimension_ref))
     plan.derived_dims.append(item.projected_name)
+    # DEV-1565 (mirrors the time-grain canonical-alias trick): when the
+    # projection aliases a joined-col dim (e.g. ``"Stores"."name" AS
+    # "Stores__name"``) the GROUP BY / ORDER BY may reference the alias-
+    # qualified form, which alias-remap rewrites to the dotted SLayer
+    # form (``stores.name``). Register that form too so validation finds it.
+    if item.dimension.dimension_ref != item.projected_name:
+        plan.derived_dims.append(item.dimension.dimension_ref)
     engine_alias = f"{table.name}.{item.dimension.dimension_ref}"
     plan.column_name_mapping.append((engine_alias, item.projected_name))
     plan.projection_types.append(item.dimension.data_type)
@@ -1505,6 +1604,349 @@ def _parse_int_literal(node: Optional[exp.Expression]) -> Optional[int]:
         return None
 
 
+# --- DEV-1565: LEFT JOIN-with-subquery recognition ---------------------------
+
+
+class _JoinPlan(BaseModel):
+    """Result of recognising Metabase's single LEFT-JOIN-with-subquery shape."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    alias: str
+    target_table: FacadeTable
+    target_schema: str
+    source_col: str
+    target_col: str
+    is_dynamic: bool
+    warn_cardinality: bool = False
+
+
+def _parse_left_join(
+    *,
+    parsed_joins: List[exp.Join],
+    parent_table: FacadeTable,
+    parent_schema: str,
+    catalog: FacadeCatalog,
+) -> Optional[_JoinPlan]:
+    """Validate and parse the single LEFT JOIN on the SELECT, if any.
+
+    Returns ``None`` when no joins are present. Raises ``TranslationError``
+    for any shape outside the Phase-1 scope (multiple joins, non-LEFT type,
+    bare-table right side, exotic subquery body, malformed ON clause)."""
+    if not parsed_joins:
+        return None
+    if len(parsed_joins) > 1:
+        raise TranslationError(
+            f"Multiple JOINs in one query are not supported (Phase 1 — "
+            f"DEV-1565); got {len(parsed_joins)}. Use one LEFT JOIN."
+        )
+    join = parsed_joins[0]
+    _reject_non_left_join(join)
+    target_table, target_schema, alias = _resolve_join_subquery_target(join, catalog)
+    source_col, target_col = _parse_on_clause(
+        on=join.args.get("on"),
+        parent_table=parent_table,
+        parent_schema=parent_schema,
+        target_table=target_table,
+        alias=alias,
+    )
+    is_dynamic, warn_cardinality = _classify_against_parent_joins(
+        parent_table=parent_table,
+        target_name=target_table.name,
+        source_col=source_col,
+        target_col=target_col,
+    )
+    return _JoinPlan(
+        alias=alias,
+        target_table=target_table,
+        target_schema=target_schema,
+        source_col=source_col,
+        target_col=target_col,
+        is_dynamic=is_dynamic,
+        warn_cardinality=warn_cardinality,
+    )
+
+
+def _reject_non_left_join(join: exp.Join) -> None:
+    """Phase 1 accepts only LEFT JOIN (sqlglot: side='LEFT', kind in (None,
+    'OUTER')). Every other shape — INNER / RIGHT / FULL / CROSS / plain
+    JOIN — is rejected with a single error surface."""
+    side = join.args.get("side")
+    kind = join.args.get("kind")
+    side_upper = (side or "").upper()
+    kind_upper = (kind or "").upper()
+    if side_upper == "LEFT" and kind_upper in ("", "OUTER"):
+        return
+    raise TranslationError(
+        f"Only LEFT JOIN is supported (Phase 1 — DEV-1565); got "
+        f"{(side_upper + ' ' + kind_upper).strip() or 'JOIN'}."
+    )
+
+
+def _resolve_join_subquery_target(
+    join: exp.Join, catalog: FacadeCatalog,
+) -> Tuple[FacadeTable, str, str]:
+    """Validate the right-side subquery shape and resolve its FROM table.
+
+    Returns ``(target_facade_table, target_schema, join_alias)``. Raises
+    on bare-table right side, non-Select subquery body, missing FROM,
+    inner WHERE/HAVING/GROUP/JOIN/CTE."""
+    right = join.this
+    if not isinstance(right, exp.Subquery):
+        raise TranslationError(
+            "LEFT JOIN right side must be a subquery '(SELECT … FROM "
+            "<table>) AS <alias>' (Phase 1 — DEV-1565); got a bare table "
+            "reference."
+        )
+    alias = right.alias
+    if not alias:
+        raise TranslationError(
+            "LEFT JOIN subquery must have an alias: '(SELECT … FROM "
+            "<table>) AS <alias>'."
+        )
+    inner = right.this
+    if not isinstance(inner, exp.Select):
+        raise TranslationError(
+            "LEFT JOIN subquery body must be a SELECT statement (Phase 1 "
+            "— DEV-1565); set-ops (UNION/INTERSECT/EXCEPT) not accepted."
+        )
+    for forbidden, label in (
+        ("where", "WHERE"),
+        ("group", "GROUP BY"),
+        ("having", "HAVING"),
+        ("joins", "JOIN"),
+        ("with_", "WITH (CTE)"),
+    ):
+        if inner.args.get(forbidden):
+            raise TranslationError(
+                f"LEFT JOIN subquery body must be 'SELECT … FROM <single "
+                f"table>' (Phase 1 — DEV-1565); inner {label} not accepted."
+            )
+    inner_from = inner.args.get("from_")
+    if inner_from is None:
+        raise TranslationError(
+            "LEFT JOIN subquery body must have a FROM clause naming a "
+            "single SLayer model (Phase 1 — DEV-1565)."
+        )
+    # Reject inner comma-join shape (FROM a, b).
+    inner_table = inner_from.this
+    if not isinstance(inner_table, exp.Table):
+        raise TranslationError(
+            "LEFT JOIN subquery body must reference exactly one table in "
+            "its FROM (Phase 1 — DEV-1565); got "
+            f"{type(inner_table).__name__}."
+        )
+    # _resolve_table accepts an exp.From wrapper, so feed the inner FROM.
+    schema_name, target_table = _resolve_table(inner_from, catalog)
+    return target_table, schema_name, alias
+
+
+def _parse_on_clause(
+    *,
+    on: Optional[exp.Expression],
+    parent_table: FacadeTable,
+    parent_schema: str,
+    target_table: FacadeTable,
+    alias: str,
+) -> Tuple[str, str]:
+    """Parse the ON clause as exactly one equality between a parent-table-
+    qualified column and a join-alias-qualified column.
+
+    Returns ``(source_col_leaf, target_col_leaf)``. Validates both leaves
+    exist on the respective ``SlayerModel.columns[]`` (hidden cols counted).
+    """
+    if on is None or not isinstance(on, exp.EQ):
+        raise TranslationError(
+            "LEFT JOIN ON clause must be a single equality "
+            "'<parent>.<col> = <alias>.<col>' (Phase 1 — DEV-1565); got "
+            f"{type(on).__name__ if on is not None else 'no ON clause'}."
+        )
+    lhs, rhs = on.this, on.expression
+    if not isinstance(lhs, exp.Column) or not isinstance(rhs, exp.Column):
+        raise TranslationError(
+            "LEFT JOIN ON clause must compare two simple column refs "
+            "(Phase 1 — DEV-1565); function calls and expressions not "
+            "accepted."
+        )
+    lhs_qual = _on_qualifier(lhs)
+    rhs_qual = _on_qualifier(rhs)
+    parent_match_l = _matches_parent_qualifier(lhs_qual, parent_table.name, parent_schema)
+    parent_match_r = _matches_parent_qualifier(rhs_qual, parent_table.name, parent_schema)
+    alias_match_l = _ci_eq(lhs_qual, alias)
+    alias_match_r = _ci_eq(rhs_qual, alias)
+    if parent_match_l and alias_match_r and not (parent_match_r and alias_match_l):
+        source_col, target_col = _leaf(lhs), _leaf(rhs)
+    elif parent_match_r and alias_match_l and not (parent_match_l and alias_match_r):
+        source_col, target_col = _leaf(rhs), _leaf(lhs)
+    else:
+        raise TranslationError(
+            f"LEFT JOIN ON clause must have one side qualified by the "
+            f"parent table ({parent_table.name!r}) and the other by the "
+            f"join alias ({alias!r}); got {on.sql()!r}."
+        )
+    _require_column(parent_table, source_col, role="parent")
+    _require_column(target_table, target_col, role="target")
+    return source_col, target_col
+
+
+def _on_qualifier(col: exp.Column) -> Optional[str]:
+    """The table-qualifier of an ON-clause column ref, or None if bare."""
+    table_node = col.args.get("table")
+    if table_node is None:
+        return None
+    return str(table_node.this) if hasattr(table_node, "this") else str(table_node)
+
+
+def _matches_parent_qualifier(
+    qual: Optional[str], parent_name: str, parent_schema: Optional[str],
+) -> bool:
+    """True if the qualifier names the parent table directly OR via
+    schema.table prefix that matches the FROM-table's schema."""
+    if qual is None:
+        return False
+    if _ci_eq(qual, parent_name):
+        return True
+    return False  # schema-prefix form is handled via _column_to_dotted strip
+
+
+def _ci_eq(a: Optional[str], b: Optional[str]) -> bool:
+    return a is not None and b is not None and a.lower() == b.lower()
+
+
+def _leaf(col: exp.Column) -> str:
+    leaf = col.this
+    return str(leaf.this) if hasattr(leaf, "this") else str(leaf)
+
+
+def _require_column(table: FacadeTable, col_name: str, *, role: str) -> None:
+    """Validate the column exists on the underlying SlayerModel — hidden
+    columns counted, since FK / PK columns are often hidden but still
+    valid ON-clause references."""
+    if table.model_ref is None:
+        return
+    if not any(c.name == col_name for c in table.model_ref.columns):
+        raise TranslationError(
+            f"LEFT JOIN ON {role}-side column {col_name!r} does not exist "
+            f"on table {table.name!r}."
+        )
+
+
+def _classify_against_parent_joins(
+    *,
+    parent_table: FacadeTable,
+    target_name: str,
+    source_col: str,
+    target_col: str,
+) -> Tuple[bool, bool]:
+    """Match the emitted (target_model, join_pairs) against the parent's
+    configured joins.
+
+    Returns ``(is_dynamic, warn_cardinality)``:
+      - existing LEFT match → (False, False).
+      - existing INNER match on same pairs → (False, True) (warn about
+        SQL LEFT vs configured INNER cardinality divergence).
+      - no entry for target_model → (True, False) (dynamic fallback).
+      - entry for target_model but DIFFERENT join_pairs → raise (an
+        additive ModelExtension would produce a duplicate join).
+    """
+    same_target = [j for j in parent_table.joins if j.target_model == target_name]
+    if not same_target:
+        return True, False
+    matching_pairs = [
+        j for j in same_target if list(j.join_pairs) == [[source_col, target_col]]
+    ]
+    if not matching_pairs:
+        configured = same_target[0].join_pairs
+        raise TranslationError(
+            f"LEFT JOIN to {target_name!r} uses ON columns "
+            f"({source_col!r}, {target_col!r}) which do not match the "
+            f"configured join_pairs ({configured}) on {parent_table.name!r}. "
+            f"ModelExtension cannot override an existing join — adjust the "
+            f"emitted SQL to match the configured join, or update the model "
+            f"join_pairs."
+        )
+    j = matching_pairs[0]
+    warn_cardinality = j.join_type != JoinType.LEFT
+    return False, warn_cardinality
+
+
+def _materialise_dynamic_join_lookups(
+    *,
+    target_model: SlayerModel,
+    extra_dims_by_name: Dict[str, FacadeDimension],
+    extra_metrics_by_name: Dict[str, FacadeMetric],
+    extra_metrics_by_formula: Dict[str, FacadeMetric],
+) -> None:
+    """For a dynamic-join target (no configured BFS expansion in the
+    catalog), build the bare-col dims and col×agg metrics keyed by
+    ``<target>.<col>`` / ``<target>.<col>:<agg>`` so the projection /
+    aggregate / WHERE / HAVING resolution paths find the joined refs.
+    """
+    local_dims, local_metrics = build_local_view(target_model)
+    prefix = target_model.name
+    for dim in local_dims:
+        ref = f"{prefix}.{dim.dimension_ref}"
+        extra_dims_by_name[ref] = FacadeDimension(
+            name=ref,
+            description=dim.description,
+            label=dim.label,
+            data_type=dim.data_type,
+            is_time=dim.is_time,
+            dimension_ref=ref,
+        )
+    for m in local_metrics:
+        if m.measure_formula == "*:count":
+            formula = f"{prefix}.*:count"
+        else:
+            formula = f"{prefix}.{m.measure_formula}"
+        new_metric = FacadeMetric(
+            name=f"{prefix}.{m.name}",
+            description=m.description,
+            label=m.label,
+            data_type=m.data_type,
+            measure_formula=formula,
+        )
+        extra_metrics_by_name[f"{prefix}.{m.name}"] = new_metric
+        extra_metrics_by_formula[formula] = new_metric
+
+
+def _build_source_model_from_join(
+    *, parent_name: str, plan: _JoinPlan,
+) -> object:
+    """``SlayerQuery.source_model`` value derived from the join plan:
+    the parent's bare name when an existing configured join matched, or a
+    ``ModelExtension`` carrying the dynamically-built ``ModelJoin`` when
+    not.
+    """
+    if not plan.is_dynamic:
+        return parent_name
+    return ModelExtension(
+        source_name=parent_name,
+        joins=[ModelJoin(
+            target_model=plan.target_table.name,
+            join_pairs=[[plan.source_col, plan.target_col]],
+            join_type=JoinType.LEFT,
+        )],
+    )
+
+
+def _emit_join_warnings(plan: _JoinPlan, parent_name: str) -> None:
+    if plan.is_dynamic:
+        logger.warning(
+            "pg-facade: dynamic join from %r to %r on %r=%r — no configured "
+            "join matched in parent.joins[]; using a ModelExtension to honor "
+            "the emitted ON clause (DEV-1565).",
+            parent_name, plan.target_table.name, plan.source_col, plan.target_col,
+        )
+    elif plan.warn_cardinality:
+        logger.warning(
+            "pg-facade: LEFT JOIN to %r matched a configured non-LEFT join "
+            "(join_type=INNER on %r.joins) — using the configured join_type "
+            "but cardinality semantics differ from the emitted SQL (DEV-1565).",
+            plan.target_table.name, parent_name,
+        )
+
+
 def _translate_slayer_select(
     parsed: exp.Select, catalog: FacadeCatalog,
 ) -> QueryResult:
@@ -1528,40 +1970,83 @@ def _translate_slayer_select(
         (schema_name, table.name) if schema_name else None
     )
 
-    items = _resolve_projection(proj_exprs, table, schema_name=schema_name)
+    # DEV-1565: recognise Metabase's LEFT JOIN-with-subquery shape, if any.
+    join_plan = _parse_left_join(
+        parsed_joins=parsed.args.get("joins") or [],
+        parent_table=table,
+        parent_schema=schema_name,
+        catalog=catalog,
+    )
+    alias_map: Optional[Dict[str, str]] = None
+    extra_dims_by_name: Dict[str, FacadeDimension] = {}
+    extra_metrics_by_name: Dict[str, FacadeMetric] = {}
+    extra_metrics_by_formula: Dict[str, FacadeMetric] = {}
+    if join_plan is not None:
+        alias_map = {join_plan.alias: join_plan.target_table.name}
+        if join_plan.is_dynamic and join_plan.target_table.model_ref is not None:
+            _materialise_dynamic_join_lookups(
+                target_model=join_plan.target_table.model_ref,
+                extra_dims_by_name=extra_dims_by_name,
+                extra_metrics_by_name=extra_metrics_by_name,
+                extra_metrics_by_formula=extra_metrics_by_formula,
+            )
+        _emit_join_warnings(join_plan, table.name)
+
+    items = _resolve_projection(
+        proj_exprs, table,
+        schema_name=schema_name,
+        alias_map=alias_map,
+        extra_dims_by_name=extra_dims_by_name or None,
+        extra_metrics_by_name=extra_metrics_by_name or None,
+        extra_metrics_by_formula=extra_metrics_by_formula or None,
+    )
     plan = _build_projection_plan(items, table)
 
     _validate_group_by(
-        parsed.args.get("group"), plan.derived_dims, strip_prefix=strip_prefix,
+        parsed.args.get("group"), plan.derived_dims,
+        strip_prefix=strip_prefix, alias_map=alias_map,
     )
 
     filters: List[str] = []
     _apply_where(
         parsed.args.get("where"), plan.time_dim_by_name, filters,
-        strip_prefix=strip_prefix,
+        strip_prefix=strip_prefix, alias_map=alias_map,
     )
     _apply_having(
-        parsed.args.get("having"), table, filters, strip_prefix=strip_prefix,
+        parsed.args.get("having"), table, filters,
+        strip_prefix=strip_prefix, alias_map=alias_map,
+        extra_metrics_by_formula=extra_metrics_by_formula or None,
     )
 
     item_by_projected_name = {item.projected_name: item for item in items}
-    # Also index time-grain items under their canonical ``grain(col)`` form so
-    # an unaliased Metabase-style GROUP BY / ORDER BY (``ORDER BY CAST(
-    # DATE_TRUNC('month', ordered_at) AS DATE)``) resolves against the
-    # aliased projection (``... AS "ordered_at"``).
     for item in items:
-        if item.time_grain is None or item.time_grain_underlying is None:
-            continue
-        canonical = (
-            f"{item.time_grain.value}({item.time_grain_underlying.dimension_ref})"
-        )
-        item_by_projected_name.setdefault(canonical, item)
+        if item.time_grain is not None and item.time_grain_underlying is not None:
+            canonical = (
+                f"{item.time_grain.value}({item.time_grain_underlying.dimension_ref})"
+            )
+            item_by_projected_name.setdefault(canonical, item)
+        # DEV-1565: aliased joined-col dim projections (`"Stores"."name" AS
+        # "Stores__name"`) also resolve under the SLayer dotted form, so an
+        # ORDER BY `"Stores"."name"` (alias-remapped to `stores.name`) finds
+        # the item.
+        elif (
+            item.dimension is not None
+            and item.dimension.dimension_ref != item.projected_name
+        ):
+            item_by_projected_name.setdefault(item.dimension.dimension_ref, item)
     order_items = _translate_order_by(
-        parsed.args.get("order"), item_by_projected_name, strip_prefix=strip_prefix,
+        parsed.args.get("order"), item_by_projected_name,
+        strip_prefix=strip_prefix, alias_map=alias_map,
     )
 
+    source_model: object = table.name
+    if join_plan is not None:
+        source_model = _build_source_model_from_join(
+            parent_name=table.name, plan=join_plan,
+        )
+
     query = SlayerQuery(
-        source_model=table.name,
+        source_model=source_model,
         measures=plan.measures or None,
         dimensions=plan.dimension_refs or None,
         time_dimensions=plan.time_dims or None,

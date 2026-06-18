@@ -935,10 +935,6 @@ def test_native_sql_order_by_canonical_alias(metabase_e2e_env: MetabaseE2EEnv) -
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1565: pg-facade doesn't yet recognise Metabase's LEFT JOIN-with-subquery projection shape",
-)
 def test_join_single_hop_project_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
@@ -963,10 +959,6 @@ def test_join_single_hop_project_joined_column(metabase_e2e_env: MetabaseE2EEnv)
         assert isinstance(row[0], str) and row[0]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1565: pg-facade doesn't yet recognise Metabase's LEFT JOIN-with-subquery projection shape",
-)
 def test_join_filter_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
@@ -1002,10 +994,6 @@ def test_join_filter_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1565: pg-facade doesn't yet recognise Metabase's LEFT JOIN-with-subquery projection shape",
-)
 def test_join_aggregate_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")

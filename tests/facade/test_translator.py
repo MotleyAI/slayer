@@ -12,8 +12,9 @@ import logging
 
 import pytest
 
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import DataType, JoinType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.query import ModelExtension
 from slayer.facade.catalog import FacadeCatalog, build_catalog
 from slayer.facade.translator import (
     AGG_OVER_MEASURE_MESSAGE,
@@ -750,3 +751,624 @@ def test_limit_and_offset_pass_through(dialect) -> None:
     assert isinstance(result, QueryResult)
     assert result.query.limit == 100
     assert result.query.offset == 50
+
+
+# --- DEV-1565: LEFT JOIN with subquery (Metabase MBQL shape) -----------------
+#
+# Metabase v0.62 emits joins as:
+#   FROM "public"."orders"
+#   LEFT JOIN (SELECT "public"."stores"."id" AS "id", ... FROM "public"."stores")
+#     AS "Stores" ON "public"."orders"."store_id" = "Stores"."id"
+#
+# The tests below pin the shape end-to-end: positive (existing join wins),
+# positive (dynamic-join fallback + WARN), and negative (every shape that
+# isn't Metabase's single-LEFT-JOIN-with-subquery pattern). All exercise the
+# translator directly without a live Metabase boot.
+
+
+def _join_catalog(
+    *,
+    parent_join_target: str | None = "stores",
+    parent_join_pairs: list[list[str]] | None = None,
+    parent_join_type: JoinType = JoinType.LEFT,
+    store_fk_hidden: bool = False,
+) -> FacadeCatalog:
+    """Build a catalog with orders + stores. Knobs control how (and whether)
+    the parent's `joins[]` entry is configured, so the tests can exercise
+    existing-join-wins, dynamic-fallback, mismatched-join-pairs, mismatched-
+    join-type, and hidden-FK-column scenarios."""
+    join_pairs = parent_join_pairs if parent_join_pairs is not None else [["store_id", "id"]]
+    orders_joins: list[ModelJoin] = []
+    if parent_join_target is not None:
+        orders_joins.append(ModelJoin(
+            target_model=parent_join_target,
+            join_pairs=join_pairs,
+            join_type=parent_join_type,
+        ))
+    orders = SlayerModel(
+        name="orders",
+        data_source="jaffle",
+        sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="store_id", type=DataType.INT, hidden=store_fk_hidden),
+            Column(name="revenue", type=DataType.DOUBLE),
+            Column(name="status", type=DataType.TEXT),
+            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        ],
+        joins=orders_joins,
+    )
+    stores = SlayerModel(
+        name="stores",
+        data_source="jaffle",
+        sql_table="stores",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="name", type=DataType.TEXT),
+            Column(name="tax_rate", type=DataType.DOUBLE),
+            Column(name="opened_at", type=DataType.TIMESTAMP),
+        ],
+    )
+    return build_catalog(models_by_datasource={"jaffle": [orders, stores]})
+
+
+def _metabase_join_sql(
+    *,
+    projection: str,
+    where: str = "",
+    group_by: str = "",
+    having: str = "",
+    order_by: str = "",
+    limit: str = "",
+    join_target_table: str = "stores",
+    join_alias: str = "Stores",
+    on_clause: str | None = None,
+) -> str:
+    """Build the Metabase LEFT JOIN-with-subquery shape for one join.
+
+    The defaults match Metabase v0.62's exact emission (schema-qualified
+    refs, every column re-projected inside the subquery). Knobs let
+    individual tests vary the join target, alias, and ON clause."""
+    on = on_clause or f'"public"."orders"."store_id" = "{join_alias}"."id"'
+    inner_projection = (
+        f'"public"."{join_target_table}"."id" AS "id", '
+        f'"public"."{join_target_table}"."name" AS "name", '
+        f'"public"."{join_target_table}"."tax_rate" AS "tax_rate", '
+        f'"public"."{join_target_table}"."opened_at" AS "opened_at"'
+    )
+    parts = [
+        f'SELECT {projection}',
+        'FROM "public"."orders"',
+        f'LEFT JOIN (SELECT {inner_projection} '
+        f'FROM "public"."{join_target_table}") AS "{join_alias}"',
+        f'  ON {on}',
+    ]
+    if where:
+        parts.append(f'WHERE {where}')
+    if group_by:
+        parts.append(f'GROUP BY {group_by}')
+    if having:
+        parts.append(f'HAVING {having}')
+    if order_by:
+        parts.append(f'ORDER BY {order_by}')
+    if limit:
+        parts.append(limit)
+    return " ".join(parts)
+
+
+# --- Positive: existing configured join wins ---------------------------------
+
+
+def test_left_join_subquery_projects_joined_column(dialect) -> None:
+    """H.1 unit equivalent: SELECT Stores.name maps to dim stores.name."""
+    sql = _metabase_join_sql(projection='"Stores"."name" AS "Stores__name"', limit="LIMIT 5")
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.source_model == "orders"
+    assert result.query.dimensions is not None
+    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+    assert dict(result.column_name_mapping) == {"orders.stores.name": "Stores__name"}
+    assert result.query.limit == 5
+
+
+def test_left_join_subquery_inverted_on_accepted(dialect) -> None:
+    """ON column order is symmetric — `<alias>.<col> = <parent>.<col>` works
+    the same as the other way."""
+    sql = _metabase_join_sql(
+        projection='"Stores"."name" AS "Stores__name"',
+        on_clause='"Stores"."id" = "public"."orders"."store_id"',
+    )
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.source_model == "orders"
+    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+
+
+def test_left_join_subquery_filter_on_joined_col(dialect) -> None:
+    """H.2 unit equivalent: WHERE on joined col lifts to SLayer filter using
+    the cross-model dotted form."""
+    sql = _metabase_join_sql(
+        projection='"public"."orders"."status", COUNT(*) AS "count"',
+        where=""""Stores"."name" = 'Acme'""",
+        group_by='"public"."orders"."status"',
+    )
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.source_model == "orders"
+    assert result.query.filters == ["stores.name = 'Acme'"]
+
+
+def test_left_join_subquery_aggregate_on_joined_col(dialect) -> None:
+    """H.3 unit equivalent: AVG(Stores.tax_rate) maps to the cross-model
+    measure stores.tax_rate:avg."""
+    sql = _metabase_join_sql(
+        projection='AVG("Stores"."tax_rate") AS "avg"',
+    )
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.source_model == "orders"
+    assert result.query.measures is not None
+    assert result.query.measures[0].formula == "stores.tax_rate:avg"
+    assert result.query.measures[0].name == "avg"
+    assert dict(result.column_name_mapping) == {"orders.avg": "avg"}
+
+
+def test_left_join_subquery_order_by_joined_col(dialect) -> None:
+    sql = _metabase_join_sql(
+        projection='"Stores"."name" AS "Stores__name", COUNT(*) AS "count"',
+        group_by='"Stores"."name"',
+        order_by='"Stores"."name" ASC',
+    )
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.source_model == "orders"
+    assert result.query.order is not None
+    assert result.query.order[0].column.full_name == "stores.name"
+    assert result.query.order[0].direction == "asc"
+    # The joined-col projection's mapping is intact alongside the COUNT(*).
+    mapping = dict(result.column_name_mapping)
+    assert mapping["orders.stores.name"] == "Stores__name"
+
+
+def test_left_join_subquery_group_by_joined_col(dialect) -> None:
+    sql = _metabase_join_sql(
+        projection='"Stores"."name" AS "Stores__name", COUNT(*) AS "count"',
+        group_by='"Stores"."name"',
+    )
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.source_model == "orders"
+    # GROUP BY on a joined column passes the strict-extras check because the
+    # joined-col projection registers `stores.name` as a derived dim.
+    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+    mapping = dict(result.column_name_mapping)
+    assert mapping["orders.stores.name"] == "Stores__name"
+
+
+def test_left_join_subquery_having_on_joined_aggregate(dialect) -> None:
+    """HAVING on an aggregate of a joined column lifts to a colon-form
+    filter — symmetric with §3's promise that joined refs appear anywhere a
+    base column ref appears today."""
+    sql = _metabase_join_sql(
+        projection='"public"."orders"."status", AVG("Stores"."tax_rate") AS "avg"',
+        group_by='"public"."orders"."status"',
+        having='AVG("Stores"."tax_rate") > 0.05',
+    )
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.source_model == "orders"
+    assert result.query.filters == ["stores.tax_rate:avg > 0.05"]
+
+
+def test_left_join_subquery_offset_passes_through(dialect) -> None:
+    sql = _metabase_join_sql(
+        projection='"Stores"."name" AS "Stores__name"',
+        limit="LIMIT 5 OFFSET 10",
+    )
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.limit == 5
+    assert result.query.offset == 10
+
+
+def test_left_join_parent_qualifier_bare_table_accepted(dialect) -> None:
+    """Plan §4 / §5: the parent qualifier on the ON clause may be either
+    `<table>` (bare) or `<schema>.<table>`. Metabase emits the
+    schema-qualified form; hand-written or other-BI SQL may emit bare."""
+    sql = _metabase_join_sql(
+        projection='"Stores"."name" AS "Stores__name"',
+        on_clause='"orders"."store_id" = "Stores"."id"',
+    )
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.source_model == "orders"
+    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+
+
+def test_left_join_uses_configured_join_emits_no_warning(dialect, caplog) -> None:
+    """Match key: (target_model, join_pairs) == configured + join_type==LEFT.
+    On a clean match the translator must NOT emit the dynamic-join WARN."""
+    sql = _metabase_join_sql(projection='"Stores"."name" AS "Stores__name"')
+    with caplog.at_level(logging.WARNING, logger="slayer.facade.translator"):
+        result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.source_model == "orders"
+    # No dynamic-join WARN, no INNER-mismatch WARN.
+    warns = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not any("dynamic join" in m or "cardinality" in m for m in warns)
+
+
+def test_left_join_on_hidden_fk_column_succeeds(dialect) -> None:
+    """ON-column existence check must validate against `SlayerModel.columns[]`
+    (not facade dimensions), so hidden FK columns still match."""
+    sql = _metabase_join_sql(projection='"Stores"."name" AS "Stores__name"')
+    result = translate(
+        sql=sql, catalog=_join_catalog(store_fk_hidden=True), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.source_model == "orders"
+    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+
+
+def test_left_join_alias_different_from_target_name(dialect) -> None:
+    """The join alias is user-chosen via MBQL; it doesn't have to match the
+    SLayer model name. Resolution uses the subquery's FROM table, not the
+    alias text."""
+    sql = _metabase_join_sql(
+        projection='"S"."name" AS "S__name"',
+        join_alias="S",
+    )
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+
+
+# --- Positive: dynamic-join fallback + WARN ----------------------------------
+
+
+def test_left_join_dynamic_when_parent_has_no_join_to_target(dialect, caplog) -> None:
+    """No configured join to stores — build a ModelExtension with the
+    emitted ON columns and emit a WARNING."""
+    sql = _metabase_join_sql(projection='"Stores"."name" AS "Stores__name"')
+    cat = _join_catalog(parent_join_target=None)
+    with caplog.at_level(logging.WARNING, logger="slayer.facade.translator"):
+        result = translate(sql=sql, catalog=cat, dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert isinstance(result.query.source_model, ModelExtension)
+    ext = result.query.source_model
+    assert ext.source_name == "orders"
+    assert ext.joins is not None and len(ext.joins) == 1
+    j = ext.joins[0]
+    assert j.target_model == "stores"
+    assert j.join_pairs == [["store_id", "id"]]
+    assert j.join_type == JoinType.LEFT
+    # Projection still resolves via the dotted cross-model form.
+    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+    assert dict(result.column_name_mapping) == {"orders.stores.name": "Stores__name"}
+    # WARN line surfaced for operators.
+    warns = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("dynamic join" in m and "orders" in m and "stores" in m for m in warns)
+
+
+def test_left_join_dynamic_supports_aggregate_on_joined_col(dialect, caplog) -> None:
+    """Dynamic-join target must materialise its column-x-agg metrics into
+    the projection's lookup dicts so AVG(Stores.tax_rate) still resolves."""
+    sql = _metabase_join_sql(projection='AVG("Stores"."tax_rate") AS "avg"')
+    cat = _join_catalog(parent_join_target=None)
+    with caplog.at_level(logging.WARNING, logger="slayer.facade.translator"):
+        result = translate(sql=sql, catalog=cat, dialect=dialect)
+    assert isinstance(result, QueryResult)
+    # Must be on the dynamic-join code path: source_model is the inline ext.
+    assert isinstance(result.query.source_model, ModelExtension)
+    assert result.query.source_model.source_name == "orders"
+    assert result.query.measures is not None
+    assert result.query.measures[0].formula == "stores.tax_rate:avg"
+    assert dict(result.column_name_mapping) == {"orders.avg": "avg"}
+
+
+def test_left_join_dynamic_supports_filter_on_joined_col(dialect, caplog) -> None:
+    sql = _metabase_join_sql(
+        projection='COUNT(*) AS "count"',
+        where=""""Stores"."name" = 'Acme'""",
+    )
+    cat = _join_catalog(parent_join_target=None)
+    with caplog.at_level(logging.WARNING, logger="slayer.facade.translator"):
+        result = translate(sql=sql, catalog=cat, dialect=dialect)
+    assert isinstance(result, QueryResult)
+    # Must be on the dynamic-join code path: source_model is the inline ext.
+    assert isinstance(result.query.source_model, ModelExtension)
+    assert result.query.source_model.source_name == "orders"
+    assert result.query.filters == ["stores.name = 'Acme'"]
+
+
+def test_left_join_configured_inner_with_matching_join_pairs_warns(
+    dialect, caplog,
+) -> None:
+    """Configured INNER + emitted LEFT have different cardinality semantics
+    (INNER drops parent rows without a match). Still use the existing join
+    (the model author's chosen semantics) but emit a WARN so operators see
+    the divergence."""
+    sql = _metabase_join_sql(projection='"Stores"."name" AS "Stores__name"')
+    cat = _join_catalog(parent_join_type=JoinType.INNER)
+    with caplog.at_level(logging.WARNING, logger="slayer.facade.translator"):
+        result = translate(sql=sql, catalog=cat, dialect=dialect)
+    assert isinstance(result, QueryResult)
+    # Existing join is used — source_model is the bare parent name.
+    assert result.query.source_model == "orders"
+    warns = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("cardinality" in m.lower() or "join_type" in m.lower() for m in warns)
+
+
+# --- Negative: rejected shapes -----------------------------------------------
+
+
+def test_two_left_joins_rejected_phase1(dialect) -> None:
+    """Multiple LEFT JOINs in one query are out of Phase 1 scope (DEV-1565)."""
+    sql = (
+        'SELECT "Stores"."name", "Customers"."region" '
+        'FROM "public"."orders" '
+        'LEFT JOIN (SELECT * FROM "public"."stores") AS "Stores" '
+        '  ON "public"."orders"."store_id" = "Stores"."id" '
+        'LEFT JOIN (SELECT * FROM "public"."customers") AS "Customers" '
+        '  ON "public"."orders"."customer_id" = "Customers"."id"'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "one LEFT JOIN" in str(exc_info.value) or "Multiple" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("join_kind", ["INNER", "RIGHT", "FULL", "CROSS"])
+def test_non_left_join_kinds_rejected(join_kind: str, dialect) -> None:
+    if join_kind == "CROSS":
+        join_sql = (
+            'CROSS JOIN (SELECT * FROM "public"."stores") AS "Stores"'
+        )
+    else:
+        join_sql = (
+            f'{join_kind} JOIN (SELECT * FROM "public"."stores") AS "Stores" '
+            f'  ON "public"."orders"."store_id" = "Stores"."id"'
+        )
+    sql = (
+        f'SELECT "Stores"."name" '
+        f'FROM "public"."orders" '
+        f'{join_sql}'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "LEFT JOIN" in str(exc_info.value)
+
+
+def test_bare_table_right_side_rejected(dialect) -> None:
+    """Phase 1 only recognises the subquery-wrapped Metabase shape."""
+    sql = (
+        'SELECT "Stores"."name" '
+        'FROM "public"."orders" '
+        'LEFT JOIN "public"."stores" AS "Stores" '
+        '  ON "public"."orders"."store_id" = "Stores"."id"'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "subquery" in str(exc_info.value).lower()
+
+
+def test_subquery_with_inner_where_rejected(dialect) -> None:
+    sql = (
+        'SELECT "Stores"."name" '
+        'FROM "public"."orders" '
+        'LEFT JOIN ('
+        '  SELECT * FROM "public"."stores" WHERE "id" > 0'
+        ') AS "Stores" '
+        '  ON "public"."orders"."store_id" = "Stores"."id"'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "subquery" in str(exc_info.value).lower()
+
+
+def test_subquery_with_inner_join_rejected(dialect) -> None:
+    sql = (
+        'SELECT "Stores"."name" '
+        'FROM "public"."orders" '
+        'LEFT JOIN ('
+        '  SELECT s.* FROM "public"."stores" s JOIN "public"."stores" s2 ON s.id = s2.id'
+        ') AS "Stores" '
+        '  ON "public"."orders"."store_id" = "Stores"."id"'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "subquery" in str(exc_info.value).lower()
+
+
+def test_subquery_with_inner_group_by_rejected(dialect) -> None:
+    sql = (
+        'SELECT "Stores"."id" '
+        'FROM "public"."orders" '
+        'LEFT JOIN ('
+        '  SELECT "id" FROM "public"."stores" GROUP BY "id"'
+        ') AS "Stores" '
+        '  ON "public"."orders"."store_id" = "Stores"."id"'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "subquery" in str(exc_info.value).lower()
+
+
+def test_subquery_with_inner_having_rejected(dialect) -> None:
+    sql = (
+        'SELECT "Stores"."id" '
+        'FROM "public"."orders" '
+        'LEFT JOIN ('
+        '  SELECT "id", COUNT(*) AS c FROM "public"."stores" '
+        '  GROUP BY "id" HAVING COUNT(*) > 0'
+        ') AS "Stores" '
+        '  ON "public"."orders"."store_id" = "Stores"."id"'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "subquery" in str(exc_info.value).lower()
+
+
+def test_subquery_with_inner_cte_rejected(dialect) -> None:
+    sql = (
+        'SELECT "Stores"."id" '
+        'FROM "public"."orders" '
+        'LEFT JOIN ('
+        '  WITH s AS (SELECT * FROM "public"."stores") SELECT * FROM s'
+        ') AS "Stores" '
+        '  ON "public"."orders"."store_id" = "Stores"."id"'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "subquery" in str(exc_info.value).lower()
+
+
+def test_subquery_with_comma_join_rejected(dialect) -> None:
+    sql = (
+        'SELECT "Stores"."id" '
+        'FROM "public"."orders" '
+        'LEFT JOIN ('
+        '  SELECT s.* FROM "public"."stores" s, "public"."stores" s2'
+        ') AS "Stores" '
+        '  ON "public"."orders"."store_id" = "Stores"."id"'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "subquery" in str(exc_info.value).lower()
+
+
+def test_subquery_without_from_rejected(dialect) -> None:
+    """A subquery with no FROM (e.g. ``SELECT 1 AS id``) has no addressable
+    target model — translator must reject rather than fall back to
+    `_resolve_table` raising a different error."""
+    sql = (
+        'SELECT "Stores"."id" '
+        'FROM "public"."orders" '
+        'LEFT JOIN (SELECT 1 AS "id") AS "Stores" '
+        '  ON "public"."orders"."store_id" = "Stores"."id"'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "subquery" in str(exc_info.value).lower()
+
+
+def test_subquery_with_set_op_rejected(dialect) -> None:
+    sql = (
+        'SELECT "Stores"."id" '
+        'FROM "public"."orders" '
+        'LEFT JOIN ('
+        '  SELECT "id" FROM "public"."stores" '
+        '  UNION ALL SELECT "id" FROM "public"."stores"'
+        ') AS "Stores" '
+        '  ON "public"."orders"."store_id" = "Stores"."id"'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "subquery" in str(exc_info.value).lower()
+
+
+def test_on_clause_composite_rejected(dialect) -> None:
+    sql = _metabase_join_sql(
+        projection='"Stores"."name"',
+        on_clause=(
+            '"public"."orders"."store_id" = "Stores"."id" '
+            'AND "public"."orders"."id" = "Stores"."id"'
+        ),
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "ON" in str(exc_info.value)
+
+
+def test_on_clause_or_rejected(dialect) -> None:
+    sql = _metabase_join_sql(
+        projection='"Stores"."name"',
+        on_clause=(
+            '"public"."orders"."store_id" = "Stores"."id" '
+            'OR "public"."orders"."id" = "Stores"."id"'
+        ),
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "ON" in str(exc_info.value)
+
+
+def test_on_clause_function_call_rejected(dialect) -> None:
+    sql = _metabase_join_sql(
+        projection='"Stores"."name"',
+        on_clause='COALESCE("public"."orders"."store_id", 0) = "Stores"."id"',
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "ON" in str(exc_info.value)
+
+
+def test_on_clause_non_equality_rejected(dialect) -> None:
+    sql = _metabase_join_sql(
+        projection='"Stores"."name"',
+        on_clause='"public"."orders"."store_id" > "Stores"."id"',
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "ON" in str(exc_info.value)
+
+
+def test_on_clause_both_sides_same_qualifier_rejected(dialect) -> None:
+    """Pathological ON shape: both sides reference the same qualifier. Can't
+    classify which side is source vs target."""
+    sql = _metabase_join_sql(
+        projection='"Stores"."name"',
+        on_clause='"Stores"."id" = "Stores"."tax_rate"',
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "ON" in str(exc_info.value)
+
+
+def test_on_clause_unknown_source_column_rejected(dialect) -> None:
+    sql = _metabase_join_sql(
+        projection='"Stores"."name"',
+        on_clause='"public"."orders"."missing_col" = "Stores"."id"',
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "missing_col" in str(exc_info.value)
+
+
+def test_on_clause_unknown_target_column_rejected(dialect) -> None:
+    sql = _metabase_join_sql(
+        projection='"Stores"."name"',
+        on_clause='"public"."orders"."store_id" = "Stores"."missing_col"',
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "missing_col" in str(exc_info.value)
+
+
+def test_left_join_target_model_unknown_errors(dialect) -> None:
+    """If the subquery's FROM resolves to no model in the catalog, fall
+    through to the existing 'Unknown table' error — keep one error surface
+    for unknown tables across the translator."""
+    sql = (
+        'SELECT "X"."col" FROM "public"."orders" '
+        'LEFT JOIN (SELECT * FROM "public"."not_a_model") AS "X" '
+        '  ON "public"."orders"."store_id" = "X"."id"'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "not_a_model" in str(exc_info.value)
+
+
+def test_left_join_different_join_pairs_rejected(dialect) -> None:
+    """Configured join to stores uses [[store_id, id]]; emitted SQL uses
+    [[id, id]]. ModelExtension.joins is additive (engine appends rather than
+    overrides), so a dynamic fallback would produce a duplicate join to the
+    same target. Reject with a clear error instead."""
+    sql = _metabase_join_sql(
+        projection='"Stores"."name"',
+        on_clause='"public"."orders"."id" = "Stores"."id"',
+    )
+    cat = _join_catalog()  # configured join_pairs=[["store_id", "id"]]
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=cat, dialect=dialect)
+    msg = str(exc_info.value)
+    assert "store_id" in msg or "join_pairs" in msg.lower()
