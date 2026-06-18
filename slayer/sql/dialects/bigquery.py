@@ -16,7 +16,11 @@ unambiguous.
 Per DEV-1542's "every dialect quirk lives behind a hook on
 ``SqlDialect``" rule, this file is BigQuery's home. The plain
 ``rewrite_emitted_sql`` / ``decode_result_keys`` hooks on the base class
-have identity defaults; only ``BigqueryDialect`` overrides them today.
+have identity defaults; only ``BigqueryDialect`` (and ``TsqlDialect``,
+DEV-1571) override them today. The shared encode/decode bijection lives
+in :mod:`slayer.sql.dialects._alias_mangle` and is reused by both
+dialects — only the regex anchor (backticks here, brackets in T-SQL)
+differs.
 """
 
 from __future__ import annotations
@@ -24,15 +28,13 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from slayer.sql.dialects._alias_mangle import decode_alias, encode_alias
 from slayer.sql.dialects.base import SqlDialect
 
 
 # ---------------------------------------------------------------------------
-# Alias mangling internals
+# Alias mangling — backtick-anchored regex (BigQuery's identifier quote)
 # ---------------------------------------------------------------------------
-
-
-_ALIAS_SEP = "___"
 
 
 # Backtick-quoted dotted alias. The pattern is constrained to identifier
@@ -54,50 +56,6 @@ _ALIAS_SEP = "___"
 #     ``tests/dialects/test_bigquery.py::test_rewrite_emitted_sql_false_positive_on_single_backticked_dotted_path``
 #     for the characterization pin.
 _DOTTED_ALIAS_RE = re.compile(r"`(\w+(?:\.\w+)+)`", re.ASCII)
-
-
-def _encode_alias(alias: str) -> str:
-    """Bijective forward encode: escape any pre-existing ``___`` in the
-    alias to ``______`` so user-named measures like ``my___metric`` round-
-    trip intact, then map ``.`` -> ``___``.
-
-    Inverse is the left-to-right walker in ``_decode_alias`` which
-    consumes the longer ``______`` token BEFORE the shorter ``___``.
-    """
-    return alias.replace(_ALIAS_SEP, _ALIAS_SEP * 2).replace(".", _ALIAS_SEP)
-
-
-def _decode_alias(key: str) -> str:
-    """Bijective reverse decode for keys produced by ``_encode_alias``.
-
-    The escape-doubled form ``______`` is consumed BEFORE the plain
-    ``___`` so the two encodings stay unambiguous.
-
-    Domain constraint: this is the inverse of ``_encode_alias`` ONLY on
-    the latter's image (strings produced by encoding a dotted alias).
-    Calling it on an arbitrary string containing ``___`` but no
-    dot-derived ``___`` is undefined and may corrupt the key. This
-    constraint never bites in practice because SLayer's projection
-    aliases are always model-qualified (``<model>.<column>``), so they
-    always contain at least one dot and always pass through encoding.
-    See ``test_decode_corrupts_no_dot_key_with_triple_underscore`` for
-    the characterization pin.
-    """
-    out: list[str] = []
-    i = 0
-    n = len(key)
-    esc = _ALIAS_SEP * 2
-    while i < n:
-        if key.startswith(esc, i):
-            out.append(_ALIAS_SEP)
-            i += len(esc)
-        elif key.startswith(_ALIAS_SEP, i):
-            out.append(".")
-            i += len(_ALIAS_SEP)
-        else:
-            out.append(key[i])
-            i += 1
-    return "".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +90,7 @@ class BigqueryDialect(SqlDialect):
         grammar.
         """
         return _DOTTED_ALIAS_RE.sub(
-            lambda m: f"`{_encode_alias(m.group(1))}`", sql
+            lambda m: f"`{encode_alias(m.group(1))}`", sql
         )
 
     def decode_result_keys(
@@ -142,4 +100,4 @@ class BigqueryDialect(SqlDialect):
         """Reverse the BigQuery alias mangling on result-row keys so
         consumers see SLayer's universal dotted alias shape regardless of
         whether the query ran against BigQuery or another dialect."""
-        return [{_decode_alias(k): v for k, v in row.items()} for row in rows]
+        return [{decode_alias(k): v for k, v in row.items()} for row in rows]

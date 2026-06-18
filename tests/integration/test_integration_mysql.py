@@ -398,14 +398,6 @@ class TestMySQLQueries:
         assert result.row_count == 1
         assert float(result.data[0]["orders.amount_change"]) == pytest.approx(175.0)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1571 (Bug 3): SLayer's outer-wrap on date-range time_shift "
-            "queries emits ANSI double-quoted aliases while the inner CTEs "
-            "use MySQL backticks. MySQL rejects double-quoted identifiers."
-        ),
-    )
     async def test_change_pct_with_date_range(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -423,13 +415,6 @@ class TestMySQLQueries:
         assert result.row_count == 1
         assert float(result.data[0]["orders.pct"]) == pytest.approx(0.875)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1571 (Bug 3): outer-wrap quote-style mismatch — same root "
-            "cause as test_change_pct_with_date_range."
-        ),
-    )
     async def test_multiple_date_range_shifts(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -529,13 +514,6 @@ def mysql_cross_model_env(mysql_container):
 
 @pytest.mark.integration
 class TestCrossModelAndMultistageMySQL:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1571 (Bug 3): cross-model CTEs hit the same MySQL outer-wrap "
-            "quote-style mismatch as the date-range time_shift path."
-        ),
-    )
     async def test_cross_model_measure(self, mysql_cross_model_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",

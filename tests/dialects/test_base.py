@@ -325,3 +325,113 @@ def test_oracle_overrides_log10_and_log2_to_false() -> None:
     d = OracleDialect()
     assert d.should_use_native_log(10) is False
     assert d.should_use_native_log(2) is False
+
+
+# ---------------------------------------------------------------------------
+# DEV-1571 Bug 1 — base emit_outer_wrap (today's derived-table wrap shape)
+#
+# The base impl IS today's behaviour: wrap ``inner_sql`` in a derived
+# table, project the public alias list, re-emit detached
+# ORDER/LIMIT/OFFSET on the outer statement. The T-SQL override (in
+# ``test_tsql.py``) lifts inner CTEs to the top so T-SQL's
+# "WITH only as statement prefix" rule is satisfied; the base impl makes
+# no such hoist and emits the existing shape verbatim.
+# ---------------------------------------------------------------------------
+
+
+def test_default_emit_outer_wrap_basic_shape() -> None:
+    """Base impl: ``SELECT <quoted public> FROM (<inner>) AS _outer``.
+
+    With no ORDER/LIMIT/OFFSET, the output is exactly the
+    derived-table wrap with no trailing clauses. Identifier quoting is
+    dialect-aware via sqlglot — base (Postgres-shaped) emits ANSI double
+    quotes.
+    """
+    out = SqlDialect().emit_outer_wrap(
+        inner_sql="SELECT 1 AS x",
+        public=["x"],
+        order=None,
+        limit=None,
+        offset_arg=None,
+    )
+    normalised = " ".join(out.split())
+    assert normalised.startswith('SELECT "x"'), (
+        f"Default outer projection must use ANSI double quotes: {out}"
+    )
+    assert "AS _outer" in normalised
+    # Inner SELECT survives inside the derived-table wrap.
+    assert "SELECT 1 AS x" in normalised
+
+
+def test_default_emit_outer_wrap_preserves_inner_cte_inside_derived_table() -> None:
+    """Base impl does NOT hoist inner CTEs. T-SQL Bug 1 is T-SQL-specific.
+
+    Pins: any change that universally hoists CTEs on the base impl is a
+    deliberate refactor (would change emitted SQL for Postgres / DuckDB /
+    SQLite / ClickHouse / Snowflake / BigQuery).
+    """
+    inner = "WITH base AS (SELECT 1 AS x) SELECT x AS y FROM base"
+    out = SqlDialect().emit_outer_wrap(
+        inner_sql=inner,
+        public=["y"],
+        order=None,
+        limit=None,
+        offset_arg=None,
+    )
+    normalised = " ".join(out.split())
+    assert not normalised.startswith("WITH "), (
+        f"Base impl must not hoist CTEs: {out}"
+    )
+    assert "WITH base" in out
+
+
+def test_default_emit_outer_wrap_with_order() -> None:
+    """ORDER BY rides on the outer statement and renders via sqlglot's
+    Postgres dialect quoting."""
+    order = sqlglot.parse_one('SELECT 1 ORDER BY "x" ASC', dialect="postgres").args.get("order")
+    out = SqlDialect().emit_outer_wrap(
+        inner_sql="SELECT 1 AS x",
+        public=["x"],
+        order=order,
+        limit=None,
+        offset_arg=None,
+    )
+    assert "ORDER BY" in out.upper()
+
+
+def test_default_emit_outer_wrap_strips_inner_qualifiers_in_order_by() -> None:
+    """The detached ORDER BY may carry inner-CTE qualifiers (e.g.
+    ``_base."col"``). Those don't resolve at the outer wrapper level —
+    only ``_outer`` is in scope. The base impl strips table qualifiers
+    (preserves the DEV-1444 behaviour).
+    """
+    order = sqlglot.parse_one(
+        'SELECT 1 ORDER BY _base."orders.id" ASC', dialect="postgres"
+    ).args.get("order")
+    out = SqlDialect().emit_outer_wrap(
+        inner_sql="SELECT 1 AS x",
+        public=["orders.id"],
+        order=order,
+        limit=None,
+        offset_arg=None,
+    )
+    assert "_base." not in out, (
+        f"Inner-CTE qualifier _base. leaked into outer ORDER BY: {out}"
+    )
+
+
+def test_default_emit_outer_wrap_uses_sqlglot_name_not_dialect_attr() -> None:
+    """The base impl uses ``self.sqlglot_name`` (the field on
+    SqlDialect), not ``self.dialect`` (which doesn't exist on dialect
+    instances — that's a SQLGenerator attribute). Pin Codex HIGH #2.
+    """
+    # Calling on bare SqlDialect must succeed — proving the impl reaches
+    # for the right attribute name. AttributeError would surface here if
+    # the impl referenced ``self.dialect``.
+    SqlDialect().emit_outer_wrap(
+        inner_sql="SELECT 1 AS x",
+        public=["x"],
+        order=None,
+        limit=None,
+        offset_arg=None,
+    )

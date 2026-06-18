@@ -158,3 +158,65 @@ def test_mysql_build_time_offset_expr_quarter_normalizes_to_3_month() -> None:
     assert "INTERVAL" in sql
     assert "MONTH" in sql
     assert "3" in sql
+
+
+# ---------------------------------------------------------------------------
+# DEV-1571 Bug 3 — outer-wrap quote style mismatch
+#
+# Today's ``SQLGenerator._build_outer_wrap`` hardcodes ANSI double quotes
+# for the public projection list. MySQL parses ``"..."`` as a string
+# literal by default, so the outer wrap is invalid SQL on MySQL. The fix
+# emits each public alias via sqlglot's dialect-aware identifier quoting,
+# which yields backticks on MySQL.
+# ---------------------------------------------------------------------------
+
+
+def test_mysql_emit_outer_wrap_uses_backticks_for_aliases() -> None:
+    """Outer projection list emits backticked identifiers on MySQL, never
+    ANSI double quotes.
+
+    MySQL's default ``sql_mode`` does not include ``ANSI_QUOTES``; double
+    quotes get parsed as string literals and the outer wrap fails to
+    resolve the inner alias.
+    """
+    out = MysqlDialect().emit_outer_wrap(
+        inner_sql="SELECT 1 AS `orders.created_at`",
+        public=["orders.created_at"],
+        order=None,
+        limit=None,
+        offset_arg=None,
+    )
+    assert "`orders.created_at`" in out, (
+        f"MySQL outer projection must use backticks: {out}"
+    )
+    assert '"orders.created_at"' not in out, (
+        f"MySQL outer projection must not use ANSI double quotes: {out}"
+    )
+
+
+def test_mysql_emit_outer_wrap_preserves_inner_cte_in_derived_table() -> None:
+    """MySQL 8+ tolerates ``WITH`` inside a derived-table subquery. The
+    base impl behaviour applies — no CTE hoisting, just wrap the inner SQL.
+
+    Pins that we did NOT accidentally pull the T-SQL Bug 1 hoist into the
+    base impl. Cross-dialect regression guard.
+    """
+    inner = (
+        "WITH base AS (SELECT 1 AS x)\n"
+        "SELECT x AS `orders.x` FROM base"
+    )
+    out = MysqlDialect().emit_outer_wrap(
+        inner_sql=inner,
+        public=["orders.x"],
+        order=None,
+        limit=None,
+        offset_arg=None,
+    )
+    # The inner WITH stays nested in the derived-table subquery on MySQL.
+    normalised = " ".join(out.split())
+    assert not normalised.startswith("WITH "), (
+        f"MySQL should NOT hoist CTEs (T-SQL bug 1 is T-SQL-only): {out}"
+    )
+    assert "WITH base" in out, (
+        f"Inner CTE list must be preserved verbatim on MySQL: {out}"
+    )

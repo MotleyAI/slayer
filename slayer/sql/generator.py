@@ -583,40 +583,29 @@ class SQLGenerator:
         limit,
         offset_arg,
     ) -> str:
-        """Emit ``SELECT <public> FROM (<inner>) AS _outer [ORDER/LIMIT/OFFSET]``.
+        """Thin delegate to ``self._dialect.emit_outer_wrap``.
 
-        ``inner_sql`` is used as-is to preserve its formatting (callers
-        diff against literal ``OVER (...)`` substrings). Trailing
-        ORDER/LIMIT/OFFSET segments are stripped from ``inner_sql`` and
-        re-emitted on the outer wrapper.
+        Strips trailing ORDER BY / LIMIT / OFFSET from ``inner_sql``
+        (text-level) before handing off to the dialect hook, then passes
+        the detached AST nodes for re-emission on the outer statement.
+
+        The dialect hook owns the wrap-shape choice — base impl emits
+        today's derived-table form; ``TsqlDialect`` overrides to hoist
+        inner top-level CTEs to satisfy T-SQL's "WITH only as statement
+        prefix" rule (DEV-1571 Bug 1).
         """
-        outer_select = _SQL_COL_SEP.join(f'"{a}"' for a in public)
         if order is None and limit is None and offset_arg is None:
-            return (
-                f"SELECT\n    {outer_select}\n"
-                f"FROM (\n{inner_sql.rstrip()}\n) AS _outer"
-            )
-        inner_no_pag = _strip_trailing_pagination(inner_sql)
-        out = (
-            f"SELECT\n    {outer_select}\n"
-            f"FROM (\n{inner_no_pag.rstrip()}\n) AS _outer"
+            stripped = inner_sql
+        else:
+            stripped = _strip_trailing_pagination(inner_sql)
+        return self._dialect.emit_outer_wrap(
+            inner_sql=stripped,
+            public=public,
+            order=order,
+            limit=limit,
+            offset_arg=offset_arg,
+            parse=self._parse,
         )
-        if order is not None:
-            # DEV-1444 (Codex review on PR #134): the detached ORDER BY
-            # may carry inner-CTE qualifiers like ``_base."col"`` from
-            # ``_assemble_combined_sql``; those don't resolve at the
-            # outer wrapper level (only ``_outer`` is in scope). Strip
-            # every Column's table qualifier — the outer scope exposes
-            # each column by its bare alias name.
-            for col in order.find_all(exp.Column):
-                if col.args.get("table") is not None:
-                    col.set("table", None)
-            out += "\n" + order.sql(dialect=self.dialect, pretty=True)
-        if limit is not None:
-            out += "\n" + limit.sql(dialect=self.dialect, pretty=True)
-        if offset_arg is not None:
-            out += "\n" + offset_arg.sql(dialect=self.dialect, pretty=True)
-        return out
 
     def _build_combined(self, enriched: EnrichedQuery,
                          base_sql: str) -> list[tuple[str, str]]:
