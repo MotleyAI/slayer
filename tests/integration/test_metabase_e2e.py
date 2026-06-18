@@ -396,24 +396,22 @@ def test_first_last_not_exposed_on_timeless_models(metabase_e2e_env: MetabaseE2E
     assert payload.status_code >= 400 or body.get("status") != "completed"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1570: typed-sentinel substitution covers Describe but not Bind; the empty-string parameter trips DuckDB's INT conversion at Execute time",
-)
 async def test_pg_description_objsubid_empty_string_predicate(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    """B.8 — DEV-1558 bug 2: empty-string parameter against the INT
-    ``objsubid`` column.
+    """B.8 — DEV-1570: empty-string parameter against the INT ``objsubid``
+    column.
 
     Metabase's pgjdbc-driven catalog probes use prepared statements that
     declare ``objsubid = $1`` with a TEXT-typed parameter; pgjdbc binds an
     empty string when no value is provided, which a regressed facade would
     refuse with ``Conversion Error: Could not convert string '' to INT64``.
-    The fix at connection.py:728 substitutes a typed NULL during Describe;
-    we pin it here by Preparing the statement (which triggers Describe)
-    and then Executing with the empty-string value — both round-trips have
-    to complete cleanly. A raw-literal probe (``WHERE objsubid = ''``)
-    would bypass the parameterised path the actual bug 2 fix lives on,
-    so we deliberately drive the $1 form pgjdbc uses.
+    DEV-1558 covered Describe via a typed-NULL sentinel; DEV-1570 covers
+    Bind+Execute by substituting NULL for any text-OID empty-string param
+    that targets a non-TEXT catalog column. We pin both round-trips here
+    by Preparing the statement (which triggers Describe) and then
+    Executing with the empty-string value — both have to complete
+    cleanly. A raw-literal probe (``WHERE objsubid = ''``) would bypass
+    the parameterised path the actual fix lives on, so we deliberately
+    drive the $1 form pgjdbc uses.
     """
     host, port = metabase_e2e_env.pg_primary
     conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
