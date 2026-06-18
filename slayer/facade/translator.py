@@ -928,7 +928,7 @@ def _resolve_column_cast_projection(
         metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
         strip_prefix=strip_prefix,
     )
-    source: Optional[DataType] = (
+    source: Optional[DataType] = (  # NOSONAR(S3358) — metric→dim→None fallback; chained ternary is the idiomatic shape
         inner.metric.data_type if inner.metric is not None
         else inner.dimension.data_type if inner.dimension is not None
         else None
@@ -1024,7 +1024,7 @@ def _raw_column_parts(col: exp.Column) -> List[str]:
     return parts
 
 
-def _resolve_projection(
+def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-expression shapes; one branch per shape by design
     expressions: Sequence[exp.Expression], table: FacadeTable,
     *, schema_name: Optional[str] = None,
 ) -> List[_ProjectionItem]:
@@ -1419,7 +1419,8 @@ def _order_by_name(
     if cast_match is not None:
         inner_col, target = cast_match
         return _alias_for_column_cast(
-            _column_to_dotted(inner_col, strip_prefix=strip_prefix), target,
+            dotted=_column_to_dotted(inner_col, strip_prefix=strip_prefix),
+            target=target,
         )
     return body.sql()
 
@@ -1452,8 +1453,8 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
             if cast_match is not None:
                 inner_col, target = cast_match
                 user_items.append(_alias_for_column_cast(
-                    _column_to_dotted(inner_col, strip_prefix=strip_prefix),
-                    target,
+                    dotted=_column_to_dotted(inner_col, strip_prefix=strip_prefix),
+                    target=target,
                 ))
                 continue
             user_items.append(g.sql())
@@ -1675,7 +1676,7 @@ def _record_dimension(
     # `GROUP BY CAST(col AS T)` validates (mirrors the time-grain pattern).
     if item.cast_target is not None:
         canonical = _alias_for_column_cast(
-            item.dimension.dimension_ref, item.cast_target,
+            dotted=item.dimension.dimension_ref, target=item.cast_target,
         )
         if canonical != item.projected_name:
             plan.derived_dims.append(canonical)
@@ -1700,6 +1701,40 @@ def _build_projection_plan(
         else:
             _record_dimension(plan=plan, item=item, table=table)
     return plan
+
+
+def _index_items_by_canonical_form(
+    items: Sequence[_ProjectionItem],
+) -> Dict[str, _ProjectionItem]:
+    """Index projection items by alias plus canonical forms (time-grain, cast).
+
+    Time-grain items are also keyed by ``grain(col)`` so an unaliased
+    Metabase-style GROUP BY / ORDER BY (``ORDER BY CAST(DATE_TRUNC('month',
+    ordered_at) AS DATE)``) resolves against the aliased projection.
+    DEV-1566: column-CAST items are keyed by the same lowercase
+    ``cast(<dotted> as <t>)`` form so ``SELECT CAST(col AS T) AS user_alias
+    ... ORDER BY CAST(col AS T)`` resolves. ``setdefault`` so an explicit
+    projection of the canonical form (rare) still wins.
+    """
+    by_name: Dict[str, _ProjectionItem] = {item.projected_name: item for item in items}
+    for item in items:
+        if item.time_grain is not None and item.time_grain_underlying is not None:
+            canonical = (
+                f"{item.time_grain.value}({item.time_grain_underlying.dimension_ref})"
+            )
+            by_name.setdefault(canonical, item)
+        if item.cast_target is not None:
+            dotted = (  # NOSONAR(S3358) — dim→metric→None fallback; chained ternary is the idiomatic shape
+                item.dimension.dimension_ref if item.dimension is not None
+                else item.metric.name if item.metric is not None
+                else None
+            )
+            if dotted is not None:
+                by_name.setdefault(
+                    _alias_for_column_cast(dotted=dotted, target=item.cast_target),
+                    item,
+                )
+    return by_name
 
 
 def _parse_int_literal(node: Optional[exp.Expression]) -> Optional[int]:
@@ -1751,36 +1786,7 @@ def _translate_slayer_select(
         parsed.args.get("having"), table, filters, strip_prefix=strip_prefix,
     )
 
-    item_by_projected_name = {item.projected_name: item for item in items}
-    # Also index time-grain items under their canonical ``grain(col)`` form so
-    # an unaliased Metabase-style GROUP BY / ORDER BY (``ORDER BY CAST(
-    # DATE_TRUNC('month', ordered_at) AS DATE)``) resolves against the
-    # aliased projection (``... AS "ordered_at"``).
-    for item in items:
-        if item.time_grain is None or item.time_grain_underlying is None:
-            continue
-        canonical = (
-            f"{item.time_grain.value}({item.time_grain_underlying.dimension_ref})"
-        )
-        item_by_projected_name.setdefault(canonical, item)
-    # DEV-1566: same canonical-form registration for column CAST projections.
-    # Lets ``SELECT CAST(col AS T) AS user_alias ... ORDER BY CAST(col AS T)``
-    # resolve via the lowercase canonical key (`cast(<dotted> as <t>)`) even
-    # when the projection has a different user alias. ``setdefault`` so an
-    # explicit projection of the canonical form (rare) still wins.
-    for item in items:
-        if item.cast_target is None:
-            continue
-        dotted = (
-            item.dimension.dimension_ref if item.dimension is not None
-            else item.metric.name if item.metric is not None
-            else None
-        )
-        if dotted is None:
-            continue
-        item_by_projected_name.setdefault(
-            _alias_for_column_cast(dotted, item.cast_target), item,
-        )
+    item_by_projected_name = _index_items_by_canonical_form(items)
     order_items = _translate_order_by(
         parsed.args.get("order"), item_by_projected_name, strip_prefix=strip_prefix,
     )
