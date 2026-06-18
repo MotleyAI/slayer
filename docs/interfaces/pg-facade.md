@@ -159,6 +159,30 @@ Out of scope: `CAST` around aggregates (`CAST(SUM(amount) AS DOUBLE)`), `TRY_CAS
 and `CAST` around expressions that aren't a bare column (`CAST(SUBSTRING(...) AS T)`).
 `CAST` wrapping a `DATE_TRUNC(...)` continues to route through the time-grain unwrap.
 
+`CAST(...)` in `ORDER BY` and `GROUP BY` is **not** admitted. The engine still
+projects the bare column, so a `ORDER BY CAST(id AS TEXT)` would sort numerically
+(by the underlying `INT`) instead of lex; a `GROUP BY CAST(ts AS DATE)` would
+group per-timestamp instead of per-date. Both are silently wrong, so the
+translator raises `ORDER BY column '...' is not in the projection list` /
+the GROUP BY strict-on-extras error. Use the alias workaround:
+
+```sql
+-- Rejected:
+SELECT CAST(delivered_at AS TIMESTAMP) FROM orders
+ORDER BY CAST(delivered_at AS TIMESTAMP);
+
+-- Works:
+SELECT CAST(delivered_at AS TIMESTAMP) AS dt FROM orders
+ORDER BY dt;
+```
+
+The wire-type override still applies — `dt` is wire-typed `TIMESTAMP` — but the
+sort runs against the engine column's natural type (`DATE` here, which is
+order-preserving so the result is correct). For genuinely lossy semantics
+(e.g. lex sort by `TEXT`-cast `INT`) the alias path makes the limitation
+explicit at the SQL level. A future ticket can lift this restriction by
+pushing the CAST into the engine SQL.
+
 Admitted (source, target) coercions:
 
 | Source type   | Admitted target types        |

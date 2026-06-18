@@ -295,14 +295,6 @@ def _is_admitted_cast(source: Optional[DataType], target: DataType) -> bool:
     return target in _CAST_ADMITTED_TARGETS.get(source, frozenset())
 
 
-def _alias_for_column_cast(dotted: str, target: DataType) -> str:
-    """Canonical ORDER BY / GROUP BY key for an unaliased ``CAST(col AS T)``
-    projection. Mirrors ``_alias_for_time_grain`` — lowercase, dotted,
-    unquoted, no precision — so the equality lookup in ``_translate_slayer_select``
-    matches what ``_order_by_name`` / ``_validate_group_by`` produce."""
-    return f"cast({dotted} as {target.value.lower()})"
-
-
 def _column_to_dotted(
     col: exp.Column, *, strip_prefix: Optional[Tuple[str, str]] = None,
 ) -> str:
@@ -1426,15 +1418,6 @@ def _order_by_name(
     if grain_match is not None:
         grain, col = grain_match
         return _alias_for_time_grain(grain, col, strip_prefix=strip_prefix)
-    # DEV-1566: CAST(<column> AS <type>) ORDER BY resolves via the same
-    # lowercase canonical key the projection-time registration emits.
-    cast_match = _detect_column_cast(body)
-    if cast_match is not None:
-        inner_col, target = cast_match
-        return _alias_for_column_cast(
-            dotted=_column_to_dotted(inner_col, strip_prefix=strip_prefix),
-            target=target,
-        )
     return body.sql()
 
 
@@ -1457,17 +1440,6 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
                 grain, col = grain_match
                 user_items.append(_alias_for_time_grain(
                     grain, col, strip_prefix=strip_prefix,
-                ))
-                continue
-            # DEV-1566: CAST(<column> AS <type>) GROUP BY canonicalises to
-            # the same lowercase form _record_dimension registers in
-            # derived_dims, so dim-only `GROUP BY CAST(col AS T)` validates.
-            cast_match = _detect_column_cast(g)
-            if cast_match is not None:
-                inner_col, target = cast_match
-                user_items.append(_alias_for_column_cast(
-                    dotted=_column_to_dotted(inner_col, strip_prefix=strip_prefix),
-                    target=target,
                 ))
                 continue
             user_items.append(g.sql())
@@ -1688,14 +1660,6 @@ def _record_dimension(
     assert item.dimension is not None
     plan.dimension_refs.append(ColumnRef.from_string(item.dimension.dimension_ref))
     plan.derived_dims.append(item.projected_name)
-    # DEV-1566: register the canonical CAST form as a derived dim so a
-    # `GROUP BY CAST(col AS T)` validates (mirrors the time-grain pattern).
-    if item.cast_target is not None:
-        canonical = _alias_for_column_cast(
-            dotted=item.dimension.dimension_ref, target=item.cast_target,
-        )
-        if canonical != item.projected_name:
-            plan.derived_dims.append(canonical)
     engine_alias = f"{table.name}.{item.dimension.dimension_ref}"
     plan.column_name_mapping.append((engine_alias, item.projected_name))
     # DEV-1566: CAST(<dim_ref> AS T) overrides the declared dim type.
@@ -1722,15 +1686,22 @@ def _build_projection_plan(
 def _index_items_by_canonical_form(
     items: Sequence[_ProjectionItem],
 ) -> Dict[str, _ProjectionItem]:
-    """Index projection items by alias plus canonical forms (time-grain, cast).
+    """Index projection items by alias plus canonical forms (time-grain only).
 
     Time-grain items are also keyed by ``grain(col)`` so an unaliased
     Metabase-style GROUP BY / ORDER BY (``ORDER BY CAST(DATE_TRUNC('month',
     ordered_at) AS DATE)``) resolves against the aliased projection.
-    DEV-1566: column-CAST items are keyed by the same lowercase
-    ``cast(<dotted> as <t>)`` form so ``SELECT CAST(col AS T) AS user_alias
-    ... ORDER BY CAST(col AS T)`` resolves. ``setdefault`` so an explicit
-    projection of the canonical form (rare) still wins.
+
+    Column-CAST items are intentionally NOT registered here: DEV-1566's CAST
+    projection is a wire-type override that leaves the engine query
+    projecting the bare column, so ``ORDER BY CAST(col AS T)`` would sort by
+    the engine column's natural type (numeric/temporal) instead of the
+    casted type's semantics (e.g. lex for TEXT), and
+    ``GROUP BY CAST(ts AS DATE)`` would group per-timestamp instead of
+    per-date. Both are silently wrong. We reject these queries with the
+    existing "ORDER BY column not in projection list" / GROUP BY
+    strict-on-extras error and the user aliases the CAST projection to
+    reference it (``SELECT CAST(c AS T) AS x ... ORDER BY x``).
     """
     by_name: Dict[str, _ProjectionItem] = {item.projected_name: item for item in items}
     for item in items:
@@ -1739,17 +1710,6 @@ def _index_items_by_canonical_form(
                 f"{item.time_grain.value}({item.time_grain_underlying.dimension_ref})"
             )
             by_name.setdefault(canonical, item)
-        if item.cast_target is not None:
-            dotted = (  # NOSONAR(S3358) — dim→metric→None fallback; chained ternary is the idiomatic shape
-                item.dimension.dimension_ref if item.dimension is not None
-                else item.metric.name if item.metric is not None
-                else None
-            )
-            if dotted is not None:
-                by_name.setdefault(
-                    _alias_for_column_cast(dotted=dotted, target=item.cast_target),
-                    item,
-                )
     return by_name
 
 

@@ -961,13 +961,52 @@ def test_cast_time_grain_compat_unchanged(dialect) -> None:
     assert result.query.time_dimensions[0].granularity == TimeGranularity.MONTH
 
 
-def test_cast_order_by_canonical_form_resolves(dialect) -> None:
-    """An unaliased CAST projection ORDER-BY'd by the same CAST form resolves
-    to the underlying engine column via the canonical-form registration."""
+def test_cast_order_by_unaliased_rejected(dialect) -> None:
+    """Codex round 2: ORDER BY CAST(<col> AS <T>) is rejected because the
+    engine query still projects the bare column — sorting by the bare column
+    follows the engine column's natural type (numeric for INT, temporal for
+    TIMESTAMP) instead of the casted type's semantics (lex for TEXT), which
+    is silently wrong. Workaround: alias the CAST projection and ORDER BY
+    the alias (see test_cast_order_by_via_alias_works)."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql=(
+                "SELECT CAST(id AS TEXT) FROM orders "
+                "ORDER BY CAST(id AS TEXT) ASC"
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+    assert "ORDER BY" in str(exc_info.value)
+    assert "not in the projection list" in str(exc_info.value)
+
+
+def test_cast_group_by_unaliased_rejected(dialect) -> None:
+    """Codex round 2: GROUP BY CAST(<col> AS <T>) is rejected. For lossy
+    pairs like TIMESTAMP→DATE the engine SQL still groups by the bare
+    column, so multiple timestamps on the same date produce duplicate
+    rows in the client (silently wrong)."""
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                "SELECT CAST(ordered_at AS DATE) FROM orders "
+                "GROUP BY CAST(ordered_at AS DATE)"
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
+def test_cast_order_by_via_alias_works(dialect) -> None:
+    """The documented workaround: alias the CAST projection and ORDER BY
+    the alias. The alias resolves to the projection item directly, no
+    canonical-form registration needed. Sort order still follows the engine
+    column's natural type — DATE→TIMESTAMP is 1:1 so the result is correct,
+    but ``SELECT CAST(id AS TEXT) AS x ... ORDER BY x`` would still sort
+    numerically. The alias path makes the limitation explicit at the SQL
+    level instead of hiding it behind a canonical-form rewrite."""
     result = translate(
         sql=(
-            "SELECT CAST(delivered_at AS TIMESTAMP) FROM orders "
-            "ORDER BY CAST(delivered_at AS TIMESTAMP) ASC"
+            "SELECT CAST(delivered_at AS TIMESTAMP) AS dt FROM orders "
+            "ORDER BY dt ASC"
         ),
         catalog=_catalog(), dialect=dialect,
     )
@@ -975,20 +1014,7 @@ def test_cast_order_by_canonical_form_resolves(dialect) -> None:
     assert result.query.order is not None
     assert result.query.order[0].column.name == "delivered_at"
     assert result.query.order[0].direction == "asc"
-
-
-def test_cast_group_by_canonical_form_resolves(dialect) -> None:
-    """A CAST in projection + the same CAST repeated in GROUP BY (dim-only
-    dedupe shape) must validate, mirroring the time-grain GROUP BY canonical
-    registration."""
-    result = translate(
-        sql=(
-            "SELECT CAST(delivered_at AS TIMESTAMP) FROM orders "
-            "GROUP BY CAST(delivered_at AS TIMESTAMP)"
-        ),
-        catalog=_catalog(), dialect=dialect,
-    )
-    assert isinstance(result, QueryResult)
+    # Wire schema still reflects the cast.
     assert result.projection_types == [DataType.TIMESTAMP]
 
 
@@ -1110,46 +1136,42 @@ def test_cast_non_column_non_aggregate_inner_rejected(dialect) -> None:
     assert "Unsupported CAST" not in str(exc_info.value)
 
 
-def test_cast_qualified_ref_order_by_canonical_resolves(dialect) -> None:
-    """Canonical CAST form must work for qualified (joined) refs too.
-    `cast(customers.region as text)` is the canonical key the registration
-    pushes into item_by_projected_name."""
-    result = translate(
-        sql=(
-            "SELECT CAST(customers.region AS TEXT) FROM orders "
-            "ORDER BY CAST(customers.region AS TEXT) ASC"
-        ),
-        catalog=_catalog(), dialect=dialect,
-    )
-    assert isinstance(result, QueryResult)
-    assert result.query.order is not None
-    assert result.query.order[0].column.full_name == "customers.region"
-    assert result.query.order[0].direction == "asc"
+def test_cast_qualified_ref_order_by_unaliased_rejected(dialect) -> None:
+    """Codex round 2: same rejection for qualified (joined) CAST refs in
+    ORDER BY. Engine still selects the bare ``customers.region``; lex sort
+    semantics don't carry through. User must alias and ORDER BY the alias."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql=(
+                "SELECT CAST(customers.region AS TEXT) FROM orders "
+                "ORDER BY CAST(customers.region AS TEXT) ASC"
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+    assert "not in the projection list" in str(exc_info.value)
 
 
-def test_cast_qualified_ref_group_by_canonical_resolves(dialect) -> None:
-    """Same qualified-ref canonical-form coverage on the GROUP BY path."""
-    result = translate(
-        sql=(
-            "SELECT CAST(customers.region AS TEXT) FROM orders "
-            "GROUP BY CAST(customers.region AS TEXT)"
-        ),
-        catalog=_catalog(), dialect=dialect,
-    )
-    assert isinstance(result, QueryResult)
-    assert result.projection_types == [DataType.TEXT]
+def test_cast_qualified_ref_group_by_unaliased_rejected(dialect) -> None:
+    """Codex round 2: same rejection for qualified-ref GROUP BY CAST."""
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                "SELECT CAST(customers.region AS TEXT) FROM orders "
+                "GROUP BY CAST(customers.region AS TEXT)"
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
 
 
-def test_cast_aliased_projection_order_by_canonical_resolves(dialect) -> None:
-    """The whole point of registering the canonical form via setdefault is
-    that ORDER BY by the CAST shape resolves even when the SELECT projection
-    carries a different user alias. ``SELECT CAST(x AS T) AS y ... ORDER BY
-    CAST(x AS T)`` must match the projection via the canonical key — not
-    via the alias `y`."""
+def test_cast_aliased_projection_order_by_via_alias_works(dialect) -> None:
+    """Workaround: with an aliased CAST projection, ORDER BY <alias>
+    resolves directly through item_by_projected_name. The ORDER BY CAST(...)
+    canonical form was removed (Codex round 2) — agents must reference the
+    alias instead."""
     result = translate(
         sql=(
             "SELECT CAST(delivered_at AS TIMESTAMP) AS ts FROM orders "
-            "ORDER BY CAST(delivered_at AS TIMESTAMP) ASC"
+            "ORDER BY ts ASC"
         ),
         catalog=_catalog(), dialect=dialect,
     )
@@ -1159,18 +1181,19 @@ def test_cast_aliased_projection_order_by_canonical_resolves(dialect) -> None:
     assert result.query.order[0].direction == "asc"
 
 
-def test_cast_aliased_projection_group_by_canonical_resolves(dialect) -> None:
-    """Same setdefault canonical-form coverage on the GROUP BY path with
-    an aliased projection."""
-    result = translate(
-        sql=(
-            "SELECT CAST(delivered_at AS TIMESTAMP) AS ts FROM orders "
-            "GROUP BY CAST(delivered_at AS TIMESTAMP)"
-        ),
-        catalog=_catalog(), dialect=dialect,
-    )
-    assert isinstance(result, QueryResult)
-    assert dict(result.column_name_mapping) == {"orders.delivered_at": "ts"}
+def test_cast_aliased_projection_group_by_unaliased_rejected(dialect) -> None:
+    """An aliased CAST projection + GROUP BY repeating the CAST shape is
+    still rejected — the canonical form is not in derived_dims after Codex
+    round 2's removal. Agents must rewrite to ``GROUP BY <alias>`` or the
+    bare column."""
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                "SELECT CAST(delivered_at AS TIMESTAMP) AS ts FROM orders "
+                "GROUP BY CAST(delivered_at AS TIMESTAMP)"
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
 
 
 def test_cast_metric_projection_overrides_wire_type(dialect) -> None:
