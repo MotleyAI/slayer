@@ -397,10 +397,6 @@ def test_first_last_not_exposed_on_timeless_models(metabase_e2e_env: MetabaseE2E
     assert payload.status_code >= 400 or body.get("status") != "completed"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1570: typed-sentinel substitution covers Describe but not Bind; the empty-string parameter trips DuckDB's INT conversion at Execute time",
-)
 async def test_pg_description_objsubid_empty_string_predicate(metabase_e2e_env: MetabaseE2EEnv) -> None:
     """B.8 — DEV-1558 bug 2: empty-string parameter against the INT
     ``objsubid`` column.
