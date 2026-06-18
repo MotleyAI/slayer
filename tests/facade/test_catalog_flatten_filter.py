@@ -102,17 +102,38 @@ def test_local_metrics_excludes_cross_model_entries() -> None:
     names = {m.name for m in locals_}
     # All cross-model expansion entries are excluded.
     assert not any("." in n for n in names)
-    # Same-model synthetic row_count survives.
-    assert "row_count" in names
-    # Same-model column-x-builtin entries survive.
-    assert "total_sum" in names
-    assert "id_count" in names
 
 
-def test_local_metrics_keeps_same_model_custom_aggregation_metrics() -> None:
-    """Same-model column-x-custom-agg expansion produces
-    ``<col>_<agg.name>`` without dots (Aggregation.name forbids dots
-    after DEV-1567). Those entries MUST survive the filter."""
+def test_local_metrics_excludes_synthetic_row_count() -> None:
+    """The rule-1 ``row_count`` metric (name='row_count',
+    measure_formula='*:count') is catalog fan-out, not user-authored.
+    BI tools see ``row_count`` as a queryable "column", emit
+    ``SELECT row_count FROM orders`` fingerprint queries, and explode
+    the wire response. Strip it from the flat-view path."""
+    cat = _orders_customers_catalog()
+    orders = _find_table(cat, table="orders")
+    locals_ = local_metrics(orders)
+    names = {m.name for m in locals_}
+    assert "row_count" not in names
+
+
+def test_local_metrics_excludes_same_model_column_builtin_agg_entries() -> None:
+    """The rule-3 ``<col>_<agg>`` cartesian
+    (e.g. ``total_sum`` / ``id_count`` / ``ordered_at_max``) is catalog
+    fan-out so colon-form aggregate resolution finds the matching
+    metric. Not user-authored, not in the flat view."""
+    cat = _orders_customers_catalog()
+    orders = _find_table(cat, table="orders")
+    locals_ = local_metrics(orders)
+    names = {m.name for m in locals_}
+    assert "total_sum" not in names
+    assert "id_count" not in names
+    assert "ordered_at_max" not in names
+
+
+def test_local_metrics_excludes_same_model_custom_aggregation_metrics() -> None:
+    """The rule-4 ``<col>_<custom_agg>`` cartesian is also catalog
+    fan-out — same rule as builtin column×agg."""
     orders = _model(
         name="orders",
         columns=[Column(name="amount", type=DataType.DOUBLE)],
@@ -124,10 +145,13 @@ def test_local_metrics_keeps_same_model_custom_aggregation_metrics() -> None:
     table = _find_table(cat, table="orders")
     locals_ = local_metrics(table)
     names = {m.name for m in locals_}
-    assert "amount_my_count" in names
+    assert "amount_my_count" not in names
 
 
 def test_local_metrics_keeps_saved_model_measures() -> None:
+    """The rule-2 saved ``ModelMeasure`` (name == measure_formula) IS
+    user-authored — the user typed the name. It belongs in the flat
+    view so BI tools can project / aggregate against it by name."""
     orders = _model(
         name="orders",
         columns=[Column(name="revenue", type=DataType.DOUBLE)],
@@ -324,7 +348,7 @@ def test_pg_description_attnum_within_local_range() -> None:
             max_for_table = len(local_dimensions(tbl)) + len(local_metrics(tbl))
             attnums = [
                 r["objsubid"] for r in rel.rows
-                if r["objoid"] == oid and r["objsubid"] != 0  # 0 = table-level
+                if r["objoid"] == oid and r["objsubid"] != 0  # NOSONAR(S125) — objsubid 0 marks the table-level description, skip it
             ]
             if attnums:
                 assert max(attnums) <= max_for_table
