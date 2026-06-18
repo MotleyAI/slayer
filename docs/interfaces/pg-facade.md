@@ -188,8 +188,7 @@ Known limitations (each tracked by a strict-`xfail` against a Linear ticket — 
 referenced gap is fixed, the test XPASSes and CI flips red, prompting a lift):
 LEFT JOIN-with-subquery projection (DEV-1565), CAST(col AS type) projection (DEV-1566),
 catalog fingerprint measure leak (DEV-1567), MBQL aggregation-ordinal refs in HAVING /
-ORDER BY (DEV-1568), per-connection `SET` state (DEV-1569), and Bind-path typed-sentinel for
-INT-vs-empty-string (DEV-1570).
+ORDER BY (DEV-1568) and per-connection `SET` state (DEV-1569).
 
 Metabase week breakouts emit a Sunday-anchored week wrapper
 (`DATE_TRUNC('week', col + INTERVAL '1 day') - INTERVAL '1 day'`); the translator maps this to

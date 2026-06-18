@@ -1131,6 +1131,24 @@ class TestAggregationValidation:
         with pytest.raises(ValueError, match="not a built-in aggregation"):
             Aggregation(name="my_agg")
 
+    def test_name_with_dot_rejected(self) -> None:
+        """DEV-1567: ``Aggregation.name`` must enforce the same identifier
+        rules as ``Column.name`` and ``ModelMeasure.name``. Otherwise the
+        ``column_x_custom_aggs`` catalog expansion produces a same-model
+        metric like ``amount_my.agg`` whose dotted name the cross-model
+        flatten filter (catalog.local_metrics / local_dimensions) would
+        misclassify."""
+        with pytest.raises(ValueError, match="Invalid name"):
+            Aggregation(name="my.agg", formula="CUSTOM({value})")
+
+    def test_name_with_hyphen_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Invalid name"):
+            Aggregation(name="my-agg", formula="CUSTOM({value})")
+
+    def test_name_starting_with_digit_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Invalid name"):
+            Aggregation(name="9agg", formula="CUSTOM({value})")
+
 
 class TestDimensionLabel:
     def test_label_optional(self) -> None:
