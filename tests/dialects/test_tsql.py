@@ -819,3 +819,36 @@ def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
     assert "[orders____ts_pct]" in sql, (
         f"Inner CASE expression's column refs must be mangled-bracket form:\n{sql}"
     )
+
+
+def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() -> None:
+    """T-SQL ORDER BY must reference the SELECT alias as a top-level
+    expression, not inside a CASE WHEN NULLS-emulation sub-expression.
+
+    sqlglot's default T-SQL ORDER BY emission wraps the alias in
+    ``CASE WHEN [alias] IS NULL THEN 1 ELSE 0 END, [alias]`` to emulate
+    NULLS LAST behaviour. T-SQL's parser treats the ``[alias]`` reference
+    INSIDE the CASE WHEN as a column-name lookup against the FROM scope
+    (NOT a SELECT alias), so the query fails with
+    ``Invalid column name 'alias'``. The fix sets ``nulls_first`` on the
+    Ordered node to match T-SQL's native default for the requested
+    direction so the emulation is suppressed.
+
+    Regression pin for the CI failure on
+    ``test_integration_sqlserver_cross_model_derived_columnsql``.
+    """
+    q = SlayerQuery(
+        source_model="orders",
+        dimensions=[ColumnRef(name="id"), ColumnRef(name="created_at")],
+        order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
+    )
+    sql = _tsql_generate(q, _orders_model_tsql())
+    assert "CASE WHEN" not in sql.upper() or "ORDER BY\n  CASE WHEN" not in sql, (
+        f"T-SQL ORDER BY must not wrap the alias in a NULLS-emulation "
+        f"CASE WHEN sub-expression — alias resolution fails inside it:\n{sql}"
+    )
+    # The ORDER BY must reference the mangled alias as the whole expression.
+    assert "ORDER BY\n  [orders___id]" in sql or "ORDER BY [orders___id]" in sql, (
+        f"T-SQL ORDER BY must reference the SELECT alias as a top-level "
+        f"expression:\n{sql}"
+    )

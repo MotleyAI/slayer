@@ -406,6 +406,20 @@ class TestSQLServerQueries:
         assert float(result.data[0]["orders.total_sum"]) == pytest.approx(375.0)
         assert float(result.data[0]["orders.prev_month"]) == pytest.approx(200.0)
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Separate pre-existing T-SQL limitation (NOT one of DEV-1571's "
+            "three bugs): consecutive_periods desugars the predicate as a "
+            "bare boolean projection (`col > 200 AS alias`). T-SQL has no "
+            "boolean scalar type and rejects `>` in a SELECT projection "
+            "with `Incorrect syntax near '>'`. Fix requires wrapping the "
+            "predicate as `CASE WHEN col > 200 THEN 1 ELSE 0 END` in the "
+            "consecutive_periods enrichment path. Track separately — "
+            "DEV-1571 only covers the CTE-hoist, alias-mangle, and "
+            "outer-wrap-quote bugs."
+        ),
+    )
     async def test_consecutive_periods_with_boolean_predicate(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",

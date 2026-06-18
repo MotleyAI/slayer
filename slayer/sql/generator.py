@@ -8,7 +8,7 @@ query engine's _enrich() step.
 import copy
 import logging
 import re
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import sqlglot
 from sqlglot import exp
@@ -1812,14 +1812,33 @@ class SQLGenerator:
         raise ValueError(f"Unknown self-join transform: {transform}")
 
     def _apply_order_limit(self, select: exp.Select, enriched: EnrichedQuery) -> exp.Select:
-        """Apply ORDER BY, LIMIT, OFFSET to a select expression."""
+        """Apply ORDER BY, LIMIT, OFFSET to a select expression.
+
+        DEV-1571 Bug 2 follow-up: on MySQL / T-SQL, sqlglot emits a
+        ``CASE WHEN <alias> IS NULL THEN 1 ELSE 0 END, <alias>`` emulation
+        of NULLS LAST whenever ``nulls_first`` is unset. On T-SQL the
+        bracketed alias INSIDE the CASE WHEN is treated as a column-name
+        lookup against the FROM scope (NOT as a SELECT alias), so the
+        query fails with ``Invalid column name``. Pin ``nulls_first`` to
+        the dialect's native default for the requested direction
+        (NULLS FIRST on ASC, NULLS LAST on DESC) so sqlglot suppresses
+        the emulation. Behaviourally this means T-SQL inherits T-SQL's
+        native NULL ordering instead of the Postgres-shaped default —
+        users who need NULLS LAST on ASC on T-SQL must order on a
+        non-nullable column or use a coalesce expression.
+        """
+        suppress_nulls_emulation = self.dialect == "tsql"
         if enriched.order:
             for order_item in enriched.order:
                 col = order_item.column
                 col_name = self._resolve_order_column(col=col, enriched=enriched)
                 order_col = exp.Column(this=exp.to_identifier(col_name, quoted=True))
                 ascending = order_item.direction == "asc"
-                select = select.order_by(exp.Ordered(this=order_col, desc=not ascending))
+                ordered_kwargs: Dict[str, Any] = {"this": order_col, "desc": not ascending}
+                if suppress_nulls_emulation:
+                    # T-SQL native: NULLS FIRST on ASC, NULLS LAST on DESC.
+                    ordered_kwargs["nulls_first"] = ascending
+                select = select.order_by(exp.Ordered(**ordered_kwargs))
 
         if enriched.limit is not None:
             select = select.limit(enriched.limit)
