@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 import re
 from contextvars import ContextVar
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import sqlglot
 import sqlglot.errors
@@ -87,10 +87,46 @@ class _SuppressCommandFallbackWarning(logging.Filter):
 logging.getLogger("sqlglot").addFilter(_SuppressCommandFallbackWarning())
 
 
-# A probe matcher takes the parsed statement and returns a canned RowBatch or
-# None. The Flight facade uses the default ``match_probe``; the Postgres facade
-# injects its own (datasource-aware version()/current_database()/SHOW/etc.).
-ProbeMatcher = Callable[[exp.Expression], Optional[RowBatch]]
+# --- session-setting capture (DEV-1569) -------------------------------------
+
+
+class SetSettingOp(BaseModel):
+    """A single ``SET <name> = <value>`` capture or ``set_config(name, value, ...)``
+    mutation. Names are lowercased on capture. Consumed by the Postgres
+    facade to mutate its per-connection session-settings map. The Flight
+    facade ignores these.
+    """
+
+    name: str
+    value: str
+
+
+class ResetSettingOp(BaseModel):
+    """``RESET <name>`` (``name`` set) or ``RESET ALL`` (``reset_all=True``)."""
+
+    name: Optional[str] = None
+    reset_all: bool = False
+
+
+# A probe matcher takes the parsed statement and returns either a canned
+# ``RowBatch`` (Flight default) or a ``ProbeMatcherOutcome`` (Postgres facade,
+# used to tunnel ``set_config`` mutation hints through to the connection). The
+# translator unwraps both into a ``ProbeResult``.
+class ProbeMatcherOutcome(BaseModel):
+    """Postgres-facade-only wrapper carrying a probe's row batch alongside
+    any pending session-setting mutation (e.g. from ``set_config(...)``).
+    The Flight facade's default matcher returns the bare ``RowBatch``; the
+    translator accepts either."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    batch: RowBatch
+    settings_mutation: Optional[SetSettingOp] = None
+
+
+ProbeMatcher = Callable[
+    [exp.Expression], Optional[Union[RowBatch, ProbeMatcherOutcome]],
+]
 
 
 # --- result types (tagged union via subclassing) -----------------------------
@@ -103,9 +139,15 @@ class TranslatorResult(BaseModel):
 
 
 class ProbeResult(TranslatorResult):
-    """One of the whitelisted connection probes matched."""
+    """One of the whitelisted connection probes matched.
+
+    ``settings_mutation`` carries a ``set_config(name, value, ...)``
+    mutation hint when the matcher returned a ``ProbeMatcherOutcome``.
+    The Postgres facade applies it on Execute (but not Describe). Flight
+    matchers return ``None`` here."""
 
     batch: RowBatch
+    settings_mutation: Optional[SetSettingOp] = None
 
 
 class InfoSchemaResult(TranslatorResult):
@@ -128,9 +170,16 @@ class NoOpResult(TranslatorResult):
     ``"START TRANSACTION"``). The Postgres facade uses it to drive its
     transaction state machine and pick the ``CommandComplete`` tag; the
     Flight facade ignores it.
+
+    ``set_setting`` carries the captured ``(name, value)`` pair when the
+    root parsed as ``exp.Set`` with a single ``name = value`` SetItem.
+    ``reset_setting`` carries the parsed ``RESET <name>`` or ``RESET ALL``
+    intent. Both are PG-facade-only; the Flight facade ignores them.
     """
 
     command_tag: Optional[str] = None
+    set_setting: Optional[SetSettingOp] = None
+    reset_setting: Optional[ResetSettingOp] = None
 
 
 class QueryResult(TranslatorResult):
@@ -1474,9 +1523,169 @@ def _is_start_transaction(node: exp.Expression) -> bool:
     return body_name == "START" and alias_name == "TRANSACTION"
 
 
+def _extract_set_setting(parsed: exp.Set) -> Optional[SetSettingOp]:
+    """Extract a ``SetSettingOp`` from a clean ``SET <name> = <value>`` /
+    ``SET <name> TO <value>`` AST. Returns ``None`` for multi-item SETs or
+    SetItem shapes whose body isn't a single ``EQ(Column(Identifier), rhs)``
+    pair — those are silently no-op'd by the caller (DEV-1569).
+
+    DEV-1569 / Codex round 2 F2: dotted custom names (``SET myapp.user_id
+    = '42'``) parse as ``Column(table='myapp', name='user_id')``;
+    reconstruct the dotted form so ``SHOW myapp.user_id`` round-trips.
+    """
+    items = parsed.args.get("expressions") or []
+    if len(items) != 1:
+        return None
+    item = items[0]
+    body = item.this if hasattr(item, "this") else None
+    if not isinstance(body, exp.EQ):
+        return None
+    lhs = body.this
+    rhs = body.expression
+    if not isinstance(lhs, exp.Column):
+        return None
+    # LHS is the setting name — Postgres GUC names are case-insensitive; we
+    # normalise to lowercase. For multi-part `a.b.c.name` shapes (custom
+    # GUCs like `myapp.user_id` or `my.app.user_id`) reconstruct the full
+    # dotted form via lhs.parts (Codex round 4 F2). Bare names have a
+    # single part and produce the same string as `lhs.name`.
+    name = ".".join(part.name for part in lhs.parts).lower()
+    value = _extract_setting_value(rhs)
+    if value is None:
+        return None
+    return SetSettingOp(name=name, value=value)
+
+
+def _extract_setting_value(rhs: Optional[exp.Expression]) -> Optional[str]:
+    """Return the string value of a ``SET`` rhs node, robust across the
+    parser's literal vs. identifier vs. variable encodings:
+
+    - ``Literal(this='UTF8', is_string=True)`` → ``'UTF8'``
+    - ``Var(this='UTF8')``                      → ``'UTF8'`` (unquoted form
+       pgjdbc emits for `SET client_encoding TO UTF8`)
+    - ``Var(this='DEFAULT')``                   → ``'DEFAULT'`` (treated as
+       literal string; users wanting reset semantics use ``RESET``)
+    - ``Column`` / ``Identifier``               → name
+    - ``Cast(this=<literal-like>)``             → recurse one level (Codex
+       round 4 F3: after extended-protocol bind substitution the rhs may
+       arrive as ``'foo'::text``)
+
+    Returns ``None`` for shapes we don't recognise so the caller can decide
+    to silently no-op the SET rather than store a malformed value.
+    """
+    if rhs is None:
+        return None
+    if isinstance(rhs, exp.Cast):
+        return _extract_setting_value(rhs.this)
+    # Signed numeric literals — `SET extra_float_digits = -1` parses as
+    # `Neg(Literal(1))` (Codex round 5 F2). Recurse and prefix the sign.
+    if isinstance(rhs, exp.Neg):
+        inner = _extract_setting_value(rhs.this)
+        return f"-{inner}" if inner is not None else None
+    if isinstance(rhs, exp.Literal):
+        return str(rhs.this)
+    if isinstance(rhs, exp.Var):
+        return str(rhs.this)
+    if isinstance(rhs, exp.Identifier):
+        return str(rhs.this)
+    if isinstance(rhs, exp.Column):
+        return rhs.name
+    return None
+
+
+def _extract_reset_setting(parsed: exp.Command) -> Optional[ResetSettingOp]:
+    """Extract ``RESET <name>`` or ``RESET ALL`` intent from an ``exp.Command``
+    root. Returns ``None`` for the bare ``RESET`` spelling — defensive
+    fallback (drivers don't emit this in practice).
+
+    Multi-word names (``RESET TIME ZONE`` / ``RESET SESSION AUTHORIZATION``)
+    are returned with internal whitespace preserved and lowercased; the
+    Postgres facade's ``_apply_reset_setting`` alias-resolves them via the
+    same ``_SHOW_ALIASES`` table that ``SHOW`` consults.
+    """
+    expr = parsed.expression
+    if expr is None:
+        return None
+    # Mirror the pattern used by ``_show_setting_name`` for robustness across
+    # sqlglot's various expression shapes.
+    raw = expr.this if hasattr(expr, "this") else expr
+    name = str(raw).strip().strip("'\"")
+    if name.upper() == "ALL":
+        return ResetSettingOp(reset_all=True)
+    # Collapse multi-word names into a single-space lowercase form so the
+    # facade can apply the alias table (`"TIME ZONE"` → `"time zone"` →
+    # `"timezone"`).
+    name = re.sub(r"\s+", " ", name).lower()
+    return ResetSettingOp(name=name)
+
+
+# Single-identifier-or-dotted-chain validation regex (single quantifier on
+# identifier chars; the optional dotted-tail uses one bounded `*` segment —
+# safe from ReDoS / S5852). Used below to validate the name half of a
+# Command-form SET after the value has been peeled off by plain string ops.
+# Accepts both `application_name` and `myapp.user_id` shapes to stay
+# consistent with the exp.Set path's lhs.parts reconstruction (Codex
+# round 5 F3).
+_COMMAND_SET_NAME_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
+
+
+def _command_expression_text(expr) -> str:
+    """Extract raw text from a Command's ``expression`` slot (which sqlglot
+    sometimes carries as a bare ``str`` and sometimes as a node)."""
+    if isinstance(expr, str):
+        return expr
+    if hasattr(expr, "this"):
+        return str(expr.this)
+    return str(expr)
+
+
+def _extract_command_form_set(parsed: exp.Command) -> Optional[SetSettingOp]:
+    """For an ``exp.Command(this='SET', expression='<raw>')`` root, try to
+    parse the raw expression text into a ``(name, value)`` pair.
+
+    Returns ``None`` for shapes the spec cuts: multi-word names
+    (``SET TIME ZONE 'UTC'``), ``SET SESSION CHARACTERISTICS …``, no
+    value, etc. Implementation uses plain string operations rather than
+    a multi-segment regex to keep clear of catastrophic backtracking
+    (Sonar S5852 / DEV-1569 round 2).
+    """
+    expr = parsed.expression
+    if expr is None:
+        return None
+    raw = _command_expression_text(expr).strip().rstrip(";").strip()
+    if not raw:
+        return None
+    # Find the first separator on the original raw so internal whitespace
+    # inside captured values is preserved (Codex round 4 F1). `=` wins over
+    # ` TO ` so `SET x = TO_DATE(...)` never accidentally splits on TO.
+    # The TO match uses `\sTO\s` with case-insensitive matching: each `\s`
+    # is a single-char (bounded) match — no ReDoS risk under S5852, and it
+    # accepts tab / newline separators the round-2 regex did.
+    eq_idx = raw.find("=")
+    if eq_idx != -1:
+        name = raw[:eq_idx].strip()
+        value = raw[eq_idx + 1:].strip()
+    else:
+        to_match = re.search(r"\sTO\s", raw, flags=re.IGNORECASE)
+        if to_match is None:
+            return None
+        name = raw[:to_match.start()].strip()
+        value = raw[to_match.end():].strip()
+    if not name or not value:
+        return None
+    if not _COMMAND_SET_NAME_RE.fullmatch(name):
+        return None
+    return SetSettingOp(name=name.lower(), value=value)
+
+
 def _classify_noop_root(parsed: exp.Expression) -> Optional[NoOpResult]:
     """Classify SET/SHOW/BEGIN/COMMIT/ROLLBACK roots into a NoOpResult with a
-    facade-neutral ``command_tag``; ``None`` if not a no-op root."""
+    facade-neutral ``command_tag``; ``None`` if not a no-op root.
+
+    DEV-1569: also extracts the parsed-out ``SET <name> = <value>`` and
+    ``RESET <name>`` / ``RESET ALL`` shapes onto ``set_setting`` /
+    ``reset_setting`` for the Postgres facade to apply per-connection.
+    """
     if isinstance(parsed, exp.Transaction):
         return NoOpResult(command_tag="BEGIN")
     if isinstance(parsed, exp.Commit):
@@ -1484,17 +1693,55 @@ def _classify_noop_root(parsed: exp.Expression) -> Optional[NoOpResult]:
     if isinstance(parsed, exp.Rollback):
         return NoOpResult(command_tag="ROLLBACK")
     if isinstance(parsed, exp.Set):
-        return NoOpResult(command_tag="SET")
+        return NoOpResult(
+            command_tag="SET", set_setting=_extract_set_setting(parsed),
+        )
     if _is_start_transaction(parsed):
         return NoOpResult(command_tag="START TRANSACTION")
     if isinstance(parsed, exp.Command):
         verb = str(parsed.this).upper() if parsed.this else ""
         # "SET" covers spellings sqlglot cannot parse into exp.Set, e.g.
         # pgjdbc's setTransactionIsolation() emitting `SET SESSION
-        # CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL ...`.
-        if verb in {"SET", "SHOW", "USE", "RESET"}:
+        # CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL ...`. We
+        # acknowledge but do not capture (set_setting stays None) since
+        # the rhs isn't a clean (name, value) pair.
+        if verb == "RESET":
+            return NoOpResult(
+                command_tag="RESET",
+                reset_setting=_extract_reset_setting(parsed),
+            )
+        if verb == "SET":
+            # DEV-1569 / Codex F1: also try to extract a (name, value) pair
+            # from the Command-form fallback so spellings like
+            # `SET search_path = public, extensions` round-trip through
+            # SHOW. Multi-word names (`SET TIME ZONE 'UTC'`) and
+            # session-characteristics spellings deliberately don't match
+            # the regex and remain silent no-ops.
+            return NoOpResult(
+                command_tag="SET",
+                set_setting=_extract_command_form_set(parsed),
+            )
+        if verb in {"SHOW", "USE"}:
             return NoOpResult(command_tag=verb)
     return None
+
+
+def _unwrap_probe(
+    probe: "Union[RowBatch, ProbeMatcherOutcome]",
+) -> ProbeResult:
+    """Normalise a probe matcher's return value into a ``ProbeResult``.
+
+    ``ProbeMatcher`` may return either a bare ``RowBatch`` (Flight default)
+    or a ``ProbeMatcherOutcome`` (Postgres facade, carrying an optional
+    session-setting mutation hint from ``set_config``). Both shapes
+    collapse into ``ProbeResult`` here so the dispatcher's branch count
+    stays low (DEV-1569 / Sonar S3776).
+    """
+    if isinstance(probe, ProbeMatcherOutcome):
+        return ProbeResult(
+            batch=probe.batch, settings_mutation=probe.settings_mutation,
+        )
+    return ProbeResult(batch=probe)
 
 
 def translate(
@@ -1528,7 +1775,7 @@ def translate(
     pm = probe_matcher or match_probe
     probe = pm(parsed)
     if probe is not None:
-        return ProbeResult(batch=probe)
+        return _unwrap_probe(probe)
 
     # Step 3 — AST root classification.
     if isinstance(parsed, (exp.Insert, exp.Update, exp.Delete, exp.Merge,

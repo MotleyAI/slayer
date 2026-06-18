@@ -38,6 +38,8 @@ from slayer.facade.translator import (
     ProbeResult,
     QueryResult,
     READ_ONLY_MESSAGE,
+    ResetSettingOp,
+    SetSettingOp,
     TranslationError,
     translate,
 )
@@ -45,7 +47,11 @@ from slayer.facade.catalog_sql import build_catalog_relations, executor_for
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.auth import verify_password
 from slayer.pg_facade.identity import parameter_status_defaults, version_string
-from slayer.pg_facade.probes import match_pg_probe
+from slayer.pg_facade.probes import (
+    SESSION_SETTING_SEED,
+    SHOW_ALIASES,
+    match_pg_probe_with_mutation,
+)
 from slayer.pg_facade.types import (
     datatype_to_oid,
     literal_for_substitution,
@@ -62,6 +68,27 @@ _BACKEND_SECRET = 0
 _PARAM_PLACEHOLDER = re.compile(r"\$(\d+)")
 # The single schema the facade advertises (matches pg_namespace / current_schema).
 PUBLIC_SCHEMA = "public"
+
+# DEV-1569: GUC_REPORT-class settings. After a successful SET / set_config /
+# RESET of one of these, the server pushes a ``ParameterStatus`` message so
+# drivers (asyncpg, pgjdbc, c3p0, …) see the new value out-of-band. The
+# lowercase key maps to the canonical Postgres wire-case name — real
+# Postgres emits ``DateStyle`` / ``TimeZone`` / ``IntervalStyle`` in
+# camel-case on the wire even though SQL identifiers are case-insensitive.
+# ``integer_datetimes``, ``is_superuser``, ``in_hot_standby``,
+# ``default_transaction_read_only`` are GUC_REPORT in real Postgres too but
+# the facade doesn't expose them as settable, so we don't list them here.
+_GUC_REPORT_NAMES: Dict[str, str] = {
+    "application_name": "application_name",
+    "client_encoding": "client_encoding",
+    "datestyle": "DateStyle",
+    "intervalstyle": "IntervalStyle",
+    "server_encoding": "server_encoding",
+    "server_version": "server_version",
+    "session_authorization": "session_authorization",
+    "standard_conforming_strings": "standard_conforming_strings",
+    "timezone": "TimeZone",
+}
 
 # DEV-1570 type aliases — populated by ``_build_column_type_index`` below and
 # cached per-connection. Declared here so the ``__init__`` annotation can
@@ -116,6 +143,16 @@ class PgConnection:
         # Extended protocol: after an error the backend discards every message
         # until the next Sync, then resumes with ReadyForQuery.
         self._skip_until_sync = False
+        # DEV-1569: per-connection session-settings mailbox. Captures SET /
+        # set_config writes; consulted by SHOW / current_setting reads. Seeded
+        # from the module-level SESSION_SETTING_SEED via dict(...) so each
+        # connection owns its own copy (never aliasing the seed).
+        self._session_settings: Dict[str, str] = dict(SESSION_SETTING_SEED)
+        # DEV-1569: when True, ``_describe_sql`` is in flight — translator
+        # calls must remain pure. Suppresses application of any session-
+        # setting mutation hints surfaced by the probe matcher during a
+        # Describe.
+        self._in_describe = False
 
     # ----- lifecycle --------------------------------------------------------
 
@@ -510,13 +547,21 @@ class PgConnection:
         # real value substitution still happens in ``_handle_bind`` for
         # Execute (Codex round 13 review).
         describe_sql = _substitute_typed_sentinels(sql, param_oids or [])
+        # DEV-1569: ``_in_describe`` suppresses application of any
+        # session-setting mutations surfaced by the translator during a
+        # Describe pass. The Execute path applies them.
+        self._in_describe = True
         try:
-            result = self._translate(describe_sql)
-        except TranslationError:
-            # Describe must not raise to the wire here; the subsequent Execute
-            # surfaces the error. Report NoData so the client can proceed.
-            self._writer.write(proto.encode_no_data())
-            return
+            try:
+                result = self._translate(describe_sql)
+            except TranslationError:
+                # Describe must not raise to the wire here; the subsequent
+                # Execute surfaces the error. Report NoData so the client
+                # can proceed.
+                self._writer.write(proto.encode_no_data())
+                return
+        finally:
+            self._in_describe = False
         fields = self._fields_for_result(result, result_formats)
         if fields is None:
             self._writer.write(proto.encode_no_data())
@@ -590,10 +635,18 @@ class PgConnection:
             catalog_sql_executor=lambda: executor_for(self._catalog, self._datasource),
         )
 
-    def _probe_matcher(self, parsed: exp.Expression) -> Optional[RowBatch]:
+    def _probe_matcher(self, parsed: exp.Expression):
+        """Wraps the PG-facade and shared probe matchers.
+
+        DEV-1569: ``SHOW`` / ``current_setting`` consult the per-connection
+        ``self._session_settings``. For ``set_config`` matches, the returned
+        ``ProbeMatcherOutcome`` carries a mutation hint that
+        ``_run_statement`` applies on Execute (Describe leaves it pending).
+        """
         assert self._datasource is not None
-        pg = match_pg_probe(
+        pg = match_pg_probe_with_mutation(
             parsed, datasource=self._datasource, version_str=version_string(),
+            session_settings=self._session_settings,
         )
         if pg is not None:
             return pg
@@ -615,10 +668,23 @@ class PgConnection:
 
         if isinstance(result, (ProbeResult, InfoSchemaResult, PgCatalogResult)):
             self._emit_row_batch(result.batch, result_formats, send_row_description)
+            # DEV-1569: set_config(...) mutation hint surfaces on ProbeResult.
+            # Apply ONLY in the Execute path (not Describe). Pushes
+            # ParameterStatus for reportable settings after CommandComplete.
+            if isinstance(result, ProbeResult) and result.settings_mutation is not None:
+                self._apply_set_setting(result.settings_mutation)
             return True
         if isinstance(result, NoOpResult):
             self._apply_tx_command(result.command_tag)
             self._writer.write(proto.encode_command_complete(_command_tag(result.command_tag)))
+            # DEV-1569: apply SET / RESET captures AFTER CommandComplete so
+            # the post-SET ParameterStatus push lands between CC and
+            # ReadyForQuery (any-time ordering OK per PG protocol). Skipped
+            # during Describe per _describe_sql / _in_describe.
+            if result.set_setting is not None:
+                self._apply_set_setting(result.set_setting)
+            if result.reset_setting is not None:
+                self._apply_reset_setting(result.reset_setting)
             return True
         if isinstance(result, QueryResult):
             return await self._run_query(result, result_formats, send_row_description)
@@ -725,6 +791,62 @@ class PgConnection:
     def _fail_tx(self) -> None:
         if self._tx_state == proto.TX_IN_TRANSACTION:
             self._tx_state = proto.TX_FAILED
+
+    # ----- DEV-1569: per-connection session-settings application -----------
+
+    def _apply_set_setting(self, op: SetSettingOp) -> None:
+        """Mutate the per-connection session-settings map and (for reportable
+        names) push a ``ParameterStatus`` message to the client.
+
+        Skipped during ``_describe_sql`` (Describe must remain pure — the
+        same prepared statement may be Executed later, at which point
+        mutation happens).
+        """
+        if self._in_describe:
+            return
+        self._session_settings[op.name] = op.value
+        self._push_parameter_status_if_reportable(op.name, op.value)
+
+    def _apply_reset_setting(self, op: ResetSettingOp) -> None:
+        """Restore the per-connection session-settings map per the RESET
+        intent. Pushes ``ParameterStatus`` for each reportable name whose
+        value changed back to seed.
+
+        DEV-1569 / Codex F2: multi-word names (``RESET TIME ZONE``,
+        ``RESET SESSION AUTHORIZATION``) are alias-resolved via the same
+        ``SHOW_ALIASES`` table that ``SHOW`` consults; without the
+        resolution the lookup against ``SESSION_SETTING_SEED`` would
+        silently miss.
+        """
+        if self._in_describe:
+            return
+        if op.reset_all:
+            # Restore every name to its seed value; push ParameterStatus for
+            # the seeded value of every reportable name (drivers latch onto
+            # the post-RESET-ALL pushes to invalidate caches).
+            self._session_settings = dict(SESSION_SETTING_SEED)
+            for lower, _wire_name in _GUC_REPORT_NAMES.items():
+                value = self._session_settings.get(lower, "")
+                self._push_parameter_status_if_reportable(lower, value)
+            return
+        # RESET <name>: alias-resolve (multi-word names), then revert to
+        # seed (if seeded) or drop the override.
+        name = SHOW_ALIASES.get(op.name or "", op.name or "")
+        if name in SESSION_SETTING_SEED:
+            self._session_settings[name] = SESSION_SETTING_SEED[name]
+            self._push_parameter_status_if_reportable(
+                name, self._session_settings[name],
+            )
+        else:
+            self._session_settings.pop(name, None)
+            # Non-seeded names are by definition not reportable (the
+            # _GUC_REPORT_NAMES set is a subset of the seed), so no push.
+
+    def _push_parameter_status_if_reportable(self, name: str, value: str) -> None:
+        wire_name = _GUC_REPORT_NAMES.get(name)
+        if wire_name is None:
+            return
+        self._writer.write(proto.encode_parameter_status(wire_name, value))
 
     # ----- IO helpers --------------------------------------------------------
 

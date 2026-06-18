@@ -1282,10 +1282,6 @@ def test_concurrent_dataset_requests(metabase_e2e_env: MetabaseE2EEnv) -> None:
         assert isinstance(r, int) and r >= 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1569: pg-facade doesn't preserve per-connection SET state; concurrent SET application_name = '...' followed by SHOW returns empty for every connection",
-)
 async def test_asyncpg_concurrent_connections(metabase_e2e_env: MetabaseE2EEnv) -> None:
     host, port = metabase_e2e_env.pg_primary
 
