@@ -105,11 +105,18 @@ _BASIC_QUERY = SlayerQuery(
             "  orders.status",
         ),
         (
+            # DEV-1571 Bug 2: T-SQL bracketed dotted aliases are mangled
+            # via TsqlDialect.rewrite_emitted_sql so T-SQL's ORDER BY
+            # resolver can match the SELECT alias. ``orders.status``
+            # encodes to ``orders___status``; ``orders._count`` (with
+            # its literal leading underscore) encodes to
+            # ``orders____count`` (3 underscores from the dot + 1
+            # literal leading underscore).
             "tsql",
             "SELECT\n"
-            "  orders.status AS [orders.status],\n"
-            "  COUNT(*) AS [orders._count],\n"
-            "  SUM(orders.amount) AS [orders.revenue_sum]\n"
+            "  orders.status AS [orders___status],\n"
+            "  COUNT(*) AS [orders____count],\n"
+            "  SUM(orders.amount) AS [orders___revenue_sum]\n"
             "FROM public.orders AS orders\n"
             "GROUP BY\n"
             "  orders.status",
@@ -186,10 +193,11 @@ _TRUNC_QUERY = SlayerQuery(
             "  STR_TO_DATE(CONCAT(YEAR(orders.created_at), ' ', MONTH(orders.created_at), ' 1'), '%Y %c %e')",
         ),
         (
+            # DEV-1571 Bug 2: bracketed dotted aliases mangled.
             "tsql",
             "SELECT\n"
-            "  DATETRUNC(month, orders.created_at) AS [orders.created_at],\n"
-            "  SUM(orders.amount) AS [orders.revenue_sum]\n"
+            "  DATETRUNC(month, orders.created_at) AS [orders___created_at],\n"
+            "  SUM(orders.amount) AS [orders___revenue_sum]\n"
             "FROM public.orders AS orders\n"
             "GROUP BY\n"
             "  DATETRUNC(month, orders.created_at)",
@@ -438,8 +446,12 @@ async def test_byte_equivalence_time_shift_tsql(orders_model: SlayerModel) -> No
     # T-SQL uses DATEADD(unit, val, col) — no INTERVAL
     assert "DATEADD(MONTH, 1, orders.created_at)" in sql
     assert "INTERVAL" not in sql
-    # T-SQL bucket function is DATETRUNC(unit, col)
-    assert "DATETRUNC(month, " in sql
+    # T-SQL bucket function is DATETRUNC(unit, col). DEV-1571 Bug 1's
+    # CTE hoist re-parses the inner SQL via sqlglot's T-SQL dialect,
+    # which canonicalises the unit identifier to upper case
+    # (``month`` -> ``MONTH``). This is a visual normalisation only —
+    # both forms are equivalent T-SQL.
+    assert "DATETRUNC(MONTH, " in sql
 
 
 # ---------------------------------------------------------------------------
@@ -458,14 +470,26 @@ _CUMSUM_QUERY = SlayerQuery(
 )
 
 
-@pytest.mark.parametrize("dialect", ["postgres", "sqlite", "tsql"])
+@pytest.mark.parametrize(
+    "dialect,expected_window",
+    [
+        # Postgres / SQLite quote with ANSI double quotes.
+        ("postgres", 'SUM("orders.revenue_sum") OVER (ORDER BY "orders.created_at")'),
+        ("sqlite", 'SUM("orders.revenue_sum") OVER (ORDER BY "orders.created_at")'),
+        # T-SQL quotes with brackets AND DEV-1571 Bug 2 mangles the
+        # dotted aliases to underscore form so the ORDER BY resolver
+        # can match the SELECT alias.
+        ("tsql", "SUM([orders___revenue_sum]) OVER (ORDER BY [orders___created_at])"),
+    ],
+)
 async def test_byte_equivalence_cumsum_window_emission(
-    dialect: str, orders_model: SlayerModel
+    dialect: str, expected_window: str, orders_model: SlayerModel
 ) -> None:
-    """Cumsum emits the same OVER (ORDER BY ...) window everywhere; only
-    the base-CTE DATE_TRUNC form changes per dialect."""
+    """Cumsum emits the same OVER (ORDER BY ...) window shape on every
+    dialect; only the identifier quoting (and DEV-1571 mangling on T-SQL)
+    differs."""
     sql = await _gen(dialect, _CUMSUM_QUERY, orders_model)
-    assert 'SUM("orders.revenue_sum") OVER (ORDER BY "orders.created_at")' in sql
+    assert expected_window in sql
 
 
 # ---------------------------------------------------------------------------

@@ -114,3 +114,19 @@ def test_clickhouse_build_date_trunc_month() -> None:
     sql = out.sql(dialect="clickhouse").upper()
     # sqlglot transpiles to ClickHouse-appropriate date function
     assert "MONTH" in sql or "DATE_TRUNC" in sql
+
+
+def test_clickhouse_build_date_trunc_week_sunday_shift() -> None:
+    """DEV-1572: WEEK_SUNDAY reuses ClickHouse's native (Monday) week
+    truncation with the +1d / -1d shift."""
+    d = ClickhouseDialect()
+    col = sqlglot.parse_one("ordered_at", dialect="clickhouse")
+    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY, parse=_parse_ch)
+    up = out.sql(dialect="clickhouse").upper()
+    # sqlglot emits the canonical ClickHouse spelling ``dateTrunc``
+    # (upper-cased here to ``DATETRUNC``). ClickHouse accepts both
+    # ``DATE_TRUNC`` and ``dateTrunc`` so either is correct on the wire,
+    # but sqlglot only emits one form — pin it.
+    assert "DATETRUNC('WEEK'" in up
+    assert "+ INTERVAL 1 DAY" in up
+    assert "- INTERVAL 1 DAY" in up

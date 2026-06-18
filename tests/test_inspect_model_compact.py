@@ -212,3 +212,19 @@ async def test_tool_descriptor_lists_compact_arg(
     tool: Any = next(t for t in tools if t.name == "inspect_model")
     schema = tool.inputSchema
     assert "compact" in schema["properties"]
+
+
+@pytest.mark.asyncio
+async def test_tool_descriptor_omits_reachable_fields_depth_arg(
+    yaml_storage: YAMLStorage,
+) -> None:
+    """DEV-1560: the ``reachable_fields_depth`` kwarg was removed from the
+    ``inspect_model`` signature. The generated MCP tool schema is a
+    caller-facing surface — a regression that re-introduces the kwarg
+    would silently re-document a dropped knob. Pin its absence here.
+    """
+    mcp = create_mcp_server(storage=yaml_storage)
+    tools = await mcp.list_tools()
+    tool: Any = next(t for t in tools if t.name == "inspect_model")
+    schema = tool.inputSchema
+    assert "reachable_fields_depth" not in schema["properties"]

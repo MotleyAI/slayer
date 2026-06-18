@@ -48,75 +48,27 @@ jobs:
 
       - name: Run integration tests
         timeout-minutes: 20
-        run: poetry run pytest tests/ -v -m "integration and not metabase_e2e" --timeout=180
-
-  integration-examples:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        example: [clickhouse, mysql]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install verify.py dependencies
-        run: pip install sqlalchemy
-
-      - name: Make slayer_data writable for container user
-        working-directory: examples/${{ matrix.example }}
-        run: chmod -R 777 slayer_data
-
-      - name: Build images
-        working-directory: examples/${{ matrix.example }}
-        run: docker compose build
-
-      - name: Start DB + seed
-        working-directory: examples/${{ matrix.example }}
-        run: docker compose up -d --wait --wait-timeout 180 seed
-
-      - name: Start slayer service
-        working-directory: examples/${{ matrix.example }}
-        run: docker compose up -d slayer
-
-      - name: Wait for SLayer API to accept connections
-        working-directory: examples/${{ matrix.example }}
+        # DEV-1564: the MySQL / ClickHouse / SQL Server pytest integration
+        # suites have their own path-gated workflows under
+        # .github/workflows/integration-<dialect>.yml. They require Docker
+        # + testcontainers + (for SQL Server) the ODBC Driver 18 — provisioned
+        # only in those workflows. Exclude them from the always-on integration
+        # job; they run when their respective dialect files change.
+        #
+        # DEV-1562: the live-Metabase e2e suite (`metabase_e2e` marker) has
+        # its own workflow at .github/workflows/pg-facade-e2e.yml — same
+        # reasoning, exclude here so this job isn't on the hook for booting
+        # a Metabase container.
         run: |
-          for i in $(seq 1 120); do
-            if curl -sf http://localhost:5143/datasources >/dev/null; then
-              echo "SLayer API ready after ${i} attempts"
-              exit 0
-            fi
-            # If the container died, fail fast and show why.
-            if [ "$(docker compose ps -q slayer | xargs -r docker inspect -f '{{.State.Running}}')" = "false" ]; then
-              echo "slayer container exited before becoming ready — logs:" >&2
-              docker compose logs --no-color slayer
-              exit 1
-            fi
-            sleep 2
-          done
-          echo "SLayer API never came up — logs:" >&2
-          docker compose logs --no-color slayer
-          exit 1
+          poetry run pytest tests/ -v -m "integration and not metabase_e2e" --timeout=180 \
+            --ignore=tests/integration/test_integration_mysql.py \
+            --ignore=tests/integration/test_integration_clickhouse.py \
+            --ignore=tests/integration/test_integration_sqlserver.py
 
-      - name: Run verify.py
-        timeout-minutes: 5
-        run: python examples/${{ matrix.example }}/verify.py
-
-      - name: Dump all container logs
-        if: always()
-        working-directory: examples/${{ matrix.example }}
-        run: docker compose logs --no-color
-
-      - name: Tear down stack
-        if: always()
-        working-directory: examples/${{ matrix.example }}
-        run: docker compose down -v
+  # DEV-1564: the previous `integration-examples` matrix (verify.py-based
+  # end-to-end checks for ClickHouse + MySQL) migrated into the per-dialect
+  # workflows so each dialect's CI lives in one place and is path-gated.
+  # SQL Server gained its first verify.py-based CI coverage there too.
 
   bigquery-example:
     # Skip on forked-PR runs where the GCP secrets aren't available — the job
@@ -200,3 +152,65 @@ jobs:
             kill "$SLAYER_PID" 2>/dev/null || true
           fi
           rm -f "$RUNNER_TEMP/sa-key.json"
+
+  snowflake-integration:
+    # Skip on forked-PR runs where the Snowflake secret isn't available — the
+    # job would fail otherwise and we'd rather not nag external contributors.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip if Snowflake secret is unset
+        id: gate
+        env:
+          SNOWFLAKE_CONNECTIONS_TOML: ${{ secrets.SNOWFLAKE_CONNECTIONS_TOML }}
+        run: |
+          if [[ -z "$SNOWFLAKE_CONNECTIONS_TOML" ]]; then
+            echo "Snowflake secret unset — skipping the integration suite."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        if: steps.gate.outputs.skip != 'true'
+        run: pip install poetry
+
+      - name: Install dependencies (with snowflake extra)
+        if: steps.gate.outputs.skip != 'true'
+        run: poetry install -E snowflake
+
+      - name: Write ~/.snowflake/connections.toml from secret
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          SNOWFLAKE_CONNECTIONS_TOML: ${{ secrets.SNOWFLAKE_CONNECTIONS_TOML }}
+        run: |
+          mkdir -p ~/.snowflake
+          # `printf '%s'` is literal — no backslash mangling, no extra trailing
+          # newline. `chmod 600` is required: snowflake-connector-python
+          # refuses to load a TOML that's world-/group-readable.
+          printf '%s' "$SNOWFLAKE_CONNECTIONS_TOML" > ~/.snowflake/connections.toml
+          chmod 600 ~/.snowflake/connections.toml
+
+      - name: Run Snowflake integration tests
+        if: steps.gate.outputs.skip != 'true'
+        timeout-minutes: 15
+        # SLAYER_SNOWFLAKE_CONNECTION names the profile in the TOML the
+        # integration suite should use. The default in the test file is
+        # `slayer_test` — match the section header in
+        # `secrets.SNOWFLAKE_CONNECTIONS_TOML`.
+        env:
+          SLAYER_SNOWFLAKE_CONNECTION: slayer_test
+        run: poetry run pytest tests/integration/test_integration_snowflake.py -v -m integration --timeout=300
+
+      - name: Wipe Snowflake credentials
+        if: always()
+        run: rm -f ~/.snowflake/connections.toml

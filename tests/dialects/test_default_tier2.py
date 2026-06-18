@@ -1,6 +1,6 @@
 """DEV-1542: tests for Tier-2 dialect subclasses (no live integration tests).
 
-Tier-2 dialects (Snowflake, BigQuery, Redshift, Trino, Presto, Databricks,
+Tier-2 dialects (BigQuery, Redshift, Trino, Presto, Databricks,
 Spark, Oracle) are empty-body subclasses of ``SqlDialect`` with class-level
 field overrides only. They differ from the base in:
 
@@ -12,6 +12,9 @@ field overrides only. They differ from the base in:
 Today's behaviour codified in ``query_engine.py:_EXPLAIN_PREFIX`` /
 ``_EXPLAIN_POSTFIX`` and ``generator.py:_LOG10_NATIVE_DIALECTS`` /
 ``_LOG2_NATIVE_DIALECTS`` must be preserved exactly.
+
+DEV-1551 promoted Snowflake out of this file — see
+``tests/dialects/test_snowflake.py``.
 """
 
 from __future__ import annotations
@@ -23,41 +26,14 @@ from slayer.sql.dialects._tier2 import (
     OracleDialect,
     PrestoDialect,
     RedshiftDialect,
-    SnowflakeDialect,
     SparkDialect,
     TrinoDialect,
 )
 
 # BigqueryDialect was promoted out of _tier2 to its own file (Tier 1) — see
 # slayer/sql/dialects/bigquery.py and tests/dialects/test_bigquery.py.
-
-
-# ---------------------------------------------------------------------------
-# Snowflake
-# ---------------------------------------------------------------------------
-
-
-def test_snowflake_sqlglot_name() -> None:
-    assert SnowflakeDialect().sqlglot_name == "snowflake"
-
-
-def test_snowflake_explain_prefix() -> None:
-    assert SnowflakeDialect().explain_prefix == "EXPLAIN USING JSON"
-
-
-def test_snowflake_log_native_flags() -> None:
-    d = SnowflakeDialect()
-    assert d.should_use_native_log(10) is True
-    # Snowflake has no LOG2 — sqlglot would fall through to LOG(2, x)
-    assert d.should_use_native_log(2) is False
-
-
-def test_snowflake_build_explain_sql() -> None:
-    assert SnowflakeDialect().build_explain_sql("X") == "EXPLAIN USING JSON X"
-
-
-# BigQuery scalar-config tests moved to tests/dialects/test_bigquery.py
-# (BigQuery was promoted out of _tier2 to Tier 1).
+# SnowflakeDialect was likewise promoted (DEV-1551) — see
+# slayer/sql/dialects/snowflake.py and tests/dialects/test_snowflake.py.
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +133,6 @@ def test_oracle_log_native_flags() -> None:
 @pytest.mark.parametrize(
     "dialect_cls,expected",
     [
-        (SnowflakeDialect, "EXPLAIN USING JSON SELECT 1"),
         (RedshiftDialect, "EXPLAIN SELECT 1"),
         (TrinoDialect, "EXPLAIN ANALYZE SELECT 1"),
         (PrestoDialect, "EXPLAIN ANALYZE SELECT 1"),

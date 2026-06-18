@@ -15,6 +15,7 @@ import asyncio
 import concurrent.futures
 import datetime as dt
 import logging
+import math
 import time
 from typing import Any, Dict, List, Tuple
 
@@ -396,24 +397,22 @@ def test_first_last_not_exposed_on_timeless_models(metabase_e2e_env: MetabaseE2E
     assert payload.status_code >= 400 or body.get("status") != "completed"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1570: typed-sentinel substitution covers Describe but not Bind; the empty-string parameter trips DuckDB's INT conversion at Execute time",
-)
 async def test_pg_description_objsubid_empty_string_predicate(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    """B.8 — DEV-1558 bug 2: empty-string parameter against the INT
-    ``objsubid`` column.
+    """B.8 — DEV-1570: empty-string parameter against the INT ``objsubid``
+    column.
 
     Metabase's pgjdbc-driven catalog probes use prepared statements that
     declare ``objsubid = $1`` with a TEXT-typed parameter; pgjdbc binds an
     empty string when no value is provided, which a regressed facade would
     refuse with ``Conversion Error: Could not convert string '' to INT64``.
-    The fix at connection.py:728 substitutes a typed NULL during Describe;
-    we pin it here by Preparing the statement (which triggers Describe)
-    and then Executing with the empty-string value — both round-trips have
-    to complete cleanly. A raw-literal probe (``WHERE objsubid = ''``)
-    would bypass the parameterised path the actual bug 2 fix lives on,
-    so we deliberately drive the $1 form pgjdbc uses.
+    DEV-1558 covered Describe via a typed-NULL sentinel; DEV-1570 covers
+    Bind+Execute by substituting NULL for any text-OID empty-string param
+    that targets a non-TEXT catalog column. We pin both round-trips here
+    by Preparing the statement (which triggers Describe) and then
+    Executing with the empty-string value — both have to complete
+    cleanly. A raw-literal probe (``WHERE objsubid = ''``) would bypass
+    the parameterised path the actual fix lives on, so we deliberately
+    drive the $1 form pgjdbc uses.
     """
     host, port = metabase_e2e_env.pg_primary
     conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
@@ -450,10 +449,6 @@ async def test_union_all_catalog_query_routed(metabase_e2e_env: MetabaseE2EEnv) 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1567: pg-facade leaks dotted cross-model fingerprint measures into the SlayerQuery; Pydantic name validator rejects them",
-)
 def test_dataset_source_table_returns_rows(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
@@ -464,10 +459,6 @@ def test_dataset_source_table_returns_rows(metabase_e2e_env: MetabaseE2EEnv) -> 
     assert len(cols) == 7  # orders has 7 columns
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1567: pg-facade leaks dotted cross-model fingerprint measures into the SlayerQuery; Pydantic name validator rejects them",
-)
 def test_empty_result_filter_returns_cleanly(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
@@ -480,10 +471,6 @@ def test_empty_result_filter_returns_cleanly(metabase_e2e_env: MetabaseE2EEnv) -
     assert rows == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1567: pg-facade leaks dotted cross-model fingerprint measures into the SlayerQuery; Pydantic name validator rejects them",
-)
 def test_wide_row_serialises(metabase_e2e_env: MetabaseE2EEnv) -> None:
     """Every column on ``items`` (a join-table) and ``orders`` must serialise."""
     client = metabase_e2e_env.client
@@ -498,7 +485,8 @@ def test_wide_row_serialises(metabase_e2e_env: MetabaseE2EEnv) -> None:
 
 @pytest.mark.xfail(
     strict=True,
-    reason="DEV-1567: pg-facade leaks dotted cross-model fingerprint measures into the SlayerQuery; Pydantic name validator rejects them (bug 8 is pinned by K.2 via psycopg DATE OID parse)",
+    reason="DEV-1573: Metabase pgjdbc DATE round-trip returns '2024-09-21T00:00:00Z' "
+           "instead of '2024-09-21'; K.2 still pins the psycopg path which is clean.",
 )
 def test_date_column_clean_round_trip_via_metabase(metabase_e2e_env: MetabaseE2EEnv) -> None:
     """C.4 — DEV-1558 bug 8: DATE encoder serialising datetime as
@@ -564,8 +552,18 @@ async def test_aggregation_matches_direct_sql(
     if isinstance(direct, (int,)) and isinstance(mb_value, (int,)):
         assert mb_value == direct, f"{agg_name}: metabase={mb_value} direct={direct}"
     else:
-        assert abs(float(mb_value) - float(direct)) < 1e-6, (
-            f"{agg_name}: metabase={mb_value} direct={direct}"
+        # Relative tolerance for the SUM case: a SUM over hundreds of
+        # thousands of float-typed rows accumulates double-precision
+        # rounding that the original absolute 1e-6 tolerance was too
+        # tight to absorb at multi-million magnitudes (observed CI diff:
+        # ~2.9e-6 on a 3.06M value → relative ~1e-12). math.isclose's
+        # rel_tol=1e-9 catches real divergences while accommodating
+        # legitimate floating-point order-of-summation differences.
+        assert math.isclose(
+            float(mb_value), float(direct), rel_tol=1e-9, abs_tol=1e-6,
+        ), (
+            f"{agg_name}: metabase={mb_value} direct={direct} "
+            f"(abs_diff={abs(float(mb_value) - float(direct))})"
         )
 
 
@@ -783,10 +781,6 @@ def test_filter_like_ilike_contains(metabase_e2e_env: MetabaseE2EEnv) -> None:
         assert n >= 1, f"{op_name} with fragment {fragment!r} returned {n} rows"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1568: pg-facade doesn't resolve MBQL `['aggregation', N]` ordinal refs in HAVING/ORDER BY — Metabase emits the literal aggregation name as a string instead",
-)
 def test_filter_having_on_aggregate(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
@@ -851,10 +845,6 @@ def test_order_by_dimension_asc_and_desc(metabase_e2e_env: MetabaseE2EEnv) -> No
     assert desc_prices == sorted(desc_prices, reverse=True)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1568: pg-facade doesn't resolve MBQL `['aggregation', N]` ordinal refs in HAVING/ORDER BY — Metabase emits `\"orders.row_count\"` instead of the aggregate's projection alias",
-)
 def test_order_by_aggregate(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
@@ -916,10 +906,6 @@ def test_native_sql_order_by_canonical_alias(metabase_e2e_env: MetabaseE2EEnv) -
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1565: pg-facade doesn't yet recognise Metabase's LEFT JOIN-with-subquery projection shape",
-)
 def test_join_single_hop_project_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
@@ -944,10 +930,6 @@ def test_join_single_hop_project_joined_column(metabase_e2e_env: MetabaseE2EEnv)
         assert isinstance(row[0], str) and row[0]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1565: pg-facade doesn't yet recognise Metabase's LEFT JOIN-with-subquery projection shape",
-)
 def test_join_filter_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
@@ -955,7 +937,33 @@ def test_join_filter_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     store_id_fid = client.field_id_by_name("orders", "store_id")
     stores_pk_fid = client.field_id_by_name("stores", "id")
     stores_name_fid = client.field_id_by_name("stores", "name")
-    discover = client.dataset(encode_mbql_query(source_table=stores_id, limit=1))
+    # Pick a sample value from a store that DEFINITELY has at least one
+    # matching order: fetch a NON-NULL store_id from orders, then look
+    # up that store's name. ``SELECT * FROM stores LIMIT 1`` (the prior
+    # approach) could land on a store with zero orders since jaffle's
+    # stores table carries entries unreferenced by orders — that
+    # produced a false-fail for n_filtered == 0 against the
+    # 0 < n_filtered invariant. Filtering NOT-NULL also guards against
+    # a NULL store_id row leaking through (would break the subsequent
+    # stores lookup).
+    order_store_rows = _dataset_rows(client.dataset(encode_mbql_query(
+        source_table=orders_id,
+        fields=[["field", store_id_fid, None]],
+        filter=["not-null", ["field", store_id_fid, None]],
+        limit=1,
+    )))
+    assert order_store_rows, "no orders with a non-NULL store_id — jaffle data shape changed"
+    sample_store_id = order_store_rows[0][0]
+    assert sample_store_id is not None
+    discover = client.dataset(encode_mbql_query(
+        source_table=stores_id,
+        filter=["=", ["field", stores_pk_fid, None], sample_store_id],
+        limit=1,
+    ))
+    assert _dataset_rows(discover), (
+        f"stores lookup for sample_store_id={sample_store_id!r} returned "
+        f"no rows — dangling FK in jaffle data"
+    )
     name_idx = next(i for i, c in enumerate(_dataset_cols(discover)) if c["name"] == "name")
     sample = _dataset_rows(discover)[0][name_idx]
     payload = client.dataset(encode_mbql_query(
@@ -985,7 +993,15 @@ def test_join_filter_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
 
 @pytest.mark.xfail(
     strict=True,
-    reason="DEV-1565: pg-facade doesn't yet recognise Metabase's LEFT JOIN-with-subquery projection shape",
+    reason=(
+        "DEV-1493 / DEV-1567: the LEFT JOIN shape recognises Metabase's "
+        "AVG(\"Stores\".\"tax_rate\") and produces a cross-model "
+        "stores.tax_rate:avg measure, but DEV-1567's _assert_local_metric "
+        "guard rejects projecting cross-model metrics in a flat SELECT "
+        "(the engine emits a CROSS-JOIN'd CTE that returns N rows of the "
+        "same aggregate value instead of 1). Needs a multi-stage rewrite "
+        "(DEV-1493) before this flat-projection shape can execute correctly."
+    ),
 )
 def test_join_aggregate_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
@@ -1254,10 +1270,6 @@ def test_concurrent_dataset_requests(metabase_e2e_env: MetabaseE2EEnv) -> None:
         assert isinstance(r, int) and r >= 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1569: pg-facade doesn't preserve per-connection SET state; concurrent SET application_name = '...' followed by SHOW returns empty for every connection",
-)
 async def test_asyncpg_concurrent_connections(metabase_e2e_env: MetabaseE2EEnv) -> None:
     host, port = metabase_e2e_env.pg_primary
 

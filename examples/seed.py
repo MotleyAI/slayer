@@ -84,6 +84,41 @@ CREATE TABLE orders (
 );
 """
 
+# Snowflake (DEV-1551): NUMBER(38,0) is Snowflake's canonical integer type;
+# NUMBER(p,s)/DECIMAL(p,s) for fixed-point. TIMESTAMP_NTZ avoids the
+# session-time-zone gotcha of bare TIMESTAMP. FK constraints are declarative
+# only (not enforced) — but the Inspector still surfaces them, so
+# auto-ingestion discovers joins.
+CREATE_SQL_SNOWFLAKE = """
+CREATE TABLE regions (
+    id NUMBER(38,0) PRIMARY KEY,
+    name TEXT NOT NULL
+);
+
+CREATE TABLE customers (
+    id NUMBER(38,0) PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    region_id NUMBER(38,0) REFERENCES regions(id)
+);
+
+CREATE TABLE products (
+    id NUMBER(38,0) PRIMARY KEY,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    price NUMBER(10,2) NOT NULL
+);
+
+CREATE TABLE orders (
+    id NUMBER(38,0) PRIMARY KEY,
+    customer_id NUMBER(38,0) REFERENCES customers(id),
+    product_id NUMBER(38,0) REFERENCES products(id),
+    quantity NUMBER(38,0) NOT NULL,
+    status TEXT NOT NULL,
+    created_at TIMESTAMP_NTZ NOT NULL
+);
+"""
+
 # ClickHouse uses MergeTree engine, no PRIMARY KEY constraint, no REFERENCES
 CREATE_SQL_CLICKHOUSE = """
 CREATE TABLE regions (
@@ -118,10 +153,13 @@ CREATE TABLE orders (
 
 def _get_create_sql(connection_string: str) -> str:
     """Return dialect-appropriate CREATE TABLE SQL."""
-    if "clickhouse" in connection_string.lower():
+    cs = connection_string.lower()
+    if "clickhouse" in cs:
         return CREATE_SQL_CLICKHOUSE
-    if "mssql" in connection_string.lower() or "sqlserver" in connection_string.lower():
+    if "mssql" in cs or "sqlserver" in cs:
         return CREATE_SQL_TSQL
+    if cs.startswith("snowflake://") or "snowflakecomputing" in cs:
+        return CREATE_SQL_SNOWFLAKE
     return CREATE_SQL_STANDARD
 
 
@@ -242,8 +280,30 @@ ORDERS = [
 
 
 def seed(connection_string: str) -> None:
-    """Create tables and insert seed data."""
-    engine = sa.create_engine(connection_string)
+    """Create tables and insert seed data.
+
+    Goes through ``engine_factory.get_engine`` (not raw
+    ``sa.create_engine``) so dialect runtime hooks fire — in particular
+    Snowflake's ``creator=`` bridge for the
+    ``snowflake://?connection_name=<name>`` sentinel URL and the SQLite
+    UDF registration listener.
+    """
+    from slayer.core.models import DatasourceConfig
+    from slayer.sql import engine_factory
+
+    # Build a minimal DatasourceConfig from the URL so the dialect
+    # strategy class can route correctly.
+    from urllib.parse import urlparse
+    parsed = urlparse(connection_string)
+    ds_type = parsed.scheme.split("+", 1)[0].lower()
+    if ds_type == "postgresql":
+        ds_type = "postgres"
+    ds = DatasourceConfig(
+        name="seed_target",
+        type=ds_type,
+        connection_string=connection_string,
+    )
+    engine = engine_factory.get_engine(ds)
 
     create_sql = _get_create_sql(connection_string)
 

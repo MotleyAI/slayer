@@ -1,0 +1,114 @@
+name: Integration - ClickHouse
+
+# DEV-1564: per-dialect CI for ClickHouse — pytest suite + verify.py
+# end-to-end check. Path-gated to ClickHouse-specific files plus the
+# shared SQL generator + dialect base.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'slayer/sql/dialects/clickhouse.py'
+      - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/generator.py'
+      - 'examples/clickhouse/**'
+      - 'tests/integration/test_integration_clickhouse.py'
+      - '.github/workflows/integration-clickhouse.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'slayer/sql/dialects/clickhouse.py'
+      - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/generator.py'
+      - 'examples/clickhouse/**'
+      - 'tests/integration/test_integration_clickhouse.py'
+      - '.github/workflows/integration-clickhouse.yml'
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Install dependencies
+        run: poetry install -E all --with dev
+
+      - name: Verify testcontainers[clickhouse] extra is importable
+        run: poetry run python -c "import testcontainers.clickhouse"
+
+      - name: Run ClickHouse integration tests
+        timeout-minutes: 20
+        run: |
+          poetry run pytest tests/integration/test_integration_clickhouse.py \
+            -v -m integration --timeout=300
+
+  verify-example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install verify.py dependencies
+        run: pip install sqlalchemy
+
+      - name: Make slayer_data writable for container user
+        working-directory: examples/clickhouse
+        run: chmod -R 777 slayer_data
+
+      - name: Build images
+        working-directory: examples/clickhouse
+        run: docker compose build
+
+      - name: Start DB + seed
+        working-directory: examples/clickhouse
+        run: docker compose up -d --wait --wait-timeout 180 seed
+
+      - name: Start slayer service
+        working-directory: examples/clickhouse
+        run: docker compose up -d slayer
+
+      - name: Wait for SLayer API to accept connections
+        working-directory: examples/clickhouse
+        run: |
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:5143/datasources >/dev/null; then
+              echo "SLayer API ready after ${i} attempts"
+              exit 0
+            fi
+            if [ "$(docker compose ps -q slayer | xargs -r docker inspect -f '{{.State.Running}}')" = "false" ]; then
+              echo "slayer container exited before becoming ready — logs:" >&2
+              docker compose logs --no-color slayer
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "SLayer API never came up — logs:" >&2
+          docker compose logs --no-color slayer
+          exit 1
+
+      - name: Run verify.py
+        timeout-minutes: 5
+        run: python examples/clickhouse/verify.py
+
+      - name: Dump all container logs
+        if: always()
+        working-directory: examples/clickhouse
+        run: docker compose logs --no-color
+
+      - name: Tear down stack
+        if: always()
+        working-directory: examples/clickhouse
+        run: docker compose down -v

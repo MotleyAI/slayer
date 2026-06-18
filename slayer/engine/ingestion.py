@@ -77,6 +77,10 @@ _SA_TYPE_MAP = {
     "DATETIME": DataType.TIMESTAMP,
     "TIMESTAMP WITHOUT TIME ZONE": DataType.TIMESTAMP,
     "TIMESTAMP WITH TIME ZONE": DataType.TIMESTAMP,
+    # Snowflake (DEV-1551) — three timestamp variants by timezone semantics.
+    "TIMESTAMP_NTZ": DataType.TIMESTAMP,
+    "TIMESTAMP_LTZ": DataType.TIMESTAMP,
+    "TIMESTAMP_TZ": DataType.TIMESTAMP,
     "DATE": DataType.DATE,
     "TIME": DataType.TIMESTAMP,
     # ClickHouse adapter integer types → INT
@@ -793,7 +797,8 @@ def ingest_datasource(
     exclude_tables: Optional[List[str]] = None,
     schema: Optional[str] = None,
 ) -> List[SlayerModel]:
-    sa_engine = sa.create_engine(datasource.resolve_env_vars().get_connection_string())
+    from slayer.sql import engine_factory
+    sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     inspector = sa.inspect(sa_engine)
 
     table_names = inspector.get_table_names(schema=schema)
@@ -882,6 +887,12 @@ def ingest_datasource(
 
         models.append(model)
 
+    # ingest_datasource is a one-shot admin operation, not a hot query
+    # path. Disposing here releases the underlying connection so other
+    # consumers (notably ``duckdb.connect(file)`` in notebooks) can open
+    # the same file. The engine_factory cache will rebuild on the next
+    # call; the cost is one extra ``sa.create_engine`` per ingest, which
+    # is negligible compared to the actual schema-introspection work.
     sa_engine.dispose()
     return models
 

@@ -6,9 +6,10 @@ Flow: SlayerQuery → _enrich() → EnrichedQuery → SQLGenerator → SQL → e
 import decimal
 import logging
 from contextvars import ContextVar
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field as PydanticField, model_validator
+from sqlglot import exp
 
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
 from slayer.core.errors import AmbiguousModelError
@@ -36,10 +37,22 @@ from slayer.engine.enriched import (
 from slayer.engine.enrichment import enrich_query
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.dialects import dialect_for_ds_type, get_dialect
+from slayer.sql.engine_factory import _runtime_fingerprint
 from slayer.sql.generator import SQLGenerator
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
+
+
+def _sql_client_cache_key(datasource: DatasourceConfig) -> Tuple[str, str]:
+    """Cache key for ``SlayerQueryEngine._sql_clients``.
+
+    Mirrors ``engine_factory``'s cache key so two datasources differing
+    in (e.g.) Snowflake ``warehouse`` get distinct ``SlayerSQLClient``
+    instances (and therefore distinct factory-cached engines with the
+    correct per-connection ``USE`` listener).
+    """
+    return (datasource.get_connection_string(), _runtime_fingerprint(datasource))
 
 
 # Per-task in-flight join-target names. Used by _resolve_join_target to break
@@ -230,7 +243,11 @@ class SlayerQueryEngine:
 
     def __init__(self, storage: StorageBackend):
         self.storage = storage
-        self._sql_clients: Dict[str, SlayerSQLClient] = {}  # connection string → cached client
+        # Cache key: (connection_string, runtime_fingerprint) — matches
+        # ``engine_factory``'s cache so Snowflake datasources sharing a
+        # connection_name but differing in warehouse/role/database/schema
+        # get distinct clients (DEV-1551).
+        self._sql_clients: Dict[Tuple[str, str], SlayerSQLClient] = {}
 
     def _get_join_target_resolving(self) -> set:
         """Return the per-task in-flight join-target name set, allocating one
@@ -685,8 +702,14 @@ class SlayerQueryEngine:
         if dry_run:
             return SlayerResponse(data=[], columns=expected_columns, sql=sql, attributes=attributes)
 
-        # Execute — reuse SQL client (and its connection pool) per datasource
-        ds_key = datasource.get_connection_string()
+        # Execute — reuse SQL client (and its connection pool) per
+        # datasource. DEV-1551: include Snowflake runtime overrides
+        # (warehouse / role / database / schema_name) in the cache key
+        # so two datasources sharing the same connection_name but
+        # differing in (e.g.) warehouse don't accidentally share a client
+        # whose engine's per-connection ``USE WAREHOUSE`` listener was
+        # set up for the other datasource.
+        ds_key = _sql_client_cache_key(datasource)
         if ds_key not in self._sql_clients:
             self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
         client = self._sql_clients[ds_key]
@@ -933,7 +956,7 @@ class SlayerQueryEngine:
         except ValueError:
             return {}
 
-        ds_key = datasource.get_connection_string()
+        ds_key = _sql_client_cache_key(datasource)
         if ds_key not in self._sql_clients:
             self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
         client = self._sql_clients[ds_key]
@@ -1906,9 +1929,22 @@ class SlayerQueryEngine:
                 short = _alias_to_short(cm.alias)
             column_map.append((cm.alias, short, DataType.DOUBLE, cm.label, None, cm.format))
 
-        # Wrap inner SQL: SELECT "orders.id" AS id, "orders.count" AS count, ... FROM (inner) AS _inner
-        rename_parts = [f'"{alias}" AS {short}' for alias, short, _, _, _, _ in column_map]
+        # Wrap inner SQL: SELECT <inner_alias> AS <short>, ... FROM (inner) AS _inner
+        # DEV-1571 Bug 3 follow-up: identifier quoting must match the
+        # dialect ``inner_sql`` was generated for. On MySQL the inner CTEs
+        # use backticks; on T-SQL the inner CTEs use brackets AND have
+        # their dotted aliases mangled. Hardcoded ANSI double quotes
+        # would either fail to parse (MySQL) or reference an alias the
+        # mangled inner subquery doesn't expose (T-SQL).
+        rename_parts = [
+            f'{exp.Identifier(this=alias, quoted=True).sql(dialect=dialect)} AS {short}'
+            for alias, short, _, _, _, _ in column_map
+        ]
         wrapped_sql = f"SELECT {', '.join(rename_parts)} FROM ({inner_sql}) AS _inner"
+        # DEV-1571 Bug 2: apply the dialect's emitted-SQL rewrite (e.g.
+        # T-SQL bracket-mangling) so the rename clause's inner-alias
+        # references match what the inner subquery actually projects.
+        wrapped_sql = get_dialect(dialect).rewrite_emitted_sql(wrapped_sql)
 
         # One Column per result column — each is potentially both a dimension
         # (group-by) or measure (with colon-aggregation) at query time.

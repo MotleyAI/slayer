@@ -12,12 +12,17 @@ fields use class-level defaults (``sqlglot_name: str = "postgres"``).
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
+
+if TYPE_CHECKING:
+    import sqlalchemy as sa
+
+    from slayer.core.models import DatasourceConfig
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +66,8 @@ def _granularity_to_unit(granularity: str) -> str:
         "day": "DAY",
         "quarter": "MONTH",  # caller multiplies by 3
         "week": "WEEK",
+        # DEV-1572: a one-period shift of a Sunday-week is just one week.
+        "week_sunday": "WEEK",
         "hour": "HOUR",
         "minute": "MINUTE",
         "second": "SECOND",
@@ -169,6 +176,22 @@ class SqlDialect(BaseModel):
         ``date_trunc`` overload — preserving today's
         ``generator.py:_build_date_trunc`` behaviour.
         """
+        if granularity == TimeGranularity.WEEK_SUNDAY:
+            # DEV-1572: Sunday-anchored week = Monday-week of (col + 1 day),
+            # shifted back 1 day. This is Metabase's own reference formula and
+            # reuses each dialect's existing (Monday-based) WEEK truncation, so
+            # WEEK_SUNDAY's correctness tracks WEEK's per dialect. BigQuery —
+            # whose native WEEK is Sunday — overrides this to emit
+            # ``DATE_TRUNC(col, WEEK(SUNDAY))`` directly.
+            shifted = self.build_time_offset_expr(
+                col_expr=col_expr, offset=1, granularity="day",
+            )
+            monday = self.build_date_trunc(
+                col_expr=shifted, granularity=TimeGranularity.WEEK, parse=parse,
+            )
+            return self.build_time_offset_expr(
+                col_expr=monday, offset=-1, granularity="day",
+            )
         gran_str = _GRANULARITY_TO_DATE_TRUNC.get(granularity, granularity.value)
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
             col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
@@ -322,6 +345,78 @@ class SqlDialect(BaseModel):
         the function-call form (DEV-1331)."""
         return tree
 
+    def emit_outer_wrap(
+        self,
+        *,
+        inner_sql: str,
+        public: list[str],
+        order: Optional[exp.Expression],
+        limit: Optional[exp.Expression],
+        offset_arg: Optional[exp.Expression],
+        parse: Optional[Callable[[str], exp.Expression]] = None,
+    ) -> str:
+        """Emit the DEV-1444 outer-projection wrap around ``inner_sql``.
+
+        Contract: ``inner_sql`` is the inner SELECT with **trailing
+        pagination already detached** (``SQLGenerator._build_outer_wrap``
+        owns the strip). ``order`` / ``limit`` / ``offset_arg`` are the
+        detached sqlglot AST nodes the caller pulled off the inner; the
+        hook re-emits them on the outer statement.
+
+        ``parse`` is the generator's ``_parse`` callback when the
+        generator is the caller (``SQLGenerator._build_outer_wrap``).
+        T-SQL needs it to preserve SLayer-specific AST rewrites (LOG10/
+        LOG2 alias preservation, SQLite JSONExtract function-form) when
+        the override re-parses ``inner_sql`` to detach the WITH clause.
+        The base impl ignores it because it embeds ``inner_sql`` verbatim
+        (no re-parse, no rewrite drift).
+
+        Base impl (Postgres-shaped, used by every dialect except T-SQL)::
+
+            SELECT "alias1", "alias2"
+            FROM   (<inner_sql>) AS _outer
+            ORDER BY ... LIMIT N OFFSET M
+
+        Identifier quoting on the public-alias list is driven by sqlglot
+        via ``self.sqlglot_name`` — backticks on MySQL/BigQuery, brackets
+        on T-SQL (the override only changes the CTE-hoist shape, not the
+        quoting), ANSI double quotes on Postgres/SQLite/DuckDB/...
+        (DEV-1571 Bug 3).
+
+        T-SQL's ``WITH``-must-be-statement-prefix rule means
+        ``TsqlDialect`` overrides this method to lift the inner top-level
+        CTEs to the outer statement (DEV-1571 Bug 1).
+
+        ORDER BY may carry inner-CTE qualifiers like ``_base."col"`` from
+        ``_assemble_combined_sql``; those don't resolve at the outer-
+        wrapper scope (only ``_outer`` is in scope). The base impl strips
+        every Column's ``table`` qualifier so the outer scope can resolve
+        each column by its bare alias name (DEV-1444 behaviour preserved).
+        """
+        del parse  # base impl embeds inner_sql verbatim; no re-parse needed.
+        col_sep = ",\n    "
+        outer_select = col_sep.join(
+            exp.Identifier(this=a, quoted=True).sql(dialect=self.sqlglot_name)
+            for a in public
+        )
+        base = (
+            f"SELECT\n    {outer_select}\n"
+            f"FROM (\n{inner_sql.rstrip()}\n) AS _outer"
+        )
+        if order is None and limit is None and offset_arg is None:
+            return base
+        out = base
+        if order is not None:
+            for col in order.find_all(exp.Column):
+                if col.args.get("table") is not None:
+                    col.set("table", None)
+            out += "\n" + order.sql(dialect=self.sqlglot_name, pretty=True)
+        if limit is not None:
+            out += "\n" + limit.sql(dialect=self.sqlglot_name, pretty=True)
+        if offset_arg is not None:
+            out += "\n" + offset_arg.sql(dialect=self.sqlglot_name, pretty=True)
+        return out
+
     def rewrite_emitted_sql(self, sql: str) -> str:
         """Default: identity. Post-pass string-level rewrite of the final
         generator output.
@@ -380,3 +475,80 @@ class SqlDialect(BaseModel):
                 "Use dry_run=True to inspect the generated SQL instead."
             )
         return f"{self.explain_prefix} {sql}{self.explain_postfix}"
+
+    # ------------------------------------------------------------------
+    # Engine / connection / runtime hooks
+    #
+    # These let a dialect carry its own runtime quirks (connection-string
+    # form, engine-creation bridge, per-connection session setup, per-
+    # statement timeout, cursor-type-code mapping) without spilling
+    # dialect-specific conditionals into ``slayer/sql/engine_factory.py``
+    # or ``slayer/sql/client.py``. Defaults are all no-op — concrete
+    # dialects override what's relevant.
+    # ------------------------------------------------------------------
+
+    def build_connection_url(
+        self,
+        datasource: "DatasourceConfig",
+    ) -> Optional[str]:
+        """Hook: dialect-specific connection-string builder.
+
+        Returning ``None`` (the default) means: defer to
+        ``DatasourceConfig.get_connection_string()``'s standard branches
+        (sqlite / duckdb / tsql / generic URL form). SnowflakeDialect
+        overrides this to emit either the
+        ``snowflake://?connection_name=<name>`` sentinel or the inline
+        ``snowflake-sqlalchemy`` URL.
+        """
+        return None
+
+    def build_engine(
+        self,
+        datasource: "DatasourceConfig",
+        *,
+        connection_string: str,
+    ) -> Optional["sa.Engine"]:
+        """Hook: build a dialect-specific SQLAlchemy engine.
+
+        Returning ``None`` (the default) means: ``engine_factory`` falls
+        back to ``sa.create_engine(connection_string, pool_pre_ping=True)``.
+        SnowflakeDialect overrides this when the sentinel URL is in play,
+        wiring the ``creator=`` kwarg to delegate to
+        ``snowflake.connector.connect(connection_name=...)``.
+        """
+        return None
+
+    def apply_session_overrides(
+        self,
+        dbapi_connection: Any,
+        datasource: "DatasourceConfig",
+    ) -> None:
+        """Hook: per-connection session setup (e.g. ``USE WAREHOUSE``).
+
+        Called by ``engine_factory``'s ``connect`` event listener on every
+        new pooled connection. SnowflakeDialect overrides this to issue
+        ``USE WAREHOUSE / USE ROLE / USE DATABASE / USE SCHEMA`` from the
+        DatasourceConfig's typed fields.
+        """
+        return None
+
+    def statement_timeout_sql(self, timeout_seconds: int) -> Optional[str]:
+        """Hook: SQL to set a per-statement timeout, or ``None`` if the
+        dialect doesn't expose one or the existing client.py path handles
+        it via a hardcoded branch (mysql / clickhouse / postgres).
+
+        SnowflakeDialect returns
+        ``ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = N``.
+        """
+        return None
+
+    def map_cursor_type_code(self, type_code: int) -> Optional[str]:
+        """Hook: dialect-specific cursor-type-code → SLayer category
+        (one of ``"number"``, ``"string"``, ``"time"``, ``"boolean"``).
+
+        Returning ``None`` (the default) means: ``client._map_type_code``
+        falls back to the Postgres OID map. SnowflakeDialect overrides
+        this to return the snowflake-connector ``FieldType`` integer
+        codes' mapping.
+        """
+        return None

@@ -18,13 +18,15 @@ import asyncio
 import logging
 import re
 import struct
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import sqlglot
 import sqlglot.errors
 import sqlglot.expressions as exp
 from pydantic import BaseModel, ConfigDict
+from sqlglot.optimizer.scope import traverse_scope
 
+from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
 from slayer.facade.catalog import FacadeCatalog, build_catalog
 from slayer.facade.probe_queries import match_probe as facade_match_probe
@@ -36,14 +38,20 @@ from slayer.facade.translator import (
     ProbeResult,
     QueryResult,
     READ_ONLY_MESSAGE,
+    ResetSettingOp,
+    SetSettingOp,
     TranslationError,
     translate,
 )
-from slayer.facade.catalog_sql import executor_for
+from slayer.facade.catalog_sql import build_catalog_relations, executor_for
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.auth import verify_password
 from slayer.pg_facade.identity import parameter_status_defaults, version_string
-from slayer.pg_facade.probes import match_pg_probe
+from slayer.pg_facade.probes import (
+    SESSION_SETTING_SEED,
+    SHOW_ALIASES,
+    match_pg_probe_with_mutation,
+)
 from slayer.pg_facade.types import (
     datatype_to_oid,
     literal_for_substitution,
@@ -60,6 +68,33 @@ _BACKEND_SECRET = 0
 _PARAM_PLACEHOLDER = re.compile(r"\$(\d+)")
 # The single schema the facade advertises (matches pg_namespace / current_schema).
 PUBLIC_SCHEMA = "public"
+
+# DEV-1569: GUC_REPORT-class settings. After a successful SET / set_config /
+# RESET of one of these, the server pushes a ``ParameterStatus`` message so
+# drivers (asyncpg, pgjdbc, c3p0, …) see the new value out-of-band. The
+# lowercase key maps to the canonical Postgres wire-case name — real
+# Postgres emits ``DateStyle`` / ``TimeZone`` / ``IntervalStyle`` in
+# camel-case on the wire even though SQL identifiers are case-insensitive.
+# ``integer_datetimes``, ``is_superuser``, ``in_hot_standby``,
+# ``default_transaction_read_only`` are GUC_REPORT in real Postgres too but
+# the facade doesn't expose them as settable, so we don't list them here.
+_GUC_REPORT_NAMES: Dict[str, str] = {
+    "application_name": "application_name",
+    "client_encoding": "client_encoding",
+    "datestyle": "DateStyle",
+    "intervalstyle": "IntervalStyle",
+    "server_encoding": "server_encoding",
+    "server_version": "server_version",
+    "session_authorization": "session_authorization",
+    "standard_conforming_strings": "standard_conforming_strings",
+    "timezone": "TimeZone",
+}
+
+# DEV-1570 type aliases — populated by ``_build_column_type_index`` below and
+# cached per-connection. Declared here so the ``__init__`` annotation can
+# reference them without a forward-ref dance.
+ColumnTypeKey = Tuple[str, str, str]  # (schema_lower, table_lower, column_lower)
+ColumnTypeIndex = Dict[ColumnTypeKey, DataType]
 
 
 class _PreparedStatement(BaseModel):
@@ -100,9 +135,24 @@ class PgConnection:
         self._catalog: Optional[FacadeCatalog] = None
         self._statements: Dict[str, _PreparedStatement] = {}
         self._portals: Dict[str, _Portal] = {}
+        # Lazily-built (schema, table, column) -> DataType lookup, used by the
+        # DEV-1570 empty-string-vs-non-text Bind rewrite. Built once per
+        # connection on first need; ``None`` until then so connections that
+        # never bind candidates pay zero cost.
+        self._column_type_index: Optional[ColumnTypeIndex] = None
         # Extended protocol: after an error the backend discards every message
         # until the next Sync, then resumes with ReadyForQuery.
         self._skip_until_sync = False
+        # DEV-1569: per-connection session-settings mailbox. Captures SET /
+        # set_config writes; consulted by SHOW / current_setting reads. Seeded
+        # from the module-level SESSION_SETTING_SEED via dict(...) so each
+        # connection owns its own copy (never aliasing the seed).
+        self._session_settings: Dict[str, str] = dict(SESSION_SETTING_SEED)
+        # DEV-1569: when True, ``_describe_sql`` is in flight — translator
+        # calls must remain pure. Suppresses application of any session-
+        # setting mutation hints surfaced by the probe matcher during a
+        # Describe.
+        self._in_describe = False
 
     # ----- lifecycle --------------------------------------------------------
 
@@ -402,9 +452,17 @@ class PgConnection:
             return stmt.sql
         formats = proto.parse_result_format_codes(bind.parameter_format_codes, n)
         oids = list(resolved)
+        empty_string_null_params = self._empty_string_null_params_for_bind(
+            sql=stmt.sql, raw_values=bind.parameter_values, oids=oids,
+        )
         literals: List[str] = []
-        for raw, fmt, oid in zip(bind.parameter_values, formats, oids):
+        for i, (raw, fmt, oid) in enumerate(
+            zip(bind.parameter_values, formats, oids), start=1,
+        ):
             if raw is None:
+                literals.append("NULL")
+                continue
+            if i in empty_string_null_params:
                 literals.append("NULL")
                 continue
             value = (
@@ -420,6 +478,30 @@ class PgConnection:
             return match.group(0)
 
         return _PARAM_PLACEHOLDER.sub(repl, stmt.sql)
+
+    def _empty_string_null_params_for_bind(
+        self, *, sql: str, raw_values, oids: List[int],
+    ) -> Set[int]:
+        # DEV-1570: pre-classify $N indices whose bound value is an empty
+        # text-OID payload AND whose AST occurrence targets a non-TEXT catalog
+        # column. Those positions emit ``NULL`` rather than ``''`` so DuckDB
+        # doesn't trip a ``Could not convert string '' to INT64`` at Execute.
+        # The column-type index is built lazily on first need.
+        candidates = [
+            i + 1 for i, (raw, oid) in enumerate(zip(raw_values, oids))
+            if oid == proto.OID_TEXT and raw == b""
+        ]
+        if not candidates or self._catalog is None or self._datasource is None:
+            return set()
+        if self._column_type_index is None:
+            self._column_type_index = _build_column_type_index(
+                catalog=self._catalog, datasource=self._datasource,
+            )
+        return _classify_empty_string_param_targets(
+            sql=sql,
+            column_type_index=self._column_type_index,
+            candidate_param_indices=candidates,
+        )
 
     async def _handle_describe(self, msg: proto.DescribeMessage) -> None:
         if msg.kind == "S":
@@ -465,13 +547,21 @@ class PgConnection:
         # real value substitution still happens in ``_handle_bind`` for
         # Execute (Codex round 13 review).
         describe_sql = _substitute_typed_sentinels(sql, param_oids or [])
+        # DEV-1569: ``_in_describe`` suppresses application of any
+        # session-setting mutations surfaced by the translator during a
+        # Describe pass. The Execute path applies them.
+        self._in_describe = True
         try:
-            result = self._translate(describe_sql)
-        except TranslationError:
-            # Describe must not raise to the wire here; the subsequent Execute
-            # surfaces the error. Report NoData so the client can proceed.
-            self._writer.write(proto.encode_no_data())
-            return
+            try:
+                result = self._translate(describe_sql)
+            except TranslationError:
+                # Describe must not raise to the wire here; the subsequent
+                # Execute surfaces the error. Report NoData so the client
+                # can proceed.
+                self._writer.write(proto.encode_no_data())
+                return
+        finally:
+            self._in_describe = False
         fields = self._fields_for_result(result, result_formats)
         if fields is None:
             self._writer.write(proto.encode_no_data())
@@ -545,10 +635,18 @@ class PgConnection:
             catalog_sql_executor=lambda: executor_for(self._catalog, self._datasource),
         )
 
-    def _probe_matcher(self, parsed: exp.Expression) -> Optional[RowBatch]:
+    def _probe_matcher(self, parsed: exp.Expression):
+        """Wraps the PG-facade and shared probe matchers.
+
+        DEV-1569: ``SHOW`` / ``current_setting`` consult the per-connection
+        ``self._session_settings``. For ``set_config`` matches, the returned
+        ``ProbeMatcherOutcome`` carries a mutation hint that
+        ``_run_statement`` applies on Execute (Describe leaves it pending).
+        """
         assert self._datasource is not None
-        pg = match_pg_probe(
+        pg = match_pg_probe_with_mutation(
             parsed, datasource=self._datasource, version_str=version_string(),
+            session_settings=self._session_settings,
         )
         if pg is not None:
             return pg
@@ -570,10 +668,23 @@ class PgConnection:
 
         if isinstance(result, (ProbeResult, InfoSchemaResult, PgCatalogResult)):
             self._emit_row_batch(result.batch, result_formats, send_row_description)
+            # DEV-1569: set_config(...) mutation hint surfaces on ProbeResult.
+            # Apply ONLY in the Execute path (not Describe). Pushes
+            # ParameterStatus for reportable settings after CommandComplete.
+            if isinstance(result, ProbeResult) and result.settings_mutation is not None:
+                self._apply_set_setting(result.settings_mutation)
             return True
         if isinstance(result, NoOpResult):
             self._apply_tx_command(result.command_tag)
             self._writer.write(proto.encode_command_complete(_command_tag(result.command_tag)))
+            # DEV-1569: apply SET / RESET captures AFTER CommandComplete so
+            # the post-SET ParameterStatus push lands between CC and
+            # ReadyForQuery (any-time ordering OK per PG protocol). Skipped
+            # during Describe per _describe_sql / _in_describe.
+            if result.set_setting is not None:
+                self._apply_set_setting(result.set_setting)
+            if result.reset_setting is not None:
+                self._apply_reset_setting(result.reset_setting)
             return True
         if isinstance(result, QueryResult):
             return await self._run_query(result, result_formats, send_row_description)
@@ -681,6 +792,62 @@ class PgConnection:
         if self._tx_state == proto.TX_IN_TRANSACTION:
             self._tx_state = proto.TX_FAILED
 
+    # ----- DEV-1569: per-connection session-settings application -----------
+
+    def _apply_set_setting(self, op: SetSettingOp) -> None:
+        """Mutate the per-connection session-settings map and (for reportable
+        names) push a ``ParameterStatus`` message to the client.
+
+        Skipped during ``_describe_sql`` (Describe must remain pure — the
+        same prepared statement may be Executed later, at which point
+        mutation happens).
+        """
+        if self._in_describe:
+            return
+        self._session_settings[op.name] = op.value
+        self._push_parameter_status_if_reportable(op.name, op.value)
+
+    def _apply_reset_setting(self, op: ResetSettingOp) -> None:
+        """Restore the per-connection session-settings map per the RESET
+        intent. Pushes ``ParameterStatus`` for each reportable name whose
+        value changed back to seed.
+
+        DEV-1569 / Codex F2: multi-word names (``RESET TIME ZONE``,
+        ``RESET SESSION AUTHORIZATION``) are alias-resolved via the same
+        ``SHOW_ALIASES`` table that ``SHOW`` consults; without the
+        resolution the lookup against ``SESSION_SETTING_SEED`` would
+        silently miss.
+        """
+        if self._in_describe:
+            return
+        if op.reset_all:
+            # Restore every name to its seed value; push ParameterStatus for
+            # the seeded value of every reportable name (drivers latch onto
+            # the post-RESET-ALL pushes to invalidate caches).
+            self._session_settings = dict(SESSION_SETTING_SEED)
+            for lower, _wire_name in _GUC_REPORT_NAMES.items():
+                value = self._session_settings.get(lower, "")
+                self._push_parameter_status_if_reportable(lower, value)
+            return
+        # RESET <name>: alias-resolve (multi-word names), then revert to
+        # seed (if seeded) or drop the override.
+        name = SHOW_ALIASES.get(op.name or "", op.name or "")
+        if name in SESSION_SETTING_SEED:
+            self._session_settings[name] = SESSION_SETTING_SEED[name]
+            self._push_parameter_status_if_reportable(
+                name, self._session_settings[name],
+            )
+        else:
+            self._session_settings.pop(name, None)
+            # Non-seeded names are by definition not reportable (the
+            # _GUC_REPORT_NAMES set is a subset of the seed), so no push.
+
+    def _push_parameter_status_if_reportable(self, name: str, value: str) -> None:
+        wire_name = _GUC_REPORT_NAMES.get(name)
+        if wire_name is None:
+            return
+        self._writer.write(proto.encode_parameter_status(wire_name, value))
+
     # ----- IO helpers --------------------------------------------------------
 
     async def _send_ready(self) -> None:
@@ -736,6 +903,326 @@ def _substitute_typed_sentinels(sql: str, param_oids: List[int]) -> str:
             return _TYPED_SENTINEL_BY_OID.get(param_oids[idx], "NULL")
         return "NULL"
     return _PARAM_PLACEHOLDER.sub(repl, sql)
+
+
+# DEV-1570: empty-string-vs-non-text Bind rewrite -----------------------------
+#
+# Symmetric with the Describe-side typed-NULL substitution above. pgjdbc /
+# Metabase binds an empty string (``b""``) for "null" against text-OID
+# parameters; when that parameter targets a non-TEXT catalog column the
+# resulting ``WHERE int_col = ''`` previously tripped DuckDB's
+# ``Conversion Error: Could not convert string '' to INT64`` at Execute.
+# The classifier below identifies $N indices whose AST occurrences land in a
+# comparison / IN / BETWEEN predicate against a column that resolves via the
+# FacadeCatalog to a non-TEXT DataType, so ``_substitute_params`` can swap
+# their literal to NULL for those positions.
+
+# Mirrors slayer.facade.catalog_sql._PG_CATALOG_NAMES — duplicating here keeps
+# the classifier independent of catalog_sql internals. Bare names in user SQL
+# resolve to pg_catalog only when they match a known relation (per the
+# catalog executor's convention at slayer/facade/catalog_sql.py:712).
+_PG_CATALOG_RELATIONS: frozenset = frozenset({
+    "pg_namespace", "pg_class", "pg_attribute", "pg_type", "pg_proc",
+    "pg_settings", "pg_description", "pg_stat_user_tables", "pg_enum",
+    "pg_tables", "pg_views", "pg_matviews", "pg_constraint", "pg_index",
+    "pg_attrdef",
+})
+
+# Binary-comparison sqlglot node classes the classifier walks. Excludes LIKE /
+# ILIKE (text-only operators; collision with the empty-string-vs-non-text bug
+# is not possible).
+_COMPARISON_NODE_TYPES: tuple = (
+    exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE,
+    exp.NullSafeEQ, exp.NullSafeNEQ,
+)
+
+
+def _build_column_type_index(
+    *, catalog: FacadeCatalog, datasource: str,
+) -> ColumnTypeIndex:
+    """Build the (schema_lower, table_lower, column_lower) -> DataType lookup
+    used by the Bind-time empty-string-to-NULL rewrite (DEV-1570).
+
+    Covers pg_catalog.*, information_schema.* (via the ``_is_<name>``
+    builder-name remap), and user-model tables under ``PUBLIC_SCHEMA``.
+    """
+    out: ColumnTypeIndex = {}
+    _index_catalog_relations(out=out, catalog=catalog, datasource=datasource)
+    _index_user_tables(out=out, catalog=catalog)
+    return out
+
+
+def _index_catalog_relations(
+    *, out: ColumnTypeIndex, catalog: FacadeCatalog, datasource: str,
+) -> None:
+    """Populate ``out`` with pg_catalog / information_schema column types
+    materialised by ``build_catalog_relations``. The ``_is_<name>`` builder
+    convention is remapped to the SQL-visible ``information_schema.<name>``."""
+    for rel in build_catalog_relations(catalog=catalog, datasource=datasource):
+        if rel.name.startswith("_is_"):
+            schema = "information_schema"
+            table = rel.name[len("_is_"):]
+        else:
+            schema = "pg_catalog"
+            table = rel.name
+        table_lower = table.lower()
+        for col in rel.columns:
+            _record_column_type(
+                out=out, key=(schema, table_lower, col.name.lower()),
+                dt=col.type,
+            )
+
+
+def _index_user_tables(*, out: ColumnTypeIndex, catalog: FacadeCatalog) -> None:
+    """Populate ``out`` with user-model column types under PUBLIC_SCHEMA."""
+    for sch in catalog.schemas:
+        schema_lower = sch.name.lower()
+        for tbl in sch.tables:
+            tbl_lower = tbl.name.lower()
+            for d in tbl.dimensions:
+                _record_column_type(
+                    out=out, key=(schema_lower, tbl_lower, d.name.lower()),
+                    dt=d.data_type,
+                )
+            for m in tbl.metrics:
+                dt = m.data_type if m.data_type is not None else DataType.TEXT
+                _record_column_type(
+                    out=out, key=(schema_lower, tbl_lower, m.name.lower()),
+                    dt=dt,
+                )
+
+
+def _record_column_type(
+    *, out: ColumnTypeIndex, key: ColumnTypeKey, dt: DataType,
+) -> None:
+    """Insert (key → dt) into ``out`` unless the key already exists with a
+    different type. Case-distinct quoted identifiers (e.g. ``id`` INT and
+    ``"ID"`` TEXT in the same model) would otherwise collide because the
+    index lower-cases column names — last-writer-wins on the previous
+    implementation could rewrite an empty-string text comparison to NULL.
+    Skip the second occurrence and warn once. Same-type collisions are
+    silently ignored (no behaviour change). DEV-1570 / Codex CX-2."""
+    existing = out.get(key)
+    if existing is None:
+        out[key] = dt
+        return
+    if existing != dt:
+        logger.warning(
+            "DEV-1570 column-type index: case-distinct collision on %s "
+            "(existing=%s, new=%s); keeping existing. Empty-string rewrite "
+            "may behave incorrectly if the case-distinct column is queried.",
+            key, existing, dt,
+        )
+
+
+def _classify_empty_string_param_targets(
+    *, sql: str,
+    column_type_index: ColumnTypeIndex,
+    candidate_param_indices: Iterable[int],
+) -> Set[int]:
+    """Return the subset of ``candidate_param_indices`` whose AST occurrences
+    appear in a comparison / IN / BETWEEN predicate against a column that
+    resolves via ``column_type_index`` to a non-TEXT ``DataType``.
+
+    Whole-parameter granularity: if ANY occurrence of $N targets a non-text
+    column, $N is in the result set so ``_substitute_params`` substitutes
+    ``NULL`` everywhere $N appears.
+
+    Returns the empty set on parse failure or unexpected AST shape; the
+    helper never raises (per Codex round 1, finding #1).
+    """
+    candidates = set(candidate_param_indices)
+    if not candidates:
+        return set()
+    # sqlglot 30.4.3's tokenizer rejects PostgreSQL placeholders adjacent to
+    # punctuation in some compact shapes (e.g. ``IN ($1,$2)`` no-whitespace
+    # form trips a TokenError, while ``IN ($1, $2)`` parses cleanly).
+    # Pad each $N with surrounding whitespace before parsing — this only
+    # affects the AST we walk for classification; the literal substitution
+    # downstream still uses the original ``stmt.sql``.
+    normalised_sql = _PARAM_PLACEHOLDER.sub(r" $\1 ", sql)
+    try:
+        parsed = sqlglot.parse_one(sql=normalised_sql, dialect="postgres")
+    except sqlglot.errors.SqlglotError:
+        return set()
+    if parsed is None:
+        return set()
+    try:
+        column_to_table = _map_column_tables(
+            parsed=parsed, column_type_index=column_type_index,
+        )
+        return _collect_non_text_params(
+            parsed=parsed, candidates=candidates,
+            column_to_table=column_to_table,
+            column_type_index=column_type_index,
+        )
+    except Exception:  # NOSONAR(S110) — defensive: never raise out of bind path
+        logger.debug("DEV-1570 classifier defensive catch", exc_info=True)
+        return set()
+
+
+def _map_column_tables(
+    *, parsed: exp.Expression, column_type_index: ColumnTypeIndex,
+) -> Dict[int, Optional[Tuple[str, str]]]:
+    """Resolve every Column node to its owning scope's (schema, table)."""
+    column_to_table: Dict[int, Optional[Tuple[str, str]]] = {}
+    for scope in traverse_scope(parsed):
+        sources = _resolved_table_sources(scope.sources)
+        for col in scope.find_all(exp.Column):
+            column_to_table[id(col)] = _resolve_column_table(
+                col=col, scope_sources=sources,
+                column_type_index=column_type_index,
+            )
+    return column_to_table
+
+
+def _collect_non_text_params(
+    *, parsed: exp.Expression,
+    candidates: Set[int],
+    column_to_table: Dict[int, Optional[Tuple[str, str]]],
+    column_type_index: ColumnTypeIndex,
+) -> Set[int]:
+    """Walk comparison / IN / BETWEEN nodes; collect $N indices whose paired
+    Column resolves to a non-TEXT ``DataType``."""
+    result: Set[int] = set()
+    for node in parsed.walk():
+        for col, param_idx in _column_param_pairs_from_node(node):
+            if param_idx not in candidates:
+                continue
+            table = column_to_table.get(id(col))
+            if table is None:
+                continue
+            key: ColumnTypeKey = (table[0], table[1], col.name.lower())
+            dt = column_type_index.get(key)
+            if dt is not None and dt != DataType.TEXT:
+                result.add(param_idx)
+    return result
+
+
+def _column_param_pairs_from_node(node) -> Iterable[Tuple[exp.Column, int]]:
+    """Yield (Column, param_index) pairs for each comparison-shape node."""
+    if isinstance(node, _COMPARISON_NODE_TYPES):
+        yield from _pair_column_and_param(node.this, node.expression)
+        return
+    if isinstance(node, exp.Between):
+        value = node.this
+        for bound_key in ("low", "high"):
+            bound = node.args.get(bound_key)
+            if bound is not None:
+                yield from _pair_column_and_param(value, bound)
+        return
+    if isinstance(node, exp.In):
+        value = node.this
+        for el in (node.expressions or []):
+            yield from _pair_column_and_param(value, el)
+
+
+def _try_extract_column(node) -> Optional[exp.Column]:
+    """Return the underlying ``exp.Column`` if ``node`` is one (optionally
+    wrapped in semantically-transparent ``exp.Paren`` layers). CAST / function
+    / arithmetic wrappers around a column are documented out of scope —
+    pin tests `test_cast_wrapped_column_not_classified`,
+    `test_arithmetic_wrapped_column_not_classified`,
+    `test_function_wrapped_column_not_classified`."""
+    while isinstance(node, exp.Paren):
+        node = node.this
+    return node if isinstance(node, exp.Column) else None
+
+
+def _try_extract_param_index(node) -> Optional[int]:
+    """Return the 1-based ``$N`` index if ``node`` is an ``exp.Parameter``
+    (optionally wrapped in ``exp.Paren`` and/or ``exp.Cast`` layers).
+
+    Unwrapping ``exp.Cast`` is parameter-side-only (Codex CX-3): a user
+    writing ``objsubid = $1::int`` or ``objsubid = CAST($1 AS INT)`` has
+    explicitly cast the parameter, and the empty-string-to-NULL rewrite
+    still applies — ``CAST(NULL AS INT)`` is a harmless typed null, while
+    leaving ``$1`` as ``''`` would still trip DuckDB's INT conversion.
+    Asymmetric with ``_try_extract_column``, which keeps CAST-wrapped
+    columns out of scope (their user-supplied cast is the documented
+    boundary at which we stop classifying)."""
+    while isinstance(node, (exp.Paren, exp.Cast)):
+        node = node.this
+    if not isinstance(node, exp.Parameter):
+        return None
+    try:
+        return int(node.name)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _pair_column_and_param(left, right) -> Iterable[Tuple[exp.Column, int]]:
+    """Two operands where one is a bare Column and the other is a $N
+    Parameter -> yield (Column, $N). Returns nothing if both sides are
+    the same kind or if neither is a Column / Parameter."""
+    col_l, col_r = _try_extract_column(left), _try_extract_column(right)
+    param_l, param_r = _try_extract_param_index(left), _try_extract_param_index(right)
+    col = col_l if col_l is not None else col_r
+    param_idx = param_l if param_l is not None else param_r
+    # Need exactly one column and exactly one parameter — reject if both sides
+    # match the same kind (col = col, param = param) or neither is matchable.
+    if col_l is not None and col_r is not None:
+        return
+    if param_l is not None and param_r is not None:
+        return
+    if col is not None and param_idx is not None:
+        yield col, param_idx
+
+
+def _resolved_table_sources(sources) -> Dict[str, Tuple[str, str]]:
+    """Given ``Scope.sources``, return ``{alias_lower: (schema_lower, table_lower)}``.
+
+    Sources whose value is another ``Scope`` (CTE / derived subquery)
+    are skipped — they lose physical-column lineage so the classifier
+    can't resolve their column types.
+
+    Bare table names (no schema qualifier) are inferred to ``pg_catalog``
+    when the name matches a known relation, otherwise to ``PUBLIC_SCHEMA``.
+    information_schema requires an explicit qualifier — bare names like
+    ``columns`` never resolve there (Codex round 1, finding #4).
+    """
+    result: Dict[str, Tuple[str, str]] = {}
+    for alias, src in sources.items():
+        if not isinstance(src, exp.Table):
+            continue
+        tbl_name = src.name.lower()
+        db_part = src.args.get("db")
+        schema: Optional[str] = None
+        if db_part is not None:
+            schema_raw = db_part.name if hasattr(db_part, "name") else str(db_part)
+            schema = schema_raw.lower()
+        if schema is None:
+            schema = (
+                "pg_catalog" if tbl_name in _PG_CATALOG_RELATIONS else PUBLIC_SCHEMA
+            )
+        result[alias.lower()] = (schema, tbl_name)
+    return result
+
+
+def _resolve_column_table(
+    *, col: exp.Column,
+    scope_sources: Dict[str, Tuple[str, str]],
+    column_type_index: ColumnTypeIndex,
+) -> Optional[Tuple[str, str]]:
+    """Resolve a Column node to ``(schema, table_name)`` via its owning
+    scope's sources. Returns ``None`` if unresolvable (no scope match,
+    ambiguous bare name, or table not in scope)."""
+    table_q = (col.table or "").lower()
+    db_q = (col.db or "").lower()
+    if table_q:
+        if db_q:
+            return (db_q, table_q)
+        if table_q in scope_sources:
+            return scope_sources[table_q]
+        return None
+    name_lower = col.name.lower()
+    matches: List[Tuple[str, str]] = []
+    for _alias, (schema, tbl) in scope_sources.items():
+        if (schema, tbl, name_lower) in column_type_index:
+            matches.append((schema, tbl))
+    if len(matches) == 1:
+        return matches[0]
+    return None
 
 
 def _resolve_param_oids(stmt: _PreparedStatement) -> List[int]:

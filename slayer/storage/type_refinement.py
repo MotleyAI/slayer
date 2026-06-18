@@ -28,7 +28,6 @@ from __future__ import annotations
 import logging
 from typing import Optional, Tuple
 
-import sqlalchemy as sa
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
@@ -264,18 +263,17 @@ def _refine_dict_sqlite_probe(d: dict, datasource: DatasourceConfig) -> bool:
         return False
 
     schema_name, table_name = _parse_sql_table_with_default_schema(sql_table, datasource)
-    sa_engine = sa.create_engine(datasource.resolve_env_vars().get_connection_string())
+    from slayer.sql import engine_factory
+    sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     changed = False
-    try:
-        with sa_engine.connect() as conn:
-            for col in refineable:
-                if _refine_one_column(
-                    conn=conn, col=col, d=d, table_name=table_name,
-                    schema_name=schema_name, sql_table=sql_table,
-                ):
-                    changed = True
-    finally:
-        sa_engine.dispose()
+    with sa_engine.connect() as conn:
+        for col in refineable:
+            if _refine_one_column(
+                conn=conn, col=col, d=d, table_name=table_name,
+                schema_name=schema_name, sql_table=sql_table,
+            ):
+                changed = True
+    # Cached engine — don't dispose; engine_factory owns lifecycle.
     return changed
 
 

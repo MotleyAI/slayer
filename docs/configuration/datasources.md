@@ -55,6 +55,7 @@ These databases are verified by integration tests and runnable Docker examples. 
 | `mysql` / `mariadb` | `motley-slayer[mysql]` | `mysql+pymysql://user:pass@localhost:3306/db` |
 | `clickhouse` | `motley-slayer[clickhouse]` | `clickhouse+http://user:pass@localhost:8123/db` |
 | `duckdb` | `motley-slayer[duckdb]` | `duckdb:///path/to/db.duckdb` |
+| `snowflake` | `motley-slayer[snowflake]` | `snowflake://?connection_name=default` (TOML-driven) or `snowflake://user:pw@account/db/schema?warehouse=wh&role=role` (inline). See [Snowflake](#snowflake) below. |
 
 #### Additional support
 
@@ -62,7 +63,6 @@ SQL generation is covered by unit tests, but not verified against live instances
 
 | Type | SQLAlchemy Driver | Install |
 |------|-------------------|---------|
-| `snowflake` | `snowflake-sqlalchemy` | `pip install snowflake-sqlalchemy` |
 | `bigquery` | `sqlalchemy-bigquery` | `pip install sqlalchemy-bigquery` |
 | `redshift` | `sqlalchemy-redshift` + `redshift_connector` | `pip install sqlalchemy-redshift redshift-connector` |
 | `trino` / `presto` / `athena` | `trino` or `PyAthena` | `pip install trino` or `pip install PyAthena` |
@@ -84,7 +84,61 @@ SQL generation is covered by unit tests, but not verified against live instances
     trusted CA and omit `TrustServerCertificate`.
 
 !!! note
-    Snowflake, BigQuery, ClickHouse, and similar analytical warehouses typically don't have foreign keys, so auto-ingestion won't discover joins. Define joins manually in your model YAML.
+    BigQuery, ClickHouse, and similar analytical warehouses typically don't have foreign keys, so auto-ingestion won't discover joins. Define joins manually in your model YAML. Snowflake is an exception — it stores declarative (non-enforced) FK constraints AND exposes them via the Inspector, so auto-ingestion discovers joins like Postgres / MySQL / SQLite.
+
+### Snowflake
+
+The recommended path is the named-connection form, which delegates auth to
+`snowflake.connector.connect(connection_name=...)` reading
+`~/.snowflake/connections.toml`. This is the only path that supports key-pair,
+OAuth, SSO, and MFA.
+
+```toml
+# ~/.snowflake/connections.toml
+[default]
+account = "jp13593"           # Snowflake account identifier, NOT a hostname
+user = "YOUR_USER"
+password = "YOUR_PASSWORD"
+warehouse = "COMPUTE_WH"
+database = "SLAYER_DEMO"
+schema = "PUBLIC"
+```
+
+```yaml
+# datasources/sf.yaml
+name: sf
+type: snowflake
+connection_name: default
+```
+
+Or the inline form (host stores the Snowflake account identifier):
+
+```yaml
+name: sf
+type: snowflake
+host: jp13593
+username: YOUR_USER
+password: YOUR_PASSWORD
+database: SLAYER_DEMO
+schema_name: PUBLIC
+warehouse: COMPUTE_WH
+role: PUBLIC
+```
+
+Both forms flow through a shared engine factory that wires a per-connection
+`USE WAREHOUSE / USE ROLE / USE DATABASE / USE SCHEMA` listener when those
+typed fields are set. The `connection_name` profile's defaults are overridden
+by anything you set on the DatasourceConfig.
+
+Statement-level timeout is enforced via
+`ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = N` on the connection.
+
+!!! warning "Snowflake identifier casing"
+    Snowflake stores unquoted identifiers in uppercase but resolves them
+    case-insensitively. sqlglot's snowflake dialect emits bare lowercase
+    identifiers, which resolve correctly against uppercase storage.
+    Mixed-case names like `"Revenue"` get double-quoted by sqlglot and
+    become case-sensitive — they must match the stored case exactly.
 
 !!! tip
     If your database isn't listed but is supported by sqlglot, it may already work — SLayer falls back to Postgres-style SQL by default. Try it and [open an issue](https://github.com/MotleyAI/slayer/issues) if you hit a problem.

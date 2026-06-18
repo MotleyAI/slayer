@@ -14,13 +14,14 @@ Integration tests and/or Docker examples; must not regress.
 | **DuckDB** | Integration tests in `tests/integration/test_integration_duckdb.py` (in-process, no Docker). |
 | **MySQL** | Docker example with `verify.py`. |
 | **ClickHouse** | Docker example with `verify.py`. |
+| **SQL Server** | Docker example with `verify.py` in `examples/sqlserver/`. |
+| **Snowflake** | Integration tests in `tests/integration/test_integration_snowflake.py` (skip without `~/.snowflake/connections.toml`); `examples/snowflake/` ships `README.md` + `verify.py`. No Docker (no free local image). |
 
 ## Tier 2 — code-covered
 
 Unit tests for SQL generation; no live-instance verification.
 
-Snowflake, BigQuery, Redshift, Trino/Presto, Databricks/Spark,
-MS SQL Server, Oracle.
+BigQuery, Redshift, Trino/Presto, Databricks/Spark, Oracle.
 
 ## Aggregation support
 
@@ -37,6 +38,7 @@ because no standard syntax works everywhere:
 | DuckDB | yes | yes | yes | yes | sqlglot rewrites ordered-set percentiles to `QUANTILE_CONT`. Native `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*` (sqlglot may emit `VARIANCE` for `var_samp`). |
 | SQLite | yes | yes | yes | yes | Python aggregate UDFs registered on every connection — see "SQLite caveats" below. |
 | ClickHouse | yes | yes | yes | yes | Native `median(x)`, parametric `quantile(p)(x)`, native `stddev_*`/`var_*`/`corr`/`covar*` (camelCase variants emitted by sqlglot for `var_samp`). |
+| Snowflake | yes | yes | yes | yes | Native `MEDIAN`, `PERCENTILE_CONT(p) WITHIN GROUP`, `STDDEV_*`/`VAR_*`/`CORR`/`COVAR_*`. `LOG10` native; no native `LOG2` (falls through to `LOG(2, x)`). |
 | MySQL | **no** | **no** | yes | **no** | No native `MEDIAN`/`PERCENTILE_CONT`/`CORR`/`COVAR_*` and no Python-UDF mechanism — SLayer raises `NotImplementedError` for those. `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP` are native on MySQL. Use MariaDB or compute the unsupported aggregations client-side. |
 
 ### SQLite caveats
@@ -102,6 +104,31 @@ If you need percentiles on MySQL, the recommended options are:
 - Pull the raw values and compute the percentile in your application.
 - Define a custom `Aggregation` on the model with whatever `GROUP_CONCAT`-
   based or windowed expression suits your data shape and group sizes.
+
+### Snowflake caveats
+
+Snowflake is a fully managed cloud warehouse — no Docker, no local instance.
+The integration suite skips by default unless `~/.snowflake/connections.toml`
+contains a profile named `slayer_test` (override with
+`$SLAYER_SNOWFLAKE_CONNECTION`). See [Datasources →
+Snowflake](configuration/datasources.md#snowflake) for connection setup.
+
+- **`LIMIT 0` type probes still compile.** SLayer infers column types via
+  `LIMIT 0` wrapper queries. Snowflake compiles those — consuming a small
+  amount of warehouse compute — even though no rows are returned. A future
+  `DESCRIBE QUERY`-based probe would skip this; not yet implemented.
+- **Identifier casing.** Snowflake stores unquoted identifiers in uppercase
+  but resolves them case-insensitively. sqlglot's snowflake dialect emits
+  bare lowercase identifiers, which therefore resolve correctly against
+  uppercase storage. **Mixed-case** names like `"Revenue"` get double-quoted
+  by sqlglot and become case-sensitive — they must match the stored case
+  exactly.
+- **Declarative FK constraints are surfaced.** Unlike ClickHouse / BigQuery,
+  Snowflake exposes its (non-enforced) FK metadata via the Inspector. Auto-
+  ingestion discovers joins like Postgres / MySQL / SQLite.
+- **No native LOG2.** `log2(x)` in a `Column.sql` falls through to the
+  canonical 2-arg `LOG(2, x)` form. `LOG10` and the rest of the math /
+  statistical functions are native.
 
 ## Adding a new dialect
 

@@ -19,7 +19,6 @@ from slayer.core.models import (
 )
 from slayer.mcp.server import (
     _build_sample_query_args,
-    _collect_reachable_fields,
     _escape_md_cell,
     _format_table,
     _friendly_db_error,
@@ -406,32 +405,6 @@ class TestMdCodeSpan:
         assert _md_code_span(42) == "`42`"
 
 
-    async def test_reachable_fields_no_bounce_back(self, mcp_server, storage: YAMLStorage) -> None:
-        """Peer joins should not cause inspect_model to list the root model's own
-        fields as 'reachable via joins'."""
-        await storage.save_model(SlayerModel(
-            name="claim", sql_table="t", data_source="test",
-            columns=[
-                Column(name="claim_id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-            ],
-            joins=[ModelJoin(target_model="claim_detail", join_pairs=[["claim_id", "claim_id"]])],
-        ))
-        await storage.save_model(SlayerModel(
-            name="claim_detail", sql_table="t2", data_source="test",
-            columns=[
-                Column(name="claim_id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="detail_notes", type=DataType.TEXT),
-            ],
-            joins=[ModelJoin(target_model="claim", join_pairs=[["claim_id", "claim_id"]])],
-        ))
-        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "claim", "num_rows": 0})
-        # claim_detail.detail_notes should be reachable
-        assert "claim_detail.detail_notes" in result
-        # But claim_detail.claim.status (bounce-back to root) should NOT appear
-        assert "claim_detail.claim.status" not in result
-
-
     async def test_measure_type_column_in_schema(self, mcp_server, storage: YAMLStorage) -> None:
         """Measure type column is included when type inference succeeds.
 
@@ -754,7 +727,7 @@ class TestInspectModelSectionGating:
         # Footer present
         assert "> Sections shown: columns." in result
         assert "> Names-only: measures, aggregations, joins." in result
-        assert "> Omitted: reachable_fields, samples, learnings." in result
+        assert "> Omitted: samples, learnings." in result
         assert "Re-call inspect_model" in result
 
     async def test_omitted_sections_with_no_entities_render_nothing(self, mcp_server, storage: YAMLStorage) -> None:
@@ -782,7 +755,7 @@ class TestInspectModelSectionGating:
             arguments={"model_name": "rich", "sections": ["columns", "fish"]},
         )
         assert "> Warning: ignored unknown sections: 'fish'." in result
-        assert "Valid: columns, measures, aggregations, joins, reachable_fields, samples, learnings." in result
+        assert "Valid: columns, measures, aggregations, joins, samples, learnings." in result
         # Valid section still rendered
         assert "## Columns (3)" in result
 
@@ -806,14 +779,16 @@ class TestInspectModelSectionGating:
         assert "## Joins (2 — names only)" in result
         # The full-table heading must NOT appear
         assert "## Columns (3)\n\n|" not in result
-        # reachable_fields and samples are fully omitted (no heading at all)
-        assert "## Reachable" not in result
+        # samples and learnings are fully omitted (no heading at all)
         assert "## Sample" not in result
+        # Reachable-via-joins section was removed entirely in DEV-1560 — it
+        # must never appear regardless of input.
+        assert "## Reachable" not in result
         # Footer summarises what was dropped — caller can re-call with a
         # corrected sections= list.
         assert "Sections shown: (none)" in result
         assert "Names-only: columns, measures, aggregations, joins" in result
-        assert "Omitted: reachable_fields, samples" in result
+        assert "Omitted: samples, learnings" in result
         assert "Re-call inspect_model with `sections=[...]`" in result
 
     async def test_canonical_order_regardless_of_input(self, mcp_server, storage: YAMLStorage) -> None:
@@ -825,27 +800,138 @@ class TestInspectModelSectionGating:
         )
         assert result.find("## Columns (3)") < result.find("## Measures (2)")
 
-    async def test_reachable_fields_omitted_no_heading(self, mcp_server, storage: YAMLStorage) -> None:
-        """When reachable_fields is not in sections, no Reachable heading appears."""
-        await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
-            name="parent", sql_table="t", data_source="test",
-            columns=[Column(name="child_id", type=DataType.DOUBLE, primary_key=True)],
-            joins=[ModelJoin(target_model="child", join_pairs=[["child_id", "id"]])],
-        ))
-        await storage.save_model(SlayerModel(
-            name="child", sql_table="t2", data_source="test",
-            columns=[
-                Column(name="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="label", type=DataType.TEXT),
-            ],
-        ))
-        result = await _call(
+    # ---- DEV-1560: reachable_fields surface fully removed ----
+
+    async def test_old_reachable_fields_token_is_unknown(self, mcp_server, storage: YAMLStorage) -> None:
+        """``sections=["reachable_fields"]`` post-removal flows through the
+        existing unknown-section branch (NOT silently filtered with a
+        fallback to full output): footer warning lists the bad token with
+        the current ``Valid:`` set, the all-unknown-resolves-to-no-sections
+        semantics kick in (collapsible sections render as names-only,
+        ``samples``/``learnings`` are omitted), the markdown body emits no
+        ``## Reachable via joins`` heading, and the JSON payload has no
+        ``reachable_dimensions`` / ``reachable_measures`` keys regardless of
+        format."""
+        await self._save_rich_model(storage)
+        result_md = await _call(
             mcp_server, name="inspect_model",
-            arguments={"model_name": "parent", "sections": ["columns", "joins"]},
+            arguments={"model_name": "rich", "sections": ["reachable_fields"]},
         )
-        assert "## Reachable" not in result
-        assert "child.label" not in result
+        # Exact one-line warning contract — fragments split could otherwise
+        # admit a malformed two-line footer.
+        assert (
+            "> Warning: ignored unknown sections: 'reachable_fields'. "
+            "Valid: columns, measures, aggregations, joins, samples, learnings."
+        ) in result_md
+        # The reachable-via-joins heading is gone for good — it can never
+        # render again, regardless of the section token.
+        assert "## Reachable" not in result_md
+        # All-unknown ⇒ no full sections selected: collapsible sections
+        # render names-only, samples + learnings are fully omitted.
+        # A silent-drop implementation (filter the bad token, fall back to
+        # the full default) would emit the full Columns table — this
+        # assertion pins that the unknown-branch wins.
+        assert "## Columns (3)\n\n|" not in result_md
+        assert "## Columns (3 — names only)" in result_md
+        assert "> Sections shown: (none)" in result_md
+        assert "> Names-only: columns, measures, aggregations, joins." in result_md
+        assert "> Omitted: samples, learnings." in result_md
+
+        result_json = await _call(
+            mcp_server, name="inspect_model",
+            arguments={
+                "model_name": "rich",
+                "sections": ["reachable_fields"],
+                "format": "json",
+            },
+        )
+        parsed = json.loads(result_json)
+        assert parsed["unknown_sections"] == ["reachable_fields"]
+        assert "reachable_dimensions" not in parsed
+        assert "reachable_measures" not in parsed
+        # Full "columns" key must NOT be present — that would mean the
+        # unknown-branch was silently bypassed.
+        assert "columns" not in parsed
+        # The collapsed names-only form lives under <section>_names siblings.
+        assert parsed["names_only_sections"] == ["columns", "measures", "aggregations", "joins"]
+        assert parsed["omitted_sections"] == ["samples", "learnings"]
+
+    async def test_old_reachable_fields_token_with_other_sections(self, mcp_server, storage: YAMLStorage) -> None:
+        """``sections=["reachable_fields", "columns"]`` renders the columns
+        table fully, warns about the unknown ``reachable_fields`` token, and
+        emits no reachable-via-joins markdown heading or JSON keys."""
+        await self._save_rich_model(storage)
+        result_md = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "rich", "sections": ["reachable_fields", "columns"]},
+        )
+        # Columns table renders in full.
+        assert "## Columns (3)" in result_md
+        # Footer warning calls out the bad token by repr.
+        assert "> Warning: ignored unknown sections: 'reachable_fields'." in result_md
+        assert "## Reachable" not in result_md
+
+        result_json = await _call(
+            mcp_server, name="inspect_model",
+            arguments={
+                "model_name": "rich",
+                "sections": ["reachable_fields", "columns"],
+                "format": "json",
+            },
+        )
+        parsed = json.loads(result_json)
+        assert "columns" in parsed
+        assert parsed["unknown_sections"] == ["reachable_fields"]
+        assert "reachable_dimensions" not in parsed
+        assert "reachable_measures" not in parsed
+
+    async def test_reachable_fields_depth_kwarg_has_no_effect(self, mcp_server, storage: YAMLStorage) -> None:
+        """DEV-1560 removed the ``reachable_fields_depth`` kwarg from the
+        ``inspect_model`` signature. FastMCP's input-schema validation
+        uses pydantic's default ``extra="ignore"`` — unknown kwargs are
+        silently dropped at the tool boundary rather than raised. The
+        caller-facing regression-pin is therefore the descriptor schema
+        (see ``test_tool_descriptor_omits_reachable_fields_depth_arg``)
+        plus this companion test, which proves the silently-dropped
+        kwarg has no behavioural effect: the rendered output is
+        byte-identical to the call without it, AND no
+        ``## Reachable via joins`` heading sneaks back in via any code
+        path that might re-read the bogus value."""
+        await self._save_rich_model(storage)
+        result_with = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "rich", "reachable_fields_depth": 5},
+        )
+        result_without = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "rich"},
+        )
+        assert result_with == result_without
+        assert "## Reachable" not in result_with
+        assert "Reachable via joins" not in result_with
+
+    async def test_no_reachable_via_joins_heading_anywhere(self, mcp_server, storage: YAMLStorage) -> None:
+        """Invariant: ``## Reachable via joins`` and the
+        ``reachable_dimensions`` / ``reachable_measures`` JSON keys never
+        appear in inspect_model output. Exercises the default
+        ``sections=None`` path and the explicit full-section-list path."""
+        await self._save_rich_model(storage)
+        for sections_arg in (
+            None,
+            ["columns", "measures", "aggregations", "joins", "samples", "learnings"],
+        ):
+            args: dict = {"model_name": "rich"}
+            if sections_arg is not None:
+                args["sections"] = sections_arg
+            md = await _call(mcp_server, name="inspect_model", arguments=args)
+            assert "## Reachable" not in md, sections_arg
+            assert "Reachable via joins" not in md, sections_arg
+
+            args_json = dict(args, format="json")
+            raw = await _call(mcp_server, name="inspect_model", arguments=args_json)
+            parsed = json.loads(raw)
+            assert "reachable_dimensions" not in parsed, sections_arg
+            assert "reachable_measures" not in parsed, sections_arg
 
 
 class TestInspectModelDescriptionsMaxChars:
@@ -921,83 +1007,6 @@ class TestInspectModelDescriptionsMaxChars:
             await _call(
                 mcp_server, name="inspect_model",
                 arguments={"model_name": "m", "descriptions_max_chars": -1},
-            )
-
-
-class TestInspectModelReachableFieldsDepth:
-    """``reachable_fields_depth`` parameter."""
-
-    async def _save_chain(self, storage: YAMLStorage) -> None:
-        await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
-            name="a", sql_table="ta", data_source="test",
-            columns=[Column(name="b_id", type=DataType.DOUBLE, primary_key=True)],
-            joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
-        ))
-        await storage.save_model(SlayerModel(
-            name="b", sql_table="tb", data_source="test",
-            columns=[
-                Column(name="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="c_id", type=DataType.DOUBLE),
-                Column(name="b_label", type=DataType.TEXT),
-            ],
-            joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
-        ))
-        await storage.save_model(SlayerModel(
-            name="c", sql_table="tc", data_source="test",
-            columns=[
-                Column(name="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="c_label", type=DataType.TEXT),
-            ],
-        ))
-
-    async def test_default_depth_5_walks_full_chain(self, mcp_server, storage: YAMLStorage) -> None:
-        await self._save_chain(storage)
-        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "a"})
-        assert "b.b_label" in result
-        assert "b.c.c_label" in result
-        assert "max depth: 5" in result
-
-    async def test_depth_one_stops_at_direct(self, mcp_server, storage: YAMLStorage) -> None:
-        await self._save_chain(storage)
-        result = await _call(
-            mcp_server, name="inspect_model",
-            arguments={"model_name": "a", "reachable_fields_depth": 1},
-        )
-        assert "b.b_label" in result
-        assert "b.c.c_label" not in result
-        assert "max depth: 1" in result
-
-    async def test_depth_zero_yields_no_reachable_section(self, mcp_server, storage: YAMLStorage) -> None:
-        """depth=0 means no reachable fields are reported (section omitted when empty)."""
-        await self._save_chain(storage)
-        result = await _call(
-            mcp_server, name="inspect_model",
-            arguments={"model_name": "a", "reachable_fields_depth": 0},
-        )
-        assert "## Reachable" not in result
-
-    async def test_negative_depth_rejected(self, mcp_server, storage: YAMLStorage) -> None:
-        """Negative depth would still no-op (the BFS just terminates immediately)
-        but accepting it muddies the contract; reject at the boundary."""
-        from mcp.server.fastmcp.exceptions import ToolError
-        await self._save_chain(storage)
-        with pytest.raises(ToolError, match="reachable_fields_depth must be between 0 and 20"):
-            await _call(
-                mcp_server, name="inspect_model",
-                arguments={"model_name": "a", "reachable_fields_depth": -1},
-            )
-
-    async def test_depth_above_max_rejected(self, mcp_server, storage: YAMLStorage) -> None:
-        """An unbounded depth defeats the section-budgeting goal — a depth of
-        thousands could enumerate vast join paths and issue many storage
-        lookups on dense graphs. Cap at 20."""
-        from mcp.server.fastmcp.exceptions import ToolError
-        await self._save_chain(storage)
-        with pytest.raises(ToolError, match="reachable_fields_depth must be between 0 and 20"):
-            await _call(
-                mcp_server, name="inspect_model",
-                arguments={"model_name": "a", "reachable_fields_depth": 1000},
             )
 
 
@@ -1100,7 +1109,7 @@ class TestInspectModelJsonGating:
         assert "sample_data_error" not in parsed
         # Top-level state arrays
         assert parsed["names_only_sections"] == ["measures", "aggregations", "joins"]
-        assert parsed["omitted_sections"] == ["reachable_fields", "samples", "learnings"]
+        assert parsed["omitted_sections"] == ["samples", "learnings"]
         assert "unknown_sections" not in parsed
 
     async def test_json_unknown_sections_array(self, mcp_server, storage: YAMLStorage) -> None:
@@ -1197,7 +1206,7 @@ class TestInspectModelHelpers:
     def test_resolve_inspect_sections_none(self) -> None:
         from slayer.mcp.server import _resolve_inspect_sections
         resolved, unknown = _resolve_inspect_sections(None)
-        assert resolved == ["columns", "measures", "aggregations", "joins", "reachable_fields", "samples", "learnings"]
+        assert resolved == ["columns", "measures", "aggregations", "joins", "samples", "learnings"]
         assert unknown == []
 
     def test_resolve_inspect_sections_empty(self) -> None:
@@ -1210,7 +1219,6 @@ class TestInspectModelHelpers:
             "measures",
             "aggregations",
             "joins",
-            "reachable_fields",
             "samples",
             "learnings",
         ]
@@ -1248,7 +1256,7 @@ class TestInspectModelHelpers:
         """
         from slayer.mcp.server import _render_inspect_footer
         result = _render_inspect_footer(
-            included=["columns", "measures", "aggregations", "joins", "reachable_fields", "samples"],
+            included=["columns", "measures", "aggregations", "joins", "samples", "learnings"],
             names_only=[], omitted=[], unknown=["foo\n> evil-injected"],
         )
         assert result is not None
@@ -1260,7 +1268,7 @@ class TestInspectModelHelpers:
     def test_render_inspect_footer_none_when_no_trim(self) -> None:
         from slayer.mcp.server import _render_inspect_footer
         result = _render_inspect_footer(
-            included=["columns", "measures", "aggregations", "joins", "reachable_fields", "samples"],
+            included=["columns", "measures", "aggregations", "joins", "samples", "learnings"],
             names_only=[], omitted=[], unknown=[],
         )
         assert result is None
@@ -1269,7 +1277,7 @@ class TestInspectModelHelpers:
         """All sections shown but unknown names → warning line only, no other footer text."""
         from slayer.mcp.server import _render_inspect_footer
         result = _render_inspect_footer(
-            included=["columns", "measures", "aggregations", "joins", "reachable_fields", "samples"],
+            included=["columns", "measures", "aggregations", "joins", "samples", "learnings"],
             names_only=[], omitted=[], unknown=["fish"],
         )
         assert result is not None
@@ -1281,14 +1289,14 @@ class TestInspectModelHelpers:
         result = _render_inspect_footer(
             included=["columns"],
             names_only=["measures", "joins"],
-            omitted=["reachable_fields"],
+            omitted=["samples"],
             unknown=["fish"],
         )
         assert result is not None
         assert "Warning: ignored unknown sections: 'fish'." in result
         assert "Sections shown: columns." in result
         assert "Names-only: measures, joins." in result
-        assert "Omitted: reachable_fields." in result
+        assert "Omitted: samples." in result
         assert "Re-call inspect_model" in result
 
 
@@ -1476,135 +1484,6 @@ class TestMarkdownHelpers:
         )
         assert cols == ["count", "revenue_avg", "other.field"]
         assert data == [{"count": 5, "revenue_avg": 12.5, "other.field": "x"}]
-
-
-class TestReachableFields:
-    async def test_empty_when_no_joins(self, storage: YAMLStorage) -> None:
-        model = SlayerModel(name="solo", sql_table="t", data_source="ds")
-        await storage.save_model(model)
-        dims, measures = await _collect_reachable_fields(model=model, storage=storage)
-        assert dims == []
-        assert measures == []
-
-    async def test_direct_join_exposes_target_fields(self, storage: YAMLStorage) -> None:
-        """In v2, every non-PK, non-hidden column is reachable both as a
-        dimension and as a measure (columns are unified)."""
-        await storage.save_model(SlayerModel(
-            name="customers", sql_table="customers", data_source="ds",
-            columns=[
-                Column(name="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
-                Column(name="region", type=DataType.TEXT),
-                Column(name="lifetime_value", sql="ltv", type=DataType.DOUBLE),
-            ],
-        ))
-        orders = SlayerModel(
-            name="orders", sql_table="orders", data_source="ds",
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-        )
-        await storage.save_model(orders)
-        dims, measures = await _collect_reachable_fields(model=orders, storage=storage)
-        # All non-PK columns reachable as both dims and measures.
-        assert "customers.name" in dims
-        assert "customers.region" in dims
-        assert "customers.lifetime_value" in dims
-        assert "customers.id" not in dims  # PK excluded from dims
-        assert "customers.lifetime_value" in measures
-        assert "customers.name" in measures
-        assert "customers.region" in measures
-
-    async def test_multi_hop_via_graph_walk(self, storage: YAMLStorage) -> None:
-        """Multi-hop reachability via direct joins: order_items → orders → customers."""
-        await storage.save_model(SlayerModel(
-            name="customers", sql_table="customers", data_source="ds",
-            columns=[Column(name="id", primary_key=True), Column(name="name")],
-        ))
-        await storage.save_model(SlayerModel(
-            name="orders", sql_table="orders", data_source="ds",
-            columns=[Column(name="id", primary_key=True), Column(name="customer_id")],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-        ))
-        root = SlayerModel(
-            name="order_items", sql_table="order_items", data_source="ds",
-            joins=[
-                ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]]),
-            ],
-        )
-        await storage.save_model(root)
-        dims, _ = await _collect_reachable_fields(model=root, storage=storage)
-        assert "orders.customer_id" in dims
-        assert "orders.customers.name" in dims
-
-    async def test_recursive_walk_via_targets_joins(self, storage: YAMLStorage) -> None:
-        """Hand-built shallow joins (root -> A -> B): recursion reaches B via A."""
-        await storage.save_model(SlayerModel(
-            name="b", sql_table="b", data_source="ds",
-            columns=[Column(name="id", primary_key=True), Column(name="code")],
-        ))
-        await storage.save_model(SlayerModel(
-            name="a", sql_table="a", data_source="ds",
-            columns=[Column(name="id", primary_key=True), Column(name="x")],
-            joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
-        ))
-        root = SlayerModel(
-            name="root", sql_table="root", data_source="ds",
-            joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
-        )
-        await storage.save_model(root)
-        dims, _ = await _collect_reachable_fields(model=root, storage=storage)
-        assert "a.x" in dims
-        assert "a.b.code" in dims
-
-    async def test_depth_cap(self, storage: YAMLStorage) -> None:
-        """Paths with more than max_depth segments are excluded."""
-        # Build a chain root -> a -> b -> c -> d
-        await storage.save_model(SlayerModel(
-            name="d", sql_table="d", data_source="ds",
-            columns=[Column(name="id", primary_key=True), Column(name="val")],
-        ))
-        await storage.save_model(SlayerModel(
-            name="c", sql_table="c", data_source="ds",
-            columns=[Column(name="id", primary_key=True), Column(name="val")],
-            joins=[ModelJoin(target_model="d", join_pairs=[["d_id", "id"]])],
-        ))
-        await storage.save_model(SlayerModel(
-            name="b", sql_table="b", data_source="ds",
-            columns=[Column(name="id", primary_key=True), Column(name="val")],
-            joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
-        ))
-        await storage.save_model(SlayerModel(
-            name="a", sql_table="a", data_source="ds",
-            columns=[Column(name="id", primary_key=True), Column(name="val")],
-            joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
-        ))
-        root = SlayerModel(
-            name="root", sql_table="root", data_source="ds",
-            joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
-        )
-        await storage.save_model(root)
-        dims, _ = await _collect_reachable_fields(model=root, storage=storage, max_depth=2)
-        # max_depth caps the model-path length (segments), so max_depth=2 admits
-        # paths "a" (1 segment → field `a.val`) and "a.b" (2 segments → field
-        # `a.b.val`). Paths of 3+ segments ("a.b.c" etc.) are excluded.
-        assert "a.val" in dims
-        assert "a.b.val" in dims
-        assert not any(d.startswith("a.b.c.") for d in dims)
-
-    async def test_cycles_dont_infinite_loop(self, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
-            name="b", sql_table="b", data_source="ds",
-            columns=[Column(name="id", primary_key=True), Column(name="val")],
-            joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
-        ))
-        a = SlayerModel(
-            name="a", sql_table="a", data_source="ds",
-            columns=[Column(name="id", primary_key=True), Column(name="val")],
-            joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
-        )
-        await storage.save_model(a)
-        dims, _ = await _collect_reachable_fields(model=a, storage=storage)
-        # Should complete without hanging; a.b.val and a.b.a.val are distinct paths
-        assert "b.val" in dims
 
 
 class TestCreateModel:

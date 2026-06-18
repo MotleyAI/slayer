@@ -559,6 +559,60 @@ class TestFields:
         assert "ORDER BY" in sql
         assert "rev_running" in sql.lower()
 
+    async def test_cumsum_over_week_sunday_time_dim(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1572 (full enum wiring): a transform over a WEEK_SUNDAY time
+        dimension must generate valid SQL — the granularity must be wired into
+        the interval helpers, not crash with a KeyError on the 9th enum value.
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.WEEK_SUNDAY,
+            )],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="cumsum(revenue:sum)", name="rev_running"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "OVER" in sql
+        assert "rev_running" in sql.lower()
+        # The WEEK_SUNDAY time dim must compile to the Sunday-week truncation
+        # (the +1-day column-side shift is unique to WEEK_SUNDAY; plain Monday
+        # WEEK has no such shift), proving the granularity wasn't downgraded.
+        assert "+ INTERVAL '1 DAY'" in sql.upper()
+
+    async def test_time_shift_over_week_sunday_uses_one_week_interval(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """A time_shift over a WEEK_SUNDAY time dim (granularity derived from
+        the time dim, not passed explicitly) shifts by one week — exercising
+        ``build_time_offset_expr``'s ``"week_sunday"`` path. Must emit valid
+        date arithmetic, not blow up on the unknown granularity string."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.WEEK_SUNDAY,
+            )],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="time_shift(revenue:sum, -1)", name="rev_prev_week"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "shifted_" in sql
+        # The shift itself must use a one-WEEK interval (7 days). Target the
+        # shift's INTERVAL unit specifically — ``INTERVAL '1 WEEK'`` — so the
+        # assertion can't be satisfied by the ``DATE_TRUNC('WEEK', ...)`` in the
+        # truncation (which uses ``INTERVAL '1 DAY'``, not a WEEK interval).
+        assert "INTERVAL '1 WEEK'" in sql.upper()
+
     async def test_cumsum_partitions_by_dimensions(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -5174,7 +5228,7 @@ class TestGetColumnTypesSql:
 
                 mock_client = MagicMock()
                 mock_client.get_column_types = capture_sql
-                engine._sql_clients["sqlite://"] = mock_client
+                engine._sql_clients[("sqlite://", "")] = mock_client
 
                 await engine.get_column_types("orders")
 
@@ -5232,7 +5286,7 @@ class TestGetColumnTypesSql:
 
                 mock_client = MagicMock()
                 mock_client.get_column_types = capture_types
-                engine._sql_clients["sqlite://"] = mock_client
+                engine._sql_clients[("sqlite://", "")] = mock_client
 
                 result = await engine.get_column_types("orders")
 

@@ -406,6 +406,28 @@ async def test_parameterised_query_substitutes(pg_demo_server) -> None:
         await conn.close()
 
 
+async def test_bind_empty_string_against_int_column_succeeds(pg_demo_server) -> None:
+    """DEV-1570: pgjdbc-style empty-string-for-null-text bound against an
+    INT-shaped catalog column previously tripped DuckDB's
+    ``Conversion Error: Could not convert string '' to INT64``.
+    The Bind-time rewrite swaps the literal to NULL so the query runs."""
+    host, port = pg_demo_server
+    conn = await _connect(host, port)
+    try:
+        # asyncpg leaves Parse OIDs empty (per _resolve_param_oids' docstring),
+        # so $1 defaults to OID_TEXT — exactly the bug shape.
+        rows = await conn.fetch(
+            "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = $1",
+            "",
+        )
+        # The query runs without raising; with $1 → NULL the predicate
+        # matches no rows (no objsubid IS NULL is possible since the column
+        # is INT NOT NULL in catalog data).
+        assert rows == []
+    finally:
+        await conn.close()
+
+
 # --- transactions ------------------------------------------------------------
 
 
