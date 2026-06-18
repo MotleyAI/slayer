@@ -1368,10 +1368,11 @@ def _extract_set_setting(parsed: exp.Set) -> Optional[SetSettingOp]:
     if not isinstance(lhs, exp.Column):
         return None
     # LHS is the setting name — Postgres GUC names are case-insensitive; we
-    # normalise to lowercase. For 2-part `table.name` shapes (custom GUCs
-    # like `myapp.user_id`) reconstruct the dotted form.
-    table_part = lhs.table or ""
-    name = f"{table_part}.{lhs.name}".lower() if table_part else lhs.name.lower()
+    # normalise to lowercase. For multi-part `a.b.c.name` shapes (custom
+    # GUCs like `myapp.user_id` or `my.app.user_id`) reconstruct the full
+    # dotted form via lhs.parts (Codex round 4 F2). Bare names have a
+    # single part and produce the same string as `lhs.name`.
+    name = ".".join(part.name for part in lhs.parts).lower()
     value = _extract_setting_value(rhs)
     if value is None:
         return None
@@ -1388,12 +1389,17 @@ def _extract_setting_value(rhs: Optional[exp.Expression]) -> Optional[str]:
     - ``Var(this='DEFAULT')``                   → ``'DEFAULT'`` (treated as
        literal string; users wanting reset semantics use ``RESET``)
     - ``Column`` / ``Identifier``               → name
+    - ``Cast(this=<literal-like>)``             → recurse one level (Codex
+       round 4 F3: after extended-protocol bind substitution the rhs may
+       arrive as ``'foo'::text``)
 
     Returns ``None`` for shapes we don't recognise so the caller can decide
     to silently no-op the SET rather than store a malformed value.
     """
     if rhs is None:
         return None
+    if isinstance(rhs, exp.Cast):
+        return _extract_setting_value(rhs.this)
     if isinstance(rhs, exp.Literal):
         return str(rhs.this)
     if isinstance(rhs, exp.Var):
@@ -1461,27 +1467,25 @@ def _extract_command_form_set(parsed: exp.Command) -> Optional[SetSettingOp]:
     expr = parsed.expression
     if expr is None:
         return None
-    # Collapse internal whitespace (tab, newline, etc.) to single spaces so
-    # the substring search for ` TO ` catches non-space-separated forms.
-    # `\s+` is a single bounded quantifier — no ReDoS risk (S5852).
-    raw = re.sub(r"\s+", " ", _command_expression_text(expr)).strip()
-    raw = raw.rstrip(";").strip()
+    raw = _command_expression_text(expr).strip().rstrip(";").strip()
     if not raw:
         return None
-    # Find the first separator: `=` wins over ` TO ` so `SET x = TO_DATE(...)`
-    # never accidentally splits on TO.
+    # Find the first separator on the original raw so internal whitespace
+    # inside captured values is preserved (Codex round 4 F1). `=` wins over
+    # ` TO ` so `SET x = TO_DATE(...)` never accidentally splits on TO.
+    # The TO match uses `\sTO\s` with case-insensitive matching: each `\s`
+    # is a single-char (bounded) match — no ReDoS risk under S5852, and it
+    # accepts tab / newline separators the round-2 regex did.
     eq_idx = raw.find("=")
     if eq_idx != -1:
         name = raw[:eq_idx].strip()
         value = raw[eq_idx + 1:].strip()
     else:
-        # ` TO ` (with surrounding spaces) on an uppercased view of raw.
-        upper = raw.upper()
-        to_idx = upper.find(" TO ")
-        if to_idx == -1:
+        to_match = re.search(r"\sTO\s", raw, flags=re.IGNORECASE)
+        if to_match is None:
             return None
-        name = raw[:to_idx].strip()
-        value = raw[to_idx + 4:].strip()
+        name = raw[:to_match.start()].strip()
+        value = raw[to_match.end():].strip()
     if not name or not value:
         return None
     if not _COMMAND_SET_NAME_RE.fullmatch(name):

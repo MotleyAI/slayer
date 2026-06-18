@@ -234,18 +234,50 @@ def test_classify_command_form_set_with_comma_values_captures(
         # the dotted name so SHOW round-trips.
         ("SET myapp.user_id = '42'", "myapp.user_id", "42"),
         ("SET myapp.User_Id = '42'", "myapp.user_id", "42"),  # lowercased
+        # 3-part dotted name — `Column.parts` walks the full chain.
+        # Codex round 4 F2.
+        ("SET my.app.user_id = '42'", "my.app.user_id", "42"),
     ],
 )
 def test_classify_set_dotted_custom_name_captures(
     sql: str, expected_name: str, expected_value: str, dialect,
 ) -> None:
-    """`SET myapp.user_id = '42'` parses as a 2-part Column; preserve the
-    dotted form so SHOW myapp.user_id round-trips. Codex round 2 F2."""
+    """`SET myapp.user_id = '42'` parses as a multi-part Column; preserve the
+    dotted form so SHOW myapp.user_id round-trips."""
     result = translate(sql=sql, catalog=_catalog(), dialect=dialect)
     assert isinstance(result, NoOpResult)
     assert result.set_setting == SetSettingOp(
         name=expected_name, value=expected_value,
     )
+
+
+def test_classify_set_cast_wrapped_rhs_captures(dialect) -> None:
+    """`SET application_name = 'foo'::text` — after extended-protocol bind
+    substitution of `$1::text`, the rhs is wrapped in exp.Cast. Peer through
+    one Cast level the same way set_config does. Codex round 4 F3."""
+    result = translate(
+        sql="SET application_name = 'foo'::text",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, NoOpResult)
+    assert result.set_setting == SetSettingOp(
+        name="application_name", value="foo",
+    )
+
+
+def test_classify_command_form_set_preserves_quoted_internal_whitespace() -> None:
+    """`SET x = "foo   bar"` — internal whitespace inside the captured value
+    must survive the separator-detection whitespace normalisation. Codex
+    round 4 F1."""
+    result = translate(
+        sql='SET search_path = "foo   bar", public',
+        catalog=_catalog(), dialect="postgres",
+    )
+    assert isinstance(result, NoOpResult)
+    # The value should preserve the triple-space inside the quoted token.
+    assert result.set_setting is not None
+    assert result.set_setting.name == "search_path"
+    assert "foo   bar" in result.set_setting.value
 
 
 def test_classify_command_form_set_with_tab_whitespace_captures() -> None:
