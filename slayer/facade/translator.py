@@ -1763,12 +1763,15 @@ def _resolve_join_subquery_target(
         ("having", "HAVING"),
         ("joins", "JOIN"),
         ("with_", "WITH (CTE)"),
-        # DEV-1565 (Codex round 1): DISTINCT / LIMIT inside the subquery
-        # change the joined row set in ways the translator would silently
-        # drop (the configured/dynamic join treats the right side as the
-        # full target table). Reject so callers see the divergence.
+        # DEV-1565 (Codex round 1+2): DISTINCT / LIMIT / OFFSET inside
+        # the subquery change the joined row set in ways the translator
+        # would silently drop (the configured/dynamic join treats the
+        # right side as the full target table). Postgres also accepts
+        # OFFSET without LIMIT — handle both so the cardinality change
+        # always surfaces.
         ("distinct", "DISTINCT"),
         ("limit", "LIMIT"),
+        ("offset", "OFFSET"),
     ):
         if inner.args.get(forbidden):
             raise TranslationError(
@@ -1873,24 +1876,45 @@ def _leaf(col: exp.Column) -> str:
 def _canonical_column_or_raise(
     table: FacadeTable, col_name: str, *, role: str,
 ) -> str:
-    """Case-insensitive lookup of ``col_name`` against the underlying
-    ``SlayerModel.columns[]`` (hidden cols counted). Returns the canonical
-    column name; raises ``TranslationError`` if no match.
+    """Lookup ``col_name`` against the underlying ``SlayerModel.columns[]``
+    (hidden cols counted). Returns the canonical column name; raises
+    ``TranslationError`` on no match OR on case-insensitive ambiguity.
 
-    DEV-1565: Postgres folds unquoted identifiers to lowercase but sqlglot
-    preserves what was written, so hand-written SQL like
+    Resolution order (Codex round 2):
+      1. Exact (case-sensitive) match — preferred so user intent wins
+         when the model has two columns differing only by case
+         (``store_id`` and ``Store_ID``).
+      2. Case-insensitive match — used when no exact match exists.
+         Raises if multiple columns match case-insensitively (Postgres
+         folds unquoted identifiers; sqlglot preserves what's written,
+         so a hand-written ``ON ... = STORE_ID`` should pick the lower-
+         case canonical column when that's the only match, but error
+         loudly if the model carries both cases).
+
+    DEV-1565: Postgres folds unquoted identifiers to lowercase but
+    sqlglot preserves what was written, so hand-written SQL like
     ``ON ORDERS.STORE_ID = STORES.ID`` would otherwise fail to match
-    against a model whose ``Column.name`` is ``store_id``. Canonicalising
-    here propagates the model-side casing to every downstream comparison
-    (the configured-join existence check, the dynamic-join
+    against a model whose ``Column.name`` is ``store_id``. The canonical
+    return propagates the model-side casing to every downstream
+    comparison (the configured-join existence check, the dynamic-join
     ``ModelExtension`` build).
     """
     if table.model_ref is None:
         return col_name
-    needle = col_name.lower()
-    for c in table.model_ref.columns:
-        if c.name.lower() == needle:
+    columns = table.model_ref.columns
+    for c in columns:
+        if c.name == col_name:
             return c.name
+    needle = col_name.lower()
+    matches = [c.name for c in columns if c.name.lower() == needle]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise TranslationError(
+            f"LEFT JOIN ON {role}-side column {col_name!r} is "
+            f"case-insensitively ambiguous on table {table.name!r} "
+            f"(matches: {sorted(matches)}); quote the exact column name."
+        )
     raise TranslationError(
         f"LEFT JOIN ON {role}-side column {col_name!r} does not exist "
         f"on table {table.name!r}."

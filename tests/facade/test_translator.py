@@ -898,19 +898,23 @@ def test_left_join_subquery_filter_on_joined_col(dialect) -> None:
     assert result.query.filters == ["stores.name = 'Acme'"]
 
 
-def test_left_join_subquery_aggregate_on_joined_col(dialect) -> None:
+def test_left_join_subquery_aggregate_on_joined_col_blocked_by_dev_1567(dialect) -> None:
     """H.3 unit equivalent: AVG(Stores.tax_rate) maps to the cross-model
-    measure stores.tax_rate:avg."""
+    measure stores.tax_rate:avg — but DEV-1567's _assert_local_metric
+    guard rejects cross-model metric projection in flat SELECT (the
+    engine can't execute it correctly until DEV-1493 multi-stage rewrite
+    lands). The translator's join recognition + alias remap still happen;
+    rejection is at the metric resolver. Test asserts the guard fires
+    with the expected error pointing at DEV-1493."""
     sql = _metabase_join_sql(
         projection='AVG("Stores"."tax_rate") AS "avg"',
     )
-    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
-    assert isinstance(result, QueryResult)
-    assert result.query.source_model == "orders"
-    assert result.query.measures is not None
-    assert result.query.measures[0].formula == "stores.tax_rate:avg"
-    assert result.query.measures[0].name == "avg"
-    assert dict(result.column_name_mapping) == {"orders.avg": "avg"}
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    msg = str(exc_info.value)
+    assert "Cross-model metric" in msg
+    assert "flat SELECT" in msg
+    assert "DEV-1493" in msg
 
 
 def test_left_join_subquery_order_by_joined_col(dialect) -> None:
@@ -945,19 +949,20 @@ def test_left_join_subquery_group_by_joined_col(dialect) -> None:
     assert mapping["orders.stores.name"] == "Stores__name"
 
 
-def test_left_join_subquery_having_on_joined_aggregate(dialect) -> None:
-    """HAVING on an aggregate of a joined column lifts to a colon-form
-    filter — symmetric with §3's promise that joined refs appear anywhere a
-    base column ref appears today."""
+def test_left_join_subquery_having_on_joined_aggregate_blocked_by_dev_1567(dialect) -> None:
+    """HAVING on a joined-col aggregate hits the same DEV-1567 guard as
+    projection — the cross-model AVG metric is rejected before the HAVING
+    rewrite can lift it to a colon-form filter. Once DEV-1493 lands this
+    test should be converted back to a positive assertion on
+    ``filters == ['stores.tax_rate:avg > 0.05']``."""
     sql = _metabase_join_sql(
         projection='"public"."orders"."status", AVG("Stores"."tax_rate") AS "avg"',
         group_by='"public"."orders"."status"',
         having='AVG("Stores"."tax_rate") > 0.05',
     )
-    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
-    assert isinstance(result, QueryResult)
-    assert result.query.source_model == "orders"
-    assert result.query.filters == ["stores.tax_rate:avg > 0.05"]
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "Cross-model metric" in str(exc_info.value)
 
 
 def test_left_join_subquery_offset_passes_through(dialect) -> None:
@@ -1028,6 +1033,37 @@ def test_left_join_on_column_case_insensitive(dialect) -> None:
     assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
 
 
+def test_left_join_on_column_case_ambiguity_rejected(dialect) -> None:
+    """Codex round 2: when a model has columns differing only by case
+    (e.g. ``store_id`` and ``Store_ID``), a case-insensitive ON-column
+    lookup is ambiguous. Exact match still wins; with neither side an
+    exact match, the resolver raises rather than silently picking the
+    first match."""
+    orders = SlayerModel(
+        name="orders", data_source="jaffle", sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="store_id", type=DataType.INT),
+            Column(name="Store_ID", type=DataType.INT),  # case-ambiguous sibling
+        ],
+        joins=[],  # forces dynamic-join path → ambiguity surfaces at ON
+    )
+    stores = SlayerModel(
+        name="stores", data_source="jaffle", sql_table="stores",
+        columns=[Column(name="id", type=DataType.INT, primary_key=True),
+                 Column(name="name", type=DataType.TEXT)],
+    )
+    cat = build_catalog(models_by_datasource={"jaffle": [orders, stores]})
+    sql = _metabase_join_sql(
+        projection='"Stores"."name"',
+        # Neither "store_id" nor "Store_ID" — only case-insensitive matches.
+        on_clause='"orders"."STORE_id" = "Stores"."id"',
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=cat, dialect=dialect)
+    assert "ambiguous" in str(exc_info.value).lower()
+
+
 def test_left_join_alias_different_from_target_name(dialect) -> None:
     """The join alias is user-chosen via MBQL; it doesn't have to match the
     SLayer model name. Resolution uses the subquery's FROM table, not the
@@ -1068,20 +1104,23 @@ def test_left_join_dynamic_when_parent_has_no_join_to_target(dialect, caplog) ->
     assert any("dynamic join" in m and "orders" in m and "stores" in m for m in warns)
 
 
-def test_left_join_dynamic_supports_aggregate_on_joined_col(dialect, caplog) -> None:
-    """Dynamic-join target must materialise its column-x-agg metrics into
-    the projection's lookup dicts so AVG(Stores.tax_rate) still resolves."""
+def test_left_join_dynamic_aggregate_on_joined_col_blocked_by_dev_1567(dialect, caplog) -> None:
+    """Dynamic-join + aggregate-on-joined-col hits the same DEV-1567
+    guard. The dynamic-join WARN still fires (the join recognition is
+    upstream of the metric guard), and the materialised lookup entry
+    carries a dotted name that the guard rejects. Once DEV-1493 lands,
+    this test should be converted back to assert the ModelExtension
+    + dotted-form materialisation."""
     sql = _metabase_join_sql(projection='AVG("Stores"."tax_rate") AS "avg"')
     cat = _join_catalog(parent_join_target=None)
     with caplog.at_level(logging.WARNING, logger="slayer.facade.translator"):
-        result = translate(sql=sql, catalog=cat, dialect=dialect)
-    assert isinstance(result, QueryResult)
-    # Must be on the dynamic-join code path: source_model is the inline ext.
-    assert isinstance(result.query.source_model, ModelExtension)
-    assert result.query.source_model.source_name == "orders"
-    assert result.query.measures is not None
-    assert result.query.measures[0].formula == "stores.tax_rate:avg"
-    assert dict(result.column_name_mapping) == {"orders.avg": "avg"}
+        with pytest.raises(TranslationError) as exc_info:
+            translate(sql=sql, catalog=cat, dialect=dialect)
+    assert "Cross-model metric" in str(exc_info.value)
+    # The dynamic-join WARN still fires because the join is parsed and
+    # the overlays prepared BEFORE projection resolution runs the guard.
+    warns = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("dynamic join" in m and "orders" in m and "stores" in m for m in warns)
 
 
 def test_left_join_dynamic_supports_filter_on_joined_col(dialect, caplog) -> None:
@@ -1278,6 +1317,22 @@ def test_subquery_with_inner_limit_rejected(dialect) -> None:
         'FROM "public"."orders" '
         'LEFT JOIN ('
         '  SELECT "id", "name" FROM "public"."stores" LIMIT 10'
+        ') AS "Stores" '
+        '  ON "public"."orders"."store_id" = "Stores"."id"'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "subquery" in str(exc_info.value).lower()
+
+
+def test_subquery_with_inner_offset_rejected(dialect) -> None:
+    """Inner OFFSET silently skips rows in the joined set (Postgres
+    accepts OFFSET without LIMIT). Codex round 2."""
+    sql = (
+        'SELECT "Stores"."name" '
+        'FROM "public"."orders" '
+        'LEFT JOIN ('
+        '  SELECT "id", "name" FROM "public"."stores" OFFSET 1'
         ') AS "Stores" '
         '  ON "public"."orders"."store_id" = "Stores"."id"'
     )

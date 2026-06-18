@@ -956,21 +956,32 @@ def test_join_filter_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     stores_pk_fid = client.field_id_by_name("stores", "id")
     stores_name_fid = client.field_id_by_name("stores", "name")
     # Pick a sample value from a store that DEFINITELY has at least one
-    # matching order: fetch any order's store_id, then look up that
-    # store's name. ``SELECT * FROM stores LIMIT 1`` (the prior approach)
-    # could land on a store with zero orders since jaffle's stores table
-    # carries entries unreferenced by orders — that produced a false-fail
-    # for n_filtered == 0 against the 0 < n_filtered invariant.
-    sample_store_id = _dataset_rows(client.dataset(encode_mbql_query(
+    # matching order: fetch a NON-NULL store_id from orders, then look
+    # up that store's name. ``SELECT * FROM stores LIMIT 1`` (the prior
+    # approach) could land on a store with zero orders since jaffle's
+    # stores table carries entries unreferenced by orders — that
+    # produced a false-fail for n_filtered == 0 against the
+    # 0 < n_filtered invariant. Filtering NOT-NULL also guards against
+    # a NULL store_id row leaking through (would break the subsequent
+    # stores lookup).
+    order_store_rows = _dataset_rows(client.dataset(encode_mbql_query(
         source_table=orders_id,
         fields=[["field", store_id_fid, None]],
+        filter=["not-null", ["field", store_id_fid, None]],
         limit=1,
-    )))[0][0]
+    )))
+    assert order_store_rows, "no orders with a non-NULL store_id — jaffle data shape changed"
+    sample_store_id = order_store_rows[0][0]
+    assert sample_store_id is not None
     discover = client.dataset(encode_mbql_query(
         source_table=stores_id,
         filter=["=", ["field", stores_pk_fid, None], sample_store_id],
         limit=1,
     ))
+    assert _dataset_rows(discover), (
+        f"stores lookup for sample_store_id={sample_store_id!r} returned "
+        f"no rows — dangling FK in jaffle data"
+    )
     name_idx = next(i for i, c in enumerate(_dataset_cols(discover)) if c["name"] == "name")
     sample = _dataset_rows(discover)[0][name_idx]
     payload = client.dataset(encode_mbql_query(
@@ -998,6 +1009,18 @@ def test_join_filter_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "DEV-1493 / DEV-1567: the LEFT JOIN shape recognises Metabase's "
+        "AVG(\"Stores\".\"tax_rate\") and produces a cross-model "
+        "stores.tax_rate:avg measure, but DEV-1567's _assert_local_metric "
+        "guard rejects projecting cross-model metrics in a flat SELECT "
+        "(the engine emits a CROSS-JOIN'd CTE that returns N rows of the "
+        "same aggregate value instead of 1). Needs a multi-stage rewrite "
+        "(DEV-1493) before this flat-projection shape can execute correctly."
+    ),
+)
 def test_join_aggregate_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
