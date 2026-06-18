@@ -1199,6 +1199,66 @@ def _lift_time_comparator(
     return dotted, None, val
 
 
+def _aggregate_alias_for_column(
+    side: exp.Expression,
+    items_by_projected_name: Dict[str, "_ProjectionItem"],
+    *, strip_prefix: Optional[Tuple[str, str]] = None,
+) -> Optional["_ProjectionItem"]:
+    """If ``side`` is a column reference whose dotted (strip_prefix-aware)
+    name matches an aggregate projection's ``projected_name``, return that
+    projection item; else ``None``.
+
+    Used by ``_try_aggregate_alias_filter`` to route Metabase-style
+    ``WHERE "<alias>" > <literal>`` and ``HAVING "<alias>" > <literal>``
+    conjuncts to colon-form filters (DEV-1568). The ``item.metric`` guard
+    keeps dimension projections that happen to share a name with what
+    *would* be an aggregate alias from being treated as aggregates.
+    """
+    if not isinstance(side, exp.Column):
+        return None
+    name = _column_to_dotted(side, strip_prefix=strip_prefix)
+    item = items_by_projected_name.get(name)
+    if item is None or item.metric is None:
+        return None
+    return item
+
+
+def _try_aggregate_alias_filter(
+    conj: exp.Expression,
+    items_by_projected_name: Dict[str, "_ProjectionItem"],
+    *, strip_prefix: Optional[Tuple[str, str]] = None,
+) -> Optional[str]:
+    """If ``conj`` is ``<aggregate-alias-col> <cmp> <literal>`` (in either
+    order), return the colon-form filter string. If one side matches an
+    aggregate alias but the other side is not a literal, raise. Return
+    ``None`` if neither side matches an aggregate-alias column ref.
+
+    DEV-1568: Metabase compiles MBQL ``["aggregation", N]`` post-aggregation
+    references to alias-bearing SQL — ``WHERE "count" > 1`` for filters and
+    ``ORDER BY "count" DESC`` for sorts. This detector rewrites the filter
+    shapes to colon-form (``*:count > 1``) so the engine classifies them
+    correctly as HAVING; ``_translate_order_by`` handles the ORDER BY side.
+    """
+    op_sql = _COMPARATOR_SQL.get(type(conj))
+    if op_sql is None:
+        return None
+    lhs, rhs = conj.this, conj.expression
+    alias_lhs = _aggregate_alias_for_column(lhs, items_by_projected_name, strip_prefix=strip_prefix)
+    alias_rhs = _aggregate_alias_for_column(rhs, items_by_projected_name, strip_prefix=strip_prefix)
+    if alias_lhs is None and alias_rhs is None:
+        return None
+    if alias_lhs is not None and alias_rhs is None and isinstance(rhs, exp.Literal):
+        assert alias_lhs.metric is not None
+        return f"{alias_lhs.metric.measure_formula} {op_sql} {rhs.sql()}"
+    if alias_rhs is not None and alias_lhs is None and isinstance(lhs, exp.Literal):
+        assert alias_rhs.metric is not None
+        return f"{alias_rhs.metric.measure_formula} {_flip_comparator(op_sql)} {lhs.sql()}"
+    raise TranslationError(
+        f"Aggregate-alias filter expects a literal on the other side; "
+        f"got: {conj.sql()!r}"
+    )
+
+
 def _classify_where_conjunct(
     conj: exp.Expression, time_dim_names: set[str],
     *,
@@ -1326,16 +1386,24 @@ def _parse_with_keyword_alias_fallback(
 def _apply_where(
     where: Optional[exp.Where],
     time_dims_built: Dict[str, TimeDimension],
+    items_by_projected_name: Dict[str, "_ProjectionItem"],
     filters_out: List[str],
     *,
     strip_prefix: Optional[Tuple[str, str]] = None,
     alias_map: Optional[Dict[str, str]] = None,
 ) -> None:
-    """Walk the WHERE chain; lift time-dim filters, append verbatim rest."""
+    """Walk the WHERE chain; route aggregate-alias refs to colon-form
+    filters (DEV-1568), lift time-dim filters, append verbatim rest."""
     if where is None:
         return
     time_dim_names = set(time_dims_built.keys())
     for conj in _split_and_chain(where.this):
+        colon_form = _try_aggregate_alias_filter(
+            conj, items_by_projected_name, strip_prefix=strip_prefix,
+        )
+        if colon_form is not None:
+            filters_out.append(colon_form)
+            continue
         lifted, verbatim = _classify_where_conjunct(
             conj, time_dim_names, strip_prefix=strip_prefix, alias_map=alias_map,
         )
@@ -1355,15 +1423,17 @@ def _apply_where(
 def _apply_having(
     having: Optional[exp.Having],
     table: FacadeTable,
+    items_by_projected_name: Dict[str, "_ProjectionItem"],
     filters_out: List[str],
     *,
     strip_prefix: Optional[Tuple[str, str]] = None,
     alias_map: Optional[Dict[str, str]] = None,
     extra_metrics_by_formula: Optional[Dict[str, FacadeMetric]] = None,
 ) -> None:
-    """Map ``HAVING <agg(col)> <cmp> <literal>`` conjuncts to colon-form
-    filters (DEV-1486 decision 21). The engine classifies colon-form
-    aggregate filters as HAVING.
+    """Map ``HAVING <agg(col)> <cmp> <literal>`` (DEV-1486 decision 21) and
+    ``HAVING <agg-alias-col> <cmp> <literal>`` (DEV-1568) conjuncts to
+    colon-form filters. The engine classifies colon-form aggregate filters
+    as HAVING.
 
     DEV-1565: ``extra_metrics_by_formula`` overlay covers dynamic-join
     targets whose metrics aren't yet in the catalog's projection.
@@ -1374,6 +1444,14 @@ def _apply_having(
     if extra_metrics_by_formula:
         metrics_by_formula.update(extra_metrics_by_formula)
     for conj in _split_and_chain(having.this):
+        # DEV-1568: alias-ref form (``HAVING "rev" > 1000``). Symmetric with
+        # the WHERE pre-pass; tries first so it wins before the agg-call form.
+        colon_form = _try_aggregate_alias_filter(
+            conj, items_by_projected_name, strip_prefix=strip_prefix,
+        )
+        if colon_form is not None:
+            filters_out.append(colon_form)
+            continue
         op_sql = _COMPARATOR_SQL.get(type(conj))
         if op_sql is None:
             raise TranslationError(
@@ -1405,6 +1483,36 @@ def _flip_comparator(op_sql: str) -> str:
 # --- ORDER BY / GROUP BY -----------------------------------------------------
 
 
+def _resolve_order_by_item(
+    body: exp.Expression,
+    item_by_projected_name: Dict[str, _ProjectionItem],
+    metric_item_by_formula: Dict[str, _ProjectionItem],
+    *,
+    strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
+) -> _ProjectionItem:
+    """Look up the projection item an ORDER BY term resolves to.
+
+    Tries the bare-name lookup first (alias or canonical metric name from
+    ``_order_by_name``); on miss, DEV-1568 fallback maps a literal aggregate
+    call (``ORDER BY SUM(revenue)``) to the projection registered under a
+    different alias (``SELECT SUM(revenue) AS "rev"``) by matching on the
+    aggregate's canonical ``measure_formula``. Raises ``TranslationError``
+    if neither path resolves.
+    """
+    name = _order_by_name(body, strip_prefix=strip_prefix, alias_map=alias_map)
+    item = item_by_projected_name.get(name)
+    if item is None:
+        agg = _detect_aggregate(body, strip_prefix=strip_prefix, alias_map=alias_map)
+        if agg is not None:
+            item = metric_item_by_formula.get(_agg_formula(agg))
+    if item is None:
+        raise TranslationError(
+            f"ORDER BY column {name!r} is not in the projection list"
+        )
+    return item
+
+
 def _translate_order_by(
     order: Optional[exp.Order],
     item_by_projected_name: Dict[str, _ProjectionItem],
@@ -1414,20 +1522,34 @@ def _translate_order_by(
 ) -> List[OrderItem]:
     if order is None:
         return []
+    # DEV-1568: when a SELECT aliases an aggregate (``SUM(revenue) AS "rev"``)
+    # and the ORDER BY repeats the call literally (``ORDER BY SUM(revenue)``),
+    # ``_order_by_name`` returns the canonical metric name (``"revenue_sum"``)
+    # — but ``item_by_projected_name`` is keyed on the user alias (``"rev"``).
+    # Build a fallback map keyed by ``metric.measure_formula`` so a repeated
+    # aggregate call resolves to the same projection the alias does.
+    metric_item_by_formula: Dict[str, _ProjectionItem] = {
+        item.metric.measure_formula: item
+        for item in item_by_projected_name.values()
+        if item.metric is not None
+    }
     out: List[OrderItem] = []
     for ord_expr in order.args.get("expressions") or []:
         if not isinstance(ord_expr, exp.Ordered):
             continue
-        body = ord_expr.this
         direction = "desc" if ord_expr.args.get("desc") else "asc"
-        name = _order_by_name(body, strip_prefix=strip_prefix, alias_map=alias_map)
-        if name not in item_by_projected_name:
-            raise TranslationError(
-                f"ORDER BY column {name!r} is not in the projection list"
-            )
-        item = item_by_projected_name[name]
+        item = _resolve_order_by_item(
+            ord_expr.this, item_by_projected_name, metric_item_by_formula,
+            strip_prefix=strip_prefix, alias_map=alias_map,
+        )
         if item.metric is not None:
-            ref = ColumnRef(name=item.metric.name)
+            # DEV-1568: use the projection's SELECT alias, not the catalog
+            # ``FacadeMetric.name``. ``_record_metric`` registered the SLayer
+            # measure under ``projected_name``, so the OrderItem must point
+            # at the same name. Pre-fix the engine saw ``ColumnRef("row_count")``
+            # against a measure named ``"count"`` and DuckDB rejected with
+            # ``Referenced column "orders.row_count" not found``.
+            ref = ColumnRef(name=item.projected_name)
         else:
             assert item.dimension is not None
             ref = ColumnRef.from_string(item.dimension.dimension_ref)
@@ -2421,13 +2543,19 @@ def _translate_slayer_select(
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
     )
 
+    # DEV-1568: WHERE/HAVING/ORDER BY all need the alias→projection-item map.
+    # Build once and pass to each consumer.
+    item_by_projected_name = {item.projected_name: item for item in items}
+
     filters: List[str] = []
     _apply_where(
-        parsed.args.get("where"), plan.time_dim_by_name, filters,
+        parsed.args.get("where"), plan.time_dim_by_name,
+        item_by_projected_name, filters,
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
     )
     _apply_having(
-        parsed.args.get("having"), table, filters,
+        parsed.args.get("having"), table,
+        item_by_projected_name, filters,
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
         extra_metrics_by_formula=overlays.extra_metrics_by_formula or None,
     )
