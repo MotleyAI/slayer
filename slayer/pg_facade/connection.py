@@ -47,6 +47,7 @@ from slayer.pg_facade.auth import verify_password
 from slayer.pg_facade.identity import parameter_status_defaults, version_string
 from slayer.pg_facade.probes import (
     SESSION_SETTING_SEED,
+    SHOW_ALIASES,
     match_pg_probe_with_mutation,
 )
 from slayer.pg_facade.types import (
@@ -764,7 +765,14 @@ class PgConnection:
     def _apply_reset_setting(self, op: ResetSettingOp) -> None:
         """Restore the per-connection session-settings map per the RESET
         intent. Pushes ``ParameterStatus`` for each reportable name whose
-        value changed back to seed."""
+        value changed back to seed.
+
+        DEV-1569 / Codex F2: multi-word names (``RESET TIME ZONE``,
+        ``RESET SESSION AUTHORIZATION``) are alias-resolved via the same
+        ``SHOW_ALIASES`` table that ``SHOW`` consults; without the
+        resolution the lookup against ``SESSION_SETTING_SEED`` would
+        silently miss.
+        """
         if self._in_describe:
             return
         if op.reset_all:
@@ -776,8 +784,9 @@ class PgConnection:
                 value = self._session_settings.get(lower, "")
                 self._push_parameter_status_if_reportable(lower, value)
             return
-        # RESET <name>: revert to seed (if seeded) or drop the override.
-        name = op.name or ""
+        # RESET <name>: alias-resolve (multi-word names), then revert to
+        # seed (if seeded) or drop the override.
+        name = SHOW_ALIASES.get(op.name or "", op.name or "")
         if name in SESSION_SETTING_SEED:
             self._session_settings[name] = SESSION_SETTING_SEED[name]
             self._push_parameter_status_if_reportable(

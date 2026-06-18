@@ -1402,17 +1402,59 @@ def _extract_setting_value(rhs: Optional[exp.Expression]) -> Optional[str]:
 def _extract_reset_setting(parsed: exp.Command) -> Optional[ResetSettingOp]:
     """Extract ``RESET <name>`` or ``RESET ALL`` intent from an ``exp.Command``
     root. Returns ``None`` for the bare ``RESET`` spelling — defensive
-    fallback (drivers don't emit this in practice)."""
+    fallback (drivers don't emit this in practice).
+
+    Multi-word names (``RESET TIME ZONE`` / ``RESET SESSION AUTHORIZATION``)
+    are returned with internal whitespace preserved and lowercased; the
+    Postgres facade's ``_apply_reset_setting`` alias-resolves them via the
+    same ``_SHOW_ALIASES`` table that ``SHOW`` consults.
+    """
     expr = parsed.expression
     if expr is None:
         return None
     # Mirror the pattern used by ``_show_setting_name`` for robustness across
     # sqlglot's various expression shapes.
     raw = expr.this if hasattr(expr, "this") else expr
-    name = str(raw).strip("'\"")
+    name = str(raw).strip().strip("'\"")
     if name.upper() == "ALL":
         return ResetSettingOp(reset_all=True)
-    return ResetSettingOp(name=name.lower())
+    # Collapse multi-word names into a single-space lowercase form so the
+    # facade can apply the alias table (`"TIME ZONE"` → `"time zone"` →
+    # `"timezone"`).
+    name = re.sub(r"\s+", " ", name).lower()
+    return ResetSettingOp(name=name)
+
+
+# Command-form SET extractor (DEV-1569 / Codex round 1 F1). sqlglot falls
+# back to ``exp.Command(this='SET', expression='<raw rest-of-line>')`` for
+# spellings it can't model — most importantly comma-separated values such
+# as ``SET search_path = public, extensions`` (which pgjdbc / Metabase
+# emit on every connection). The regex captures a single-identifier name
+# followed by ``=`` or ``TO``; multi-word names (``SET TIME ZONE 'UTC'``)
+# and ``SET SESSION CHARACTERISTICS …`` deliberately don't match so they
+# fall through to the silent-no-op behaviour the spec cuts.
+_COMMAND_SET_RE = re.compile(
+    r"^\s*([A-Za-z_][\w]*)\s*(?:=|TO\s+)\s*(.+?)\s*;?\s*$",
+)
+
+
+def _extract_command_form_set(parsed: exp.Command) -> Optional[SetSettingOp]:
+    """For an ``exp.Command(this='SET', expression='<raw>')`` root, try to
+    parse the raw expression text into a ``(name, value)`` pair via a small
+    regex. Returns ``None`` if the shape doesn't match (multi-word names,
+    no value, etc.) so the caller silently no-ops."""
+    expr = parsed.expression
+    if expr is None:
+        return None
+    raw = expr if isinstance(expr, str) else (
+        expr.this if hasattr(expr, "this") else str(expr)
+    )
+    match = _COMMAND_SET_RE.match(str(raw))
+    if match is None:
+        return None
+    name = match.group(1).lower()
+    value = match.group(2).strip()
+    return SetSettingOp(name=name, value=value)
 
 
 def _classify_noop_root(parsed: exp.Expression) -> Optional[NoOpResult]:
@@ -1447,9 +1489,38 @@ def _classify_noop_root(parsed: exp.Expression) -> Optional[NoOpResult]:
                 command_tag="RESET",
                 reset_setting=_extract_reset_setting(parsed),
             )
-        if verb in {"SET", "SHOW", "USE"}:
+        if verb == "SET":
+            # DEV-1569 / Codex F1: also try to extract a (name, value) pair
+            # from the Command-form fallback so spellings like
+            # `SET search_path = public, extensions` round-trip through
+            # SHOW. Multi-word names (`SET TIME ZONE 'UTC'`) and
+            # session-characteristics spellings deliberately don't match
+            # the regex and remain silent no-ops.
+            return NoOpResult(
+                command_tag="SET",
+                set_setting=_extract_command_form_set(parsed),
+            )
+        if verb in {"SHOW", "USE"}:
             return NoOpResult(command_tag=verb)
     return None
+
+
+def _unwrap_probe(
+    probe: "Union[RowBatch, ProbeMatcherOutcome]",
+) -> ProbeResult:
+    """Normalise a probe matcher's return value into a ``ProbeResult``.
+
+    ``ProbeMatcher`` may return either a bare ``RowBatch`` (Flight default)
+    or a ``ProbeMatcherOutcome`` (Postgres facade, carrying an optional
+    session-setting mutation hint from ``set_config``). Both shapes
+    collapse into ``ProbeResult`` here so the dispatcher's branch count
+    stays low (DEV-1569 / Sonar S3776).
+    """
+    if isinstance(probe, ProbeMatcherOutcome):
+        return ProbeResult(
+            batch=probe.batch, settings_mutation=probe.settings_mutation,
+        )
+    return ProbeResult(batch=probe)
 
 
 def translate(
@@ -1483,15 +1554,7 @@ def translate(
     pm = probe_matcher or match_probe
     probe = pm(parsed)
     if probe is not None:
-        # ProbeMatcher may return either a bare ``RowBatch`` (Flight default)
-        # or a ``ProbeMatcherOutcome`` (Postgres facade, carrying an optional
-        # session-setting mutation hint from set_config). Normalise into a
-        # ``ProbeResult`` either way (DEV-1569).
-        if isinstance(probe, ProbeMatcherOutcome):
-            return ProbeResult(
-                batch=probe.batch, settings_mutation=probe.settings_mutation,
-            )
-        return ProbeResult(batch=probe)
+        return _unwrap_probe(probe)
 
     # Step 3 — AST root classification.
     if isinstance(parsed, (exp.Insert, exp.Update, exp.Delete, exp.Merge,

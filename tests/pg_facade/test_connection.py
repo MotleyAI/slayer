@@ -16,6 +16,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.connection import PgConnection
+from slayer.pg_facade.probes import SESSION_SETTING_SEED
 
 
 # --- fakes -------------------------------------------------------------------
@@ -1382,7 +1383,6 @@ async def test_show_all_returns_empty_for_unknown_setting() -> None:
 async def test_session_settings_isolated_after_first_use() -> None:
     """Two fresh connections both seed from SESSION_SETTING_SEED. Setting on
     one doesn't pollute the other's view, even later in the same test."""
-    from slayer.pg_facade.probes import SESSION_SETTING_SEED
     seed_snapshot = dict(SESSION_SETTING_SEED)
 
     inp_a = (
@@ -1395,7 +1395,7 @@ async def test_session_settings_isolated_after_first_use() -> None:
         + _query("SHOW application_name")
         + _terminate()
     )
-    writer_a, writer_b = await asyncio.gather(_run(inp_a), _run(inp_b))
+    _, writer_b = await asyncio.gather(_run(inp_a), _run(inp_b))
     # B's SHOW returns seeded "" (NOT 'A').
     assert _show_value(_messages(writer_b.buffer)) == ""
     # Module-level seed unchanged.
@@ -1672,6 +1672,80 @@ async def test_set_server_version_silently_accepted() -> None:
     )
     # SHOW reflects the mutated value (since server_version IS in the seed).
     assert _show_value(msgs) == "99.0"
+
+
+async def test_set_search_path_comma_values_round_trip() -> None:
+    """`SET search_path = public, extensions` (Command-form, comma-separated
+    values — pgjdbc / Metabase default) round-trips through SHOW correctly.
+    Codex round 1 finding F1."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET search_path = public, extensions")
+        + _query("SHOW search_path")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "public, extensions"
+
+
+async def test_reset_multi_word_alias_resolves_to_seed_key() -> None:
+    """`RESET TIME ZONE` must alias-resolve to the seeded `timezone` key
+    before restoring. Codex round 1 finding F2."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET timezone = 'America/New_York'")
+        + _query("RESET TIME ZONE")
+        + _query("SHOW timezone")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    # After RESET TIME ZONE, SHOW timezone returns the seeded UTC.
+    assert _show_value(msgs) == "UTC"
+
+
+async def test_reset_session_authorization_alias_resolves() -> None:
+    """`RESET SESSION AUTHORIZATION` aliases to `session_authorization`."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SET session_authorization = 'someuser'")
+        + _query("RESET SESSION AUTHORIZATION")
+        + _query("SHOW session_authorization")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "slayer"
+
+
+async def test_set_config_with_cast_value_mutates_session() -> None:
+    """`SELECT set_config('app', $1::text, false)` (asyncpg cast form) must
+    still mutate per-connection state. Codex round 1 finding F3."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SELECT set_config('application_name', 'cast_value'::text, false)")
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert _show_value(msgs) == "cast_value"
+
+
+async def test_set_config_with_is_local_true_does_not_mutate() -> None:
+    """`set_config('app', 'x', true)` must NOT persist — `is_local=true` is
+    out of scope for DEV-1569."""
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SELECT set_config('application_name', 'transient', true)")
+        + _query("SHOW application_name")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    # SHOW returns the seeded "" — the transient set_config didn't persist.
+    assert _show_value(msgs) == ""
 
 
 @pytest.mark.parametrize(

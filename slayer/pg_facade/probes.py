@@ -56,7 +56,7 @@ SESSION_SETTING_SEED: Dict[str, str] = {
 # Multi-word SHOW spellings → the canonical setting they report. pgjdbc's
 # Connection.getTransactionIsolation() issues `SHOW TRANSACTION ISOLATION
 # LEVEL` on every pooled connection (c3p0 caches it at pool-init).
-_SHOW_ALIASES = {
+SHOW_ALIASES = {
     "transaction isolation level": "transaction_isolation",
     "time zone": "timezone",
     "session authorization": "session_authorization",
@@ -121,7 +121,7 @@ def match_pg_probe(
     setting = _show_setting_name(parsed)
     if setting is not None:
         key = setting.lower()
-        key = _SHOW_ALIASES.get(key, key)
+        key = SHOW_ALIASES.get(key, key)
         value = settings.get(key, "")
         return _single(key, value)
 
@@ -185,9 +185,15 @@ def _extract_set_config_mutation(parsed: exp.Expression) -> Optional[SetSettingO
     <is_local>)`` and return a ``SetSettingOp`` carrying the (lowercased
     name, raw value) pair; return ``None`` otherwise.
 
-    Both arguments must be string Literals — set_config with non-literal
-    args isn't something a real client emits, and reaching into a
-    variable-bound argument here would be Future-Codex.
+    DEV-1569 / Codex F3: the value may arrive wrapped in an ``exp.Cast``
+    (asyncpg / pgjdbc emit ``set_config('app', $1::text, false)`` and the
+    bound substitution leaves ``'value'::text``); ``_first_literal``
+    peers through one level of CAST so the mutation still surfaces.
+
+    DEV-1569 / CodeRabbit thread: ``is_local=true`` is out of scope for
+    DEV-1569 (we don't model transaction-bound restoration). When the
+    third argument is explicitly ``true``, return ``None`` so the
+    connection still emits the row but doesn't persist the value.
     """
     body = _single_projection(parsed)
     if body is None:
@@ -198,13 +204,49 @@ def _extract_set_config_mutation(parsed: exp.Expression) -> Optional[SetSettingO
     value_lit = _first_literal(body, 1)
     if name_lit is None or value_lit is None:
         return None
+    if not _set_config_is_session_scope(body):
+        return None
     return SetSettingOp(name=name_lit.lower(), value=value_lit)
 
 
-def _first_literal(node: exp.Anonymous, index: int) -> Optional[str]:
+def _set_config_is_session_scope(node: exp.Anonymous) -> bool:
+    """Check ``set_config`` 's third argument (``is_local``).
+
+    ``True`` (session scope) is permitted; explicit ``true`` (local scope)
+    is blocked since DEV-1569 doesn't model transaction-bound restoration.
+    A missing third argument or an unknown shape is treated as session
+    scope (per real-Postgres default).
+    """
     args = node.args.get("expressions") or []
-    if index < len(args) and isinstance(args[index], exp.Literal):  # NOSONAR(S6466) — guarded by index < len(args)
-        return str(args[index].this)
+    if len(args) < 3:
+        return True
+    is_local = args[2]
+    if isinstance(is_local, exp.Boolean):
+        return is_local.this is False
+    if isinstance(is_local, exp.Literal):
+        return str(is_local.this).lower() != "true"
+    # Non-literal / non-boolean third arg: be conservative — skip mutation.
+    return False
+
+
+def _first_literal(node: exp.Anonymous, index: int) -> Optional[str]:
+    """Return the string value of the ``index``-th argument of ``node`` if it
+    is a string literal (or a CAST around a string literal). Returns
+    ``None`` otherwise.
+
+    DEV-1569 / Codex F3: drivers emit cast forms like ``'foo'::text`` and
+    ``cast('foo' AS TEXT)`` for set_config arguments; sqlglot parses both
+    as ``exp.Cast(this=Literal('foo'), to=DataType(TEXT))``. Peer through
+    one level of CAST so the underlying literal is reachable.
+    """
+    args = node.args.get("expressions") or []
+    if index >= len(args):
+        return None
+    arg = args[index]
+    if isinstance(arg, exp.Cast):
+        arg = arg.this
+    if isinstance(arg, exp.Literal):  # NOSONAR(S6466) — guarded by index < len(args)
+        return str(arg.this)
     return None
 
 

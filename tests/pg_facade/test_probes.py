@@ -174,7 +174,7 @@ def test_show_reads_from_session_settings() -> None:
 def test_show_falls_back_to_seed_when_session_settings_is_none() -> None:
     """Backwards compatibility: session_settings=None → seed-only behaviour
     (matches the pre-DEV-1569 contract)."""
-    batch = _probe("SHOW application_name")  # session_settings=None
+    batch = _probe("SHOW application_name")  # session_settings=None  # NOSONAR(S125) — argument-shape note, not commented-out code
     assert batch is not None
     assert batch.rows == [{"application_name": ""}]
 
@@ -314,6 +314,52 @@ def test_match_pg_probe_with_mutation_returns_none_for_non_probe() -> None:
         datasource="jaffle", version_str="x",
     )
     assert outcome is None
+
+
+def test_match_pg_probe_with_mutation_unwraps_cast_around_set_config_value() -> None:
+    """sqlglot wraps `'foo'::text` and `cast('foo' as text)` as ``exp.Cast``;
+    `set_config('app', 'foo'::text, false)` (the common asyncpg / pgjdbc
+    extended-protocol spelling after a Bind substitutes a typed cast) must
+    still produce a SetSettingOp."""
+    for sql in [
+        "SELECT set_config('application_name', 'foo'::text, false)",
+        "SELECT set_config('application_name', cast('foo' AS TEXT), false)",
+    ]:
+        outcome = match_pg_probe_with_mutation(
+            _parse(sql), datasource="jaffle", version_str="x",
+            session_settings={"application_name": "old"},
+        )
+        assert outcome is not None, sql
+        assert outcome.settings_mutation == SetSettingOp(
+            name="application_name", value="foo",
+        ), sql
+
+
+def test_match_pg_probe_with_mutation_blocks_is_local_true() -> None:
+    """`set_config('app', 'x', true)` must NOT produce a mutation hint —
+    `is_local=true` is out of scope per DEV-1569 (the spec cuts
+    transaction-bound restore semantics)."""
+    outcome = match_pg_probe_with_mutation(
+        _parse("SELECT set_config('application_name', 'foo', true)"),
+        datasource="jaffle", version_str="x",
+        session_settings={"application_name": "old"},
+    )
+    assert outcome is not None
+    # Batch is still returned (probe is matched + echoed for the response),
+    # but no mutation is applied.
+    assert outcome.settings_mutation is None
+
+
+def test_match_pg_probe_with_mutation_allows_explicit_is_local_false() -> None:
+    outcome = match_pg_probe_with_mutation(
+        _parse("SELECT set_config('application_name', 'foo', false)"),
+        datasource="jaffle", version_str="x",
+        session_settings={"application_name": "old"},
+    )
+    assert outcome is not None
+    assert outcome.settings_mutation == SetSettingOp(
+        name="application_name", value="foo",
+    )
 
 
 def test_match_pg_probe_with_mutation_no_dict_returns_outcome_for_set_config() -> None:

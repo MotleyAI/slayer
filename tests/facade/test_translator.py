@@ -184,7 +184,8 @@ def test_classify_multi_item_set_does_not_capture(dialect) -> None:
 def test_classify_command_form_set_does_not_capture(dialect) -> None:
     """sqlglot falls back to ``exp.Command`` for `SET TIME ZONE 'UTC'` and
     `SET SESSION CHARACTERISTICS …`. Per spec, those acknowledge silently
-    with no setting capture."""
+    with no setting capture (multi-word setting names, not a clean
+    `<single-name> (=|TO) <value>` pair)."""
     for sql in [
         "SET TIME ZONE 'UTC'",
         "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ UNCOMMITTED",
@@ -194,6 +195,48 @@ def test_classify_command_form_set_does_not_capture(dialect) -> None:
         assert result.command_tag == "SET"
         assert result.set_setting is None
         assert result.reset_setting is None
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected_name", "expected_value"),
+    [
+        # The DEV-1569 / Codex fix: comma-separated values fall back to
+        # ``exp.Command`` but still carry a clean `<name> = <values>` shape.
+        # pgjdbc / Metabase emit this for `search_path` on every connection.
+        ("SET search_path = public, extensions", "search_path", "public, extensions"),
+        ("SET search_path TO public, extensions", "search_path", "public, extensions"),
+        ("SET search_path TO 'public', 'extensions'", "search_path", "'public', 'extensions'"),
+        # Mixed-case name lowercased.
+        ("SET Search_Path = public, extensions", "search_path", "public, extensions"),
+    ],
+)
+def test_classify_command_form_set_with_comma_values_captures(
+    sql: str, expected_name: str, expected_value: str,
+) -> None:
+    """`SET search_path = a, b` falls back to sqlglot's Command form (the
+    comma-list parser doesn't recognise multi-value SET yet). The classifier
+    must still capture (name, raw-value-text) so the connection persists it.
+    """
+    # Run under the postgres dialect; the dialect-less parser yields a
+    # different shape for this Command form.
+    result = translate(sql=sql, catalog=_catalog(), dialect="postgres")
+    assert isinstance(result, NoOpResult)
+    assert result.command_tag == "SET"
+    assert result.set_setting == SetSettingOp(name=expected_name, value=expected_value)
+    assert result.reset_setting is None
+
+
+def test_classify_command_form_set_to_keyword_captures(dialect) -> None:
+    """`SET <name> TO <values>` (TO instead of =) — same Command-form
+    extraction."""
+    result = translate(
+        sql="SET search_path TO public, extensions",
+        catalog=_catalog(), dialect="postgres",
+    )
+    assert isinstance(result, NoOpResult)
+    assert result.set_setting == SetSettingOp(
+        name="search_path", value="public, extensions",
+    )
 
 
 @pytest.mark.parametrize(
