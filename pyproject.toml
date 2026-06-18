@@ -1,6 +1,6 @@
 [project]
 name = "motley-slayer"
-version = "0.7.4"
+version = "0.7.5"
 description = "A lightweight, agent-first semantic layer for AI agents"
 requires-python = ">=3.11"
 license = "MIT"
@@ -117,12 +117,18 @@ pyinstrument = "^5.1.2"
 # wire path a real BI tool would. Java >= 11 must be on PATH.
 jaydebeapi = "^1.2.3"
 jpype1 = "^1.5.0"
+# DEV-1564: dialect integration suites spin up real DBs via testcontainers.
+# The MySQL/ClickHouse/SQL Server suites import `testcontainers.<dialect>`
+# and skip cleanly if it's missing; CI workflows assert the extras are
+# importable before invoking pytest so a missing dep surfaces as failure.
+testcontainers = {extras = ["mysql", "clickhouse", "mssql"], version = "^4.0"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--ignore=tests/perf"
 markers = [
     "integration: marks tests as integration tests (require a real database)",
+    "metabase_e2e: live-Metabase end-to-end suite (requires Docker)",
 ]
 asyncio_mode = "auto"
 

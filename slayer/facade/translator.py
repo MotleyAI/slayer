@@ -342,9 +342,19 @@ def _apply_strip_prefix(
 def _detect_time_grain_date_trunc(
     node: exp.Expression,
 ) -> Optional[Tuple[TimeGranularity, exp.Column]]:
+    """Plain ``DATE_TRUNC(<unit>, <col>)`` detector.
+
+    Does NOT unwrap any day offsets on the column side — a bare
+    ``DATE_TRUNC('week', col + INTERVAL '1 day')`` is a user-written
+    shifted bucket, not the Metabase Sunday-week wrapper, and must
+    fall through to the regular "unsupported projection" error.
+    The full Sunday-week pattern is handled by
+    ``_detect_sunday_week_wrapper`` which requires BOTH the outer ``-1
+    day`` shift and the inner ``+1 day`` shift to be present together.
+    """
     unit = node.args.get("unit")
     col = node.this
-    if unit is None or not isinstance(col, exp.Column):
+    if unit is None:
         return None
     # The unit is a string literal under the dialect-less parse and a bare
     # identifier (``exp.Var``) under the Postgres dialect's TIMESTAMP_TRUNC.
@@ -355,7 +365,102 @@ def _detect_time_grain_date_trunc(
     grain = _TIME_GRAIN_NAMES.get(unit_str)
     if grain is None:
         return None
+    if isinstance(col, exp.Cast):
+        col = col.this
+    if not isinstance(col, exp.Column):
+        return None
     return grain, col
+
+
+def _detect_sunday_week_wrapper(
+    node: exp.Expression,  # NOSONAR(S1172) — placeholder until DEV-1572 lands
+) -> Optional[Tuple[TimeGranularity, exp.Column]]:
+    """Stub — Sunday-week wrapper recognition is deferred to DEV-1572.
+
+    DEV-1562 PR #182 rounds 4-5 added detection of Metabase's full
+    Sunday-week shape — ``(CAST(DATE_TRUNC('week', col + INTERVAL '1 day')
+    AS DATE) + INTERVAL '-1 day')`` — and mapped it to ``WEEK(col)``.
+    Codex round-10 flagged that as a correctness bug: SLayer's existing
+    ``WEEK`` granularity is Monday-based (``date.weekday()``) and silently
+    swapping Metabase's Sunday buckets for Monday ones shifts row labels
+    by a day and reshuffles the row→bucket assignment.
+
+    Until SLayer grows a real ``WEEK_SUNDAY`` granularity per dialect
+    (tracked in DEV-1572), this stub returns ``None`` so the wrapper
+    falls through to the existing "Unsupported projection expression"
+    error — failing loudly with a clear message is better than silently
+    bucketing the wrong way. The Metabase week-breakout test in the e2e
+    suite is xfail(strict=True) referencing DEV-1572 and will XPASS the
+    day the real granularity lands.
+    """
+    return None
+
+
+def _day_interval_sign(node: exp.Expression) -> Optional[int]:
+    """Return ``+1`` for ``INTERVAL '1 day'``, ``-1`` for ``INTERVAL '-1 day'``,
+    or ``None`` if ``node`` isn't a one-day interval at all.
+
+    Recognised forms:
+    * Dialect-less parse: ``INTERVAL '1 day'`` / ``INTERVAL '-1 day'`` — the
+      literal carries the unit string.
+    * Postgres dialect: ``INTERVAL '1' DAY`` — literal is the magnitude,
+      unit is a separate ``DAY`` node.
+    """
+    if not isinstance(node, exp.Interval):
+        return None
+    val = node.this
+    if not isinstance(val, exp.Literal):
+        return None
+    s = str(val.this).strip().lower().replace("'", "")
+    unit = node.args.get("unit")
+    unit_str = ""
+    if unit is not None:
+        unit_str = str(unit.this if hasattr(unit, "this") else unit).lower()
+    if s in {"1", "-1"}:
+        if not unit_str.startswith("day"):
+            return None
+        return 1 if s == "1" else -1
+    if s == "1 day":
+        return 1
+    if s == "-1 day":
+        return -1
+    return None
+
+
+def _unwrap_signed_day_offset(
+    node: exp.Expression, *, expected_sign: int,
+) -> exp.Expression:
+    """If ``node`` shifts by exactly ``expected_sign`` days (``+1`` or ``-1``)
+    via a single ADD/SUB of ``INTERVAL '1 day'`` / ``INTERVAL '-1 day'``,
+    return the inner expression. Otherwise return ``node`` unchanged.
+
+    Direction matters: ``expected_sign=-1`` matches Metabase's outer
+    Sunday-week wrapper (``<expr> + INTERVAL '-1 day'`` or
+    ``<expr> - INTERVAL '1 day'``) but NOT the inverse, so a legitimate
+    user-written ``DATE_TRUNC('week', x + INTERVAL '1 day')`` outside the
+    Sunday-week wrapper stays preserved (would not match
+    ``expected_sign=-1``). ``expected_sign=+1`` matches the inner
+    column-side shift (``<col> + INTERVAL '1 day'`` or
+    ``<col> - INTERVAL '-1 day'``).
+    """
+    if isinstance(node, exp.Paren):
+        inner = _unwrap_signed_day_offset(node.this, expected_sign=expected_sign)
+        if inner is not node.this:
+            return inner
+    if isinstance(node, exp.Add):
+        # Adding +1 day → net +1; adding -1 day → net -1.
+        right_sign = _day_interval_sign(node.expression)
+        if right_sign is not None and right_sign == expected_sign:
+            return node.this
+        left_sign = _day_interval_sign(node.this)
+        if left_sign is not None and left_sign == expected_sign:
+            return node.expression
+    if isinstance(node, exp.Sub):
+        # Subtracting +1 day → net -1; subtracting -1 day → net +1.
+        right_sign = _day_interval_sign(node.expression)
+        if right_sign is not None and -right_sign == expected_sign:
+            return node.this
+    return node
 
 
 def _detect_time_grain_single_arg(
@@ -400,6 +505,19 @@ def _detect_time_grain(node: exp.Expression) -> Optional[Tuple[TimeGranularity, 
         unwrapped = _detect_time_grain(node.this)
         if unwrapped is not None:
             return unwrapped
+    # DEV-1562 / DEV-1558 round-20 follow-up: Metabase emits Sunday-based
+    # week truncation as the full wrapper
+    # ``CAST((CAST(DATE_TRUNC('week', col + INTERVAL '1 day') AS DATE) +
+    # INTERVAL '-1 day') AS DATE)``. Detect the complete pattern as a single
+    # match — partial wrappers (just the outer -1d, or just the inner +1d)
+    # are NOT Sunday-week and must keep raising as unsupported projections.
+    sunday_week = _detect_sunday_week_wrapper(node)
+    if sunday_week is not None:
+        return sunday_week
+    if isinstance(node, exp.Paren):
+        recur = _detect_time_grain(node.this)
+        if recur is not None:
+            return recur
     if isinstance(node, (exp.DateTrunc, exp.TimestampTrunc)):
         match = _detect_time_grain_date_trunc(node)
         if match is not None:
