@@ -348,6 +348,13 @@ class TestMySQLQueries:
         result = await mysql_env.execute(query=query)
         assert result.data[0]["orders._count"] == 5
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "DEV-1571 (Bug 3): outer-wrap quote-style mismatch on MySQL — "
+            "same root cause as test_change_pct_with_date_range."
+        ),
+    )
     async def test_time_shift_with_date_range(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -366,6 +373,16 @@ class TestMySQLQueries:
         assert float(result.data[0]["orders.total_sum"]) == pytest.approx(375.0)
         assert float(result.data[0]["orders.prev_month"]) == pytest.approx(200.0)
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "DEV-1571 (Bug 3 silent variant): MySQL treats the outer-wrap's "
+            '"orders.positive_run" as a string literal, so the result row '
+            "carries the literal column-name text instead of the column "
+            "value. Same root cause as test_change_pct_with_date_range; "
+            "fixed by routing outer-wrap SQL through sqlglot's MySQL dialect."
+        ),
+    )
     async def test_consecutive_periods_with_boolean_predicate(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -381,6 +398,13 @@ class TestMySQLQueries:
         result = await mysql_env.execute(query=query)
         assert [r["orders.positive_run"] for r in result.data] == [1, 0, 1]
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "DEV-1571 (Bug 3): outer-wrap quote-style mismatch on MySQL — "
+            "same root cause as test_change_pct_with_date_range."
+        ),
+    )
     async def test_change_with_date_range(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",

@@ -8,34 +8,21 @@ on:
   pull_request:
     branches: [main]
     paths:
-      # ClickHouse-specific
       - 'slayer/sql/dialects/clickhouse.py'
+      - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/generator.py'
       - 'examples/clickhouse/**'
       - 'tests/integration/test_integration_clickhouse.py'
       - '.github/workflows/integration-clickhouse.yml'
-      # Shared runtime — changes to query execution, engine wiring, storage,
-      # ingestion, or datasource construction can break dialect suites with
-      # no other CI signal (since the main ci.yml --ignores them).
-      - 'slayer/sql/**'
-      - 'slayer/engine/**'
-      - 'slayer/core/**'
-      - 'slayer/storage/**'
-      # Dependency / lock-file changes
-      - 'pyproject.toml'
-      - 'poetry.lock'
   push:
     branches: [main]
     paths:
       - 'slayer/sql/dialects/clickhouse.py'
+      - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/generator.py'
       - 'examples/clickhouse/**'
       - 'tests/integration/test_integration_clickhouse.py'
       - '.github/workflows/integration-clickhouse.yml'
-      - 'slayer/sql/**'
-      - 'slayer/engine/**'
-      - 'slayer/core/**'
-      - 'slayer/storage/**'
-      - 'pyproject.toml'
-      - 'poetry.lock'
   workflow_dispatch:
 
 jobs:

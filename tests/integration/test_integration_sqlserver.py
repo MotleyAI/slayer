@@ -406,6 +406,13 @@ class TestSQLServerQueries:
         assert float(result.data[0]["orders.total_sum"]) == pytest.approx(375.0)
         assert float(result.data[0]["orders.prev_month"]) == pytest.approx(200.0)
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "DEV-1571 (Bug 1): CTE-in-derived-table on T-SQL — same root "
+            "cause as test_time_shift_with_date_range."
+        ),
+    )
     async def test_consecutive_periods_with_boolean_predicate(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",

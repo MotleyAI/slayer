@@ -1751,17 +1751,37 @@ async def _live_columns_for_sql_model(
 # ===========================================================================
 
 
+def _strip_ident_quotes(ident: str) -> str:
+    """Strip surrounding double-quotes from an SQL identifier and unescape
+    ``""`` → ``"``. Bare identifiers pass through unchanged.
+    """
+    ident = ident.strip()
+    if len(ident) >= 2 and ident[0] == '"' == ident[-1]:
+        return ident[1:-1].replace('""', '"')
+    return ident
+
+
 def _resolve_live_table(
     *, sql_table: str, live_tables: Dict[str, LiveTable]
 ) -> Optional[LiveTable]:
     """Look up a model's ``sql_table`` in the live introspection map,
     falling back to the bare name when the persisted value is schema-
-    qualified (``schema.table``).
+    qualified (``schema.table``) and unquoting double-quoted identifiers
+    (e.g. ``prod."Company"`` for case-sensitive Postgres tables).
     """
-    live = live_tables.get(sql_table)
-    if live is None and "." in sql_table:
-        live = live_tables.get(sql_table.split(".", 1)[1])
-    return live
+    candidates = [sql_table]
+    if "." in sql_table:
+        candidates.append(sql_table.split(".", 1)[1])
+    # Materialise the snapshot before extending — a bare generator
+    # ``(_strip_ident_quotes(c) for c in candidates)`` would iterate the
+    # list lazily WHILE ``extend`` appends to it, so every appended item
+    # gets re-fed into the iterator and the loop never terminates.
+    candidates.extend([_strip_ident_quotes(c) for c in candidates])
+    for name in candidates:
+        live = live_tables.get(name)
+        if live is not None:
+            return live
+    return None
 
 
 def _is_validate_models_base_column(col: Column) -> bool:
