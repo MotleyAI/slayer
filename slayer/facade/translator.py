@@ -292,11 +292,18 @@ _LOSSY_ORDER_BY_CAST_PAIRS: frozenset = frozenset({
     (DataType.DATE, DataType.TEXT),
     (DataType.TIMESTAMP, DataType.TEXT),
 })
-# GROUP BY lossy: only the many-to-one TIMESTAMP→DATE rollup. Every other
-# admitted pair is a 1:1 / identity mapping, so per-engine-column grouping
-# already collapses to the same set of casted groups.
+# GROUP BY lossy: many-to-one casts where the engine-column grouping
+# returns MORE groups than the casted column would.
+#   - TIMESTAMP → DATE: multiple timestamps per date.
+#   - INT → DOUBLE: int64 has precise range ±2^53 in IEEE 754 float64;
+#     larger bigints lose precision so distinct ints can collapse to the
+#     same double under Postgres's GROUP BY semantics, but the facade
+#     groups by the bare int and over-reports groups.
+# Every other admitted pair is a 1:1 / identity mapping within the
+# supported value range.
 _LOSSY_GROUP_BY_CAST_PAIRS: frozenset = frozenset({
     (DataType.TIMESTAMP, DataType.DATE),
+    (DataType.INT, DataType.DOUBLE),
 })
 
 

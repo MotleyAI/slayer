@@ -1257,21 +1257,38 @@ def test_cast_alias_order_by_lossy_pair_rejected(
     assert "lossy pair" in msg
 
 
-def test_cast_alias_group_by_lossy_timestamp_to_date_rejected(dialect) -> None:
-    """The only many-to-one admitted pair: SELECT CAST(ordered_at AS DATE)
-    AS d ... GROUP BY d would group per-timestamp but advertise per-date,
-    surfacing duplicate dates. Rejected."""
+@pytest.mark.parametrize(
+    ("col", "target", "expected_source", "expected_target"),
+    [
+        # TIMESTAMP → DATE: many timestamps per date.
+        ("ordered_at", "DATE", "TIMESTAMP", "DATE"),
+        # Codex round 5: INT → DOUBLE is also lossy for grouping because
+        # IEEE 754 float64 cannot represent every int64 distinctly; large
+        # bigints collapse to the same double under Postgres semantics
+        # while the facade groups by the bare int and over-reports groups.
+        ("id", "DOUBLE", "INT", "DOUBLE"),
+    ],
+)
+def test_cast_alias_group_by_lossy_pair_rejected(
+    col: str, target: str, expected_source: str, expected_target: str,
+    dialect,
+) -> None:
+    """Many-to-one admitted pairs (TIMESTAMP→DATE, INT→DOUBLE) are rejected
+    in GROUP BY alias paths — the facade's per-engine-column grouping
+    returns more groups than Postgres semantics would produce."""
     with pytest.raises(TranslationError) as exc_info:
         translate(
             sql=(
-                "SELECT CAST(ordered_at AS DATE) AS d, COUNT(*) FROM orders "
-                "GROUP BY d"
+                f"SELECT CAST({col} AS {target}) AS d, COUNT(*) FROM orders "
+                f"GROUP BY d"
             ),
             catalog=_catalog(), dialect=dialect,
         )
     msg = str(exc_info.value)
     assert "GROUP BY on CAST projection" in msg
     assert "lossy pair" in msg
+    assert expected_source in msg
+    assert expected_target in msg
 
 
 @pytest.mark.parametrize(
@@ -1306,7 +1323,6 @@ def test_cast_alias_order_by_safe_pair_admitted(
     ("col", "target"),
     [
         ("delivered_at", "TIMESTAMP"),  # DATE → TIMESTAMP (1:1)
-        ("id", "DOUBLE"),               # INT → DOUBLE
         ("revenue", "DOUBLE"),          # identity
         ("delivered_at", "DATE"),       # identity
         ("status", "TEXT"),             # identity TEXT → TEXT

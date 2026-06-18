@@ -173,10 +173,10 @@ Pairs that **fail** the aliased-reference admission and raise
 `ORDER BY on CAST projection '...' with lossy pair X→T is unsupported`
 (symmetric message for GROUP BY):
 
-| Path     | Lossy pairs                                                     |
-|----------|-----------------------------------------------------------------|
-| ORDER BY | `X → TEXT` for every `X` (lex sort ≠ engine's natural sort)     |
-| GROUP BY | `TIMESTAMP → DATE` (many-to-one rollup)                         |
+| Path     | Lossy pairs                                                              |
+|----------|--------------------------------------------------------------------------|
+| ORDER BY | `X → TEXT` for every `X` (lex sort ≠ engine's natural sort)              |
+| GROUP BY | `TIMESTAMP → DATE` (many-to-one rollup); `INT → DOUBLE` (IEEE 754 collapse beyond ±2^53) |
 
 Every other admitted pair — identity (`X → X`), `DATE → TIMESTAMP`,
 `TIMESTAMP → DATE` for ORDER BY, `INT → DOUBLE` — preserves the casted
