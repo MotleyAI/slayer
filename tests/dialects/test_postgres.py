@@ -63,6 +63,23 @@ def test_postgres_build_date_trunc_casts_literal_to_timestamp() -> None:
     assert "CAST" in out.sql(dialect="postgres").upper()
 
 
+def test_postgres_build_date_trunc_week_sunday_shift() -> None:
+    """DEV-1572: WEEK_SUNDAY = Monday-week of (col + 1 day) minus 1 day.
+
+    The generic shift reuses Postgres' native (Monday-based) DATE_TRUNC('week').
+    Both day-shift legs must be present so the bucket lands on Sunday.
+    """
+    d = PostgresDialect()
+    col = sqlglot.parse_one("ordered_at", dialect="postgres")
+    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY, parse=_parse_pg)
+    sql = out.sql(dialect="postgres")
+    up = sql.upper()
+    assert "DATE_TRUNC('WEEK'" in up
+    # Inner +1 day and outer -1 day legs.
+    assert "+ INTERVAL '1 DAY'" in up
+    assert "- INTERVAL '1 DAY'" in up
+
+
 # ---------------------------------------------------------------------------
 # build_time_offset_expr — INTERVAL N UNIT
 # ---------------------------------------------------------------------------

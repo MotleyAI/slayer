@@ -41,6 +41,18 @@ def test_duckdb_build_date_trunc_month() -> None:
     assert "MONTH" in sql
 
 
+def test_duckdb_build_date_trunc_week_sunday_shift() -> None:
+    """DEV-1572: WEEK_SUNDAY reuses DuckDB's native (Monday) DATE_TRUNC('week')
+    with the +1d / -1d shift. DuckDB emits unquoted ``INTERVAL 1 DAY``."""
+    d = DuckdbDialect()
+    col = sqlglot.parse_one("ordered_at", dialect="duckdb")
+    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY, parse=_parse_duckdb)
+    up = out.sql(dialect="duckdb").upper()
+    assert "DATE_TRUNC('WEEK'" in up
+    assert "+ INTERVAL 1 DAY" in up
+    assert "- INTERVAL 1 DAY" in up
+
+
 def test_duckdb_build_median() -> None:
     """DuckDB uses sqlglot's QUANTILE_CONT translation for PERCENTILE_CONT —
     accept either spelling at the SQL-emit layer."""

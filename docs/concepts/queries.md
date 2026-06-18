@@ -91,7 +91,9 @@ A time dimension with a required granularity and an optional date range. Support
 }
 ```
 
-**Granularities**: `second`, `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year`
+**Granularities**: `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`
+
+`week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
 
 ## OrderItem
 

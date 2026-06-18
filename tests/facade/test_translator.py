@@ -501,28 +501,67 @@ def test_time_grain_on_non_time_column_errors(dialect) -> None:
     assert "not a time column" in str(exc_info.value)
 
 
-def test_metabase_sunday_week_wrapper_rejected_pending_dev_1572(dialect) -> None:
-    """DEV-1572 follow-up: when Metabase issues a week breakout on a DATE
-    column, it emits the Sunday-week wrapper
+def test_metabase_sunday_week_wrapper_recognised(dialect) -> None:
+    """DEV-1572: when Metabase issues a week breakout on a DATE column it
+    emits the Sunday-week wrapper
     ``CAST((CAST(DATE_TRUNC('week', col + INTERVAL '1 day') AS DATE)
-    + INTERVAL '-1 day') AS DATE)``. SLayer's existing ``WEEK``
-    granularity is Monday-based, so silently collapsing this wrapper to
-    plain ``WEEK(col)`` would shift bucket boundaries by a day. Until
-    SLayer grows a real ``WEEK_SUNDAY`` granularity (DEV-1572), the
-    translator rejects the wrapper outright — failing loudly is the
-    right behaviour vs. returning wrong-bucketed data.
+    + INTERVAL '-1 day') AS DATE)``. The translator must recognise the full
+    wrapper and map it to a single ``WEEK_SUNDAY`` time dimension over the
+    bare column — so downstream SQL generation emits the Sunday-anchored
+    bucketing Metabase asked for instead of rejecting the query.
     """
+    result = translate(
+        sql=(
+            'SELECT CAST((CAST(date_trunc(\'week\', '
+            '("orders"."ordered_at" + INTERVAL \'1 day\')) AS DATE) '
+            '+ INTERVAL \'-1 day\') AS DATE) AS "ordered_at", '
+            'COUNT(*) AS "count" '
+            'FROM "orders" '
+            'GROUP BY CAST((CAST(date_trunc(\'week\', '
+            '("orders"."ordered_at" + INTERVAL \'1 day\')) AS DATE) '
+            '+ INTERVAL \'-1 day\') AS DATE)'
+        ),
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.time_dimensions is not None
+    assert len(result.query.time_dimensions) == 1
+    assert result.query.time_dimensions[0].granularity == TimeGranularity.WEEK_SUNDAY
+    assert result.query.time_dimensions[0].dimension.full_name == "ordered_at"
+
+
+def test_sunday_week_wrapper_two_day_offset_rejected(dialect) -> None:
+    """The Sunday-week detector matches ONLY a one-day shift on EACH leg. A
+    two-day shift on either leg is a different bucketing transform (not
+    Metabase's wrapper) and must keep raising rather than collapse to
+    WEEK_SUNDAY. Exercises the exactly-one-day guard on both the inner
+    (column-side) and the outer (result-side) shift independently.
+    """
+    # Inner +2 day (outer -1 day intact) — inner leg is not one day.
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                'SELECT CAST((CAST(date_trunc(\'week\', '
+                '("orders"."ordered_at" + INTERVAL \'2 day\')) AS DATE) '
+                '+ INTERVAL \'-1 day\') AS DATE) AS "ordered_at", '
+                'COUNT(*) AS "count" FROM "orders" '
+                'GROUP BY CAST((CAST(date_trunc(\'week\', '
+                '("orders"."ordered_at" + INTERVAL \'2 day\')) AS DATE) '
+                '+ INTERVAL \'-1 day\') AS DATE)'
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+    # Inner +1 day intact, outer -2 day — outer leg is not one day.
     with pytest.raises(TranslationError):
         translate(
             sql=(
                 'SELECT CAST((CAST(date_trunc(\'week\', '
                 '("orders"."ordered_at" + INTERVAL \'1 day\')) AS DATE) '
-                '+ INTERVAL \'-1 day\') AS DATE) AS "ordered_at", '
-                'COUNT(*) AS "count" '
-                'FROM "orders" '
+                '+ INTERVAL \'-2 day\') AS DATE) AS "ordered_at", '
+                'COUNT(*) AS "count" FROM "orders" '
                 'GROUP BY CAST((CAST(date_trunc(\'week\', '
                 '("orders"."ordered_at" + INTERVAL \'1 day\')) AS DATE) '
-                '+ INTERVAL \'-1 day\') AS DATE)'
+                '+ INTERVAL \'-2 day\') AS DATE)'
             ),
             catalog=_catalog(), dialect=dialect,
         )
