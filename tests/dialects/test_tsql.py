@@ -349,6 +349,33 @@ def test_tsql_emit_outer_wrap_with_limit() -> None:
     assert "5" in out
 
 
+def test_tsql_emit_outer_wrap_no_ctes_with_limit_transposes_pagination() -> None:
+    """Regression pin: the no-CTE branch must also transpose ``LIMIT``
+    into T-SQL's ``TOP`` / ``FETCH NEXT N ROWS ONLY`` syntax, not emit
+    literal ``LIMIT N`` (which T-SQL rejects).
+
+    Before the fix, ``TsqlDialect.emit_outer_wrap`` fell back to the base
+    impl's string concat whenever the inner SELECT had no top-level CTE,
+    re-introducing the bug for any T-SQL query that hit the outer-wrap
+    path (DEV-1444) without happening to have a CTE chain. Codex caught
+    this in the DEV-1571 PR review.
+    """
+    inner = "SELECT id AS [orders.id] FROM orders"  # no WITH
+    limit = sqlglot.parse_one("SELECT 1 LIMIT 5", dialect="tsql").args.get("limit")
+    out = TsqlDialect().emit_outer_wrap(
+        inner_sql=inner,
+        public=["orders.id"],
+        order=None,
+        limit=limit,
+        offset_arg=None,
+    )
+    upper = _normalise(out).upper()
+    assert "LIMIT" not in upper, (
+        f"No-CTE T-SQL outer wrap still emits literal LIMIT: {out}"
+    )
+    assert "5" in out
+
+
 def test_tsql_emit_outer_wrap_with_offset() -> None:
     """Outer wrap with ``OFFSET N`` re-emits via sqlglot's T-SQL dialect.
     Asserts the offset value survives without raising.

@@ -221,7 +221,9 @@ class TsqlDialect(SqlDialect):
         offset_arg: Optional[exp.Expression],
         parse: Optional[Callable[[str], exp.Expression]] = None,
     ) -> str:
-        """T-SQL: hoist inner top-level CTEs to the outer statement.
+        """T-SQL: hoist inner top-level CTEs to the outer statement AND
+        transpose detached pagination to ``TOP`` / ``FETCH NEXT N ROWS
+        ONLY`` syntax.
 
         SQL Server allows ``WITH`` only as a statement prefix, not inside
         a derived-table subquery. Without this override, SLayer's
@@ -229,19 +231,30 @@ class TsqlDialect(SqlDialect):
         FROM step2) AS _outer ORDER BY ...``, which T-SQL rejects with
         ``Incorrect syntax near the keyword 'WITH'``.
 
-        Strategy: parse ``inner_sql`` via the generator's ``_parse``
-        (when supplied) so SLayer-specific AST rewrites survive the
-        round-trip — LOG10/LOG2 alias preservation (DEV-1337) and
-        SQLite JSONExtract function-form (DEV-1331). Then detach the
-        top-level ``With`` node from the inner ``Select`` and emit
-        ``WITH <ctes> SELECT <public> FROM (<inner_main_select>) AS
-        _outer ORDER/LIMIT/OFFSET``.
+        Strategy (single AST path, no fallback to the base impl):
+
+        1. Parse ``inner_sql`` via the generator's ``_parse`` (when
+           supplied) so SLayer-specific AST rewrites survive the
+           round-trip — LOG10/LOG2 alias preservation (DEV-1337) and
+           SQLite JSONExtract function-form (DEV-1331).
+        2. Detach the top-level ``With`` node (if any) from the inner
+           ``Select`` so the inner main SELECT can be wrapped in the
+           derived table without re-introducing nested WITH.
+        3. Build the outer wrap entirely via sqlglot AST so dialect-
+           aware rendering transposes the detached ``Limit`` / ``Offset``
+           nodes into T-SQL's ``TOP`` / ``FETCH NEXT N ROWS ONLY``
+           syntax. A naïve ``limit.sql(dialect="tsql")`` only emits
+           ``LIMIT N`` because the transposition fires on the wrapping
+           Select, not on a free-standing Limit node. The CTE-less
+           branch must take the AST path too, otherwise any T-SQL query
+           that hits the outer-wrap path without CTEs would still emit
+           literal ``LIMIT N``.
 
         When the generator doesn't pass ``parse`` (direct unit-test
         invocation), falls back to ``sqlglot.parse_one(dialect="tsql")``.
-
-        When the inner SELECT has no top-level CTEs, the hoist is a
-        no-op — the override falls through to the base impl shape.
+        When the parse itself fails (malformed SQL / sqlglot bug), defers
+        to the base impl — T-SQL will still reject malformed SQL at the
+        DB layer, but we don't make it worse.
         """
         parse_fn = parse if parse is not None else (
             lambda s: sqlglot.parse_one(s, dialect=self.sqlglot_name)
@@ -249,9 +262,6 @@ class TsqlDialect(SqlDialect):
         try:
             parsed = parse_fn(inner_sql)
         except Exception:
-            # Parse failure (malformed SQL, sqlglot bug, ...) — defer to
-            # the base impl. T-SQL will still reject the nested WITH at
-            # the DB layer, but we don't make it worse.
             return super().emit_outer_wrap(
                 inner_sql=inner_sql,
                 public=public,
@@ -259,14 +269,7 @@ class TsqlDialect(SqlDialect):
                 limit=limit,
                 offset_arg=offset_arg,
             )
-        # sqlglot exposes the WITH clause under the ``with_`` args key
-        # (Python-keyword avoidance). Other clauses (``order`` / ``limit``
-        # / ``offset``) use their natural names.
-        with_node = (
-            parsed.args.get("with_") if isinstance(parsed, exp.Select) else None
-        )
-        if not isinstance(parsed, exp.Select) or with_node is None:
-            # No top-level CTEs — base behaviour is fine on T-SQL.
+        if not isinstance(parsed, exp.Select):
             return super().emit_outer_wrap(
                 inner_sql=inner_sql,
                 public=public,
@@ -274,10 +277,13 @@ class TsqlDialect(SqlDialect):
                 limit=limit,
                 offset_arg=offset_arg,
             )
-        # Detach the With from the inner Select so the inner main SELECT
-        # can be wrapped in the derived table without re-introducing
-        # nested WITH.
-        parsed.set("with_", None)
+        # Detach the With (if present) so the inner main SELECT can be
+        # wrapped in a derived table. ``with_`` is the sqlglot args key
+        # (Python-keyword avoidance); other clauses use their natural
+        # names (``order`` / ``limit`` / ``offset``).
+        with_node = parsed.args.get("with_")
+        if with_node is not None:
+            parsed.set("with_", None)
         # Strip inner-CTE qualifiers from detached ORDER BY columns so
         # they resolve at the outer-wrapper scope (only ``_outer`` is
         # visible). DEV-1444 carry-over.
@@ -285,12 +291,6 @@ class TsqlDialect(SqlDialect):
             for col in order.find_all(exp.Column):
                 if col.args.get("table") is not None:
                     col.set("table", None)
-        # Build the outer wrap entirely via sqlglot AST so dialect-aware
-        # rendering transposes the detached ``Limit`` / ``Offset`` nodes
-        # into T-SQL's ``TOP`` / ``FETCH NEXT N ROWS ONLY`` syntax. A
-        # naïve ``limit.sql(dialect="tsql")`` only emits ``LIMIT N``
-        # because the transposition fires on the wrapping Select, not on
-        # a free-standing Limit node.
         derived = exp.Subquery(
             this=parsed,
             alias=exp.TableAlias(this=exp.to_identifier("_outer")),
@@ -299,7 +299,8 @@ class TsqlDialect(SqlDialect):
         for a in public:
             outer = outer.select(exp.Identifier(this=a, quoted=True))
         outer = outer.from_(derived)
-        outer.set("with_", with_node)
+        if with_node is not None:
+            outer.set("with_", with_node)
         if order is not None:
             outer.set("order", order)
         if limit is not None:
