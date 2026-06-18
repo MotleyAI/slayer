@@ -987,6 +987,27 @@ class SlayerQueryEngine:
                 result[em.source_measure_name or em.name] = raw_types[em.alias]
         return result
 
+    async def aclose(self) -> None:
+        """Dispose every cached ``SlayerSQLClient``'s async engine.
+
+        Connection-leak fix: per-instance async engines bind their asyncpg /
+        aiomysql pool to the event loop that first opened a connection. If
+        the loop dies (``asyncio.run`` returning, an event-loop swap, or a
+        plain shutdown) the pool's connections can no longer be closed —
+        ``asyncpg.Connection.close`` itself needs a live loop — so they
+        linger open server-side until TCP keepalive expires. ``aclose()``
+        disposes each engine *inside the live loop* so the pool drains
+        cleanly. ``execute_sync`` calls this in a ``finally`` before
+        ``asyncio.run`` returns; long-lived async holders (FastAPI lifespan,
+        notebooks) should call it at shutdown.
+        """
+        # Snapshot the cache so per-client errors can't break the loop
+        # below and so a re-entrant call to ``aclose`` sees an empty cache.
+        clients = list(self._sql_clients.values())
+        self._sql_clients.clear()
+        for client in clients:
+            await client.aclose()
+
     def execute_sync(
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
@@ -995,12 +1016,23 @@ class SlayerQueryEngine:
         dry_run: bool = False,
         explain: bool = False,
     ) -> SlayerResponse:
-        """Synchronous wrapper for execute(). For CLI, notebooks, and scripts."""
+        """Synchronous wrapper for execute(). For CLI, notebooks, and scripts.
+
+        Disposes per-call async engines BEFORE ``asyncio.run`` closes the
+        loop — see ``aclose`` for the leak rationale. Any dispose error is
+        logged and swallowed so it can't mask a real query error.
+        """
         from slayer.async_utils import run_sync
 
-        return run_sync(
-            self.execute(query, variables=variables, dry_run=dry_run, explain=explain)
-        )
+        async def _run_and_cleanup() -> SlayerResponse:
+            try:
+                return await self.execute(
+                    query, variables=variables, dry_run=dry_run, explain=explain,
+                )
+            finally:
+                await self.aclose()
+
+        return run_sync(_run_and_cleanup())
 
     async def edit_model_remove(
         self,
