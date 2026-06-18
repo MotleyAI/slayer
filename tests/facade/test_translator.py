@@ -500,6 +500,98 @@ def test_time_grain_on_non_time_column_errors(dialect) -> None:
     assert "not a time column" in str(exc_info.value)
 
 
+def test_metabase_sunday_week_wrapper_rejected_pending_dev_1572(dialect) -> None:
+    """DEV-1572 follow-up: when Metabase issues a week breakout on a DATE
+    column, it emits the Sunday-week wrapper
+    ``CAST((CAST(DATE_TRUNC('week', col + INTERVAL '1 day') AS DATE)
+    + INTERVAL '-1 day') AS DATE)``. SLayer's existing ``WEEK``
+    granularity is Monday-based, so silently collapsing this wrapper to
+    plain ``WEEK(col)`` would shift bucket boundaries by a day. Until
+    SLayer grows a real ``WEEK_SUNDAY`` granularity (DEV-1572), the
+    translator rejects the wrapper outright — failing loudly is the
+    right behaviour vs. returning wrong-bucketed data.
+    """
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                'SELECT CAST((CAST(date_trunc(\'week\', '
+                '("orders"."ordered_at" + INTERVAL \'1 day\')) AS DATE) '
+                '+ INTERVAL \'-1 day\') AS DATE) AS "ordered_at", '
+                'COUNT(*) AS "count" '
+                'FROM "orders" '
+                'GROUP BY CAST((CAST(date_trunc(\'week\', '
+                '("orders"."ordered_at" + INTERVAL \'1 day\')) AS DATE) '
+                '+ INTERVAL \'-1 day\') AS DATE)'
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
+def test_one_day_offset_on_non_week_is_preserved(dialect) -> None:
+    """The day-offset unwrap is scoped to WEEK only: a ``date_trunc('month',
+    col + INTERVAL '1 day')`` query is NOT a Sunday-week wrapper, so the
+    column-side offset must be treated as user intent (the column is not a
+    bare ``ordered_at`` ref) and rejected with the existing translator error.
+    """
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                'SELECT date_trunc(\'month\', '
+                '("orders"."ordered_at" + INTERVAL \'1 day\')), '
+                'COUNT(*) FROM "orders"'
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
+def test_partial_sunday_week_wrapper_is_rejected(dialect) -> None:
+    """The Sunday-week unwrap requires BOTH the outer ``-1 day`` shift and
+    the inner ``+1 day`` shift to be present together. Half a wrapper is
+    user intent (a deliberately-shifted bucket) and must NOT silently
+    collapse to plain ``WEEK(col)``.
+    """
+    # Inner +1 day alone — no outer wrapper. Not Sunday-week; reject.
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                'SELECT date_trunc(\'week\', '
+                '("orders"."ordered_at" + INTERVAL \'1 day\')), '
+                'COUNT(*) FROM "orders"'
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+    # Inner -1 day alone — also not Sunday-week (wrong direction).
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                'SELECT date_trunc(\'week\', '
+                '("orders"."ordered_at" - INTERVAL \'1 day\')), '
+                'COUNT(*) FROM "orders"'
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
+def test_outer_week_day_offset_direction_aware(dialect) -> None:
+    """Direction matters on the outer wrapper too: Metabase emits
+    ``(date_trunc('week', col + INTERVAL '1 day') + INTERVAL '-1 day')``
+    — outer net is ``-1 day``. The inverse shape with a ``+1 day`` outer
+    offset is not Metabase's shape and must NOT collapse to a plain WEEK
+    grain.
+    """
+    # Matching +1 outer offset on top of a Sunday-week inner is NOT the
+    # Metabase shape; treat the whole thing as an unsupported projection.
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                'SELECT (date_trunc(\'week\', '
+                '("orders"."ordered_at" + INTERVAL \'1 day\')) + INTERVAL \'1 day\'), '
+                'COUNT(*) FROM "orders"'
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
 # --- dialect-only parse acceptance ------------------------------------------
 
 

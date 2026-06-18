@@ -165,3 +165,33 @@ The facade is pure-stdlib; the extra exists only to keep the install path consis
 ```bash
 pip install "motley-slayer[pg_facade]"
 ```
+
+## Testing your changes
+
+For wire-level / translator changes, the unit suite under `tests/test_pg_facade*.py` covers
+each component in isolation. Behaviour at the *interaction boundary* with a real BI client
+is covered by the live-Metabase end-to-end suite (DEV-1562):
+
+```bash
+poetry run pytest -m metabase_e2e tests/integration/test_metabase_e2e.py -v
+```
+
+The suite needs Docker; it boots `metabase/metabase:v0.62.1.5` alongside two
+token-protected pg-serve processes (per-session random tokens, both bound on `0.0.0.0`
+so the container reaches them via `host.docker.internal`; the second backs the L.2 / L.3
+bad-password tests) and drives ~62 cases through the real `pgjdbc` protocol — bootstrap +
+sync, MBQL aggregations and time-grain breakouts, native-SQL probes, wire-format
+round-trips, transactions, concurrency, and error envelopes. Skips cleanly when Docker is
+unavailable.
+
+Known limitations (each tracked by a strict-`xfail` against a Linear ticket — the day the
+referenced gap is fixed, the test XPASSes and CI flips red, prompting a lift):
+LEFT JOIN-with-subquery projection (DEV-1565), CAST(col AS type) projection (DEV-1566),
+catalog fingerprint measure leak (DEV-1567), MBQL aggregation-ordinal refs in HAVING /
+ORDER BY (DEV-1568), per-connection `SET` state (DEV-1569), Bind-path typed-sentinel for
+INT-vs-empty-string (DEV-1570), and **Metabase week breakouts** (DEV-1572 — Metabase emits
+a Sunday-week wrapper that doesn't match SLayer's Monday-based `WEEK` granularity).
+
+CI fires automatically on PRs touching `slayer/pg_facade/`, `slayer/facade/`,
+`slayer/demo/`, the
+e2e test files, or `pyproject.toml` / `poetry.lock`.

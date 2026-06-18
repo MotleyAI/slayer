@@ -8,88 +8,21 @@ the extended/binary protocol, transactions, and concurrency end-to-end.
 
 from __future__ import annotations
 
-import argparse
 import asyncio
-import tempfile
-import threading
-import time
-from typing import Iterator, Optional, Tuple
+from typing import Iterator, Tuple
 
 import pytest
+
+from tests.integration._pg_serve_helpers import DEMO_DATASOURCE, start_pg_demo_server
 
 pytestmark = pytest.mark.integration
 
 asyncpg = pytest.importorskip("asyncpg")
 
-DEMO_DATASOURCE = "jaffle_shop"
-
-
-def _start_pg_demo_server(*, token: Optional[str]):
-    """Boot a Postgres-facade server backed by the Jaffle Shop demo.
-
-    Returns ``(loop, thread, host, port)``. Caller stops via
-    ``loop.call_soon_threadsafe(loop.stop)`` + ``thread.join()``.
-    """
-    from slayer.cli import _prepare_demo, _resolve_storage
-    from slayer.engine.query_engine import SlayerQueryEngine
-    from slayer.pg_facade.connection import PgConnection
-
-    args = argparse.Namespace(
-        storage=tempfile.mkdtemp(prefix="slayer-pg-it-"),
-        models_dir=None,
-        datasource=None,
-        force=False,
-    )
-    storage = _resolve_storage(args)
-    try:
-        _prepare_demo(args, storage)
-    except Exception as exc:  # pragma: no cover - demo deps missing
-        pytest.skip(f"Jaffle Shop demo unavailable: {exc}")
-    engine = SlayerQueryEngine(storage=storage)
-
-    holder: dict = {}
-    ready = threading.Event()
-
-    def _thread_main() -> None:
-        loop = asyncio.new_event_loop()
-        holder["loop"] = loop
-        asyncio.set_event_loop(loop)
-
-        async def handle(reader, writer) -> None:
-            conn = PgConnection(
-                reader, writer, engine=engine, storage=storage, token=token, tls_ctx=None,
-            )
-            try:
-                await conn.run()
-            finally:
-                writer.close()
-
-        async def _setup():
-            server = await asyncio.start_server(handle, host="127.0.0.1", port=0)
-            holder["port"] = server.sockets[0].getsockname()[1]
-            holder["server"] = server
-            ready.set()
-            return server
-
-        server = loop.run_until_complete(_setup())
-        try:
-            loop.run_forever()
-        finally:
-            server.close()
-            loop.run_until_complete(server.wait_closed())
-            loop.close()
-
-    thread = threading.Thread(target=_thread_main, daemon=True)
-    thread.start()
-    if not ready.wait(timeout=10) or "port" not in holder:
-        raise RuntimeError("pg facade demo server failed to start within 10s")
-    time.sleep(0.1)
-    return holder["loop"], thread, "127.0.0.1", holder["port"]
-
 
 @pytest.fixture(scope="module")
 def pg_demo_server() -> Iterator[Tuple[str, int]]:
-    loop, thread, host, port = _start_pg_demo_server(token=None)
+    loop, thread, host, port = start_pg_demo_server(token=None)
     try:
         yield host, port
     finally:
@@ -100,7 +33,7 @@ def pg_demo_server() -> Iterator[Tuple[str, int]]:
 @pytest.fixture(scope="module")
 def pg_demo_server_with_token() -> Iterator[Tuple[str, int, str]]:
     token = "s3cret"
-    loop, thread, host, port = _start_pg_demo_server(token=token)
+    loop, thread, host, port = start_pg_demo_server(token=token)
     try:
         yield host, port, token
     finally:

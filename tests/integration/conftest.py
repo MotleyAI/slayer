@@ -3,6 +3,11 @@
 Currently hosts the Flight SQL demo-server fixture used by both
 ``test_integration_flight.py`` (JayDeBeAPI) and
 ``test_integration_flight_pyarrow_client.py``.
+
+Also re-exports the ``metabase_e2e_env`` fixture from
+``conftest_metabase.py`` so the live-Metabase suite (DEV-1562) can pick it
+up via pytest's auto-discovery without an explicit import (which would
+shadow it via parameter binding in every test).
 """
 
 from __future__ import annotations
@@ -17,6 +22,18 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, Tuple
 
 import pytest
+
+# Import the metabase fixture conditionally: ``conftest_metabase`` top-imports
+# ``requests``, which is in the ``all`` poetry extra but not in narrower dev
+# installs (e.g. ``-E postgres`` only). Failing to import here would break
+# collection of every integration test, not just the metabase_e2e ones. The
+# fallback makes the metabase fixture unavailable to pytest, which is fine —
+# the suite that uses it carries its own ``pytest.importorskip("requests")``
+# guard and would skip cleanly.
+try:
+    from tests.integration.conftest_metabase import metabase_e2e_env  # noqa: F401
+except ImportError:
+    pass
 
 JDBC_DRIVER_VERSION = "18.3.0"
 JDBC_DRIVER_URL = (
