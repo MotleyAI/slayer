@@ -22,8 +22,11 @@ have identity defaults; only ``BigqueryDialect`` overrides them today.
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
+from sqlglot import exp
+
+from slayer.core.enums import TimeGranularity
 from slayer.sql.dialects.base import SqlDialect
 
 
@@ -121,6 +124,38 @@ class BigqueryDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+
+    def build_date_trunc(
+        self,
+        col_expr: exp.Expression,
+        granularity: TimeGranularity,
+        *,
+        parse: Callable[[str], exp.Expression],
+    ) -> exp.Expression:
+        """BigQuery override for WEEK_SUNDAY (DEV-1572).
+
+        BigQuery's native ``DATE_TRUNC(x, WEEK)`` is already Sunday-based, so
+        the base class's generic +1d/-1d shift (which reuses a Monday-based
+        WEEK) would double-shift. Emit the native Sunday form
+        ``DATE_TRUNC(col, WEEK(SUNDAY))`` instead.
+
+        Built as an ``exp.Anonymous`` because sqlglot (30.4.x) drops the
+        ``(SUNDAY)`` weekday modifier when re-emitting an ``exp.DateTrunc`` —
+        the anonymous call renders verbatim on the single final emission.
+        Non-column/non-cast operands are wrapped in ``CAST(... AS TIMESTAMP)``
+        to mirror the base class's operand handling. Every other granularity
+        delegates to the base implementation.
+        """
+        if granularity != TimeGranularity.WEEK_SUNDAY:
+            return super().build_date_trunc(
+                col_expr=col_expr, granularity=granularity, parse=parse,
+            )
+        if not isinstance(col_expr, (exp.Column, exp.Cast)):
+            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
+        week_sunday = exp.Anonymous(this="WEEK", expressions=[exp.var("SUNDAY")])
+        return exp.Anonymous(
+            this="DATE_TRUNC", expressions=[col_expr, week_sunday],
+        )
 
     def rewrite_emitted_sql(self, sql: str) -> str:
         """Replace ``.`` with ``___`` inside backtick-quoted identifiers.

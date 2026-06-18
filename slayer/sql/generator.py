@@ -1029,7 +1029,8 @@ class SQLGenerator:
     def _granularity_interval_expr(self, granularity: TimeGranularity, sign: int = 1) -> list[exp.Expression]:
         if granularity == TimeGranularity.QUARTER:
             duration = "3m"
-        elif granularity == TimeGranularity.WEEK:
+        elif granularity in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY):
+            # DEV-1572: a one-period shift of a Sunday-week is one week.
             duration = "1w"
         else:
             unit_to_duration = {
