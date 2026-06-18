@@ -966,7 +966,22 @@ def test_join_filter_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     store_id_fid = client.field_id_by_name("orders", "store_id")
     stores_pk_fid = client.field_id_by_name("stores", "id")
     stores_name_fid = client.field_id_by_name("stores", "name")
-    discover = client.dataset(encode_mbql_query(source_table=stores_id, limit=1))
+    # Pick a sample value from a store that DEFINITELY has at least one
+    # matching order: fetch any order's store_id, then look up that
+    # store's name. ``SELECT * FROM stores LIMIT 1`` (the prior approach)
+    # could land on a store with zero orders since jaffle's stores table
+    # carries entries unreferenced by orders — that produced a false-fail
+    # for n_filtered == 0 against the 0 < n_filtered invariant.
+    sample_store_id = _dataset_rows(client.dataset(encode_mbql_query(
+        source_table=orders_id,
+        fields=[["field", store_id_fid, None]],
+        limit=1,
+    )))[0][0]
+    discover = client.dataset(encode_mbql_query(
+        source_table=stores_id,
+        filter=["=", ["field", stores_pk_fid, None], sample_store_id],
+        limit=1,
+    ))
     name_idx = next(i for i, c in enumerate(_dataset_cols(discover)) if c["name"] == "name")
     sample = _dataset_rows(discover)[0][name_idx]
     payload = client.dataset(encode_mbql_query(
