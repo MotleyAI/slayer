@@ -89,6 +89,12 @@ class TsqlDialect(SqlDialect):
         fallback exists but isn't a current target — track separately
         if anyone needs it.
         """
+        if granularity == TimeGranularity.WEEK_SUNDAY:
+            # DEV-1572: delegate to the base generic shift, which composes
+            # T-SQL's DATEADD day-offset around the iso_week (Monday) DATETRUNC.
+            return super().build_date_trunc(
+                col_expr=col_expr, granularity=granularity, parse=parse,
+            )
         gran_str = granularity.value
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
             col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))

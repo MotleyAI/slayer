@@ -66,6 +66,8 @@ def _granularity_to_unit(granularity: str) -> str:
         "day": "DAY",
         "quarter": "MONTH",  # caller multiplies by 3
         "week": "WEEK",
+        # DEV-1572: a one-period shift of a Sunday-week is just one week.
+        "week_sunday": "WEEK",
         "hour": "HOUR",
         "minute": "MINUTE",
         "second": "SECOND",
@@ -174,6 +176,22 @@ class SqlDialect(BaseModel):
         ``date_trunc`` overload — preserving today's
         ``generator.py:_build_date_trunc`` behaviour.
         """
+        if granularity == TimeGranularity.WEEK_SUNDAY:
+            # DEV-1572: Sunday-anchored week = Monday-week of (col + 1 day),
+            # shifted back 1 day. This is Metabase's own reference formula and
+            # reuses each dialect's existing (Monday-based) WEEK truncation, so
+            # WEEK_SUNDAY's correctness tracks WEEK's per dialect. BigQuery —
+            # whose native WEEK is Sunday — overrides this to emit
+            # ``DATE_TRUNC(col, WEEK(SUNDAY))`` directly.
+            shifted = self.build_time_offset_expr(
+                col_expr=col_expr, offset=1, granularity="day",
+            )
+            monday = self.build_date_trunc(
+                col_expr=shifted, granularity=TimeGranularity.WEEK, parse=parse,
+            )
+            return self.build_time_offset_expr(
+                col_expr=monday, offset=-1, granularity="day",
+            )
         gran_str = _GRANULARITY_TO_DATE_TRUNC.get(granularity, granularity.value)
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
             col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))

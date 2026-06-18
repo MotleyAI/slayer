@@ -90,6 +90,57 @@ def test_sqlite_build_date_trunc_week_uses_weekday_modifier() -> None:
     assert "-6 days" in sql
 
 
+def test_sqlite_build_date_trunc_week_sunday_emission() -> None:
+    """DEV-1572: WEEK_SUNDAY delegates to the generic shift, which composes
+    SQLite's day-offset (+1d / -1d) around SQLite's Monday-week truncation."""
+    d = SqliteDialect()
+    col = sqlglot.parse_one("ordered_at", dialect="sqlite")
+    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY, parse=_parse_sqlite)
+    sql = out.sql(dialect="sqlite")
+    assert sql == (
+        "DATE(DATE(DATE(ordered_at, '1 days'), 'weekday 0', '-6 days'), '-1 days')"
+    )
+
+
+@pytest.mark.parametrize(
+    "input_date,expected_sunday",
+    [
+        ("2024-01-07", "2024-01-07"),  # Sunday   -> itself
+        ("2024-01-08", "2024-01-07"),  # Monday
+        ("2024-01-09", "2024-01-07"),  # Tuesday
+        ("2024-01-10", "2024-01-07"),  # Wednesday
+        ("2024-01-11", "2024-01-07"),  # Thursday
+        ("2024-01-12", "2024-01-07"),  # Friday
+        ("2024-01-13", "2024-01-07"),  # Saturday
+        ("2024-01-01", "2023-12-31"),  # Monday, crosses the year boundary
+    ],
+)
+def test_sqlite_build_date_trunc_week_sunday_executes_to_sunday(
+    input_date: str, expected_sunday: str
+) -> None:
+    """Execute the emitted SQLite WEEK_SUNDAY expression against a real
+    in-memory SQLite connection and assert the bucket lands on the exact
+    Sunday (not merely 'a Sunday', and not a week early). Native DATE()
+    math — no UDFs required.
+    """
+    import sqlite3
+
+    d = SqliteDialect()
+    col = sqlglot.parse_one("ts", dialect="sqlite")
+    expr = d.build_date_trunc(
+        col, TimeGranularity.WEEK_SUNDAY, parse=_parse_sqlite
+    ).sql(dialect="sqlite")
+
+    con = sqlite3.connect(":memory:")
+    try:
+        con.execute("CREATE TABLE t(ts TEXT)")
+        con.execute("INSERT INTO t VALUES (?)", (input_date,))
+        (got,) = con.execute(f"SELECT {expr} FROM t").fetchone()
+    finally:
+        con.close()
+    assert got == expected_sunday
+
+
 def test_sqlite_build_date_trunc_quarter_uses_case_when() -> None:
     """Quarter truncation uses STRFTIME + CASE WHEN to map month→quarter start."""
     d = SqliteDialect()

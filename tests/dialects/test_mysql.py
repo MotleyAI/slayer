@@ -156,6 +156,19 @@ def test_mysql_build_date_trunc_emits_date_trunc() -> None:
     assert isinstance(out, (exp.DateTrunc, exp.Func))
 
 
+def test_mysql_build_date_trunc_week_sunday_shift() -> None:
+    """DEV-1572: WEEK_SUNDAY reuses MySQL's Monday-based week truncation
+    (sqlglot emits ``WEEK(x, 1)`` / ``%u``) with the +1d / -1d shift."""
+    d = MysqlDialect()
+    col = sqlglot.parse_one("ordered_at", dialect="mysql")
+    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY, parse=_parse_mysql)
+    up = out.sql(dialect="mysql").upper()
+    assert "+ INTERVAL 1 DAY" in up
+    assert "- INTERVAL 1 DAY" in up
+    # Monday-based inner week truncation (mode 1 / ISO %u).
+    assert "WEEK(" in up
+
+
 def test_mysql_build_time_offset_expr_quarter_normalizes_to_3_month() -> None:
     d = MysqlDialect()
     col = sqlglot.parse_one("created_at", dialect="mysql")

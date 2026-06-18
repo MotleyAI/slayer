@@ -564,26 +564,7 @@ async def test_aggregation_matches_direct_sql(
 GRAINS = ["hour", "day", "week", "month", "quarter", "year"]
 
 
-@pytest.mark.parametrize(
-    "grain",
-    [
-        pytest.param(
-            "week",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "DEV-1572: Metabase week breakouts emit a Sunday-week wrapper "
-                    "(DATE_TRUNC('week', col + 1d) - 1d); SLayer's existing WEEK "
-                    "granularity is Monday-based, so the translator currently "
-                    "rejects the wrapper rather than silently mis-bucketing. "
-                    "Lift the xfail once WEEK_SUNDAY lands."
-                ),
-            ),
-        )
-        if g == "week" else g
-        for g in GRAINS
-    ],
-)
+@pytest.mark.parametrize("grain", GRAINS)
 def test_time_grain_breakout(metabase_e2e_env: MetabaseE2EEnv, grain: str) -> None:
     """E.1-E.6 — temporal-unit breakout on a DATE column. The ``month`` case
     specifically pins the round-20 CAST-unwrap fix (DEV-1558 bug 6).

@@ -1,5 +1,7 @@
 """Tests for core domain models."""
 
+import datetime
+
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
@@ -900,6 +902,56 @@ class TestTimeGranularity:
         import datetime
         end = TimeGranularity.MONTH.period_end(datetime.date(2024, 3, 15))
         assert end == datetime.date(2024, 3, 31)
+
+    # DEV-1572: WEEK_SUNDAY — Sunday-anchored week. period_start rounds back to
+    # the Sunday at or before the date; period_end is the following Saturday.
+    # 2024-01-07 is a Sunday; 2024-01-08..13 are Mon..Sat of that week, all of
+    # which belong to the Sunday-week [2024-01-07 .. 2024-01-13].
+    @pytest.mark.parametrize(
+        "day,expected_start",
+        [
+            (7, datetime.date(2024, 1, 7)),   # Sunday  -> itself
+            (8, datetime.date(2024, 1, 7)),   # Monday
+            (9, datetime.date(2024, 1, 7)),   # Tuesday
+            (10, datetime.date(2024, 1, 7)),  # Wednesday
+            (11, datetime.date(2024, 1, 7)),  # Thursday
+            (12, datetime.date(2024, 1, 7)),  # Friday
+            (13, datetime.date(2024, 1, 7)),  # Saturday
+        ],
+    )
+    def test_period_start_week_sunday_each_weekday(
+        self, day: int, expected_start: datetime.date
+    ) -> None:
+        start = TimeGranularity.WEEK_SUNDAY.period_start(datetime.date(2024, 1, day))
+        assert start == expected_start
+
+    @pytest.mark.parametrize(
+        "day,expected_end",
+        [
+            (7, datetime.date(2024, 1, 13)),   # Sunday
+            (8, datetime.date(2024, 1, 13)),   # Monday
+            (9, datetime.date(2024, 1, 13)),   # Tuesday
+            (10, datetime.date(2024, 1, 13)),  # Wednesday
+            (11, datetime.date(2024, 1, 13)),  # Thursday
+            (12, datetime.date(2024, 1, 13)),  # Friday
+            (13, datetime.date(2024, 1, 13)),  # Saturday -> itself
+        ],
+    )
+    def test_period_end_week_sunday_each_weekday(
+        self, day: int, expected_end: datetime.date
+    ) -> None:
+        end = TimeGranularity.WEEK_SUNDAY.period_end(datetime.date(2024, 1, day))
+        assert end == expected_end
+
+    def test_period_start_week_sunday_crosses_year_boundary(self) -> None:
+        # 2024-01-01 is a Monday; its Sunday-week starts on 2023-12-31.
+        start = TimeGranularity.WEEK_SUNDAY.period_start(datetime.date(2024, 1, 1))
+        assert start == datetime.date(2023, 12, 31)
+
+    def test_period_end_week_sunday_crosses_year_boundary(self) -> None:
+        # 2024-12-30 is a Monday; its Sunday-week ends on Saturday 2025-01-04.
+        end = TimeGranularity.WEEK_SUNDAY.period_end(datetime.date(2024, 12, 30))
+        assert end == datetime.date(2025, 1, 4)
 
 
 class TestStringCoercion:

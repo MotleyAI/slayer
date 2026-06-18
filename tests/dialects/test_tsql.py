@@ -83,6 +83,19 @@ def test_tsql_build_date_trunc_week_uses_iso_week() -> None:
     assert "iso_week" in sql
 
 
+def test_tsql_build_date_trunc_week_sunday_shift() -> None:
+    """DEV-1572: WEEK_SUNDAY delegates to the generic shift, which composes
+    T-SQL's DATEADD day-offset around the iso_week (Monday) DATETRUNC."""
+    d = TsqlDialect()
+    col = sqlglot.parse_one("ordered_at", dialect="tsql")
+    out = d.build_date_trunc(col, TimeGranularity.WEEK_SUNDAY, parse=_parse_tsql)
+    sql = out.sql(dialect="tsql").lower()
+    assert "datetrunc" in sql
+    assert "iso_week" in sql          # inner Monday-week truncation
+    assert "dateadd(day, 1," in sql   # inner +1 day
+    assert "dateadd(day, -1," in sql  # outer -1 day
+
+
 def test_tsql_build_date_trunc_casts_non_column_to_timestamp() -> None:
     """``DATETRUNC`` requires a temporal type — non-column operands are
     wrapped in ``CAST(... AS TIMESTAMP)``."""

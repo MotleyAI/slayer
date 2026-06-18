@@ -188,9 +188,11 @@ Known limitations (each tracked by a strict-`xfail` against a Linear ticket — 
 referenced gap is fixed, the test XPASSes and CI flips red, prompting a lift):
 LEFT JOIN-with-subquery projection (DEV-1565), CAST(col AS type) projection (DEV-1566),
 catalog fingerprint measure leak (DEV-1567), MBQL aggregation-ordinal refs in HAVING /
-ORDER BY (DEV-1568), per-connection `SET` state (DEV-1569), and **Metabase week
-breakouts** (DEV-1572 — Metabase emits a Sunday-week wrapper that doesn't match
-SLayer's Monday-based `WEEK` granularity).
+ORDER BY (DEV-1568) and per-connection `SET` state (DEV-1569).
+
+Metabase week breakouts emit a Sunday-anchored week wrapper
+(`DATE_TRUNC('week', col + INTERVAL '1 day') - INTERVAL '1 day'`); the translator maps this to
+SLayer's `week_sunday` granularity (DEV-1572), so week breakouts bucket the way Metabase asks.
 
 CI fires automatically on PRs touching `slayer/pg_facade/`, `slayer/facade/`,
 `slayer/demo/`, the
