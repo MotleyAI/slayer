@@ -1185,3 +1185,57 @@ def test_cast_metric_projection_overrides_wire_type(dialect) -> None:
     assert result.query.measures[0].formula == "revenue:sum"
     # Declared metric type is DOUBLE; CAST(<metric> AS TEXT) overrides.
     assert result.projection_types == [DataType.TEXT]
+
+
+# --- allow_column_cast gate (Codex round 1 — Flight regression guard) --------
+#
+# DEV-1566 admits CAST(<col> AS <type>) projection in the shared translator.
+# The Flight facade materialises rows via pa.Table.from_pylist against a
+# catalog-typed schema, which raises ArrowTypeError on values whose Python
+# type doesn't match the declared Arrow type (date vs timestamp, bool vs
+# utf8, etc.). The Flight shim passes allow_column_cast=False to reject the
+# new projection shape at translate time; this test pins the gate.
+
+
+def test_allow_column_cast_false_rejects_cast_projection() -> None:
+    """With allow_column_cast=False, the CAST projection branch is skipped
+    and the body falls through to the 'Unsupported projection expression'
+    error (the existing terminal path)."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql="SELECT CAST(delivered_at AS TIMESTAMP) FROM orders",
+            catalog=_catalog(), dialect=None, allow_column_cast=False,
+        )
+    assert "Unsupported projection expression" in str(exc_info.value)
+
+
+def test_allow_column_cast_false_leaves_time_grain_cast_unwrap_working() -> None:
+    """The gate must not regress the time-grain CAST-unwrap path — the
+    Metabase fingerprint ``CAST(DATE_TRUNC(...) AS DATE)`` is detected by
+    ``_detect_time_grain``, which runs BEFORE the column-CAST branch."""
+    result = translate(
+        sql=(
+            "SELECT CAST(date_trunc('month', ordered_at) AS DATE), revenue_sum "
+            "FROM orders"
+        ),
+        catalog=_catalog(), dialect=None, allow_column_cast=False,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.time_dimensions is not None
+    assert result.query.time_dimensions[0].granularity == TimeGranularity.MONTH
+
+
+def test_allow_column_cast_default_true_unchanged(dialect) -> None:
+    """Sanity: the default-True path is the same as not passing the kwarg
+    (pg-facade behaviour). Pinned so the default never silently flips."""
+    explicit = translate(
+        sql="SELECT CAST(delivered_at AS TIMESTAMP) FROM orders",
+        catalog=_catalog(), dialect=dialect, allow_column_cast=True,
+    )
+    implicit = translate(
+        sql="SELECT CAST(delivered_at AS TIMESTAMP) FROM orders",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(explicit, QueryResult)
+    assert isinstance(implicit, QueryResult)
+    assert explicit.projection_types == implicit.projection_types == [DataType.TIMESTAMP]

@@ -1027,8 +1027,17 @@ def _raw_column_parts(col: exp.Column) -> List[str]:
 def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-expression shapes; one branch per shape by design
     expressions: Sequence[exp.Expression], table: FacadeTable,
     *, schema_name: Optional[str] = None,
+    allow_column_cast: bool = True,
 ) -> List[_ProjectionItem]:
-    """Walk the projection list, classifying each item against the table."""
+    """Walk the projection list, classifying each item against the table.
+
+    ``allow_column_cast`` gates the DEV-1566 ``CAST(<column> AS <type>)``
+    projection branch. The pg-facade passes ``True`` (default) — its wire
+    encoders coerce values to the declared OID. The Flight facade passes
+    ``False`` because its ``pa.Table.from_pylist`` schema-binding rejects
+    values whose Python type doesn't match the declared Arrow type and the
+    facade has no value-coercion pass.
+    """
     metrics_by_name = {m.name: m for m in table.metrics}
     metrics_by_formula = {m.measure_formula: m for m in table.metrics}
     dims_by_name = {d.name: d for d in table.dimensions}
@@ -1072,16 +1081,20 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
         # time-grain unwrap (preserves Metabase's CAST(DATE_TRUNC(...) AS DATE))
         # and AFTER the aggregate detector (CAST(SUM(...) AS T) is out of
         # scope — the detector requires the inner to be a bare Column).
-        cast_match = _detect_column_cast(body)
-        if cast_match is not None:
-            inner_col, cast_target = cast_match
-            out.append(_resolve_column_cast_projection(
-                body=inner_col, cast_target=cast_target,
-                alias_name=alias_name, table=table,
-                metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
-                strip_prefix=strip_prefix,
-            ))
-            continue
+        # Gated by allow_column_cast so the Flight facade falls through to
+        # the "Unsupported projection expression" error instead of producing
+        # a wire schema its row materialiser can't fulfil.
+        if allow_column_cast:
+            cast_match = _detect_column_cast(body)
+            if cast_match is not None:
+                inner_col, cast_target = cast_match
+                out.append(_resolve_column_cast_projection(
+                    body=inner_col, cast_target=cast_target,
+                    alias_name=alias_name, table=table,
+                    metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
+                    strip_prefix=strip_prefix,
+                ))
+                continue
 
         if isinstance(body, exp.Column):
             out.append(_resolve_column_projection(
@@ -1527,6 +1540,7 @@ def translate(
     catalog_sql_executor: (
         "Optional[CatalogSqlExecutorProtocol | Callable[[], CatalogSqlExecutorProtocol]]"
     ) = None,
+    allow_column_cast: bool = True,
 ) -> TranslatorResult:
     """Translate a SQL string into a TranslatorResult.
 
@@ -1598,7 +1612,9 @@ def translate(
         )
 
     # Step 5 / 6 — SLayer-table translation.
-    return _translate_slayer_select(parsed, catalog)
+    return _translate_slayer_select(
+        parsed, catalog, allow_column_cast=allow_column_cast,
+    )
 
 
 # Lightweight Protocol so the translator doesn't pull catalog_sql at import
@@ -1749,6 +1765,7 @@ def _parse_int_literal(node: Optional[exp.Expression]) -> Optional[int]:
 
 def _translate_slayer_select(
     parsed: exp.Select, catalog: FacadeCatalog,
+    *, allow_column_cast: bool = True,
 ) -> QueryResult:
     from_clause = parsed.args.get("from_")
     if from_clause is None:
@@ -1770,7 +1787,10 @@ def _translate_slayer_select(
         (schema_name, table.name) if schema_name else None
     )
 
-    items = _resolve_projection(proj_exprs, table, schema_name=schema_name)
+    items = _resolve_projection(
+        proj_exprs, table, schema_name=schema_name,
+        allow_column_cast=allow_column_cast,
+    )
     plan = _build_projection_plan(items, table)
 
     _validate_group_by(
