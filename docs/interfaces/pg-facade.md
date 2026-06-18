@@ -216,16 +216,42 @@ Admitted (source, target) coercions:
 
 Pairs outside the allowlist (e.g. `CAST(name AS INT)`, `CAST(amount AS BOOLEAN)`)
 raise `Unsupported CAST: cannot project <SOURCE> column as <TARGET> (...). Admitted
-coercions: see docs/interfaces/pg-facade.md.` Unsupported target types
-(`UUID`, `JSON`, `ARRAY`, `STRUCT`, `DECIMAL`/`NUMERIC`, `TIMESTAMPTZ` /
-`TIMESTAMP WITH TIME ZONE`, …) raise the standard `Unsupported projection
-expression` error. `DECIMAL`/`NUMERIC` and `TIMESTAMPTZ` are deliberately
-NOT admitted via a DOUBLE / TIMESTAMP coercion — Postgres clients reading
-the projected column would receive OID 701 (`float8`) or OID 1114
-(`timestamp`, no-TZ) when they asked for OID 1700 (`numeric`, exact-precision)
-or OID 1184 (`timestamptz`, TZ-aware), losing precision and TZ semantics.
-Until SLayer adds native `NUMERIC` and `TIMESTAMPTZ` data types with their
-own wire encoders, the only safe answer is to reject.
+coercions: see docs/interfaces/pg-facade.md.` Unsupported target types (`UUID`,
+`JSON`, `ARRAY`, `STRUCT`, …) raise the standard `Unsupported projection
+expression` error.
+
+#### CAST coarse-OID mapping
+
+CAST is a **coarse wire-OID hint**, not a precision-preserving conversion.
+The SLayer engine projects the bare column unchanged; the pg-facade encoder
+is OID-driven, so the wire bytes always match the OID we advertise. Some
+PostgreSQL types the user can write in a CAST don't have a one-to-one
+SLayer equivalent — those collapse onto the nearest broader SLayer type:
+
+| User wrote in `CAST(... AS X)` | SLayer maps to | Wire OID advertised |
+|---|---|---|
+| `INTEGER` / `INT` (pre-existing) | `DataType.INT` | 20 (`int8`) — not 23 (`int4`) |
+| `SMALLINT` | `DataType.INT` | 20 (`int8`) — not 21 (`int2`) |
+| `TINYINT` / `MEDIUMINT` (non-Postgres widths) | `DataType.INT` | 20 (`int8`) |
+| `BIGINT` | `DataType.INT` | 20 (`int8`) ✓ exact match |
+| `DECIMAL` / `NUMERIC` | `DataType.DOUBLE` | 701 (`float8`) — not 1700 (`numeric`) |
+| `FLOAT` / `REAL` / `DOUBLE` | `DataType.DOUBLE` | 701 (`float8`) ✓ |
+| `TIMESTAMPTZ` / `TIMESTAMP WITH TIME ZONE` | `DataType.TIMESTAMP` | 1114 (`timestamp`, no TZ) — not 1184 (`timestamptz`) |
+| `TIMESTAMP` / `DATETIME` | `DataType.TIMESTAMP` | 1114 (`timestamp`) ✓ |
+
+What this means in practice:
+
+- The wire bytes the client receives are always consistent with the OID we
+  advertise (the encoder picks the binary/text form from the OID). There is
+  no value corruption.
+- The OID is potentially broader than what the user typed. A client that
+  asked for `NUMERIC` and got `float8` sees a float on the wire and decodes
+  it correctly as a float — but loses the "exact precision" expectation.
+  A client that asked for `TIMESTAMPTZ` sees naive `timestamp` bytes — and
+  loses TZ-aware decoding semantics.
+- Callers needing exact `NUMERIC` precision, narrow integer wire widths, or
+  TZ-aware timestamps must compute upstream (or wait for SLayer to model
+  those types natively).
 
 `DOUBLE → INT` is intentionally excluded: Python's `int(<float>)` truncates toward zero
 while Postgres rounds half-to-even, so silently admitting the pair would diverge from

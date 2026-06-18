@@ -285,22 +285,25 @@ _COMPARATOR_SQL: Dict[type, str] = {
 # projection support. Aliases sqlglot canonicalises at parse time (STRING→TEXT,
 # INTEGER→INT, NUMERIC→DECIMAL, BOOL→BOOLEAN, FLOAT→DOUBLE) need no entry;
 # REAL parses to exp.DataType.Type.FLOAT (not normalised), so DOUBLE coverage
-# routes through here. Parameterised forms (VARCHAR(255)) collapse onto the
-# same base member at parse time — precision is dropped at the SLayer
-# boundary because SLayer wire types don't carry it.
+# routes through here. Parameterised forms (VARCHAR(255), DECIMAL(10,2))
+# collapse onto the same base member at parse time — precision is dropped at
+# the SLayer boundary because SLayer wire types don't carry it.
 #
-# Codex round 8 — silently-coercive targets DROPPED:
-#   * DECIMAL/NUMERIC: PostgreSQL exposes these as OID 1700 (`numeric`,
-#     exact-precision). DataType.DOUBLE would advertise OID 701 (`float8`)
-#     and round-trip via the float encoder — wrong wire type, potential
-#     precision loss. Until SLayer adds a NUMERIC DataType + OID 1700 +
-#     decimal encoder, the only safe answer is to reject.
-#   * TIMESTAMPTZ / TIMESTAMP WITH TIME ZONE / TIMESTAMPLTZ: OID 1184 with
-#     timezone-aware client decoding. DataType.TIMESTAMP would advertise
-#     OID 1114 (`timestamp`, no-TZ) — wrong wire type AND wrong timezone
-#     semantics. Reject until proper TIMESTAMPTZ support lands.
-# These pairs now fall through to the "Unsupported projection expression"
-# error, same as UUID/JSON/ARRAY/STRUCT.
+# CAST is a COARSE wire-OID hint, not a precision-preserving conversion. The
+# SLayer engine projects the bare column unchanged; the pg-facade encoder is
+# OID-driven, so the wire bytes always match the OID we advertise. The only
+# "mismatch" exposed by the coarsenings below is that the advertised OID is
+# broader than what the user typed:
+#
+#   * DECIMAL/NUMERIC → DataType.DOUBLE (OID 701 `float8`, not 1700 `numeric`).
+#   * INTEGER / SMALLINT / TINYINT / MEDIUMINT → DataType.INT
+#     (OID 20 `int8`, not 23/21).
+#   * TIMESTAMPTZ / TIMESTAMP WITH TIME ZONE / TIMESTAMPLTZ → DataType.TIMESTAMP
+#     (OID 1114 `timestamp`, no TZ semantics).
+#
+# Callers needing exact NUMERIC precision, narrow integer wire widths, or
+# TZ-aware timestamps must compute upstream. See pg-facade.md
+# §"CAST coarse-OID mapping" for the user-facing table.
 _SQLGLOT_TYPE_TO_DATATYPE: Dict[exp.DataType.Type, DataType] = {
     exp.DataType.Type.TEXT: DataType.TEXT,
     exp.DataType.Type.VARCHAR: DataType.TEXT,
@@ -314,10 +317,13 @@ _SQLGLOT_TYPE_TO_DATATYPE: Dict[exp.DataType.Type, DataType] = {
     exp.DataType.Type.MEDIUMINT: DataType.INT,
     exp.DataType.Type.DOUBLE: DataType.DOUBLE,
     exp.DataType.Type.FLOAT: DataType.DOUBLE,
+    exp.DataType.Type.DECIMAL: DataType.DOUBLE,
     exp.DataType.Type.BOOLEAN: DataType.BOOLEAN,
     exp.DataType.Type.DATE: DataType.DATE,
     exp.DataType.Type.TIMESTAMP: DataType.TIMESTAMP,
     exp.DataType.Type.DATETIME: DataType.TIMESTAMP,
+    exp.DataType.Type.TIMESTAMPTZ: DataType.TIMESTAMP,
+    exp.DataType.Type.TIMESTAMPLTZ: DataType.TIMESTAMP,
 }
 
 # DEV-1566: per-pair allowlist of CAST coercions admitted in projection.
