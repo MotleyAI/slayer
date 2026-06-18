@@ -1010,6 +1010,24 @@ def test_left_join_on_hidden_fk_column_succeeds(dialect) -> None:
     assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
 
 
+def test_left_join_on_column_case_insensitive(dialect) -> None:
+    """Hand-written SQL with unquoted UPPERCASE ON columns (Postgres folds
+    these to lowercase server-side; sqlglot preserves what's written) must
+    resolve against the model's canonical (lowercase) column names. Codex
+    flagged the previous case-sensitive comparison."""
+    sql = _metabase_join_sql(
+        projection='"Stores"."name" AS "Stores__name"',
+        on_clause='"orders"."STORE_ID" = "Stores"."ID"',
+    )
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    # Existing-join match key still matches because canonical-case
+    # lookup happens at parse time, before the (target_model, join_pairs)
+    # equality check against parent.joins[].
+    assert result.query.source_model == "orders"
+    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+
+
 def test_left_join_alias_different_from_target_name(dialect) -> None:
     """The join alias is user-chosen via MBQL; it doesn't have to match the
     SLayer model name. Resolution uses the subquery's FROM table, not the

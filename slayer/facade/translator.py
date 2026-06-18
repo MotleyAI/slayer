@@ -913,6 +913,28 @@ def _raw_column_parts(col: exp.Column) -> List[str]:
     return parts
 
 
+def _build_projection_lookups(
+    table: FacadeTable,
+    *,
+    extra_dims_by_name: Optional[Dict[str, FacadeDimension]] = None,
+    extra_metrics_by_name: Optional[Dict[str, FacadeMetric]] = None,
+    extra_metrics_by_formula: Optional[Dict[str, FacadeMetric]] = None,
+) -> Tuple[Dict[str, FacadeMetric], Dict[str, FacadeMetric], Dict[str, FacadeDimension]]:
+    """Assemble the (metrics_by_name, metrics_by_formula, dims_by_name)
+    lookup dicts from the catalog's table metadata, overlaid with the
+    DEV-1565 dynamic-join extras when supplied."""
+    metrics_by_name = {m.name: m for m in table.metrics}
+    metrics_by_formula = {m.measure_formula: m for m in table.metrics}
+    dims_by_name = {d.name: d for d in table.dimensions}
+    if extra_dims_by_name:
+        dims_by_name.update(extra_dims_by_name)
+    if extra_metrics_by_name:
+        metrics_by_name.update(extra_metrics_by_name)
+    if extra_metrics_by_formula:
+        metrics_by_formula.update(extra_metrics_by_formula)
+    return metrics_by_name, metrics_by_formula, dims_by_name
+
+
 def _resolve_projection(
     expressions: Sequence[exp.Expression], table: FacadeTable,
     *,
@@ -929,15 +951,12 @@ def _resolve_projection(
     ``<target>.<col>`` lookups so the joined dotted refs resolve without
     needing a configured catalog join.
     """
-    metrics_by_name = {m.name: m for m in table.metrics}
-    metrics_by_formula = {m.measure_formula: m for m in table.metrics}
-    dims_by_name = {d.name: d for d in table.dimensions}
-    if extra_dims_by_name:
-        dims_by_name.update(extra_dims_by_name)
-    if extra_metrics_by_name:
-        metrics_by_name.update(extra_metrics_by_name)
-    if extra_metrics_by_formula:
-        metrics_by_formula.update(extra_metrics_by_formula)
+    metrics_by_name, metrics_by_formula, dims_by_name = _build_projection_lookups(
+        table,
+        extra_dims_by_name=extra_dims_by_name,
+        extra_metrics_by_name=extra_metrics_by_name,
+        extra_metrics_by_formula=extra_metrics_by_formula,
+    )
     # DEV-1558 B5: when the FROM was schema-qualified (e.g. "public"."orders"),
     # let column refs that lead with the same `schema.table.` prefix resolve
     # to the bare column.
@@ -1625,7 +1644,6 @@ def _parse_left_join(
     *,
     parsed_joins: List[exp.Join],
     parent_table: FacadeTable,
-    parent_schema: str,
     catalog: FacadeCatalog,
 ) -> Optional[_JoinPlan]:
     """Validate and parse the single LEFT JOIN on the SELECT, if any.
@@ -1646,7 +1664,6 @@ def _parse_left_join(
     source_col, target_col = _parse_on_clause(
         on=join.args.get("on"),
         parent_table=parent_table,
-        parent_schema=parent_schema,
         target_table=target_table,
         alias=alias,
     )
@@ -1745,15 +1762,16 @@ def _parse_on_clause(
     *,
     on: Optional[exp.Expression],
     parent_table: FacadeTable,
-    parent_schema: str,
     target_table: FacadeTable,
     alias: str,
 ) -> Tuple[str, str]:
     """Parse the ON clause as exactly one equality between a parent-table-
     qualified column and a join-alias-qualified column.
 
-    Returns ``(source_col_leaf, target_col_leaf)``. Validates both leaves
-    exist on the respective ``SlayerModel.columns[]`` (hidden cols counted).
+    Returns ``(source_col, target_col)`` in the canonical case used by
+    the underlying ``SlayerModel.columns[]`` (case-insensitive ON-column
+    lookup catches hand-written UPPERCASE refs that Postgres folds to
+    lowercase). Hidden columns counted.
     """
     if on is None or not isinstance(on, exp.EQ):
         raise TranslationError(
@@ -1770,23 +1788,24 @@ def _parse_on_clause(
         )
     lhs_qual = _on_qualifier(lhs)
     rhs_qual = _on_qualifier(rhs)
-    parent_match_l = _matches_parent_qualifier(lhs_qual, parent_table.name, parent_schema)
-    parent_match_r = _matches_parent_qualifier(rhs_qual, parent_table.name, parent_schema)
+    parent_match_l = _matches_parent_qualifier(lhs_qual, parent_table.name)
+    parent_match_r = _matches_parent_qualifier(rhs_qual, parent_table.name)
     alias_match_l = _ci_eq(lhs_qual, alias)
     alias_match_r = _ci_eq(rhs_qual, alias)
     if parent_match_l and alias_match_r and not (parent_match_r and alias_match_l):
-        source_col, target_col = _leaf(lhs), _leaf(rhs)
+        source_raw, target_raw = _leaf(lhs), _leaf(rhs)
     elif parent_match_r and alias_match_l and not (parent_match_l and alias_match_r):
-        source_col, target_col = _leaf(rhs), _leaf(lhs)
+        source_raw, target_raw = _leaf(rhs), _leaf(lhs)
     else:
         raise TranslationError(
             f"LEFT JOIN ON clause must have one side qualified by the "
             f"parent table ({parent_table.name!r}) and the other by the "
             f"join alias ({alias!r}); got {on.sql()!r}."
         )
-    _require_column(parent_table, source_col, role="parent")
-    _require_column(target_table, target_col, role="target")
-    return source_col, target_col
+    return (
+        _canonical_column_or_raise(parent_table, source_raw, role="parent"),
+        _canonical_column_or_raise(target_table, target_raw, role="target"),
+    )
 
 
 def _on_qualifier(col: exp.Column) -> Optional[str]:
@@ -1798,15 +1817,12 @@ def _on_qualifier(col: exp.Column) -> Optional[str]:
 
 
 def _matches_parent_qualifier(
-    qual: Optional[str], parent_name: str, parent_schema: Optional[str],
+    qual: Optional[str], parent_name: str,
 ) -> bool:
-    """True if the qualifier names the parent table directly OR via
-    schema.table prefix that matches the FROM-table's schema."""
-    if qual is None:
-        return False
-    if _ci_eq(qual, parent_name):
-        return True
-    return False  # schema-prefix form is handled via _column_to_dotted strip
+    """True if the qualifier names the parent table (case-insensitive).
+    Schema-prefix form is handled by ``_column_to_dotted``'s strip path,
+    so this only matches the table-name segment."""
+    return qual is not None and _ci_eq(qual, parent_name)
 
 
 def _ci_eq(a: Optional[str], b: Optional[str]) -> bool:
@@ -1818,17 +1834,31 @@ def _leaf(col: exp.Column) -> str:
     return str(leaf.this) if hasattr(leaf, "this") else str(leaf)
 
 
-def _require_column(table: FacadeTable, col_name: str, *, role: str) -> None:
-    """Validate the column exists on the underlying SlayerModel — hidden
-    columns counted, since FK / PK columns are often hidden but still
-    valid ON-clause references."""
+def _canonical_column_or_raise(
+    table: FacadeTable, col_name: str, *, role: str,
+) -> str:
+    """Case-insensitive lookup of ``col_name`` against the underlying
+    ``SlayerModel.columns[]`` (hidden cols counted). Returns the canonical
+    column name; raises ``TranslationError`` if no match.
+
+    DEV-1565: Postgres folds unquoted identifiers to lowercase but sqlglot
+    preserves what was written, so hand-written SQL like
+    ``ON ORDERS.STORE_ID = STORES.ID`` would otherwise fail to match
+    against a model whose ``Column.name`` is ``store_id``. Canonicalising
+    here propagates the model-side casing to every downstream comparison
+    (the configured-join existence check, the dynamic-join
+    ``ModelExtension`` build).
+    """
     if table.model_ref is None:
-        return
-    if not any(c.name == col_name for c in table.model_ref.columns):
-        raise TranslationError(
-            f"LEFT JOIN ON {role}-side column {col_name!r} does not exist "
-            f"on table {table.name!r}."
-        )
+        return col_name
+    needle = col_name.lower()
+    for c in table.model_ref.columns:
+        if c.name.lower() == needle:
+            return c.name
+    raise TranslationError(
+        f"LEFT JOIN ON {role}-side column {col_name!r} does not exist "
+        f"on table {table.name!r}."
+    )
 
 
 def _classify_against_parent_joins(
@@ -1947,6 +1977,62 @@ def _emit_join_warnings(plan: _JoinPlan, parent_name: str) -> None:
         )
 
 
+class _JoinOverlays(BaseModel):
+    """Translator-state derived from a parsed ``_JoinPlan``: the alias
+    rewrite map and the on-demand projection-lookup overlays for the
+    dynamic-fallback case."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    alias_map: Optional[Dict[str, str]] = None
+    extra_dims_by_name: Dict[str, FacadeDimension] = {}
+    extra_metrics_by_name: Dict[str, FacadeMetric] = {}
+    extra_metrics_by_formula: Dict[str, FacadeMetric] = {}
+
+
+def _prepare_join_overlays(
+    join_plan: Optional[_JoinPlan], parent_name: str,
+) -> _JoinOverlays:
+    """Build the alias map + (for dynamic joins) the materialised lookup
+    overlays, and emit the join-related warnings. Extracted from
+    ``_translate_slayer_select`` to keep its cognitive complexity in check."""
+    if join_plan is None:
+        return _JoinOverlays()
+    overlays = _JoinOverlays(
+        alias_map={join_plan.alias: join_plan.target_table.name},
+    )
+    if join_plan.is_dynamic and join_plan.target_table.model_ref is not None:
+        _materialise_dynamic_join_lookups(
+            target_model=join_plan.target_table.model_ref,
+            extra_dims_by_name=overlays.extra_dims_by_name,
+            extra_metrics_by_name=overlays.extra_metrics_by_name,
+            extra_metrics_by_formula=overlays.extra_metrics_by_formula,
+        )
+    _emit_join_warnings(join_plan, parent_name)
+    return overlays
+
+
+def _build_item_index(items: List[_ProjectionItem]) -> Dict[str, _ProjectionItem]:
+    """Map every projection item by its user-facing name PLUS its canonical
+    secondary key (time-grain canonical form for `CAST(date_trunc(...))`
+    GROUP BY matches; dimension_ref dotted form for joined-col aliased
+    projections — see DEV-1565). ``setdefault`` preserves the primary
+    projected_name entry when the secondary key collides with it."""
+    out: Dict[str, _ProjectionItem] = {item.projected_name: item for item in items}
+    for item in items:
+        if item.time_grain is not None and item.time_grain_underlying is not None:
+            canonical = (
+                f"{item.time_grain.value}({item.time_grain_underlying.dimension_ref})"
+            )
+            out.setdefault(canonical, item)
+        elif (
+            item.dimension is not None
+            and item.dimension.dimension_ref != item.projected_name
+        ):
+            out.setdefault(item.dimension.dimension_ref, item)
+    return out
+
+
 def _translate_slayer_select(
     parsed: exp.Select, catalog: FacadeCatalog,
 ) -> QueryResult:
@@ -1970,80 +2056,49 @@ def _translate_slayer_select(
         (schema_name, table.name) if schema_name else None
     )
 
-    # DEV-1565: recognise Metabase's LEFT JOIN-with-subquery shape, if any.
     join_plan = _parse_left_join(
         parsed_joins=parsed.args.get("joins") or [],
         parent_table=table,
-        parent_schema=schema_name,
         catalog=catalog,
     )
-    alias_map: Optional[Dict[str, str]] = None
-    extra_dims_by_name: Dict[str, FacadeDimension] = {}
-    extra_metrics_by_name: Dict[str, FacadeMetric] = {}
-    extra_metrics_by_formula: Dict[str, FacadeMetric] = {}
-    if join_plan is not None:
-        alias_map = {join_plan.alias: join_plan.target_table.name}
-        if join_plan.is_dynamic and join_plan.target_table.model_ref is not None:
-            _materialise_dynamic_join_lookups(
-                target_model=join_plan.target_table.model_ref,
-                extra_dims_by_name=extra_dims_by_name,
-                extra_metrics_by_name=extra_metrics_by_name,
-                extra_metrics_by_formula=extra_metrics_by_formula,
-            )
-        _emit_join_warnings(join_plan, table.name)
+    overlays = _prepare_join_overlays(join_plan, table.name)
 
     items = _resolve_projection(
         proj_exprs, table,
         schema_name=schema_name,
-        alias_map=alias_map,
-        extra_dims_by_name=extra_dims_by_name or None,
-        extra_metrics_by_name=extra_metrics_by_name or None,
-        extra_metrics_by_formula=extra_metrics_by_formula or None,
+        alias_map=overlays.alias_map,
+        extra_dims_by_name=overlays.extra_dims_by_name or None,
+        extra_metrics_by_name=overlays.extra_metrics_by_name or None,
+        extra_metrics_by_formula=overlays.extra_metrics_by_formula or None,
     )
     plan = _build_projection_plan(items, table)
 
     _validate_group_by(
         parsed.args.get("group"), plan.derived_dims,
-        strip_prefix=strip_prefix, alias_map=alias_map,
+        strip_prefix=strip_prefix, alias_map=overlays.alias_map,
     )
 
     filters: List[str] = []
     _apply_where(
         parsed.args.get("where"), plan.time_dim_by_name, filters,
-        strip_prefix=strip_prefix, alias_map=alias_map,
+        strip_prefix=strip_prefix, alias_map=overlays.alias_map,
     )
     _apply_having(
         parsed.args.get("having"), table, filters,
-        strip_prefix=strip_prefix, alias_map=alias_map,
-        extra_metrics_by_formula=extra_metrics_by_formula or None,
+        strip_prefix=strip_prefix, alias_map=overlays.alias_map,
+        extra_metrics_by_formula=overlays.extra_metrics_by_formula or None,
     )
 
-    item_by_projected_name = {item.projected_name: item for item in items}
-    for item in items:
-        if item.time_grain is not None and item.time_grain_underlying is not None:
-            canonical = (
-                f"{item.time_grain.value}({item.time_grain_underlying.dimension_ref})"
-            )
-            item_by_projected_name.setdefault(canonical, item)
-        # DEV-1565: aliased joined-col dim projections (`"Stores"."name" AS
-        # "Stores__name"`) also resolve under the SLayer dotted form, so an
-        # ORDER BY `"Stores"."name"` (alias-remapped to `stores.name`) finds
-        # the item.
-        elif (
-            item.dimension is not None
-            and item.dimension.dimension_ref != item.projected_name
-        ):
-            item_by_projected_name.setdefault(item.dimension.dimension_ref, item)
     order_items = _translate_order_by(
-        parsed.args.get("order"), item_by_projected_name,
-        strip_prefix=strip_prefix, alias_map=alias_map,
+        parsed.args.get("order"), _build_item_index(items),
+        strip_prefix=strip_prefix, alias_map=overlays.alias_map,
     )
 
-    source_model: object = table.name
-    if join_plan is not None:
-        source_model = _build_source_model_from_join(
-            parent_name=table.name, plan=join_plan,
-        )
+    source_model: object = (
+        _build_source_model_from_join(parent_name=table.name, plan=join_plan)
+        if join_plan is not None
+        else table.name
+    )
 
     query = SlayerQuery(
         source_model=source_model,
