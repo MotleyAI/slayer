@@ -951,11 +951,7 @@ def _resolve_column_cast_projection(
         metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
         strip_prefix=strip_prefix,
     )
-    source: Optional[DataType] = (  # NOSONAR(S3358) — metric→dim→None fallback; chained ternary is the idiomatic shape
-        inner.metric.data_type if inner.metric is not None
-        else inner.dimension.data_type if inner.dimension is not None
-        else None
-    )
+    source = _item_cast_source_type(inner)
     if not _is_admitted_cast(source=source, target=cast_target):
         offending = exp.Cast(this=body, to=exp.DataType.build(cast_target.value)).sql()
         raise TranslationError(
@@ -1447,6 +1443,26 @@ def _lossy_cast_error_message(
     )
 
 
+def _reject_lossy_cast_or_pass(
+    *, kind: str, name: str, item: _ProjectionItem, lossy_pairs: frozenset,
+) -> None:
+    """If ``item`` is a CAST projection AND its (source, target) pair is
+    lossy under bare-column ORDER BY / GROUP BY semantics, raise. Otherwise
+    no-op. Unknown-source casts (custom metrics without a declared
+    data_type) are admitted as None→TEXT only; ``_cast_pair_is_lossy``
+    treats that case as lossy for ORDER BY by default."""
+    if item.cast_target is None:
+        return
+    source = _item_cast_source_type(item)
+    if not _cast_pair_is_lossy(
+        source=source, target=item.cast_target, lossy_pairs=lossy_pairs,
+    ):
+        return
+    raise TranslationError(_lossy_cast_error_message(
+        kind=kind, name=name, source=source, target=item.cast_target,
+    ))
+
+
 def _translate_order_by(
     order: Optional[exp.Order],
     item_by_projected_name: Dict[str, _ProjectionItem],
@@ -1466,21 +1482,10 @@ def _translate_order_by(
                 f"ORDER BY column {name!r} is not in the projection list"
             )
         item = item_by_projected_name[name]
-        # DEV-1566 — Codex round 3: reject ORDER BY on CAST projections whose
-        # (source, target) pair is lossy under bare-column sort semantics.
-        # Unknown-source casts (custom metrics without a declared data_type)
-        # are treated as lossy — the only admitted unknown-source target is
-        # TEXT, and the lex-vs-natural sort gap applies.
-        if item.cast_target is not None:
-            source = _item_cast_source_type(item)
-            if _cast_pair_is_lossy(
-                source=source, target=item.cast_target,
-                lossy_pairs=_LOSSY_ORDER_BY_CAST_PAIRS,
-            ):
-                raise TranslationError(_lossy_cast_error_message(
-                    kind="ORDER BY", name=name,
-                    source=source, target=item.cast_target,
-                ))
+        _reject_lossy_cast_or_pass(
+            kind="ORDER BY", name=name, item=item,
+            lossy_pairs=_LOSSY_ORDER_BY_CAST_PAIRS,
+        )
         if item.metric is not None:
             ref = ColumnRef(name=item.metric.name)
         else:
@@ -1562,17 +1567,12 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
         # here — the engine's per-value grouping already collapses to the
         # same set of TEXT representations.
         item = item_by_projected_name.get(u)
-        if item is None or item.cast_target is None:
+        if item is None:
             continue
-        source = _item_cast_source_type(item)
-        if _cast_pair_is_lossy(
-            source=source, target=item.cast_target,
+        _reject_lossy_cast_or_pass(
+            kind="GROUP BY", name=u, item=item,
             lossy_pairs=_LOSSY_GROUP_BY_CAST_PAIRS,
-        ):
-            raise TranslationError(_lossy_cast_error_message(
-                kind="GROUP BY", name=u,
-                source=source, target=item.cast_target,
-            ))
+        )
 
 
 def _is_ignorable_group_item(item: str) -> bool:
