@@ -791,10 +791,6 @@ def test_filter_like_ilike_contains(metabase_e2e_env: MetabaseE2EEnv) -> None:
         assert n >= 1, f"{op_name} with fragment {fragment!r} returned {n} rows"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1568: pg-facade doesn't resolve MBQL `['aggregation', N]` ordinal refs in HAVING/ORDER BY — Metabase emits the literal aggregation name as a string instead",
-)
 def test_filter_having_on_aggregate(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
@@ -859,10 +855,6 @@ def test_order_by_dimension_asc_and_desc(metabase_e2e_env: MetabaseE2EEnv) -> No
     assert desc_prices == sorted(desc_prices, reverse=True)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1568: pg-facade doesn't resolve MBQL `['aggregation', N]` ordinal refs in HAVING/ORDER BY — Metabase emits `\"orders.row_count\"` instead of the aggregate's projection alias",
-)
 def test_order_by_aggregate(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")

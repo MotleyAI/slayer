@@ -426,6 +426,202 @@ def test_order_by_aggregate_expression_resolves(dialect) -> None:
     assert result.query.order[0].direction == "desc"
 
 
+# --- DEV-1568: MBQL aggregation-alias refs in WHERE/HAVING/ORDER BY ----------
+#
+# Metabase compiles MBQL `["aggregation", N]` post-aggregation references to
+# SQL that names the projection alias directly:
+#   * WHERE filter:  WHERE "<alias>" <cmp> <literal>      (ungrammatical pre-GROUP-BY
+#                                                          ref, but the live wire
+#                                                          capture shows this exact
+#                                                          shape — Metabase emits it
+#                                                          as WHERE, not HAVING)
+#   * HAVING filter: HAVING "<alias>" <cmp> <literal>     (covered for symmetry; not
+#                                                          observed on the wire but
+#                                                          cheap to support)
+#   * ORDER BY:      ORDER BY "<alias>" <dir>             (alias-ref, NOT the
+#                                                          catalog-side FacadeMetric.name)
+#
+# The translator must connect the alias back to the catalog aggregate's
+# `measure_formula` (for filters) or `projected_name` (for OrderItem.column),
+# NOT the catalog-side `FacadeMetric.name`.
+
+
+def test_where_on_aggregate_alias_for_count_star_resolves(dialect) -> None:
+    result = translate(
+        sql='SELECT status, COUNT(*) AS "count" FROM orders '
+            'WHERE "count" > 1 GROUP BY status',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.filters == ["*:count > 1"]
+
+
+def test_where_on_aggregate_alias_literal_on_left_flips(dialect) -> None:
+    result = translate(
+        sql='SELECT status, COUNT(*) AS "count" FROM orders '
+            'WHERE 1 < "count" GROUP BY status',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.filters == ["*:count > 1"]
+
+
+def test_where_on_aggregate_alias_for_sum_resolves(dialect) -> None:
+    result = translate(
+        sql='SELECT status, SUM(revenue) AS "rev" FROM orders '
+            'WHERE "rev" > 1000 GROUP BY status',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.filters == ["revenue:sum > 1000"]
+
+
+def test_having_on_aggregate_alias_resolves(dialect) -> None:
+    result = translate(
+        sql='SELECT status, SUM(revenue) AS "rev" FROM orders '
+            'GROUP BY status HAVING "rev" > 1000',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.filters == ["revenue:sum > 1000"]
+
+
+def test_order_by_aggregate_alias_for_count_star(dialect) -> None:
+    """Metabase shape: COUNT(*) aliased, ORDER BY references the alias.
+
+    Pre-fix the translator built ``ColumnRef(name=item.metric.name)`` —
+    i.e. ``ColumnRef("row_count")`` — but ``plan.measures`` registered the
+    SLayer measure under ``projected_name`` (``"count"``), so the engine
+    failed with ``Referenced column "orders.row_count" not found``.
+    """
+    result = translate(
+        sql='SELECT status, COUNT(*) AS "count" FROM orders '
+            'GROUP BY status ORDER BY "count" DESC',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.order is not None
+    assert result.query.order[0].column.name == "count"
+    assert result.query.order[0].direction == "desc"
+
+
+def test_order_by_aggregate_call_with_alias_uses_projected_name(dialect) -> None:
+    """ORDER BY repeats the aggregate-call literally, but the projection is
+    aliased — the OrderItem must use the user alias, not ``metric.name``."""
+    result = translate(
+        sql='SELECT SUM(revenue) AS "rev" FROM orders ORDER BY SUM(revenue) DESC',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.order is not None
+    assert result.query.order[0].column.name == "rev"
+    assert result.query.order[0].direction == "desc"
+
+
+def test_where_on_aggregate_alias_gte_comparator_resolves(dialect) -> None:
+    """Regression guard: alias detection must work for every comparator, not
+    just ``>``/``<``. Covers Codex review #4."""
+    result = translate(
+        sql='SELECT status, COUNT(*) AS "count" FROM orders '
+            'WHERE "count" >= 5 GROUP BY status',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.filters == ["*:count >= 5"]
+
+
+def test_where_on_aggregate_alias_count_distinct_resolves(dialect) -> None:
+    """Confirms the colon-form emission uses the catalog's pre-expanded
+    ``measure_formula`` (which canonicalises COUNT(DISTINCT col) →
+    ``col:count_distinct``) rather than a hand-built form. Covers Codex #6."""
+    result = translate(
+        sql='SELECT status, COUNT(DISTINCT id) AS "uniq" FROM orders '
+            'WHERE "uniq" > 1 GROUP BY status',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.filters == ["id:count_distinct > 1"]
+
+
+def test_where_aggregate_alias_against_non_literal_raises(dialect) -> None:
+    """An aggregate-alias compared to ANYTHING other than a literal must
+    raise — the verbatim fallback would silently emit broken SQL. Covers
+    Codex review #2."""
+    with pytest.raises(TranslationError):
+        translate(
+            sql='SELECT status, COUNT(*) AS "count", SUM(revenue) AS "rev" '
+                'FROM orders WHERE "count" > "rev" GROUP BY status',
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
+def test_where_aggregate_alias_match_is_case_sensitive(dialect) -> None:
+    """Lookup against ``items_by_projected_name`` is case-sensitive (mirrors
+    the existing ORDER BY alias-lookup behaviour). A WHERE conjunct whose
+    column-name case differs from the projection alias must NOT route through
+    the colon-form path — it falls through to verbatim, with the user's
+    original column-name case preserved. Covers Codex #3."""
+    result = translate(
+        sql='SELECT status, COUNT(*) AS "count" FROM orders '
+            'WHERE "Count" > 1 GROUP BY status',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    filters = result.query.filters or []
+    # Did NOT route through the colon-form path…
+    assert "*:count > 1" not in filters
+    # …and DID fall through to the verbatim branch, preserving "Count".
+    assert len(filters) == 1
+    assert '"Count"' in filters[0]
+
+
+def test_having_aggregate_alias_against_non_literal_raises(dialect) -> None:
+    """HAVING symmetry of the WHERE raise rule. Covers Codex #1."""
+    with pytest.raises(TranslationError):
+        translate(
+            sql='SELECT status, COUNT(*) AS "count", SUM(revenue) AS "rev" '
+                'FROM orders GROUP BY status HAVING "count" > "rev"',
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
+@pytest.mark.parametrize("alias_form", [
+    '"orders"."count"',          # 2-part: table-qualified
+    '"public"."orders"."count"', # 3-part: schema.table-qualified (pg-facade)
+])
+def test_where_on_qualified_aggregate_alias_resolves(alias_form, dialect) -> None:
+    """``strip_prefix`` must drop the FROM-table qualifier so a 2-part or
+    3-part column ref to the aggregate alias resolves identically to the
+    bare form. Covers Codex #2."""
+    result = translate(
+        sql=f'SELECT status, COUNT(*) AS "count" FROM orders '
+            f'WHERE {alias_form} > 1 GROUP BY status',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.filters == ["*:count > 1"]
+
+
+def test_where_on_dimension_alias_does_not_route_to_aggregate_path(dialect) -> None:
+    """The alias-detection helper is guarded on ``item.metric is not None``.
+    A dimension projection aliased to a name that would otherwise match must
+    fall through to the existing verbatim filter path, NOT raise (the
+    "must be a literal" rule applies only to aggregate-alias matches).
+    Covers Codex #3."""
+    # status (dim) aliased to "count"; WHERE "count" = 'x' is a dim equality.
+    # Pre-fix and post-fix both fall through to verbatim because metric is None.
+    result = translate(
+        sql='SELECT status AS "count" FROM orders WHERE "count" = \'x\'',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    filters = result.query.filters or []
+    # Did NOT route through the colon-form path…
+    assert "*:count = 'x'" not in filters
+    # …and DID fall through to the verbatim path.
+    assert len(filters) == 1
+
+
 # --- time-grain wrapping -----------------------------------------------------
 
 
@@ -676,12 +872,15 @@ def test_not_equal_rewrites_to_dsl_neq(dialect) -> None:
 
 
 def test_metric_in_where_passes_through_for_having(dialect) -> None:
+    """A bare-metric-name WHERE ref (no SELECT alias) routes through the
+    DEV-1568 aggregate-alias pre-pass and lands as canonical colon-form.
+    The engine classifies colon-form aggregate filters as HAVING."""
     result = translate(
         sql="SELECT revenue_sum, status FROM orders WHERE revenue_sum > 1000",
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filters == ["revenue_sum > 1000"]
+    assert result.query.filters == ["revenue:sum > 1000"]
 
 
 # --- GROUP BY / ORDER BY / LIMIT / OFFSET ------------------------------------
