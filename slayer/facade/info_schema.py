@@ -28,7 +28,12 @@ from typing import List, Optional
 import sqlglot.expressions as exp
 
 from slayer.core.enums import DataType
-from slayer.facade.catalog import CATALOG_NAME, FacadeCatalog
+from slayer.facade.catalog import (
+    CATALOG_NAME,
+    FacadeCatalog,
+    local_dimensions,
+    local_metrics,
+)
 from slayer.facade.datatypes import datatype_to_jdbc
 from slayer.facade.rows import FacadeColumn, RowBatch
 
@@ -201,6 +206,13 @@ def _serve_columns(*, catalog: FacadeCatalog) -> RowBatch:
     into the JDBC ``COLUMNS`` shape. BI tools introspecting a "table"
     via the wire-facade driver see this as the column list of the
     underlying semantic model.
+
+    DEV-1567: cross-model entries are excluded — they leak as dotted
+    "columns" that Metabase / dbt fingerprint scans then project, landing
+    a dotted name in ``SlayerQuery.measures[*].name`` (Pydantic rejects
+    the dot). Catalog-namespaced surfaces (``INFORMATION_SCHEMA.METRICS``
+    / ``.DIMENSIONS``) and the catalog SQL fingerprint hash continue to
+    use the raw ``tbl.metrics`` / ``tbl.dimensions``.
     """
     columns = [
         FacadeColumn(name="table_catalog", type=DataType.TEXT),
@@ -216,7 +228,7 @@ def _serve_columns(*, catalog: FacadeCatalog) -> RowBatch:
     for sch in catalog.schemas:
         for tbl in sch.tables:
             position = 1
-            for d in tbl.dimensions:
+            for d in local_dimensions(tbl):
                 rows.append({
                     "table_catalog": catalog.catalog_name,
                     "table_schema": sch.name,
@@ -228,7 +240,7 @@ def _serve_columns(*, catalog: FacadeCatalog) -> RowBatch:
                     "column_kind": "DIMENSION",
                 })
                 position += 1
-            for m in tbl.metrics:
+            for m in local_metrics(tbl):
                 rows.append({
                     "table_catalog": catalog.catalog_name,
                     "table_schema": sch.name,

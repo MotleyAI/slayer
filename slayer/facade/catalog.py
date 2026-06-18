@@ -107,6 +107,71 @@ class FacadeCatalog(BaseModel):
     schemas: List[FacadeSchema]
 
 
+def local_metrics(table: FacadeTable) -> List[FacadeMetric]:
+    """Metrics that should appear in the per-table flat-column view
+    (``pg_attribute`` / ``INFORMATION_SCHEMA.COLUMNS``) — saved
+    ``ModelMeasure`` entries only.
+
+    DEV-1567: ``_metric_expansion`` produces three kinds of entries on
+    every table:
+
+    1. **Cross-model entries** — names like ``customers.row_count`` /
+       ``customers.regions.population_sum`` produced by joining sibling
+       models' metrics under a dotted prefix.
+    2. **Synthetic same-model entries** — the ``row_count`` rule-1
+       metric (``measure_formula="*:count"``), the column × built-in-
+       aggregation cartesian (``<col>_<agg>`` / ``<col>:<agg>``), and
+       the column × custom-aggregation cartesian. None of these are
+       user-authored — they're catalog fan-out so BI tools can pick
+       any column × any agg via colon-form resolution.
+    3. **Saved measures** — ``ModelMeasure`` entries where the catalog
+       sets ``name == measure_formula`` (the user named them, so the
+       formula IS the name).
+
+    BI tools (Metabase, dbt schema scan, pgjdbc clients) that flatten
+    the catalog through ``pg_attribute`` then discover every dimension
+    AND every metric as a projectable "column" of the parent table and
+    emit ``SELECT *``-style queries listing them all. Metabase's MBQL
+    fingerprint pass then wraps each one in ``COUNT(...)``/``MAX(...)``,
+    landing dotted names in ``SlayerQuery.measures[*].name`` (Pydantic
+    rejects them) or exploding the wire response width (the C.1 e2e
+    test asserts ``len(cols) == 7``, the count of ``orders``' user-
+    authored columns).
+
+    Both kinds (1) and (2) are stripped here. Saved measures (kind 3)
+    stay because the user named them — they ARE the model's queryable
+    surface.
+
+    The raw ``table.metrics`` list keeps all three kinds so:
+      * ``INFORMATION_SCHEMA.METRICS`` still exposes them as the
+        catalog-namespaced answer to "what can I aggregate?";
+      * the catalog-SQL fingerprint hash still tracks them for cache
+        invalidation;
+      * the translator's ``metrics_by_name`` / ``metrics_by_formula``
+        lookups still resolve hand-written cross-model SQL (rejected
+        there by the translator-side guard) and same-model aggregate
+        refs like ``MAX(total)``.
+
+    The "dot in name" cross-model predicate is safe because every
+    catalog-side name source forbids dots: ``Column.name``,
+    ``ModelMeasure.name``, and (DEV-1567) ``Aggregation.name`` all
+    enforce ``[a-zA-Z_][a-zA-Z0-9_]*``.
+    """
+    return [
+        m for m in table.metrics
+        if "." not in m.name and m.measure_formula == m.name
+    ]
+
+
+def local_dimensions(table: FacadeTable) -> List[FacadeDimension]:
+    """Mirror of :func:`local_metrics` for dimensions: drop cross-model
+    entries (single-hop and multi-hop joined dimensions). Unlike
+    metrics, dimensions don't have a synthetic-vs-user-authored split —
+    every dimension IS a ``Column`` the user defined on the model.
+    See :func:`local_metrics` for the leak-path rationale."""
+    return [d for d in table.dimensions if "." not in d.name]
+
+
 def build_catalog(
     *,
     models_by_datasource: Dict[str, List[SlayerModel]],
