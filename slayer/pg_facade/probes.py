@@ -212,15 +212,21 @@ def _extract_set_config_mutation(parsed: exp.Expression) -> Optional[SetSettingO
 def _set_config_is_session_scope(node: exp.Anonymous) -> bool:
     """Check ``set_config`` 's third argument (``is_local``).
 
-    ``True`` (session scope) is permitted; explicit ``true`` (local scope)
+    ``False`` (session scope) is permitted; explicit ``true`` (local scope)
     is blocked since DEV-1569 doesn't model transaction-bound restoration.
     A missing third argument or an unknown shape is treated as session
     scope (per real-Postgres default).
+
+    DEV-1569 / Codex round 2 F1: extended-protocol substitution may
+    surface the boolean wrapped in an ``exp.Cast`` (``FALSE::boolean`` /
+    ``CAST(FALSE AS BOOLEAN)``); peer through one Cast level.
     """
     args = node.args.get("expressions") or []
     if len(args) < 3:
         return True
     is_local = args[2]
+    if isinstance(is_local, exp.Cast):
+        is_local = is_local.this
     if isinstance(is_local, exp.Boolean):
         return is_local.this is False
     if isinstance(is_local, exp.Literal):
@@ -242,10 +248,10 @@ def _first_literal(node: exp.Anonymous, index: int) -> Optional[str]:
     args = node.args.get("expressions") or []
     if index >= len(args):
         return None
-    arg = args[index]
+    arg = args[index]  # NOSONAR(S6466) — guarded by the index check on the line above
     if isinstance(arg, exp.Cast):
         arg = arg.this
-    if isinstance(arg, exp.Literal):  # NOSONAR(S6466) — guarded by index < len(args)
+    if isinstance(arg, exp.Literal):
         return str(arg.this)
     return None
 

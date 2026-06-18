@@ -350,6 +350,31 @@ def test_match_pg_probe_with_mutation_blocks_is_local_true() -> None:
     assert outcome.settings_mutation is None
 
 
+def test_match_pg_probe_with_mutation_unwraps_cast_around_is_local() -> None:
+    """`set_config('app', 'foo', $2::boolean)` — sqlglot wraps the bound
+    boolean as ``Cast(Boolean(...))``. The guard must peer through one
+    level of Cast so a false-cast still allows mutation and a true-cast
+    still blocks it."""
+    # FALSE wrapped in Cast → mutation allowed.
+    outcome = match_pg_probe_with_mutation(
+        _parse("SELECT set_config('application_name', 'foo', FALSE::boolean)"),
+        datasource="jaffle", version_str="x",
+        session_settings={"application_name": "old"},
+    )
+    assert outcome is not None
+    assert outcome.settings_mutation == SetSettingOp(
+        name="application_name", value="foo",
+    )
+    # TRUE wrapped in Cast → mutation blocked.
+    outcome = match_pg_probe_with_mutation(
+        _parse("SELECT set_config('application_name', 'foo', TRUE::boolean)"),
+        datasource="jaffle", version_str="x",
+        session_settings={"application_name": "old"},
+    )
+    assert outcome is not None
+    assert outcome.settings_mutation is None
+
+
 def test_match_pg_probe_with_mutation_allows_explicit_is_local_false() -> None:
     outcome = match_pg_probe_with_mutation(
         _parse("SELECT set_config('application_name', 'foo', false)"),

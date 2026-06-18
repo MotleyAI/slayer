@@ -1351,6 +1351,10 @@ def _extract_set_setting(parsed: exp.Set) -> Optional[SetSettingOp]:
     ``SET <name> TO <value>`` AST. Returns ``None`` for multi-item SETs or
     SetItem shapes whose body isn't a single ``EQ(Column(Identifier), rhs)``
     pair — those are silently no-op'd by the caller (DEV-1569).
+
+    DEV-1569 / Codex round 2 F2: dotted custom names (``SET myapp.user_id
+    = '42'``) parse as ``Column(table='myapp', name='user_id')``;
+    reconstruct the dotted form so ``SHOW myapp.user_id`` round-trips.
     """
     items = parsed.args.get("expressions") or []
     if len(items) != 1:
@@ -1364,8 +1368,10 @@ def _extract_set_setting(parsed: exp.Set) -> Optional[SetSettingOp]:
     if not isinstance(lhs, exp.Column):
         return None
     # LHS is the setting name — Postgres GUC names are case-insensitive; we
-    # normalise to lowercase.
-    name = lhs.name.lower()
+    # normalise to lowercase. For 2-part `table.name` shapes (custom GUCs
+    # like `myapp.user_id`) reconstruct the dotted form.
+    table_part = lhs.table or ""
+    name = f"{table_part}.{lhs.name}".lower() if table_part else lhs.name.lower()
     value = _extract_setting_value(rhs)
     if value is None:
         return None
@@ -1425,36 +1431,58 @@ def _extract_reset_setting(parsed: exp.Command) -> Optional[ResetSettingOp]:
     return ResetSettingOp(name=name)
 
 
-# Command-form SET extractor (DEV-1569 / Codex round 1 F1). sqlglot falls
-# back to ``exp.Command(this='SET', expression='<raw rest-of-line>')`` for
-# spellings it can't model — most importantly comma-separated values such
-# as ``SET search_path = public, extensions`` (which pgjdbc / Metabase
-# emit on every connection). The regex captures a single-identifier name
-# followed by ``=`` or ``TO``; multi-word names (``SET TIME ZONE 'UTC'``)
-# and ``SET SESSION CHARACTERISTICS …`` deliberately don't match so they
-# fall through to the silent-no-op behaviour the spec cuts.
-_COMMAND_SET_RE = re.compile(
-    r"^\s*([A-Za-z_][\w]*)\s*(?:=|TO\s+)\s*(.+?)\s*;?\s*$",
-)
+# Single-identifier validation regex (single quantifier on identifier chars;
+# no chain of unbounded `\s*` segments — safe from ReDoS / S5852). Used
+# below to validate the name half of a Command-form SET after the value
+# has been peeled off by plain string ops.
+_COMMAND_SET_NAME_RE = re.compile(r"[A-Za-z_]\w*")
+
+
+def _command_expression_text(expr) -> str:
+    """Extract raw text from a Command's ``expression`` slot (which sqlglot
+    sometimes carries as a bare ``str`` and sometimes as a node)."""
+    if isinstance(expr, str):
+        return expr
+    if hasattr(expr, "this"):
+        return str(expr.this)
+    return str(expr)
 
 
 def _extract_command_form_set(parsed: exp.Command) -> Optional[SetSettingOp]:
     """For an ``exp.Command(this='SET', expression='<raw>')`` root, try to
-    parse the raw expression text into a ``(name, value)`` pair via a small
-    regex. Returns ``None`` if the shape doesn't match (multi-word names,
-    no value, etc.) so the caller silently no-ops."""
+    parse the raw expression text into a ``(name, value)`` pair.
+
+    Returns ``None`` for shapes the spec cuts: multi-word names
+    (``SET TIME ZONE 'UTC'``), ``SET SESSION CHARACTERISTICS …``, no
+    value, etc. Implementation uses plain string operations rather than
+    a multi-segment regex to keep clear of catastrophic backtracking
+    (Sonar S5852 / DEV-1569 round 2).
+    """
     expr = parsed.expression
     if expr is None:
         return None
-    raw = expr if isinstance(expr, str) else (
-        expr.this if hasattr(expr, "this") else str(expr)
-    )
-    match = _COMMAND_SET_RE.match(str(raw))
-    if match is None:
+    raw = _command_expression_text(expr).strip().rstrip(";").strip()
+    if not raw:
         return None
-    name = match.group(1).lower()
-    value = match.group(2).strip()
-    return SetSettingOp(name=name, value=value)
+    # Find the first separator: `=` wins over ` TO ` so `SET x = TO_DATE(...)`
+    # never accidentally splits on TO.
+    eq_idx = raw.find("=")
+    if eq_idx != -1:
+        name = raw[:eq_idx].strip()
+        value = raw[eq_idx + 1:].strip()
+    else:
+        # ` TO ` (with surrounding whitespace) on an uppercased view of raw.
+        upper = raw.upper()
+        to_idx = upper.find(" TO ")
+        if to_idx == -1:
+            return None
+        name = raw[:to_idx].strip()
+        value = raw[to_idx + 4:].strip()
+    if not name or not value:
+        return None
+    if not _COMMAND_SET_NAME_RE.fullmatch(name):
+        return None
+    return SetSettingOp(name=name.lower(), value=value)
 
 
 def _classify_noop_root(parsed: exp.Expression) -> Optional[NoOpResult]:

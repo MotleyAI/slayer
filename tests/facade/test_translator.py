@@ -226,6 +226,28 @@ def test_classify_command_form_set_with_comma_values_captures(
     assert result.reset_setting is None
 
 
+@pytest.mark.parametrize(
+    ("sql", "expected_name", "expected_value"),
+    [
+        # Dotted "custom GUC" names — apps and PG extensions use `myapp.user_id`.
+        # sqlglot parses these as Column(table=my, name=custom); we reconstruct
+        # the dotted name so SHOW round-trips.
+        ("SET myapp.user_id = '42'", "myapp.user_id", "42"),
+        ("SET myapp.User_Id = '42'", "myapp.user_id", "42"),  # lowercased
+    ],
+)
+def test_classify_set_dotted_custom_name_captures(
+    sql: str, expected_name: str, expected_value: str, dialect,
+) -> None:
+    """`SET myapp.user_id = '42'` parses as a 2-part Column; preserve the
+    dotted form so SHOW myapp.user_id round-trips. Codex round 2 F2."""
+    result = translate(sql=sql, catalog=_catalog(), dialect=dialect)
+    assert isinstance(result, NoOpResult)
+    assert result.set_setting == SetSettingOp(
+        name=expected_name, value=expected_value,
+    )
+
+
 def test_classify_command_form_set_to_keyword_captures(dialect) -> None:
     """`SET <name> TO <values>` (TO instead of =) — same Command-form
     extraction."""
