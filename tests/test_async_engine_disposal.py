@@ -18,9 +18,10 @@ runs inside the same loop that owned the connections.
 from __future__ import annotations
 
 import asyncio
+import math
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -34,7 +35,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 @pytest.fixture
-def workspace() -> Path:
+def workspace() -> Iterator[Path]:
     tmp = tempfile.TemporaryDirectory()
     try:
         yield Path(tmp.name)
@@ -56,7 +57,8 @@ def _build_engine_with_fake_pg_client(
     ds = DatasourceConfig(
         name="leaky", type="postgres",
         host="example.invalid", port=5432, database="x",
-        username="u", password="p",
+        # No username/password — these clients only host MagicMock async engines,
+        # the real connection string is never used. Avoids Sonar S2068.
     )
     client = SlayerSQLClient(datasource=ds)
     fake_engine = MagicMock(name="fake_async_engine")
@@ -72,13 +74,16 @@ class TestAsyncEngineDisposal:
         self, workspace: Path,
     ) -> None:
         engine, fake_engine = _build_engine_with_fake_pg_client(workspace)
+        client = next(iter(engine._sql_clients.values()))
 
         await engine.aclose()
 
         fake_engine.dispose.assert_awaited_once()
-        # Cache is cleared so a subsequent call doesn't try to dispose
-        # a torn-down engine.
-        assert engine._sql_clients == {}
+        # The SlayerSQLClient instance is KEPT in the cache (so :memory:
+        # SQLite's StaticPool-pinned _sync_engine survives across calls);
+        # only the async engine reference is nulled.
+        assert engine._sql_clients, "client cache must persist for sync-engine reuse"
+        assert client._async_engine is None
 
     async def test_aclose_is_idempotent(self, workspace: Path) -> None:
         engine, fake_engine = _build_engine_with_fake_pg_client(workspace)
@@ -86,8 +91,9 @@ class TestAsyncEngineDisposal:
         await engine.aclose()
         await engine.aclose()
 
-        # Dispose still ran exactly once — the second call finds an empty
-        # cache and is a no-op rather than re-disposing.
+        # Dispose ran exactly once — the second call finds ``_async_engine``
+        # already None on every cached client and is a no-op rather than
+        # re-disposing the now-stale reference.
         fake_engine.dispose.assert_awaited_once()
 
     async def test_client_aclose_nulls_engine_before_dispose(
@@ -101,9 +107,9 @@ class TestAsyncEngineDisposal:
         engine, fake_engine = _build_engine_with_fake_pg_client(workspace)
         client = next(iter(engine._sql_clients.values()))
 
-        async def dispose_and_check() -> None:
-            # While dispose is running, the client's ``_async_engine``
-            # field is already None.
+        # Sync side_effect (no awaits needed) — AsyncMock invokes it the
+        # same way and Sonar S7503 stays clean.
+        def dispose_and_check() -> None:
             assert client._async_engine is None
         fake_engine.dispose = AsyncMock(side_effect=dispose_and_check)
 
@@ -162,7 +168,7 @@ class TestAsyncEngineDisposal:
         ds_fake = DatasourceConfig(
             name="leaky-extra", type="postgres",
             host="example.invalid", port=5432, database="x",
-            username="u", password="p",
+            # No username/password — fake mock-only clients (Sonar S2068).
         )
         client = SlayerSQLClient(datasource=ds_fake)
         fake_engine = MagicMock()
@@ -173,13 +179,14 @@ class TestAsyncEngineDisposal:
         result = engine.execute_sync(SlayerQuery(
             source_model="t", measures=["val:sum"],
         ))
-        assert result.data[0]["t.val_sum"] == 6.0
+        assert math.isclose(result.data[0]["t.val_sum"], 6.0)
         # Disposal ran inside the same loop that owned the engine,
         # BEFORE asyncio.run closed it.
         fake_engine.dispose.assert_awaited_once()
-        # Cache cleared so the next execute_sync call doesn't reuse a
-        # disposed engine.
-        assert engine._sql_clients == {}
+        # Client is KEPT in the cache; only its async engine was nulled
+        # so the next call lazily rebuilds it on the new loop.
+        assert client._async_engine is None
+        assert engine._sql_clients, "client cache must persist for sync-engine reuse"
 
     def test_execute_sync_disposes_even_on_error(
         self, workspace: Path,
@@ -194,7 +201,7 @@ class TestAsyncEngineDisposal:
         ds = DatasourceConfig(
             name="leaky", type="postgres",
             host="example.invalid", port=5432, database="x",
-            username="u", password="p",
+            # No username/password — fake mock-only clients (Sonar S2068).
         )
         client = SlayerSQLClient(datasource=ds)
         fake_engine = MagicMock()
@@ -236,30 +243,98 @@ class TestAsyncEngineDisposal:
         )))
         engine = SlayerQueryEngine(storage=storage)
 
+        # Install ONE fake postgres-typed client up front; across N
+        # execute_sync calls we re-attach a fresh async engine to it
+        # each time and confirm every previous one was disposed exactly
+        # once. This mirrors the real Storyline pattern: one engine /
+        # one client, called repeatedly across asyncio.run boundaries.
+        ds_fake = DatasourceConfig(
+            name="fake", type="postgres",
+            host="x.invalid", port=5432, database="x",
+            # No username/password — fake mock-only clients (Sonar S2068).
+        )
+        client_i = SlayerSQLClient(datasource=ds_fake)
+        engine._sql_clients[("fake", "postgres")] = client_i
+
         fakes: list[Any] = []
         for i in range(20):
-            ds_i = DatasourceConfig(
-                name=f"fake-{i}", type="postgres",
-                host="x.invalid", port=5432, database="x",
-                username="u", password="p",
-            )
-            client_i = SlayerSQLClient(datasource=ds_i)
             fake = MagicMock()
             fake.dispose = AsyncMock()
             client_i._async_engine = fake
-            engine._sql_clients[(f"fake-{i}", "postgres")] = client_i
             fakes.append(fake)
 
             engine.execute_sync(SlayerQuery(
                 source_model="t", measures=["*:count"],
             ))
-            # Cache must be empty after each call — that's the structural
-            # guarantee against the leak.
-            assert engine._sql_clients == {}, (
-                f"iter {i}: cache should be cleared by aclose()"
+            # Client persists across calls so its _sync_engine (and any
+            # pinned ``:memory:`` SQLite StaticPool connection) survives.
+            assert client_i in engine._sql_clients.values()
+            # But the per-call async engine is gone — disposed inside
+            # the live loop before asyncio.run closed it.
+            assert client_i._async_engine is None, (
+                f"iter {i}: async engine should be nulled after execute_sync"
             )
 
-        # Every engine we installed got disposed exactly once.
+        # Every fake we installed got disposed exactly once.
         for i, fake in enumerate(fakes):
             fake.dispose.assert_awaited_once_with()
             assert fake.dispose.await_count == 1, f"iter {i}: disposed {fake.dispose.await_count} times"
+
+    def test_sync_engine_survives_across_execute_sync_calls(
+        self, workspace: Path,
+    ) -> None:
+        """The reviewer's concrete concern: ``:memory:`` SQLite pins its
+        data inside ``SlayerSQLClient._sync_engine``'s ``StaticPool``. If
+        ``aclose`` discarded the client (or rebuilt its sync engine)
+        between calls, the next ``execute_sync`` would see a fresh empty
+        in-memory DB.
+
+        Use a file-backed SQLite for the test (``:memory:`` itself can't
+        be probed end-to-end — the DEV-1538 affinity-widening introspect
+        path opens its own connection that doesn't see the StaticPool's
+        pinned in-memory state). The reviewer's concern reduces to:
+        ``client._sync_engine`` must be the SAME object across calls. If
+        that identity holds for a file-backed DS, it holds for
+        ``:memory:`` too, since the cache logic is identical.
+        """
+        import sqlite3
+        db = workspace / "live.db"
+        c = sqlite3.connect(db)
+        c.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")
+        c.execute("INSERT INTO t (v) VALUES (10), (20), (30)")
+        c.commit()
+        c.close()
+
+        storage = YAMLStorage(base_dir=str(workspace / "store"))
+        asyncio.run(storage.save_datasource(
+            DatasourceConfig(name="lite", type="sqlite", database=str(db)),
+        ))
+        asyncio.run(storage.save_model(SlayerModel(
+            name="t", data_source="lite", sql_table="t",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="v", sql="v", type=DataType.INT),
+            ],
+        )))
+        engine = SlayerQueryEngine(storage=storage)
+
+        r1 = engine.execute_sync(SlayerQuery(
+            source_model="t", measures=["*:count", "v:sum"],
+        ))
+        assert r1.data[0]["t._count"] == 3
+        assert r1.data[0]["t.v_sum"] == 60
+        assert len(engine._sql_clients) == 1
+        client = next(iter(engine._sql_clients.values()))
+        sync_engine_first = client._sync_engine
+
+        r2 = engine.execute_sync(SlayerQuery(
+            source_model="t", measures=["*:count", "v:sum"],
+        ))
+        assert r2.data[0]["t._count"] == 3
+        # Same client + same sync engine object — the engine the
+        # reviewer is worried about losing for :memory: SQLite.
+        assert client in engine._sql_clients.values()
+        assert client._sync_engine is sync_engine_first, (
+            "client._sync_engine was rebuilt — :memory: data would be lost "
+            "in the analogous in-memory case"
+        )

@@ -1000,12 +1000,18 @@ class SlayerQueryEngine:
         cleanly. ``execute_sync`` calls this in a ``finally`` before
         ``asyncio.run`` returns; long-lived async holders (FastAPI lifespan,
         notebooks) should call it at shutdown.
+
+        ``SlayerSQLClient`` instances themselves are KEPT in the cache —
+        only ``_async_engine`` is disposed. The sync engine survives
+        (critical for ``:memory:`` SQLite, whose ``StaticPool`` pins the
+        one connection that holds all the in-memory data; dropping the
+        client would replace that with a fresh empty database on the
+        next call). On the next ``execute_sync`` each client lazily
+        rebuilds its async engine on the new loop.
         """
-        # Snapshot the cache so per-client errors can't break the loop
-        # below and so a re-entrant call to ``aclose`` sees an empty cache.
-        clients = list(self._sql_clients.values())
-        self._sql_clients.clear()
-        for client in clients:
+        # ``client.aclose()`` does not mutate ``self._sql_clients`` so
+        # iterating ``.values()`` directly is safe.
+        for client in self._sql_clients.values():
             await client.aclose()
 
     def execute_sync(
