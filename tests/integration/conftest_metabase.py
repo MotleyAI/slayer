@@ -15,7 +15,6 @@ reasons.
 
 from __future__ import annotations
 
-import json
 import logging
 import secrets
 import shutil
@@ -534,12 +533,10 @@ def encode_mbql_query(*, source_table: int, **extras: Any) -> Dict[str, Any]:
     return {"type": "query", "query": inner}
 
 
-# Re-export the JSON dump shim used by tests so they don't need to import json themselves.
 __all__ = [
     "MetabaseClient",
     "MetabaseE2EEnv",
     "encode_mbql_query",
     "encode_native_query",
     "metabase_e2e_env",
-    "json",
 ]
