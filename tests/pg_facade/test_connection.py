@@ -1210,28 +1210,33 @@ async def test_bind_empty_string_mixed_use_param_whole_swap() -> None:
     assert "''" not in portal_sql, f"whole-param swap missed an occurrence: {portal_sql!r}"
 
 
-async def test_bind_nonempty_string_against_int_column_still_errors() -> None:
-    """The rewrite is precise: a non-convertible TEXT value against an
-    INT column still surfaces DuckDB's conversion error. Codex finding
-    #6: use `b'abc'` (DuckDB CANNOT coerce) rather than `b'5'` (it can)."""
+async def test_bind_nonempty_string_against_int_column_preserves_literal() -> None:
+    """The rewrite is precise: only empty-string text-OID binds get the
+    NULL substitution. A non-empty string against an INT column must hit
+    ``literal_for_substitution`` like any other value, so the portal SQL
+    carries the literal verbatim (``'abc'``) rather than ``NULL``.
+
+    We assert on the portal SQL rather than on DuckDB's downstream
+    behaviour — DuckDB's per-version coercion of ``'abc'`` against an INT
+    column varies between wheels (Python 3.11's DuckDB accepts it
+    silently; 3.12's rejects with a conversion error) and is out of
+    scope for this PR. The SLayer invariant under test is the rewrite's
+    precision, not DuckDB's strictness."""
     sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = $1"
     inp = (
         _startup(user="u", database="jaffle")
         + _parse("", sql)
-        + _describe("S", "")
         + _bind("", "", values=(b"abc",), result_formats=(proto.FORMAT_TEXT,))
-        + _execute("")
         + _sync()
         + _terminate()
     )
-    writer = await _run(inp)
-    msgs = _messages(writer.buffer)
-    type_seq = _types(msgs)
-    # The execution step must surface ErrorResponse — rewrite did NOT fire
-    # because the bind value is not empty.
-    assert "E" in type_seq, (
-        "non-empty-string bind against INT column must NOT be rewritten — "
-        f"expected ErrorResponse, got {type_seq}"
+    _writer, conn = await _run_capturing(inp)
+    portal_sql = conn._portals[""].sql
+    assert "'abc'" in portal_sql, (
+        f"non-empty string must reach the portal as a quoted literal: {portal_sql!r}"
+    )
+    assert "NULL" not in portal_sql, (
+        f"non-empty string must NOT be rewritten to NULL: {portal_sql!r}"
     )
 
 

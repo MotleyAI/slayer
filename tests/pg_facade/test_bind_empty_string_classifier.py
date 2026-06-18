@@ -476,6 +476,45 @@ def test_doubly_parenthesised_param_classified(column_type_index):
     assert _classify(sql, column_type_index, [1]) == {1}
 
 
+# --- Cast-wrapped parameters (Codex CX-3) ----------------------------------
+
+
+def test_pg_cast_param_classified(column_type_index):
+    """``col = $1::int`` — sqlglot parses ``$1::int`` as ``exp.Cast(Parameter)``.
+    The rewrite must still fire (we substitute the literal NULL which
+    becomes ``CAST(NULL AS INT)`` after substitution — harmless typed null)."""
+    sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = $1::int"
+    assert _classify(sql, column_type_index, [1]) == {1}
+
+
+def test_cast_function_form_param_classified(column_type_index):
+    """``col = CAST($1 AS INT)`` — same AST shape as ``$1::int``."""
+    sql = (
+        "SELECT objoid FROM pg_catalog.pg_description "
+        "WHERE objsubid = CAST($1 AS INT)"
+    )
+    assert _classify(sql, column_type_index, [1]) == {1}
+
+
+def test_between_with_cast_params_classified(column_type_index):
+    """``BETWEEN $1::int AND $2::int`` — both bounds wrapped in
+    ``exp.Cast(Parameter)``."""
+    sql = (
+        "SELECT objoid FROM pg_catalog.pg_description "
+        "WHERE objsubid BETWEEN $1::int AND $2::int"
+    )
+    assert _classify(sql, column_type_index, [1, 2]) == {1, 2}
+
+
+def test_paren_around_cast_param_classified(column_type_index):
+    """``col = ($1::int)`` — the Cast unwrap must compose with the Paren peel."""
+    sql = (
+        "SELECT objoid FROM pg_catalog.pg_description "
+        "WHERE objsubid = ($1::int)"
+    )
+    assert _classify(sql, column_type_index, [1]) == {1}
+
+
 # --- Case-distinct columns (Codex CX-2) -------------------------------------
 
 

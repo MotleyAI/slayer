@@ -988,37 +988,54 @@ def _column_param_pairs_from_node(node) -> Iterable[Tuple[exp.Column, int]]:
             yield from _pair_column_and_param(value, el)
 
 
-def _unwrap_paren(node):
-    """Strip ``exp.Paren`` wrappers (semantically transparent). sqlglot
-    represents ``($1)`` / ``(col)`` as ``Paren(Parameter)`` / ``Paren(Column)``,
-    so ``col = ($1)`` / ``IN (($1))`` / ``BETWEEN ($1) AND ($2)`` would
-    otherwise dodge the empty-string-to-NULL rewrite (Codex CX-1)."""
+def _try_extract_column(node) -> Optional[exp.Column]:
+    """Return the underlying ``exp.Column`` if ``node`` is one (optionally
+    wrapped in semantically-transparent ``exp.Paren`` layers). CAST / function
+    / arithmetic wrappers around a column are documented out of scope —
+    pin tests `test_cast_wrapped_column_not_classified`,
+    `test_arithmetic_wrapped_column_not_classified`,
+    `test_function_wrapped_column_not_classified`."""
     while isinstance(node, exp.Paren):
         node = node.this
-    return node
+    return node if isinstance(node, exp.Column) else None
+
+
+def _try_extract_param_index(node) -> Optional[int]:
+    """Return the 1-based ``$N`` index if ``node`` is an ``exp.Parameter``
+    (optionally wrapped in ``exp.Paren`` and/or ``exp.Cast`` layers).
+
+    Unwrapping ``exp.Cast`` is parameter-side-only (Codex CX-3): a user
+    writing ``objsubid = $1::int`` or ``objsubid = CAST($1 AS INT)`` has
+    explicitly cast the parameter, and the empty-string-to-NULL rewrite
+    still applies — ``CAST(NULL AS INT)`` is a harmless typed null, while
+    leaving ``$1`` as ``''`` would still trip DuckDB's INT conversion.
+    Asymmetric with ``_try_extract_column``, which keeps CAST-wrapped
+    columns out of scope (their user-supplied cast is the documented
+    boundary at which we stop classifying)."""
+    while isinstance(node, (exp.Paren, exp.Cast)):
+        node = node.this
+    if not isinstance(node, exp.Parameter):
+        return None
+    try:
+        return int(node.name)
+    except (ValueError, AttributeError, TypeError):
+        return None
 
 
 def _pair_column_and_param(left, right) -> Iterable[Tuple[exp.Column, int]]:
     """Two operands where one is a bare Column and the other is a $N
     Parameter -> yield (Column, $N). Returns nothing if both sides are
     the same kind or if neither is a Column / Parameter."""
-    left = _unwrap_paren(left)
-    right = _unwrap_paren(right)
-    col: Optional[exp.Column] = None
-    param_idx: Optional[int] = None
-    for op in (left, right):
-        if isinstance(op, exp.Column):
-            if col is not None:
-                return
-            col = op
-        elif isinstance(op, exp.Parameter):
-            try:
-                idx = int(op.name)
-            except (ValueError, AttributeError, TypeError):
-                continue
-            if param_idx is not None:
-                return
-            param_idx = idx
+    col_l, col_r = _try_extract_column(left), _try_extract_column(right)
+    param_l, param_r = _try_extract_param_index(left), _try_extract_param_index(right)
+    col = col_l if col_l is not None else col_r
+    param_idx = param_l if param_l is not None else param_r
+    # Need exactly one column and exactly one parameter — reject if both sides
+    # match the same kind (col = col, param = param) or neither is matchable.
+    if col_l is not None and col_r is not None:
+        return
+    if param_l is not None and param_r is not None:
+        return
     if col is not None and param_idx is not None:
         yield col, param_idx
 
