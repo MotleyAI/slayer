@@ -17,16 +17,18 @@ from __future__ import annotations
 import logging
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import (
     DEFAULT_AGGREGATIONS_BY_TYPE,
     PRIMARY_KEY_AGGREGATIONS,
     DataType,
+    JoinType,
 )
 from slayer.core.models import (
     Aggregation,
     Column,
+    ModelJoin,
     SlayerModel,
 )
 from slayer.facade.datatypes import SUPPORTED_DATATYPES
@@ -63,12 +65,36 @@ class FacadeDimension(BaseModel):
     dimension_ref: str
 
 
+class FacadeJoin(BaseModel):
+    """A direct (single-hop) join from a parent model to a target model.
+
+    Used by the wire-facade translator (DEV-1565) to recognise BI-tool-emitted
+    LEFT JOIN-with-subquery shapes against the parent's configured joins.
+    Only joins whose target is a non-hidden model in the same catalog are
+    exposed, mirroring the BFS dim/metric filter.
+    """
+    target_model: str
+    join_pairs: List[List[str]]
+    join_type: JoinType = JoinType.LEFT
+
+
 class FacadeTable(BaseModel):
+    # arbitrary_types_allowed lets `model_ref` carry the in-memory
+    # SlayerModel handle without Pydantic deep-copying / re-validating it.
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     name: str
     table_type: str
     description: Optional[str] = None
     metrics: List[FacadeMetric]
     dimensions: List[FacadeDimension]
+    joins: List[FacadeJoin] = Field(default_factory=list)
+    # In-memory handle to the underlying SlayerModel — required by the
+    # translator for ON-clause column validation (hidden FK/PK columns
+    # don't appear on `dimensions`) and for the dynamic-join lookup
+    # materialisation (DEV-1565). Excluded from any future serialisation
+    # of FacadeCatalog.
+    model_ref: Optional[SlayerModel] = Field(default=None, exclude=True)
 
 
 class FacadeSchema(BaseModel):
@@ -214,12 +240,39 @@ def _build_table(
     )
     metrics = _metric_expansion(model=model, reachable=reachable)
     dimensions = _dimension_expansion(model=model, reachable=reachable)
+    joins = _facade_joins_for(model=model, models_by_name=models_by_name)
     return FacadeTable(
         name=model.name,
         table_type=table_type,
         description=model.description,
         metrics=metrics,
         dimensions=dimensions,
+        joins=joins,
+        model_ref=model,
+    )
+
+
+def _facade_joins_for(
+    *, model: SlayerModel, models_by_name: Dict[str, SlayerModel],
+) -> List[FacadeJoin]:
+    """Expose every direct (single-hop) join whose target is a non-hidden
+    model in the same catalog. Mirrors the BFS filter so the translator's
+    existence check never matches a join that isn't otherwise addressable
+    (DEV-1565)."""
+    out: List[FacadeJoin] = []
+    for j in model.joins:
+        target = models_by_name.get(j.target_model)
+        if target is None or target.hidden:
+            continue
+        out.append(_facade_join_from(join=j))
+    return out
+
+
+def _facade_join_from(*, join: ModelJoin) -> FacadeJoin:
+    return FacadeJoin(
+        target_model=join.target_model,
+        join_pairs=[list(pair) for pair in join.join_pairs],
+        join_type=join.join_type,
     )
 
 
@@ -440,6 +493,35 @@ def _local_metrics_for(*, model: SlayerModel) -> List[FacadeMetric]:
         *_column_x_builtin_aggs(model),
         *_column_x_custom_aggs(model),
     ]
+
+
+def _local_dimensions_for(*, model: SlayerModel) -> List[FacadeDimension]:
+    """Bare-column dims for a single model in isolation (no join walk)."""
+    out: List[FacadeDimension] = []
+    for col in model.columns:
+        if col.hidden:
+            continue
+        out.append(FacadeDimension(
+            name=col.name,
+            description=col.description,
+            label=col.label,
+            data_type=col.type,
+            is_time=col.type in {DataType.DATE, DataType.TIMESTAMP},
+            dimension_ref=col.name,
+        ))
+    return out
+
+
+def build_local_view(
+    model: SlayerModel,
+) -> Tuple[List[FacadeDimension], List[FacadeMetric]]:
+    """Build the bare-column dims + col×agg metrics for a single model
+    in isolation (no join walk). Used by the translator's dynamic-join
+    lookup materialisation (DEV-1565) so a join the catalog's BFS didn't
+    pre-expand can still resolve `<target>.<col>` / `<target>.<col>:<agg>`
+    refs.
+    """
+    return _local_dimensions_for(model=model), _local_metrics_for(model=model)
 
 
 def _describe_column_agg(*, column: Column, agg: str) -> Optional[str]:

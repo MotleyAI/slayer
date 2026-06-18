@@ -1777,3 +1777,342 @@ async def test_set_pushes_parameter_status_for_all_reportable_names(
     # the seed value; only the LAST push for this name should be the SET.
     assert len(post) >= 1
     assert post[-1] == (expected_name, expected_value)
+# --- DEV-1570: empty-string-vs-non-text Bind rewrite -----------------------
+
+
+async def _run_capturing(
+    input_bytes: bytes, *, token: Optional[str] = None, storage=None, engine=None,
+) -> Tuple[_FakeWriter, PgConnection]:
+    """Variant of ``_run`` that returns both the writer and the connection
+    so tests can introspect ``conn._portals`` post-Bind."""
+    reader = asyncio.StreamReader()
+    reader.feed_data(input_bytes)
+    reader.feed_eof()
+    writer = _FakeWriter()
+    conn = PgConnection(
+        reader, writer,
+        engine=engine or _FakeEngine([]),
+        storage=storage or _storage(),
+        token=token,
+        tls_ctx=None,
+    )
+    await conn.run()
+    return writer, conn
+
+
+async def test_bind_empty_string_to_int_column_in_pg_catalog_no_error() -> None:
+    """DEV-1570: pgjdbc's empty-string-for-null-text convention against an
+    INT column previously produced ``WHERE objsubid = ''`` → DuckDB
+    ``Conversion Error: Could not convert string '' to INT64`` at Execute.
+    The Bind-time rewrite swaps the literal to ``NULL`` so the query runs."""
+    sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = $1"
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _describe("S", "")
+        + _bind("", "", values=(b"",), result_formats=(proto.FORMAT_TEXT,))
+        + _execute("")
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    type_seq = _types(msgs)
+    assert "E" not in type_seq, (
+        "Bind empty-string against INT column must rewrite to NULL — "
+        f"got error sequence {type_seq}"
+    )
+    assert "T" in type_seq  # RowDescription
+    assert "2" in type_seq  # BindComplete
+    assert "Z" in type_seq  # ReadyForQuery
+
+
+async def test_bind_empty_string_to_int_column_substitutes_null_literal() -> None:
+    """Portal-level introspection: the substituted SQL must contain `NULL`
+    (and NOT the literal `''`) at the parameter position."""
+    sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = $1"
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _bind("", "", values=(b"",), result_formats=(proto.FORMAT_TEXT,))
+        + _sync()
+        + _terminate()
+    )
+    _writer, conn = await _run_capturing(inp)
+    portal_sql = conn._portals[""].sql
+    assert "NULL" in portal_sql, f"expected NULL substitution, got: {portal_sql!r}"
+    assert "''" not in portal_sql, f"empty-string literal must not survive: {portal_sql!r}"
+
+
+async def test_bind_empty_string_to_text_column_keeps_empty_literal() -> None:
+    """Empty string against TEXT column is a legal predicate; rewrite must
+    NOT fire — the `''` literal is preserved."""
+    sql = "SELECT relname FROM pg_catalog.pg_class WHERE relname = $1"
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _bind("", "", values=(b"",), result_formats=(proto.FORMAT_TEXT,))
+        + _sync()
+        + _terminate()
+    )
+    _writer, conn = await _run_capturing(inp)
+    portal_sql = conn._portals[""].sql
+    assert "''" in portal_sql, f"text column comparison must keep '': {portal_sql!r}"
+
+
+async def test_bind_empty_string_to_boolean_column_substitutes_null() -> None:
+    sql = "SELECT relname FROM pg_catalog.pg_class WHERE relhasindex = $1"
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _bind("", "", values=(b"",), result_formats=(proto.FORMAT_TEXT,))
+        + _execute("")
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert "E" not in _types(msgs)
+
+
+async def test_bind_empty_string_to_date_column_user_model_substitutes_null() -> None:
+    """DATE-typed user-model column. Verifies the user-model branch of the
+    column-type index resolves under PUBLIC_SCHEMA."""
+    sql = "SELECT id FROM orders WHERE order_date = $1"
+    engine = _CapturingEngine([])
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _bind("", "", values=(b"",), result_formats=(proto.FORMAT_TEXT,))
+        + _sync()
+        + _terminate()
+    )
+    _writer, conn = await _run_capturing(inp, engine=engine)
+    portal_sql = conn._portals[""].sql
+    assert "NULL" in portal_sql
+
+
+async def test_bind_empty_string_to_timestamp_column_user_model_substitutes_null() -> None:
+    sql = "SELECT id FROM orders WHERE ordered_at = $1"
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _bind("", "", values=(b"",), result_formats=(proto.FORMAT_TEXT,))
+        + _sync()
+        + _terminate()
+    )
+    _writer, conn = await _run_capturing(inp)
+    portal_sql = conn._portals[""].sql
+    assert "NULL" in portal_sql
+
+
+async def test_bind_empty_string_binary_format_substitutes_null() -> None:
+    """Codex finding #8: text-OID parameter sent in BINARY format (0-byte
+    payload) — same rule applies (raw == b'')."""
+    sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = $1"
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _bind("", "", values=(b"",), param_formats=(proto.FORMAT_BINARY,),
+                result_formats=(proto.FORMAT_TEXT,))
+        + _sync()
+        + _terminate()
+    )
+    _writer, conn = await _run_capturing(inp)
+    portal_sql = conn._portals[""].sql
+    assert "NULL" in portal_sql, f"binary-format empty bind must rewrite: {portal_sql!r}"
+
+
+async def test_bind_empty_string_in_between_rewrites_only_empty_bound() -> None:
+    """BETWEEN $1 AND $2 with bind (b'', b'5') — $1 → NULL, $2 stays quoted '5'.
+    Codex finding #6: $2 must be the QUOTED text literal `'5'`, not bare `5`,
+    since the declared OID is text."""
+    sql = (
+        "SELECT objoid FROM pg_catalog.pg_description "
+        "WHERE objsubid BETWEEN $1 AND $2"
+    )
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _bind("", "", values=(b"", b"5"), result_formats=(proto.FORMAT_TEXT,))
+        + _sync()
+        + _terminate()
+    )
+    _writer, conn = await _run_capturing(inp)
+    portal_sql = conn._portals[""].sql
+    assert "NULL" in portal_sql
+    assert "'5'" in portal_sql, f"expected quoted '5' for $2: {portal_sql!r}"
+
+
+async def test_bind_empty_string_in_list_rewrites_only_empty_bound() -> None:
+    sql = (
+        "SELECT objoid FROM pg_catalog.pg_description "
+        "WHERE objsubid IN ($1, $2)"
+    )
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _bind("", "", values=(b"", b"5"), result_formats=(proto.FORMAT_TEXT,))
+        + _sync()
+        + _terminate()
+    )
+    _writer, conn = await _run_capturing(inp)
+    portal_sql = conn._portals[""].sql
+    assert "NULL" in portal_sql
+    assert "'5'" in portal_sql
+
+
+async def test_bind_empty_string_mixed_use_param_whole_swap() -> None:
+    """$1 appears against both INT and TEXT columns. Whole-param swap:
+    every occurrence of $1 substitutes to NULL — the text-column branch
+    too. The empty-string `''` literal must NOT appear in the portal SQL."""
+    sql = (
+        "SELECT * FROM pg_catalog.pg_description AS d "
+        "INNER JOIN pg_catalog.pg_class AS c ON c.oid = d.objoid "
+        "WHERE d.objsubid = $1 OR c.relname = $1"
+    )
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _bind("", "", values=(b"",), result_formats=(proto.FORMAT_TEXT,))
+        + _sync()
+        + _terminate()
+    )
+    _writer, conn = await _run_capturing(inp)
+    portal_sql = conn._portals[""].sql
+    # Both predicate positions take NULL.
+    assert portal_sql.count("NULL") >= 2, (
+        f"expected NULL in both predicates for whole-param swap: {portal_sql!r}"
+    )
+    # No surviving '' literal anywhere in the portal SQL.
+    assert "''" not in portal_sql, f"whole-param swap missed an occurrence: {portal_sql!r}"
+
+
+async def test_bind_nonempty_string_against_int_column_preserves_literal() -> None:
+    """The rewrite is precise: only empty-string text-OID binds get the
+    NULL substitution. A non-empty string against an INT column must hit
+    ``literal_for_substitution`` like any other value, so the portal SQL
+    carries the literal verbatim (``'abc'``) rather than ``NULL``.
+
+    We assert on the portal SQL rather than on DuckDB's downstream
+    behaviour — DuckDB's per-version coercion of ``'abc'`` against an INT
+    column varies between wheels (Python 3.11's DuckDB accepts it
+    silently; 3.12's rejects with a conversion error) and is out of
+    scope for this PR. The SLayer invariant under test is the rewrite's
+    precision, not DuckDB's strictness."""
+    sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = $1"
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _bind("", "", values=(b"abc",), result_formats=(proto.FORMAT_TEXT,))
+        + _sync()
+        + _terminate()
+    )
+    _writer, conn = await _run_capturing(inp)
+    portal_sql = conn._portals[""].sql
+    assert "'abc'" in portal_sql, (
+        f"non-empty string must reach the portal as a quoted literal: {portal_sql!r}"
+    )
+    assert "NULL" not in portal_sql, (
+        f"non-empty string must NOT be rewritten to NULL: {portal_sql!r}"
+    )
+
+
+async def test_bind_empty_string_declared_oid_int8_is_bind_error() -> None:
+    """When the client explicitly declares OID_INT8 in Parse and binds
+    `b""`, the existing `value_from_text` path raises ValueError → bind
+    error. The DEV-1570 rewrite is gated on OID_TEXT only."""
+    sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = $1"
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql, oids=(proto.OID_INT8,))
+        + _bind("", "", values=(b"",), result_formats=(proto.FORMAT_TEXT,))
+        + _execute("")
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    type_seq = _types(msgs)
+    # The existing bind-error path fires.
+    assert "E" in type_seq
+
+
+async def test_bind_empty_string_with_cast_wrapped_column_falls_through() -> None:
+    """Codex finding #3 / spec scope limit: expression-wrapped column refs
+    (CAST(...), arithmetic, function calls) are out of scope. The
+    rewrite does NOT fire; `''` survives in the portal SQL and the
+    DuckDB conversion error surfaces at Execute."""
+    sql = (
+        "SELECT objoid FROM pg_catalog.pg_description "
+        "WHERE CAST(objsubid AS BIGINT) = $1"
+    )
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _bind("", "", values=(b"",), result_formats=(proto.FORMAT_TEXT,))
+        + _sync()
+        + _terminate()
+    )
+    _writer, conn = await _run_capturing(inp)
+    portal_sql = conn._portals[""].sql
+    assert "''" in portal_sql, (
+        "expression-wrapped column ref is out of scope; '' literal must "
+        f"survive in: {portal_sql!r}"
+    )
+
+
+async def test_bind_empty_string_in_subquery_predicate_rewrites() -> None:
+    sql = (
+        "SELECT * FROM pg_catalog.pg_class "
+        "WHERE oid IN ("
+        "  SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = $1"
+        ")"
+    )
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _bind("", "", values=(b"",), result_formats=(proto.FORMAT_TEXT,))
+        + _sync()
+        + _terminate()
+    )
+    _writer, conn = await _run_capturing(inp)
+    portal_sql = conn._portals[""].sql
+    assert "NULL" in portal_sql, f"subquery predicate must rewrite: {portal_sql!r}"
+
+
+async def test_bind_empty_string_via_cte_alias_falls_through() -> None:
+    """Codex finding #3: CTE-derived column refs lose physical-column
+    lineage. The classifier returns empty set; the `''` literal survives."""
+    sql = (
+        "WITH d AS (SELECT objsubid AS x FROM pg_catalog.pg_description) "
+        "SELECT * FROM d WHERE x = $1"
+    )
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _bind("", "", values=(b"",), result_formats=(proto.FORMAT_TEXT,))
+        + _sync()
+        + _terminate()
+    )
+    _writer, conn = await _run_capturing(inp)
+    portal_sql = conn._portals[""].sql
+    assert "''" in portal_sql, (
+        f"CTE-aliased column ref is out of scope; '' must survive: {portal_sql!r}"
+    )
+
+
+async def test_bind_empty_string_user_model_int_column() -> None:
+    """User-model branch via PUBLIC_SCHEMA — `orders.id` is INT primary key."""
+    sql = "SELECT id FROM orders WHERE id = $1"
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", sql)
+        + _bind("", "", values=(b"",), result_formats=(proto.FORMAT_TEXT,))
+        + _sync()
+        + _terminate()
+    )
+    _writer, conn = await _run_capturing(inp)
+    portal_sql = conn._portals[""].sql
+    assert "NULL" in portal_sql, f"user-model INT column must rewrite: {portal_sql!r}"
+    assert "''" not in portal_sql

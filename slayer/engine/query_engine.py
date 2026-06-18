@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field as PydanticField, model_validator
+from sqlglot import exp
 
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
 from slayer.core.errors import AmbiguousModelError
@@ -1928,9 +1929,22 @@ class SlayerQueryEngine:
                 short = _alias_to_short(cm.alias)
             column_map.append((cm.alias, short, DataType.DOUBLE, cm.label, None, cm.format))
 
-        # Wrap inner SQL: SELECT "orders.id" AS id, "orders.count" AS count, ... FROM (inner) AS _inner
-        rename_parts = [f'"{alias}" AS {short}' for alias, short, _, _, _, _ in column_map]
+        # Wrap inner SQL: SELECT <inner_alias> AS <short>, ... FROM (inner) AS _inner
+        # DEV-1571 Bug 3 follow-up: identifier quoting must match the
+        # dialect ``inner_sql`` was generated for. On MySQL the inner CTEs
+        # use backticks; on T-SQL the inner CTEs use brackets AND have
+        # their dotted aliases mangled. Hardcoded ANSI double quotes
+        # would either fail to parse (MySQL) or reference an alias the
+        # mangled inner subquery doesn't expose (T-SQL).
+        rename_parts = [
+            f'{exp.Identifier(this=alias, quoted=True).sql(dialect=dialect)} AS {short}'
+            for alias, short, _, _, _, _ in column_map
+        ]
         wrapped_sql = f"SELECT {', '.join(rename_parts)} FROM ({inner_sql}) AS _inner"
+        # DEV-1571 Bug 2: apply the dialect's emitted-SQL rewrite (e.g.
+        # T-SQL bracket-mangling) so the rename clause's inner-alias
+        # references match what the inner subquery actually projects.
+        wrapped_sql = get_dialect(dialect).rewrite_emitted_sql(wrapped_sql)
 
         # One Column per result column — each is potentially both a dimension
         # (group-by) or measure (with colon-aggregation) at query time.

@@ -398,19 +398,21 @@ def test_first_last_not_exposed_on_timeless_models(metabase_e2e_env: MetabaseE2E
 
 
 async def test_pg_description_objsubid_empty_string_predicate(metabase_e2e_env: MetabaseE2EEnv) -> None:
-    """B.8 — DEV-1558 bug 2: empty-string parameter against the INT
-    ``objsubid`` column.
+    """B.8 — DEV-1570: empty-string parameter against the INT ``objsubid``
+    column.
 
     Metabase's pgjdbc-driven catalog probes use prepared statements that
     declare ``objsubid = $1`` with a TEXT-typed parameter; pgjdbc binds an
     empty string when no value is provided, which a regressed facade would
     refuse with ``Conversion Error: Could not convert string '' to INT64``.
-    The fix at connection.py:728 substitutes a typed NULL during Describe;
-    we pin it here by Preparing the statement (which triggers Describe)
-    and then Executing with the empty-string value — both round-trips have
-    to complete cleanly. A raw-literal probe (``WHERE objsubid = ''``)
-    would bypass the parameterised path the actual bug 2 fix lives on,
-    so we deliberately drive the $1 form pgjdbc uses.
+    DEV-1558 covered Describe via a typed-NULL sentinel; DEV-1570 covers
+    Bind+Execute by substituting NULL for any text-OID empty-string param
+    that targets a non-TEXT catalog column. We pin both round-trips here
+    by Preparing the statement (which triggers Describe) and then
+    Executing with the empty-string value — both have to complete
+    cleanly. A raw-literal probe (``WHERE objsubid = ''``) would bypass
+    the parameterised path the actual fix lives on, so we deliberately
+    drive the $1 form pgjdbc uses.
     """
     host, port = metabase_e2e_env.pg_primary
     conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
@@ -550,14 +552,19 @@ async def test_aggregation_matches_direct_sql(
     if isinstance(direct, (int,)) and isinstance(mb_value, (int,)):
         assert mb_value == direct, f"{agg_name}: metabase={mb_value} direct={direct}"
     else:
-        # `rel_tol=1e-9` catches percentage drift on any magnitude;
-        # `abs_tol=1e-4` handles near-zero cases and one-hundredth-of-a-cent
-        # currency precision. A bare `abs(...) < 1e-6` flaked at ~3M sums
-        # because float64 reordering noise scales with magnitude
-        # (~3M * 2^-52 ≈ 7e-10 per add * ~30k orders ≈ 2e-5 worst-case).
+        # Relative tolerance for the SUM case: a SUM over hundreds of
+        # thousands of float-typed rows accumulates double-precision
+        # rounding that the original absolute 1e-6 tolerance was too
+        # tight to absorb at multi-million magnitudes (observed CI diff:
+        # ~2.9e-6 on a 3.06M value → relative ~1e-12). math.isclose's
+        # rel_tol=1e-9 catches real divergences while accommodating
+        # legitimate floating-point order-of-summation differences.
         assert math.isclose(
-            float(mb_value), float(direct), rel_tol=1e-9, abs_tol=1e-4,
-        ), f"{agg_name}: metabase={mb_value} direct={direct}"
+            float(mb_value), float(direct), rel_tol=1e-9, abs_tol=1e-6,
+        ), (
+            f"{agg_name}: metabase={mb_value} direct={direct} "
+            f"(abs_diff={abs(float(mb_value) - float(direct))})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -568,26 +575,7 @@ async def test_aggregation_matches_direct_sql(
 GRAINS = ["hour", "day", "week", "month", "quarter", "year"]
 
 
-@pytest.mark.parametrize(
-    "grain",
-    [
-        pytest.param(
-            "week",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "DEV-1572: Metabase week breakouts emit a Sunday-week wrapper "
-                    "(DATE_TRUNC('week', col + 1d) - 1d); SLayer's existing WEEK "
-                    "granularity is Monday-based, so the translator currently "
-                    "rejects the wrapper rather than silently mis-bucketing. "
-                    "Lift the xfail once WEEK_SUNDAY lands."
-                ),
-            ),
-        )
-        if g == "week" else g
-        for g in GRAINS
-    ],
-)
+@pytest.mark.parametrize("grain", GRAINS)
 def test_time_grain_breakout(metabase_e2e_env: MetabaseE2EEnv, grain: str) -> None:
     """E.1-E.6 — temporal-unit breakout on a DATE column. The ``month`` case
     specifically pins the round-20 CAST-unwrap fix (DEV-1558 bug 6).
@@ -926,10 +914,6 @@ def test_native_sql_order_by_canonical_alias(metabase_e2e_env: MetabaseE2EEnv) -
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1565: pg-facade doesn't yet recognise Metabase's LEFT JOIN-with-subquery projection shape",
-)
 def test_join_single_hop_project_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
@@ -954,10 +938,6 @@ def test_join_single_hop_project_joined_column(metabase_e2e_env: MetabaseE2EEnv)
         assert isinstance(row[0], str) and row[0]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1565: pg-facade doesn't yet recognise Metabase's LEFT JOIN-with-subquery projection shape",
-)
 def test_join_filter_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
@@ -965,7 +945,33 @@ def test_join_filter_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     store_id_fid = client.field_id_by_name("orders", "store_id")
     stores_pk_fid = client.field_id_by_name("stores", "id")
     stores_name_fid = client.field_id_by_name("stores", "name")
-    discover = client.dataset(encode_mbql_query(source_table=stores_id, limit=1))
+    # Pick a sample value from a store that DEFINITELY has at least one
+    # matching order: fetch a NON-NULL store_id from orders, then look
+    # up that store's name. ``SELECT * FROM stores LIMIT 1`` (the prior
+    # approach) could land on a store with zero orders since jaffle's
+    # stores table carries entries unreferenced by orders — that
+    # produced a false-fail for n_filtered == 0 against the
+    # 0 < n_filtered invariant. Filtering NOT-NULL also guards against
+    # a NULL store_id row leaking through (would break the subsequent
+    # stores lookup).
+    order_store_rows = _dataset_rows(client.dataset(encode_mbql_query(
+        source_table=orders_id,
+        fields=[["field", store_id_fid, None]],
+        filter=["not-null", ["field", store_id_fid, None]],
+        limit=1,
+    )))
+    assert order_store_rows, "no orders with a non-NULL store_id — jaffle data shape changed"
+    sample_store_id = order_store_rows[0][0]
+    assert sample_store_id is not None
+    discover = client.dataset(encode_mbql_query(
+        source_table=stores_id,
+        filter=["=", ["field", stores_pk_fid, None], sample_store_id],
+        limit=1,
+    ))
+    assert _dataset_rows(discover), (
+        f"stores lookup for sample_store_id={sample_store_id!r} returned "
+        f"no rows — dangling FK in jaffle data"
+    )
     name_idx = next(i for i, c in enumerate(_dataset_cols(discover)) if c["name"] == "name")
     sample = _dataset_rows(discover)[0][name_idx]
     payload = client.dataset(encode_mbql_query(
@@ -995,7 +1001,15 @@ def test_join_filter_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
 
 @pytest.mark.xfail(
     strict=True,
-    reason="DEV-1565: pg-facade doesn't yet recognise Metabase's LEFT JOIN-with-subquery projection shape",
+    reason=(
+        "DEV-1493 / DEV-1567: the LEFT JOIN shape recognises Metabase's "
+        "AVG(\"Stores\".\"tax_rate\") and produces a cross-model "
+        "stores.tax_rate:avg measure, but DEV-1567's _assert_local_metric "
+        "guard rejects projecting cross-model metrics in a flat SELECT "
+        "(the engine emits a CROSS-JOIN'd CTE that returns N rows of the "
+        "same aggregate value instead of 1). Needs a multi-stage rewrite "
+        "(DEV-1493) before this flat-projection shape can execute correctly."
+    ),
 )
 def test_join_aggregate_on_joined_column(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
