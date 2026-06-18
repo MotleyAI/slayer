@@ -48,7 +48,13 @@ import sqlglot.expressions as exp
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
-from slayer.facade.catalog import CATALOG_NAME, FacadeCatalog, FacadeTable
+from slayer.facade.catalog import (
+    CATALOG_NAME,
+    FacadeCatalog,
+    FacadeTable,
+    local_dimensions,
+    local_metrics,
+)
 from slayer.facade.rows import FacadeColumn, RowBatch
 from slayer.pg_facade.types import datatype_to_oid
 
@@ -196,10 +202,18 @@ def _table_oid(datasource: str, table: FacadeTable) -> int:
 
 
 def _column_specs(table: FacadeTable):
-    """Yield ``(name, DataType)`` for every projectable column (dims + metrics)."""
-    for d in table.dimensions:
+    """Yield ``(name, DataType)`` for every projectable column (dims +
+    metrics).
+
+    DEV-1567: cross-model entries are excluded so ``pg_attribute`` /
+    ``pg_class.relnatts`` advertise only the same-model column list. BI
+    tools that flatten the catalog into a column view (Metabase, dbt
+    schema scan) discover only base columns and don't issue fingerprint
+    queries that would lead to dotted ``SlayerQuery.measures[*].name``.
+    """
+    for d in local_dimensions(table):
         yield d.name, d.data_type
-    for m in table.metrics:
+    for m in local_metrics(table):
         yield m.name, m.data_type if m.data_type is not None else DataType.TEXT
 
 
@@ -374,12 +388,14 @@ def _build_pg_description(catalog: FacadeCatalog) -> CatalogRelation:
             rows.append({"objoid": oid, "classoid": KNOWN_SYSTEM_OIDS["pg_class"],
                          "objsubid": 0, "description": tbl.description})
         attnum = 1
-        for d in tbl.dimensions:
+        # DEV-1567: stay within the (filtered) pg_attribute attnum space so
+        # ``objsubid`` always matches a real pg_attribute row.
+        for d in local_dimensions(tbl):
             if d.description:
                 rows.append({"objoid": oid, "classoid": KNOWN_SYSTEM_OIDS["pg_class"],
                              "objsubid": attnum, "description": d.description})
             attnum += 1
-        for m in tbl.metrics:
+        for m in local_metrics(tbl):
             if m.description:
                 rows.append({"objoid": oid, "classoid": KNOWN_SYSTEM_OIDS["pg_class"],
                              "objsubid": attnum, "description": m.description})
@@ -527,9 +543,12 @@ def _build_is_columns(catalog: FacadeCatalog, datasource: str) -> CatalogRelatio
         FacadeColumn(name="label", type=DataType.TEXT),
     ]
     rows: List[Dict[str, Any]] = []
+    # DEV-1567: exclude cross-model entries — they leak as dotted "columns"
+    # that Metabase fingerprint scans then project (see local_metrics
+    # docstring in slayer/facade/catalog.py).
     for _ds, tbl in _all_tables(catalog):
         position = 1
-        for d in tbl.dimensions:
+        for d in local_dimensions(tbl):
             udt = _UDT_NAME_BY_DATATYPE.get(d.data_type, "text")
             rows.append({
                 "table_catalog": datasource, "table_schema": "public",
@@ -542,7 +561,7 @@ def _build_is_columns(catalog: FacadeCatalog, datasource: str) -> CatalogRelatio
                 "label": d.label,
             })
             position += 1
-        for m in tbl.metrics:
+        for m in local_metrics(tbl):
             udt = _UDT_NAME_BY_DATATYPE.get(m.data_type, "text") if m.data_type else "text"
             rows.append({
                 "table_catalog": datasource, "table_schema": "public",
