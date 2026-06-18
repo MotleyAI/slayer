@@ -1054,6 +1054,25 @@ def test_cast_unknown_source_datatype_admits_text_only(dialect) -> None:
         )
     assert "Unsupported CAST" in str(exc_info.value)
 
+    # Codex round 4: ORDER BY on the alias of an unknown-source CAST→TEXT
+    # must be rejected too — the lex-vs-natural sort gap applies regardless
+    # of whether the underlying source type was declared. The error message
+    # surfaces "unknown" for the source. (GROUP BY on a metric alias is
+    # already rejected by the strict-on-extras membership check — only
+    # dimensions populate derived_dims — so the lossy GROUP BY path can't
+    # be triggered through an unknown-source metric.)
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql=(
+                "SELECT CAST(custom_metric AS TEXT) AS m FROM orders "
+                "ORDER BY m"
+            ),
+            catalog=catalog, dialect=dialect,
+        )
+    msg = str(exc_info.value)
+    assert "ORDER BY on CAST projection" in msg
+    assert "unknown" in msg
+
 
 @pytest.mark.parametrize(
     "col", ["delivered_at", "ordered_at", "id", "revenue", "is_paid", "status"],

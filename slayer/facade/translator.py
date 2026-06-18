@@ -1394,10 +1394,11 @@ def _flip_comparator(op_sql: str) -> str:
 
 def _item_cast_source_type(item: _ProjectionItem) -> Optional[DataType]:
     """Return the underlying source DataType of a CAST-projected item, or
-    None when the item isn't a CAST projection. Used to look up the
-    (source, target) pair against the lossy-CAST sets."""
-    if item.cast_target is None:
-        return None
+    None when the source type is unknown (custom metric without a declared
+    ``data_type``). Caller MUST gate on ``item.cast_target is not None``
+    before calling this — the helper's None return is intentionally
+    overloaded with the unknown-source case so the lossy-pair check can
+    treat unknown-source casts as lossy by default."""
     if item.metric is not None:
         return item.metric.data_type
     if item.dimension is not None:
@@ -1405,15 +1406,34 @@ def _item_cast_source_type(item: _ProjectionItem) -> Optional[DataType]:
     return None
 
 
+def _cast_pair_is_lossy(
+    *, source: Optional[DataType], target: DataType,
+    lossy_pairs: frozenset,
+) -> bool:
+    """A cast is lossy when either: (a) the source is known and (source,
+    target) is in ``lossy_pairs``, or (b) the source is unknown — the only
+    admitted unknown-source target is TEXT (see ``_is_admitted_cast``)
+    which is always lossy for ORDER BY (lex vs engine's natural sort).
+    For GROUP BY the unknown-source path is admitted because the engine's
+    bare-value grouping preserves whatever per-value distinction TEXT
+    would expose."""
+    if source is None:
+        return target is DataType.TEXT
+    return (source, target) in lossy_pairs
+
+
 def _lossy_cast_error_message(
-    *, kind: str, name: str, source: DataType, target: DataType,
+    *, kind: str, name: str, source: Optional[DataType], target: DataType,
 ) -> str:
     """One-line user-facing message for the lossy-CAST-pair rejection. The
     ``kind`` is ``ORDER BY`` or ``GROUP BY``; ``name`` is the user-visible
-    identifier the message points at (typically the alias)."""
+    identifier the message points at (typically the alias). ``source`` is
+    None when the underlying metric/dimension has no declared data_type
+    (custom metric path), which is treated as lossy by default."""
+    source_str = str(source) if source is not None else "unknown"
     return (
         f"{kind} on CAST projection {name!r} with lossy pair "
-        f"{source!s}→{target!s} is unsupported: the engine query projects "
+        f"{source_str}→{target!s} is unsupported: the engine query projects "
         f"the bare column, so the underlying sort/group semantics don't "
         f"match the casted type. Use the bare column, or wait for engine-"
         f"side CAST pushdown."
@@ -1441,14 +1461,19 @@ def _translate_order_by(
         item = item_by_projected_name[name]
         # DEV-1566 — Codex round 3: reject ORDER BY on CAST projections whose
         # (source, target) pair is lossy under bare-column sort semantics.
-        source = _item_cast_source_type(item)
-        if source is not None and item.cast_target is not None and (
-            (source, item.cast_target) in _LOSSY_ORDER_BY_CAST_PAIRS
-        ):
-            raise TranslationError(_lossy_cast_error_message(
-                kind="ORDER BY", name=name,
+        # Unknown-source casts (custom metrics without a declared data_type)
+        # are treated as lossy — the only admitted unknown-source target is
+        # TEXT, and the lex-vs-natural sort gap applies.
+        if item.cast_target is not None:
+            source = _item_cast_source_type(item)
+            if _cast_pair_is_lossy(
                 source=source, target=item.cast_target,
-            ))
+                lossy_pairs=_LOSSY_ORDER_BY_CAST_PAIRS,
+            ):
+                raise TranslationError(_lossy_cast_error_message(
+                    kind="ORDER BY", name=name,
+                    source=source, target=item.cast_target,
+                ))
         if item.metric is not None:
             ref = ColumnRef(name=item.metric.name)
         else:
@@ -1526,12 +1551,16 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
             )
         # DEV-1566 — Codex round 3: reject GROUP BY on CAST projections
         # whose (source, target) pair is lossy under bare-column grouping.
+        # Unknown-source casts (only admitted as None→TEXT) are admitted
+        # here — the engine's per-value grouping already collapses to the
+        # same set of TEXT representations.
         item = item_by_projected_name.get(u)
-        if item is None:
+        if item is None or item.cast_target is None:
             continue
         source = _item_cast_source_type(item)
-        if source is not None and item.cast_target is not None and (
-            (source, item.cast_target) in _LOSSY_GROUP_BY_CAST_PAIRS
+        if _cast_pair_is_lossy(
+            source=source, target=item.cast_target,
+            lossy_pairs=_LOSSY_GROUP_BY_CAST_PAIRS,
         ):
             raise TranslationError(_lossy_cast_error_message(
                 kind="GROUP BY", name=u,
