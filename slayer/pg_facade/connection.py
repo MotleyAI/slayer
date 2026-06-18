@@ -912,8 +912,15 @@ def _classify_empty_string_param_targets(
     candidates = set(candidate_param_indices)
     if not candidates:
         return set()
+    # sqlglot 30.4.3's tokenizer rejects PostgreSQL placeholders adjacent to
+    # punctuation in some compact shapes (e.g. ``IN ($1,$2)`` no-whitespace
+    # form trips a TokenError, while ``IN ($1, $2)`` parses cleanly).
+    # Pad each $N with surrounding whitespace before parsing — this only
+    # affects the AST we walk for classification; the literal substitution
+    # downstream still uses the original ``stmt.sql``.
+    normalised_sql = _PARAM_PLACEHOLDER.sub(r" $\1 ", sql)
     try:
-        parsed = sqlglot.parse_one(sql=sql, dialect="postgres")
+        parsed = sqlglot.parse_one(sql=normalised_sql, dialect="postgres")
     except sqlglot.errors.SqlglotError:
         return set()
     if parsed is None:

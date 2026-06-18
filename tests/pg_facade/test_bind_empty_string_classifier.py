@@ -515,6 +515,27 @@ def test_paren_around_cast_param_classified(column_type_index):
     assert _classify(sql, column_type_index, [1]) == {1}
 
 
+# --- Compact placeholder shapes (Codex CX-4 — sqlglot tokenizer) -----------
+
+
+def test_in_with_no_whitespace_after_comma_classified(column_type_index):
+    """``IN ($1,$2)`` with no space after the comma trips sqlglot 30.4.3's
+    tokenizer (raises TokenError on the raw form). The classifier must
+    pad placeholders before parsing so the rewrite still fires."""
+    sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid IN ($1,$2)"
+    assert _classify(sql, column_type_index, [1, 2]) == {1, 2}
+
+
+def test_between_with_no_whitespace_after_and_classified(column_type_index):
+    """``BETWEEN $1 AND$2`` — placeholder adjacent to ``AND`` is another
+    tokenizer-sensitive shape."""
+    sql = (
+        "SELECT objoid FROM pg_catalog.pg_description "
+        "WHERE objsubid BETWEEN $1 AND$2"
+    )
+    assert _classify(sql, column_type_index, [1, 2]) == {1, 2}
+
+
 # --- Case-distinct columns (Codex CX-2) -------------------------------------
 
 
