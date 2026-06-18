@@ -392,6 +392,22 @@ class SQLGenerator:
         strategy object from the string sqlglot consumes."""
         return self._dialect.sqlglot_name
 
+    def _q(self, name: str) -> str:
+        """Dialect-aware identifier quoting (DEV-1571 Bug 3 generalised).
+
+        Returns ``name`` wrapped in the dialect's natural identifier
+        quotes — backticks on MySQL/BigQuery, brackets on T-SQL, ANSI
+        double quotes on Postgres/SQLite/DuckDB/ClickHouse/Snowflake.
+
+        Used across every site in this generator that previously
+        hardcoded ``f'"{name}"'``. The hardcoded form parses as a string
+        literal on MySQL and bypasses T-SQL's bracket-anchored alias
+        mangling (Bug 2), so the inner CTE-assembly code paths that fed
+        the failing time-shift / cross-model integration tests must
+        emit through this helper.
+        """
+        return exp.Identifier(this=name, quoted=True).sql(dialect=self.dialect)
+
     def _parse(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
         """Parse ``sql`` via sqlglot, applying SLayer-specific AST rewrites.
 
@@ -837,9 +853,9 @@ class SQLGenerator:
         for m in enriched.measures:
             if not _has_cross_model_filter(m) and not _is_windowed_measure(m):
                 base_cols.append(m.alias)
-        final_parts = [f'_base."{a}"' for a in base_cols]
+        final_parts = [f'_base.{self._q(a)}' for a in base_cols]
         for cte_name, alias, _ in measure_cte_refs:
-            final_parts.append(f'{cte_name}."{alias}"')
+            final_parts.append(f'{cte_name}.{self._q(alias)}')
 
         from_clause_str = "FROM _base"
         joined_ctes: set = set()
@@ -853,7 +869,7 @@ class SQLGenerator:
             effective_aliases = cte_join_aliases if cte_join_aliases is not None else join_aliases
             join_on_parts = []
             for a in effective_aliases:
-                join_on_parts.append(f'_base."{a}" = {cte_name}."{a}"')
+                join_on_parts.append(f'_base.{self._q(a)} = {cte_name}.{self._q(a)}')
             if join_on_parts:
                 from_clause_str += f"\nLEFT JOIN {cte_name} ON {' AND '.join(join_on_parts)}"
             else:
@@ -893,9 +909,9 @@ class SQLGenerator:
                 col_name = self._resolve_order_column(col=col, enriched=enriched)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
                 if col_name in base_cols:
-                    order_parts.append(f'_base."{col_name}" {direction}')
+                    order_parts.append(f'_base.{self._q(col_name)} {direction}')
                 else:
-                    order_parts.append(f'"{col_name}" {direction}')
+                    order_parts.append(f'{self._q(col_name)} {direction}')
             sql += "\nORDER BY " + ", ".join(order_parts)
         if enriched.limit is not None:
             sql += f"\nLIMIT {enriched.limit}"
@@ -904,8 +920,7 @@ class SQLGenerator:
 
         return sql
 
-    @staticmethod
-    def _apply_pagination_to_sql(enriched: EnrichedQuery, sql: str) -> str:
+    def _apply_pagination_to_sql(self, enriched: EnrichedQuery, sql: str) -> str:
         """Apply ORDER BY, LIMIT, OFFSET to a raw SQL string."""
         if enriched.order:
             order_parts = []
@@ -913,7 +928,7 @@ class SQLGenerator:
                 col = order_item.column
                 col_name = SQLGenerator._resolve_order_column(col=col, enriched=enriched)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
-                order_parts.append(f'"{col_name}" {direction}')
+                order_parts.append(f'{self._q(col_name)} {direction}')
             sql += "\nORDER BY " + ", ".join(order_parts)
         if enriched.limit is not None:
             sql += f"\nLIMIT {enriched.limit}"
@@ -1448,18 +1463,24 @@ class SQLGenerator:
             remaining_transforms = []
 
             # Collect window transforms and expressions that can go in one layer
-            layer_parts = [f'"{a}"' for a in sorted(available_aliases)]
+            layer_parts = [self._q(a) for a in sorted(available_aliases)]
 
             for expr in pending_expressions:
                 if self._deps_available(expr.sql, available_aliases):
                     # DEV-1361: when the source ModelMeasure declared a
                     # result type, wrap the expression in CAST so the outer
                     # SELECT yields the typed value.
-                    expr_sql = expr.sql
+                    # DEV-1571 Bug 3 follow-up: ``expr.sql`` comes from
+                    # enrichment (``_resolve_sql``) with hardcoded ANSI
+                    # double-quoted aliases. Parse in postgres dialect
+                    # (where ``"x"`` is an identifier) and re-emit in the
+                    # active dialect so MySQL backticks / T-SQL brackets
+                    # land throughout the expression.
+                    parsed = self._parse(expr.sql, dialect="postgres")
                     if expr.type is not None:
-                        wrapped = _wrap_cast_for_type(self._parse(expr_sql), expr.type)
-                        expr_sql = wrapped.sql(dialect=self.dialect)
-                    layer_parts.append(f'{expr_sql} AS "{expr.alias}"')
+                        parsed = _wrap_cast_for_type(parsed, expr.type)
+                    expr_sql = parsed.sql(dialect=self.dialect)
+                    layer_parts.append(f'{expr_sql} AS {self._q(expr.alias)}')
                     added_this_layer.append(expr.alias)
                 else:
                     remaining_expressions.append(expr)
@@ -1482,7 +1503,7 @@ class SQLGenerator:
                     if t.type is not None:
                         wrapped = _wrap_cast_for_type(self._parse(window_sql), t.type)
                         window_sql = wrapped.sql(dialect=self.dialect)
-                    layer_parts.append(f'{window_sql} AS "{t.alias}"')
+                    layer_parts.append(f'{window_sql} AS {self._q(t.alias)}')
                     added_this_layer.append(t.alias)
 
             # Emit window layer CTE if anything was added
@@ -1505,19 +1526,24 @@ class SQLGenerator:
                 ctes.append((shift_name, shifted_sql))
 
                 # Build the self-join CTE: src LEFT JOIN shifted ON time equality
-                time_col = f'"{t.time_alias}"'
+                time_col = self._q(t.time_alias)
                 join_cond = f'{src_cte}.{time_col} = {shift_name}.{time_col}'
                 # Also join on all dimension columns for correct matching
                 for dim in enriched.dimensions:
-                    join_cond += f' AND {src_cte}."{dim.alias}" = {shift_name}."{dim.alias}"'
+                    join_cond += (
+                        f' AND {src_cte}.{self._q(dim.alias)} '
+                        f'= {shift_name}.{self._q(dim.alias)}'
+                    )
                 col_sql = self._build_self_join_column(
                     transform=t.transform, right_table=shift_name,
                     measure_alias=t.measure_alias,
                 )
-                join_cols = ", ".join(f'{src_cte}."{a}"' for a in sorted(available_aliases))
+                join_cols = ", ".join(
+                    f'{src_cte}.{self._q(a)}' for a in sorted(available_aliases)
+                )
                 join_layer = f"sjoin_{t.name}"
                 join_sql = (
-                    f"SELECT {join_cols}, {col_sql} AS \"{t.alias}\"\n"
+                    f"SELECT {join_cols}, {col_sql} AS {self._q(t.alias)}\n"
                     f"FROM {src_cte}\n"
                     f"LEFT JOIN {shift_name}\n"
                     f"    ON {join_cond}"
@@ -1556,11 +1582,15 @@ class SQLGenerator:
         final_cte = ctes[-1][0]
 
         # Build final SELECT
-        final_parts = [f'"{a}"' for a in sorted(available_aliases)]
+        final_parts = [self._q(a) for a in sorted(available_aliases)]
 
-        # Add any remaining expressions/transforms that couldn't be layered
+        # Add any remaining expressions/transforms that couldn't be layered.
+        # DEV-1571 Bug 3 follow-up: re-emit each expression through the
+        # active dialect so ANSI-quoted aliases from enrichment become
+        # MySQL backticks / T-SQL brackets.
         for expr in pending_expressions:
-            final_parts.append(f'{expr.sql} AS "{expr.alias}"')
+            expr_sql = self._parse(expr.sql, dialect="postgres").sql(dialect=self.dialect)
+            final_parts.append(f'{expr_sql} AS {self._q(expr.alias)}')
         for t in pending_transforms:
             if t.transform in _SELF_JOIN_TRANSFORMS:
                 continue  # Should not happen — self-joins are always materialized
@@ -1570,7 +1600,7 @@ class SQLGenerator:
             if t.type is not None:
                 wrapped = _wrap_cast_for_type(self._parse(window_sql), t.type)
                 window_sql = wrapped.sql(dialect=self.dialect)
-            final_parts.append(f'{window_sql} AS "{t.alias}"')
+            final_parts.append(f'{window_sql} AS {self._q(t.alias)}')
 
         outer_select = "SELECT\n    " + _SQL_COL_SEP.join(final_parts)
 
@@ -1591,10 +1621,10 @@ class SQLGenerator:
                         f"{model}.{col_name}",
                         qualified_sql,
                     )
-                # Wrap qualified names in quotes for alias references
+                # Wrap qualified names in dialect-aware quotes for alias references
                 for col_name in dict.fromkeys(f.columns):
                     qualified = f"{model}.{col_name}"
-                    qualified_sql = qualified_sql.replace(qualified, f'"{qualified}"')
+                    qualified_sql = qualified_sql.replace(qualified, self._q(qualified))
                 conditions.append(qualified_sql)
             where_clause = _SQL_AND_JOINER.join(conditions)
             sql = f"SELECT *\nFROM (\n{sql}\n) AS _filtered\nWHERE {where_clause}"
@@ -1721,14 +1751,13 @@ class SQLGenerator:
             col_expr=col_expr, granularity=granularity, parse=self._parse,
         )
 
-    @staticmethod
-    def _build_transform_sql(t) -> str:  # NOSONAR S3776 — flat dispatch over transform names; per-transform SQL forms read better as one if/elif tree than as named helpers
+    def _build_transform_sql(self, t) -> str:  # NOSONAR S3776 — flat dispatch over transform names; per-transform SQL forms read better as one if/elif tree than as named helpers
         """Build a window function SQL expression for a transform."""
-        measure = f'"{t.measure_alias}"'
-        time_col = f'"{t.time_alias}"' if t.time_alias else None
+        measure = self._q(t.measure_alias)
+        time_col = self._q(t.time_alias) if t.time_alias else None
         partition_cols = getattr(t, "partition_aliases", []) or []
         partition_clause = (
-            "PARTITION BY " + ", ".join(f'"{a}"' for a in partition_cols)
+            "PARTITION BY " + ", ".join(self._q(a) for a in partition_cols)
             if partition_cols
             else ""
         )
@@ -1774,11 +1803,10 @@ class SQLGenerator:
         else:
             raise ValueError(f"Unsupported transform: {t.transform}")
 
-    @staticmethod
-    def _build_self_join_column(transform: str, right_table: str,
-                                measure_alias: str) -> str:
+    def _build_self_join_column(self, transform: str, right_table: str,
+                                 measure_alias: str) -> str:
         """Build the SELECT expression for a self-join transform."""
-        prev = f'{right_table}."{measure_alias}"'
+        prev = f'{right_table}.{self._q(measure_alias)}'
         if transform == "time_shift":
             return prev
         raise ValueError(f"Unknown self-join transform: {transform}")

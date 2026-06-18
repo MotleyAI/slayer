@@ -15,6 +15,7 @@ T-SQL has the most divergent shape of any Tier-1 dialect:
 
 from __future__ import annotations
 
+import asyncio
 import re
 import tempfile
 
@@ -24,9 +25,11 @@ from sqlglot import exp
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.generator import SQLGenerator
 from slayer.sql.dialects.tsql import TsqlDialect
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -726,3 +729,93 @@ class TestEngineTsqlDecodeIntegration:
             assert "orders.status" in resp.columns
         finally:
             tmp.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# DEV-1571 Bug 3 follow-up — T-SQL inner CTEs get dialect-aware bracket
+# quoting AND Bug 2 mangling fires on those identifiers.
+#
+# Pre-fix, the inner CTE assembly emitted hardcoded ANSI double quotes.
+# On T-SQL the result PARSED (T-SQL accepts ``"..."`` as identifiers when
+# QUOTED_IDENTIFIER is ON, the default) but the dotted alias bypassed
+# Bug 2's bracket-anchored mangling regex, so the literal-dot form left
+# the ORDER BY resolver unable to match the SELECT alias.
+# ---------------------------------------------------------------------------
+
+
+async def _noop_resolver_tsql(**kw):  # noqa: ARG001  # NOSONAR(S7503) — resolver stub must remain async
+    return None
+
+
+def _tsql_generate(query: SlayerQuery, model: SlayerModel) -> str:
+    async def _run() -> str:
+        enriched = await enrich_query(
+            query=query, model=model,
+            resolve_dimension_via_joins=_noop_resolver_tsql,
+            resolve_cross_model_measure=_noop_resolver_tsql,
+            resolve_join_target=_noop_resolver_tsql,
+            dialect="tsql",
+        )
+        return SQLGenerator(dialect="tsql").generate(enriched=enriched)
+
+    return asyncio.run(_run())
+
+
+def _orders_model_tsql() -> SlayerModel:
+    return SlayerModel(
+        name="orders", sql_table="orders", data_source="test",
+        default_time_dimension="created_at",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="total", sql="amount", type=DataType.DOUBLE),
+        ],
+    )
+
+
+def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
+    """``change_pct(total:sum)`` builds shifted/self-join/step CTEs.
+    After DEV-1571 Bug 3 follow-up, every identifier in those CTEs uses
+    T-SQL brackets AND Bug 2 mangling converts the dotted aliases to
+    underscore form so ORDER BY can match them.
+
+    Regression pin for the CI failure on
+    ``tests/integration/test_integration_sqlserver.py::TestSQLServerQueries::test_change_pct_with_date_range``.
+    """
+    q = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+            date_range=["2024-03-01", "2024-03-31"],
+        )],
+        measures=[
+            ModelMeasure(formula="total:sum"),
+            ModelMeasure(formula="change_pct(total:sum)", name="pct"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    sql = _tsql_generate(q, _orders_model_tsql())
+    # No ANSI-quoted identifiers — they'd bypass Bug 2 mangling and the
+    # literal-dot form would fail T-SQL's ORDER BY alias resolver.
+    assert '"orders.' not in sql, (
+        f"T-SQL emission must not contain ANSI-quoted dotted identifiers "
+        f"(would bypass Bug 2 mangling):\n{sql}"
+    )
+    # All dotted aliases must be mangled.
+    assert "[orders.created_at]" not in sql, (
+        f"T-SQL emission must not contain literal-dot bracketed aliases "
+        f"(Bug 2 mangling didn't fire):\n{sql}"
+    )
+    # Self-join CTE references the mangled form on both sides.
+    assert (
+        "base.[orders___created_at] = shifted__ts_pct.[orders___created_at]"
+        in sql
+    ), f"Self-join ON clause must use mangled bracketed identifiers:\n{sql}"
+    # Outer ORDER BY references the mangled alias.
+    assert "[orders___created_at]" in sql
+    # Computed expression's column references in step2 use mangled brackets.
+    assert "[orders____ts_pct]" in sql, (
+        f"Inner CASE expression's column refs must be mangled-bracket form:\n{sql}"
+    )
