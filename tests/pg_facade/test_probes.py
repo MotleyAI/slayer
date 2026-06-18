@@ -350,6 +350,22 @@ def test_match_pg_probe_with_mutation_blocks_is_local_true() -> None:
     assert outcome.settings_mutation is None
 
 
+def test_match_pg_probe_with_mutation_blocks_alt_boolean_true_spellings() -> None:
+    """Postgres boolean input accepts `'t'`, `'on'`, `'yes'`, `'1'` for true.
+    Drivers rarely use these for is_local, but the guard should still
+    block them consistently. Codex round 5 F1."""
+    for spelling in ["'t'", "'on'", "'yes'", "'1'", "'TRUE'"]:
+        outcome = match_pg_probe_with_mutation(
+            _parse(f"SELECT set_config('application_name', 'foo', {spelling})"),
+            datasource="jaffle", version_str="x",
+            session_settings={"application_name": "old"},
+        )
+        assert outcome is not None, spelling
+        assert outcome.settings_mutation is None, (
+            f"is_local={spelling} should block mutation"
+        )
+
+
 def test_match_pg_probe_with_mutation_unwraps_cast_around_is_local() -> None:
     """`set_config('app', 'foo', $2::boolean)` — sqlglot wraps the bound
     boolean as ``Cast(Boolean(...))``. The guard must peer through one

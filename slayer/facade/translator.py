@@ -1400,6 +1400,11 @@ def _extract_setting_value(rhs: Optional[exp.Expression]) -> Optional[str]:
         return None
     if isinstance(rhs, exp.Cast):
         return _extract_setting_value(rhs.this)
+    # Signed numeric literals — `SET extra_float_digits = -1` parses as
+    # `Neg(Literal(1))` (Codex round 5 F2). Recurse and prefix the sign.
+    if isinstance(rhs, exp.Neg):
+        inner = _extract_setting_value(rhs.this)
+        return f"-{inner}" if inner is not None else None
     if isinstance(rhs, exp.Literal):
         return str(rhs.this)
     if isinstance(rhs, exp.Var):
@@ -1437,11 +1442,14 @@ def _extract_reset_setting(parsed: exp.Command) -> Optional[ResetSettingOp]:
     return ResetSettingOp(name=name)
 
 
-# Single-identifier validation regex (single quantifier on identifier chars;
-# no chain of unbounded `\s*` segments — safe from ReDoS / S5852). Used
-# below to validate the name half of a Command-form SET after the value
-# has been peeled off by plain string ops.
-_COMMAND_SET_NAME_RE = re.compile(r"[A-Za-z_]\w*")
+# Single-identifier-or-dotted-chain validation regex (single quantifier on
+# identifier chars; the optional dotted-tail uses one bounded `*` segment —
+# safe from ReDoS / S5852). Used below to validate the name half of a
+# Command-form SET after the value has been peeled off by plain string ops.
+# Accepts both `application_name` and `myapp.user_id` shapes to stay
+# consistent with the exp.Set path's lhs.parts reconstruction (Codex
+# round 5 F3).
+_COMMAND_SET_NAME_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
 
 
 def _command_expression_text(expr) -> str:

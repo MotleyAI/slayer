@@ -230,7 +230,10 @@ def _set_config_is_session_scope(node: exp.Anonymous) -> bool:
     if isinstance(is_local, exp.Boolean):
         return is_local.this is False
     if isinstance(is_local, exp.Literal):
-        return str(is_local.this).lower() != "true"
+        # Postgres accepts these as truthy boolean inputs (drivers rarely
+        # use them for is_local, but match for consistency with PG parse
+        # rules). Codex round 5 F1.
+        return str(is_local.this).lower() not in ("true", "t", "on", "yes", "1")
     # Non-literal / non-boolean third arg: be conservative — skip mutation.
     return False
 

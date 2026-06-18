@@ -265,6 +265,41 @@ def test_classify_set_cast_wrapped_rhs_captures(dialect) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("sql", "expected_name", "expected_value"),
+    [
+        ("SET extra_float_digits = -1", "extra_float_digits", "-1"),
+        ("SET seq_page_cost = -0.5", "seq_page_cost", "-0.5"),
+        ("SET x = +5", "x", "5"),
+    ],
+)
+def test_classify_set_signed_numeric_value_captures(
+    sql: str, expected_name: str, expected_value: str, dialect,
+) -> None:
+    """Signed numeric SET values (`-1`, `-0.5`) parse as `exp.Neg(Literal)`;
+    `_extract_setting_value` must recognise the prefix. Codex round 5 F2."""
+    result = translate(sql=sql, catalog=_catalog(), dialect=dialect)
+    assert isinstance(result, NoOpResult)
+    assert result.set_setting == SetSettingOp(
+        name=expected_name, value=expected_value,
+    )
+
+
+def test_classify_command_form_set_dotted_name_captures() -> None:
+    """`SET myapp.user_id = public, extensions` falls into Command-form
+    (comma-list value), but the name regex must allow dotted names so the
+    classifier is consistent with the exp.Set path's lhs.parts
+    reconstruction. Codex round 5 F3."""
+    result = translate(
+        sql="SET myapp.user_id = public, extensions",
+        catalog=_catalog(), dialect="postgres",
+    )
+    assert isinstance(result, NoOpResult)
+    assert result.set_setting == SetSettingOp(
+        name="myapp.user_id", value="public, extensions",
+    )
+
+
 def test_classify_command_form_set_preserves_quoted_internal_whitespace() -> None:
     """`SET x = "foo   bar"` — internal whitespace inside the captured value
     must survive the separator-detection whitespace normalisation. Codex
