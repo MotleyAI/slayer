@@ -1461,7 +1461,11 @@ def _extract_command_form_set(parsed: exp.Command) -> Optional[SetSettingOp]:
     expr = parsed.expression
     if expr is None:
         return None
-    raw = _command_expression_text(expr).strip().rstrip(";").strip()
+    # Collapse internal whitespace (tab, newline, etc.) to single spaces so
+    # the substring search for ` TO ` catches non-space-separated forms.
+    # `\s+` is a single bounded quantifier — no ReDoS risk (S5852).
+    raw = re.sub(r"\s+", " ", _command_expression_text(expr)).strip()
+    raw = raw.rstrip(";").strip()
     if not raw:
         return None
     # Find the first separator: `=` wins over ` TO ` so `SET x = TO_DATE(...)`
@@ -1471,7 +1475,7 @@ def _extract_command_form_set(parsed: exp.Command) -> Optional[SetSettingOp]:
         name = raw[:eq_idx].strip()
         value = raw[eq_idx + 1:].strip()
     else:
-        # ` TO ` (with surrounding whitespace) on an uppercased view of raw.
+        # ` TO ` (with surrounding spaces) on an uppercased view of raw.
         upper = raw.upper()
         to_idx = upper.find(" TO ")
         if to_idx == -1:

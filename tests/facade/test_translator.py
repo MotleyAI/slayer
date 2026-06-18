@@ -248,6 +248,21 @@ def test_classify_set_dotted_custom_name_captures(
     )
 
 
+def test_classify_command_form_set_with_tab_whitespace_captures() -> None:
+    """Tab-separated `SET search_path\\tTO\\tpublic` (and other non-space
+    SQL whitespace around TO) must still capture. Round-2 regex caught
+    these via \\s+; the round-3 string-ops rewrite must too.
+    Codex round 3 minor."""
+    result = translate(
+        sql="SET search_path\tTO\tpublic, extensions",
+        catalog=_catalog(), dialect="postgres",
+    )
+    assert isinstance(result, NoOpResult)
+    assert result.set_setting == SetSettingOp(
+        name="search_path", value="public, extensions",
+    )
+
+
 def test_classify_command_form_set_to_keyword_captures(dialect) -> None:
     """`SET <name> TO <values>` (TO instead of =) — same Command-form
     extraction."""
