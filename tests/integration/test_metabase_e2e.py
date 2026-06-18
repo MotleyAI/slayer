@@ -15,6 +15,7 @@ import asyncio
 import concurrent.futures
 import datetime as dt
 import logging
+import math
 import time
 from typing import Any, Dict, List, Tuple
 
@@ -551,8 +552,18 @@ async def test_aggregation_matches_direct_sql(
     if isinstance(direct, (int,)) and isinstance(mb_value, (int,)):
         assert mb_value == direct, f"{agg_name}: metabase={mb_value} direct={direct}"
     else:
-        assert abs(float(mb_value) - float(direct)) < 1e-6, (
-            f"{agg_name}: metabase={mb_value} direct={direct}"
+        # Relative tolerance for the SUM case: a SUM over hundreds of
+        # thousands of float-typed rows accumulates double-precision
+        # rounding that the original absolute 1e-6 tolerance was too
+        # tight to absorb at multi-million magnitudes (observed CI diff:
+        # ~2.9e-6 on a 3.06M value → relative ~1e-12). math.isclose's
+        # rel_tol=1e-9 catches real divergences while accommodating
+        # legitimate floating-point order-of-summation differences.
+        assert math.isclose(
+            float(mb_value), float(direct), rel_tol=1e-9, abs_tol=1e-6,
+        ), (
+            f"{agg_name}: metabase={mb_value} direct={direct} "
+            f"(abs_diff={abs(float(mb_value) - float(direct))})"
         )
 
 
