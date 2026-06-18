@@ -174,11 +174,10 @@ class TestMCPModelToolsDataSourceArg:
     ) -> None:
         """The helpers backing ``inspect_model`` (``_get_row_count``,
         ``_collect_dim_profile``, ``_collect_measure_profile``,
-        ``_collect_reachable_fields``, the sample-data query) all run
-        ``engine.execute`` against the model. After v4 each of those calls
-        must forward ``data_source=model.data_source`` so the engine's
-        bare-name resolution doesn't pick the sibling in another datasource.
-        See PR #92 thread #7.
+        the sample-data query) all run ``engine.execute`` against the model.
+        After v4 each of those calls must forward
+        ``data_source=model.data_source`` so the engine's bare-name resolution
+        doesn't pick the sibling in another datasource. See PR #92 thread #7.
         """
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))

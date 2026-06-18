@@ -215,10 +215,21 @@ def test_cli_argparse_subprocess_accepts_description_flag(
     """End-to-end smoke (subprocess): the argparse spec accepts
     ``--description`` and the saved memory carries the field. The
     project CLI puts ``--storage`` on each subparser, so it appears
-    after the subcommand."""
+    after the subcommand.
+
+    The subprocess inherits an env where litellm's logger is forced to
+    ``ERROR`` — its default WARNING-level chatter (the model-cost-map
+    fetch and SOCKS-proxy fallback paths fired during the embedding
+    refresh) writes large stderr bursts that race pytest's fd-level
+    output capture and can starve the subprocess pipe until the
+    ``subprocess.run`` timeout kicks in. Silencing the logger removes
+    the bursts and the test is deterministic at ~5s.
+    """
+    import os
     import subprocess
     import sys
 
+    env = {**os.environ, "LITELLM_LOG": "ERROR"}
     cmd = [
         sys.executable, "-m", "slayer",
         "memory",
@@ -228,7 +239,7 @@ def test_cli_argparse_subprocess_accepts_description_flag(
         "--entities", "mydb.orders.amount",
         "--description", "subproc cents",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
     assert result.returncode == 0, result.stderr
     memories = asyncio.run(yaml_storage.list_memories(entities=None))
     assert any(m.description == "subproc cents" for m in memories)
