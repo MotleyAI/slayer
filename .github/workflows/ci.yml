@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -51,8 +54,13 @@ jobs:
         # + testcontainers + (for SQL Server) the ODBC Driver 18 — provisioned
         # only in those workflows. Exclude them from the always-on integration
         # job; they run when their respective dialect files change.
+        #
+        # DEV-1562: the live-Metabase e2e suite (`metabase_e2e` marker) has
+        # its own workflow at .github/workflows/pg-facade-e2e.yml — same
+        # reasoning, exclude here so this job isn't on the hook for booting
+        # a Metabase container.
         run: |
-          poetry run pytest tests/ -v -m integration --timeout=180 \
+          poetry run pytest tests/ -v -m "integration and not metabase_e2e" --timeout=180 \
             --ignore=tests/integration/test_integration_mysql.py \
             --ignore=tests/integration/test_integration_clickhouse.py \
             --ignore=tests/integration/test_integration_sqlserver.py
