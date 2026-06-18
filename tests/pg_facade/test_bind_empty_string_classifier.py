@@ -61,11 +61,13 @@ def catalog():
 
 @pytest.fixture
 def column_type_index(catalog):
-    return _build_column_type_index(catalog, "jaffle")
+    return _build_column_type_index(catalog=catalog, datasource="jaffle")
 
 
 def _classify(sql: str, idx, candidates):
-    return _classify_empty_string_param_targets(sql, idx, candidates)
+    return _classify_empty_string_param_targets(
+        sql=sql, column_type_index=idx, candidate_param_indices=candidates,
+    )
 
 
 # --- pg_catalog int column --------------------------------------------------
@@ -441,3 +443,64 @@ def test_column_type_index_includes_user_models_under_public(column_type_index):
     assert column_type_index.get(("public", "orders", "status")) == DataType.TEXT
     assert column_type_index.get(("public", "orders", "is_paid")) == DataType.BOOLEAN
     assert column_type_index.get(("public", "orders", "ordered_at")) == DataType.TIMESTAMP
+
+
+# --- Parenthesised parameters (Codex CX-1) ---------------------------------
+
+
+def test_parenthesised_eq_param_classified(column_type_index):
+    """``col = ($1)`` — sqlglot wraps ``$1`` in ``exp.Paren``. The classifier
+    must unwrap so the predicate still resolves."""
+    sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = ($1)"
+    assert _classify(sql, column_type_index, [1]) == {1}
+
+
+def test_parenthesised_in_param_classified(column_type_index):
+    """``col IN (($1))`` — IN-list element is ``exp.Paren(Parameter)``."""
+    sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid IN (($1))"
+    assert _classify(sql, column_type_index, [1]) == {1}
+
+
+def test_parenthesised_between_bounds_classified(column_type_index):
+    """``col BETWEEN ($1) AND ($2)`` — both bounds wrapped in ``exp.Paren``."""
+    sql = (
+        "SELECT objoid FROM pg_catalog.pg_description "
+        "WHERE objsubid BETWEEN ($1) AND ($2)"
+    )
+    assert _classify(sql, column_type_index, [1, 2]) == {1, 2}
+
+
+def test_doubly_parenthesised_param_classified(column_type_index):
+    """``col = (($1))`` — multiple nested ``exp.Paren`` layers must be peeled."""
+    sql = "SELECT objoid FROM pg_catalog.pg_description WHERE objsubid = (($1))"
+    assert _classify(sql, column_type_index, [1]) == {1}
+
+
+# --- Case-distinct columns (Codex CX-2) -------------------------------------
+
+
+def test_case_distinct_collision_keeps_first_and_warns(caplog):
+    """``id INT`` plus ``"ID" TEXT`` on the same model would collide under
+    case-folded indexing — last-writer-wins would silently swap the type and
+    let the empty-string rewrite mis-fire. _record_column_type keeps the
+    first entry and warns once."""
+    import logging
+
+    model = SlayerModel(
+        name="case_distinct",
+        data_source="jaffle",
+        sql_table="case_distinct",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="ID", type=DataType.TEXT),
+        ],
+    )
+    catalog = build_catalog(models_by_datasource={PUBLIC_SCHEMA: [model]})
+    with caplog.at_level(logging.WARNING, logger="slayer.pg_facade.connection"):
+        idx = _build_column_type_index(catalog=catalog, datasource="jaffle")
+    # First-writer-wins: `id` INT is inserted first.
+    assert idx.get(("public", "case_distinct", "id")) == DataType.INT
+    # The collision was warned about.
+    assert any(
+        "case-distinct collision" in rec.message for rec in caplog.records
+    ), f"expected collision warning; got: {[r.message for r in caplog.records]}"

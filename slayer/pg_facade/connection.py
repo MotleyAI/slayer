@@ -415,26 +415,9 @@ class PgConnection:
             return stmt.sql
         formats = proto.parse_result_format_codes(bind.parameter_format_codes, n)
         oids = list(resolved)
-        # DEV-1570: pre-classify $N indices whose bound value is an empty
-        # text-OID payload AND whose AST occurrence targets a non-TEXT
-        # catalog column. Those positions emit ``NULL`` rather than ``''``
-        # so DuckDB doesn't trip a ``Could not convert string '' to INT64``
-        # conversion at Execute. The cache is built lazily on first need.
-        empty_string_null_params: Set[int] = set()
-        candidates = [
-            i + 1 for i, (raw, oid) in enumerate(zip(bind.parameter_values, oids))
-            if oid == proto.OID_TEXT and raw == b""
-        ]
-        if candidates and self._catalog is not None and self._datasource is not None:
-            if self._column_type_index is None:
-                self._column_type_index = _build_column_type_index(
-                    self._catalog, self._datasource,
-                )
-            empty_string_null_params = _classify_empty_string_param_targets(
-                sql=stmt.sql,
-                column_type_index=self._column_type_index,
-                candidate_param_indices=candidates,
-            )
+        empty_string_null_params = self._empty_string_null_params_for_bind(
+            sql=stmt.sql, raw_values=bind.parameter_values, oids=oids,
+        )
         literals: List[str] = []
         for i, (raw, fmt, oid) in enumerate(
             zip(bind.parameter_values, formats, oids), start=1,
@@ -458,6 +441,30 @@ class PgConnection:
             return match.group(0)
 
         return _PARAM_PLACEHOLDER.sub(repl, stmt.sql)
+
+    def _empty_string_null_params_for_bind(
+        self, *, sql: str, raw_values, oids: List[int],
+    ) -> Set[int]:
+        # DEV-1570: pre-classify $N indices whose bound value is an empty
+        # text-OID payload AND whose AST occurrence targets a non-TEXT catalog
+        # column. Those positions emit ``NULL`` rather than ``''`` so DuckDB
+        # doesn't trip a ``Could not convert string '' to INT64`` at Execute.
+        # The column-type index is built lazily on first need.
+        candidates = [
+            i + 1 for i, (raw, oid) in enumerate(zip(raw_values, oids))
+            if oid == proto.OID_TEXT and raw == b""
+        ]
+        if not candidates or self._catalog is None or self._datasource is None:
+            return set()
+        if self._column_type_index is None:
+            self._column_type_index = _build_column_type_index(
+                catalog=self._catalog, datasource=self._datasource,
+            )
+        return _classify_empty_string_param_targets(
+            sql=sql,
+            column_type_index=self._column_type_index,
+            candidate_param_indices=candidates,
+        )
 
     async def _handle_describe(self, msg: proto.DescribeMessage) -> None:
         if msg.kind == "S":
@@ -809,7 +816,7 @@ _COMPARISON_NODE_TYPES: tuple = (
 
 
 def _build_column_type_index(
-    catalog: FacadeCatalog, datasource: str,
+    *, catalog: FacadeCatalog, datasource: str,
 ) -> ColumnTypeIndex:
     """Build the (schema_lower, table_lower, column_lower) -> DataType lookup
     used by the Bind-time empty-string-to-NULL rewrite (DEV-1570).
@@ -818,7 +825,18 @@ def _build_column_type_index(
     builder-name remap), and user-model tables under ``PUBLIC_SCHEMA``.
     """
     out: ColumnTypeIndex = {}
-    for rel in build_catalog_relations(catalog, datasource):
+    _index_catalog_relations(out=out, catalog=catalog, datasource=datasource)
+    _index_user_tables(out=out, catalog=catalog)
+    return out
+
+
+def _index_catalog_relations(
+    *, out: ColumnTypeIndex, catalog: FacadeCatalog, datasource: str,
+) -> None:
+    """Populate ``out`` with pg_catalog / information_schema column types
+    materialised by ``build_catalog_relations``. The ``_is_<name>`` builder
+    convention is remapped to the SQL-visible ``information_schema.<name>``."""
+    for rel in build_catalog_relations(catalog=catalog, datasource=datasource):
         if rel.name.startswith("_is_"):
             schema = "information_schema"
             table = rel.name[len("_is_"):]
@@ -827,21 +845,56 @@ def _build_column_type_index(
             table = rel.name
         table_lower = table.lower()
         for col in rel.columns:
-            out[(schema, table_lower, col.name.lower())] = col.type
+            _record_column_type(
+                out=out, key=(schema, table_lower, col.name.lower()),
+                dt=col.type,
+            )
+
+
+def _index_user_tables(*, out: ColumnTypeIndex, catalog: FacadeCatalog) -> None:
+    """Populate ``out`` with user-model column types under PUBLIC_SCHEMA."""
     for sch in catalog.schemas:
         schema_lower = sch.name.lower()
         for tbl in sch.tables:
             tbl_lower = tbl.name.lower()
             for d in tbl.dimensions:
-                out[(schema_lower, tbl_lower, d.name.lower())] = d.data_type
+                _record_column_type(
+                    out=out, key=(schema_lower, tbl_lower, d.name.lower()),
+                    dt=d.data_type,
+                )
             for m in tbl.metrics:
                 dt = m.data_type if m.data_type is not None else DataType.TEXT
-                out[(schema_lower, tbl_lower, m.name.lower())] = dt
-    return out
+                _record_column_type(
+                    out=out, key=(schema_lower, tbl_lower, m.name.lower()),
+                    dt=dt,
+                )
+
+
+def _record_column_type(
+    *, out: ColumnTypeIndex, key: ColumnTypeKey, dt: DataType,
+) -> None:
+    """Insert (key → dt) into ``out`` unless the key already exists with a
+    different type. Case-distinct quoted identifiers (e.g. ``id`` INT and
+    ``"ID"`` TEXT in the same model) would otherwise collide because the
+    index lower-cases column names — last-writer-wins on the previous
+    implementation could rewrite an empty-string text comparison to NULL.
+    Skip the second occurrence and warn once. Same-type collisions are
+    silently ignored (no behaviour change). DEV-1570 / Codex CX-2."""
+    existing = out.get(key)
+    if existing is None:
+        out[key] = dt
+        return
+    if existing != dt:
+        logger.warning(
+            "DEV-1570 column-type index: case-distinct collision on %s "
+            "(existing=%s, new=%s); keeping existing. Empty-string rewrite "
+            "may behave incorrectly if the case-distinct column is queried.",
+            key, existing, dt,
+        )
 
 
 def _classify_empty_string_param_targets(
-    sql: str,
+    *, sql: str,
     column_type_index: ColumnTypeIndex,
     candidate_param_indices: Iterable[int],
 ) -> Set[int]:
@@ -860,36 +913,61 @@ def _classify_empty_string_param_targets(
     if not candidates:
         return set()
     try:
-        parsed = sqlglot.parse_one(sql, dialect="postgres")
+        parsed = sqlglot.parse_one(sql=sql, dialect="postgres")
     except sqlglot.errors.SqlglotError:
         return set()
     if parsed is None:
         return set()
     try:
-        column_to_table: Dict[int, Optional[Tuple[str, str]]] = {}
-        for scope in traverse_scope(parsed):
-            sources = _resolved_table_sources(scope.sources)
-            for col in scope.find_all(exp.Column):
-                column_to_table[id(col)] = _resolve_column_table(
-                    col=col, scope_sources=sources,
-                    column_type_index=column_type_index,
-                )
-        result: Set[int] = set()
-        for node in parsed.walk():
-            for col, param_idx in _column_param_pairs_from_node(node):
-                if param_idx not in candidates:
-                    continue
-                table = column_to_table.get(id(col))
-                if table is None:
-                    continue
-                key: ColumnTypeKey = (table[0], table[1], col.name.lower())
-                dt = column_type_index.get(key)
-                if dt is not None and dt != DataType.TEXT:
-                    result.add(param_idx)
-        return result
+        column_to_table = _map_column_tables(
+            parsed=parsed, column_type_index=column_type_index,
+        )
+        return _collect_non_text_params(
+            parsed=parsed, candidates=candidates,
+            column_to_table=column_to_table,
+            column_type_index=column_type_index,
+        )
     except Exception:  # NOSONAR(S110) — defensive: never raise out of bind path
         logger.debug("DEV-1570 classifier defensive catch", exc_info=True)
         return set()
+
+
+def _map_column_tables(
+    *, parsed: exp.Expression, column_type_index: ColumnTypeIndex,
+) -> Dict[int, Optional[Tuple[str, str]]]:
+    """Resolve every Column node to its owning scope's (schema, table)."""
+    column_to_table: Dict[int, Optional[Tuple[str, str]]] = {}
+    for scope in traverse_scope(parsed):
+        sources = _resolved_table_sources(scope.sources)
+        for col in scope.find_all(exp.Column):
+            column_to_table[id(col)] = _resolve_column_table(
+                col=col, scope_sources=sources,
+                column_type_index=column_type_index,
+            )
+    return column_to_table
+
+
+def _collect_non_text_params(
+    *, parsed: exp.Expression,
+    candidates: Set[int],
+    column_to_table: Dict[int, Optional[Tuple[str, str]]],
+    column_type_index: ColumnTypeIndex,
+) -> Set[int]:
+    """Walk comparison / IN / BETWEEN nodes; collect $N indices whose paired
+    Column resolves to a non-TEXT ``DataType``."""
+    result: Set[int] = set()
+    for node in parsed.walk():
+        for col, param_idx in _column_param_pairs_from_node(node):
+            if param_idx not in candidates:
+                continue
+            table = column_to_table.get(id(col))
+            if table is None:
+                continue
+            key: ColumnTypeKey = (table[0], table[1], col.name.lower())
+            dt = column_type_index.get(key)
+            if dt is not None and dt != DataType.TEXT:
+                result.add(param_idx)
+    return result
 
 
 def _column_param_pairs_from_node(node) -> Iterable[Tuple[exp.Column, int]]:
@@ -910,10 +988,22 @@ def _column_param_pairs_from_node(node) -> Iterable[Tuple[exp.Column, int]]:
             yield from _pair_column_and_param(value, el)
 
 
+def _unwrap_paren(node):
+    """Strip ``exp.Paren`` wrappers (semantically transparent). sqlglot
+    represents ``($1)`` / ``(col)`` as ``Paren(Parameter)`` / ``Paren(Column)``,
+    so ``col = ($1)`` / ``IN (($1))`` / ``BETWEEN ($1) AND ($2)`` would
+    otherwise dodge the empty-string-to-NULL rewrite (Codex CX-1)."""
+    while isinstance(node, exp.Paren):
+        node = node.this
+    return node
+
+
 def _pair_column_and_param(left, right) -> Iterable[Tuple[exp.Column, int]]:
     """Two operands where one is a bare Column and the other is a $N
     Parameter -> yield (Column, $N). Returns nothing if both sides are
     the same kind or if neither is a Column / Parameter."""
+    left = _unwrap_paren(left)
+    right = _unwrap_paren(right)
     col: Optional[exp.Column] = None
     param_idx: Optional[int] = None
     for op in (left, right):
