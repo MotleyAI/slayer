@@ -1622,15 +1622,18 @@ class SQLGenerator:
                         qualified_sql,
                     )
                 # Wrap qualified names in dialect-aware quotes for alias
-                # references. Use regex with word boundaries (not
+                # references. Use regex with word + dot boundaries (not
                 # ``str.replace``) so a shorter alias doesn't mutate the
                 # prefix of a longer one — e.g. replacing ``orders.foo``
-                # must not touch ``orders.foo_bar``.
+                # must not touch ``orders.foo_bar`` (word-char tail) AND
+                # must not touch ``orders.foo.bar`` (dot tail). ``.`` is
+                # NOT a ``\w`` character, so the leading/trailing guard
+                # explicitly excludes it alongside ``\w``.
                 for col_name in dict.fromkeys(f.columns):
                     qualified = f"{model}.{col_name}"
                     quoted = self._q(qualified)
                     qualified_sql = re.sub(
-                        rf'(?<!\w){re.escape(qualified)}(?!\w)',
+                        rf'(?<![\w.]){re.escape(qualified)}(?![\w.])',
                         lambda _m, q=quoted: q,
                         qualified_sql,
                     )
