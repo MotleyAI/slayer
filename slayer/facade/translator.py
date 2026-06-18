@@ -1733,6 +1733,12 @@ def _resolve_join_subquery_target(
         ("having", "HAVING"),
         ("joins", "JOIN"),
         ("with_", "WITH (CTE)"),
+        # DEV-1565 (Codex round 1): DISTINCT / LIMIT inside the subquery
+        # change the joined row set in ways the translator would silently
+        # drop (the configured/dynamic join treats the right side as the
+        # full target table). Reject so callers see the divergence.
+        ("distinct", "DISTINCT"),
+        ("limit", "LIMIT"),
     ):
         if inner.args.get(forbidden):
             raise TranslationError(

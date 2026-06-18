@@ -1254,6 +1254,38 @@ def test_subquery_with_comma_join_rejected(dialect) -> None:
     assert "subquery" in str(exc_info.value).lower()
 
 
+def test_subquery_with_inner_distinct_rejected(dialect) -> None:
+    """Inner DISTINCT silently de-duplicates the joined row set; reject so
+    the cardinality change is surfaced (Codex round 1)."""
+    sql = (
+        'SELECT "Stores"."name" '
+        'FROM "public"."orders" '
+        'LEFT JOIN ('
+        '  SELECT DISTINCT "id", "name" FROM "public"."stores"'
+        ') AS "Stores" '
+        '  ON "public"."orders"."store_id" = "Stores"."id"'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "subquery" in str(exc_info.value).lower()
+
+
+def test_subquery_with_inner_limit_rejected(dialect) -> None:
+    """Inner LIMIT silently truncates the joined row set; reject so the
+    cardinality change is surfaced (Codex round 1)."""
+    sql = (
+        'SELECT "Stores"."name" '
+        'FROM "public"."orders" '
+        'LEFT JOIN ('
+        '  SELECT "id", "name" FROM "public"."stores" LIMIT 10'
+        ') AS "Stores" '
+        '  ON "public"."orders"."store_id" = "Stores"."id"'
+    )
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert "subquery" in str(exc_info.value).lower()
+
+
 def test_subquery_without_from_rejected(dialect) -> None:
     """A subquery with no FROM (e.g. ``SELECT 1 AS id``) has no addressable
     target model — translator must reject rather than fall back to
