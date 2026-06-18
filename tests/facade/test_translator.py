@@ -1349,6 +1349,57 @@ def test_cast_alias_group_by_safe_pair_admitted(
     assert result.projection_types[0] == DataType(target)
 
 
+def test_cast_order_by_bare_column_does_not_shadow_cast_projection(dialect) -> None:
+    """Codex round 8: when both the bare column and a CAST alias are
+    projected, ``ORDER BY <bare col>`` must route to the bare column
+    projection — NOT to the CAST item via the secondary-key fallback that
+    would then trip the lossy-pair rejection. Validates the
+    ``item.cast_target is None`` guard in ``_build_item_index``."""
+    result = translate(
+        sql="SELECT id, CAST(id AS TEXT) AS x FROM orders ORDER BY id",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.order is not None
+    assert result.query.order[0].column.name == "id"
+    assert result.query.order[0].direction == "asc"
+    # Wire schema: bare id keeps INT; the CAST alias surfaces as TEXT.
+    assert result.projection_types == [DataType.INT, DataType.TEXT]
+
+
+def test_cast_order_by_bare_column_without_bare_projection_fails_cleanly(dialect) -> None:
+    """Codex round 8: when the bare column is NOT projected, ``ORDER BY
+    <bare col>`` over a CAST projection must surface ``not in the
+    projection list`` (the existing strict-on-extras error) — NOT the
+    lossy-CAST rejection (which would falsely imply the user asked for
+    lex-sort semantics on the casted column)."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql="SELECT CAST(id AS TEXT) AS x, status FROM orders ORDER BY id",
+            catalog=_catalog(), dialect=dialect,
+        )
+    msg = str(exc_info.value)
+    assert "not in the projection list" in msg
+    assert "lossy pair" not in msg
+
+
+def test_cast_joined_column_metabase_alias_resolves(dialect) -> None:
+    """Codex round 8: ``CAST("Stores"."name" AS TEXT)`` in a Metabase-style
+    LEFT JOIN subquery must resolve through the alias_map (\"Stores\" →
+    \"stores\"). Before the fix the CAST branch dropped the alias_map and
+    the joined ref came through as ``Stores.name`` → ``Unknown projection
+    item``. Now the cast branch forwards alias_map and the projection
+    resolves to ``stores.name`` like the non-casted shape does."""
+    sql = _metabase_join_sql(
+        projection='CAST("Stores"."name" AS TEXT) AS "store_name"',
+    )
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.dimensions is not None
+    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+    assert result.projection_types == [DataType.TEXT]
+
+
 def test_cast_metric_projection_overrides_wire_type(dialect) -> None:
     """A CAST around a metric reference resolves through the metric path
     (`_record_metric`), and the cast target wins over the declared metric type."""

@@ -1077,15 +1077,21 @@ def _resolve_column_cast_projection(
     metrics_by_name: Dict[str, FacadeMetric],
     dims_by_name: Dict[str, FacadeDimension],
     strip_prefix: Optional[Tuple[str, str]] = None,
+    alias_map: Optional[Dict[str, str]] = None,
 ) -> _ProjectionItem:
     """Resolve ``CAST(<column> AS <type>)`` to a projection item that runs
     the bare column through the engine and overrides the wire OID via
     ``cast_target``. Enforces the strict per-pair coercion allowlist.
+
+    DEV-1565: ``alias_map`` carries the LEFT-JOIN subquery's
+    ``"Stores"."name"`` → catalog ``stores.name`` rewrite so Metabase-style
+    joined CAST refs resolve through the same dimension-lookup path as
+    non-casted joined refs.
     """
     inner = _resolve_column_projection(
         body=body, alias_name=alias_name, table=table,
         metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
-        strip_prefix=strip_prefix,
+        strip_prefix=strip_prefix, alias_map=alias_map,
     )
     source = _item_cast_source_type(inner)
     if not _is_admitted_cast(source=source, target=cast_target):
@@ -1282,7 +1288,7 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
                     body=inner_col, cast_target=cast_target,
                     alias_name=alias_name, table=table,
                     metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
-                    strip_prefix=strip_prefix,
+                    strip_prefix=strip_prefix, alias_map=alias_map,
                 ))
                 continue
 
@@ -2789,7 +2795,15 @@ def _build_item_index(items: List[_ProjectionItem]) -> Dict[str, _ProjectionItem
     secondary key (time-grain canonical form for `CAST(date_trunc(...))`
     GROUP BY matches; dimension_ref dotted form for joined-col aliased
     projections — see DEV-1565). ``setdefault`` preserves the primary
-    projected_name entry when the secondary key collides with it."""
+    projected_name entry when the secondary key collides with it.
+
+    DEV-1566: CAST-projected items are NOT registered under their
+    ``dimension_ref`` secondary key — that would route ``ORDER BY <bare col>``
+    on a query like ``SELECT CAST(id AS TEXT) AS x ... ORDER BY id`` to the
+    cast item and trip the lossy-pair rejection, even though the user
+    explicitly named the bare column (and the engine ordering already
+    matches that intent).
+    """
     out: Dict[str, _ProjectionItem] = {item.projected_name: item for item in items}
     for item in items:
         if item.time_grain is not None and item.time_grain_underlying is not None:
@@ -2799,6 +2813,7 @@ def _build_item_index(items: List[_ProjectionItem]) -> Dict[str, _ProjectionItem
             out.setdefault(canonical, item)
         elif (
             item.dimension is not None
+            and item.cast_target is None
             and item.dimension.dimension_ref != item.projected_name
         ):
             out.setdefault(item.dimension.dimension_ref, item)
