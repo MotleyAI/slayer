@@ -327,6 +327,78 @@ class SqlDialect(BaseModel):
         the function-call form (DEV-1331)."""
         return tree
 
+    def emit_outer_wrap(
+        self,
+        *,
+        inner_sql: str,
+        public: list[str],
+        order: Optional[exp.Expression],
+        limit: Optional[exp.Expression],
+        offset_arg: Optional[exp.Expression],
+        parse: Optional[Callable[[str], exp.Expression]] = None,
+    ) -> str:
+        """Emit the DEV-1444 outer-projection wrap around ``inner_sql``.
+
+        Contract: ``inner_sql`` is the inner SELECT with **trailing
+        pagination already detached** (``SQLGenerator._build_outer_wrap``
+        owns the strip). ``order`` / ``limit`` / ``offset_arg`` are the
+        detached sqlglot AST nodes the caller pulled off the inner; the
+        hook re-emits them on the outer statement.
+
+        ``parse`` is the generator's ``_parse`` callback when the
+        generator is the caller (``SQLGenerator._build_outer_wrap``).
+        T-SQL needs it to preserve SLayer-specific AST rewrites (LOG10/
+        LOG2 alias preservation, SQLite JSONExtract function-form) when
+        the override re-parses ``inner_sql`` to detach the WITH clause.
+        The base impl ignores it because it embeds ``inner_sql`` verbatim
+        (no re-parse, no rewrite drift).
+
+        Base impl (Postgres-shaped, used by every dialect except T-SQL)::
+
+            SELECT "alias1", "alias2"
+            FROM   (<inner_sql>) AS _outer
+            ORDER BY ... LIMIT N OFFSET M
+
+        Identifier quoting on the public-alias list is driven by sqlglot
+        via ``self.sqlglot_name`` — backticks on MySQL/BigQuery, brackets
+        on T-SQL (the override only changes the CTE-hoist shape, not the
+        quoting), ANSI double quotes on Postgres/SQLite/DuckDB/...
+        (DEV-1571 Bug 3).
+
+        T-SQL's ``WITH``-must-be-statement-prefix rule means
+        ``TsqlDialect`` overrides this method to lift the inner top-level
+        CTEs to the outer statement (DEV-1571 Bug 1).
+
+        ORDER BY may carry inner-CTE qualifiers like ``_base."col"`` from
+        ``_assemble_combined_sql``; those don't resolve at the outer-
+        wrapper scope (only ``_outer`` is in scope). The base impl strips
+        every Column's ``table`` qualifier so the outer scope can resolve
+        each column by its bare alias name (DEV-1444 behaviour preserved).
+        """
+        del parse  # base impl embeds inner_sql verbatim; no re-parse needed.
+        col_sep = ",\n    "
+        outer_select = col_sep.join(
+            exp.Identifier(this=a, quoted=True).sql(dialect=self.sqlglot_name)
+            for a in public
+        )
+        base = (
+            f"SELECT\n    {outer_select}\n"
+            f"FROM (\n{inner_sql.rstrip()}\n) AS _outer"
+        )
+        if order is None and limit is None and offset_arg is None:
+            return base
+        out = base
+        if order is not None:
+            for col in order.find_all(exp.Column):
+                if col.args.get("table") is not None:
+                    col.set("table", None)
+            out += "\n" + order.sql(dialect=self.sqlglot_name, pretty=True)
+        if limit is not None:
+            out += "\n" + limit.sql(dialect=self.sqlglot_name, pretty=True)
+        if offset_arg is not None:
+            out += "\n" + offset_arg.sql(dialect=self.sqlglot_name, pretty=True)
+        return out
+
     def rewrite_emitted_sql(self, sql: str) -> str:
         """Default: identity. Post-pass string-level rewrite of the final
         generator output.

@@ -296,6 +296,41 @@ def test_base_default_decode_result_keys_is_identity() -> None:
 
 
 # ---------------------------------------------------------------------------
+# DEV-1571 Bug 3 — base impl identifier quoting picks BigQuery's backticks
+# (not ANSI double quotes), proving the fix is dialect-driven via sqlglot
+# rather than special-cased only for MySQL.
+# ---------------------------------------------------------------------------
+
+
+def test_bigquery_emit_outer_wrap_uses_backticks_for_aliases() -> None:
+    """BigQuery inherits the base ``emit_outer_wrap``. The base impl uses
+    ``exp.Identifier(this=a, quoted=True).sql(dialect=self.sqlglot_name)``
+    so each public-alias identifier is quoted with the dialect's natural
+    quote char — backticks for BigQuery.
+
+    The PRE-mangle output still carries dotted aliases inside backticks;
+    ``rewrite_emitted_sql`` runs after ``generate()`` to mangle them. This
+    test pins the base-impl quote choice in isolation.
+
+    Pin Codex (Step 5) MEDIUM #4 — proves Bug 3 fix isn't special-cased
+    only for MySQL.
+    """
+    out = BigqueryDialect().emit_outer_wrap(
+        inner_sql="SELECT 1 AS `orders.x`",
+        public=["orders.x"],
+        order=None,
+        limit=None,
+        offset_arg=None,
+    )
+    assert "`orders.x`" in out, (
+        f"BigQuery outer projection must use backticks: {out}"
+    )
+    assert '"orders.x"' not in out, (
+        f"BigQuery outer projection must not use ANSI double quotes: {out}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Generic-hook dispatch — prove the generator/engine call the dialect hook,
 # not a hard-coded ``if dialect == "bigquery":`` branch. Codex HIGH #1.
 # ---------------------------------------------------------------------------
