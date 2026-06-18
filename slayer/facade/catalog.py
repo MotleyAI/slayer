@@ -81,6 +81,42 @@ class FacadeCatalog(BaseModel):
     schemas: List[FacadeSchema]
 
 
+def local_metrics(table: FacadeTable) -> List[FacadeMetric]:
+    """Metrics whose ``name`` carries no cross-model dotted prefix.
+
+    DEV-1567: ``_metric_expansion`` pre-expands cross-model metrics into
+    entries like ``customers.row_count`` /
+    ``customers.regions.population_sum``. BI tools that flatten the
+    catalog through ``pg_attribute`` / ``INFORMATION_SCHEMA.COLUMNS`` then
+    discover those dotted "columns" and emit fingerprint SQL that lands a
+    dotted name in ``SlayerQuery.measures[*].name`` — rejected by the
+    Pydantic validator. Filtering at the flatten step stops the leak.
+
+    Cross-model entries stay on ``table.metrics`` so:
+      * ``INFORMATION_SCHEMA.METRICS`` still exposes them as catalog-
+        namespaced;
+      * the catalog-SQL fingerprint hash still tracks them for cache
+        invalidation;
+      * the translator's ``metrics_by_name`` / ``metrics_by_formula``
+        lookups still resolve hand-written cross-model SQL (rejected
+        there by the translator-side guard).
+
+    The "dot in name" predicate is safe because every catalog-side name
+    source forbids dots: ``Column.name``, ``ModelMeasure.name``, and
+    (DEV-1567) ``Aggregation.name`` all enforce
+    ``[a-zA-Z_][a-zA-Z0-9_]*``. The synthetic ``row_count`` /
+    ``_row_count`` metric never contains a dot.
+    """
+    return [m for m in table.metrics if "." not in m.name]
+
+
+def local_dimensions(table: FacadeTable) -> List[FacadeDimension]:
+    """Mirror of :func:`local_metrics` for dimensions (single-hop and
+    multi-hop joined dimensions excluded). See :func:`local_metrics` for
+    the leak-path and predicate rationale."""
+    return [d for d in table.dimensions if "." not in d.name]
+
+
 def build_catalog(
     *,
     models_by_datasource: Dict[str, List[SlayerModel]],
