@@ -230,12 +230,27 @@ def _set_config_is_session_scope(node: exp.Anonymous) -> bool:
     if isinstance(is_local, exp.Boolean):
         return is_local.this is False
     if isinstance(is_local, exp.Literal):
-        # Postgres accepts these as truthy boolean inputs (drivers rarely
-        # use them for is_local, but match for consistency with PG parse
-        # rules). Codex round 5 F1.
-        return str(is_local.this).lower() not in ("true", "t", "on", "yes", "1")
+        return not _is_truthy_boolean_literal(str(is_local.this))
     # Non-literal / non-boolean third arg: be conservative — skip mutation.
     return False
+
+
+def _is_truthy_boolean_literal(value: str) -> bool:
+    """Match Postgres boolean input rules: accept any unique case-insensitive
+    prefix of `true` or `yes`, plus the exact strings `on` and `1`.
+
+    Examples that return True: `t`, `tr`, `tru`, `true`, `y`, `ye`, `yes`,
+    `on`, `1` (case-insensitive). Empty string and any other input return
+    False. Codex round 5/6.
+    """
+    lowered = value.lower()
+    if not lowered:
+        return False
+    return (
+        lowered in ("on", "1")
+        or "true".startswith(lowered)
+        or "yes".startswith(lowered)
+    )
 
 
 def _first_literal(node: exp.Anonymous, index: int) -> Optional[str]:

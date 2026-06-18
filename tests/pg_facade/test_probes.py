@@ -351,10 +351,16 @@ def test_match_pg_probe_with_mutation_blocks_is_local_true() -> None:
 
 
 def test_match_pg_probe_with_mutation_blocks_alt_boolean_true_spellings() -> None:
-    """Postgres boolean input accepts `'t'`, `'on'`, `'yes'`, `'1'` for true.
-    Drivers rarely use these for is_local, but the guard should still
-    block them consistently. Codex round 5 F1."""
-    for spelling in ["'t'", "'on'", "'yes'", "'1'", "'TRUE'"]:
+    """Postgres boolean input accepts unique prefixes of `true`/`yes` plus
+    `on`/`1`. The guard treats all of those as is_local=true. Drivers
+    rarely emit these forms, but the guard should still be PG-consistent.
+    Codex round 5 F1, round 6 F1."""
+    for spelling in [
+        "'t'", "'tr'", "'tru'", "'true'", "'TRUE'", "'True'",
+        "'y'", "'ye'", "'yes'", "'YES'",
+        "'on'", "'ON'",
+        "'1'",
+    ]:
         outcome = match_pg_probe_with_mutation(
             _parse(f"SELECT set_config('application_name', 'foo', {spelling})"),
             datasource="jaffle", version_str="x",
