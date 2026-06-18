@@ -216,8 +216,16 @@ Admitted (source, target) coercions:
 
 Pairs outside the allowlist (e.g. `CAST(name AS INT)`, `CAST(amount AS BOOLEAN)`)
 raise `Unsupported CAST: cannot project <SOURCE> column as <TARGET> (...). Admitted
-coercions: see docs/interfaces/pg-facade.md.` Unsupported target types (`UUID`, `JSON`,
-`ARRAY`, `STRUCT`, …) raise the standard `Unsupported projection expression` error.
+coercions: see docs/interfaces/pg-facade.md.` Unsupported target types
+(`UUID`, `JSON`, `ARRAY`, `STRUCT`, `DECIMAL`/`NUMERIC`, `TIMESTAMPTZ` /
+`TIMESTAMP WITH TIME ZONE`, …) raise the standard `Unsupported projection
+expression` error. `DECIMAL`/`NUMERIC` and `TIMESTAMPTZ` are deliberately
+NOT admitted via a DOUBLE / TIMESTAMP coercion — Postgres clients reading
+the projected column would receive OID 701 (`float8`) or OID 1114
+(`timestamp`, no-TZ) when they asked for OID 1700 (`numeric`, exact-precision)
+or OID 1184 (`timestamptz`, TZ-aware), losing precision and TZ semantics.
+Until SLayer adds native `NUMERIC` and `TIMESTAMPTZ` data types with their
+own wire encoders, the only safe answer is to reject.
 
 `DOUBLE → INT` is intentionally excluded: Python's `int(<float>)` truncates toward zero
 while Postgres rounds half-to-even, so silently admitting the pair would diverge from

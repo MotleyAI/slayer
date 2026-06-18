@@ -1691,22 +1691,20 @@ def test_cast_text_target_admitted_from_every_source(col: str, dialect) -> None:
         ("INTEGER", DataType.INT),
         ("BIGINT", DataType.INT),
         ("SMALLINT", DataType.INT),
-        # DOUBLE-family aliases (floating/decimal collapse to DOUBLE).
+        # DOUBLE-family aliases (floating types collapse to DOUBLE; DECIMAL /
+        # NUMERIC are deliberately NOT here — see Codex round 8 carve-out).
         ("FLOAT", DataType.DOUBLE),
         ("REAL", DataType.DOUBLE),
-        ("DECIMAL", DataType.DOUBLE),
-        ("NUMERIC", DataType.DOUBLE),
-        # TIMESTAMP-family aliases.
+        # TIMESTAMP-family aliases — TIMESTAMPTZ deliberately NOT here.
         ("DATETIME", DataType.TIMESTAMP),
-        ("TIMESTAMPTZ", DataType.TIMESTAMP),
     ],
 )
 def test_cast_sqlglot_type_aliases_map_to_slayer_datatype(
     type_alias: str, expected: DataType,
 ) -> None:
     """Each accepted sqlglot DataType.Type alias collapses onto the canonical
-    SLayer DataType. Pinned under postgres dialect since some aliases
-    (TIMESTAMPTZ) only parse cleanly there."""
+    SLayer DataType. Pinned under postgres dialect since some aliases only
+    parse cleanly there."""
     # Pick a source column whose declared type makes <source, expected> an
     # admitted pair: identity on the expected canonical type.
     source_col = {
@@ -1723,10 +1721,28 @@ def test_cast_sqlglot_type_aliases_map_to_slayer_datatype(
     assert result.projection_types == [expected]
 
 
+@pytest.mark.parametrize("type_alias", ["DECIMAL", "NUMERIC", "TIMESTAMPTZ"])
+def test_cast_exact_or_timezone_aware_types_rejected(type_alias: str) -> None:
+    """Codex round 8: ``DECIMAL`` / ``NUMERIC`` and ``TIMESTAMPTZ`` were
+    silently coerced into ``DataType.DOUBLE`` / ``DataType.TIMESTAMP``
+    respectively. PostgreSQL exposes them as OID 1700 (`numeric`, exact)
+    and OID 1184 (`timestamptz`, TZ-aware) — distinct from the OID 701 /
+    1114 the coerced mapping would advertise — so clients got the wrong
+    wire type. Pinned as rejected (falls through to the unsupported-
+    projection-expression error) until SLayer adds native NUMERIC and
+    TIMESTAMPTZ types + OIDs + encoders."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql=f"SELECT CAST(revenue AS {type_alias}) FROM orders",
+            catalog=_catalog(), dialect="postgres",
+        )
+    assert "Unsupported projection expression" in str(exc_info.value)
+
+
 def test_cast_parameterised_type_form_works() -> None:
-    """sqlglot represents ``VARCHAR(255)`` / ``DECIMAL(10,2)`` etc. with their
-    precision modifier on the SAME ``DataType.Type`` member, so the mapping
-    collapses precision implicitly — SLayer wire types don't carry it."""
+    """sqlglot represents ``VARCHAR(255)`` etc. with their precision modifier
+    on the SAME ``DataType.Type`` member, so the mapping collapses precision
+    implicitly — SLayer wire types don't carry it."""
     result = translate(
         sql="SELECT CAST(status AS VARCHAR(255)) FROM orders",
         catalog=_catalog(), dialect="postgres",
