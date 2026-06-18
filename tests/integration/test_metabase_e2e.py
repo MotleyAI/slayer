@@ -451,10 +451,6 @@ async def test_union_all_catalog_query_routed(metabase_e2e_env: MetabaseE2EEnv) 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1567: pg-facade leaks dotted cross-model fingerprint measures into the SlayerQuery; Pydantic name validator rejects them",
-)
 def test_dataset_source_table_returns_rows(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
@@ -465,10 +461,6 @@ def test_dataset_source_table_returns_rows(metabase_e2e_env: MetabaseE2EEnv) -> 
     assert len(cols) == 7  # orders has 7 columns
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1567: pg-facade leaks dotted cross-model fingerprint measures into the SlayerQuery; Pydantic name validator rejects them",
-)
 def test_empty_result_filter_returns_cleanly(metabase_e2e_env: MetabaseE2EEnv) -> None:
     client = metabase_e2e_env.client
     orders_id = client.table_id_by_name("orders")
@@ -481,10 +473,6 @@ def test_empty_result_filter_returns_cleanly(metabase_e2e_env: MetabaseE2EEnv) -
     assert rows == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEV-1567: pg-facade leaks dotted cross-model fingerprint measures into the SlayerQuery; Pydantic name validator rejects them",
-)
 def test_wide_row_serialises(metabase_e2e_env: MetabaseE2EEnv) -> None:
     """Every column on ``items`` (a join-table) and ``orders`` must serialise."""
     client = metabase_e2e_env.client
@@ -499,7 +487,8 @@ def test_wide_row_serialises(metabase_e2e_env: MetabaseE2EEnv) -> None:
 
 @pytest.mark.xfail(
     strict=True,
-    reason="DEV-1567: pg-facade leaks dotted cross-model fingerprint measures into the SlayerQuery; Pydantic name validator rejects them (bug 8 is pinned by K.2 via psycopg DATE OID parse)",
+    reason="DEV-1573: Metabase pgjdbc DATE round-trip returns '2024-09-21T00:00:00Z' "
+           "instead of '2024-09-21'; K.2 still pins the psycopg path which is clean.",
 )
 def test_date_column_clean_round_trip_via_metabase(metabase_e2e_env: MetabaseE2EEnv) -> None:
     """C.4 — DEV-1558 bug 8: DATE encoder serialising datetime as

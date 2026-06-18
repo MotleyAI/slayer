@@ -313,6 +313,20 @@ class Aggregation(BaseModel):
     description: Optional[str] = None
     meta: Optional[Dict[str, Any]] = None
 
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        # DEV-1567: same identifier rule as Column.name / ModelMeasure.name.
+        # The pg-facade catalog flattens cross-model entries with a dotted
+        # prefix; the local/cross-model split would misclassify a dotted
+        # Aggregation.name as cross-model.
+        if not _NAME_PATTERN.match(v):
+            raise ValueError(
+                f"Invalid name '{v}': must contain only letters, digits, "
+                f"and underscores, and start with a letter or underscore"
+            )
+        return v
+
     @model_validator(mode="after")
     def _require_formula_for_custom(self) -> "Aggregation":
         if self.name not in BUILTIN_AGGREGATIONS and self.formula is None:

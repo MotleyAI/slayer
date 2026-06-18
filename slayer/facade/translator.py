@@ -616,6 +616,33 @@ def _saved_measure_names(table: FacadeTable) -> set[str]:
     return {m.name for m in table.metrics if m.measure_formula == m.name}
 
 
+def _assert_local_metric(metric: FacadeMetric) -> None:
+    """DEV-1567: reject cross-model metric projection at the resolver.
+
+    The catalog pre-expands cross-model metrics into entries with dotted
+    names (``customers.row_count``, ``customers.regions.population_sum``).
+    The flat-column probes (``pg_attribute`` /
+    ``INFORMATION_SCHEMA.COLUMNS``) hide them so BI tools don't discover
+    them as projectable, but a hand-written SQL ref still resolves
+    through ``metrics_by_name`` / ``metrics_by_formula``. Letting it
+    flow into ``SlayerQuery.measures[*].name`` would either trip the
+    Pydantic validator (29 errors per query) or — with a non-dotted user
+    alias — produce a SlayerQuery whose engine alias mis-keys against
+    the engine result (DEV-1448 preserves the cross-model hop path on
+    the engine side, so ``orders.cr`` against ``orders.customers.cr``).
+
+    Guard predicate matches the catalog-flatten filter
+    (``slayer/facade/catalog.py:local_metrics``); see DEV-1493 for the
+    multi-stage rewrite path.
+    """
+    if "." in metric.name:
+        raise TranslationError(
+            f"Cross-model metric {metric.name!r} cannot be projected in "
+            f"a flat SELECT. Use a saved metric or rewrite as a multi-"
+            f"stage query (DEV-1493)."
+        )
+
+
 def _metric_for_aggregate(
     call: _AggCall, table: FacadeTable, metrics_by_formula: Dict[str, FacadeMetric],
 ) -> FacadeMetric:
@@ -634,6 +661,7 @@ def _metric_for_aggregate(
     formula = _agg_formula(call)
     metric = metrics_by_formula.get(formula)
     if metric is not None:
+        _assert_local_metric(metric)
         return metric
     # Not eligible / unknown. Distinguish the saved-measure case for a
     # clearer message pointing at the follow-up ticket.
@@ -815,9 +843,11 @@ def _resolve_column_projection(
 ) -> _ProjectionItem:
     dotted = _column_to_dotted(body, strip_prefix=strip_prefix)
     if dotted in metrics_by_name:
+        metric = metrics_by_name[dotted]
+        _assert_local_metric(metric)
         return _ProjectionItem(
             projected_name=alias_name or dotted,
-            metric=metrics_by_name[dotted],
+            metric=metric,
         )
     if dotted in dims_by_name:
         return _ProjectionItem(
