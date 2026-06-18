@@ -159,29 +159,48 @@ Out of scope: `CAST` around aggregates (`CAST(SUM(amount) AS DOUBLE)`), `TRY_CAS
 and `CAST` around expressions that aren't a bare column (`CAST(SUBSTRING(...) AS T)`).
 `CAST` wrapping a `DATE_TRUNC(...)` continues to route through the time-grain unwrap.
 
-`CAST(...)` in `ORDER BY` and `GROUP BY` is **not** admitted. The engine still
-projects the bare column, so a `ORDER BY CAST(id AS TEXT)` would sort numerically
-(by the underlying `INT`) instead of lex; a `GROUP BY CAST(ts AS DATE)` would
-group per-timestamp instead of per-date. Both are silently wrong, so the
-translator raises `ORDER BY column '...' is not in the projection list` /
-the GROUP BY strict-on-extras error. Use the alias workaround:
+`CAST(...)` in `ORDER BY` and `GROUP BY` has two layers of admission:
+
+1. **Unaliased canonical-form** (e.g. `ORDER BY CAST(c AS T)` repeating the
+   projection's CAST verbatim): **never admitted.** The translator raises
+   `ORDER BY column '...' is not in the projection list` / the GROUP BY
+   strict-on-extras error. Workaround: alias and reference the alias.
+2. **Aliased reference** (`SELECT CAST(c AS T) AS x ... ORDER BY x` /
+   `... GROUP BY x`): admitted **only** when the `(source, target)` pair
+   preserves sort/group semantics under the bare-column engine projection.
+
+Pairs that **fail** the aliased-reference admission and raise
+`ORDER BY on CAST projection '...' with lossy pair X→T is unsupported`
+(symmetric message for GROUP BY):
+
+| Path     | Lossy pairs                                                     |
+|----------|-----------------------------------------------------------------|
+| ORDER BY | `X → TEXT` for every `X` (lex sort ≠ engine's natural sort)     |
+| GROUP BY | `TIMESTAMP → DATE` (many-to-one rollup)                         |
+
+Every other admitted pair — identity (`X → X`), `DATE → TIMESTAMP`,
+`TIMESTAMP → DATE` for ORDER BY, `INT → DOUBLE` — preserves the casted
+semantics under the bare-column engine projection, so the alias path stays
+open.
 
 ```sql
--- Rejected:
+-- Always rejected (canonical form):
 SELECT CAST(delivered_at AS TIMESTAMP) FROM orders
 ORDER BY CAST(delivered_at AS TIMESTAMP);
 
--- Works:
+-- Aliased reference, safe pair → works:
 SELECT CAST(delivered_at AS TIMESTAMP) AS dt FROM orders
 ORDER BY dt;
+
+-- Aliased reference, lossy pair → rejected:
+SELECT CAST(id AS TEXT) AS s FROM orders ORDER BY s;
+SELECT CAST(ordered_at AS DATE) AS d, COUNT(*) FROM orders GROUP BY d;
 ```
 
-The wire-type override still applies — `dt` is wire-typed `TIMESTAMP` — but the
-sort runs against the engine column's natural type (`DATE` here, which is
-order-preserving so the result is correct). For genuinely lossy semantics
-(e.g. lex sort by `TEXT`-cast `INT`) the alias path makes the limitation
-explicit at the SQL level. A future ticket can lift this restriction by
-pushing the CAST into the engine SQL.
+The wire-type override still applies in the safe-pair case — `dt` is
+wire-typed `TIMESTAMP` even though the engine sorts the underlying `DATE`.
+A future ticket can lift the remaining restrictions by pushing the CAST
+into the engine SQL.
 
 Admitted (source, target) coercions:
 

@@ -275,6 +275,30 @@ _CAST_ADMITTED_TARGETS: Dict[DataType, frozenset] = {
     DataType.TEXT: frozenset({DataType.TEXT}),
 }
 
+# DEV-1566 — Codex round 3: pairs whose ORDER BY / GROUP BY semantics under
+# Postgres differ from what the bare-column engine projection would produce.
+# A query that references a CAST-projected item (via alias or canonical form)
+# in ORDER BY / GROUP BY is rejected when the pair is in the corresponding
+# set — workaround: order/group by the bare column, or wait for a follow-up
+# ticket that pushes CAST into the engine SQL.
+#
+# ORDER BY lossy: every X→TEXT pair (lex sort ≠ engine's natural sort).
+# Identity X→X, INT→DOUBLE, DATE↔TIMESTAMP all preserve relative order so
+# they stay admitted.
+_LOSSY_ORDER_BY_CAST_PAIRS: frozenset = frozenset({
+    (DataType.INT, DataType.TEXT),
+    (DataType.DOUBLE, DataType.TEXT),
+    (DataType.BOOLEAN, DataType.TEXT),
+    (DataType.DATE, DataType.TEXT),
+    (DataType.TIMESTAMP, DataType.TEXT),
+})
+# GROUP BY lossy: only the many-to-one TIMESTAMP→DATE rollup. Every other
+# admitted pair is a 1:1 / identity mapping, so per-engine-column grouping
+# already collapses to the same set of casted groups.
+_LOSSY_GROUP_BY_CAST_PAIRS: frozenset = frozenset({
+    (DataType.TIMESTAMP, DataType.DATE),
+})
+
 
 def _sqlglot_type_to_datatype(node: exp.DataType) -> Optional[DataType]:
     """Map a sqlglot ``DataType`` node to a SLayer ``DataType``.
@@ -1368,6 +1392,34 @@ def _flip_comparator(op_sql: str) -> str:
 # --- ORDER BY / GROUP BY -----------------------------------------------------
 
 
+def _item_cast_source_type(item: _ProjectionItem) -> Optional[DataType]:
+    """Return the underlying source DataType of a CAST-projected item, or
+    None when the item isn't a CAST projection. Used to look up the
+    (source, target) pair against the lossy-CAST sets."""
+    if item.cast_target is None:
+        return None
+    if item.metric is not None:
+        return item.metric.data_type
+    if item.dimension is not None:
+        return item.dimension.data_type
+    return None
+
+
+def _lossy_cast_error_message(
+    *, kind: str, name: str, source: DataType, target: DataType,
+) -> str:
+    """One-line user-facing message for the lossy-CAST-pair rejection. The
+    ``kind`` is ``ORDER BY`` or ``GROUP BY``; ``name`` is the user-visible
+    identifier the message points at (typically the alias)."""
+    return (
+        f"{kind} on CAST projection {name!r} with lossy pair "
+        f"{source!s}→{target!s} is unsupported: the engine query projects "
+        f"the bare column, so the underlying sort/group semantics don't "
+        f"match the casted type. Use the bare column, or wait for engine-"
+        f"side CAST pushdown."
+    )
+
+
 def _translate_order_by(
     order: Optional[exp.Order],
     item_by_projected_name: Dict[str, _ProjectionItem],
@@ -1387,6 +1439,16 @@ def _translate_order_by(
                 f"ORDER BY column {name!r} is not in the projection list"
             )
         item = item_by_projected_name[name]
+        # DEV-1566 — Codex round 3: reject ORDER BY on CAST projections whose
+        # (source, target) pair is lossy under bare-column sort semantics.
+        source = _item_cast_source_type(item)
+        if source is not None and item.cast_target is not None and (
+            (source, item.cast_target) in _LOSSY_ORDER_BY_CAST_PAIRS
+        ):
+            raise TranslationError(_lossy_cast_error_message(
+                kind="ORDER BY", name=name,
+                source=source, target=item.cast_target,
+            ))
         if item.metric is not None:
             ref = ColumnRef(name=item.metric.name)
         else:
@@ -1424,9 +1486,17 @@ def _order_by_name(
 def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; extraction adds indirection
     group: Optional[exp.Group],
     derived: List[str],
+    item_by_projected_name: Dict[str, _ProjectionItem],
     *, strip_prefix: Optional[Tuple[str, str]] = None,
 ) -> None:
-    """Apply the strict-on-extras / lenient-on-omissions policy (§6.1)."""
+    """Apply the strict-on-extras / lenient-on-omissions policy (§6.1).
+
+    ``item_by_projected_name`` is consulted only to look up the projection
+    item behind a user-facing name so the DEV-1566 lossy-CAST-pair rejection
+    can fire. Membership validation still runs against the ``derived`` list
+    (which carries time-grain canonical forms in addition to the projected
+    names) to preserve the existing strict-on-extras behaviour.
+    """
     if group is None:
         return
     derived_set = set(derived)
@@ -1454,6 +1524,19 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
                 f"GROUP BY item {u!r} is not in the projection's derived "
                 f"dimension set ({sorted(derived_set)})"
             )
+        # DEV-1566 — Codex round 3: reject GROUP BY on CAST projections
+        # whose (source, target) pair is lossy under bare-column grouping.
+        item = item_by_projected_name.get(u)
+        if item is None:
+            continue
+        source = _item_cast_source_type(item)
+        if source is not None and item.cast_target is not None and (
+            (source, item.cast_target) in _LOSSY_GROUP_BY_CAST_PAIRS
+        ):
+            raise TranslationError(_lossy_cast_error_message(
+                kind="GROUP BY", name=u,
+                source=source, target=item.cast_target,
+            ))
 
 
 def _is_ignorable_group_item(item: str) -> bool:
@@ -1752,9 +1835,11 @@ def _translate_slayer_select(
         allow_column_cast=allow_column_cast,
     )
     plan = _build_projection_plan(items, table)
+    item_by_projected_name = _index_items_by_canonical_form(items)
 
     _validate_group_by(
-        parsed.args.get("group"), plan.derived_dims, strip_prefix=strip_prefix,
+        parsed.args.get("group"), plan.derived_dims, item_by_projected_name,
+        strip_prefix=strip_prefix,
     )
 
     filters: List[str] = []
@@ -1766,7 +1851,6 @@ def _translate_slayer_select(
         parsed.args.get("having"), table, filters, strip_prefix=strip_prefix,
     )
 
-    item_by_projected_name = _index_items_by_canonical_form(items)
     order_items = _translate_order_by(
         parsed.args.get("order"), item_by_projected_name, strip_prefix=strip_prefix,
     )

@@ -1196,6 +1196,119 @@ def test_cast_aliased_projection_group_by_unaliased_rejected(dialect) -> None:
         )
 
 
+# --- Codex round 3: lossy-pair rejection via alias ---------------------------
+#
+# Round 3 dropped CAST canonical-form registration so unaliased
+# ORDER BY / GROUP BY CAST(...) fail with "not in projection list". But the
+# aliased path (SELECT CAST(c AS T) AS x ... ORDER BY x) still resolves via
+# the bare alias; it sorts/groups by the bare column, which for lossy pairs
+# (X→TEXT for ORDER BY, TIMESTAMP→DATE for GROUP BY) silently disagrees with
+# the casted semantics. These pairs are rejected at order/group-by time;
+# every other admitted pair (1:1, identity, INT→DOUBLE, DATE↔TIMESTAMP)
+# stays admitted via alias because the underlying engine value preserves
+# the casted order/grouping.
+
+
+@pytest.mark.parametrize(
+    ("col", "target"),
+    [
+        ("id", "TEXT"),             # INT → TEXT
+        ("revenue", "TEXT"),        # DOUBLE → TEXT
+        ("is_paid", "TEXT"),        # BOOLEAN → TEXT
+        ("delivered_at", "TEXT"),   # DATE → TEXT
+        ("ordered_at", "TEXT"),     # TIMESTAMP → TEXT
+    ],
+)
+def test_cast_alias_order_by_lossy_pair_rejected(
+    col: str, target: str, dialect,
+) -> None:
+    """SELECT CAST(<col> AS TEXT) AS x ... ORDER BY x is admitted in
+    projection but rejected at ORDER BY resolution — the engine query still
+    sorts by the bare column's natural type (numeric/temporal) rather than
+    the casted type's lex order."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql=(
+                f"SELECT CAST({col} AS {target}) AS x FROM orders ORDER BY x"
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+    msg = str(exc_info.value)
+    assert "ORDER BY on CAST projection" in msg
+    assert "lossy pair" in msg
+
+
+def test_cast_alias_group_by_lossy_timestamp_to_date_rejected(dialect) -> None:
+    """The only many-to-one admitted pair: SELECT CAST(ordered_at AS DATE)
+    AS d ... GROUP BY d would group per-timestamp but advertise per-date,
+    surfacing duplicate dates. Rejected."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql=(
+                "SELECT CAST(ordered_at AS DATE) AS d, COUNT(*) FROM orders "
+                "GROUP BY d"
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+    msg = str(exc_info.value)
+    assert "GROUP BY on CAST projection" in msg
+    assert "lossy pair" in msg
+
+
+@pytest.mark.parametrize(
+    ("col", "target"),
+    [
+        ("delivered_at", "TIMESTAMP"),  # DATE → TIMESTAMP (1:1)
+        ("ordered_at", "DATE"),         # TIMESTAMP → DATE — only for ORDER BY
+        ("id", "DOUBLE"),               # INT → DOUBLE (1:1 within INT range)
+        ("delivered_at", "DATE"),       # identity DATE → DATE
+        ("revenue", "DOUBLE"),          # identity DOUBLE → DOUBLE
+    ],
+)
+def test_cast_alias_order_by_safe_pair_admitted(
+    col: str, target: str, dialect,
+) -> None:
+    """Order-preserving pairs (1:1 / identity / DATE↔TIMESTAMP) stay
+    admitted via alias because the engine column's natural sort matches
+    the casted type's sort. The wire-type override still applies."""
+    result = translate(
+        sql=(
+            f"SELECT CAST({col} AS {target}) AS x FROM orders ORDER BY x"
+        ),
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.order is not None
+    assert result.query.order[0].direction == "asc"
+    assert result.projection_types == [DataType(target)]
+
+
+@pytest.mark.parametrize(
+    ("col", "target"),
+    [
+        ("delivered_at", "TIMESTAMP"),  # DATE → TIMESTAMP (1:1)
+        ("id", "DOUBLE"),               # INT → DOUBLE
+        ("revenue", "DOUBLE"),          # identity
+        ("delivered_at", "DATE"),       # identity
+        ("status", "TEXT"),             # identity TEXT → TEXT
+    ],
+)
+def test_cast_alias_group_by_safe_pair_admitted(
+    col: str, target: str, dialect,
+) -> None:
+    """1:1 / identity pairs preserve the per-engine-column grouping under
+    the casted type, so GROUP BY <alias> stays admitted."""
+    result = translate(
+        sql=(
+            f"SELECT CAST({col} AS {target}) AS x, COUNT(*) FROM orders "
+            f"GROUP BY x"
+        ),
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.projection_types[0] == DataType(target)
+
+
 def test_cast_metric_projection_overrides_wire_type(dialect) -> None:
     """A CAST around a metric reference resolves through the metric path
     (`_record_metric`), and the cast target wins over the declared metric type."""
