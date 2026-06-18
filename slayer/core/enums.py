@@ -68,6 +68,10 @@ class TimeGranularity(StrEnum):
     HOUR = "hour"
     DAY = "day"
     WEEK = "week"
+    # DEV-1572: Sunday-anchored week (weeks start on Sunday, end on Saturday).
+    # WEEK is Monday-anchored (ISO-8601); WEEK_SUNDAY exists so Metabase week
+    # breakouts — which use Sunday weeks — bucket the way Metabase asked for.
+    WEEK_SUNDAY = "week_sunday"
     MONTH = "month"
     QUARTER = "quarter"
     YEAR = "year"
@@ -79,6 +83,10 @@ class TimeGranularity(StrEnum):
             return date
         elif self == TimeGranularity.WEEK:
             return date - datetime.timedelta(days=date.weekday())
+        elif self == TimeGranularity.WEEK_SUNDAY:
+            # Round back to the Sunday at or before ``date``. weekday(): Mon=0..
+            # Sun=6, so (weekday + 1) % 7 is the number of days since Sunday.
+            return date - datetime.timedelta(days=(date.weekday() + 1) % 7)
         elif self == TimeGranularity.MONTH:
             return date.replace(day=1)
         elif self == TimeGranularity.QUARTER:
@@ -95,6 +103,10 @@ class TimeGranularity(StrEnum):
             return date
         elif self == TimeGranularity.WEEK:
             return date + datetime.timedelta(days=6 - date.weekday())
+        elif self == TimeGranularity.WEEK_SUNDAY:
+            # Advance to the Saturday at or after ``date`` (last day of the
+            # Sunday-anchored week). weekday(): Mon=0..Sun=6, Saturday=5.
+            return date + datetime.timedelta(days=(5 - date.weekday()) % 7)
         elif self == TimeGranularity.MONTH:
             if date.month == 12:
                 return date.replace(year=date.year + 1, month=1, day=1) - datetime.timedelta(days=1)

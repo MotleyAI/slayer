@@ -416,6 +416,13 @@ class SqliteDialect(SqlDialect):
     ) -> exp.Expression:
         """SQLite has no DATE_TRUNC — use STRFTIME (with CASE WHEN for
         quarter, weekday-modifier for week)."""
+        if granularity == TimeGranularity.WEEK_SUNDAY:
+            # DEV-1572: delegate to the base generic shift, which composes
+            # SQLite's own day-offset (DATE(col, 'N days')) around SQLite's
+            # Monday-week truncation — yielding the Sunday-anchored bucket.
+            return super().build_date_trunc(
+                col_expr=col_expr, granularity=granularity, parse=parse,
+            )
         gran_str = granularity.value
         fmt_map = {
             "year": "%Y-01-01",
@@ -459,12 +466,12 @@ class SqliteDialect(SqlDialect):
         """
         sqlite_units = {
             "year": "years", "month": "months", "day": "days",
-            "quarter": "months", "week": "days",
+            "quarter": "months", "week": "days", "week_sunday": "days",
             "hour": "hours", "minute": "minutes", "second": "seconds",
         }
         sqlite_unit = sqlite_units.get(granularity, granularity.lower() + "s")
         val = offset * 3 if granularity == "quarter" else offset
-        sqlite_val = val * 7 if granularity == "week" else val
+        sqlite_val = val * 7 if granularity in ("week", "week_sunday") else val
         return exp.Anonymous(
             this="DATE",
             expressions=[

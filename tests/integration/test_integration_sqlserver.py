@@ -388,14 +388,6 @@ class TestSQLServerQueries:
         result = await sqlserver_env.execute(query=query)
         assert result.data[0]["orders._count"] == 5
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1571 (Bug 1): SLayer's outer-wrap on date-range time_shift "
-            "emits WITH inside a derived table, which T-SQL rejects "
-            "(`Incorrect syntax near the keyword 'WITH'`)."
-        ),
-    )
     async def test_time_shift_with_date_range(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -417,8 +409,15 @@ class TestSQLServerQueries:
     @pytest.mark.xfail(
         strict=True,
         reason=(
-            "DEV-1571 (Bug 1): CTE-in-derived-table on T-SQL — same root "
-            "cause as test_time_shift_with_date_range."
+            "Separate pre-existing T-SQL limitation (NOT one of DEV-1571's "
+            "three bugs): consecutive_periods desugars the predicate as a "
+            "bare boolean projection (`col > 200 AS alias`). T-SQL has no "
+            "boolean scalar type and rejects `>` in a SELECT projection "
+            "with `Incorrect syntax near '>'`. Fix requires wrapping the "
+            "predicate as `CASE WHEN col > 200 THEN 1 ELSE 0 END` in the "
+            "consecutive_periods enrichment path. Track separately — "
+            "DEV-1571 only covers the CTE-hoist, alias-mangle, and "
+            "outer-wrap-quote bugs."
         ),
     )
     async def test_consecutive_periods_with_boolean_predicate(self, sqlserver_env: SlayerQueryEngine) -> None:
@@ -436,13 +435,6 @@ class TestSQLServerQueries:
         result = await sqlserver_env.execute(query=query)
         assert [r["orders.positive_run"] for r in result.data] == [1, 0, 1]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1571 (Bug 1): CTE-in-derived-table on T-SQL — same root "
-            "cause as test_time_shift_with_date_range."
-        ),
-    )
     async def test_change_with_date_range(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -460,13 +452,6 @@ class TestSQLServerQueries:
         assert result.row_count == 1
         assert float(result.data[0]["orders.amount_change"]) == pytest.approx(175.0)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1571 (Bug 1): CTE-in-derived-table on T-SQL — same root "
-            "cause as test_time_shift_with_date_range."
-        ),
-    )
     async def test_change_pct_with_date_range(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -484,13 +469,6 @@ class TestSQLServerQueries:
         assert result.row_count == 1
         assert float(result.data[0]["orders.pct"]) == pytest.approx(0.875)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1571 (Bug 1): CTE-in-derived-table on T-SQL — same root "
-            "cause as test_time_shift_with_date_range."
-        ),
-    )
     async def test_multiple_date_range_shifts(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -1328,15 +1306,6 @@ def sqlserver_derived_chain_env(sqlserver_container):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEV-1571 (Bug 2): T-SQL ORDER BY treats [a_tbl.id] as a literal "
-        "column-name lookup, not as a SELECT alias. Needs the same dotted-"
-        "alias mangling pair as BigqueryDialect.rewrite_emitted_sql + "
-        "decode_result_keys."
-    ),
-)
 async def test_integration_sqlserver_cross_model_derived_columnsql(
     sqlserver_derived_chain_env: SlayerQueryEngine,
 ) -> None:

@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.enriched import EnrichedQuery
@@ -96,6 +96,69 @@ def test_log_native_flags() -> None:
 def test_build_explain_sql_raises() -> None:
     with pytest.raises(ValueError, match="EXPLAIN is not supported"):
         BigqueryDialect().build_explain_sql("SELECT 1")
+
+
+# ---------------------------------------------------------------------------
+# build_date_trunc — WEEK_SUNDAY override (DEV-1572)
+# ---------------------------------------------------------------------------
+
+
+def test_bigquery_build_date_trunc_week_sunday_native() -> None:
+    """DEV-1572: BigQuery's native ``DATE_TRUNC(x, WEEK)`` is Sunday-based,
+    so the generic +1d/-1d shift would double-count. BigQuery overrides to
+    emit ``DATE_TRUNC(col, WEEK(SUNDAY))`` directly.
+
+    The ``(SUNDAY)`` modifier is the whole point — sqlglot 30.4.3 drops it
+    when re-emitting an ``exp.DateTrunc``, so the dialect builds the call as
+    an ``exp.Anonymous`` that renders verbatim on a single emission.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    d = BigqueryDialect()
+    col = exp.column("ordered_at")
+    out = d.build_date_trunc(
+        col, TimeGranularity.WEEK_SUNDAY,
+        parse=lambda s: sqlglot.parse_one(s, dialect="bigquery"),
+    )
+    sql = out.sql(dialect="bigquery")
+    assert "WEEK(SUNDAY)" in sql, f"WEEK(SUNDAY) dropped on emit: {sql}"
+    assert "DATE_TRUNC" in sql.upper()
+    # Must NOT be the wrong-bucketing shift form.
+    assert "INTERVAL" not in sql.upper()
+
+
+def test_bigquery_build_date_trunc_non_week_delegates_to_base() -> None:
+    """Granularities other than WEEK_SUNDAY fall through to the base
+    DATE_TRUNC emission (the override is WEEK_SUNDAY-only)."""
+    import sqlglot
+    from sqlglot import exp
+
+    d = BigqueryDialect()
+    col = exp.column("ordered_at")
+    out = d.build_date_trunc(
+        col, TimeGranularity.MONTH,
+        parse=lambda s: sqlglot.parse_one(s, dialect="bigquery"),
+    )
+    up = out.sql(dialect="bigquery").upper()
+    assert "DATE_TRUNC" in up
+    assert "MONTH" in up
+    assert "WEEK(SUNDAY)" not in out.sql(dialect="bigquery")
+
+
+def test_bigquery_week_sunday_survives_rewrite_emitted_sql() -> None:
+    """The alias-mangling ``rewrite_emitted_sql`` regex only touches dotted
+    backticked identifiers; ``WEEK(SUNDAY)`` (no backticks) must pass
+    through untouched. Pins Codex's full-pipeline concern."""
+    d = BigqueryDialect()
+    sql = (
+        "SELECT DATE_TRUNC(`orders`.`ordered_at`, WEEK(SUNDAY)) "
+        "AS `orders.ordered_at` FROM `orders`"
+    )
+    out = d.rewrite_emitted_sql(sql)
+    assert "WEEK(SUNDAY)" in out
+    # The dotted alias is still mangled as usual.
+    assert "`orders___ordered_at`" in out
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +356,41 @@ def test_base_default_decode_result_keys_is_identity() -> None:
     invariant on the read side."""
     rows = [{"orders.count": 42, "orders.products.category": "shoes"}, {}]
     assert SqlDialect().decode_result_keys(rows) == rows
+
+
+# ---------------------------------------------------------------------------
+# DEV-1571 Bug 3 — base impl identifier quoting picks BigQuery's backticks
+# (not ANSI double quotes), proving the fix is dialect-driven via sqlglot
+# rather than special-cased only for MySQL.
+# ---------------------------------------------------------------------------
+
+
+def test_bigquery_emit_outer_wrap_uses_backticks_for_aliases() -> None:
+    """BigQuery inherits the base ``emit_outer_wrap``. The base impl uses
+    ``exp.Identifier(this=a, quoted=True).sql(dialect=self.sqlglot_name)``
+    so each public-alias identifier is quoted with the dialect's natural
+    quote char — backticks for BigQuery.
+
+    The PRE-mangle output still carries dotted aliases inside backticks;
+    ``rewrite_emitted_sql`` runs after ``generate()`` to mangle them. This
+    test pins the base-impl quote choice in isolation.
+
+    Pin Codex (Step 5) MEDIUM #4 — proves Bug 3 fix isn't special-cased
+    only for MySQL.
+    """
+    out = BigqueryDialect().emit_outer_wrap(
+        inner_sql="SELECT 1 AS `orders.x`",
+        public=["orders.x"],
+        order=None,
+        limit=None,
+        offset_arg=None,
+    )
+    assert "`orders.x`" in out, (
+        f"BigQuery outer projection must use backticks: {out}"
+    )
+    assert '"orders.x"' not in out, (
+        f"BigQuery outer projection must not use ANSI double quotes: {out}"
+    )
 
 
 # ---------------------------------------------------------------------------

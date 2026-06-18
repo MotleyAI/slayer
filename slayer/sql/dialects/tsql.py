@@ -13,15 +13,27 @@ T-SQL is the most divergent Tier-1 dialect:
 * Variance-decomposition formula for CORR / COVAR_* with the T-SQL names
 * EXPLAIN is a session-toggle pair: ``SET SHOWPLAN_ALL ON; ... ; OFF``
 * No native LOG2
+* DEV-1571 Bug 1: T-SQL rejects ``WITH`` inside a derived-table subquery.
+  ``emit_outer_wrap`` overrides the base to hoist inner top-level CTEs
+  to the outer statement.
+* DEV-1571 Bug 2: T-SQL's ``ORDER BY`` resolver does not treat
+  ``[a.b]`` as a SELECT alias — it tries to resolve it as a column-name
+  lookup against the FROM scope. ``rewrite_emitted_sql`` mangles dotted
+  bracketed aliases to ``[a___b]``; ``decode_result_keys`` reverses on
+  result rows. Same bijection as ``BigqueryDialect``, different regex
+  anchor.
 """
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+import re
+from typing import Any, Callable, Optional
 
+import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
+from slayer.sql.dialects._alias_mangle import decode_alias, encode_alias
 from slayer.sql.dialects.base import SqlDialect, _build_covar_decomposition
 
 
@@ -33,6 +45,21 @@ _TSQL_STAT_NAMES: dict[str, str] = {
     "var_samp": "VAR",
     "var_pop": "VARP",
 }
+
+
+# DEV-1571 Bug 2: bracket-quoted dotted alias. Same shape as BigQuery's
+# backtick-anchored regex (``\w+(?:\.\w+)+``) with ``re.ASCII`` keeping
+# ``\w`` ASCII-only so accented identifiers like ``[café.metric]`` do
+# not mangle.
+#
+# Caveat (documented constraint, identical to BigQuery's): a fully
+# bracketed dotted path of word-only segments (e.g. ``[my_schema.my_table]``)
+# WOULD false-positive mangle. T-SQL users writing such paths in
+# ``Column.sql`` must bracket each segment individually
+# (``[my_schema].[my_table]``). T-SQL identifiers with spaces, hyphens,
+# or other non-``\w`` characters (``[my table]``) are safe — the
+# non-word character breaks the match.
+_TSQL_DOTTED_ALIAS_RE = re.compile(r"\[(\w+(?:\.\w+)+)\]", re.ASCII)
 
 
 class TsqlDialect(SqlDialect):
@@ -62,6 +89,12 @@ class TsqlDialect(SqlDialect):
         fallback exists but isn't a current target — track separately
         if anyone needs it.
         """
+        if granularity == TimeGranularity.WEEK_SUNDAY:
+            # DEV-1572: delegate to the base generic shift, which composes
+            # T-SQL's DATEADD day-offset around the iso_week (Monday) DATETRUNC.
+            return super().build_date_trunc(
+                col_expr=col_expr, granularity=granularity, parse=parse,
+            )
         gran_str = granularity.value
         if not isinstance(col_expr, (exp.Column, exp.Cast)):
             col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
@@ -179,3 +212,138 @@ class TsqlDialect(SqlDialect):
             stddev_fn="STDEV",
             parse=parse,
         )
+
+    # ------------------------------------------------------------------
+    # DEV-1571 Bug 1: emit_outer_wrap hoists inner top-level CTEs
+    # ------------------------------------------------------------------
+
+    def emit_outer_wrap(
+        self,
+        *,
+        inner_sql: str,
+        public: list[str],
+        order: Optional[exp.Expression],
+        limit: Optional[exp.Expression],
+        offset_arg: Optional[exp.Expression],
+        parse: Optional[Callable[[str], exp.Expression]] = None,
+    ) -> str:
+        """T-SQL: hoist inner top-level CTEs to the outer statement AND
+        transpose detached pagination to ``TOP`` / ``FETCH NEXT N ROWS
+        ONLY`` syntax.
+
+        SQL Server allows ``WITH`` only as a statement prefix, not inside
+        a derived-table subquery. Without this override, SLayer's
+        DEV-1444 outer-wrap emits ``SELECT ... FROM (WITH ctes SELECT ...
+        FROM step2) AS _outer ORDER BY ...``, which T-SQL rejects with
+        ``Incorrect syntax near the keyword 'WITH'``.
+
+        Strategy (single AST path, no fallback to the base impl):
+
+        1. Parse ``inner_sql`` via the generator's ``_parse`` (when
+           supplied) so SLayer-specific AST rewrites survive the
+           round-trip — LOG10/LOG2 alias preservation (DEV-1337) and
+           SQLite JSONExtract function-form (DEV-1331).
+        2. Detach the top-level ``With`` node (if any) from the inner
+           ``Select`` so the inner main SELECT can be wrapped in the
+           derived table without re-introducing nested WITH.
+        3. Build the outer wrap entirely via sqlglot AST so dialect-
+           aware rendering transposes the detached ``Limit`` / ``Offset``
+           nodes into T-SQL's ``TOP`` / ``FETCH NEXT N ROWS ONLY``
+           syntax. A naïve ``limit.sql(dialect="tsql")`` only emits
+           ``LIMIT N`` because the transposition fires on the wrapping
+           Select, not on a free-standing Limit node. The CTE-less
+           branch must take the AST path too, otherwise any T-SQL query
+           that hits the outer-wrap path without CTEs would still emit
+           literal ``LIMIT N``.
+
+        When the generator doesn't pass ``parse`` (direct unit-test
+        invocation), falls back to ``sqlglot.parse_one(dialect="tsql")``.
+        When the parse itself fails (malformed SQL / sqlglot bug), defers
+        to the base impl — T-SQL will still reject malformed SQL at the
+        DB layer, but we don't make it worse.
+        """
+        parse_fn = parse if parse is not None else (
+            lambda s: sqlglot.parse_one(s, dialect=self.sqlglot_name)
+        )
+        try:
+            parsed = parse_fn(inner_sql)
+        except Exception:
+            return super().emit_outer_wrap(
+                inner_sql=inner_sql,
+                public=public,
+                order=order,
+                limit=limit,
+                offset_arg=offset_arg,
+            )
+        if not isinstance(parsed, exp.Select):
+            return super().emit_outer_wrap(
+                inner_sql=inner_sql,
+                public=public,
+                order=order,
+                limit=limit,
+                offset_arg=offset_arg,
+            )
+        # Detach the With (if present) so the inner main SELECT can be
+        # wrapped in a derived table. ``with_`` is the sqlglot args key
+        # (Python-keyword avoidance); other clauses use their natural
+        # names (``order`` / ``limit`` / ``offset``).
+        with_node = parsed.args.get("with_")
+        if with_node is not None:
+            parsed.set("with_", None)
+        # Strip inner-CTE qualifiers from detached ORDER BY columns so
+        # they resolve at the outer-wrapper scope (only ``_outer`` is
+        # visible). DEV-1444 carry-over.
+        if order is not None:
+            for col in order.find_all(exp.Column):
+                if col.args.get("table") is not None:
+                    col.set("table", None)
+        derived = exp.Subquery(
+            this=parsed,
+            alias=exp.TableAlias(this=exp.to_identifier("_outer")),
+        )
+        outer = exp.Select()
+        for a in public:
+            outer = outer.select(exp.Identifier(this=a, quoted=True))
+        outer = outer.from_(derived)
+        if with_node is not None:
+            outer.set("with_", with_node)
+        if order is not None:
+            outer.set("order", order)
+        if limit is not None:
+            outer.set("limit", limit)
+        if offset_arg is not None:
+            outer.set("offset", offset_arg)
+        return outer.sql(dialect=self.sqlglot_name, pretty=True)
+
+    # ------------------------------------------------------------------
+    # DEV-1571 Bug 2: bracketed dotted-alias mangling
+    # ------------------------------------------------------------------
+
+    def rewrite_emitted_sql(self, sql: str) -> str:
+        """Replace ``.`` with ``___`` inside bracket-quoted identifiers.
+
+        T-SQL's ``ORDER BY`` resolver does not treat ``[a.b]`` as a
+        SELECT alias — it tries to resolve it as a column-name lookup
+        against the FROM scope and fails with ``Invalid column name``.
+        Mangling on emit gives the parser a single dotless identifier
+        and the alias resolves cleanly. ``decode_result_keys`` reverses
+        the mangling on result rows so consumers see SLayer's universal
+        dotted alias shape.
+
+        Uses the same bijection as ``BigqueryDialect`` (shared encode in
+        ``slayer.sql.dialects._alias_mangle``); only the regex anchor
+        differs.
+        """
+        return _TSQL_DOTTED_ALIAS_RE.sub(
+            lambda m: f"[{encode_alias(m.group(1))}]", sql
+        )
+
+    def decode_result_keys(
+        self,
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Reverse the T-SQL alias mangling on result-row keys so
+        consumers see SLayer's universal dotted alias shape regardless
+        of whether the query ran against T-SQL or another dialect.
+        """
+        return [{decode_alias(k): v for k, v in row.items()} for row in rows]

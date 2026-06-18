@@ -105,6 +105,75 @@ class TestMultiDialectGeneration:
         sql_upper = sql.upper()
         assert any(fn in sql_upper for fn in ["DATE_TRUNC", "STRFTIME", "TRUNC", "STR_TO_DATE", "DATETRUNC"])
 
+    # Oracle is excluded: its native TRUNC(x,'WEEK') is Jan-1-anchored, so
+    # neither WEEK nor WEEK_SUNDAY is truly Monday/Sunday there — Oracle
+    # Sunday-week correctness is explicitly out of scope (DEV-1572). The exact
+    # per-dialect Sunday shape is pinned in tests/dialects/test_<dialect>.py;
+    # SQLite runtime bucketing is pinned by execution there. This is an
+    # emission-only smoke test guarding against a silent fallback to Monday
+    # WEEK across the remaining dialects.
+    @pytest.mark.parametrize(
+        "dialect", [d for d in ALL_DIALECTS if d != "oracle"]
+    )
+    async def test_date_trunc_week_sunday_differs_from_week(
+        self, dialect: str, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1572 emission smoke test: a WEEK_SUNDAY breakout must emit
+        different SQL from a plain (Monday) WEEK breakout — a dialect-agnostic
+        guard that WEEK_SUNDAY is genuinely shifted/overridden and never
+        silently falls back to Monday-week bucketing. Exact Sunday-shape and
+        runtime correctness are pinned by the per-dialect strategy tests."""
+        def _q(grain: TimeGranularity) -> SlayerQuery:
+            return SlayerQuery(
+                source_model="orders",
+                measures=[ModelMeasure(formula="*:count")],
+                time_dimensions=[TimeDimension(
+                    dimension=ColumnRef(name="created_at"), granularity=grain
+                )],
+            )
+
+        gen = SQLGenerator(dialect=dialect)
+        sql_week = await _generate(gen, _q(TimeGranularity.WEEK), orders_model)
+        sql_sun = await _generate(gen, _q(TimeGranularity.WEEK_SUNDAY), orders_model)
+
+        up = sql_sun.upper()
+        assert any(fn in up for fn in ["DATE_TRUNC", "STRFTIME", "TRUNC", "STR_TO_DATE", "DATETRUNC", "DATE("])
+        assert _norm(sql_sun) != _norm(sql_week), (
+            f"WEEK_SUNDAY emitted identical SQL to Monday WEEK on {dialect} — "
+            f"silent fallback to wrong bucketing.\n{sql_sun}"
+        )
+
+    @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "sqlite", "bigquery", "snowflake", "tsql"])
+    async def test_date_trunc_week_sunday_over_date_column(self, dialect: str) -> None:
+        """WEEK_SUNDAY over a DATE-typed (not TIMESTAMP) column generates valid
+        SQL — covers Codex's DATE-vs-TIMESTAMP operand concern through the full
+        generator path."""
+        gen = SQLGenerator(dialect=dialect)
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="ordered_on", sql="ordered_on", type=DataType.DATE),
+            ],
+        )
+        sql = await _generate(
+            gen,
+            SlayerQuery(
+                source_model="orders",
+                measures=[ModelMeasure(formula="*:count")],
+                time_dimensions=[TimeDimension(
+                    dimension=ColumnRef(name="ordered_on"),
+                    granularity=TimeGranularity.WEEK_SUNDAY,
+                )],
+            ),
+            model,
+        )
+        up = sql.upper()
+        assert "COUNT(" in up
+        assert any(fn in up for fn in ["DATE_TRUNC", "STRFTIME", "TRUNC", "DATETRUNC", "STR_TO_DATE", "DATE("])
+
     @pytest.mark.parametrize("dialect", ["postgres", "mysql", "bigquery", "duckdb", "snowflake", "tsql"])
     async def test_date_trunc_casts_unknown_typed_time_dim(self, dialect: str) -> None:
         """A time-dimension whose ``sql`` is a bare literal (or any expression
