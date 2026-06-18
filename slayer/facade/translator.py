@@ -1329,6 +1329,34 @@ def _flip_comparator(op_sql: str) -> str:
 # --- ORDER BY / GROUP BY -----------------------------------------------------
 
 
+def _resolve_order_by_item(
+    body: exp.Expression,
+    item_by_projected_name: Dict[str, _ProjectionItem],
+    metric_item_by_formula: Dict[str, _ProjectionItem],
+    *, strip_prefix: Optional[Tuple[str, str]] = None,
+) -> _ProjectionItem:
+    """Look up the projection item an ORDER BY term resolves to.
+
+    Tries the bare-name lookup first (alias or canonical metric name from
+    ``_order_by_name``); on miss, DEV-1568 fallback maps a literal aggregate
+    call (``ORDER BY SUM(revenue)``) to the projection registered under a
+    different alias (``SELECT SUM(revenue) AS "rev"``) by matching on the
+    aggregate's canonical ``measure_formula``. Raises ``TranslationError``
+    if neither path resolves.
+    """
+    name = _order_by_name(body, strip_prefix=strip_prefix)
+    item = item_by_projected_name.get(name)
+    if item is None:
+        agg = _detect_aggregate(body, strip_prefix=strip_prefix)
+        if agg is not None:
+            item = metric_item_by_formula.get(_agg_formula(agg))
+    if item is None:
+        raise TranslationError(
+            f"ORDER BY column {name!r} is not in the projection list"
+        )
+    return item
+
+
 def _translate_order_by(
     order: Optional[exp.Order],
     item_by_projected_name: Dict[str, _ProjectionItem],
@@ -1351,18 +1379,11 @@ def _translate_order_by(
     for ord_expr in order.args.get("expressions") or []:
         if not isinstance(ord_expr, exp.Ordered):
             continue
-        body = ord_expr.this
         direction = "desc" if ord_expr.args.get("desc") else "asc"
-        name = _order_by_name(body, strip_prefix=strip_prefix)
-        item: Optional[_ProjectionItem] = item_by_projected_name.get(name)
-        if item is None:
-            agg = _detect_aggregate(body, strip_prefix=strip_prefix)
-            if agg is not None:
-                item = metric_item_by_formula.get(_agg_formula(agg))
-        if item is None:
-            raise TranslationError(
-                f"ORDER BY column {name!r} is not in the projection list"
-            )
+        item = _resolve_order_by_item(
+            ord_expr.this, item_by_projected_name, metric_item_by_formula,
+            strip_prefix=strip_prefix,
+        )
         if item.metric is not None:
             # DEV-1568: use the projection's SELECT alias, not the catalog
             # ``FacadeMetric.name``. ``_record_metric`` registered the SLayer
