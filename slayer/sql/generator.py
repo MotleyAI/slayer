@@ -1621,10 +1621,19 @@ class SQLGenerator:
                         f"{model}.{col_name}",
                         qualified_sql,
                     )
-                # Wrap qualified names in dialect-aware quotes for alias references
+                # Wrap qualified names in dialect-aware quotes for alias
+                # references. Use regex with word boundaries (not
+                # ``str.replace``) so a shorter alias doesn't mutate the
+                # prefix of a longer one — e.g. replacing ``orders.foo``
+                # must not touch ``orders.foo_bar``.
                 for col_name in dict.fromkeys(f.columns):
                     qualified = f"{model}.{col_name}"
-                    qualified_sql = qualified_sql.replace(qualified, self._q(qualified))
+                    quoted = self._q(qualified)
+                    qualified_sql = re.sub(
+                        rf'(?<!\w){re.escape(qualified)}(?!\w)',
+                        lambda _m, q=quoted: q,
+                        qualified_sql,
+                    )
                 conditions.append(qualified_sql)
             where_clause = _SQL_AND_JOINER.join(conditions)
             sql = f"SELECT *\nFROM (\n{sql}\n) AS _filtered\nWHERE {where_clause}"
