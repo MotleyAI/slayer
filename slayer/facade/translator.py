@@ -1921,6 +1921,30 @@ def _is_ignorable_group_item(item: str) -> bool:
     return item.isdigit()
 
 
+def _reject_lossy_cast_in_implicit_grouping(
+    items: Sequence[_ProjectionItem],
+) -> None:
+    """DEV-1566 — Codex round 12: when the user omits an explicit GROUP BY
+    but projects at least one dimension, SLayer auto-groups (dim-only-dedup
+    when there are no measures, mandatory dim-group when there are
+    measures). The auto-grouping is by the bare engine column, so a
+    CAST-projected dimension with a lossy (source, target) pair has the
+    same correctness gap as an explicit ``GROUP BY <alias>`` would. Run
+    the same lossy check the explicit-GROUP-BY path runs, on each
+    dim-shaped CAST item.
+
+    Caller invokes this iff the parsed SQL has no explicit GROUP BY —
+    the explicit path's ``_validate_group_by`` already covers that case.
+    """
+    for item in items:
+        if item.dimension is None:
+            continue
+        _reject_lossy_cast_or_pass(
+            kind="GROUP BY", name=item.projected_name, item=item,
+            lossy_pairs=_LOSSY_GROUP_BY_CAST_PAIRS,
+        )
+
+
 # --- main entry point --------------------------------------------------------
 
 
@@ -2883,6 +2907,11 @@ def _translate_slayer_select(
         parsed.args.get("group"), plan.derived_dims, item_by_projected_name,
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
     )
+    # DEV-1566 — Codex round 12: explicit-GROUP-BY check above only fires when
+    # the user wrote GROUP BY. Implicit auto-grouping (dim-only-dedup OR
+    # dim+measure) hits the same correctness gap on lossy CAST dim items.
+    if parsed.args.get("group") is None:
+        _reject_lossy_cast_in_implicit_grouping(items)
 
     filters: List[str] = []
     _apply_where(

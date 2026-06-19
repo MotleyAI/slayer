@@ -1500,16 +1500,21 @@ def test_cast_identity_pair_admitted_for_every_type(col: str, target: str, diale
     [
         # Date/time pair
         ("delivered_at", "TIMESTAMP", DataType.TIMESTAMP),
-        ("ordered_at", "DATE", DataType.DATE),
-        # Numeric pair (INT→DOUBLE only; DOUBLE→INT dropped)
-        ("id", "DOUBLE", DataType.DOUBLE),
-        # X → TEXT (always admitted)
+        # X → TEXT (always admitted; not lossy under dim-only-dedup because
+        # the engine's per-value distinct already groups by the same set of
+        # TEXT representations).
         ("delivered_at", "TEXT", DataType.TEXT),
         ("ordered_at", "TEXT", DataType.TEXT),
         ("id", "TEXT", DataType.TEXT),
         ("revenue", "TEXT", DataType.TEXT),
         ("is_paid", "TEXT", DataType.TEXT),
         ("status", "TEXT", DataType.TEXT),
+        # Round-12 carve-out: ``(ordered_at, DATE)`` (TIMESTAMP→DATE) and
+        # ``(id, DOUBLE)`` (INT→DOUBLE) are admitted by the wire-type
+        # encoder but trip the implicit-grouping lossy check because the
+        # bare projection ``SELECT CAST(<col> AS <target>) FROM orders``
+        # is dim-only and auto-dedups by the bare engine column. They get
+        # their own pinned-rejection test below.
     ],
 )
 def test_cast_admitted_coercions_parametrised(
@@ -1892,10 +1897,11 @@ def test_cast_alias_group_by_lossy_pair_rejected(
     ("col", "target"),
     [
         ("delivered_at", "TIMESTAMP"),  # DATE → TIMESTAMP (1:1)
-        ("ordered_at", "DATE"),         # TIMESTAMP → DATE — only for ORDER BY
-        ("id", "DOUBLE"),               # INT → DOUBLE (1:1 within INT range)
         ("delivered_at", "DATE"),       # identity DATE → DATE
         ("revenue", "DOUBLE"),          # identity DOUBLE → DOUBLE
+        # ``(ordered_at, DATE)`` and ``(id, DOUBLE)`` look ORDER-BY-safe in
+        # isolation but the dim-only-dedup auto-grouping flips them to lossy
+        # — see Codex round 12 carve-out below.
     ],
 )
 def test_cast_alias_order_by_safe_pair_admitted(
@@ -1914,6 +1920,64 @@ def test_cast_alias_order_by_safe_pair_admitted(
     assert result.query.order is not None
     assert result.query.order[0].direction == "asc"
     assert result.projection_types == [DataType(target)]
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected_source", "expected_target"),
+    [
+        # Bare CAST projection — dim-only-dedup auto-groups by the underlying
+        # column. TIMESTAMP→DATE collapses distinct timestamps that share a
+        # date.
+        (
+            "SELECT CAST(ordered_at AS DATE) FROM orders",
+            "TIMESTAMP", "DATE",
+        ),
+        # Bare CAST projection — INT→DOUBLE: bigints above ±2^53 collapse.
+        (
+            "SELECT CAST(id AS DOUBLE) FROM orders",
+            "INT", "DOUBLE",
+        ),
+        # Aliased CAST + ORDER BY — same dim-only-dedup auto-grouping fires.
+        (
+            "SELECT CAST(ordered_at AS DATE) AS x FROM orders ORDER BY x",
+            "TIMESTAMP", "DATE",
+        ),
+        (
+            "SELECT CAST(id AS DOUBLE) AS x FROM orders ORDER BY x",
+            "INT", "DOUBLE",
+        ),
+        # Implicit grouping via aggregating measure: SELECT CAST(<col>),
+        # COUNT(*) auto-groups the dim alongside the measure with no
+        # explicit GROUP BY.
+        (
+            "SELECT CAST(ordered_at AS DATE), COUNT(*) FROM orders",
+            "TIMESTAMP", "DATE",
+        ),
+        (
+            "SELECT CAST(id AS DOUBLE) AS x, COUNT(*) FROM orders",
+            "INT", "DOUBLE",
+        ),
+    ],
+)
+def test_cast_implicit_grouping_lossy_pair_rejected(
+    sql: str, expected_source: str, expected_target: str, dialect,
+) -> None:
+    """Codex round 12: SLayer auto-groups projected dimensions whenever
+    GROUP BY is omitted — by dim-only-dedup when there's no measure, or
+    by the mandatory dim-group when a measure is present. Either way the
+    engine groups by the bare column, so lossy CAST pairs
+    (``TIMESTAMP→DATE``, ``INT→DOUBLE``) silently produce duplicate
+    casted-group rows. The explicit-GROUP-BY lossy check (round 4) is
+    extended to the implicit-grouping path so the same correctness gap
+    surfaces a clean ``GROUP BY on CAST projection ... with lossy pair
+    X→T`` error regardless of whether the user wrote GROUP BY."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_catalog(), dialect=dialect)
+    msg = str(exc_info.value)
+    assert "GROUP BY on CAST projection" in msg
+    assert "lossy pair" in msg
+    assert expected_source in msg
+    assert expected_target in msg
 
 
 @pytest.mark.parametrize(
