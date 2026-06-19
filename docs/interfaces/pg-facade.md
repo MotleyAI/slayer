@@ -116,6 +116,7 @@ against them. Project named metrics (`revenue_sum`) or write `SUM(amount)` /
 * With a token, the server requests a cleartext password
   (`AuthenticationCleartextPassword`); the client's password must equal the token.
   Use a loopback bind (or a trusted network) so the password is not sent in the clear.
+  Let us know if you would like us to support TLS. 
 
 ## SQL Surface
 
