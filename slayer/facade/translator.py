@@ -374,6 +374,10 @@ _LOSSY_GROUP_BY_CAST_PAIRS: frozenset = frozenset({
     (DataType.INT, DataType.DOUBLE),
 })
 
+# Single source of truth for the GROUP BY string used in lossy-CAST error
+# messages and the LEFT-JOIN-subquery forbidden-clauses list.
+_GROUP_BY_KIND = "GROUP BY"
+
 
 def _sqlglot_type_to_datatype(node: exp.DataType) -> Optional[DataType]:
     """Map a sqlglot ``DataType`` node to a SLayer ``DataType``.
@@ -1910,7 +1914,7 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
         if item is None:
             continue
         _reject_lossy_cast_or_pass(
-            kind="GROUP BY", name=u, item=item,
+            kind=_GROUP_BY_KIND, name=u, item=item,
             lossy_pairs=_LOSSY_GROUP_BY_CAST_PAIRS,
         )
 
@@ -1922,7 +1926,7 @@ def _is_ignorable_group_item(item: str) -> bool:
 
 
 def _reject_lossy_cast_in_implicit_grouping(
-    items: Sequence[_ProjectionItem],
+    group: Optional[exp.Group], items: Sequence[_ProjectionItem],
 ) -> None:
     """DEV-1566 — Codex round 12: when the user omits an explicit GROUP BY
     but projects at least one dimension, SLayer auto-groups (dim-only-dedup
@@ -1933,14 +1937,16 @@ def _reject_lossy_cast_in_implicit_grouping(
     the same lossy check the explicit-GROUP-BY path runs, on each
     dim-shaped CAST item.
 
-    Caller invokes this iff the parsed SQL has no explicit GROUP BY —
-    the explicit path's ``_validate_group_by`` already covers that case.
+    No-op when ``group is not None``: the explicit path's
+    ``_validate_group_by`` already covers that case.
     """
+    if group is not None:
+        return
     for item in items:
         if item.dimension is None:
             continue
         _reject_lossy_cast_or_pass(
-            kind="GROUP BY", name=item.projected_name, item=item,
+            kind=_GROUP_BY_KIND, name=item.projected_name, item=item,
             lossy_pairs=_LOSSY_GROUP_BY_CAST_PAIRS,
         )
 
@@ -2517,7 +2523,7 @@ def _resolve_join_subquery_target(
         )
     for forbidden, label in (
         ("where", "WHERE"),
-        ("group", "GROUP BY"),
+        ("group", _GROUP_BY_KIND),
         ("having", "HAVING"),
         ("joins", "JOIN"),
         ("with_", "WITH (CTE)"),
@@ -2903,15 +2909,12 @@ def _translate_slayer_select(
     plan = _build_projection_plan(items, table)
     item_by_projected_name = _index_items_by_canonical_form(items)
 
+    group = parsed.args.get("group")
     _validate_group_by(
-        parsed.args.get("group"), plan.derived_dims, item_by_projected_name,
+        group, plan.derived_dims, item_by_projected_name,
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
     )
-    # DEV-1566 — Codex round 12: explicit-GROUP-BY check above only fires when
-    # the user wrote GROUP BY. Implicit auto-grouping (dim-only-dedup OR
-    # dim+measure) hits the same correctness gap on lossy CAST dim items.
-    if parsed.args.get("group") is None:
-        _reject_lossy_cast_in_implicit_grouping(items)
+    _reject_lossy_cast_in_implicit_grouping(group, items)
 
     filters: List[str] = []
     _apply_where(
