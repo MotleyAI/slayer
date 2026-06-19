@@ -232,6 +232,35 @@ class TestBasicQueries:
         assert "ORDER BY" in sql
         assert "DESC" in sql
 
+    async def test_order_by_shorthand_descending_reaches_sql(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        # DEV-1575: shorthand {col: "descending"} heals + normalizes and emits DESC.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+            order=[{"status": "descending"}],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "ORDER BY" in sql
+        assert "DESC" in sql.upper()
+
+    async def test_order_by_ascending_synonym_not_descending(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        # DEV-1575 regression: a canonical "ASCENDING" must normalize to asc so the
+        # generator's strict ``direction == "asc"`` check does NOT fall through to DESC.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+            order=[{"column": "status", "direction": "ASCENDING"}],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "ORDER BY" in sql
+        assert "DESC" not in sql.upper()
+
 
 class TestTimeDimensions:
     async def test_time_dimension_with_granularity(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:

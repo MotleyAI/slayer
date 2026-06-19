@@ -3,6 +3,7 @@
 import datetime
 
 import pytest
+from pydantic import ValidationError
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelMeasure, SlayerModel
@@ -96,6 +97,244 @@ class TestOrderItem:
         item = OrderItem(column="status", direction="asc")
         assert item.column.name == "status"
         assert item.raw_formula is None
+
+
+class TestOrderShorthandHealing:
+    """DEV-1575: heal LLM-shorthand ``order`` items and harden direction validation.
+
+    Shorthand ``{col: "desc"}`` (single- or multi-key) heals to canonical
+    ``{"column": col, "direction": "desc"}``; direction is normalized
+    (case-insensitive, ``asc``/``desc``/``ascending``/``descending``, whitespace
+    trimmed) and anything else is rejected; ``OrderItem`` forbids extra keys.
+    """
+
+    # --- single-key shorthand ---
+
+    def test_shorthand_desc(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"avg_processing_time_days": "desc"}])
+        assert len(q.order) == 1
+        assert q.order[0].column.name == "avg_processing_time_days"
+        assert q.order[0].direction == "desc"
+
+    def test_shorthand_asc(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"status": "asc"}])
+        assert q.order[0].column.name == "status"
+        assert q.order[0].direction == "asc"
+
+    def test_shorthand_equals_canonical(self) -> None:
+        shorthand = SlayerQuery(source_model="orders", order=[{"status": "desc"}])
+        canonical = SlayerQuery(
+            source_model="orders", order=[{"column": "status", "direction": "desc"}]
+        )
+        assert shorthand.order == canonical.order
+
+    # --- direction vocabulary: case-insensitive, synonyms, whitespace ---
+
+    def test_shorthand_uppercase_normalized(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"status": "DESC"}])
+        assert q.order[0].direction == "desc"
+
+    def test_shorthand_descending_synonym(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"status": "DESCENDING"}])
+        assert q.order[0].direction == "desc"
+
+    def test_shorthand_ascending_synonym_mixed_case(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"status": "Ascending"}])
+        assert q.order[0].direction == "asc"
+
+    def test_shorthand_whitespace_trimmed(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"status": " Asc "}])
+        assert q.order[0].direction == "asc"
+
+    # --- formula key composes with existing normalization ---
+
+    def test_shorthand_formula_key(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"revenue:sum": "desc"}])
+        assert q.order[0].column.name == "revenue_sum"
+        assert q.order[0].raw_formula == "revenue:sum"
+        assert q.order[0].direction == "desc"
+
+    def test_shorthand_formula_key_equals_canonical(self) -> None:
+        shorthand = SlayerQuery(source_model="orders", order=[{"revenue:sum": "desc"}])
+        canonical = SlayerQuery(
+            source_model="orders", order=[{"column": "revenue:sum", "direction": "desc"}]
+        )
+        assert shorthand.order == canonical.order
+
+    # --- multi-key expansion (one dict -> N OrderItems, insertion order) ---
+
+    def test_multikey_expands_in_order(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"a": "desc", "b": "asc"}])
+        assert [(o.column.name, o.direction) for o in q.order] == [("a", "desc"), ("b", "asc")]
+
+    def test_multikey_synonyms_and_case(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"a": "ASCENDING", "b": "Desc"}])
+        assert [(o.column.name, o.direction) for o in q.order] == [("a", "asc"), ("b", "desc")]
+
+    def test_multikey_partial_non_direction_raises(self) -> None:
+        # Not every value is a direction -> not shorthand -> canonical validation rejects.
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{"a": "desc", "b": "downward"}])
+
+    # --- bare single item passed without the enclosing list gets wrapped ---
+
+    def test_bare_dict_shorthand_wrapped(self) -> None:
+        q = SlayerQuery(source_model="orders", order={"status": "desc"})
+        assert len(q.order) == 1
+        assert q.order[0].column.name == "status"
+        assert q.order[0].direction == "desc"
+
+    def test_bare_canonical_dict_wrapped(self) -> None:
+        q = SlayerQuery(source_model="orders", order={"column": "status", "direction": "asc"})
+        assert len(q.order) == 1
+        assert q.order[0].column.name == "status"
+        assert q.order[0].direction == "asc"
+
+    def test_bare_multikey_dict_wrapped(self) -> None:
+        q = SlayerQuery(source_model="orders", order={"a": "desc", "b": "asc"})
+        assert [(o.column.name, o.direction) for o in q.order] == [("a", "desc"), ("b", "asc")]
+
+    def test_bare_orderitem_wrapped(self) -> None:
+        item = OrderItem(column="status", direction="desc")
+        q = SlayerQuery(source_model="orders", order=item)
+        assert len(q.order) == 1
+        assert q.order[0].column.name == "status"
+        assert q.order[0].direction == "desc"
+
+    # --- canonical preserved; latent uppercase-direction bug fixed ---
+
+    def test_canonical_unchanged(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"column": "status", "direction": "desc"}])
+        assert q.order[0].column.name == "status"
+        assert q.order[0].direction == "desc"
+
+    def test_canonical_uppercase_direction_normalized(self) -> None:
+        # Pre-existing latent bug: SQL generator compares ``direction == "asc"`` strictly,
+        # so a stored "ASCENDING"/"ASC" used to silently emit DESC. Now normalized.
+        q = SlayerQuery(
+            source_model="orders", order=[{"column": "status", "direction": "ASCENDING"}]
+        )
+        assert q.order[0].direction == "asc"
+
+    def test_canonical_column_named_like_direction_word(self) -> None:
+        # Single reserved 'column' key whose value happens to be a direction word
+        # stays canonical (order by a column literally named "desc").
+        q = SlayerQuery(source_model="orders", order=[{"column": "desc"}])
+        assert q.order[0].column.name == "desc"
+        assert q.order[0].direction == "asc"
+
+    # --- rejections: malformed / ambiguous never silently mangled ---
+
+    def test_invalid_direction_value_shorthand_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{"col": "downward"}])
+
+    def test_invalid_direction_value_canonical_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{"column": "status", "direction": "sideways"}])
+
+    def test_mixed_canonical_and_stray_direction_key_raises(self) -> None:
+        # extra='forbid' rejects the stray 'b' rather than silently dropping it.
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{"column": "status", "b": "asc"}])
+
+    def test_mixed_canonical_and_stray_nondirection_key_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{"column": "status", "b": "downward"}])
+
+    def test_direction_only_key_raises(self) -> None:
+        # {"direction": "desc"} is a malformed canonical item (no column), not shorthand.
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{"direction": "desc"}])
+
+    def test_empty_dict_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{}])
+
+    def test_nested_list_item_raises(self) -> None:
+        # No list-of-lists support.
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[["a", "desc"]])
+
+    def test_non_wrappable_scalar_string_raises(self) -> None:
+        with pytest.raises(Exception, match="must be a list"):
+            SlayerQuery(source_model="orders", order="status")
+
+    def test_non_wrappable_int_raises(self) -> None:
+        with pytest.raises(Exception, match="must be a list"):
+            SlayerQuery(source_model="orders", order=42)
+
+    # --- mixed list: shorthand + canonical + multi-key together ---
+
+    def test_mixed_shorthand_canonical_multikey_list(self) -> None:
+        q = SlayerQuery(
+            source_model="orders",
+            order=[
+                {"a": "desc"},
+                {"column": "b", "direction": "asc"},
+                {"c": "asc", "d": "desc"},
+            ],
+        )
+        assert [(o.column.name, o.direction) for o in q.order] == [
+            ("a", "desc"),
+            ("b", "asc"),
+            ("c", "asc"),
+            ("d", "desc"),
+        ]
+
+    # --- None / tuple / non-string keys / passthrough ---
+
+    def test_order_none_stays_none(self) -> None:
+        q = SlayerQuery(source_model="orders", order=None)
+        assert q.order is None
+
+    def test_tuple_input_accepted(self) -> None:
+        q = SlayerQuery(
+            source_model="orders",
+            order=({"a": "desc"}, {"column": "b", "direction": "asc"}),
+        )
+        assert [(o.column.name, o.direction) for o in q.order] == [("a", "desc"), ("b", "asc")]
+
+    def test_non_string_key_not_healed_raises(self) -> None:
+        # A non-string key means the dict is not treated as shorthand; it falls
+        # through to OrderItem validation, which rejects it (no column).
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{1: "desc"}])
+
+    def test_multikey_formula_keys_preserve_raw_formula(self) -> None:
+        q = SlayerQuery(
+            source_model="orders", order=[{"revenue:sum": "desc", "amount:max": "asc"}]
+        )
+        assert len(q.order) == 2
+        assert q.order[0].column.name == "revenue_sum"
+        assert q.order[0].raw_formula == "revenue:sum"
+        assert q.order[0].direction == "desc"
+        assert q.order[1].column.name == "amount_max"
+        assert q.order[1].raw_formula == "amount:max"
+        assert q.order[1].direction == "asc"
+
+    def test_list_orderitem_passthrough(self) -> None:
+        item = OrderItem(column="revenue:sum", direction="desc")
+        q = SlayerQuery(source_model="orders", order=[item])
+        assert len(q.order) == 1
+        assert q.order[0].column.name == "revenue_sum"
+        assert q.order[0].direction == "desc"
+
+    # --- OrderItem-level direction validation + extra=forbid ---
+
+    def test_orderitem_direction_synonym_normalized(self) -> None:
+        assert OrderItem(column="status", direction="DESCENDING").direction == "desc"
+
+    def test_orderitem_direction_default_asc(self) -> None:
+        assert OrderItem(column="status").direction == "asc"
+
+    def test_orderitem_invalid_direction_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            OrderItem(column="status", direction="sideways")
+
+    def test_orderitem_extra_key_forbidden(self) -> None:
+        with pytest.raises(ValidationError):
+            OrderItem(column="status", direction="asc", bogus="x")
 
 
 class TestSlayerModel:
