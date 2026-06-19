@@ -373,6 +373,21 @@ async def test_dml_rejected(pg_demo_server) -> None:
         await conn.close()
 
 
+async def test_cast_unsupported_coercion_returns_postgres_error(pg_demo_server) -> None:
+    """DEV-1566: CAST(<TEXT col> AS INT) is outside the admitted-coercion
+    allowlist (truncation/parse semantics differ from Postgres). The
+    translator surfaces a clean PostgresError with the strict-allowlist
+    message — not an internal connection crash at wire-encode time."""
+    host, port = pg_demo_server
+    conn = await _connect(host, port)
+    try:
+        with pytest.raises(asyncpg.PostgresError) as exc_info:
+            await conn.fetch("SELECT CAST(name AS INT) FROM customers LIMIT 1")
+        assert "Unsupported CAST" in str(exc_info.value)
+    finally:
+        await conn.close()
+
+
 # --- parameterised query (literal substitution) ------------------------------
 
 

@@ -49,6 +49,10 @@ def _catalog() -> FacadeCatalog:
             Column(name="revenue", type=DataType.DOUBLE),
             Column(name="status", type=DataType.TEXT),
             Column(name="ordered_at", type=DataType.TIMESTAMP),
+            # DEV-1566: DATE column for CAST(<date> AS TIMESTAMP) coverage.
+            Column(name="delivered_at", type=DataType.DATE),
+            # DEV-1566: BOOLEAN column for CAST allowlist coverage.
+            Column(name="is_paid", type=DataType.BOOLEAN),
         ],
         measures=[
             ModelMeasure(name="aov", formula="revenue:sum / *:count",
@@ -128,6 +132,48 @@ def test_show_statement_is_noop_with_tag(dialect) -> None:
     result = translate(sql="SHOW search_path", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, NoOpResult)
     assert result.command_tag == "SHOW"
+
+
+def test_command_fallback_warning_suppressed_during_translate(dialect, caplog) -> None:
+    # sqlglot warns when a statement parses to the generic Command node; for
+    # facade traffic that path is expected and handled, so translate() must
+    # not leak one warning line per BI connection.
+    with caplog.at_level(logging.WARNING, logger="sqlglot"):
+        result = translate(
+            sql="SHOW TRANSACTION ISOLATION LEVEL", catalog=_catalog(), dialect=dialect
+        )
+    assert isinstance(result, NoOpResult)
+    assert not [r for r in caplog.records if "Falling back" in r.getMessage()]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "INSERT INTO orders VALUES (1)",
+        "UPDATE orders SET id = 2",
+        "DELETE FROM orders",
+        "CREATE TABLE x (a INT)",
+        "DROP TABLE orders",
+        "ALTER TABLE orders ADD COLUMN foo INT",
+    ],
+)
+def test_dml_ddl_rejected_read_only(sql: str, dialect) -> None:
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_catalog(), dialect=dialect)
+    assert READ_ONLY_MESSAGE in str(exc_info.value)
+
+
+def test_select_star_on_table_rejected(dialect) -> None:
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql="SELECT * FROM orders", catalog=_catalog(), dialect=dialect)
+    assert "SELECT *" in str(exc_info.value)
+    assert "INFORMATION_SCHEMA.METRICS" in str(exc_info.value)
+
+
+def test_parse_error_translates(dialect) -> None:
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql="SELECT FROM WHERE", catalog=_catalog(), dialect=dialect)
+    assert "parse error" in str(exc_info.value).lower()
 
 
 # --- DEV-1569: SET / RESET capture on NoOpResult, set_config mutation tunneling ---
@@ -471,46 +517,7 @@ def test_reset_setting_op_is_pydantic_model() -> None:
     )
 
 
-def test_command_fallback_warning_suppressed_during_translate(dialect, caplog) -> None:
-    # sqlglot warns when a statement parses to the generic Command node; for
-    # facade traffic that path is expected and handled, so translate() must
-    # not leak one warning line per BI connection.
-    with caplog.at_level(logging.WARNING, logger="sqlglot"):
-        result = translate(
-            sql="SHOW TRANSACTION ISOLATION LEVEL", catalog=_catalog(), dialect=dialect
-        )
-    assert isinstance(result, NoOpResult)
-    assert not [r for r in caplog.records if "Falling back" in r.getMessage()]
 
-
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "INSERT INTO orders VALUES (1)",
-        "UPDATE orders SET id = 2",
-        "DELETE FROM orders",
-        "CREATE TABLE x (a INT)",
-        "DROP TABLE orders",
-        "ALTER TABLE orders ADD COLUMN foo INT",
-    ],
-)
-def test_dml_ddl_rejected_read_only(sql: str, dialect) -> None:
-    with pytest.raises(TranslationError) as exc_info:
-        translate(sql=sql, catalog=_catalog(), dialect=dialect)
-    assert READ_ONLY_MESSAGE in str(exc_info.value)
-
-
-def test_select_star_on_table_rejected(dialect) -> None:
-    with pytest.raises(TranslationError) as exc_info:
-        translate(sql="SELECT * FROM orders", catalog=_catalog(), dialect=dialect)
-    assert "SELECT *" in str(exc_info.value)
-    assert "INFORMATION_SCHEMA.METRICS" in str(exc_info.value)
-
-
-def test_parse_error_translates(dialect) -> None:
-    with pytest.raises(TranslationError) as exc_info:
-        translate(sql="SELECT FROM WHERE", catalog=_catalog(), dialect=dialect)
-    assert "parse error" in str(exc_info.value).lower()
 
 
 # --- table resolution --------------------------------------------------------
@@ -968,6 +975,7 @@ def test_where_on_dimension_alias_does_not_route_to_aggregate_path(dialect) -> N
     assert len(filters) == 1
 
 
+
 # --- time-grain wrapping -----------------------------------------------------
 
 
@@ -1071,6 +1079,23 @@ def test_metabase_sunday_week_wrapper_recognised(dialect) -> None:
     assert result.query.time_dimensions[0].dimension.full_name == "ordered_at"
 
 
+def test_one_day_offset_on_non_week_is_preserved(dialect) -> None:
+    """The day-offset unwrap is scoped to WEEK only: a ``date_trunc('month',
+    col + INTERVAL '1 day')`` query is NOT a Sunday-week wrapper, so the
+    column-side offset must be treated as user intent (the column is not a
+    bare ``ordered_at`` ref) and rejected with the existing translator error.
+    """
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                'SELECT date_trunc(\'month\', '
+                '("orders"."ordered_at" + INTERVAL \'1 day\')), '
+                'COUNT(*) FROM "orders"'
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
 def test_sunday_week_wrapper_two_day_offset_rejected(dialect) -> None:
     """The Sunday-week detector matches ONLY a one-day shift on EACH leg. A
     two-day shift on either leg is a different bucketing transform (not
@@ -1108,21 +1133,6 @@ def test_sunday_week_wrapper_two_day_offset_rejected(dialect) -> None:
         )
 
 
-def test_one_day_offset_on_non_week_is_preserved(dialect) -> None:
-    """The day-offset unwrap is scoped to WEEK only: a ``date_trunc('month',
-    col + INTERVAL '1 day')`` query is NOT a Sunday-week wrapper, so the
-    column-side offset must be treated as user intent (the column is not a
-    bare ``ordered_at`` ref) and rejected with the existing translator error.
-    """
-    with pytest.raises(TranslationError):
-        translate(
-            sql=(
-                'SELECT date_trunc(\'month\', '
-                '("orders"."ordered_at" + INTERVAL \'1 day\')), '
-                'COUNT(*) FROM "orders"'
-            ),
-            catalog=_catalog(), dialect=dialect,
-        )
 
 
 def test_partial_sunday_week_wrapper_is_rejected(dialect) -> None:
@@ -1171,6 +1181,11 @@ def test_outer_week_day_offset_direction_aware(dialect) -> None:
             ),
             catalog=_catalog(), dialect=dialect,
         )
+
+
+
+
+
 
 
 # --- dialect-only parse acceptance ------------------------------------------
@@ -1335,6 +1350,778 @@ def test_limit_and_offset_pass_through(dialect) -> None:
     assert result.query.limit == 100
     assert result.query.offset == 50
 
+
+# --- CAST(<column> AS <type>) projection (DEV-1566) --------------------------
+#
+# The translator admits CAST around a bare/qualified Column reference, overrides
+# the wire OID via projection_types, and leaves the engine SQL projecting the
+# bare column. The strict allowlist mirrors the (source, target) pairs the wire
+# encoders in slayer/pg_facade/types.py can losslessly handle.
+
+
+def test_cast_column_projection_admits_date_to_timestamp(dialect) -> None:
+    """Linear repro: CAST(<DATE col> AS TIMESTAMP) round-trips through the
+    translator. Engine still projects the bare column; the wire layer learns
+    the new OID via projection_types."""
+    result = translate(
+        sql="SELECT CAST(delivered_at AS TIMESTAMP) FROM orders",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    # Engine sees the bare column — no CAST pushed into SlayerQuery.
+    assert result.query.dimensions is not None
+    assert [d.full_name for d in result.query.dimensions] == ["delivered_at"]
+    # Wire schema reflects the casted type, not the column's declared DATE.
+    assert result.projection_types == [DataType.TIMESTAMP]
+    # column_name_mapping uses the inner column's dotted form as projected_name.
+    assert dict(result.column_name_mapping) == {
+        "orders.delivered_at": "delivered_at",
+    }
+
+
+def test_cast_column_with_alias_uses_alias_as_projected_name(dialect) -> None:
+    """The engine still selects the BARE column; only the projected_name
+    (user-facing label) carries the alias. So engine_alias stays
+    ``orders.delivered_at`` — NOT ``orders.ts`` (which would be the
+    aggregate-alias pattern; aggregates rename the SLayer-level measure)."""
+    result = translate(
+        sql="SELECT CAST(delivered_at AS TIMESTAMP) AS ts FROM orders",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert dict(result.column_name_mapping) == {"orders.delivered_at": "ts"}
+    assert result.projection_types == [DataType.TIMESTAMP]
+
+
+def test_postgres_double_colon_cast_works() -> None:
+    """``col::TYPE`` sugar parses to ``exp.Cast`` under the postgres dialect —
+    same outcome as the keyword form."""
+    result = translate(
+        sql="SELECT delivered_at::TIMESTAMP FROM orders",
+        catalog=_catalog(), dialect="postgres",
+    )
+    assert isinstance(result, QueryResult)
+    assert result.projection_types == [DataType.TIMESTAMP]
+
+
+def test_cast_joined_column_projection(dialect) -> None:
+    """CAST around a joined dotted column ref resolves through the same
+    cross-model dimension path as a bare projection."""
+    result = translate(
+        sql="SELECT CAST(customers.region AS TEXT) FROM orders",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.dimensions is not None
+    assert [d.full_name for d in result.query.dimensions] == ["customers.region"]
+    assert result.projection_types == [DataType.TEXT]
+
+
+@pytest.mark.parametrize("type_name", ["UUID", "JSON", "ARRAY<INT>", "STRUCT<x INT>"])
+def test_cast_unsupported_target_type_raises(type_name: str, dialect) -> None:
+    """Cast target types not in the SLayer DataType mapping fall through to
+    the existing 'Unsupported projection expression' error."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql=f"SELECT CAST(revenue AS {type_name}) FROM orders",
+            catalog=_catalog(), dialect=dialect,
+        )
+    assert "Unsupported projection expression" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("col", "target"),
+    [
+        ("status", "INT"),         # TEXT → INT
+        ("status", "BOOLEAN"),     # TEXT → BOOLEAN
+        ("revenue", "BOOLEAN"),    # DOUBLE → BOOLEAN
+        ("revenue", "INT"),        # DOUBLE → INT (lossy; dropped from allowlist)
+        ("revenue", "DATE"),       # DOUBLE → DATE
+        ("is_paid", "DATE"),       # BOOLEAN → DATE
+        ("is_paid", "TIMESTAMP"),  # BOOLEAN → TIMESTAMP
+        ("is_paid", "INT"),        # BOOLEAN → INT
+        ("delivered_at", "INT"),   # DATE → INT
+        ("delivered_at", "DOUBLE"),# DATE → DOUBLE
+        ("ordered_at", "INT"),     # TIMESTAMP → INT
+        ("ordered_at", "DOUBLE"),  # TIMESTAMP → DOUBLE
+        ("id", "DATE"),            # INT → DATE
+        ("id", "BOOLEAN"),         # INT → BOOLEAN
+    ],
+)
+def test_cast_rejected_coercions_raise(col: str, target: str, dialect) -> None:
+    """Pairs outside the §5 allowlist surface a strict, named error message."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql=f"SELECT CAST({col} AS {target}) FROM orders",
+            catalog=_catalog(), dialect=dialect,
+        )
+    assert "Unsupported CAST" in str(exc_info.value)
+
+
+def test_cast_rejected_error_message_pins_full_contract(dialect) -> None:
+    """The rejected-coercion error must name the source DataType, target
+    DataType, the offending SQL, and link the docs reference. Vague messages
+    would regress agent-debuggability."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql="SELECT CAST(status AS INT) FROM orders",
+            catalog=_catalog(), dialect=dialect,
+        )
+    msg = str(exc_info.value)
+    assert "Unsupported CAST" in msg
+    assert "TEXT" in msg              # source DataType
+    assert "INT" in msg               # target DataType
+    assert "CAST(status AS INT)" in msg  # offending SQL fragment
+    assert "docs/interfaces/pg-facade.md" in msg  # docs pointer
+
+
+@pytest.mark.parametrize(
+    ("col", "target"),
+    [
+        ("status", "TEXT"),         # TEXT → TEXT
+        ("revenue", "DOUBLE"),      # DOUBLE → DOUBLE
+        ("id", "INT"),              # INT → INT
+        ("delivered_at", "DATE"),   # DATE → DATE
+        ("ordered_at", "TIMESTAMP"),# TIMESTAMP → TIMESTAMP
+        ("is_paid", "BOOLEAN"),     # BOOLEAN → BOOLEAN
+    ],
+)
+def test_cast_identity_pair_admitted_for_every_type(col: str, target: str, dialect) -> None:
+    result = translate(
+        sql=f"SELECT CAST({col} AS {target}) FROM orders",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.projection_types == [DataType(target)]
+
+
+@pytest.mark.parametrize(
+    ("col", "target", "expected_type"),
+    [
+        # Date/time pair
+        ("delivered_at", "TIMESTAMP", DataType.TIMESTAMP),
+        # X → TEXT (always admitted; not lossy under dim-only-dedup because
+        # the engine's per-value distinct already groups by the same set of
+        # TEXT representations).
+        ("delivered_at", "TEXT", DataType.TEXT),
+        ("ordered_at", "TEXT", DataType.TEXT),
+        ("id", "TEXT", DataType.TEXT),
+        ("revenue", "TEXT", DataType.TEXT),
+        ("is_paid", "TEXT", DataType.TEXT),
+        ("status", "TEXT", DataType.TEXT),
+        # Round-12 carve-out: ``(ordered_at, DATE)`` (TIMESTAMP→DATE) and
+        # ``(id, DOUBLE)`` (INT→DOUBLE) are admitted by the wire-type
+        # encoder but trip the implicit-grouping lossy check because the
+        # bare projection ``SELECT CAST(<col> AS <target>) FROM orders``
+        # is dim-only and auto-dedups by the bare engine column. They get
+        # their own pinned-rejection test below.
+    ],
+)
+def test_cast_admitted_coercions_parametrised(
+    col: str, target: str, expected_type: DataType, dialect,
+) -> None:
+    result = translate(
+        sql=f"SELECT CAST({col} AS {target}) FROM orders",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.projection_types == [expected_type]
+
+
+def test_cast_try_cast_rejected(dialect) -> None:
+    """TRY_CAST parses to exp.TryCast, not exp.Cast, and is explicitly out
+    of scope — Postgres has no native TRY_CAST."""
+    with pytest.raises(TranslationError):
+        translate(
+            sql="SELECT TRY_CAST(status AS INT) FROM orders",
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
+def test_cast_aggregate_inner_rejected(dialect) -> None:
+    """CAST(<aggregate> AS T) is explicitly out of scope (Column only)."""
+    with pytest.raises(TranslationError):
+        translate(
+            sql="SELECT CAST(SUM(revenue) AS DOUBLE) FROM orders",
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
+def test_cast_time_grain_compat_unchanged(dialect) -> None:
+    """CAST(DATE_TRUNC(...) AS DATE) is the time-grain pattern — body.this is
+    DateTrunc, not Column, so the new column-CAST branch returns None and the
+    existing time-grain CAST-unwrap still handles it."""
+    result = translate(
+        sql="SELECT CAST(date_trunc('month', ordered_at) AS DATE), revenue_sum FROM orders",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.time_dimensions is not None
+    assert result.query.time_dimensions[0].granularity == TimeGranularity.MONTH
+
+
+def test_cast_order_by_unaliased_rejected(dialect) -> None:
+    """Codex round 2: ORDER BY CAST(<col> AS <T>) is rejected because the
+    engine query still projects the bare column — sorting by the bare column
+    follows the engine column's natural type (numeric for INT, temporal for
+    TIMESTAMP) instead of the casted type's semantics (lex for TEXT), which
+    is silently wrong. Workaround: alias the CAST projection and ORDER BY
+    the alias (see test_cast_order_by_via_alias_works)."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql=(
+                "SELECT CAST(id AS TEXT) FROM orders "
+                "ORDER BY CAST(id AS TEXT) ASC"
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+    assert "ORDER BY" in str(exc_info.value)
+    assert "not in the projection list" in str(exc_info.value)
+
+
+def test_cast_group_by_unaliased_rejected(dialect) -> None:
+    """Codex round 2: GROUP BY CAST(<col> AS <T>) is rejected. For lossy
+    pairs like TIMESTAMP→DATE the engine SQL still groups by the bare
+    column, so multiple timestamps on the same date produce duplicate
+    rows in the client (silently wrong)."""
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                "SELECT CAST(ordered_at AS DATE) FROM orders "
+                "GROUP BY CAST(ordered_at AS DATE)"
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
+def test_cast_order_by_via_alias_works(dialect) -> None:
+    """The documented workaround: alias the CAST projection and ORDER BY
+    the alias. The alias resolves to the projection item directly, no
+    canonical-form registration needed. Sort order still follows the engine
+    column's natural type — DATE→TIMESTAMP is 1:1 so the result is correct,
+    but ``SELECT CAST(id AS TEXT) AS x ... ORDER BY x`` would still sort
+    numerically. The alias path makes the limitation explicit at the SQL
+    level instead of hiding it behind a canonical-form rewrite."""
+    result = translate(
+        sql=(
+            "SELECT CAST(delivered_at AS TIMESTAMP) AS dt FROM orders "
+            "ORDER BY dt ASC"
+        ),
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.order is not None
+    assert result.query.order[0].column.name == "delivered_at"
+    assert result.query.order[0].direction == "asc"
+    # Wire schema still reflects the cast.
+    assert result.projection_types == [DataType.TIMESTAMP]
+
+
+def test_cast_unknown_source_datatype_admits_text_only(dialect) -> None:
+    """Custom metrics with declared data_type=None admit ONLY CAST→TEXT;
+    every other target is rejected so wire-encode-time crashes don't surface
+    as opaque connection errors. Custom aggregations carry data_type=None
+    when constructed without an explicit type — exercise that path."""
+    orders = SlayerModel(
+        name="orders",
+        data_source="jaffle",
+        sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="amount", type=DataType.DOUBLE),
+        ],
+        measures=[
+            # No `type=` → ModelMeasure.type is None.
+            ModelMeasure(name="custom_metric", formula="amount:sum"),
+        ],
+    )
+    catalog = build_catalog(models_by_datasource={"jaffle": [orders]})
+
+    # → TEXT admitted.
+    result = translate(
+        sql="SELECT CAST(custom_metric AS TEXT) FROM orders",
+        catalog=catalog, dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.projection_types == [DataType.TEXT]
+
+    # → TIMESTAMP rejected with the strict-allowlist message.
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql="SELECT CAST(custom_metric AS TIMESTAMP) FROM orders",
+            catalog=catalog, dialect=dialect,
+        )
+    assert "Unsupported CAST" in str(exc_info.value)
+
+    # Codex round 4: ORDER BY on the alias of an unknown-source CAST→TEXT
+    # must be rejected too — the lex-vs-natural sort gap applies regardless
+    # of whether the underlying source type was declared. The error message
+    # surfaces "unknown" for the source. (GROUP BY on a metric alias is
+    # already rejected by the strict-on-extras membership check — only
+    # dimensions populate derived_dims — so the lossy GROUP BY path can't
+    # be triggered through an unknown-source metric.)
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql=(
+                "SELECT CAST(custom_metric AS TEXT) AS m FROM orders "
+                "ORDER BY m"
+            ),
+            catalog=catalog, dialect=dialect,
+        )
+    msg = str(exc_info.value)
+    assert "ORDER BY on CAST projection" in msg
+    assert "unknown" in msg
+
+
+@pytest.mark.parametrize(
+    "col", ["delivered_at", "ordered_at", "id", "revenue", "is_paid", "status"],
+)
+def test_cast_text_target_admitted_from_every_source(col: str, dialect) -> None:
+    """X → TEXT is always admitted (stringification is universal)."""
+    result = translate(
+        sql=f"SELECT CAST({col} AS TEXT) FROM orders",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.projection_types == [DataType.TEXT]
+
+
+@pytest.mark.parametrize(
+    ("type_alias", "expected"),
+    [
+        # TEXT-family aliases.
+        ("VARCHAR", DataType.TEXT),
+        ("CHAR", DataType.TEXT),
+        # INT-family aliases (narrowing widths collapse to DataType.INT — see
+        # the coarse-OID note in pg-facade.md).
+        ("INTEGER", DataType.INT),
+        ("BIGINT", DataType.INT),
+        ("SMALLINT", DataType.INT),
+        # DOUBLE-family aliases (floating + DECIMAL/NUMERIC all collapse to
+        # DataType.DOUBLE — same coarse-OID note).
+        ("FLOAT", DataType.DOUBLE),
+        ("REAL", DataType.DOUBLE),
+        ("DECIMAL", DataType.DOUBLE),
+        ("NUMERIC", DataType.DOUBLE),
+        # TIMESTAMP-family aliases (TIMESTAMPTZ / TIMESTAMP WITH TIME ZONE
+        # collapse to DataType.TIMESTAMP — same coarse-OID note).
+        ("DATETIME", DataType.TIMESTAMP),
+        ("TIMESTAMPTZ", DataType.TIMESTAMP),
+    ],
+)
+def test_cast_sqlglot_type_aliases_map_to_slayer_datatype(
+    type_alias: str, expected: DataType,
+) -> None:
+    """Each accepted sqlglot DataType.Type alias collapses onto the canonical
+    SLayer DataType. Pinned under postgres dialect since some aliases
+    (TIMESTAMPTZ) only parse cleanly there."""
+    # Pick a source column whose declared type makes <source, expected> an
+    # admitted pair: identity on the expected canonical type.
+    source_col = {
+        DataType.TEXT: "status",
+        DataType.INT: "id",
+        DataType.DOUBLE: "revenue",
+        DataType.TIMESTAMP: "ordered_at",
+    }[expected]
+    result = translate(
+        sql=f"SELECT CAST({source_col} AS {type_alias}) FROM orders",
+        catalog=_catalog(), dialect="postgres",
+    )
+    assert isinstance(result, QueryResult)
+    assert result.projection_types == [expected]
+
+
+def test_cast_parameterised_type_form_works() -> None:
+    """sqlglot represents ``VARCHAR(255)`` etc. with their precision modifier
+    on the SAME ``DataType.Type`` member, so the mapping collapses precision
+    implicitly — SLayer wire types don't carry it."""
+    result = translate(
+        sql="SELECT CAST(status AS VARCHAR(255)) FROM orders",
+        catalog=_catalog(), dialect="postgres",
+    )
+    assert isinstance(result, QueryResult)
+    assert result.projection_types == [DataType.TEXT]
+
+
+def test_cast_non_column_non_aggregate_inner_rejected(dialect) -> None:
+    """The CAST detector REQUIRES body.this == exp.Column. Inner expressions
+    that aren't bare columns (hygiene wrappers like SUBSTRING, function
+    calls, arithmetic) must not accidentally route through the CAST branch
+    — they must fall through to the existing fallback."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql="SELECT CAST(SUBSTRING(status, 1, 1) AS TEXT) FROM orders",
+            catalog=_catalog(), dialect=dialect,
+        )
+    # Specifically: NOT the strict-allowlist message.
+    assert "Unsupported CAST" not in str(exc_info.value)
+
+
+def test_cast_qualified_ref_order_by_unaliased_rejected(dialect) -> None:
+    """Codex round 2: same rejection for qualified (joined) CAST refs in
+    ORDER BY. Engine still selects the bare ``customers.region``; lex sort
+    semantics don't carry through. User must alias and ORDER BY the alias."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql=(
+                "SELECT CAST(customers.region AS TEXT) FROM orders "
+                "ORDER BY CAST(customers.region AS TEXT) ASC"
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+    assert "not in the projection list" in str(exc_info.value)
+
+
+def test_cast_qualified_ref_group_by_unaliased_rejected(dialect) -> None:
+    """Codex round 2: same rejection for qualified-ref GROUP BY CAST."""
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                "SELECT CAST(customers.region AS TEXT) FROM orders "
+                "GROUP BY CAST(customers.region AS TEXT)"
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
+def test_cast_aliased_projection_order_by_via_alias_works(dialect) -> None:
+    """Workaround: with an aliased CAST projection, ORDER BY <alias>
+    resolves directly through item_by_projected_name. The ORDER BY CAST(...)
+    canonical form was removed (Codex round 2) — agents must reference the
+    alias instead."""
+    result = translate(
+        sql=(
+            "SELECT CAST(delivered_at AS TIMESTAMP) AS ts FROM orders "
+            "ORDER BY ts ASC"
+        ),
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.order is not None
+    assert result.query.order[0].column.name == "delivered_at"
+    assert result.query.order[0].direction == "asc"
+
+
+def test_cast_aliased_projection_group_by_unaliased_rejected(dialect) -> None:
+    """An aliased CAST projection + GROUP BY repeating the CAST shape is
+    still rejected — the canonical form is not in derived_dims after Codex
+    round 2's removal. Agents must rewrite to ``GROUP BY <alias>`` or the
+    bare column."""
+    with pytest.raises(TranslationError):
+        translate(
+            sql=(
+                "SELECT CAST(delivered_at AS TIMESTAMP) AS ts FROM orders "
+                "GROUP BY CAST(delivered_at AS TIMESTAMP)"
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+
+
+# --- Codex round 3: lossy-pair rejection via alias ---------------------------
+#
+# Round 3 dropped CAST canonical-form registration so unaliased
+# ORDER BY / GROUP BY CAST(...) fail with "not in projection list". But the
+# aliased path (SELECT CAST(c AS T) AS x ... ORDER BY x) still resolves via
+# the bare alias; it sorts/groups by the bare column, which for lossy pairs
+# (X→TEXT for ORDER BY, TIMESTAMP→DATE for GROUP BY) silently disagrees with
+# the casted semantics. These pairs are rejected at order/group-by time;
+# every other admitted pair (1:1, identity, INT→DOUBLE, DATE↔TIMESTAMP)
+# stays admitted via alias because the underlying engine value preserves
+# the casted order/grouping.
+
+
+@pytest.mark.parametrize(
+    ("col", "target"),
+    [
+        ("id", "TEXT"),             # INT → TEXT
+        ("revenue", "TEXT"),        # DOUBLE → TEXT
+        ("is_paid", "TEXT"),        # BOOLEAN → TEXT
+        ("delivered_at", "TEXT"),   # DATE → TEXT
+        ("ordered_at", "TEXT"),     # TIMESTAMP → TEXT
+    ],
+)
+def test_cast_alias_order_by_lossy_pair_rejected(
+    col: str, target: str, dialect,
+) -> None:
+    """SELECT CAST(<col> AS TEXT) AS x ... ORDER BY x is admitted in
+    projection but rejected at ORDER BY resolution — the engine query still
+    sorts by the bare column's natural type (numeric/temporal) rather than
+    the casted type's lex order."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql=(
+                f"SELECT CAST({col} AS {target}) AS x FROM orders ORDER BY x"
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+    msg = str(exc_info.value)
+    assert "ORDER BY on CAST projection" in msg
+    assert "lossy pair" in msg
+
+
+@pytest.mark.parametrize(
+    ("col", "target", "expected_source", "expected_target"),
+    [
+        # TIMESTAMP → DATE: many timestamps per date.
+        ("ordered_at", "DATE", "TIMESTAMP", "DATE"),
+        # Codex round 5: INT → DOUBLE is also lossy for grouping because
+        # IEEE 754 float64 cannot represent every int64 distinctly; large
+        # bigints collapse to the same double under Postgres semantics
+        # while the facade groups by the bare int and over-reports groups.
+        ("id", "DOUBLE", "INT", "DOUBLE"),
+    ],
+)
+def test_cast_alias_group_by_lossy_pair_rejected(
+    col: str, target: str, expected_source: str, expected_target: str,
+    dialect,
+) -> None:
+    """Many-to-one admitted pairs (TIMESTAMP→DATE, INT→DOUBLE) are rejected
+    in GROUP BY alias paths — the facade's per-engine-column grouping
+    returns more groups than Postgres semantics would produce."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql=(
+                f"SELECT CAST({col} AS {target}) AS d, COUNT(*) FROM orders "
+                f"GROUP BY d"
+            ),
+            catalog=_catalog(), dialect=dialect,
+        )
+    msg = str(exc_info.value)
+    assert "GROUP BY on CAST projection" in msg
+    assert "lossy pair" in msg
+    assert expected_source in msg
+    assert expected_target in msg
+
+
+@pytest.mark.parametrize(
+    ("col", "target"),
+    [
+        ("delivered_at", "TIMESTAMP"),  # DATE → TIMESTAMP (1:1)
+        ("delivered_at", "DATE"),       # identity DATE → DATE
+        ("revenue", "DOUBLE"),          # identity DOUBLE → DOUBLE
+        # ``(ordered_at, DATE)`` and ``(id, DOUBLE)`` look ORDER-BY-safe in
+        # isolation but the dim-only-dedup auto-grouping flips them to lossy
+        # — see Codex round 12 carve-out below.
+    ],
+)
+def test_cast_alias_order_by_safe_pair_admitted(
+    col: str, target: str, dialect,
+) -> None:
+    """Order-preserving pairs (1:1 / identity / DATE↔TIMESTAMP) stay
+    admitted via alias because the engine column's natural sort matches
+    the casted type's sort. The wire-type override still applies."""
+    result = translate(
+        sql=(
+            f"SELECT CAST({col} AS {target}) AS x FROM orders ORDER BY x"
+        ),
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.order is not None
+    assert result.query.order[0].direction == "asc"
+    assert result.projection_types == [DataType(target)]
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected_source", "expected_target"),
+    [
+        # Bare CAST projection — dim-only-dedup auto-groups by the underlying
+        # column. TIMESTAMP→DATE collapses distinct timestamps that share a
+        # date.
+        (
+            "SELECT CAST(ordered_at AS DATE) FROM orders",
+            "TIMESTAMP", "DATE",
+        ),
+        # Bare CAST projection — INT→DOUBLE: bigints above ±2^53 collapse.
+        (
+            "SELECT CAST(id AS DOUBLE) FROM orders",
+            "INT", "DOUBLE",
+        ),
+        # Aliased CAST + ORDER BY — same dim-only-dedup auto-grouping fires.
+        (
+            "SELECT CAST(ordered_at AS DATE) AS x FROM orders ORDER BY x",
+            "TIMESTAMP", "DATE",
+        ),
+        (
+            "SELECT CAST(id AS DOUBLE) AS x FROM orders ORDER BY x",
+            "INT", "DOUBLE",
+        ),
+        # Implicit grouping via aggregating measure: SELECT CAST(<col>),
+        # COUNT(*) auto-groups the dim alongside the measure with no
+        # explicit GROUP BY.
+        (
+            "SELECT CAST(ordered_at AS DATE), COUNT(*) FROM orders",
+            "TIMESTAMP", "DATE",
+        ),
+        (
+            "SELECT CAST(id AS DOUBLE) AS x, COUNT(*) FROM orders",
+            "INT", "DOUBLE",
+        ),
+    ],
+)
+def test_cast_implicit_grouping_lossy_pair_rejected(
+    sql: str, expected_source: str, expected_target: str, dialect,
+) -> None:
+    """Codex round 12: SLayer auto-groups projected dimensions whenever
+    GROUP BY is omitted — by dim-only-dedup when there's no measure, or
+    by the mandatory dim-group when a measure is present. Either way the
+    engine groups by the bare column, so lossy CAST pairs
+    (``TIMESTAMP→DATE``, ``INT→DOUBLE``) silently produce duplicate
+    casted-group rows. The explicit-GROUP-BY lossy check (round 4) is
+    extended to the implicit-grouping path so the same correctness gap
+    surfaces a clean ``GROUP BY on CAST projection ... with lossy pair
+    X→T`` error regardless of whether the user wrote GROUP BY."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql=sql, catalog=_catalog(), dialect=dialect)
+    msg = str(exc_info.value)
+    assert "GROUP BY on CAST projection" in msg
+    assert "lossy pair" in msg
+    assert expected_source in msg
+    assert expected_target in msg
+
+
+@pytest.mark.parametrize(
+    ("col", "target"),
+    [
+        ("delivered_at", "TIMESTAMP"),  # DATE → TIMESTAMP (1:1)
+        ("revenue", "DOUBLE"),          # identity
+        ("delivered_at", "DATE"),       # identity
+        ("status", "TEXT"),             # identity TEXT → TEXT
+    ],
+)
+def test_cast_alias_group_by_safe_pair_admitted(
+    col: str, target: str, dialect,
+) -> None:
+    """1:1 / identity pairs preserve the per-engine-column grouping under
+    the casted type, so GROUP BY <alias> stays admitted."""
+    result = translate(
+        sql=(
+            f"SELECT CAST({col} AS {target}) AS x, COUNT(*) FROM orders "
+            f"GROUP BY x"
+        ),
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.projection_types[0] == DataType(target)
+
+
+def test_cast_order_by_bare_column_does_not_shadow_cast_projection(dialect) -> None:
+    """Codex round 8: when both the bare column and a CAST alias are
+    projected, ``ORDER BY <bare col>`` must route to the bare column
+    projection — NOT to the CAST item via the secondary-key fallback that
+    would then trip the lossy-pair rejection. Validates the
+    ``item.cast_target is None`` guard in ``_build_item_index``."""
+    result = translate(
+        sql="SELECT id, CAST(id AS TEXT) AS x FROM orders ORDER BY id",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.order is not None
+    assert result.query.order[0].column.name == "id"
+    assert result.query.order[0].direction == "asc"
+    # Wire schema: bare id keeps INT; the CAST alias surfaces as TEXT.
+    assert result.projection_types == [DataType.INT, DataType.TEXT]
+
+
+def test_cast_order_by_bare_column_without_bare_projection_fails_cleanly(dialect) -> None:
+    """Codex round 8: when the bare column is NOT projected, ``ORDER BY
+    <bare col>`` over a CAST projection must surface ``not in the
+    projection list`` (the existing strict-on-extras error) — NOT the
+    lossy-CAST rejection (which would falsely imply the user asked for
+    lex-sort semantics on the casted column)."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql="SELECT CAST(id AS TEXT) AS x, status FROM orders ORDER BY id",
+            catalog=_catalog(), dialect=dialect,
+        )
+    msg = str(exc_info.value)
+    assert "not in the projection list" in msg
+    assert "lossy pair" not in msg
+
+
+def test_cast_joined_column_metabase_alias_resolves(dialect) -> None:
+    """Codex round 8: ``CAST("Stores"."name" AS TEXT)`` in a Metabase-style
+    LEFT JOIN subquery must resolve through the alias_map (\"Stores\" →
+    \"stores\"). Before the fix the CAST branch dropped the alias_map and
+    the joined ref came through as ``Stores.name`` → ``Unknown projection
+    item``. Now the cast branch forwards alias_map and the projection
+    resolves to ``stores.name`` like the non-casted shape does."""
+    sql = _metabase_join_sql(
+        projection='CAST("Stores"."name" AS TEXT) AS "store_name"',
+    )
+    result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
+    assert isinstance(result, QueryResult)
+    assert result.query.dimensions is not None
+    assert [d.full_name for d in result.query.dimensions] == ["stores.name"]
+    assert result.projection_types == [DataType.TEXT]
+
+
+def test_cast_metric_projection_overrides_wire_type(dialect) -> None:
+    """A CAST around a metric reference resolves through the metric path
+    (`_record_metric`), and the cast target wins over the declared metric type."""
+    result = translate(
+        sql="SELECT CAST(revenue_sum AS TEXT) FROM orders",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.measures is not None
+    assert result.query.measures[0].formula == "revenue:sum"
+    # Declared metric type is DOUBLE; CAST(<metric> AS TEXT) overrides.
+    assert result.projection_types == [DataType.TEXT]
+
+
+# --- allow_column_cast gate (Codex round 1 — Flight regression guard) --------
+#
+# DEV-1566 admits CAST(<col> AS <type>) projection in the shared translator.
+# The Flight facade materialises rows via pa.Table.from_pylist against a
+# catalog-typed schema, which raises ArrowTypeError on values whose Python
+# type doesn't match the declared Arrow type (date vs timestamp, bool vs
+# utf8, etc.). The Flight shim passes allow_column_cast=False to reject the
+# new projection shape at translate time; this test pins the gate.
+
+
+def test_allow_column_cast_false_rejects_cast_projection() -> None:
+    """With allow_column_cast=False, the CAST projection branch is skipped
+    and the body falls through to the 'Unsupported projection expression'
+    error (the existing terminal path)."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql="SELECT CAST(delivered_at AS TIMESTAMP) FROM orders",
+            catalog=_catalog(), dialect=None, allow_column_cast=False,
+        )
+    assert "Unsupported projection expression" in str(exc_info.value)
+
+
+def test_allow_column_cast_false_leaves_time_grain_cast_unwrap_working() -> None:
+    """The gate must not regress the time-grain CAST-unwrap path — the
+    Metabase fingerprint ``CAST(DATE_TRUNC(...) AS DATE)`` is detected by
+    ``_detect_time_grain``, which runs BEFORE the column-CAST branch."""
+    result = translate(
+        sql=(
+            "SELECT CAST(date_trunc('month', ordered_at) AS DATE), revenue_sum "
+            "FROM orders"
+        ),
+        catalog=_catalog(), dialect=None, allow_column_cast=False,
+    )
+    assert isinstance(result, QueryResult)
+    assert result.query.time_dimensions is not None
+    assert result.query.time_dimensions[0].granularity == TimeGranularity.MONTH
+
+
+def test_allow_column_cast_default_true_unchanged(dialect) -> None:
+    """Sanity: the default-True path is the same as not passing the kwarg
+    (pg-facade behaviour). Pinned so the default never silently flips."""
+    explicit = translate(
+        sql="SELECT CAST(delivered_at AS TIMESTAMP) FROM orders",
+        catalog=_catalog(), dialect=dialect, allow_column_cast=True,
+    )
+    implicit = translate(
+        sql="SELECT CAST(delivered_at AS TIMESTAMP) FROM orders",
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(explicit, QueryResult)
+    assert isinstance(implicit, QueryResult)
+    assert explicit.projection_types == implicit.projection_types == [DataType.TIMESTAMP]
 
 # --- DEV-1565: LEFT JOIN with subquery (Metabase MBQL shape) -----------------
 #

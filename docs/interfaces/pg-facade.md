@@ -142,6 +142,122 @@ Postgres-specific predicates that aren't valid SLayer DSL (`ILIKE`, `::cast`, re
 `ANY`/`ALL`) parse but are rejected at execution — use the standard comparison / `IN` /
 `BETWEEN` forms.
 
+### `CAST(<column> AS <type>)` in projection
+
+A projection of the shape `CAST(<column> AS <type>)` (and the equivalent `col::type`
+sugar) is accepted when the inner expression is a bare or qualified column reference
+**and** the (source, target) pair is in the allowlist below. The engine still executes
+the bare column — the cast is a pure wire-layer type rewrite. The projected column's
+Postgres OID is overridden to match the casted type.
+
+Common BI shapes covered: `SELECT CAST(ordered_at AS TIMESTAMP) FROM orders` (DATE
+column promoted for a TIMESTAMP-aware client), `SELECT CAST(amount AS TEXT) AS s
+FROM orders` (stringification), `SELECT CAST(customers.region AS TEXT) FROM orders`
+(joined column).
+
+Out of scope: `CAST` around aggregates (`CAST(SUM(amount) AS DOUBLE)`), `TRY_CAST`,
+and `CAST` around expressions that aren't a bare column (`CAST(SUBSTRING(...) AS T)`).
+`CAST` wrapping a `DATE_TRUNC(...)` continues to route through the time-grain unwrap.
+
+`CAST(...)` in `ORDER BY` and `GROUP BY` has two layers of admission:
+
+1. **Unaliased canonical-form** (e.g. `ORDER BY CAST(c AS T)` repeating the
+   projection's CAST verbatim): **never admitted.** The translator raises
+   `ORDER BY column '...' is not in the projection list` / the GROUP BY
+   strict-on-extras error. Workaround: alias and reference the alias.
+2. **Aliased reference** (`SELECT CAST(c AS T) AS x ... ORDER BY x` /
+   `... GROUP BY x`): admitted **only** when the `(source, target)` pair
+   preserves sort/group semantics under the bare-column engine projection.
+
+Pairs that **fail** the aliased-reference admission and raise
+`ORDER BY on CAST projection '...' with lossy pair X→T is unsupported`
+(symmetric message for GROUP BY):
+
+| Path     | Lossy pairs                                                              |
+|----------|--------------------------------------------------------------------------|
+| ORDER BY | `X → TEXT` for every non-text `X` (lex sort ≠ engine's natural sort). `TEXT → TEXT` is identity and stays admitted. |
+| GROUP BY | `TIMESTAMP → DATE` (many-to-one rollup); `INT → DOUBLE` (IEEE 754 collapse beyond ±2^53) |
+
+Every other admitted pair — identity (`X → X`), `DATE → TIMESTAMP`,
+`TIMESTAMP → DATE` for ORDER BY, `INT → DOUBLE` — preserves the casted
+semantics under the bare-column engine projection, so the alias path stays
+open.
+
+```sql
+-- Always rejected (canonical form):
+SELECT CAST(delivered_at AS TIMESTAMP) FROM orders
+ORDER BY CAST(delivered_at AS TIMESTAMP);
+
+-- Aliased reference, safe pair → works:
+SELECT CAST(delivered_at AS TIMESTAMP) AS dt FROM orders
+ORDER BY dt;
+
+-- Aliased reference, lossy pair → rejected:
+SELECT CAST(id AS TEXT) AS s FROM orders ORDER BY s;
+SELECT CAST(ordered_at AS DATE) AS d, COUNT(*) FROM orders GROUP BY d;
+```
+
+The wire-type override still applies in the safe-pair case — `dt` is
+wire-typed `TIMESTAMP` even though the engine sorts the underlying `DATE`.
+A future ticket can lift the remaining restrictions by pushing the CAST
+into the engine SQL.
+
+Admitted (source, target) coercions:
+
+| Source type   | Admitted target types        |
+|---------------|------------------------------|
+| `DATE`        | `DATE`, `TIMESTAMP`, `TEXT`  |
+| `TIMESTAMP`   | `TIMESTAMP`, `DATE`, `TEXT`  |
+| `INT`         | `INT`, `DOUBLE`, `TEXT`      |
+| `DOUBLE`      | `DOUBLE`, `TEXT`             |
+| `BOOLEAN`     | `BOOLEAN`, `TEXT`            |
+| `TEXT`        | `TEXT`                       |
+| *(unknown)*   | `TEXT`                       |
+
+Pairs outside the allowlist (e.g. `CAST(name AS INT)`, `CAST(amount AS BOOLEAN)`)
+raise `Unsupported CAST: cannot project <SOURCE> column as <TARGET> (...). Admitted
+coercions: see docs/interfaces/pg-facade.md.` Unsupported target types (`UUID`,
+`JSON`, `ARRAY`, `STRUCT`, …) raise the standard `Unsupported projection
+expression` error.
+
+#### CAST coarse-OID mapping
+
+CAST is a **coarse wire-OID hint**, not a precision-preserving conversion.
+The SLayer engine projects the bare column unchanged; the pg-facade encoder
+is OID-driven, so the wire bytes always match the OID we advertise. Some
+PostgreSQL types the user can write in a CAST don't have a one-to-one
+SLayer equivalent — those collapse onto the nearest broader SLayer type:
+
+| User wrote in `CAST(... AS X)` | SLayer maps to | Wire OID advertised |
+|---|---|---|
+| `INTEGER` / `INT` (pre-existing) | `DataType.INT` | 20 (`int8`) — not 23 (`int4`) |
+| `SMALLINT` | `DataType.INT` | 20 (`int8`) — not 21 (`int2`) |
+| `TINYINT` / `MEDIUMINT` (non-Postgres widths) | `DataType.INT` | 20 (`int8`) |
+| `BIGINT` | `DataType.INT` | 20 (`int8`) ✓ exact match |
+| `DECIMAL` / `NUMERIC` | `DataType.DOUBLE` | 701 (`float8`) — not 1700 (`numeric`) |
+| `FLOAT` / `REAL` / `DOUBLE` | `DataType.DOUBLE` | 701 (`float8`) ✓ |
+| `TIMESTAMPTZ` / `TIMESTAMP WITH TIME ZONE` | `DataType.TIMESTAMP` | 1114 (`timestamp`, no TZ) — not 1184 (`timestamptz`) |
+| `TIMESTAMP` / `DATETIME` | `DataType.TIMESTAMP` | 1114 (`timestamp`) ✓ |
+
+What this means in practice:
+
+- The wire bytes the client receives are always consistent with the OID we
+  advertise (the encoder picks the binary/text form from the OID). There is
+  no value corruption.
+- The OID is potentially broader than what the user typed. A client that
+  asked for `NUMERIC` and got `float8` sees a float on the wire and decodes
+  it correctly as a float — but loses the "exact precision" expectation.
+  A client that asked for `TIMESTAMPTZ` sees naive `timestamp` bytes — and
+  loses TZ-aware decoding semantics.
+- Callers needing exact `NUMERIC` precision, narrow integer wire widths, or
+  TZ-aware timestamps must compute upstream (or wait for SLayer to model
+  those types natively).
+
+`DOUBLE → INT` is intentionally excluded: Python's `int(<float>)` truncates toward zero
+while Postgres rounds half-to-even, so silently admitting the pair would diverge from
+`psql` semantics. Pre-aggregate or pre-round on your side when an integer-typed result
+is required.
+
 ## Introspection
 
 * `INFORMATION_SCHEMA.METRICS` / `DIMENSIONS` / `SCHEMATA` / `TABLES` / `COLUMNS`.

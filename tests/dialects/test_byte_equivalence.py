@@ -173,13 +173,15 @@ _TRUNC_QUERY = SlayerQuery(
             '  DATE_TRUNC(\'MONTH\', orders.created_at)',
         ),
         (
+            # ClickHouse accepts both ``dateTrunc`` and ``DATE_TRUNC``; sqlglot
+            # now emits the canonical lowercase ClickHouse form.
             "clickhouse",
             'SELECT\n'
-            '  DATE_TRUNC(\'MONTH\', orders.created_at) AS "orders.created_at",\n'
+            '  dateTrunc(\'MONTH\', orders.created_at) AS "orders.created_at",\n'
             '  SUM(orders.amount) AS "orders.revenue_sum"\n'
             'FROM public.orders AS orders\n'
             'GROUP BY\n'
-            '  DATE_TRUNC(\'MONTH\', orders.created_at)',
+            '  dateTrunc(\'MONTH\', orders.created_at)',
         ),
         (
             "mysql",
