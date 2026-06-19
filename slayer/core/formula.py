@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Literal, Mapping, Optional, Union
 
 from pydantic import BaseModel, Field
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS
+from slayer.core.enums import BUILTIN_AGGREGATIONS, normalize_aggregation_name
 from slayer.core.refs import (
     AGG_REF_RE as _AGG_REF_RE,
     IDENT_OR_PATH_RE as _IDENT_OR_PATH_RE,
@@ -70,7 +70,15 @@ STRING_HYGIENE_OPS = frozenset({
     "concat",
 })
 
-CallCategory = Literal["transform", "hygiene", "like_internal", "unknown"]
+# DEV-1576: scalar post-aggregation functions accepted as top-level formula
+# calls. They are recognised case-insensitively (agents overwhelmingly emit
+# ``ROUND``) and pass through to the emitted SQL via the arithmetic-passthrough
+# machinery (``_parse_mixed_arithmetic``). The list is intentionally tiny — the
+# existing inside-arithmetic passthrough already accepts arbitrary functions,
+# but top-level calls stay gated so genuinely unknown functions keep raising.
+SCALAR_FUNCTIONS = frozenset({"round", "abs"})
+
+CallCategory = Literal["transform", "scalar", "hygiene", "like_internal", "unknown"]
 
 _LIKE_INTERNAL_NAMES = frozenset({"__like__", "__notlike__"})
 
@@ -84,11 +92,63 @@ def _classify_call_name(name: str) -> CallCategory:
     """
     if name in ALL_TRANSFORMS:
         return "transform"
+    if name.lower() in SCALAR_FUNCTIONS:
+        return "scalar"
     if name in STRING_HYGIENE_OPS:
         return "hygiene"
     if name in _LIKE_INTERNAL_NAMES:
         return "like_internal"
     return "unknown"
+
+
+def _validate_scalar_call(node: ast.Call, original: str) -> None:
+    """Validate arity for a top-level ``round`` / ``abs`` call (DEV-1576).
+
+    ``abs`` takes exactly one argument; ``round`` takes one or two
+    (``expression[, ndigits]``) where ``ndigits`` must be an integer literal
+    (negative allowed). Neither accepts keyword arguments.
+    """
+    name = node.func.id.lower()
+    if node.keywords:
+        raise ValueError(
+            f"'{name}' does not accept keyword arguments. Formula: {original!r}"
+        )
+    if name == "abs":
+        if len(node.args) != 1:
+            raise ValueError(
+                f"'abs' requires exactly one argument (the expression). "
+                f"Formula: {original!r}"
+            )
+        return
+    # round
+    if len(node.args) not in (1, 2):
+        raise ValueError(
+            f"'round' accepts 1 or 2 arguments (expression[, ndigits]). "
+            f"Formula: {original!r}"
+        )
+    if len(node.args) == 2 and not _is_integer_literal(node.args[1]):
+        raise ValueError(
+            f"'round' ndigits (2nd argument) must be an integer literal. "
+            f"Formula: {original!r}"
+        )
+
+
+def _is_integer_literal(node: ast.AST) -> bool:
+    """True for an integer constant or a negated integer constant (``-2``).
+
+    Booleans are rejected — ``True``/``False`` are ``int`` subclasses but are
+    not meaningful ndigits values.
+    """
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, int) and not isinstance(node.value, bool)
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.USub)
+        and isinstance(node.operand, ast.Constant)
+    ):
+        v = node.operand.value
+        return isinstance(v, int) and not isinstance(v, bool)
+    return False
 
 
 class AggregatedMeasureRef(BaseModel):
@@ -354,7 +414,10 @@ def _preprocess_agg_refs(formula: str) -> tuple[str, Dict[str, AggregatedMeasure
 
     def _replace(match: re.Match) -> str:
         measure_name = match.group(1)
-        agg_name = match.group(2)
+        # DEV-1576: heal aggregation-name aliases / casing at the single colon-
+        # syntax chokepoint (shared by parse_formula and parse_filter). Unknown
+        # names pass through unchanged so the §3 enrichment error still fires.
+        agg_name = normalize_aggregation_name(match.group(2))
         args_str = match.group(3)
 
         agg_args: list[str] = []
@@ -554,7 +617,15 @@ def _parse_node(
             raise ValueError(f"Unsupported function call in formula: {original!r}")
 
         func_name = node.func.id
-        if _classify_call_name(func_name) != "transform":
+        category = _classify_call_name(func_name)
+        if category == "scalar":
+            # DEV-1576: round()/abs() are passthrough scalar functions. Route
+            # through the arithmetic-passthrough path, which preserves the call
+            # in the emitted SQL and registers any inner aggregated refs (and
+            # extracts any nested transform as a sub-transform).
+            _validate_scalar_call(node, original)
+            return _parse_mixed_arithmetic(node, original, agg_refs)
+        if category != "transform":
             raise ValueError(
                 f"Unknown transform function '{func_name}'. "
                 f"Supported: {', '.join(sorted(ALL_TRANSFORMS))}"

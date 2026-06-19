@@ -3704,3 +3704,87 @@ async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_sco
     assert "SUM(" in having.upper() and "/" in having and "NULLIF" in having.upper(), (
         f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
     )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1576 — round()/abs() execution + aggregation-alias healing (SQLite)
+# ---------------------------------------------------------------------------
+
+
+async def test_round_two_args_executes(integration_env):
+    """round(expr, ndigits) compiles and rounds the value."""
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="round(total_amount:sum / 7.0, 2)", name="r")],
+    )
+    response = await engine.execute(query)
+    assert response.data[0]["orders.r"] == pytest.approx(107.14)
+
+
+async def test_round_zero_ndigits_executes(integration_env):
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="round(total_amount:sum / 7.0, 0)", name="r")],
+    )
+    response = await engine.execute(query)
+    assert response.data[0]["orders.r"] == pytest.approx(107.0)
+
+
+async def test_abs_executes(integration_env):
+    """abs(expr) compiles and returns the magnitude."""
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="abs(total_amount:sum - 1000.0)", name="a")],
+    )
+    response = await engine.execute(query)
+    assert response.data[0]["orders.a"] == pytest.approx(250.0)
+
+
+async def test_count_distinct_alias_executes(integration_env):
+    """``status:countd`` heals to count_distinct and executes."""
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="status:countd")],
+    )
+    response = await engine.execute(query)
+    # completed / pending / cancelled → 3 distinct statuses.
+    assert response.data[0]["orders.status_count_distinct"] == 3
+
+
+async def test_stddev_alias_maps_to_sample_variant(integration_env):
+    """``amount:stddev`` heals to stddev_samp (sample, not population)."""
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="amount:stddev")],
+    )
+    response = await engine.execute(query)
+    # Sample stddev of [100,200,50,75,300,25] = sqrt(55000/5) ≈ 104.88
+    # (population variant would be sqrt(55000/6) ≈ 95.74).
+    assert response.data[0]["orders.amount_stddev_samp"] == pytest.approx(104.88, abs=0.1)
+
+
+async def test_round_over_bare_measure_raises(integration_env):
+    """A bare (non-aggregated) measure inside round is rejected, not leaked."""
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="round(amount, 2)", name="r")],
+    )
+    with pytest.raises(ValueError, match="Bare measure name"):
+        await engine.execute(query)
+
+
+async def test_abs_over_bare_measure_raises(integration_env):
+    """Same guard for abs — a bare measure inside abs is rejected."""
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="abs(amount)", name="a")],
+    )
+    with pytest.raises(ValueError, match="Bare measure name"):
+        await engine.execute(query)

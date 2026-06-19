@@ -40,7 +40,9 @@ Each entry in `measures` is either a bare formula string or a `{"formula": ..., 
   "last(revenue:sum)",
   "time_shift(revenue:sum, -1, 'year')",
   "lag(revenue:sum, 1)",
-  "rank(revenue:sum)"
+  "rank(revenue:sum)",
+  "round(revenue:sum, 2)",
+  "abs(revenue:sum - cost:sum)"
 ]
 ```
 

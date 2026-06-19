@@ -8,6 +8,7 @@ Separated from query_engine.py for clarity — this is the largest single
 transformation step in the query pipeline.
 """
 
+import difflib
 import re
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
@@ -408,6 +409,24 @@ async def enrich_query(
             if measure_def is None:
                 raise ValueError(
                     f"Column '{measure_name}' not found in model '{model.name}'"
+                )
+            # DEV-1576 §3: distinguish "unknown aggregation name" from "known
+            # but not allowed for this column type". The name check runs BEFORE
+            # the PK / whitelist / type gates so an unknown name never gets
+            # mislabelled as a type restriction (a perfectly aggregatable DOUBLE
+            # column with a misspelled agg should say "Unknown aggregation",
+            # not "not applicable to DOUBLE column").
+            known_aggregations = BUILTIN_AGGREGATIONS | {
+                a.name for a in model.aggregations
+            }
+            if aggregation_name not in known_aggregations:
+                suggestion = difflib.get_close_matches(
+                    aggregation_name, sorted(known_aggregations), n=1
+                )
+                hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
+                raise ValueError(
+                    f"Unknown aggregation '{aggregation_name}'.{hint} "
+                    f"Known: {sorted(known_aggregations)}."
                 )
             # Apply aggregation eligibility gates per the v2 contract:
             # 1. Primary-key columns are always restricted to count/count_distinct
