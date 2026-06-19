@@ -175,7 +175,7 @@ Pairs that **fail** the aliased-reference admission and raise
 
 | Path     | Lossy pairs                                                              |
 |----------|--------------------------------------------------------------------------|
-| ORDER BY | `X → TEXT` for every `X` (lex sort ≠ engine's natural sort)              |
+| ORDER BY | `X → TEXT` for every non-text `X` (lex sort ≠ engine's natural sort). `TEXT → TEXT` is identity and stays admitted. |
 | GROUP BY | `TIMESTAMP → DATE` (many-to-one rollup); `INT → DOUBLE` (IEEE 754 collapse beyond ±2^53) |
 
 Every other admitted pair — identity (`X → X`), `DATE → TIMESTAMP`,
