@@ -197,6 +197,24 @@ def _coerce_order_column(v: Any) -> Any:
     return v
 
 
+# DEV-1575: the accepted ORDER BY direction vocabulary (case-insensitive),
+# mapping every synonym to the canonical lowercase form the SQL generator
+# compares against (``direction == "asc"``). Single source of truth shared by
+# the shorthand-healing detector (``_process_order_item``) and the
+# ``OrderItem.direction`` normalizing validator.
+_DIRECTION_NORMALIZE = {
+    "asc": "asc",
+    "ascending": "asc",
+    "desc": "desc",
+    "descending": "desc",
+}
+
+
+def _is_direction(value: Any) -> bool:
+    """True if ``value`` is a recognized direction word (case/whitespace-insensitive)."""
+    return isinstance(value, str) and value.strip().lower() in _DIRECTION_NORMALIZE
+
+
 class TimeDimension(BaseModel):
     dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)]
     granularity: TimeGranularity
@@ -205,6 +223,11 @@ class TimeDimension(BaseModel):
 
 
 class OrderItem(BaseModel):
+    # DEV-1575: reject stray keys so a mixed canonical+shorthand item
+    # (e.g. ``{"column": "x", "b": "asc"}``) raises loudly instead of silently
+    # dropping the extra key.
+    model_config = ConfigDict(extra="forbid")
+
     column: Annotated[ColumnRef, BeforeValidator(_coerce_order_column)]
     direction: str = "asc"
     raw_formula: Optional[str] = None
@@ -221,6 +244,24 @@ class OrderItem(BaseModel):
                 if ":" in rewritten or _FUNCSTYLE_CALL_PATTERN.match(rewritten):
                     data = {**data, "raw_formula": rewritten}
         return data
+
+    @field_validator("direction")
+    @classmethod
+    def _normalize_direction(cls, v: str) -> str:
+        """DEV-1575: normalize direction to canonical ``asc``/``desc`` (case- and
+        whitespace-insensitive, accepting ``ascending``/``descending`` synonyms),
+        rejecting anything else.
+
+        The SQL generator compares ``direction == "asc"`` strictly, so a
+        non-normalized value (``"ASC"``, ``"ascending"``) would silently emit
+        DESC. Normalizing here fixes that for both healed and canonical items.
+        """
+        if _is_direction(v):
+            return _DIRECTION_NORMALIZE[v.strip().lower()]
+        raise ValueError(
+            "order direction must be one of asc/desc/ascending/descending "
+            f"(case-insensitive), got {v!r}"
+        )
 
 
 def _coerce_measures(v: Any) -> Any:
@@ -239,6 +280,56 @@ def _coerce_dimensions(v: Any) -> Any:
     if not isinstance(v, (list, tuple)):
         raise TypeError(f"'dimensions' must be a list, got {type(v).__name__}")
     return [{"name": item} if isinstance(item, str) else item for item in v]
+
+
+def _process_order_item(item: Any) -> list:
+    """DEV-1575: heal a single ``order`` entry, returning the list of canonical
+    items it expands to.
+
+    LLM agents frequently write a shorthand dict mapping column → direction
+    instead of the canonical ``{"column", "direction"}`` shape. A dict with no
+    ``column``/``direction`` key whose values are *all* direction words is
+    treated as shorthand and expanded — one canonical item per key, preserving
+    insertion order (so a single-key dict yields one item and a multi-key dict
+    yields several). Everything else passes through unchanged: canonical dicts
+    (their stray keys are policed by ``OrderItem``'s ``extra="forbid"``) and
+    malformed input (rejected by ``OrderItem`` validation).
+    """
+    if not isinstance(item, dict):
+        return [item]
+    # A dict carrying a reserved key is canonical-intended; never reinterpret it
+    # as shorthand. extra="forbid" on OrderItem rejects any stray keys.
+    if "column" in item or "direction" in item:
+        return [item]
+    if (
+        item
+        and all(isinstance(k, str) for k in item)
+        and all(_is_direction(val) for val in item.values())
+    ):
+        return [{"column": k, "direction": val} for k, val in item.items()]
+    return [item]
+
+
+def _coerce_order(v: Any) -> Any:
+    """DEV-1575: heal shorthand ``order`` items before ``OrderItem`` validation.
+
+    Accepts the canonical ``list``/``tuple`` of items, healing each shorthand
+    dict (see ``_process_order_item``). A bare single item passed without the
+    enclosing list (a ``dict`` or an ``OrderItem``) is wrapped into a
+    one-element list; any other non-list input raises (mirrors the
+    ``_coerce_measures``/``_coerce_dimensions`` convention).
+    """
+    if v is None:
+        return v
+    if not isinstance(v, (list, tuple)):
+        if isinstance(v, (dict, OrderItem)):
+            v = [v]
+        else:
+            raise TypeError(f"'order' must be a list, got {type(v).__name__}")
+    result: list = []
+    for item in v:
+        result.extend(_process_order_item(item))
+    return result
 
 
 class ModelExtension(BaseModel):
@@ -334,7 +425,7 @@ class SlayerQuery(BaseModel):
     main_time_dimension: Optional[str] = None  # Explicit time dimension for transforms (overrides auto-detection)
     filters: Optional[List[str]] = None
     variables: Optional[Dict[str, Any]] = None  # Variable values for filter substitution
-    order: Optional[List[OrderItem]] = None
+    order: Annotated[Optional[List[OrderItem]], BeforeValidator(_coerce_order)] = None
     limit: Optional[int] = None
     offset: Optional[int] = None
     whole_periods_only: bool = False
