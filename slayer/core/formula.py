@@ -404,6 +404,30 @@ def _split_args(s: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _split_agg_arglist(args_str: Optional[str]) -> tuple[list[str], dict[str, str]]:
+    """Parse a colon-aggregation ``(...)`` arglist into (positional, keyword).
+
+    ``args_str`` is the raw ``(...)`` capture (with parens) or ``None``.
+    ``price:weighted_avg(weight=quantity)`` → ``([], {"weight": "quantity"})``;
+    ``revenue:last(ordered_at)`` → ``(["ordered_at"], {})``.
+    """
+    agg_args: list[str] = []
+    agg_kwargs: dict[str, str] = {}
+    if not args_str:
+        return agg_args, agg_kwargs
+    inner = args_str[1:-1].strip()
+    if not inner:
+        return agg_args, agg_kwargs
+    for part in inner.split(","):
+        part = part.strip()
+        if "=" in part:
+            key, val = part.split("=", 1)
+            agg_kwargs[key.strip()] = val.strip()
+        else:
+            agg_args.append(part)
+    return agg_args, agg_kwargs
+
+
 def _preprocess_agg_refs(
     formula: str,
     custom_agg_names: frozenset[str] = frozenset(),
@@ -412,9 +436,16 @@ def _preprocess_agg_refs(
 
     Returns (preprocessed_formula, {placeholder: AggregatedMeasureRef}).
 
-    ``custom_agg_names`` are the host model's custom-aggregation names; a colon
-    token matching one of them exactly is left un-normalized so a custom
-    aggregation always takes precedence over alias/casing healing (DEV-1576).
+    ``custom_agg_names`` are the reachable custom-aggregation names (the source
+    model plus its join graph); a colon token matching one exactly is left
+    un-normalized so a custom aggregation takes precedence over alias/casing
+    healing (DEV-1576). This is parse-time and model-set-scoped, not per-ref
+    target-scoped: in a mixed-model graph a custom name on one model suppresses
+    healing of that same token on a different model. The failure mode is benign
+    — the un-healed token simply resolves (custom agg) or raises an explicit
+    "Unknown aggregation" at enrichment; it never silently picks the wrong
+    aggregation. Per-ref scoping would require deferring the heal past parse,
+    which would desync the canonical filter/ORDER-BY aliases built here.
     """
     refs: Dict[str, AggregatedMeasureRef] = {}
     counter = [0]
@@ -432,20 +463,7 @@ def _preprocess_agg_refs(
             raw_agg if raw_agg in custom_agg_names
             else normalize_aggregation_name(raw_agg)
         )
-        args_str = match.group(3)
-
-        agg_args: list[str] = []
-        agg_kwargs: dict[str, str] = {}
-        if args_str:
-            inner = args_str[1:-1].strip()
-            if inner:
-                for part in inner.split(","):
-                    part = part.strip()
-                    if "=" in part:
-                        key, val = part.split("=", 1)
-                        agg_kwargs[key.strip()] = val.strip()
-                    else:
-                        agg_args.append(part)
+        agg_args, agg_kwargs = _split_agg_arglist(match.group(3))
 
         placeholder = f"__agg{counter[0]}__"
         counter[0] += 1
@@ -587,7 +605,9 @@ def parse_formula(
     # Rewrite function-style aggregations (e.g., sum(revenue) → revenue:sum)
     formula = _rewrite_funcstyle_aggregations(formula, extra_agg_names)
     # Preprocess colon syntax into ast-parseable placeholders
-    processed, agg_refs = _preprocess_agg_refs(formula, extra_agg_names or frozenset())
+    processed, agg_refs = _preprocess_agg_refs(
+        formula, custom_agg_names=extra_agg_names or frozenset()
+    )
 
     try:
         tree = ast.parse(processed, mode="eval")
@@ -1120,7 +1140,9 @@ def parse_filter(
     # Include agg args/kwargs in the canonical name so e.g.
     # ``revenue:sum(window='90d') > 100`` matches the windowed measure's alias
     # ``orders.revenue_sum_window_90d`` and not the bare ``orders.revenue_sum``.
-    processed, agg_refs = _preprocess_agg_refs(processed, extra_agg_names or frozenset())
+    processed, agg_refs = _preprocess_agg_refs(
+        processed, custom_agg_names=extra_agg_names or frozenset()
+    )
     agg_canonical = {
         ph: canonical_agg_name(
             measure_name=ref.measure_name,
