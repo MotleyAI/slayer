@@ -8215,7 +8215,6 @@ docs = ["mkdocs-material"]
 embedding-search = ["litellm", "numpy"]
 flight = ["pyarrow"]
 mysql = ["aiomysql", "pymysql"]
-pg-facade = []
 postgres = ["asyncpg", "psycopg2-binary"]
 snowflake = ["snowflake-connector-python", "snowflake-sqlalchemy"]
 sqlserver = ["pyodbc"]
@@ -8223,4 +8222,4 @@ sqlserver = ["pyodbc"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "d4151843357fd55a4f26f68589dc8bdd90cceaec90a676d55c12f00e264a48af"
+content-hash = "efee3adb87aa1a4edee86faf4958affb2208af944696fd842fa3177c1142b4bf"
