@@ -53,6 +53,7 @@ async def _generate_sql(
     orders: SlayerModel,
     customers: SlayerModel,
     measures: list,
+    dialect: str = "postgres",
 ) -> str:
     """Run a real engine + SQL generator and return the SQL string."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -62,7 +63,25 @@ async def _generate_sql(
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(source_model="orders", measures=measures)
         enriched = await engine._enrich(query=query, model=orders, named_queries={})
-        return SQLGenerator(dialect="postgres").generate(enriched=enriched)
+        return SQLGenerator(dialect=dialect).generate(enriched=enriched)
+
+
+def _orders_with_status() -> SlayerModel:
+    """Orders model carrying a local TEXT column (``status``) and a numeric
+    ``rating`` column — for the DEV-1576 §3 error-split tests."""
+    return SlayerModel(
+        name="orders",
+        sql_table="public.orders",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="rating", sql="rating", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )
 
 
 class TestCrossModelGating:
@@ -348,3 +367,279 @@ class TestCrossModelColumnFilter:
         )
         assert "CASE" in sql.upper()
         assert "completed" in sql.lower()
+
+
+class TestDev1576UnknownVsDisallowed:
+    """DEV-1576 §3 — split 'unknown aggregation name' from 'not allowed for
+    this column type'. Local (non-cross-model) path only.
+    """
+
+    async def test_unknown_name_raises_unknown_aggregation(self) -> None:
+        with pytest.raises(ValueError, match=r"Unknown aggregation 'bogus'"):
+            await _generate_sql(
+                orders=_orders_with_status(),
+                customers=_customers_model(),
+                measures=[{"formula": "amount:bogus", "name": "result"}],
+            )
+
+    async def test_unknown_name_lists_known_aggregations(self) -> None:
+        with pytest.raises(ValueError, match=r"Known:"):
+            await _generate_sql(
+                orders=_orders_with_status(),
+                customers=_customers_model(),
+                measures=[{"formula": "amount:bogus", "name": "result"}],
+            )
+
+    async def test_unknown_name_suggests_close_match(self) -> None:
+        # ``stdev`` is a near-miss for stddev_samp/stddev_pop. It is NOT an
+        # alias (so §1 leaves it), and enrichment should offer a suggestion.
+        with pytest.raises(ValueError, match=r"Did you mean 'stddev_(samp|pop)'"):
+            await _generate_sql(
+                orders=_orders_with_status(),
+                customers=_customers_model(),
+                measures=[{"formula": "amount:stdev", "name": "result"}],
+            )
+
+    async def test_type_disallowed_keeps_not_applicable_wording(self) -> None:
+        # ``sum`` is a KNOWN aggregation but not eligible for a TEXT column —
+        # keep the existing 'not applicable to <TYPE> column' message.
+        with pytest.raises(ValueError, match=r"not applicable to TEXT column"):
+            await _generate_sql(
+                orders=_orders_with_status(),
+                customers=_customers_model(),
+                measures=[{"formula": "status:sum", "name": "result"}],
+            )
+
+    async def test_type_disallowed_is_not_reported_as_unknown(self) -> None:
+        with pytest.raises(ValueError) as exc:
+            await _generate_sql(
+                orders=_orders_with_status(),
+                customers=_customers_model(),
+                measures=[{"formula": "status:sum", "name": "result"}],
+            )
+        assert "Unknown aggregation" not in str(exc.value)
+
+    async def test_star_unknown_keeps_star_message(self) -> None:
+        # ``*`` only supports count — keep the dedicated star message rather
+        # than the generic 'Unknown aggregation' wording.
+        with pytest.raises(ValueError, match=r"\*:count"):
+            await _generate_sql(
+                orders=_orders_with_status(),
+                customers=_customers_model(),
+                measures=[{"formula": "*:bogus", "name": "result"}],
+            )
+
+    async def test_custom_agg_known_but_disallowed_keeps_not_allowed(self) -> None:
+        # A custom aggregation known model-wide but absent from a column's
+        # allowed_aggregations whitelist → 'not allowed for column', NOT
+        # 'Unknown aggregation'.
+        orders = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(
+                    name="rating",
+                    sql="rating",
+                    type=DataType.DOUBLE,
+                    allowed_aggregations=["avg"],
+                ),
+            ],
+            aggregations=[Aggregation(name="myagg", formula="SUM({value}) * 2")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        with pytest.raises(ValueError) as exc:
+            await _generate_sql(
+                orders=orders,
+                customers=_customers_model(),
+                measures=[{"formula": "rating:myagg", "name": "result"}],
+            )
+        assert "Unknown aggregation" not in str(exc.value)
+        assert "not allowed" in str(exc.value)
+
+    async def test_custom_agg_allowed_when_no_whitelist(self) -> None:
+        # Guard: the unknown-name check must not break a legitimate custom
+        # aggregation on a column with no whitelist.
+        orders = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+            aggregations=[Aggregation(name="myagg", formula="SUM({value}) * 2")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        sql = await _generate_sql(
+            orders=orders,
+            customers=_customers_model(),
+            measures=[{"formula": "amount:myagg", "name": "result"}],
+        )
+        assert "SUM" in sql.upper()
+
+    async def test_healed_alias_does_not_trigger_unknown(self) -> None:
+        # ``countd`` heals to count_distinct in §1 — it must reach SQL, not
+        # the §3 'Unknown aggregation' error.
+        sql = await _generate_sql(
+            orders=_orders_with_status(),
+            customers=_customers_model(),
+            measures=[{"formula": "amount:countd", "name": "result"}],
+        )
+        assert "COUNT(DISTINCT" in sql.upper()
+
+
+class TestDev1576RoundAbsGeneration:
+    """DEV-1576 §2 — round()/abs() compile in a formula; Postgres needs a
+    numeric CAST for 2-arg round (round(double precision, int) doesn't
+    exist), while SQLite/DuckDB round natively over DOUBLE.
+    """
+
+    async def test_round_two_args_postgres_casts_to_numeric(self) -> None:
+        sql = await _generate_sql(
+            orders=_orders_model(),
+            customers=_customers_model(),
+            measures=[{"formula": "round(amount:sum, 2)", "name": "r"}],
+            dialect="postgres",
+        )
+        up = sql.upper()
+        assert "ROUND(CAST(" in up
+        assert "AS DECIMAL" in up or "AS NUMERIC" in up
+
+    @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
+    async def test_round_two_args_non_postgres_no_cast(self, dialect: str) -> None:
+        sql = await _generate_sql(
+            orders=_orders_model(),
+            customers=_customers_model(),
+            measures=[{"formula": "round(amount:sum, 2)", "name": "r"}],
+            dialect=dialect,
+        )
+        up = sql.upper()
+        assert "ROUND(" in up
+        # No numeric cast injected — these backends round DOUBLE natively.
+        assert "ROUND(CAST(" not in up
+
+    async def test_round_one_arg_postgres_no_cast(self) -> None:
+        # 1-arg round(double precision) exists on Postgres — no cast needed.
+        sql = await _generate_sql(
+            orders=_orders_model(),
+            customers=_customers_model(),
+            measures=[{"formula": "round(amount:sum)", "name": "r"}],
+            dialect="postgres",
+        )
+        up = sql.upper()
+        assert "ROUND(" in up
+        assert "ROUND(CAST(" not in up
+
+    @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "duckdb"])
+    async def test_abs_generates_unchanged(self, dialect: str) -> None:
+        sql = await _generate_sql(
+            orders=_orders_model(),
+            customers=_customers_model(),
+            measures=[{"formula": "abs(amount:sum)", "name": "a"}],
+            dialect=dialect,
+        )
+        assert "ABS(" in sql.upper()
+
+
+class TestDev1576UnknownNamePrecedence:
+    """DEV-1576 §3 — the unknown-name guard fires BEFORE the PK / whitelist /
+    type gates, and the suggestion list reflects model-wide custom aggs."""
+
+    def _orders_pk_whitelist_custom(self) -> SlayerModel:
+        return SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(
+                    name="rating",
+                    sql="rating",
+                    type=DataType.DOUBLE,
+                    allowed_aggregations=["avg"],
+                ),
+            ],
+            aggregations=[Aggregation(name="myagg", formula="SUM({value}) * 2")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+
+    @pytest.mark.parametrize("column", ["rating", "id", "status"])
+    async def test_unknown_name_beats_pk_whitelist_and_type_gates(
+        self, column: str,
+    ) -> None:
+        # rating has a whitelist, id is PK, status is TEXT — for an unknown
+        # aggregation name all three must surface 'Unknown aggregation', not
+        # the whitelist / PK / type-applicability message.
+        with pytest.raises(ValueError, match=r"Unknown aggregation 'bogus'"):
+            await _generate_sql(
+                orders=self._orders_pk_whitelist_custom(),
+                customers=_customers_model(),
+                measures=[{"formula": f"{column}:bogus", "name": "result"}],
+            )
+
+    async def test_known_list_includes_custom_aggregations(self) -> None:
+        with pytest.raises(ValueError) as exc:
+            await _generate_sql(
+                orders=self._orders_pk_whitelist_custom(),
+                customers=_customers_model(),
+                measures=[{"formula": "amount:bogus", "name": "result"}],
+            )
+        assert "myagg" in str(exc.value)
+
+    async def test_no_did_you_mean_for_poor_match(self) -> None:
+        with pytest.raises(ValueError) as exc:
+            await _generate_sql(
+                orders=self._orders_pk_whitelist_custom(),
+                customers=_customers_model(),
+                measures=[{"formula": "amount:zzzzz", "name": "result"}],
+            )
+        assert "Did you mean" not in str(exc.value)
+
+
+class TestDev1576CustomAggPrecedence:
+    """DEV-1576 (Codex): a model custom aggregation named like an alias key
+    (countd/stddev/var/...) or a builtin casing must take precedence over
+    alias healing — the heal must not silently shadow it."""
+
+    async def test_custom_agg_named_like_alias_takes_precedence(self) -> None:
+        orders = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+            aggregations=[
+                Aggregation(name="countd", formula="COUNT(DISTINCT {value}) + 1"),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        sql = await _generate_sql(
+            orders=orders,
+            customers=_customers_model(),
+            measures=[{"formula": "amount:countd", "name": "result"}],
+        )
+        # The custom formula (… + 1) must win, not the healed builtin
+        # count_distinct (plain COUNT(DISTINCT …)).
+        assert "+ 1" in sql
+
+    async def test_alias_heals_when_no_colliding_custom_agg(self) -> None:
+        # Same query on a model WITHOUT a colliding custom agg still heals to
+        # the builtin count_distinct.
+        sql = await _generate_sql(
+            orders=_orders_model(),
+            customers=_customers_model(),
+            measures=[{"formula": "amount:countd", "name": "result"}],
+        )
+        assert "COUNT(DISTINCT" in sql.upper()
+        assert "+ 1" not in sql

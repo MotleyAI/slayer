@@ -433,7 +433,13 @@ class SQLGenerator:
         # Log-alias rewrite is multi-dialect; the per-base allowlist check
         # lives inside ``_rewrite_log_aliases`` so unsupported dialects
         # (oracle; tsql for log2) keep the canonical 2-arg LOG form.
-        return tree.transform(self._rewrite_log_aliases)
+        tree = tree.transform(self._rewrite_log_aliases)
+        # DEV-1576: target-keyed AST rewrite. Keyed to the generator's TARGET
+        # dialect (``self._dialect``), NOT the parse dialect — expressions are
+        # canonically parsed as Postgres regardless of target, so this is the
+        # only place a Postgres-only ROUND cast can fire without corrupting
+        # SQLite / DuckDB output.
+        return self._dialect.rewrite_target_ast(tree)
 
     def _parse_predicate(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
         """Parse a bare WHERE/HAVING predicate expression (DEV-1378).
@@ -461,7 +467,10 @@ class SQLGenerator:
                 f"Could not extract WHERE predicate from {sql!r} (dialect={d!r})"
             )
         tree = active.rewrite_parsed_ast(where.this)
-        return tree.transform(self._rewrite_log_aliases)
+        tree = tree.transform(self._rewrite_log_aliases)
+        # DEV-1576: same target-keyed rewrite as ``_parse`` — a 2-arg ROUND
+        # over a DOUBLE in a Mode-A SQL filter needs the Postgres numeric cast.
+        return self._dialect.rewrite_target_ast(tree)
 
     def generate(
         self,

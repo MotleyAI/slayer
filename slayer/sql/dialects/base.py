@@ -345,6 +345,23 @@ class SqlDialect(BaseModel):
         the function-call form (DEV-1331)."""
         return tree
 
+    def rewrite_target_ast(self, tree: exp.Expression) -> exp.Expression:
+        """Default: identity. Target-keyed AST rewrite (DEV-1576).
+
+        Applied in ``SQLGenerator._parse`` using the generator's **target**
+        dialect (``self._dialect``), independent of the parse dialect. This is
+        the place for output-shaping a dialect needs that the input-side
+        ``rewrite_parsed_ast`` cannot do: formula/measure expressions are
+        canonically parsed as Postgres regardless of target, so a
+        ``rewrite_parsed_ast`` override would fire for every backend.
+
+        ``PostgresDialect`` overrides this to wrap the first argument of a
+        2-arg ``ROUND`` in a numeric ``CAST`` (Postgres has no
+        ``round(double precision, integer)`` — only ``round(numeric, int)``).
+        SQLite / DuckDB round ``DOUBLE`` natively, so they keep the identity.
+        """
+        return tree
+
     def emit_outer_wrap(
         self,
         *,

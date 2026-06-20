@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Literal, Mapping, Optional, Union
 
 from pydantic import BaseModel, Field
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS
+from slayer.core.enums import BUILTIN_AGGREGATIONS, normalize_aggregation_name
 from slayer.core.refs import (
     AGG_REF_RE as _AGG_REF_RE,
     IDENT_OR_PATH_RE as _IDENT_OR_PATH_RE,
@@ -70,7 +70,15 @@ STRING_HYGIENE_OPS = frozenset({
     "concat",
 })
 
-CallCategory = Literal["transform", "hygiene", "like_internal", "unknown"]
+# DEV-1576: scalar post-aggregation functions accepted as top-level formula
+# calls. They are recognised case-insensitively (agents overwhelmingly emit
+# ``ROUND``) and pass through to the emitted SQL via the arithmetic-passthrough
+# machinery (``_parse_mixed_arithmetic``). The list is intentionally tiny — the
+# existing inside-arithmetic passthrough already accepts arbitrary functions,
+# but top-level calls stay gated so genuinely unknown functions keep raising.
+SCALAR_FUNCTIONS = frozenset({"round", "abs"})
+
+CallCategory = Literal["transform", "scalar", "hygiene", "like_internal", "unknown"]
 
 _LIKE_INTERNAL_NAMES = frozenset({"__like__", "__notlike__"})
 
@@ -84,11 +92,63 @@ def _classify_call_name(name: str) -> CallCategory:
     """
     if name in ALL_TRANSFORMS:
         return "transform"
+    if name.lower() in SCALAR_FUNCTIONS:
+        return "scalar"
     if name in STRING_HYGIENE_OPS:
         return "hygiene"
     if name in _LIKE_INTERNAL_NAMES:
         return "like_internal"
     return "unknown"
+
+
+def _validate_scalar_call(node: ast.Call, original: str) -> None:
+    """Validate arity for a top-level ``round`` / ``abs`` call (DEV-1576).
+
+    ``abs`` takes exactly one argument; ``round`` takes one or two
+    (``expression[, ndigits]``) where ``ndigits`` must be an integer literal
+    (negative allowed). Neither accepts keyword arguments.
+    """
+    name = node.func.id.lower()
+    if node.keywords:
+        raise ValueError(
+            f"'{name}' does not accept keyword arguments. Formula: {original!r}"
+        )
+    if name == "abs":
+        if len(node.args) != 1:
+            raise ValueError(
+                f"'abs' requires exactly one argument (the expression). "
+                f"Formula: {original!r}"
+            )
+        return
+    # round
+    if len(node.args) not in (1, 2):
+        raise ValueError(
+            f"'round' accepts 1 or 2 arguments (expression[, ndigits]). "
+            f"Formula: {original!r}"
+        )
+    if len(node.args) == 2 and not _is_integer_literal(node.args[1]):
+        raise ValueError(
+            f"'round' ndigits (2nd argument) must be an integer literal. "
+            f"Formula: {original!r}"
+        )
+
+
+def _is_integer_literal(node: ast.AST) -> bool:
+    """True for an integer constant or a negated integer constant (``-2``).
+
+    Booleans are rejected — ``True``/``False`` are ``int`` subclasses but are
+    not meaningful ndigits values.
+    """
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, int) and not isinstance(node.value, bool)
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.USub)
+        and isinstance(node.operand, ast.Constant)
+    ):
+        v = node.operand.value
+        return isinstance(v, int) and not isinstance(v, bool)
+    return False
 
 
 class AggregatedMeasureRef(BaseModel):
@@ -344,31 +404,66 @@ def _split_args(s: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _preprocess_agg_refs(formula: str) -> tuple[str, Dict[str, AggregatedMeasureRef]]:
+def _split_agg_arglist(args_str: Optional[str]) -> tuple[list[str], dict[str, str]]:
+    """Parse a colon-aggregation ``(...)`` arglist into (positional, keyword).
+
+    ``args_str`` is the raw ``(...)`` capture (with parens) or ``None``.
+    ``price:weighted_avg(weight=quantity)`` → ``([], {"weight": "quantity"})``;
+    ``revenue:last(ordered_at)`` → ``(["ordered_at"], {})``.
+    """
+    agg_args: list[str] = []
+    agg_kwargs: dict[str, str] = {}
+    if not args_str:
+        return agg_args, agg_kwargs
+    inner = args_str[1:-1].strip()
+    if not inner:
+        return agg_args, agg_kwargs
+    for part in inner.split(","):
+        part = part.strip()
+        if "=" in part:
+            key, val = part.split("=", 1)
+            agg_kwargs[key.strip()] = val.strip()
+        else:
+            agg_args.append(part)
+    return agg_args, agg_kwargs
+
+
+def _preprocess_agg_refs(
+    formula: str,
+    custom_agg_names: frozenset[str] = frozenset(),
+) -> tuple[str, Dict[str, AggregatedMeasureRef]]:
     """Replace colon-syntax aggregated measure refs with placeholder identifiers.
 
     Returns (preprocessed_formula, {placeholder: AggregatedMeasureRef}).
+
+    ``custom_agg_names`` are the reachable custom-aggregation names (the source
+    model plus its join graph); a colon token matching one exactly is left
+    un-normalized so a custom aggregation takes precedence over alias/casing
+    healing (DEV-1576). This is parse-time and model-set-scoped, not per-ref
+    target-scoped: in a mixed-model graph a custom name on one model suppresses
+    healing of that same token on a different model. The failure mode is benign
+    — the un-healed token simply resolves (custom agg) or raises an explicit
+    "Unknown aggregation" at enrichment; it never silently picks the wrong
+    aggregation. Per-ref scoping would require deferring the heal past parse,
+    which would desync the canonical filter/ORDER-BY aliases built here.
     """
     refs: Dict[str, AggregatedMeasureRef] = {}
     counter = [0]
 
     def _replace(match: re.Match) -> str:
         measure_name = match.group(1)
-        agg_name = match.group(2)
-        args_str = match.group(3)
-
-        agg_args: list[str] = []
-        agg_kwargs: dict[str, str] = {}
-        if args_str:
-            inner = args_str[1:-1].strip()
-            if inner:
-                for part in inner.split(","):
-                    part = part.strip()
-                    if "=" in part:
-                        key, val = part.split("=", 1)
-                        agg_kwargs[key.strip()] = val.strip()
-                    else:
-                        agg_args.append(part)
+        # DEV-1576: heal aggregation-name aliases / casing at the single colon-
+        # syntax chokepoint (shared by parse_formula and parse_filter). Unknown
+        # names pass through unchanged so the §3 enrichment error still fires.
+        # A model-level custom aggregation named like an alias key / builtin
+        # casing wins — skip healing for an exact custom-name match so it still
+        # resolves at enrichment.
+        raw_agg = match.group(2)
+        agg_name = (
+            raw_agg if raw_agg in custom_agg_names
+            else normalize_aggregation_name(raw_agg)
+        )
+        agg_args, agg_kwargs = _split_agg_arglist(match.group(3))
 
         placeholder = f"__agg{counter[0]}__"
         counter[0] += 1
@@ -510,7 +605,9 @@ def parse_formula(
     # Rewrite function-style aggregations (e.g., sum(revenue) → revenue:sum)
     formula = _rewrite_funcstyle_aggregations(formula, extra_agg_names)
     # Preprocess colon syntax into ast-parseable placeholders
-    processed, agg_refs = _preprocess_agg_refs(formula)
+    processed, agg_refs = _preprocess_agg_refs(
+        formula=formula, custom_agg_names=extra_agg_names or frozenset()
+    )
 
     try:
         tree = ast.parse(processed, mode="eval")
@@ -554,7 +651,15 @@ def _parse_node(
             raise ValueError(f"Unsupported function call in formula: {original!r}")
 
         func_name = node.func.id
-        if _classify_call_name(func_name) != "transform":
+        category = _classify_call_name(func_name)
+        if category == "scalar":
+            # DEV-1576: round()/abs() are passthrough scalar functions. Route
+            # through the arithmetic-passthrough path, which preserves the call
+            # in the emitted SQL and registers any inner aggregated refs (and
+            # extracts any nested transform as a sub-transform).
+            _validate_scalar_call(node, original)
+            return _parse_mixed_arithmetic(node, original, agg_refs)
+        if category != "transform":
             raise ValueError(
                 f"Unknown transform function '{func_name}'. "
                 f"Supported: {', '.join(sorted(ALL_TRANSFORMS))}"
@@ -1035,7 +1140,9 @@ def parse_filter(
     # Include agg args/kwargs in the canonical name so e.g.
     # ``revenue:sum(window='90d') > 100`` matches the windowed measure's alias
     # ``orders.revenue_sum_window_90d`` and not the bare ``orders.revenue_sum``.
-    processed, agg_refs = _preprocess_agg_refs(processed)
+    processed, agg_refs = _preprocess_agg_refs(
+        formula=processed, custom_agg_names=extra_agg_names or frozenset()
+    )
     agg_canonical = {
         ph: canonical_agg_name(
             measure_name=ref.measure_name,

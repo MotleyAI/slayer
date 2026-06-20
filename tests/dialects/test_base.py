@@ -435,3 +435,26 @@ def test_default_emit_outer_wrap_uses_sqlglot_name_not_dialect_attr() -> None:
         limit=None,
         offset_arg=None,
     )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1576: rewrite_target_ast default is identity (only Postgres overrides).
+# ---------------------------------------------------------------------------
+
+
+def test_base_rewrite_target_ast_is_identity_for_round() -> None:
+    from slayer.sql.dialects.base import SqlDialect
+    d = SqlDialect()
+    tree = sqlglot.parse_one("ROUND(x, 2)", dialect="postgres")
+    before = tree.sql(dialect="postgres")
+    after = d.rewrite_target_ast(tree).sql(dialect="postgres")
+    assert before == after
+
+
+def test_duckdb_and_sqlite_rewrite_target_ast_leave_round_uncast() -> None:
+    from slayer.sql.dialects.duckdb import DuckdbDialect
+    from slayer.sql.dialects.sqlite import SqliteDialect
+    for d in (DuckdbDialect(), SqliteDialect()):
+        tree = sqlglot.parse_one("ROUND(x, 2)", dialect="postgres")
+        out = d.rewrite_target_ast(tree).sql(dialect=d.sqlglot_name).upper()
+        assert "CAST(" not in out

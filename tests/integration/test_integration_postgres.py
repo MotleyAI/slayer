@@ -129,6 +129,13 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
 
                 Column(name="total", sql="amount", type=DataType.DOUBLE),
                 Column(name="avg_amount", sql="amount", type=DataType.DOUBLE),
+                # DEV-1576: a genuine DOUBLE PRECISION expression column.
+                # ``amount`` is NUMERIC, so ``round(amount:sum, 2)`` works on
+                # Postgres natively; the non-bare DOUBLE-typed sql gets wrapped
+                # in CAST(... AS DOUBLE PRECISION), so SUM yields double and
+                # ``round(double precision, int)`` would fail without the
+                # PostgresDialect numeric-cast rewrite.
+                Column(name="amount_d", sql="amount * 1.0", type=DataType.DOUBLE),
             ],
         )
         customers_model = SlayerModel(
@@ -1182,3 +1189,59 @@ async def test_integration_postgres_cross_model_derived_columnsql(
     assert response.row_count == 2
     assert float(response.data[0]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
     assert float(response.data[1]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
+
+
+@pytest.mark.integration
+class TestPostgresDev1576Heals:
+    """DEV-1576 — round()/abs() execution (incl. the double-precision cast
+    path) and aggregation-alias healing against a real Postgres."""
+
+    async def test_round_two_args_over_double_executes(
+        self, pg_env: SlayerQueryEngine,
+    ) -> None:
+        # SUM(amount_d) = 875.0 (double precision); /8.0 = 109.375 → round 2.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "round(amount_d:sum / 8.0, 2)", "name": "r"}],
+        )
+        result = await pg_env.execute(query=query)
+        assert float(result.data[0]["orders.r"]) == pytest.approx(109.38)
+
+    async def test_round_one_arg_over_double_executes(
+        self, pg_env: SlayerQueryEngine,
+    ) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "round(amount_d:sum / 8.0)", "name": "r"}],
+        )
+        result = await pg_env.execute(query=query)
+        assert float(result.data[0]["orders.r"]) == pytest.approx(109.0)
+
+    async def test_abs_over_double_executes(self, pg_env: SlayerQueryEngine) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "abs(amount_d:sum - 1000.0)", "name": "a"}],
+        )
+        result = await pg_env.execute(query=query)
+        assert float(result.data[0]["orders.a"]) == pytest.approx(125.0)
+
+    async def test_count_distinct_alias_executes(
+        self, pg_env: SlayerQueryEngine,
+    ) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "status:countd"}],
+        )
+        result = await pg_env.execute(query=query)
+        assert result.data[0]["orders.status_count_distinct"] == 3
+
+    async def test_stddev_alias_executes(self, pg_env: SlayerQueryEngine) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "total:stddev"}],
+        )
+        result = await pg_env.execute(query=query)
+        # Sample stddev of [100,200,50,150,75,300] (mean 145.83) ≈ 92.76.
+        assert float(result.data[0]["orders.total_stddev_samp"]) == pytest.approx(
+            92.76, abs=0.1
+        )
