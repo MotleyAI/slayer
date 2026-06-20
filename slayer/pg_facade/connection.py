@@ -219,9 +219,9 @@ class PgConnection:
             return proto.decode_startup(body)
 
     async def _perform_tls_upgrade(self) -> None:
-        """Upgrade the plaintext transport to TLS (best-effort).
+        """Upgrade the plaintext transport to TLS.
 
-        Real TLS is exercised by integration testing; unit tests monkeypatch
+        Not covered by end-to-end handshake tests yet; unit tests monkeypatch
         this. asyncio's ``start_tls`` requires the running loop + transport.
         """
         loop = asyncio.get_running_loop()
