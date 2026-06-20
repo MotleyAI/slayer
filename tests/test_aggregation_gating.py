@@ -602,3 +602,44 @@ class TestDev1576UnknownNamePrecedence:
                 measures=[{"formula": "amount:zzzzz", "name": "result"}],
             )
         assert "Did you mean" not in str(exc.value)
+
+
+class TestDev1576CustomAggPrecedence:
+    """DEV-1576 (Codex): a model custom aggregation named like an alias key
+    (countd/stddev/var/...) or a builtin casing must take precedence over
+    alias healing — the heal must not silently shadow it."""
+
+    async def test_custom_agg_named_like_alias_takes_precedence(self) -> None:
+        orders = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+            aggregations=[
+                Aggregation(name="countd", formula="COUNT(DISTINCT {value}) + 1"),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        sql = await _generate_sql(
+            orders=orders,
+            customers=_customers_model(),
+            measures=[{"formula": "amount:countd", "name": "result"}],
+        )
+        # The custom formula (… + 1) must win, not the healed builtin
+        # count_distinct (plain COUNT(DISTINCT …)).
+        assert "+ 1" in sql
+
+    async def test_alias_heals_when_no_colliding_custom_agg(self) -> None:
+        # Same query on a model WITHOUT a colliding custom agg still heals to
+        # the builtin count_distinct.
+        sql = await _generate_sql(
+            orders=_orders_model(),
+            customers=_customers_model(),
+            measures=[{"formula": "amount:countd", "name": "result"}],
+        )
+        assert "COUNT(DISTINCT" in sql.upper()
+        assert "+ 1" not in sql

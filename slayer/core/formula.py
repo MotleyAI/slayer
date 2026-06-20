@@ -404,10 +404,17 @@ def _split_args(s: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _preprocess_agg_refs(formula: str) -> tuple[str, Dict[str, AggregatedMeasureRef]]:
+def _preprocess_agg_refs(
+    formula: str,
+    custom_agg_names: frozenset[str] = frozenset(),
+) -> tuple[str, Dict[str, AggregatedMeasureRef]]:
     """Replace colon-syntax aggregated measure refs with placeholder identifiers.
 
     Returns (preprocessed_formula, {placeholder: AggregatedMeasureRef}).
+
+    ``custom_agg_names`` are the host model's custom-aggregation names; a colon
+    token matching one of them exactly is left un-normalized so a custom
+    aggregation always takes precedence over alias/casing healing (DEV-1576).
     """
     refs: Dict[str, AggregatedMeasureRef] = {}
     counter = [0]
@@ -417,7 +424,14 @@ def _preprocess_agg_refs(formula: str) -> tuple[str, Dict[str, AggregatedMeasure
         # DEV-1576: heal aggregation-name aliases / casing at the single colon-
         # syntax chokepoint (shared by parse_formula and parse_filter). Unknown
         # names pass through unchanged so the §3 enrichment error still fires.
-        agg_name = normalize_aggregation_name(match.group(2))
+        # A model-level custom aggregation named like an alias key / builtin
+        # casing wins — skip healing for an exact custom-name match so it still
+        # resolves at enrichment.
+        raw_agg = match.group(2)
+        agg_name = (
+            raw_agg if raw_agg in custom_agg_names
+            else normalize_aggregation_name(raw_agg)
+        )
         args_str = match.group(3)
 
         agg_args: list[str] = []
@@ -573,7 +587,7 @@ def parse_formula(
     # Rewrite function-style aggregations (e.g., sum(revenue) → revenue:sum)
     formula = _rewrite_funcstyle_aggregations(formula, extra_agg_names)
     # Preprocess colon syntax into ast-parseable placeholders
-    processed, agg_refs = _preprocess_agg_refs(formula)
+    processed, agg_refs = _preprocess_agg_refs(formula, extra_agg_names or frozenset())
 
     try:
         tree = ast.parse(processed, mode="eval")
@@ -1106,7 +1120,7 @@ def parse_filter(
     # Include agg args/kwargs in the canonical name so e.g.
     # ``revenue:sum(window='90d') > 100`` matches the windowed measure's alias
     # ``orders.revenue_sum_window_90d`` and not the bare ``orders.revenue_sum``.
-    processed, agg_refs = _preprocess_agg_refs(processed)
+    processed, agg_refs = _preprocess_agg_refs(processed, extra_agg_names or frozenset())
     agg_canonical = {
         ph: canonical_agg_name(
             measure_name=ref.measure_name,

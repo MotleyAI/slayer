@@ -133,6 +133,23 @@ class TestColonSyntaxAliasHealing:
         pf = parse_filter("amount:stddev > 1")
         assert any(ref.aggregation_name == "stddev_samp" for ref in pf.agg_refs)
 
+    def test_custom_agg_named_like_alias_not_healed(self) -> None:
+        # A model custom aggregation named like an alias key takes precedence —
+        # an exact custom-name match is NOT rewritten to the builtin.
+        result = parse_formula("revenue:countd", extra_agg_names=frozenset({"countd"}))
+        assert isinstance(result, AggregatedMeasureRef)
+        assert result.aggregation_name == "countd"
+
+    def test_alias_still_heals_when_custom_name_differs(self) -> None:
+        result = parse_formula(
+            "revenue:countd", extra_agg_names=frozenset({"some_other_agg"})
+        )
+        assert result.aggregation_name == "count_distinct"
+
+    def test_custom_agg_named_like_alias_not_healed_in_filter(self) -> None:
+        pf = parse_filter("revenue:countd > 5", extra_agg_names=frozenset({"countd"}))
+        assert any(ref.aggregation_name == "countd" for ref in pf.agg_refs)
+
 
 # ---------------------------------------------------------------------------
 # §2 — round() / abs() as top-level formula functions
