@@ -606,7 +606,7 @@ def parse_formula(
     formula = _rewrite_funcstyle_aggregations(formula, extra_agg_names)
     # Preprocess colon syntax into ast-parseable placeholders
     processed, agg_refs = _preprocess_agg_refs(
-        formula, custom_agg_names=extra_agg_names or frozenset()
+        formula=formula, custom_agg_names=extra_agg_names or frozenset()
     )
 
     try:
@@ -1141,7 +1141,7 @@ def parse_filter(
     # ``revenue:sum(window='90d') > 100`` matches the windowed measure's alias
     # ``orders.revenue_sum_window_90d`` and not the bare ``orders.revenue_sum``.
     processed, agg_refs = _preprocess_agg_refs(
-        processed, custom_agg_names=extra_agg_names or frozenset()
+        formula=processed, custom_agg_names=extra_agg_names or frozenset()
     )
     agg_canonical = {
         ph: canonical_agg_name(

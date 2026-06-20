@@ -2794,7 +2794,7 @@ def extract_filter_transforms(
     preprocessed = _preprocess_like(preprocessed)
     # Preprocess colon syntax (e.g., "order_total:sum") into ast-safe placeholders
     preprocessed, agg_refs = _preprocess_agg_refs(
-        preprocessed, custom_agg_names=extra_agg_names or frozenset()
+        formula=preprocessed, custom_agg_names=extra_agg_names or frozenset()
     )
     # Build reverse map: placeholder → original colon form
     _agg_reverse = {
