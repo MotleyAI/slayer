@@ -421,7 +421,9 @@ async def enrich_query(
             }
             if aggregation_name not in known_aggregations:
                 suggestion = difflib.get_close_matches(
-                    aggregation_name, sorted(known_aggregations), n=1
+                    word=aggregation_name,
+                    possibilities=sorted(known_aggregations),
+                    n=1,
                 )
                 hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
                 raise ValueError(

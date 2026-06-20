@@ -190,14 +190,16 @@ class TestScalarFunctionsParse:
         assert result.sub_transforms, "nested cumsum should become a sub-transform"
         assert result.sub_transforms[0][1].transform == "cumsum"
 
-    @pytest.mark.parametrize("raw", ["ROUND(revenue:sum, 2)", "Round(revenue:sum, 2)"])
-    def test_round_case_insensitive(self, raw: str) -> None:
-        result = parse_formula(raw)
-        assert isinstance(result, MixedArithmeticField)
-        assert _agg_names(result) == {"sum"}
-
-    @pytest.mark.parametrize("raw", ["ABS(revenue:sum)", "Abs(revenue:sum)"])
-    def test_abs_case_insensitive(self, raw: str) -> None:
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "ROUND(revenue:sum, 2)",
+            "Round(revenue:sum, 2)",
+            "ABS(revenue:sum)",
+            "Abs(revenue:sum)",
+        ],
+    )
+    def test_scalar_functions_case_insensitive(self, raw: str) -> None:
         result = parse_formula(raw)
         assert isinstance(result, MixedArithmeticField)
         assert _agg_names(result) == {"sum"}

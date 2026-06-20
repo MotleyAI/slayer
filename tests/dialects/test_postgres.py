@@ -242,6 +242,15 @@ def test_postgres_rewrite_target_ast_casts_round_over_expression() -> None:
     assert "ROUND(CAST(" in out
 
 
+def test_postgres_parse_predicate_casts_two_arg_round() -> None:
+    # DEV-1576: a 2-arg ROUND in a Mode-A SQL filter (parsed via
+    # _parse_predicate) must get the same numeric cast as projections.
+    from slayer.sql.generator import SQLGenerator
+    gen = SQLGenerator(dialect="postgres")
+    out = gen._parse_predicate("round(amount, 2) > 5").sql(dialect="postgres").upper()
+    assert "ROUND(CAST(" in out
+
+
 def test_postgres_rewrite_target_ast_preserves_json_extract() -> None:
     # The new hook must only touch ROUND — leave everything else alone.
     d = PostgresDialect()

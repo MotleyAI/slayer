@@ -467,7 +467,10 @@ class SQLGenerator:
                 f"Could not extract WHERE predicate from {sql!r} (dialect={d!r})"
             )
         tree = active.rewrite_parsed_ast(where.this)
-        return tree.transform(self._rewrite_log_aliases)
+        tree = tree.transform(self._rewrite_log_aliases)
+        # DEV-1576: same target-keyed rewrite as ``_parse`` — a 2-arg ROUND
+        # over a DOUBLE in a Mode-A SQL filter needs the Postgres numeric cast.
+        return self._dialect.rewrite_target_ast(tree)
 
     def generate(
         self,
