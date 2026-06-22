@@ -464,6 +464,22 @@ class SlayerSQLClient:
         self._async_engine = None
         self._sync_engine: Optional[sa.Engine] = None
 
+    async def aclose(self) -> None:
+        """Dispose the cached async engine inside the current event loop."""
+        engine = self._async_engine
+        if engine is None:
+            return
+        # Null first so a failed dispose can't leave a half-torn engine cached.
+        self._async_engine = None
+        try:
+            await engine.dispose()
+        except Exception as exc:  # pragma: no cover
+            import logging
+            logging.getLogger(__name__).warning(
+                "Async engine dispose failed for datasource %r: %s",
+                self.datasource.name, exc,
+            )
+
     def _get_async_engine(self):
         """Get or create the async engine for this client (cached per instance)."""
         if self._async_engine is None:
