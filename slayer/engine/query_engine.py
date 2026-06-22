@@ -988,29 +988,15 @@ class SlayerQueryEngine:
         return result
 
     async def aclose(self) -> None:
-        """Dispose every cached ``SlayerSQLClient``'s async engine.
+        """Dispose every cached client's async engine; keep the clients themselves.
 
-        Connection-leak fix: per-instance async engines bind their asyncpg /
-        aiomysql pool to the event loop that first opened a connection. If
-        the loop dies (``asyncio.run`` returning, an event-loop swap, or a
-        plain shutdown) the pool's connections can no longer be closed —
-        ``asyncpg.Connection.close`` itself needs a live loop — so they
-        linger open server-side until TCP keepalive expires. ``aclose()``
-        disposes each engine *inside the live loop* so the pool drains
-        cleanly. ``execute_sync`` calls this in a ``finally`` before
-        ``asyncio.run`` returns; long-lived async holders (FastAPI lifespan,
-        notebooks) should call it at shutdown.
-
-        ``SlayerSQLClient`` instances themselves are KEPT in the cache —
-        only ``_async_engine`` is disposed. The sync engine survives
-        (critical for ``:memory:`` SQLite, whose ``StaticPool`` pins the
-        one connection that holds all the in-memory data; dropping the
-        client would replace that with a fresh empty database on the
-        next call). On the next ``execute_sync`` each client lazily
-        rebuilds its async engine on the new loop.
+        Per-instance async engines bind their asyncpg/aiomysql pool to the loop
+        that first opened a connection; closing that loop without disposing
+        leaks the server-side connections (asyncpg.Connection.close needs a
+        live loop). Clients are kept so ``_sync_engine`` survives — important
+        for ``:memory:`` SQLite, whose StaticPool pins the connection holding
+        all data.
         """
-        # ``client.aclose()`` does not mutate ``self._sql_clients`` so
-        # iterating ``.values()`` directly is safe.
         for client in self._sql_clients.values():
             await client.aclose()
 
@@ -1022,11 +1008,8 @@ class SlayerQueryEngine:
         dry_run: bool = False,
         explain: bool = False,
     ) -> SlayerResponse:
-        """Synchronous wrapper for execute(). For CLI, notebooks, and scripts.
-
-        Disposes per-call async engines BEFORE ``asyncio.run`` closes the
-        loop — see ``aclose`` for the leak rationale. Any dispose error is
-        logged and swallowed so it can't mask a real query error.
+        """Synchronous wrapper for execute(). Disposes per-call async engines
+        in ``finally`` so they don't outlive their owning loop — see ``aclose``.
         """
         from slayer.async_utils import run_sync
 
