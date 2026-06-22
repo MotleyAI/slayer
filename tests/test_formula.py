@@ -581,21 +581,20 @@ class TestParseFilterInjection:
         result = parse_filter("customers.email not like '%spam.com'")
         assert "customers.email NOT LIKE '%spam.com'" in result.sql
 
-    # --- DEV-1378: hygiene-call LHS for LIKE / NOT LIKE ---------------------
+    # --- Scalar-call LHS for LIKE / NOT LIKE --------------------------------
 
-    def test_like_hygiene_call_lhs(self) -> None:
-        """``lower(name) like 'a%'`` and friends must parse — DEV-1378
-        added hygiene scalars but the LIKE preprocessor only matched
-        bare/dotted identifiers, so call LHS surfaced as a syntax error."""
+    def test_like_scalar_call_lhs(self) -> None:
+        """``lower(name) like 'a%'`` and friends — LIKE preprocessor must
+        match scalar calls on the LHS, not just bare/dotted identifiers."""
         result = parse_filter("lower(name) like 'a%'")
         assert "lower(name) LIKE 'a%'" in result.sql
 
-    def test_not_like_hygiene_call_lhs(self) -> None:
+    def test_not_like_scalar_call_lhs(self) -> None:
         result = parse_filter("trim(email) not like '%@test.com'")
         assert "trim(email) NOT LIKE '%@test.com'" in result.sql
 
-    def test_like_hygiene_call_dotted_arg(self) -> None:
-        """The hygiene call's argument itself can be a dotted ref."""
+    def test_like_scalar_call_dotted_arg(self) -> None:
+        """The scalar call's argument can be a dotted ref."""
         result = parse_filter("lower(customers.email) like '%@motley.ai'")
         assert "lower(customers.email) LIKE '%@motley.ai'" in result.sql
 
@@ -1108,12 +1107,10 @@ class TestPlaceholderLeakRegression:
         assert ("temperature_c", "max") in names
 
 
-class TestStringHygieneFilters:
-    """DEV-1378: lowercase string-hygiene scalar functions accepted inline
-    in Mode B (DSL) filters: ``lower``, ``upper``, ``trim``, ``replace``,
-    ``substr``, ``instr``, ``length``, ``concat``. The SQL ``||``
-    operator is rewritten to ``concat(...)`` by ``_preprocess_concat``.
-    """
+class TestStringScalarFilters:
+    """Scalar string functions accepted in Mode B filters via the unified
+    ``SCALAR_PASSTHROUGH`` set. The SQL ``||`` operator is rewritten to
+    ``concat(...)`` by ``_preprocess_concat``."""
 
     @pytest.mark.parametrize("op", ["lower", "upper", "trim", "length"])
     def test_unary_op_round_trips(self, op: str) -> None:

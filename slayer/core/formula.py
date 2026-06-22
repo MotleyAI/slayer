@@ -52,13 +52,11 @@ RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
 
 ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
 
-# Canonical Mode B scalar-function allowlist. Consulted uniformly at every
-# Mode B surface — top-level ``ModelMeasure.formula`` calls,
-# inside-arithmetic calls, and ``SlayerQuery.filters``. Names are matched
-# case-insensitively (lowercase here). Pass-through to emitted SQL; sqlglot
-# handles per-dialect spelling. Supersedes the prior ``SCALAR_FUNCTIONS``
-# (DEV-1576) and ``STRING_HYGIENE_OPS`` (DEV-1378) — never add parallel
-# allowlists; extend this set instead.
+# Canonical Mode B scalar-function allowlist. Consulted uniformly by every
+# Mode B surface — top-level ``ModelMeasure.formula`` calls, inside-arithmetic
+# calls, and ``SlayerQuery.filters`` — case-insensitively. Pass-through to
+# emitted SQL; sqlglot handles per-dialect spelling. Extending: add to this
+# set only — never create parallel allowlists.
 SCALAR_PASSTHROUGH = frozenset({
     # NULL handling
     "coalesce", "nullif", "ifnull",
@@ -69,28 +67,15 @@ SCALAR_PASSTHROUGH = frozenset({
     "mod", "sign", "trunc",
     # Min/max scalar (NOT the agg forms — those are min:/max:)
     "greatest", "least",
-    # String hygiene
+    # String
     "lower", "upper", "trim", "ltrim", "rtrim",
     "replace", "substr", "substring",
     "instr", "length", "concat",
 })
 
-# Backwards-compat aliases for code paths that still reference the old
-# names. Both point at the unified set so adding a function here is
-# enough for every surface to pick it up.
-SCALAR_FUNCTIONS = SCALAR_PASSTHROUGH
-STRING_HYGIENE_OPS = SCALAR_PASSTHROUGH
-
-CallCategory = Literal["transform", "scalar", "hygiene", "like_internal", "unknown"]
+CallCategory = Literal["transform", "scalar", "like_internal", "unknown"]
 
 _LIKE_INTERNAL_NAMES = frozenset({"__like__", "__notlike__"})
-
-# String-hygiene names route through the filter walker's "hygiene" branch
-# for back-compat. They're a subset of ``SCALAR_PASSTHROUGH``.
-_LEGACY_HYGIENE_NAMES = frozenset({
-    "lower", "upper", "trim", "ltrim", "rtrim",
-    "replace", "substr", "substring", "instr", "length", "concat",
-})
 
 
 def _classify_call_name(name: str) -> CallCategory:
@@ -99,8 +84,6 @@ def _classify_call_name(name: str) -> CallCategory:
     if name in ALL_TRANSFORMS:
         return "transform"
     if name.lower() in SCALAR_PASSTHROUGH:
-        if name.lower() in _LEGACY_HYGIENE_NAMES:
-            return "hygiene"
         return "scalar"
     if name in _LIKE_INTERNAL_NAMES:
         return "like_internal"
@@ -655,10 +638,9 @@ def _parse_node(
         func_name = node.func.id
         category = _classify_call_name(func_name)
         if category == "scalar":
-            # DEV-1576: round()/abs() are passthrough scalar functions. Route
-            # through the arithmetic-passthrough path, which preserves the call
-            # in the emitted SQL and registers any inner aggregated refs (and
-            # extracts any nested transform as a sub-transform).
+            # Pass-through SCALAR_PASSTHROUGH call. Route through
+            # _parse_mixed_arithmetic so inner aggregated refs and nested
+            # transforms are registered/extracted.
             _validate_scalar_call(node, original)
             return _parse_mixed_arithmetic(node, original, agg_refs)
         if category != "transform":
@@ -986,11 +968,10 @@ class ParsedFilter(BaseModel):
 
 
 # LHS of a LIKE / NOT LIKE may be a bare/dotted identifier OR a single
-# hygiene-call (e.g. ``lower(name)``, ``trim(customers.email)``). The
-# call alternative is matched before the dotted-identifier alternative
-# so that ``lower(name) like 'a%'`` resolves to the call form.
-# ``[^()]*`` keeps this to one level of parens — nested hygiene calls
-# inside LIKE (e.g. ``concat(lower(a), b) like '%'``) still fall through.
+# scalar call (e.g. ``lower(name)``, ``trim(customers.email)``). The call
+# alternative is matched first so ``lower(name) like 'a%'`` resolves to
+# the call form. ``[^()]*`` keeps this to one level of parens — nested
+# scalar calls (``concat(lower(a), b) like '%'``) still fall through.
 _LIKE_RE = re.compile(
     r"\b(\w+\([^()]*\)|(?:\w+\.)*\w+)\s+(not\s+)?like\s+('[^']*')",
     flags=re.IGNORECASE,
@@ -1102,8 +1083,8 @@ def parse_filter(
     - ``LIKE`` / ``NOT LIKE``, ``IS NULL`` / ``IS NOT NULL``
 
     Rejects unknown function calls (the Python AST walker raises on any
-    call other than the internal ``__like__`` / ``__notlike__`` helpers
-    and a small allowlist of string-hygiene scalar operators).
+    call outside ``SCALAR_PASSTHROUGH`` and the internal ``__like__`` /
+    ``__notlike__`` helpers).
 
     Pre-rejects raw ``OVER (...)`` window-function syntax via
     :func:`has_window_function` (the rank-family transforms cover the
@@ -1395,10 +1376,9 @@ def _call_to_sql(node: ast.Call, original: str, recur) -> str:
     if category == "like_internal" and len(node.args) >= 2:
         sql_op = "LIKE" if func_name == "__like__" else "NOT LIKE"
         return f"{recur(node.args[0])} {sql_op} '{_get_string_arg(node.args[1], original)}'"
-    if category in ("hygiene", "scalar"):
-        # Any function in the unified SCALAR_PASSTHROUGH set: pass through
-        # to emitted SQL with the user-written casing preserved. sqlglot
-        # re-spells per dialect at SQL-generation time.
+    if category == "scalar":
+        # SCALAR_PASSTHROUGH: pass through with the user-written casing
+        # preserved; sqlglot re-spells per dialect at SQL-generation time.
         if node.keywords:
             raise ValueError(
                 f"Filter scalar function {func_name!r} does not accept "
