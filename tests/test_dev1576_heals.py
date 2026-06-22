@@ -257,26 +257,31 @@ class TestScalarFunctionArity:
             parse_formula("abs(revenue:sum, foo=1)")
 
 
-class TestScalarAllowlistIsExclusive:
-    @pytest.mark.parametrize("fn", ["ceil", "floor", "sqrt", "ln", "nullif", "coalesce"])
-    def test_other_functions_still_reject_at_top_level(self, fn: str) -> None:
-        # Only round/abs are promoted to top-level scalar functions. Every
-        # other function call at the top level keeps raising "Unknown
-        # transform" (the inside-arithmetic passthrough is unchanged and
-        # tested separately).
-        with pytest.raises(ValueError, match="Unknown transform"):
-            parse_formula(f"{fn}(revenue:sum)")
+class TestScalarPassthroughPolicy:
+    """Mode B has one canonical scalar-function allowlist (SCALAR_PASSTHROUGH)
+    applied uniformly at top-level and inside arithmetic. Replaces the old
+    narrow {round, abs} gate from DEV-1576."""
 
-    def test_inside_arithmetic_passthrough_unchanged(self) -> None:
-        # Pre-existing behaviour: a non-transform call inside arithmetic
-        # passes through and registers the inner agg ref.
+    @pytest.mark.parametrize("fn", ["ceil", "floor", "sqrt", "ln", "nullif", "coalesce"])
+    def test_common_scalars_accepted_at_top_level(self, fn: str) -> None:
+        # All of these landed in the unified SCALAR_PASSTHROUGH set.
+        result = parse_formula(f"{fn}(revenue:sum)")
+        assert result is not None
+
+    def test_inside_arithmetic_passthrough_still_works(self) -> None:
         result = parse_formula("*:count / nullif(revenue:max, 0)")
         assert isinstance(result, MixedArithmeticField)
         assert "nullif" in result.sql.lower()
+
+    def test_unknown_call_inside_arithmetic_now_rejected(self) -> None:
+        # The unification closed the accidental side door: unknown calls
+        # inside arithmetic used to silently pass through.
+        with pytest.raises(ValueError, match="Unknown function"):
+            parse_formula("revenue:sum + bogus_fn(other:sum)")
 
     @pytest.mark.parametrize("raw", ["countd(revenue)", "countDistinct(revenue)"])
     def test_funcstyle_aggregation_alias_out_of_scope(self, raw: str) -> None:
         # §1 heals colon syntax only. Function-style alias calls are NOT
         # rewritten — they fall through to the parser as unknown calls.
-        with pytest.raises(ValueError, match="Unknown transform"):
+        with pytest.raises(ValueError, match="Unknown function"):
             parse_formula(raw)

@@ -197,7 +197,7 @@ class TestFormulaParser:
         assert result.transform == "change_pct"
 
     def test_unknown_function_raises(self) -> None:
-        with pytest.raises(ValueError, match="Unknown transform"):
+        with pytest.raises(ValueError, match="Unknown function"):
             parse_formula("unknown_func(revenue)")
 
     def test_invalid_syntax_raises(self) -> None:
@@ -1182,13 +1182,56 @@ class TestStringHygieneFilters:
         pf = parse_filter("note = 'lower(x)'")
         assert pf.sql == "note = 'lower(x)'"
 
-    def test_uppercase_function_name_rejected(self) -> None:
-        # Casing is lowercase-only — consistent with existing transform names.
-        with pytest.raises(ValueError, match="Unknown filter function 'LOWER'"):
-            parse_filter("LOWER(name) = 'eu'")
+    def test_uppercase_function_name_accepted(self) -> None:
+        # SCALAR_PASSTHROUGH lookup is case-insensitive, matching the
+        # formula-side policy. The user-written casing is preserved on
+        # emission so sqlglot can re-spell per dialect.
+        pf = parse_filter("LOWER(name) = 'eu'")
+        assert "LOWER(name)" in pf.sql
 
-    def test_substring_synonym_rejected(self) -> None:
-        # The canonical name is ``substr`` (SQLite spelling); ``substring``
-        # is an unknown DSL function.
-        with pytest.raises(ValueError, match="Unknown filter function 'substring'"):
-            parse_filter("substring(s, 1, 5) = 'abcde'")
+    def test_substring_synonym_accepted(self) -> None:
+        # Both ``substr`` (SQLite) and ``substring`` (Postgres/ANSI) are
+        # in the unified SCALAR_PASSTHROUGH set.
+        pf = parse_filter("substring(s, 1, 5) = 'abcde'")
+        assert "substring(s, 1, 5)" in pf.sql
+
+
+class TestUnifiedScalarPassthrough:
+    """One canonical SCALAR_PASSTHROUGH set is consulted by every Mode B
+    surface — top-level formulas, inside-arithmetic formulas, and query
+    filters. Replaces the old three-allowlist regime."""
+
+    @pytest.mark.parametrize("fn", [
+        "coalesce", "nullif", "ifnull",
+        "ceil", "floor", "sqrt", "exp", "ln", "log10", "log2",
+        "greatest", "least", "mod", "sign",
+    ])
+    def test_scalar_top_level(self, fn: str) -> None:
+        parse_formula(f"{fn}(revenue:sum, 0)" if fn in {"coalesce", "nullif", "ifnull", "greatest", "least", "mod"}
+                      else f"{fn}(revenue:sum)")
+
+    def test_cto_repro_coalesce_nullif_arithmetic(self) -> None:
+        """The motivating Cube-translation case:
+        ``COALESCE(((SUM(a)/NULLIF(SUM(b),0)) - 1), -999999)``."""
+        result = parse_formula("coalesce((a:sum / nullif(b:sum, 0)) - 1, -999999)")
+        assert "coalesce" in result.sql.lower()
+        assert "nullif" in result.sql.lower()
+
+    def test_unknown_call_rejected_at_top_level(self) -> None:
+        with pytest.raises(ValueError, match="Unknown function"):
+            parse_formula("magic_fn(revenue:sum)")
+
+    def test_unknown_call_rejected_inside_arithmetic(self) -> None:
+        with pytest.raises(ValueError, match="Unknown function"):
+            parse_formula("revenue:sum + magic_fn(other:sum)")
+
+    def test_uppercase_accepted_case_insensitively(self) -> None:
+        # Case-insensitive lookup matches the Mode B convention.
+        parse_formula("COALESCE(revenue:sum, 0)")
+        parse_formula("Round(revenue:sum / 100, 2)")
+
+    def test_filter_uses_same_set(self) -> None:
+        # The filter walker consults the same SCALAR_PASSTHROUGH so things
+        # like coalesce / greatest are now accepted in filters too.
+        pf = parse_filter("coalesce(name, 'unknown') = 'foo'")
+        assert "coalesce" in pf.sql.lower()
