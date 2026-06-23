@@ -272,7 +272,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             "SLayer is a semantic layer for querying databases. "
             "Instead of writing SQL, describe what data you want using models, measures, dimensions, and filters. "
             "Call help() for an overview of SLayer concepts, and help(topic='...') for deep dives on specific topics. "
-            "Typical workflow: list_datasources → models_summary → inspect_model → query. "
+            "Typical workflow: list_datasources → models_summary → inspect → query. "
             "To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."
         ),
     )
@@ -308,7 +308,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         variables: Optional[Dict[str, Any]] = None,
         distinct_dimension_values: bool = True,
     ) -> str:
-        """Query data from a semantic model. Call inspect_model first to see available columns and measures.
+        """Query data from a semantic model. Call inspect(reference="<ds>.<model>", entity_type="model") first to see available columns and measures.
 
         Args:
             source_model: One of three forms:
@@ -1417,7 +1417,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             for m in models:
                 lines.append(f"- {m.name} ({len(m.columns)} columns, {len(m.measures)} measures)")
             lines.append("")
-            lines.append("Use models_summary and inspect_model to explore, then query to fetch data.")
+            lines.append("Use models_summary and inspect to explore, then query to fetch data.")
 
         return "\n".join(lines)
 

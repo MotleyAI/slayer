@@ -44,6 +44,8 @@ _VALID_FORMATS = {"markdown", "json"}
 # Kinds for which the leaf-lookup canonical form is the 3-part id.
 _LEAF_KINDS = {"column", "measure", "aggregation"}
 
+_DESCRIPTION_PREFIX = "Description: "
+
 
 def _warn_line(*, arg: str, entity_type: str) -> str:
     """A model-only-arg warning message (plain text, no ``> Warning:``
@@ -178,11 +180,11 @@ class InspectService:
             return text
         out: List[str] = []
         for line in text.split("\n"):
-            if line.startswith("Description: "):
-                value = line[len("Description: "):]
+            if line.startswith(_DESCRIPTION_PREFIX):
+                value = line[len(_DESCRIPTION_PREFIX):]
                 if len(value) > max_chars:
                     line = (
-                        "Description: "
+                        _DESCRIPTION_PREFIX
                         + value[:max_chars]
                         + _TRUNCATION_MARKER
                     )
@@ -368,6 +370,23 @@ class InspectService:
                 f"Model '{canonical}' not found "
                 f"(reference '{reference}')."
             )
+        if compact:
+            # Description-only, consistent with every other kind — and cheap:
+            # short-circuit before the full renderer (which can run row-count /
+            # profiling / sample-data DB work). compact=False returns the full
+            # model view (sections / samples / SQL).
+            description = _truncate_description(
+                model.description, descriptions_max_chars,
+            )
+            if fmt == "json":
+                return json.dumps({
+                    "canonical_id": canonical,
+                    "entity_type": "model",
+                    "description": description,
+                    "text": "",
+                    "warnings": warnings,
+                }, indent=2, default=str)
+            return self._markdown_with_warnings(description or "", warnings)
         rendered = await render_model_inspection(
             model=model,
             storage=self._storage,
@@ -400,16 +419,19 @@ class InspectService:
             canonical = res.canonical_forms[0]
             if canonical.count(".") == 1:
                 return canonical
-        # Case D / fallback: the resolver returned a datasource (1-seg) or
-        # a leaf (3-seg). Try the bare-name model identity lookup.
-        bare = reference.split(".")[-1] if "." in reference else reference
-        for candidate in (reference, bare):
-            try:
-                ident = await self._storage.resolve_model_identity(candidate)
-            except Exception:
-                ident = None
-            if ident is not None:
-                return f"{ident[0]}.{ident[1]}"
+        # Case D fallback: a *bare* name the resolver mapped to a datasource
+        # (1-seg) that is ALSO a model elsewhere. Only the reference itself is
+        # a valid model-identity candidate — never the last segment of a
+        # dotted reference. A dotted reference that resolved to a leaf (or
+        # didn't resolve to a 2-seg model) is a kind mismatch, not a model:
+        # collapsing `ds.orders.amount` to `amount` could return an unrelated
+        # model named `amount`.
+        try:
+            ident = await self._storage.resolve_model_identity(reference)
+        except Exception:
+            ident = None
+        if ident is not None:
+            return f"{ident[0]}.{ident[1]}"
         return None
 
     # ------------------------------------------------------------------
@@ -458,31 +480,63 @@ class InspectService:
             if p.canonical_id == canonical and p.kind == entity_type
         ]
         if len(matches) == 1:
-            entry = matches[0]
-            trunc_desc = _truncate_description(
-                entry.description, descriptions_max_chars,
+            return self._render_leaf_entry(
+                entry=matches[0], canonical=canonical, entity_type=entity_type,
+                compact=compact, fmt=fmt,
+                descriptions_max_chars=descriptions_max_chars,
+                warnings=warnings,
             )
-            full_text = self._truncate_description_field(
-                entry.text, descriptions_max_chars,
-            )
-            if fmt == "json":
-                return json.dumps({
-                    "canonical_id": canonical,
-                    "entity_type": entity_type,
-                    "description": trunc_desc,
-                    "text": "" if compact else full_text,
-                    "warnings": warnings,
-                })
-            body = (trunc_desc or "") if compact else full_text
-            return self._markdown_with_warnings(body, warnings)
+        return self._leaf_lookup_error(
+            canonical=canonical, entity_type=entity_type, leaf=leaf,
+            ds_name=ds_name, model_name=model_name, pairs=pairs,
+            match_count=len(matches),
+        )
 
-        if len(matches) > 1:
+    def _render_leaf_entry(
+        self,
+        *,
+        entry,
+        canonical: str,
+        entity_type: str,
+        compact: bool,
+        fmt: str,
+        descriptions_max_chars: Optional[int],
+        warnings: List[str],
+    ) -> str:
+        trunc_desc = _truncate_description(
+            entry.description, descriptions_max_chars,
+        )
+        full_text = self._truncate_description_field(
+            entry.text, descriptions_max_chars,
+        )
+        if fmt == "json":
+            return json.dumps({
+                "canonical_id": canonical,
+                "entity_type": entity_type,
+                "description": trunc_desc,
+                "text": "" if compact else full_text,
+                "warnings": warnings,
+            })
+        body = (trunc_desc or "") if compact else full_text
+        return self._markdown_with_warnings(body, warnings)
+
+    @staticmethod
+    def _leaf_lookup_error(
+        *,
+        canonical: str,
+        entity_type: str,
+        leaf: str,
+        ds_name: str,
+        model_name: str,
+        pairs,
+        match_count: int,
+    ) -> str:
+        if match_count > 1:
             return (
-                f"'{canonical}' matches {len(matches)} {entity_type}s on "
+                f"'{canonical}' matches {match_count} {entity_type}s on "
                 f"model '{ds_name}.{model_name}'; cannot uniquely identify "
                 f"which to inspect."
             )
-
         # Zero matches of the requested kind. Name the available kind(s).
         other_kinds = sorted({
             p.kind for p in pairs if p.canonical_id == canonical

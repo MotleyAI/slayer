@@ -223,30 +223,14 @@ def _markdown_table(rows: List[Dict[str, Any]], columns: List[str]) -> str:
     return "\n".join([header, sep] + body)
 
 
-def _build_sample_query_args(
+def _choose_sample_dims(
     model: SlayerModel,
-    num_rows: int,
-    measure_types: Optional[Dict[str, str]] = None,
-) -> Dict[str, Any]:
-    """Build the ``SlayerQuery`` payload for ``inspect_model``'s sample data.
-
-    - First entry is always ``*:count``.
-    - For each non-hidden, non-primary-key column:
-      - If ``allowed_aggregations`` is restricted and doesn't include ``avg``,
-        use the first safe entry (or skip if empty).
-      - Else (avg is permitted): prefer ``avg``, but fall back to
-        ``count_distinct`` for non-numeric columns (inferred from
-        ``measure_types`` or the column's own ``type``).
-    - Groups by up to two non-primary-key, non-hidden columns of non-numeric
-      type so the sample shows variation without exploding table width.
-    """
-    measure_types = measure_types or {}
-
-    # Pick up to two categorical columns to group by first, so we don't also
-    # aggregate them as measures (count_distinct(status) grouped by status is
-    # always 1, which isn't useful sample data).
+) -> Tuple[List[Dict[str, str]], set]:
+    """Pick up to two categorical (TEXT/BOOLEAN) non-hidden, non-PK columns to
+    group the sample by, so they aren't also aggregated as measures
+    (count_distinct(status) grouped by status is always 1)."""
     dims: List[Dict[str, str]] = []
-    dim_names: set[str] = set()
+    dim_names: set = set()
     for c in model.columns:
         if c.hidden or c.primary_key:
             continue
@@ -257,31 +241,59 @@ def _build_sample_query_args(
         dim_names.add(c.name)
         if len(dims) >= 2:
             break
+    return dims, dim_names
+
+
+def _choose_sample_agg(
+    column: Column,
+    *,
+    measure_types: Dict[str, str],
+) -> Optional[str]:
+    """Pick a sample aggregation for ``column``, or ``None`` to skip it.
+
+    - With a restricted ``allowed_aggregations`` that excludes ``avg``: prefer
+      the first zero-arg-safe built-in (``_SAFE_SAMPLE_AGGS``); if none, fall
+      back to the first allowed entry (even if it needs extra context — an
+      intentional, tested behavior). Empty list → skip.
+    - Otherwise (``avg`` permitted): prefer ``avg`` for numeric columns, else
+      ``count_distinct`` (type inferred from ``measure_types`` — the lowercase
+      ``engine.get_column_types`` contract — or the column's own ``type``).
+    """
+    allowed = column.allowed_aggregations
+    if allowed is not None and "avg" not in allowed:
+        if not allowed:
+            return None
+        safe = next((a for a in allowed if a in _SAFE_SAMPLE_AGGS), None)
+        return safe if safe else allowed[0]
+    inferred = measure_types.get(column.name)
+    inferred_norm = inferred.strip().lower() if isinstance(inferred, str) else None
+    if inferred_norm and inferred_norm != "number":
+        return "count_distinct"
+    if column.type not in (DataType.INT, DataType.DOUBLE):
+        return "count_distinct"
+    return "avg"
+
+
+def _build_sample_query_args(
+    model: SlayerModel,
+    num_rows: int,
+    measure_types: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Build the ``SlayerQuery`` payload for ``inspect_model``'s sample data.
+
+    First measure is always ``*:count``; then one aggregation per non-hidden,
+    non-primary-key, non-grouped column (see :func:`_choose_sample_agg`).
+    """
+    measure_types = measure_types or {}
+    dims, dim_names = _choose_sample_dims(model)
 
     measures: List[Dict[str, str]] = [{"formula": "*:count"}]
     for c in model.columns:
         if c.hidden or c.primary_key or c.name in dim_names:
             continue
-        allowed = c.allowed_aggregations
-        if allowed is not None and "avg" not in allowed:
-            if not allowed:
-                continue
-            safe = next((a for a in allowed if a in _SAFE_SAMPLE_AGGS), None)
-            agg = safe if safe else allowed[0]
-        else:
-            # DEV-1361: numeric columns (INT/DOUBLE) are avg-able; everything
-            # else falls back to count_distinct. ``measure_types`` comes from
-            # ``engine.get_column_types`` whose contract is the lowercase
-            # category set {"number","string","time","boolean"}; normalize
-            # before comparing in case the contract widens later.
-            inferred = measure_types.get(c.name)
-            inferred_norm = inferred.strip().lower() if isinstance(inferred, str) else None
-            if inferred_norm and inferred_norm != "number":
-                agg = "count_distinct"
-            elif c.type not in (DataType.INT, DataType.DOUBLE):
-                agg = "count_distinct"
-            else:
-                agg = "avg"
+        agg = _choose_sample_agg(c, measure_types=measure_types)
+        if agg is None:
+            continue
         measures.append({"formula": f"{c.name}:{agg}"})
 
     return {

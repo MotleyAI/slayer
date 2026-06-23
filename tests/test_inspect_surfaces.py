@@ -6,6 +6,7 @@ REST ``POST /inspect``, CLI ``slayer inspect``, and ``SlayerClient.inspect``
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import io
 import json
@@ -120,17 +121,20 @@ class TestMcpSurface:
 # ---------------------------------------------------------------------------
 
 
+def _seed_sync(storage: YAMLStorage) -> None:
+    """Run the async ``_seed`` on a throwaway loop, for sync fixtures."""
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_seed(storage))
+    finally:
+        loop.close()
+
+
 @pytest.fixture
 def rest_client() -> Iterator[TestClient]:
-    import asyncio
-
     with tempfile.TemporaryDirectory() as tmp:
         storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(_seed(storage))
-        finally:
-            loop.close()
+        _seed_sync(storage)
         yield TestClient(create_app(storage=storage))
 
 
@@ -186,30 +190,30 @@ class TestRestSurface:
 
 
 @pytest.fixture
-async def cli_storage() -> AsyncIterator[YAMLStorage]:
+def cli_storage() -> Iterator[YAMLStorage]:
     with tempfile.TemporaryDirectory() as tmp:
         st = YAMLStorage(base_dir=tmp)
-        await _seed(st)
+        _seed_sync(st)
         yield st
 
 
 def _inspect_args(**overrides) -> SimpleNamespace:
-    base = dict(
-        reference="mydb.orders.amount",
-        entity_type="column",
-        compact=False,
-        format="markdown",
-        num_rows=3,
-        show_sql=False,
-        sections=None,
-        descriptions_max_chars=None,
-    )
+    base = {
+        "reference": "mydb.orders.amount",
+        "entity_type": "column",
+        "compact": False,
+        "format": "markdown",
+        "num_rows": 3,
+        "show_sql": False,
+        "sections": None,
+        "descriptions_max_chars": None,
+    }
     base.update(overrides)
     return SimpleNamespace(**base)
 
 
 class TestCliSurface:
-    async def test_run_inspect_prints_render(
+    def test_run_inspect_prints_render(
         self, cli_storage: YAMLStorage
     ) -> None:
         from slayer.cli import _run_inspect
@@ -219,9 +223,13 @@ class TestCliSurface:
             _run_inspect(args=_inspect_args(), storage=cli_storage)
         assert "Column: mydb.orders.amount" in buf.getvalue()
 
-    async def test_run_inspect_error_path(self, cli_storage: YAMLStorage) -> None:
+    def test_run_inspect_not_found_prints_string(
+        self, cli_storage: YAMLStorage
+    ) -> None:
         from slayer.cli import _run_inspect
 
+        # A not-found lookup is a descriptive string result (exit 0), not a
+        # raised error — consistent with the inspect_model precedent.
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             _run_inspect(
@@ -230,6 +238,21 @@ class TestCliSurface:
             )
         assert "nope" in buf.getvalue()
 
+    def test_run_inspect_invalid_arg_exits_nonzero(
+        self, cli_storage: YAMLStorage
+    ) -> None:
+        from slayer.cli import _run_inspect
+
+        # Invalid args raise ValueError → _exit_with_error → sys.exit(1).
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), pytest.raises(SystemExit) as exc:
+            _run_inspect(
+                args=_inspect_args(entity_type="banana"),
+                storage=cli_storage,
+            )
+        assert exc.value.code == 1
+        assert "entity_type" in buf.getvalue()
+
 
 # ---------------------------------------------------------------------------
 # SlayerClient
@@ -237,10 +260,10 @@ class TestCliSurface:
 
 
 @pytest.fixture
-async def client_storage() -> AsyncIterator[YAMLStorage]:
+def client_storage() -> Iterator[YAMLStorage]:
     with tempfile.TemporaryDirectory() as tmp:
         st = YAMLStorage(base_dir=tmp)
-        await _seed(st)
+        _seed_sync(st)
         yield st
 
 

@@ -91,7 +91,7 @@ def _resolve_storage(args):
     return resolve_storage(path)
 
 
-def main():
+def main():  # NOSONAR(S3776) — linear top-level CLI command dispatch (one elif per subcommand); splitting the dispatch chain would not improve readability
     parser = argparse.ArgumentParser(
         prog="slayer",
         description="SLayer — a lightweight semantic layer for AI agents",
@@ -797,8 +797,8 @@ def _run_inspect(*, args, storage) -> None:
             descriptions_max_chars=args.descriptions_max_chars,
         ))
     except (SlayerError, ValueError) as exc:
-        print(str(exc))
-        return
+        _exit_with_error(exc)
+        return  # for type checkers; _exit_with_error never returns
     print(out)
 
 

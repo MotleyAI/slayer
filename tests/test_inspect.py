@@ -224,6 +224,18 @@ class TestCompact:
         )
         assert default == explicit
 
+    async def test_model_compact_is_description_only(
+        self, svc: InspectService
+    ) -> None:
+        # DEV-1588 review: model compact must short-circuit to description-only
+        # (cheap, consistent with other kinds) rather than the full renderer.
+        out = await svc.inspect(
+            reference="mydb.orders", entity_type="model", compact=True,
+        )
+        assert "One row per placed order." in out
+        assert "# Model: `orders`" not in out
+        assert "Columns" not in out
+
 
 # ---------------------------------------------------------------------------
 # Reference normalization (join paths) + normalized-id echo
@@ -352,6 +364,26 @@ class TestEntityTypeMismatch:
             reference="mydb.orders.amount", entity_type="model", compact=False,
         )
         assert "model" in out.lower()
+
+    async def test_dotted_leaf_does_not_resolve_to_unrelated_model(
+        self, storage: YAMLStorage
+    ) -> None:
+        # DEV-1588 review: a model literally named like the leaf must NOT be
+        # returned for `inspect("mydb.orders.amount", "model")` — the dotted
+        # leaf is a kind mismatch, not a bare-name fallback.
+        await storage.save_model(SlayerModel(
+            name="amount",  # collides with orders.amount leaf name
+            sql_table="amount",
+            data_source="mydb",
+            description="UNRELATED model named amount.",
+            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+        ))
+        svc = InspectService(storage=storage)
+        out = await svc.inspect(
+            reference="mydb.orders.amount", entity_type="model", compact=False,
+        )
+        assert "UNRELATED model named amount." not in out
+        assert "# Model: `amount`" not in out
 
     async def test_memory_entity_type_on_non_memory_ref_errors(
         self, svc: InspectService
