@@ -20,13 +20,14 @@ from slayer.core.errors import EntityResolutionError, MemoryNotFoundError
 from slayer.inspect.model_render import (
     _TRUNCATION_MARKER,
     _truncate_description,
+    model_skeleton_fields,
     render_model_inspection,
+    render_model_skeleton,
 )
 from slayer.memories.resolver import resolve_entity
 from slayer.search.render import (
     collect_model_entity_pairs,
     compact_description_from_learning,
-    render_datasource_text,
     render_memory_text,
 )
 from slayer.storage.base import StorageBackend
@@ -252,13 +253,17 @@ class InspectService:
             full_text = render_memory_text(memory=mem_for_render)
 
         if fmt == "json":
-            return json.dumps({
+            payload = {
                 "canonical_id": f"memory:{mem.id}",
                 "entity_type": "memory",
                 "description": description,
-                "text": full_text,
-                "warnings": warnings,
-            })
+            }
+            # ``text`` present iff non-empty (DEV-1588 follow-up): compact mode
+            # leaves ``full_text`` empty, so the key is omitted.
+            if full_text:
+                payload["text"] = full_text
+            payload["warnings"] = warnings
+            return json.dumps(payload)
         body = description if compact else full_text
         return self._markdown_with_warnings(body or "", warnings)
 
@@ -317,30 +322,56 @@ class InspectService:
     ) -> str:
         cfg = await self._storage.get_datasource(ds_name)
         description = cfg.description if cfg is not None else None
-        models = []
-        for name in await self._storage.list_models(data_source=ds_name):
-            m = await self._storage.get_model(name, data_source=ds_name)
-            if m is not None:
-                models.append(m)
-        full_text = self._truncate_description_field(
-            text=render_datasource_text(
-                name=ds_name, models=models, description=description,
-            ),
-            max_chars=descriptions_max_chars,
-        )
         trunc_desc = _truncate_description(
             text=description, max_chars=descriptions_max_chars,
         )
+
+        # compact=True: datasource description only (DB-free); ``text`` is
+        # omitted entirely (present iff non-empty, DEV-1588 follow-up).
+        if compact:
+            if fmt == "json":
+                return json.dumps({
+                    "canonical_id": ds_name,
+                    "entity_type": "datasource",
+                    "description": trunc_desc,
+                    "warnings": warnings,
+                })
+            return self._markdown_with_warnings(trunc_desc or "", warnings)
+
+        # compact=False: a per-model schema skeleton for each VISIBLE model,
+        # sorted by name (matches models_summary), still DB-free.
+        models = []
+        for name in await self._storage.list_models(data_source=ds_name):
+            m = await self._storage.get_model(name, data_source=ds_name)
+            if m is not None and not m.hidden:
+                models.append(m)
+        models.sort(key=lambda m: m.name)
+
         if fmt == "json":
             return json.dumps({
                 "canonical_id": ds_name,
                 "entity_type": "datasource",
                 "description": trunc_desc,
-                "text": "" if compact else full_text,
+                "models": [
+                    model_skeleton_fields(
+                        model=m, max_chars=descriptions_max_chars,
+                    )
+                    for m in models
+                ],
                 "warnings": warnings,
-            })
-        body = (trunc_desc or "") if compact else full_text
-        return self._markdown_with_warnings(body, warnings)
+            }, indent=2, default=str)
+
+        md_lines: List[str] = [f"Datasource: {ds_name}"]
+        if trunc_desc:
+            md_lines.append(f"Description: {trunc_desc}")
+        for m in models:
+            md_lines.append(f"\n## `{m.name}`")
+            md_lines.append(
+                render_model_skeleton(
+                    model=m, max_chars=descriptions_max_chars,
+                )
+            )
+        return self._markdown_with_warnings("\n".join(md_lines), warnings)
 
     # ------------------------------------------------------------------
     # Model
@@ -373,22 +404,27 @@ class InspectService:
                 f"(reference '{reference}')."
             )
         if compact:
-            # Description-only, consistent with every other kind — and cheap:
-            # short-circuit before the full renderer (which can run row-count /
-            # profiling / sample-data DB work). compact=False returns the full
-            # model view (sections / samples / SQL).
-            description = _truncate_description(
-                text=model.description, max_chars=descriptions_max_chars,
-            )
+            # Schema skeleton (DEV-1588 follow-up): column / measure /
+            # aggregation NAMES + join targets, zero DB calls — short-circuit
+            # before the full renderer (which can run row-count / profiling /
+            # sample-data DB work). compact=False returns the full model view
+            # (sections / samples / SQL).
             if fmt == "json":
-                return json.dumps({
-                    "canonical_id": canonical,
-                    "entity_type": "model",
-                    "description": description,
-                    "text": "",
-                    "warnings": warnings,
-                }, indent=2, default=str)
-            return self._markdown_with_warnings(description or "", warnings)
+                payload = dict(model_skeleton_fields(
+                    model=model, max_chars=descriptions_max_chars,
+                ))
+                # The resolved id is authoritative (echoes the normalized
+                # reference, like every other inspect JSON shape).
+                payload["canonical_id"] = canonical
+                payload["entity_type"] = "model"
+                payload["warnings"] = warnings
+                return json.dumps(payload, indent=2, default=str)
+            body = render_model_skeleton(
+                model=model, max_chars=descriptions_max_chars,
+            )
+            return self._markdown_with_warnings(
+                f"# `{model.name}`\n{body}", warnings,
+            )
         rendered = await render_model_inspection(
             model=model,
             storage=self._storage,
@@ -512,13 +548,17 @@ class InspectService:
             text=entry.text, max_chars=descriptions_max_chars,
         )
         if fmt == "json":
-            return json.dumps({
+            payload = {
                 "canonical_id": canonical,
                 "entity_type": entity_type,
                 "description": trunc_desc,
-                "text": "" if compact else full_text,
-                "warnings": warnings,
-            })
+            }
+            # ``text`` present iff non-empty (DEV-1588 follow-up): compact mode
+            # omits it; full mode carries the entity render.
+            if not compact and full_text:
+                payload["text"] = full_text
+            payload["warnings"] = warnings
+            return json.dumps(payload)
         body = (trunc_desc or "") if compact else full_text
         return self._markdown_with_warnings(body, warnings)
 

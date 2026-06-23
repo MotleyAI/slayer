@@ -534,6 +534,64 @@ def _source_type_for(model: SlayerModel) -> str:
     return "unknown"
 
 
+# ---------------------------------------------------------------------------
+# Model schema skeleton (DEV-1588 follow-up)
+# ---------------------------------------------------------------------------
+
+_SKELETON_NONE = "_(none)_"
+
+
+def model_skeleton_fields(
+    *, model: SlayerModel, max_chars: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Cheap, DB-free structured skeleton of a model.
+
+    Shape: ``{name, canonical_id, description, column_names, measure_names,
+    aggregation_names, joins_to}``. Used by ``inspect(model, compact=True)``
+    JSON and by each entry of ``inspect(datasource, compact=False)``'s
+    ``models`` list (DEV-1588). ``description`` is truncated by ``max_chars``;
+    ``canonical_id`` falls back to the bare name when ``data_source`` is unset
+    (e.g. a not-yet-refined query-backed model).
+    """
+    canonical_id = (
+        f"{model.data_source}.{model.name}" if model.data_source else model.name
+    )
+    return {
+        "name": model.name,
+        "canonical_id": canonical_id,
+        "description": _truncate_description(model.description, max_chars),
+        "column_names": [c.name for c in model.columns if not c.hidden],
+        "measure_names": [m.name for m in model.measures if m.name is not None],
+        "aggregation_names": [a.name for a in model.aggregations],
+        "joins_to": sorted({j.target_model for j in model.joins}),
+    }
+
+
+def _skeleton_csv(names: List[str]) -> str:
+    return ", ".join(names) if names else _SKELETON_NONE
+
+
+def render_model_skeleton(
+    *, model: SlayerModel, max_chars: Optional[int] = None,
+) -> str:
+    """Heading-less markdown schema skeleton (DB-free).
+
+    An optional truncated description line (only when set), then four lines —
+    ``Columns`` / ``Measures`` / ``Aggregations`` / ``Joins to`` — always
+    present, each empty value rendered ``_(none)_`` (aligned to
+    ``models_summary(compact)``). The caller prepends the ``#``/``##`` heading.
+    """
+    fields = model_skeleton_fields(model=model, max_chars=max_chars)
+    lines: List[str] = []
+    if fields["description"]:
+        lines.append(fields["description"])
+    lines.append(f"Columns: {_skeleton_csv(fields['column_names'])}")
+    lines.append(f"Measures: {_skeleton_csv(fields['measure_names'])}")
+    lines.append(f"Aggregations: {_skeleton_csv(fields['aggregation_names'])}")
+    lines.append(f"Joins to: {_skeleton_csv(fields['joins_to'])}")
+    return "\n".join(lines)
+
+
 async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of the inspect_model tool body; the section-gating + cache-miss + dual markdown/json render is intentionally a single linear pass
     *,
     model: SlayerModel,

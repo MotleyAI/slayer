@@ -179,7 +179,7 @@ slayer inspect jaffle_shop.orders --type model --format json
 |------|----------|-------------|
 | `reference` | Yes | Entity reference: canonical id, bare name, join path (resolved to the owning model), or `memory:<id>`. |
 | `--type` | Yes | Entity kind: `datasource`, `model`, `column`, `measure`, `aggregation`, or `memory`. Disambiguates same-named entities and asserts the kind. |
-| `--no-compact` | No | Return the full render instead of the description-only default. |
+| `--no-compact` | No | Return the full render. The compact default is description-only for column/measure/aggregation/datasource/memory, and a cheap **schema skeleton** (column/measure/aggregation names + join targets, zero DB calls) for `--type model`; `--no-compact` on a datasource renders a per-model skeleton for each visible model. |
 | `--format` | No | `markdown` (default) or `json`. |
 | `--num-rows` | No | (model only) Sample-data rows. Ignored with a warning for other kinds. |
 | `--show-sql` | No | (model only) Include generated SQL. No-op for column/measure/aggregation; warned for datasource/memory. |

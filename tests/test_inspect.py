@@ -17,8 +17,16 @@ Design (settled in the spec interview + two Codex review passes):
 * The reference is normalized via ``resolve_entity`` (so join paths like
   ``orders.customers.region`` resolve to the owning model's canonical), and
   the normalized canonical id is echoed back (always in the JSON shape).
-* ``compact=True`` (default) → description-only; ``compact=False`` → full
-  render. ``format`` is ``markdown`` (default) | ``json``.
+* ``compact=True`` (default): leaf (column/measure/aggregation), datasource,
+  and memory render description-only; the **model** kind renders a cheap
+  schema *skeleton* (column / measure / aggregation **names** + join targets,
+  zero DB calls). ``compact=False`` → full render; for the **datasource**
+  kind, ``compact=False`` renders a per-model skeleton for each visible model.
+  ``format`` is ``markdown`` (default) | ``json``.
+* JSON ``text`` is present **iff non-empty**: ``compact=True`` JSON omits the
+  ``text`` key entirely for every kind; ``compact=False`` JSON carries ``text``
+  only where it holds a render (memory / leaf), ``models`` for the datasource
+  kind, and the full ``inspect_model`` payload for the model kind.
 * ``inspect`` RENDERS hidden entities (deliberate escape-hatch lookup).
 * Model-only args (``num_rows``/``show_sql``/``sections``/
   ``descriptions_max_chars``) apply where they map; otherwise ignored with a
@@ -224,17 +232,31 @@ class TestCompact:
         )
         assert default == explicit
 
-    async def test_model_compact_is_description_only(
+    async def test_model_compact_is_skeleton(
         self, svc: InspectService
     ) -> None:
-        # DEV-1588 review: model compact must short-circuit to description-only
-        # (cheap, consistent with other kinds) rather than the full renderer.
+        # DEV-1588 follow-up: model compact is a cheap schema *skeleton* (names
+        # only, zero DB), NOT description-only and NOT the full renderer.
         out = await svc.inspect(
             reference="mydb.orders", entity_type="model", compact=True,
         )
+        # Description still shown.
         assert "One row per placed order." in out
-        assert "# Model: `orders`" not in out
-        assert "Columns" not in out
+        # Skeleton lines present (all four, names only).
+        assert "Columns: " in out
+        assert "amount" in out and "customer_id" in out
+        assert "Measures: aov" in out
+        assert "Aggregations: big" in out
+        assert "Joins to: customers" in out
+        # Standalone skeleton heading is the backticked model name (no "Model:"
+        # prefix, distinguishing it from the full render).
+        assert "# `orders`" in out
+        # Full-render-only markers must be absent (proves the skeleton path,
+        # not render_model_inspection).
+        assert "# Model: `orders`" not in out   # full-render heading
+        assert "## Columns (" not in out         # full-render columns table
+        assert "- **data_source:**" not in out   # metadata bullets
+        assert "## Sample Data" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -718,15 +740,17 @@ class TestJsonShapes:
         assert "text" in payload
         assert "warnings" in payload
 
-    async def test_column_json_compact_empty_text(
+    async def test_column_json_compact_omits_text(
         self, svc: InspectService
     ) -> None:
+        # DEV-1588 follow-up: ``text`` is present iff non-empty, so compact
+        # JSON drops the key entirely (a consumer never sees ``text: ""``).
         out = await svc.inspect(
             reference="mydb.orders.amount", entity_type="column",
             format="json", compact=True,
         )
         payload = json.loads(out)
-        assert payload["text"] == ""
+        assert "text" not in payload
         assert payload["description"] == "Order total in USD."
 
     async def test_model_json_shape(self, svc: InspectService) -> None:
@@ -865,3 +889,513 @@ class TestHiddenStaysOutOfSearch:
         resp = await svc.search(question="topsecret", max_results=20)
         ids = {hit.id for hit in resp.results}
         assert "mydb.leaky.topsecret" not in ids
+
+
+# ---------------------------------------------------------------------------
+# DEV-1588 follow-up: model/datasource compact skeleton
+# ---------------------------------------------------------------------------
+
+
+def _orders_like_model() -> SlayerModel:
+    """A standalone (no-storage) ``orders`` model mirroring the seed fixture —
+    columns id/amount/customer_id/big, one named measure, one aggregation, one
+    join. Used to unit-test the pure skeleton helpers."""
+    return SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source="mydb",
+        description="One row per placed order.",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="customer_id", sql="customer_id", type=DataType.INT),
+            Column(name="big", sql="amount", type=DataType.DOUBLE),
+        ],
+        measures=[ModelMeasure(name="aov", formula="amount:sum / *:count")],
+        aggregations=[Aggregation(name="big", formula="MAX({col})")],
+        joins=[ModelJoin(target_model="customers", join_pairs=[("customer_id", "id")])],
+    )
+
+
+class TestModelSkeletonHelpers:
+    """Pure helpers in ``slayer.inspect.model_render`` — no DB, no engine."""
+
+    def test_render_model_skeleton_is_heading_less(self) -> None:
+        from slayer.inspect.model_render import render_model_skeleton
+
+        md = render_model_skeleton(model=_orders_like_model())
+        # The caller prepends the `#`/`##` heading — the helper body must not.
+        assert not any(line.startswith("#") for line in md.splitlines())
+        assert "One row per placed order." in md
+        # Exact plain-CSV (no backticks) per the locked format.
+        assert "Columns: id, amount, customer_id, big" in md
+        assert "Measures: aov" in md
+        assert "Aggregations: big" in md
+        assert "Joins to: customers" in md
+
+    def test_render_model_skeleton_empty_sections_render_none(self) -> None:
+        from slayer.inspect.model_render import render_model_skeleton
+
+        bare = SlayerModel(
+            name="customers", sql_table="customers", data_source="mydb",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="region", sql="region", type=DataType.TEXT),
+            ],
+        )
+        md = render_model_skeleton(model=bare)
+        lines = md.splitlines()
+        # No description set → no description line; body starts at `Columns:`.
+        assert lines[0] == "Columns: id, region"
+        # All four lines always present; empty ones render `_(none)_`
+        # (aligned to models_summary(compact)).
+        assert "Measures: _(none)_" in md
+        assert "Aggregations: _(none)_" in md
+        assert "Joins to: _(none)_" in md
+        # No blank trailing-space "Measures: " line.
+        assert "Measures: \n" not in md and not md.endswith("Measures: ")
+
+    def test_render_model_skeleton_hidden_only_columns_render_none(self) -> None:
+        from slayer.inspect.model_render import render_model_skeleton
+
+        m = SlayerModel(
+            name="m", sql_table="m", data_source="mydb",
+            columns=[
+                Column(name="secret", sql="secret", type=DataType.TEXT, hidden=True),
+            ],
+        )
+        md = render_model_skeleton(model=m)
+        assert "Columns: _(none)_" in md
+        assert "secret" not in md
+
+    def test_render_model_skeleton_unnamed_only_measures_render_none(
+        self,
+    ) -> None:
+        from slayer.inspect.model_render import render_model_skeleton
+
+        # SlayerModel rejects unnamed measures at validation, so model_copy is
+        # used to reach the defensive ``m.name is not None`` filter path.
+        base = SlayerModel(
+            name="m", sql_table="m", data_source="mydb",
+            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            measures=[ModelMeasure(name="tmp", formula="id:sum")],
+        )
+        m = base.model_copy(update={"measures": [ModelMeasure(formula="id:max")]})
+        md = render_model_skeleton(model=m)
+        assert "Measures: _(none)_" in md
+
+    def test_render_model_skeleton_truncates_description(self) -> None:
+        from slayer.inspect.model_render import render_model_skeleton
+
+        md = render_model_skeleton(model=_orders_like_model(), max_chars=4)
+        assert "One row per placed order." not in md
+        assert "Columns: " in md
+
+    def test_model_skeleton_fields_shape(self) -> None:
+        from slayer.inspect.model_render import model_skeleton_fields
+
+        fields = model_skeleton_fields(model=_orders_like_model())
+        assert fields["name"] == "orders"
+        assert fields["canonical_id"] == "mydb.orders"
+        assert fields["description"] == "One row per placed order."
+        assert fields["column_names"] == ["id", "amount", "customer_id", "big"]
+        assert fields["measure_names"] == ["aov"]
+        assert fields["aggregation_names"] == ["big"]
+        assert fields["joins_to"] == ["customers"]
+
+    def test_model_skeleton_fields_excludes_hidden_columns(self) -> None:
+        from slayer.inspect.model_render import model_skeleton_fields
+
+        m = SlayerModel(
+            name="m", sql_table="m", data_source="mydb",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="visible", sql="visible", type=DataType.TEXT),
+                Column(name="secret", sql="secret", type=DataType.TEXT, hidden=True),
+            ],
+        )
+        assert model_skeleton_fields(model=m)["column_names"] == ["id", "visible"]
+
+    def test_model_skeleton_fields_excludes_unnamed_measures(self) -> None:
+        from slayer.inspect.model_render import model_skeleton_fields
+
+        # model_copy bypasses the SlayerModel "every measure must be named"
+        # validator so we can prove the defensive filter in the helper.
+        base = SlayerModel(
+            name="m", sql_table="m", data_source="mydb",
+            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            measures=[ModelMeasure(name="named", formula="id:sum")],
+        )
+        m = base.model_copy(update={"measures": [
+            ModelMeasure(name="named", formula="id:sum"),
+            ModelMeasure(formula="id:max"),  # unnamed
+        ]})
+        assert model_skeleton_fields(model=m)["measure_names"] == ["named"]
+
+    def test_model_skeleton_fields_joins_sorted_deduped(self) -> None:
+        from slayer.inspect.model_render import model_skeleton_fields
+
+        m = SlayerModel(
+            name="m", sql_table="m", data_source="mydb",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="z_id", sql="z_id", type=DataType.INT),
+                Column(name="a_id", sql="a_id", type=DataType.INT),
+            ],
+            joins=[
+                ModelJoin(target_model="zebra", join_pairs=[("z_id", "id")]),
+                ModelJoin(target_model="apple", join_pairs=[("a_id", "id")]),
+            ],
+        )
+        assert model_skeleton_fields(model=m)["joins_to"] == ["apple", "zebra"]
+
+    def test_canonical_id_has_no_leading_dot_without_data_source(self) -> None:
+        from slayer.inspect.model_render import model_skeleton_fields
+
+        # model_copy bypasses validators so we can simulate a not-yet-refined
+        # (empty data_source) model and prove the guard.
+        m = _orders_like_model().model_copy(update={"data_source": ""})
+        assert model_skeleton_fields(model=m)["canonical_id"] == "orders"
+
+    def test_model_render_module_does_not_import_slayer_mcp(self) -> None:
+        # The skeleton helpers live in slayer.inspect.model_render, which
+        # mcp/server.py imports — so the reverse would be a circular import.
+        import ast
+        import pathlib
+
+        import slayer.inspect.model_render as mr
+
+        src = pathlib.Path(mr.__file__).read_text()
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                assert all(
+                    not a.name.startswith("slayer.mcp") for a in node.names
+                )
+            elif isinstance(node, ast.ImportFrom):
+                assert not (node.module or "").startswith("slayer.mcp")
+
+
+class TestModelCompactSkeletonJson:
+    async def test_model_compact_json_shape(self, svc: InspectService) -> None:
+        out = await svc.inspect(
+            reference="mydb.orders", entity_type="model",
+            format="json", compact=True,
+        )
+        p = json.loads(out)
+        assert p["canonical_id"] == "mydb.orders"
+        assert p["entity_type"] == "model"
+        assert p["name"] == "orders"
+        assert p["description"] == "One row per placed order."
+        assert p["column_names"] == ["id", "amount", "customer_id", "big"]
+        assert p["measure_names"] == ["aov"]
+        assert p["aggregation_names"] == ["big"]
+        assert p["joins_to"] == ["customers"]
+        assert "text" not in p
+        assert "warnings" in p
+
+    async def test_model_compact_json_empty_lists_present(
+        self, svc: InspectService
+    ) -> None:
+        # ``customers`` has no measures / aggregations / joins — the JSON keys
+        # are still present as empty lists (stable shape).
+        out = await svc.inspect(
+            reference="mydb.customers", entity_type="model",
+            format="json", compact=True,
+        )
+        p = json.loads(out)
+        assert p["canonical_id"] == "mydb.customers"
+        assert p["column_names"] == ["id", "region"]
+        assert p["measure_names"] == []
+        assert p["aggregation_names"] == []
+        assert p["joins_to"] == []
+        assert "text" not in p
+
+    async def test_model_compact_markdown_empty_sections_render_none(
+        self, svc: InspectService
+    ) -> None:
+        out = await svc.inspect(
+            reference="mydb.customers", entity_type="model", compact=True,
+        )
+        assert "Columns: " in out and "region" in out
+        assert "Measures: _(none)_" in out
+        assert "Aggregations: _(none)_" in out
+        assert "Joins to: _(none)_" in out
+
+    async def test_model_compact_descriptions_max_chars(
+        self, svc: InspectService
+    ) -> None:
+        out = await svc.inspect(
+            reference="mydb.orders", entity_type="model", compact=True,
+            descriptions_max_chars=4,
+        )
+        assert "One row per placed order." not in out
+        assert "Columns: " in out
+
+    async def test_model_compact_json_truncates_description(
+        self, svc: InspectService
+    ) -> None:
+        out = await svc.inspect(
+            reference="mydb.orders", entity_type="model",
+            format="json", compact=True, descriptions_max_chars=4,
+        )
+        p = json.loads(out)
+        assert p["description"] != "One row per placed order."
+        assert p["description"].startswith("One ")
+        # Structure intact despite truncation.
+        assert p["column_names"] == ["id", "amount", "customer_id", "big"]
+
+
+class TestDatasourceCompactFalseSkeletons:
+    async def test_markdown_per_model_skeletons(
+        self, svc: InspectService
+    ) -> None:
+        out = await svc.inspect(
+            reference="mydb", entity_type="datasource", compact=False,
+        )
+        assert "Datasource: mydb" in out
+        assert "Primary analytics warehouse." in out
+        # Per-model heading + skeleton body for each visible model.
+        assert "## `customers`" in out
+        assert "## `orders`" in out
+        assert "region" in out            # customers column name
+        assert "Measures: aov" in out     # orders measure
+        assert "Joins to: customers" in out
+        # Sorted by name: customers heading precedes orders heading.
+        assert out.index("## `customers`") < out.index("## `orders`")
+
+    async def test_json_models_list(self, svc: InspectService) -> None:
+        out = await svc.inspect(
+            reference="mydb", entity_type="datasource",
+            format="json", compact=False,
+        )
+        p = json.loads(out)
+        assert p["canonical_id"] == "mydb"
+        assert p["entity_type"] == "datasource"
+        assert p["description"] == "Primary analytics warehouse."
+        assert "text" not in p
+        names = [m["name"] for m in p["models"]]
+        assert names == ["customers", "orders"]   # sorted by name
+        orders = next(m for m in p["models"] if m["name"] == "orders")
+        assert orders["canonical_id"] == "mydb.orders"
+        assert orders["column_names"] == ["id", "amount", "customer_id", "big"]
+        assert orders["measure_names"] == ["aov"]
+        assert orders["aggregation_names"] == ["big"]
+        assert orders["joins_to"] == ["customers"]
+
+    async def test_hidden_model_excluded(self, storage: YAMLStorage) -> None:
+        await storage.save_model(SlayerModel(
+            name="hiddends", sql_table="hiddends", data_source="mydb",
+            hidden=True,
+            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+        ))
+        svc = InspectService(storage=storage)
+        out = await svc.inspect(
+            reference="mydb", entity_type="datasource", compact=False,
+        )
+        assert "hiddends" not in out
+        outj = await svc.inspect(
+            reference="mydb", entity_type="datasource",
+            format="json", compact=False,
+        )
+        assert all(m["name"] != "hiddends" for m in json.loads(outj)["models"])
+
+    async def test_no_visible_models_empty_list(
+        self, storage: YAMLStorage
+    ) -> None:
+        await storage.save_datasource(DatasourceConfig(
+            name="emptyds", type="sqlite", database=":memory:",
+            description="Empty one.",
+        ))
+        await storage.save_model(SlayerModel(
+            name="onlyhidden", sql_table="onlyhidden", data_source="emptyds",
+            hidden=True,
+            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+        ))
+        svc = InspectService(storage=storage)
+        outj = await svc.inspect(
+            reference="emptyds", entity_type="datasource",
+            format="json", compact=False,
+        )
+        assert json.loads(outj)["models"] == []
+        outmd = await svc.inspect(
+            reference="emptyds", entity_type="datasource", compact=False,
+        )
+        assert "Datasource: emptyds" in outmd
+        assert "onlyhidden" not in outmd
+
+    async def test_descriptions_max_chars_truncates_ds_and_models(
+        self, svc: InspectService
+    ) -> None:
+        out = await svc.inspect(
+            reference="mydb", entity_type="datasource", compact=False,
+            descriptions_max_chars=4,
+        )
+        assert "Primary analytics warehouse." not in out   # ds description
+        assert "One row per placed order." not in out       # model description
+        # Skeleton structure still present.
+        assert "## `orders`" in out
+
+    async def test_json_descriptions_max_chars_truncates_ds_and_models(
+        self, svc: InspectService
+    ) -> None:
+        out = await svc.inspect(
+            reference="mydb", entity_type="datasource",
+            format="json", compact=False, descriptions_max_chars=4,
+        )
+        p = json.loads(out)
+        assert p["description"] != "Primary analytics warehouse."
+        assert p["description"].startswith("Prim")
+        orders = next(m for m in p["models"] if m["name"] == "orders")
+        assert orders["description"] != "One row per placed order."
+        assert orders["description"].startswith("One ")
+
+    async def test_warnings_preserved_in_json(
+        self, svc: InspectService
+    ) -> None:
+        # show_sql is a model-only arg → warns for the datasource kind, and the
+        # warning must survive into the JSON ``warnings`` list.
+        out = await svc.inspect(
+            reference="mydb", entity_type="datasource",
+            format="json", compact=False, show_sql=True,
+        )
+        p = json.loads(out)
+        assert any("show_sql" in w for w in p["warnings"])
+
+
+class TestDatasourceCompactTrueUnchanged:
+    async def test_markdown_description_only(self, svc: InspectService) -> None:
+        out = await svc.inspect(
+            reference="mydb", entity_type="datasource", compact=True,
+        )
+        assert "Primary analytics warehouse." in out
+        assert "## `orders`" not in out
+        assert "Columns:" not in out
+
+    async def test_json_omits_text_and_models(
+        self, svc: InspectService
+    ) -> None:
+        out = await svc.inspect(
+            reference="mydb", entity_type="datasource",
+            format="json", compact=True,
+        )
+        p = json.loads(out)
+        assert "text" not in p
+        assert "models" not in p
+        assert p["description"] == "Primary analytics warehouse."
+
+
+class TestCompactTextOmittedAllKinds:
+    @pytest.mark.parametrize(
+        "reference,entity_type",
+        [
+            ("mydb.orders.amount", "column"),
+            ("mydb.orders.aov", "measure"),
+            ("mydb.orders.big", "aggregation"),
+        ],
+    )
+    async def test_leaf_compact_json_omits_text(
+        self, svc: InspectService, reference: str, entity_type: str
+    ) -> None:
+        out = await svc.inspect(
+            reference=reference, entity_type=entity_type,
+            format="json", compact=True,
+        )
+        assert "text" not in json.loads(out)
+
+    @pytest.mark.parametrize(
+        "reference,entity_type",
+        [
+            ("mydb.orders.amount", "column"),
+            ("mydb.orders.aov", "measure"),
+            ("mydb.orders.big", "aggregation"),
+        ],
+    )
+    async def test_leaf_noncompact_json_keeps_text(
+        self, svc: InspectService, reference: str, entity_type: str
+    ) -> None:
+        out = await svc.inspect(
+            reference=reference, entity_type=entity_type,
+            format="json", compact=False,
+        )
+        p = json.loads(out)
+        assert "text" in p and p["text"]
+
+    async def test_memory_compact_json_omits_text(
+        self, storage: YAMLStorage
+    ) -> None:
+        mem = await storage.save_memory(
+            learning="Body.", entities=["mydb.orders.amount"],
+            description="Preview.",
+        )
+        svc = InspectService(storage=storage)
+        out = await svc.inspect(
+            reference=f"memory:{mem.id}", entity_type="memory",
+            format="json", compact=True,
+        )
+        p = json.loads(out)
+        assert "text" not in p
+        assert p["description"] == "Preview."
+
+    async def test_memory_noncompact_json_keeps_text(
+        self, storage: YAMLStorage
+    ) -> None:
+        mem = await storage.save_memory(
+            learning="Full body text here.",
+            entities=["mydb.orders.amount"],
+        )
+        svc = InspectService(storage=storage)
+        out = await svc.inspect(
+            reference=f"memory:{mem.id}", entity_type="memory",
+            format="json", compact=False,
+        )
+        p = json.loads(out)
+        assert "text" in p and "Full body text here." in p["text"]
+
+
+class TestSkeletonZeroDB:
+    async def test_model_compact_never_touches_engine(
+        self, storage: YAMLStorage
+    ) -> None:
+        class _ExplodingEngine:
+            def __getattr__(self, name: str):
+                raise AssertionError(
+                    f"engine.{name} must not be called in the compact "
+                    f"skeleton path"
+                )
+
+        svc = InspectService(storage=storage, engine=_ExplodingEngine())
+        out = await svc.inspect(
+            reference="mydb.orders", entity_type="model", compact=True,
+        )
+        assert "Columns: " in out
+        outj = await svc.inspect(
+            reference="mydb.orders", entity_type="model",
+            format="json", compact=True,
+        )
+        assert json.loads(outj)["name"] == "orders"
+
+    async def test_model_compact_does_not_call_full_renderer(
+        self, storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Direct proof the compact path short-circuits BEFORE the DB-hitting
+        # full renderer: monkeypatch render_model_inspection to explode.
+        import slayer.inspect.service as service_mod
+
+        async def _boom(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError(
+                "render_model_inspection must not run for compact=True"
+            )
+
+        monkeypatch.setattr(service_mod, "render_model_inspection", _boom)
+        svc = InspectService(storage=storage)
+        out = await svc.inspect(
+            reference="mydb.orders", entity_type="model", compact=True,
+        )
+        assert "Columns: " in out
+        # And the full path STILL uses it (guards against a stale patch /
+        # wrong-symbol monkeypatch giving a false pass above).
+        with pytest.raises(AssertionError, match="must not run"):
+            await svc.inspect(
+                reference="mydb.orders", entity_type="model", compact=False,
+            )
