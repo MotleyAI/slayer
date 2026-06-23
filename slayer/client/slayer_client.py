@@ -463,6 +463,83 @@ class SlayerClient:
         result = await self._request(method="POST", path="/search", json=body)
         return SearchResponse.model_validate(result)
 
+    async def inspect(
+        self,
+        *,
+        reference: str,
+        entity_type: str,
+        compact: bool = True,
+        format: str = "markdown",
+        num_rows: int = 3,
+        show_sql: bool = False,
+        sections: Optional[List[str]] = None,
+        descriptions_max_chars: Optional[int] = None,
+    ) -> str:
+        """Inspect EXACTLY one entity by reference and kind (DEV-1588).
+
+        A single-entity point-lookup (no fusion / ranking / bundled
+        memories). ``entity_type`` is required, one of
+        ``datasource``/``model``/``column``/``measure``/``aggregation``/
+        ``memory``.
+        """
+        if self._storage is not None:
+            # Local import: slayer.inspect.service transitively imports the
+            # search render stack (tantivy), which is not part of the client
+            # extras. Remote-only installs that never call .inspect() must
+            # not blow up at module-import time.
+            from slayer.inspect.service import InspectService
+
+            return await InspectService(
+                storage=self._storage, engine=self._engine,
+            ).inspect(
+                reference=reference,
+                entity_type=entity_type,
+                compact=compact,
+                format=format,
+                num_rows=num_rows,
+                show_sql=show_sql,
+                sections=sections,
+                descriptions_max_chars=descriptions_max_chars,
+            )
+        body = self._build_inspect_body(
+            reference=reference,
+            entity_type=entity_type,
+            compact=compact,
+            format=format,
+            num_rows=num_rows,
+            show_sql=show_sql,
+            sections=sections,
+            descriptions_max_chars=descriptions_max_chars,
+        )
+        resp = await self._request(method="POST", path="/inspect", json=body)
+        return resp["result"]
+
+    @staticmethod
+    def _build_inspect_body(
+        *,
+        reference: str,
+        entity_type: str,
+        compact: bool,
+        format: str,
+        num_rows: int,
+        show_sql: bool,
+        sections: Optional[List[str]],
+        descriptions_max_chars: Optional[int],
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "reference": reference,
+            "entity_type": entity_type,
+            "compact": compact,
+            "format": format,
+            "num_rows": num_rows,
+            "show_sql": show_sql,
+        }
+        if sections is not None:
+            body["sections"] = sections
+        if descriptions_max_chars is not None:
+            body["descriptions_max_chars"] = descriptions_max_chars
+        return body
+
     # ----- Sync API (for notebooks, scripts, CLI) -----
 
     def query_sync(
@@ -501,6 +578,45 @@ class SlayerClient:
         Accepts the same input union as ``query_sync``.
         """
         return self.query_sync(query=query, explain=True)
+
+    def inspect_sync(
+        self,
+        *,
+        reference: str,
+        entity_type: str,
+        compact: bool = True,
+        format: str = "markdown",
+        num_rows: int = 3,
+        show_sql: bool = False,
+        sections: Optional[List[str]] = None,
+        descriptions_max_chars: Optional[int] = None,
+    ) -> str:
+        """Synchronous variant of :meth:`inspect` (DEV-1588)."""
+        if self._storage is not None:
+            from slayer.async_utils import run_sync
+
+            return run_sync(self.inspect(
+                reference=reference,
+                entity_type=entity_type,
+                compact=compact,
+                format=format,
+                num_rows=num_rows,
+                show_sql=show_sql,
+                sections=sections,
+                descriptions_max_chars=descriptions_max_chars,
+            ))
+        body = self._build_inspect_body(
+            reference=reference,
+            entity_type=entity_type,
+            compact=compact,
+            format=format,
+            num_rows=num_rows,
+            show_sql=show_sql,
+            sections=sections,
+            descriptions_max_chars=descriptions_max_chars,
+        )
+        resp = self._request_sync(method="POST", path="/inspect", json=body)
+        return resp["result"]
 
     def query_df(self, query: QueryInput):
         """Execute a query and return a pandas DataFrame (sync).

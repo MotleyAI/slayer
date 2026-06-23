@@ -19,6 +19,7 @@ from slayer.core.format import NumberFormat
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
@@ -166,6 +167,22 @@ class SearchRequest(BaseModel):
     max_results: int = Field(default=10, ge=1)
     cypher_filter: Optional[str] = None
     compact: bool = True
+
+
+class InspectRequest(BaseModel):
+    """Body for ``POST /inspect`` (DEV-1588). Mirrors the MCP / CLI /
+    SlayerClient ``inspect`` surfaces — a single-entity point-lookup."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reference: str
+    entity_type: str
+    compact: bool = True
+    format: str = "markdown"
+    num_rows: int = 3
+    show_sql: bool = False
+    sections: Optional[List[str]] = None
+    descriptions_max_chars: Optional[int] = None
 
 
 def _slayer_version() -> str:
@@ -697,5 +714,34 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         except (SlayerError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return response.model_dump(mode="json")
+
+    inspect_service = InspectService(storage=storage, engine=engine)
+
+    @app.post(
+        "/inspect",
+        responses={
+            400: {
+                "description": (
+                    "Invalid input: bad entity_type / format, negative "
+                    "descriptions_max_chars, or an unresolvable reference."
+                )
+            }
+        },
+    )
+    async def inspect(request: InspectRequest) -> Dict[str, Any]:
+        try:
+            result = await inspect_service.inspect(
+                reference=request.reference,
+                entity_type=request.entity_type,
+                compact=request.compact,
+                format=request.format,
+                num_rows=request.num_rows,
+                show_sql=request.show_sql,
+                sections=request.sections,
+                descriptions_max_chars=request.descriptions_max_chars,
+            )
+        except (SlayerError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"result": result}
 
     return app
