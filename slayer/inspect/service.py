@@ -233,7 +233,9 @@ class InspectService:
             if mem.description
             else compact_description_from_learning(mem.learning)
         )
-        description = _truncate_description(description, descriptions_max_chars)
+        description = _truncate_description(
+            text=description, max_chars=descriptions_max_chars,
+        )
         if compact:
             full_text = ""
         else:
@@ -242,7 +244,7 @@ class InspectService:
                 # Truncate the learning body only — keep the tagged-entities
                 # line intact (mirrors per-field truncation elsewhere).
                 truncated_learning = _truncate_description(
-                    mem.learning, descriptions_max_chars,
+                    text=mem.learning, max_chars=descriptions_max_chars,
                 ) or ""
                 mem_for_render = mem.model_copy(
                     update={"learning": truncated_learning},
@@ -316,19 +318,19 @@ class InspectService:
         cfg = await self._storage.get_datasource(ds_name)
         description = cfg.description if cfg is not None else None
         models = []
-        for ds, name in await self._storage._list_all_model_identities():
-            if ds != ds_name:
-                continue
-            m = await self._storage.get_model(name, data_source=ds)
+        for name in await self._storage.list_models(data_source=ds_name):
+            m = await self._storage.get_model(name, data_source=ds_name)
             if m is not None:
                 models.append(m)
         full_text = self._truncate_description_field(
-            render_datasource_text(
+            text=render_datasource_text(
                 name=ds_name, models=models, description=description,
             ),
-            descriptions_max_chars,
+            max_chars=descriptions_max_chars,
         )
-        trunc_desc = _truncate_description(description, descriptions_max_chars)
+        trunc_desc = _truncate_description(
+            text=description, max_chars=descriptions_max_chars,
+        )
         if fmt == "json":
             return json.dumps({
                 "canonical_id": ds_name,
@@ -376,7 +378,7 @@ class InspectService:
             # profiling / sample-data DB work). compact=False returns the full
             # model view (sections / samples / SQL).
             description = _truncate_description(
-                model.description, descriptions_max_chars,
+                text=model.description, max_chars=descriptions_max_chars,
             )
             if fmt == "json":
                 return json.dumps({
@@ -504,10 +506,10 @@ class InspectService:
         warnings: List[str],
     ) -> str:
         trunc_desc = _truncate_description(
-            entry.description, descriptions_max_chars,
+            text=entry.description, max_chars=descriptions_max_chars,
         )
         full_text = self._truncate_description_field(
-            entry.text, descriptions_max_chars,
+            text=entry.text, max_chars=descriptions_max_chars,
         )
         if fmt == "json":
             return json.dumps({

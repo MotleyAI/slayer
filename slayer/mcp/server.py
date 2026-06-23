@@ -308,7 +308,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         variables: Optional[Dict[str, Any]] = None,
         distinct_dimension_values: bool = True,
     ) -> str:
-        """Query data from a semantic model. Call inspect(reference="<ds>.<model>", entity_type="model") first to see available columns and measures.
+        """Query data from a semantic model. Call inspect(reference="<ds>.<model>", entity_type="model", compact=False) first to see available columns and measures.
 
         Args:
             source_model: One of three forms:
