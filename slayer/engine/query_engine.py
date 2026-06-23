@@ -987,6 +987,19 @@ class SlayerQueryEngine:
                 result[em.source_measure_name or em.name] = raw_types[em.alias]
         return result
 
+    async def aclose(self) -> None:
+        """Dispose every cached client's async engine; keep the clients themselves.
+
+        Per-instance async engines bind their asyncpg/aiomysql pool to the loop
+        that first opened a connection; closing that loop without disposing
+        leaks the server-side connections (asyncpg.Connection.close needs a
+        live loop). Clients are kept so ``_sync_engine`` survives — important
+        for ``:memory:`` SQLite, whose StaticPool pins the connection holding
+        all data.
+        """
+        for client in self._sql_clients.values():
+            await client.aclose()
+
     def execute_sync(
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
@@ -995,12 +1008,20 @@ class SlayerQueryEngine:
         dry_run: bool = False,
         explain: bool = False,
     ) -> SlayerResponse:
-        """Synchronous wrapper for execute(). For CLI, notebooks, and scripts."""
+        """Synchronous wrapper for execute(). Disposes per-call async engines
+        in ``finally`` so they don't outlive their owning loop — see ``aclose``.
+        """
         from slayer.async_utils import run_sync
 
-        return run_sync(
-            self.execute(query, variables=variables, dry_run=dry_run, explain=explain)
-        )
+        async def _run_and_cleanup() -> SlayerResponse:
+            try:
+                return await self.execute(
+                    query, variables=variables, dry_run=dry_run, explain=explain,
+                )
+            finally:
+                await self.aclose()
+
+        return run_sync(_run_and_cleanup())
 
     async def edit_model_remove(
         self,

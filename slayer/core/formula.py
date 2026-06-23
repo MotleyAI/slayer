@@ -52,62 +52,49 @@ RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
 
 ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
 
-# DEV-1378: string-hygiene scalar functions accepted inline in Mode B
-# (DSL) filters. These are pass-through to the emitted SQL; sqlglot
-# handles per-dialect spelling at SQL-generation time. Names are
-# lowercase only (matching SLayer's existing transform convention —
-# ``cumsum``, ``rank``, ``time_shift``). The SQL ``||`` concat operator
-# is rewritten to ``concat(...)`` by ``_preprocess_concat`` before AST
-# parsing.
-STRING_HYGIENE_OPS = frozenset({
-    "lower",
-    "upper",
-    "trim",
-    "replace",
-    "substr",
-    "instr",
-    "length",
-    "concat",
+# Canonical Mode B scalar-function allowlist. Consulted uniformly by every
+# Mode B surface — top-level ``ModelMeasure.formula`` calls, inside-arithmetic
+# calls, and ``SlayerQuery.filters`` — case-insensitively. Pass-through to
+# emitted SQL; sqlglot handles per-dialect spelling. Extending: add to this
+# set only — never create parallel allowlists.
+SCALAR_PASSTHROUGH = frozenset({
+    # NULL handling
+    "coalesce", "nullif", "ifnull",
+    # Math
+    "round", "abs", "ceil", "ceiling", "floor",
+    "power", "pow", "sqrt", "exp",
+    "ln", "log", "log10", "log2",
+    "mod", "sign", "trunc",
+    # Min/max scalar (NOT the agg forms — those are min:/max:)
+    "greatest", "least",
+    # String
+    "lower", "upper", "trim", "ltrim", "rtrim",
+    "replace", "substr", "substring",
+    "instr", "length", "concat",
 })
 
-# DEV-1576: scalar post-aggregation functions accepted as top-level formula
-# calls. They are recognised case-insensitively (agents overwhelmingly emit
-# ``ROUND``) and pass through to the emitted SQL via the arithmetic-passthrough
-# machinery (``_parse_mixed_arithmetic``). The list is intentionally tiny — the
-# existing inside-arithmetic passthrough already accepts arbitrary functions,
-# but top-level calls stay gated so genuinely unknown functions keep raising.
-SCALAR_FUNCTIONS = frozenset({"round", "abs"})
-
-CallCategory = Literal["transform", "scalar", "hygiene", "like_internal", "unknown"]
+CallCategory = Literal["transform", "scalar", "like_internal", "unknown"]
 
 _LIKE_INTERNAL_NAMES = frozenset({"__like__", "__notlike__"})
 
 
 def _classify_call_name(name: str) -> CallCategory:
-    """Categorize a function-call identifier for the formula and filter walkers.
-
-    Single source of truth shared by ``_parse_node`` (formula → FieldSpec) and
-    ``_call_to_sql`` (filter → SQL string). Each walker still decides what
-    to do with the category; this helper just classifies the name.
-    """
+    """Categorize a Mode B function-call identifier — shared by the formula
+    and filter walkers."""
     if name in ALL_TRANSFORMS:
         return "transform"
-    if name.lower() in SCALAR_FUNCTIONS:
+    if name.lower() in SCALAR_PASSTHROUGH:
         return "scalar"
-    if name in STRING_HYGIENE_OPS:
-        return "hygiene"
     if name in _LIKE_INTERNAL_NAMES:
         return "like_internal"
     return "unknown"
 
 
 def _validate_scalar_call(node: ast.Call, original: str) -> None:
-    """Validate arity for a top-level ``round`` / ``abs`` call (DEV-1576).
-
-    ``abs`` takes exactly one argument; ``round`` takes one or two
-    (``expression[, ndigits]``) where ``ndigits`` must be an integer literal
-    (negative allowed). Neither accepts keyword arguments.
-    """
+    """Arity check for top-level scalar calls. ``round`` / ``abs`` have specific
+    shapes worth catching early; other scalars in ``SCALAR_PASSTHROUGH`` have
+    variable arity (``coalesce``, ``greatest``, …) and are validated by sqlglot
+    at SQL-emission time."""
     name = node.func.id.lower()
     if node.keywords:
         raise ValueError(
@@ -116,21 +103,19 @@ def _validate_scalar_call(node: ast.Call, original: str) -> None:
     if name == "abs":
         if len(node.args) != 1:
             raise ValueError(
-                f"'abs' requires exactly one argument (the expression). "
+                f"'abs' requires exactly one argument. Formula: {original!r}"
+            )
+    elif name == "round":
+        if len(node.args) not in (1, 2):
+            raise ValueError(
+                f"'round' accepts 1 or 2 arguments (expression[, ndigits]). "
                 f"Formula: {original!r}"
             )
-        return
-    # round
-    if len(node.args) not in (1, 2):
-        raise ValueError(
-            f"'round' accepts 1 or 2 arguments (expression[, ndigits]). "
-            f"Formula: {original!r}"
-        )
-    if len(node.args) == 2 and not _is_integer_literal(node.args[1]):
-        raise ValueError(
-            f"'round' ndigits (2nd argument) must be an integer literal. "
-            f"Formula: {original!r}"
-        )
+        if len(node.args) == 2 and not _is_integer_literal(node.args[1]):
+            raise ValueError(
+                f"'round' ndigits (2nd argument) must be an integer literal. "
+                f"Formula: {original!r}"
+            )
 
 
 def _is_integer_literal(node: ast.AST) -> bool:
@@ -653,16 +638,17 @@ def _parse_node(
         func_name = node.func.id
         category = _classify_call_name(func_name)
         if category == "scalar":
-            # DEV-1576: round()/abs() are passthrough scalar functions. Route
-            # through the arithmetic-passthrough path, which preserves the call
-            # in the emitted SQL and registers any inner aggregated refs (and
-            # extracts any nested transform as a sub-transform).
+            # Pass-through SCALAR_PASSTHROUGH call. Route through
+            # _parse_mixed_arithmetic so inner aggregated refs and nested
+            # transforms are registered/extracted.
             _validate_scalar_call(node, original)
             return _parse_mixed_arithmetic(node, original, agg_refs)
         if category != "transform":
             raise ValueError(
-                f"Unknown transform function '{func_name}'. "
-                f"Supported: {', '.join(sorted(ALL_TRANSFORMS))}"
+                f"Unknown function '{func_name}' in formula {original!r}. "
+                f"Supported scalar functions: "
+                f"{', '.join(sorted(SCALAR_PASSTHROUGH))}. "
+                f"Transforms: {', '.join(sorted(ALL_TRANSFORMS))}."
             )
 
         if not node.args:
@@ -782,9 +768,20 @@ def _replace_calls_in_arith(
         return node
 
     if isinstance(node, ast.Call):
-        # Non-transform call (e.g. nullif, coalesce) wrapping aggregated refs.
-        # Recurse into args/keywords so any __aggN__ placeholders inside get
-        # registered in measure_names; otherwise they leak to emitted SQL.
+        # Non-transform scalar call wrapping aggregated refs (e.g. nullif,
+        # coalesce, abs). Validate the name against the canonical Mode B
+        # allowlist — previously any name passed through, which was a
+        # consistency bug (top-level had a strict allowlist while
+        # inside-arithmetic accepted anything).
+        if isinstance(node.func, ast.Name):
+            name = node.func.id
+            if name not in ALL_TRANSFORMS and name.lower() not in SCALAR_PASSTHROUGH:
+                raise ValueError(
+                    f"Unknown function {name!r} in formula {kwargs['original']!r}. "
+                    f"Supported scalar functions: "
+                    f"{', '.join(sorted(SCALAR_PASSTHROUGH))}. "
+                    f"Transforms: {', '.join(sorted(ALL_TRANSFORMS))}."
+                )
         node.args = [_replace_calls_in_arith(a, **kwargs) for a in node.args]
         for kw in node.keywords:
             kw.value = _replace_calls_in_arith(kw.value, **kwargs)
@@ -971,11 +968,10 @@ class ParsedFilter(BaseModel):
 
 
 # LHS of a LIKE / NOT LIKE may be a bare/dotted identifier OR a single
-# hygiene-call (e.g. ``lower(name)``, ``trim(customers.email)``). The
-# call alternative is matched before the dotted-identifier alternative
-# so that ``lower(name) like 'a%'`` resolves to the call form.
-# ``[^()]*`` keeps this to one level of parens — nested hygiene calls
-# inside LIKE (e.g. ``concat(lower(a), b) like '%'``) still fall through.
+# scalar call (e.g. ``lower(name)``, ``trim(customers.email)``). The call
+# alternative is matched first so ``lower(name) like 'a%'`` resolves to
+# the call form. ``[^()]*`` keeps this to one level of parens — nested
+# scalar calls (``concat(lower(a), b) like '%'``) still fall through.
 _LIKE_RE = re.compile(
     r"\b(\w+\([^()]*\)|(?:\w+\.)*\w+)\s+(not\s+)?like\s+('[^']*')",
     flags=re.IGNORECASE,
@@ -1087,8 +1083,8 @@ def parse_filter(
     - ``LIKE`` / ``NOT LIKE``, ``IS NULL`` / ``IS NOT NULL``
 
     Rejects unknown function calls (the Python AST walker raises on any
-    call other than the internal ``__like__`` / ``__notlike__`` helpers
-    and a small allowlist of string-hygiene scalar operators).
+    call outside ``SCALAR_PASSTHROUGH`` and the internal ``__like__`` /
+    ``__notlike__`` helpers).
 
     Pre-rejects raw ``OVER (...)`` window-function syntax via
     :func:`has_window_function` (the rank-family transforms cover the
@@ -1380,15 +1376,12 @@ def _call_to_sql(node: ast.Call, original: str, recur) -> str:
     if category == "like_internal" and len(node.args) >= 2:
         sql_op = "LIKE" if func_name == "__like__" else "NOT LIKE"
         return f"{recur(node.args[0])} {sql_op} '{_get_string_arg(node.args[1], original)}'"
-    if category == "hygiene":
-        # DEV-1378: lowercase string-hygiene scalars (lower / upper / trim /
-        # replace / substr / instr / length / concat). Args recurse through
-        # the standard handler, so nested calls and literal/integer
-        # constants render correctly. sqlglot translates per-dialect at
-        # SQL-generation time.
+    if category == "scalar":
+        # SCALAR_PASSTHROUGH: pass through with the user-written casing
+        # preserved; sqlglot re-spells per dialect at SQL-generation time.
         if node.keywords:
             raise ValueError(
-                f"String-hygiene function {func_name!r} does not accept "
+                f"Filter scalar function {func_name!r} does not accept "
                 f"keyword arguments: {original!r}"
             )
         arg_sqls = [recur(a) for a in node.args]
