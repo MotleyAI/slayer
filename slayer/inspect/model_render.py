@@ -45,6 +45,8 @@ _INSPECT_SECTIONS_NAMES_ONLY = ("columns", "measures", "aggregations", "joins")
 _INSPECT_SECTIONS_OMITTABLE = ("samples", "learnings")
 _VALID_INSPECT_SECTIONS = _INSPECT_SECTIONS_NAMES_ONLY + _INSPECT_SECTIONS_OMITTABLE
 _TRUNCATION_MARKER = " ... [truncated]"
+# Placeholder rendered for an empty section / pruned markdown table.
+_NONE_PLACEHOLDER = "_(none)_"
 
 
 def _escape_md_cell(value: Any) -> str:
@@ -198,11 +200,11 @@ def _markdown_table(rows: List[Dict[str, Any]], columns: List[str]) -> str:
     Otherwise a normal markdown table is produced over the surviving columns.
     """
     if not rows:
-        return "_(none)_"
+        return _NONE_PLACEHOLDER
 
     kept = [c for c in columns if any(_cell_is_present(r.get(c)) for r in rows)]
     if not kept:
-        return "_(none)_"
+        return _NONE_PLACEHOLDER
 
     if len(kept) == 1:
         col = kept[0]
@@ -538,9 +540,6 @@ def _source_type_for(model: SlayerModel) -> str:
 # Model schema skeleton (DEV-1588 follow-up)
 # ---------------------------------------------------------------------------
 
-_SKELETON_NONE = "_(none)_"
-
-
 def model_skeleton_fields(
     *, model: SlayerModel, max_chars: Optional[int] = None,
 ) -> Dict[str, Any]:
@@ -568,7 +567,7 @@ def model_skeleton_fields(
 
 
 def _skeleton_csv(names: List[str]) -> str:
-    return ", ".join(names) if names else _SKELETON_NONE
+    return ", ".join(names) if names else _NONE_PLACEHOLDER
 
 
 def render_model_skeleton(

@@ -56,6 +56,10 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 # The module under test does not exist yet — importing it is the first
 # right-reason failure for this TDD suite.
+from slayer.inspect.model_render import (  # noqa: E402
+    model_skeleton_fields,
+    render_model_skeleton,
+)
 from slayer.inspect.service import InspectService  # noqa: E402
 
 
@@ -921,7 +925,6 @@ class TestModelSkeletonHelpers:
     """Pure helpers in ``slayer.inspect.model_render`` — no DB, no engine."""
 
     def test_render_model_skeleton_is_heading_less(self) -> None:
-        from slayer.inspect.model_render import render_model_skeleton
 
         md = render_model_skeleton(model=_orders_like_model())
         # The caller prepends the `#`/`##` heading — the helper body must not.
@@ -934,7 +937,6 @@ class TestModelSkeletonHelpers:
         assert "Joins to: customers" in md
 
     def test_render_model_skeleton_empty_sections_render_none(self) -> None:
-        from slayer.inspect.model_render import render_model_skeleton
 
         bare = SlayerModel(
             name="customers", sql_table="customers", data_source="mydb",
@@ -956,7 +958,6 @@ class TestModelSkeletonHelpers:
         assert "Measures: \n" not in md and not md.endswith("Measures: ")
 
     def test_render_model_skeleton_hidden_only_columns_render_none(self) -> None:
-        from slayer.inspect.model_render import render_model_skeleton
 
         m = SlayerModel(
             name="m", sql_table="m", data_source="mydb",
@@ -971,7 +972,6 @@ class TestModelSkeletonHelpers:
     def test_render_model_skeleton_unnamed_only_measures_render_none(
         self,
     ) -> None:
-        from slayer.inspect.model_render import render_model_skeleton
 
         # SlayerModel rejects unnamed measures at validation, so model_copy is
         # used to reach the defensive ``m.name is not None`` filter path.
@@ -985,14 +985,12 @@ class TestModelSkeletonHelpers:
         assert "Measures: _(none)_" in md
 
     def test_render_model_skeleton_truncates_description(self) -> None:
-        from slayer.inspect.model_render import render_model_skeleton
 
         md = render_model_skeleton(model=_orders_like_model(), max_chars=4)
         assert "One row per placed order." not in md
         assert "Columns: " in md
 
     def test_model_skeleton_fields_shape(self) -> None:
-        from slayer.inspect.model_render import model_skeleton_fields
 
         fields = model_skeleton_fields(model=_orders_like_model())
         assert fields["name"] == "orders"
@@ -1004,7 +1002,6 @@ class TestModelSkeletonHelpers:
         assert fields["joins_to"] == ["customers"]
 
     def test_model_skeleton_fields_excludes_hidden_columns(self) -> None:
-        from slayer.inspect.model_render import model_skeleton_fields
 
         m = SlayerModel(
             name="m", sql_table="m", data_source="mydb",
@@ -1017,7 +1014,6 @@ class TestModelSkeletonHelpers:
         assert model_skeleton_fields(model=m)["column_names"] == ["id", "visible"]
 
     def test_model_skeleton_fields_excludes_unnamed_measures(self) -> None:
-        from slayer.inspect.model_render import model_skeleton_fields
 
         # model_copy bypasses the SlayerModel "every measure must be named"
         # validator so we can prove the defensive filter in the helper.
@@ -1033,7 +1029,6 @@ class TestModelSkeletonHelpers:
         assert model_skeleton_fields(model=m)["measure_names"] == ["named"]
 
     def test_model_skeleton_fields_joins_sorted_deduped(self) -> None:
-        from slayer.inspect.model_render import model_skeleton_fields
 
         m = SlayerModel(
             name="m", sql_table="m", data_source="mydb",
@@ -1050,7 +1045,6 @@ class TestModelSkeletonHelpers:
         assert model_skeleton_fields(model=m)["joins_to"] == ["apple", "zebra"]
 
     def test_canonical_id_has_no_leading_dot_without_data_source(self) -> None:
-        from slayer.inspect.model_render import model_skeleton_fields
 
         # model_copy bypasses validators so we can simulate a not-yet-refined
         # (empty data_source) model and prove the guard.
@@ -1399,3 +1393,55 @@ class TestSkeletonZeroDB:
             await svc.inspect(
                 reference="mydb.orders", entity_type="model", compact=False,
             )
+
+
+# ---------------------------------------------------------------------------
+# Ambiguous bare model name (DEV-1588 follow-up — Codex review)
+# ---------------------------------------------------------------------------
+
+
+class TestAmbiguousModelName:
+    """A bare model name present in 2+ datasources with no priority winner
+    makes ``resolve_entity`` raise ``AmbiguousModelError`` (a SlayerError
+    sibling, NOT an EntityResolutionError). inspect must surface the message,
+    not let it escape as an uncaught exception (which would 500 on REST)."""
+
+    async def _seed_ambiguous(self, storage: YAMLStorage) -> None:
+        # ``mydb`` already has ``orders``; add a second datasource that also
+        # has ``orders``, then clear the priority so no winner resolves.
+        await storage.save_datasource(DatasourceConfig(
+            name="otherdb", type="sqlite", database=":memory:",
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders", data_source="otherdb",
+            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+        ))
+        await storage.set_datasource_priority([])
+
+    @pytest.mark.parametrize(
+        "entity_type", ["model", "datasource", "column"],
+    )
+    async def test_ambiguous_bare_model_returns_message_not_raise(
+        self, storage: YAMLStorage, entity_type: str
+    ) -> None:
+        await self._seed_ambiguous(storage)
+        svc = InspectService(storage=storage)
+        # Must NOT raise — returns the actionable ambiguity message.
+        out = await svc.inspect(
+            reference="orders", entity_type=entity_type, compact=False,
+        )
+        assert "multiple datasources" in out.lower()
+        assert "mydb" in out and "otherdb" in out
+
+    async def test_ambiguous_bare_model_json_does_not_crash(
+        self, storage: YAMLStorage
+    ) -> None:
+        await self._seed_ambiguous(storage)
+        svc = InspectService(storage=storage)
+        out = await svc.inspect(
+            reference="orders", entity_type="model",
+            format="json", compact=True,
+        )
+        # The ambiguity message is returned as a plain string (not JSON, not a
+        # raised exception) — the surface stays alive.
+        assert "multiple datasources" in out.lower()

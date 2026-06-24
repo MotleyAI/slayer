@@ -16,7 +16,11 @@ from __future__ import annotations
 import json
 from typing import List, Optional
 
-from slayer.core.errors import EntityResolutionError, MemoryNotFoundError
+from slayer.core.errors import (
+    AmbiguousModelError,
+    EntityResolutionError,
+    MemoryNotFoundError,
+)
 from slayer.inspect.model_render import (
     _TRUNCATION_MARKER,
     _truncate_description,
@@ -284,7 +288,10 @@ class InspectService:
             res = await resolve_entity(
                 reference, storage=self._storage, source_model=None,
             )
-        except EntityResolutionError as exc:
+        except (EntityResolutionError, AmbiguousModelError) as exc:
+            # AmbiguousModelError (a SlayerError sibling, NOT a subclass of
+            # EntityResolutionError) escapes resolve_entity's bare-name model
+            # leg; surface its message instead of crashing the surface.
             return str(exc)
         warnings = warnings + list(res.warnings)
         if len(res.canonical_forms) != 1:
@@ -389,7 +396,12 @@ class InspectService:
         descriptions_max_chars: Optional[int],
         warnings: List[str],
     ) -> str:
-        canonical = await self._resolve_model_canonical(reference)
+        try:
+            canonical = await self._resolve_model_canonical(reference)
+        except AmbiguousModelError as exc:
+            # A bare model name present in ≥2 datasources with no priority
+            # winner — surface the actionable message, not an uncaught raise.
+            return str(exc)
         if canonical is None:
             return (
                 f"'{reference}' does not resolve to a model. Pass a "
@@ -451,6 +463,9 @@ class InspectService:
             res = await resolve_entity(
                 reference, storage=self._storage, source_model=None,
             )
+        except AmbiguousModelError:
+            # Bare ambiguous model name: let the caller surface the message.
+            raise
         except EntityResolutionError:
             res = None
         if res is not None and len(res.canonical_forms) == 1:
@@ -466,6 +481,8 @@ class InspectService:
         # model named `amount`.
         try:
             ident = await self._storage.resolve_model_identity(reference)
+        except AmbiguousModelError:
+            raise
         except Exception:
             ident = None
         if ident is not None:
@@ -490,7 +507,10 @@ class InspectService:
             res = await resolve_entity(
                 reference, storage=self._storage, source_model=None,
             )
-        except EntityResolutionError as exc:
+        except (EntityResolutionError, AmbiguousModelError) as exc:
+            # AmbiguousModelError (a SlayerError sibling, NOT a subclass of
+            # EntityResolutionError) escapes resolve_entity's bare-name model
+            # leg; surface its message instead of crashing the surface.
             return str(exc)
         warnings = warnings + list(res.warnings)
         if len(res.canonical_forms) != 1:

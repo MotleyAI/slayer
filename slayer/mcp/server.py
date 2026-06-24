@@ -794,9 +794,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 Disambiguates the 3-part canonical collision (a name
                 shared by, e.g., a column and an aggregation) and asserts
                 the resolved kind — a mismatch returns a detailed error.
-            compact: When true (default) return the description only
-                (full render fields omitted). False returns the full
-                render.
+            compact: When true (default): description-only for
+                column/measure/aggregation/datasource/memory; for
+                ``entity_type="model"`` a cheap schema skeleton (column /
+                measure / aggregation names + join targets, zero DB calls).
+                False returns the full render (and, for the datasource kind,
+                a per-model skeleton for each visible model).
             format: ``"markdown"`` (default) or ``"json"``.
             num_rows: Sample-data rows for ``entity_type="model"``. Ignored
                 (with a warning) for other kinds.
