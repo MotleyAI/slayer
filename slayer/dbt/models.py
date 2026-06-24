@@ -3,11 +3,74 @@
 Lightweight representations of dbt's semantic_models and metrics YAML.
 We don't use metricflow-semantic-interfaces because it requires a Pydantic v1
 compatibility shim and has heavy transitive dependencies we don't need.
+
+DEV-1595: parser completeness — every semantically-relevant
+dbt-semantic-interfaces (DSI) field is parsed (so the converter can either
+represent it or route it to a clean-fail report), never silently dropped.
+Pydantic ``extra="ignore"`` is kept everywhere (DSI is forward-compatible and
+adds fields over time; ``forbid`` would break on a newer manifest).
 """
 
-from typing import List, Optional
+import re
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+
+# ───────────────────────── shared helpers ─────────────────────────
+
+
+# Plural → singular granularity normalization for offset/window strings
+# (DSI accepts ``"2 weeks"``; SLayer's transforms want ``week``).
+_PLURAL_GRANULARITY_RE = re.compile(r"s$", re.IGNORECASE)
+
+
+def _normalize_filter(value: Any) -> Optional[str]:
+    """Normalize a DSI ``WhereFilterIntersection`` to a single filter string.
+
+    DSI filters are a *string*, a *list of strings*, or the structured
+    ``{"where_filters": [{"where_sql_template": "..."}]}`` dict. SLayer carries
+    a single ``Optional[str]`` per filter, so multiple where-clauses are
+    AND-joined (each parenthesised to preserve precedence). The raw Jinja is
+    preserved verbatim inside each clause — ``convert_dbt_filter`` resolves it
+    downstream.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value or None
+    parts: List[str] = []
+    if isinstance(value, dict):
+        where_filters = value.get("where_filters") or []
+        for wf in where_filters:
+            if isinstance(wf, dict):
+                tmpl = wf.get("where_sql_template")
+                if tmpl:
+                    parts.append(str(tmpl))
+            elif wf:
+                parts.append(str(wf))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            if isinstance(item, dict):
+                tmpl = item.get("where_sql_template")
+                if tmpl:
+                    parts.append(str(tmpl))
+            elif item:
+                parts.append(str(item))
+    else:
+        return str(value)
+
+    parts = [p for p in parts if p]
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return parts[0]
+    return " AND ".join(f"({p})" for p in parts)
+
+
+class DbtConfig(BaseModel):
+    """DSI ``config`` block. Only ``meta`` is semantically carried by SLayer."""
+    meta: Optional[Dict[str, Any]] = None
 
 
 class DbtTimeTypeParams(BaseModel):
@@ -21,11 +84,20 @@ class DbtNonAdditiveDimension(BaseModel):
     window_groupings: List[str] = Field(default_factory=list)
 
 
+class DbtValidityParams(BaseModel):
+    """SCD validity-window params on a dimension (recognized, not represented)."""
+    is_start: Optional[bool] = None
+    is_end: Optional[bool] = None
+
+
 class DbtEntity(BaseModel):
     name: str
     type: str  # "primary", "foreign", "unique", "natural"
     expr: Optional[str] = None  # defaults to name if omitted
     description: Optional[str] = None
+    label: Optional[str] = None
+    role: Optional[str] = None  # recognized for report/meta; not represented
+    config: Optional[DbtConfig] = None
 
 
 class DbtDimension(BaseModel):
@@ -35,6 +107,9 @@ class DbtDimension(BaseModel):
     description: Optional[str] = None
     label: Optional[str] = None
     type_params: Optional[DbtTimeTypeParams] = None
+    is_partition: Optional[bool] = None  # recognized for report/meta
+    validity_params: Optional[DbtValidityParams] = None  # recognized for report/meta
+    config: Optional[DbtConfig] = None
 
 
 class DbtMeasureAggParams(BaseModel):
@@ -53,6 +128,7 @@ class DbtMeasure(BaseModel):
     agg_time_dimension: Optional[str] = None
     agg_params: Optional[DbtMeasureAggParams] = None
     non_additive_dimension: Optional[DbtNonAdditiveDimension] = None
+    config: Optional[DbtConfig] = None
 
     @field_validator("expr", mode="before")
     @classmethod
@@ -77,6 +153,39 @@ class DbtSemanticModel(BaseModel):
     dimensions: List[DbtDimension] = Field(default_factory=list)
     measures: List[DbtMeasure] = Field(default_factory=list)
     label: Optional[str] = None
+    config: Optional[DbtConfig] = None
+
+
+class DbtMetricTimeWindow(BaseModel):
+    """A DSI metric time window: ``{count, granularity}`` or ``"7 days"``."""
+    count: int
+    granularity: str
+
+    @field_validator("granularity", mode="before")
+    @classmethod
+    def _normalize_granularity(cls, v: Any) -> Any:
+        """Singularize plural granularities (``weeks`` → ``week``)."""
+        if isinstance(v, str):
+            return _PLURAL_GRANULARITY_RE.sub("", v.strip()).lower() or v
+        return v
+
+    @classmethod
+    def parse(cls, value: Any) -> Optional["DbtMetricTimeWindow"]:
+        """Coerce a ``"<count> <granularity>"`` string / dict into the model."""
+        if value is None:
+            return None
+        if isinstance(value, DbtMetricTimeWindow):
+            return value
+        if isinstance(value, dict):
+            return cls.model_validate(value)
+        if isinstance(value, str):
+            parts = value.strip().split()
+            if len(parts) == 2 and parts[0].lstrip("-").isdigit():
+                return cls(count=int(parts[0]), granularity=parts[1])
+            # Single token (e.g. "month") → count 1.
+            if len(parts) == 1 and parts[0]:
+                return cls(count=1, granularity=parts[0])
+        return None
 
 
 class DbtMetricInputMeasure(BaseModel):
@@ -84,6 +193,13 @@ class DbtMetricInputMeasure(BaseModel):
     name: str
     filter: Optional[str] = None
     alias: Optional[str] = None
+    join_to_timespine: bool = False
+    fill_nulls_with: Optional[int] = None
+
+    @field_validator("filter", mode="before")
+    @classmethod
+    def _normalize_filter(cls, v: Any) -> Optional[str]:
+        return _normalize_filter(v)
 
 
 class DbtMetricInput(BaseModel):
@@ -94,13 +210,88 @@ class DbtMetricInput(BaseModel):
     offset_to_grain: Optional[str] = None
     filter: Optional[str] = None
 
+    @field_validator("filter", mode="before")
+    @classmethod
+    def _normalize_filter(cls, v: Any) -> Optional[str]:
+        return _normalize_filter(v)
+
+
+class DbtCumulativeTypeParams(BaseModel):
+    """DSI ``cumulative_type_params`` (window / grain_to_date / period_agg)."""
+    measure: Optional[str] = None
+    metric: Optional[str] = None
+    window: Optional[DbtMetricTimeWindow] = None
+    grain_to_date: Optional[str] = None
+    period_agg: Optional[str] = None  # default "first" in DSI
+
+    @field_validator("window", mode="before")
+    @classmethod
+    def _coerce_window(cls, v: Any) -> Any:
+        return DbtMetricTimeWindow.parse(v)
+
+
+class DbtConversionTypeParams(BaseModel):
+    """DSI ``conversion_type_params`` — parsed so conversion metrics fail
+    cleanly (funnel SQL is unsupported), never crash."""
+    base_measure: Optional[DbtMetricInputMeasure] = None
+    conversion_measure: Optional[DbtMetricInputMeasure] = None
+    base_metric: Optional[str] = None
+    conversion_metric: Optional[str] = None
+    entity: Optional[str] = None
+    calculation: Optional[str] = None
+    window: Optional[DbtMetricTimeWindow] = None
+    constant_properties: Optional[List[Dict[str, Any]]] = None
+
+    @field_validator("window", mode="before")
+    @classmethod
+    def _coerce_window(cls, v: Any) -> Any:
+        return DbtMetricTimeWindow.parse(v)
+
+
+class DbtMetricAggregationParams(BaseModel):
+    """DSI ``metric_aggregation_params`` — a measure-less simple metric that
+    aggregates a semantic-model expression directly. Unsupported shape in
+    SLayer (parsed for clean-fail routing)."""
+    semantic_model: Optional[str] = None
+    agg: Optional[str] = None
+    expr: Optional[str] = None
+    agg_params: Optional[DbtMeasureAggParams] = None
+    agg_time_dimension: Optional[str] = None
+
 
 class DbtMetricTypeParams(BaseModel):
-    measure: Optional[str] = None  # simple metrics: measure name (string shorthand)
+    measure: Optional[DbtMetricInputMeasure] = None  # simple: measure ref (str shorthand or obj)
     expr: Optional[str] = None  # derived metrics: formula expression
     metrics: Optional[List[DbtMetricInput]] = None  # derived: input metric refs
     numerator: Optional[DbtMetricInput] = None  # ratio
     denominator: Optional[DbtMetricInput] = None  # ratio
+    # Cumulative — both the flat legacy fields and the nested struct.
+    window: Optional[DbtMetricTimeWindow] = None
+    grain_to_date: Optional[str] = None
+    cumulative_type_params: Optional[DbtCumulativeTypeParams] = None
+    # Conversion / measure-less / metadata.
+    conversion_type_params: Optional[DbtConversionTypeParams] = None
+    metric_aggregation_params: Optional[DbtMetricAggregationParams] = None
+    time_granularity: Optional[str] = None
+    is_private: Optional[bool] = None
+
+    @field_validator("measure", mode="before")
+    @classmethod
+    def _coerce_measure(cls, v: Any) -> Any:
+        """Accept the string shorthand (``measure: revenue``) or the full
+        ``MetricInputMeasure`` object."""
+        if isinstance(v, str):
+            return {"name": v}
+        return v
+
+    @field_validator("window", mode="before")
+    @classmethod
+    def _coerce_window(cls, v: Any) -> Any:
+        return DbtMetricTimeWindow.parse(v)
+
+    @property
+    def measure_name(self) -> Optional[str]:
+        return self.measure.name if self.measure else None
 
 
 class DbtMetric(BaseModel):
@@ -110,6 +301,13 @@ class DbtMetric(BaseModel):
     label: Optional[str] = None
     type_params: Optional[DbtMetricTypeParams] = None
     filter: Optional[str] = None
+    time_granularity: Optional[str] = None
+    config: Optional[DbtConfig] = None
+
+    @field_validator("filter", mode="before")
+    @classmethod
+    def _normalize_filter(cls, v: Any) -> Optional[str]:
+        return _normalize_filter(v)
 
 
 class DbtColumnMeta(BaseModel):
@@ -147,7 +345,12 @@ class DbtRegularModel(BaseModel):
 
 
 class DbtProject(BaseModel):
-    """Aggregated result of parsing all YAML files in a dbt project."""
+    """Aggregated result of parsing all YAML files in a dbt project.
+
+    ``saved_queries`` / ``exports`` (and any other top-level DSI artefacts) are
+    out of scope for the importer but accepted via ``extra="ignore"`` so a full
+    manifest doesn't crash the parser.
+    """
     semantic_models: List[DbtSemanticModel] = Field(default_factory=list)
     metrics: List[DbtMetric] = Field(default_factory=list)
     regular_models: List[DbtRegularModel] = Field(default_factory=list)

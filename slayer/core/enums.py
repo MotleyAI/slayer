@@ -140,7 +140,7 @@ class JoinType(StrEnum):
 # Built-in aggregation names (always available without model-level definition).
 BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "min", "max",
-    "count", "count_distinct",
+    "count", "count_distinct", "count_distinct_approx",
     "first", "last",
     "weighted_avg",
     "median", "percentile",
@@ -157,6 +157,9 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
 AGGREGATION_ALIASES: dict[str, str] = {
     "countd": "count_distinct",
     "countdistinct": "count_distinct",  # also matches "countDistinct" once lowercased
+    # DEV-1595: approximate-distinct spellings agents / dbt-to-cube emit.
+    "approx_count_distinct": "count_distinct_approx",
+    "countdistinctapprox": "count_distinct_approx",  # matches "countDistinctApprox" lowercased
     "stddev": "stddev_samp",
     "var": "var_samp",
     "variance": "var_samp",
@@ -218,7 +221,7 @@ NUMERIC_ONLY_AGGREGATIONS: frozenset[str] = frozenset({
 # to gate ``column:agg`` expressions (e.g., ``revenue:sum`` requires ``sum`` to
 # be eligible for the ``revenue`` column's data type).
 _NUMERIC_AGGREGATIONS: frozenset[str] = frozenset({
-    "sum", "avg", "min", "max", "count", "count_distinct",
+    "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx",
     "median", "weighted_avg", "percentile", "first", "last",
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
     "corr", "covar_samp", "covar_pop",
@@ -230,21 +233,21 @@ DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
     DataType.INT: _NUMERIC_AGGREGATIONS,
     DataType.DOUBLE: _NUMERIC_AGGREGATIONS,
     DataType.TEXT: frozenset({
-        "count", "count_distinct", "first", "last", "min", "max",
+        "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
     }),
     DataType.BOOLEAN: frozenset({
-        "count", "count_distinct", "sum", "min", "max", "first", "last",
+        "count", "count_distinct", "count_distinct_approx", "sum", "min", "max", "first", "last",
     }),
     DataType.DATE: frozenset({
-        "count", "count_distinct", "first", "last", "min", "max",
+        "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
     }),
     DataType.TIMESTAMP: frozenset({
-        "count", "count_distinct", "first", "last", "min", "max",
+        "count", "count_distinct", "count_distinct_approx", "first", "last", "min", "max",
     }),
 }
 
 # Primary-key columns are always restricted to row-counting aggregations,
 # regardless of data type. (You can ``count`` customer_ids, but not ``sum`` them.)
 PRIMARY_KEY_AGGREGATIONS: frozenset[str] = frozenset({
-    "count", "count_distinct",
+    "count", "count_distinct", "count_distinct_approx",
 })

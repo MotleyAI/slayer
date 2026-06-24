@@ -294,6 +294,23 @@ class SqlDialect(BaseModel):
             f"PERCENTILE_CONT({p_str}) WITHIN GROUP (ORDER BY {col_sql})"
         )
 
+    def build_approx_count_distinct(
+        self,
+        col_sql: str,
+        *,
+        parse: Callable[[str], exp.Expression],
+    ) -> exp.Expression:
+        """Default: exact ``COUNT(DISTINCT col)`` fallback (DEV-1595).
+
+        Backends with no native approximate-distinct function (Postgres /
+        SQLite / MySQL) fall back to the exact count, which is *more*
+        accurate than an approximation — consistent with the "no
+        approximate SQL" rule. Native-supporting dialects override this to
+        emit their own approximate-distinct function (DuckDB
+        ``approx_count_distinct``, ClickHouse ``uniq``, …).
+        """
+        return parse(f"COUNT(DISTINCT {col_sql})")
+
     def build_stat_agg_1arg(
         self,
         agg_name: str,

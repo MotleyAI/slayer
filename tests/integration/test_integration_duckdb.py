@@ -305,6 +305,30 @@ class TestDuckDBQueries:
         assert float(result.data[0]["orders.prev"]) == pytest.approx(300.0)  # Jan
         assert float(result.data[0]["orders.next"]) == pytest.approx(375.0)  # Mar
 
+    async def test_unbounded_cumsum_matches_running_total(
+        self, duckdb_env: SlayerQueryEngine
+    ) -> None:
+        """DEV-1595: the unbounded ``cumsum`` a cumulative dbt metric maps to
+        must numerically equal the running total of the per-grain measure.
+
+        Monthly totals: Jan=300, Feb=200, Mar=375 → running totals 300, 500, 875.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            )],
+            measures=[
+                ModelMeasure(formula="total:sum"),
+                ModelMeasure(formula="cumsum(total:sum)", name="running"),
+            ],
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        )
+        result = await duckdb_env.execute(query=query)
+        assert result.row_count == 3
+        running = [float(r["orders.running"]) for r in result.data]
+        assert running == pytest.approx([300.0, 500.0, 875.0])
+
 
 @pytest.fixture(scope="module")
 def duckdb_ingest_env(tmp_path_factory):

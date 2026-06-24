@@ -22,11 +22,12 @@ from the base is ``log2_native=False`` (Snowflake has no native LOG2).
 from __future__ import annotations
 
 import re as _re
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 from urllib.parse import quote
 
 import sqlalchemy as sa
 import sqlalchemy.engine.url as _sa_url
+from sqlglot import exp
 
 from slayer.sql.dialects.base import SqlDialect
 
@@ -191,6 +192,15 @@ class SnowflakeDialect(SqlDialect):
     log10_native: bool = True
     # No native LOG2 — falls through to canonical ``LOG(2, x)`` form.
     log2_native: bool = False
+
+    def build_approx_count_distinct(
+        self,
+        col_sql: str,
+        *,
+        parse: Callable[[str], exp.Expression],
+    ) -> exp.Expression:
+        """Snowflake: native ``APPROX_COUNT_DISTINCT(x)`` aggregate."""
+        return parse(f"APPROX_COUNT_DISTINCT({col_sql})")
 
     # ------------------------------------------------------------------
     # Connection URL / engine

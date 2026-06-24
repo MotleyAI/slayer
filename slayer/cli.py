@@ -1335,19 +1335,16 @@ def _run_import_dbt(args):
             f"({len(model.columns)} columns, {len(model.measures)} measures)"
         )
 
-    for u in result.unconverted_metrics:
-        context = u.model_name or u.metric_name or "general"
-        print(f"  UNCONVERTED [{context}]: {u.message}")
-
-    for w in result.warnings:
-        context = w.model_name or w.metric_name or "general"
-        print(f"  WARNING [{context}]: {w.message}")
+    # DEV-1595: grouped, category-keyed conversion report + a severity tally.
+    if result.unconverted_metrics or result.warnings:
+        print("\nConversion report:")
+        print(result.render_report())
 
     visible_count = len(result.models) - hidden_count
+    unconverted, dropped = result.tally()
     print(
         f"\nDone: {visible_count} models, {hidden_count} hidden, "
-        f"{len(result.unconverted_metrics)} unconverted metrics, "
-        f"{len(result.warnings)} warnings"
+        f"{unconverted} unconverted, {dropped} dropped"
     )
 
 

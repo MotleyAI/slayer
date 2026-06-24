@@ -1186,8 +1186,9 @@ class TestDbtMeasureToModelMeasure:
         orders = next(m for m in result.models if m.name == "orders")
 
         aov = next(m for m in orders.measures if m.name == "aov")
-        # Q-5: bare ModelMeasure names — formula refs total_amount / order_count
-        assert aov.formula == "total_amount / order_count"
+        # Q-5: bare ModelMeasure names — formula refs total_amount / order_count.
+        # DEV-1595: ratio denominators are NULL-guarded with nullif(den, 0).
+        assert aov.formula == "total_amount / nullif(order_count, 0)"
 
     def test_cumulative_metric_becomes_model_measure(self) -> None:
         project = DbtProject(
@@ -1408,7 +1409,8 @@ class TestUnfilteredSimpleMetricResolution:
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         orders = next(m for m in result.models if m.name == "orders")
         aov = next(m for m in orders.measures if m.name == "aov_via_metrics")
-        assert aov.formula == "total_amount / order_count", (
+        # DEV-1595: ratio denominators are NULL-guarded with nullif(den, 0).
+        assert aov.formula == "total_amount / nullif(order_count, 0)", (
             f"Ratio formula should reference backing measures, got {aov.formula!r}"
         )
 

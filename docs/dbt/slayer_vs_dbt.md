@@ -54,17 +54,23 @@ dbt allows each measure within a semantic model to have its own default time dim
 
 ## Where SLayer Cannot Express dbt Constructs
 
+These constructs are **failed cleanly** by the importer — routed to the [conversion report](dbt_import.md#clean-fail-unsupported) with a workaround and stashed into the owning entity's `meta`, never converted to approximate or wrong SQL.
+
 ### No Rolling-Window Cumulative
 
-SLayer's [`cumsum()`](../concepts/formulas.md) accumulates from the beginning of the result set. dbt supports `window: {count: 30, period: day}` for trailing windows. A self-join over [`ModelExtension`](../concepts/queries.md#modelextension) could emulate this but is awkward; see the [Time example](../examples/04_time/time.md) for the transforms that are natively supported.
+SLayer's [`cumsum()`](../concepts/formulas.md) accumulates from the beginning of the result set. dbt supports `window: {count: 30, granularity: day}` for trailing windows. A self-join over [`ModelExtension`](../concepts/queries.md#modelextension) could emulate this but is awkward; see the [Time example](../examples/04_time/time.md) for the transforms that are natively supported.
 
 ### No `grain_to_date` Cumulative Reset
 
-dbt supports resetting cumulative at grain boundaries (e.g., month-to-date resets each month). SLayer's [`cumsum`](../concepts/formulas.md) has no partition-reset variant.
+dbt supports resetting cumulative at grain boundaries (e.g., month-to-date resets each month). SLayer's [`cumsum`](../concepts/formulas.md) has no partition-reset variant — put the grain dimension in the query instead.
 
 ### No Conversion Metrics
 
 Entity-based sequential event tracking (e.g., "users who visited then purchased within 7 days"). SLayer has no equivalent — this requires entity-based pre-aggregated joins with time windows.
+
+### Other clean-fails
+
+`offset_to_grain`, an `offset_window` on a multi-aggregate (ratio/derived) input, non-standard granularities, discrete/approximate percentile flags, `join_to_timespine` / `fill_nulls_with` gap-filling, and measure-less simple metrics (`metric_aggregation_params`) are all failed cleanly with a documented workaround — see the [clean-fail table](dbt_import.md#clean-fail-unsupported).
 
 ---
 
