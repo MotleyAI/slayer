@@ -206,6 +206,26 @@ async def test_save_model_accepts_base_columns_only(tmp_path) -> None:
     await storage.save_model(model)
 
 
+async def test_save_model_accepts_quoted_self_identity_column(tmp_path) -> None:
+    """A column whose sql is the double-quoted form of its own name is a base
+    reference, not a derived expression — required to reach a mixed-case
+    physical column on case-folding dialects (Prisma-style camelCase). It must
+    NOT be mistaken for a single-step self-cycle."""
+    storage = _yaml_storage(tmp_path)
+    model = SlayerModel(
+        name="merchant",
+        data_source="ds",
+        sql_table="merchant",
+        columns=[
+            Column(name="legalEntityType", sql='"legalEntityType"', type=DataType.TEXT),
+        ],
+    )
+    await storage.save_model(model)
+    reloaded = await storage.get_model("merchant", data_source="ds")
+    assert reloaded is not None
+    assert {c.name for c in reloaded.columns} == {"legalEntityType"}
+
+
 # ---------------------------------------------------------------------------
 # 2. Cross-model cycles (within a single data_source).
 # ---------------------------------------------------------------------------

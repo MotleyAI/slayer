@@ -35,7 +35,15 @@ def _is_trivial_base(*, column: Column) -> bool:
     """
     if column.sql is None:
         return True
-    return column.sql.strip() == column.name
+    sql = column.sql.strip()
+    # A double-quoted self-identity (``"legalEntityType"`` for a column named
+    # ``legalEntityType``) is still a bare base reference — required to point
+    # at a mixed-case physical column on case-folding dialects. Strip the
+    # surrounding identifier quotes before comparing so it is not mistaken
+    # for a derived expression (which would self-recurse into a false cycle).
+    if len(sql) >= 2 and sql[0] == '"' and sql[-1] == '"':
+        sql = sql[1:-1].replace('""', '"')
+    return sql == column.name
 
 
 def _root_scope_column_ids(*, parsed: exp.Expression) -> Set[int]:
