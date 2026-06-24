@@ -1445,3 +1445,34 @@ class TestAmbiguousModelName:
         # The ambiguity message is returned as a plain string (not JSON, not a
         # raised exception) — the surface stays alive.
         assert "multiple datasources" in out.lower()
+
+    async def test_datasource_prefix_not_blocked_by_ambiguous_model(
+        self, storage: YAMLStorage
+    ) -> None:
+        # A name that is BOTH a known datasource AND an ambiguous model (same
+        # name in >=2 datasources, no priority winner). resolve_entity's
+        # Case-D collision probe must not let that ambiguity abort the valid
+        # datasource interpretation (regression from the AmbiguousModelError
+        # handling — Codex re-review).
+        await storage.save_datasource(DatasourceConfig(
+            name="shared", type="sqlite", database=":memory:",
+            description="The shared datasource.",
+        ))
+        await storage.save_datasource(DatasourceConfig(
+            name="otherdb", type="sqlite", database=":memory:",
+        ))
+        await storage.save_model(SlayerModel(
+            name="shared", sql_table="shared", data_source="mydb",
+            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+        ))
+        await storage.save_model(SlayerModel(
+            name="shared", sql_table="shared", data_source="otherdb",
+            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+        ))
+        await storage.set_datasource_priority([])  # no model-leg winner
+        svc = InspectService(storage=storage)
+        out = await svc.inspect(
+            reference="shared", entity_type="datasource", compact=False,
+        )
+        assert "Datasource: shared" in out
+        assert "multiple datasources" not in out.lower()
