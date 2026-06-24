@@ -589,3 +589,65 @@ class TestEngineDecodeIntegration:
             assert "orders.status" in resp.columns
         finally:
             tmp.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# build_engine — inline service-account JSON
+# ---------------------------------------------------------------------------
+
+
+def test_build_engine_without_credentials_json_returns_none() -> None:
+    """No ``credentials_json`` → return ``None`` so engine_factory falls
+    back to the default ``create_engine`` (which reads ADC)."""
+    ds = DatasourceConfig(name="bq", type="bigquery", database="my-project")
+    dialect = BigqueryDialect()
+    assert dialect.build_engine(ds, connection_string="bigquery://my-project") is None
+
+
+def test_build_engine_with_credentials_json_passes_info_to_create_engine() -> None:
+    """``credentials_json`` → ``create_engine(..., credentials_info=<dict>)``."""
+    import json as _json
+
+    sa_info = {
+        "type": "service_account",
+        "project_id": "my-project",
+        "private_key_id": "abc",
+        "private_key": "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",
+        "client_email": "svc@my-project.iam.gserviceaccount.com",
+        "client_id": "123",
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+    ds = DatasourceConfig(
+        name="bq",
+        type="bigquery",
+        database="my-project",
+        credentials_json=_json.dumps(sa_info),
+    )
+    dialect = BigqueryDialect()
+    captured: dict = {}
+
+    def fake_create_engine(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return object()  # opaque sentinel; we only check call args
+
+    with patch("slayer.sql.dialects.bigquery.sa.create_engine", side_effect=fake_create_engine):
+        engine = dialect.build_engine(ds, connection_string="bigquery://my-project")
+
+    assert engine is not None
+    assert captured["url"] == "bigquery://my-project"
+    assert captured["kwargs"]["credentials_info"] == sa_info
+    assert captured["kwargs"]["pool_pre_ping"] is True
+
+
+def test_build_engine_with_invalid_credentials_json_raises() -> None:
+    """Garbage in ``credentials_json`` raises a clear error rather than
+    leaking a low-level ``JSONDecodeError`` traceback."""
+    ds = DatasourceConfig(
+        name="bq", type="bigquery", database="my-project",
+        credentials_json="this is not JSON",
+    )
+    dialect = BigqueryDialect()
+    with pytest.raises(ValueError, match="credentials_json is not valid JSON"):
+        dialect.build_engine(ds, connection_string="bigquery://my-project")

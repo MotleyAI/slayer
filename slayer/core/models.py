@@ -741,6 +741,13 @@ class DatasourceConfig(BaseModel):
     connection_name: Optional[str] = None
     warehouse: Optional[str] = None
     role: Optional[str] = None
+    # BigQuery-specific. Other dialects ignore it. The contents of a Google
+    # service-account key file as a JSON string. When set, the BigQuery dialect
+    # constructs the SQLAlchemy engine with ``credentials_info=json.loads(...)``
+    # so the connection authenticates against that service account directly.
+    # When unset, BigQuery falls back to Application Default Credentials
+    # (``GOOGLE_APPLICATION_CREDENTIALS`` env var or attached compute identity).
+    credentials_json: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
