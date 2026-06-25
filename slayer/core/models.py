@@ -747,7 +747,7 @@ class DatasourceConfig(BaseModel):
     # so the connection authenticates against that service account directly.
     # When unset, BigQuery falls back to Application Default Credentials
     # (``GOOGLE_APPLICATION_CREDENTIALS`` env var or attached compute identity).
-    credentials_json: Optional[str] = None
+    credentials_json: Optional[str] = Field(default=None, repr=False)
 
     @model_validator(mode="before")
     @classmethod

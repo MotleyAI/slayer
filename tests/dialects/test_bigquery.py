@@ -651,3 +651,16 @@ def test_build_engine_with_invalid_credentials_json_raises() -> None:
     dialect = BigqueryDialect()
     with pytest.raises(ValueError, match="credentials_json is not valid JSON"):
         dialect.build_engine(ds, connection_string="bigquery://my-project")
+
+
+@pytest.mark.parametrize("payload", ["[]", "null", '"key"', "42"])
+def test_build_engine_with_non_object_credentials_json_raises(payload: str) -> None:
+    """Valid JSON that isn't an object (list/null/string/number) is rejected
+    rather than passed to ``create_engine`` as a bogus ``credentials_info``."""
+    ds = DatasourceConfig(
+        name="bq", type="bigquery", database="my-project",
+        credentials_json=payload,
+    )
+    dialect = BigqueryDialect()
+    with pytest.raises(ValueError, match="credentials_json must be a JSON object"):
+        dialect.build_engine(ds, connection_string="bigquery://my-project")

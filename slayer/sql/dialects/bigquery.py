@@ -168,6 +168,10 @@ class BigqueryDialect(SqlDialect):
             raise ValueError(
                 f"Datasource '{datasource.name}': credentials_json is not valid JSON: {exc}"
             ) from exc
+        if not isinstance(credentials_info, dict):
+            raise ValueError(
+                f"Datasource '{datasource.name}': credentials_json must be a JSON object"
+            )
         return sa.create_engine(
             connection_string,
             credentials_info=credentials_info,
