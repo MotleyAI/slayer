@@ -763,6 +763,42 @@ def test_cross_model_filter_foreign_entity_without_owner_clean_fails() -> None:
                for e in _all_report_entries(result))
 
 
+def test_derived_ref_to_measure_filtered_simple_metric_keeps_filter() -> None:
+    """A simple metric whose filter lives only on type_params.measure.filter is
+    materialized as a filtered measure; a derived reference to it must use that
+    filtered metric, not collapse to the unfiltered base measure."""
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(name="orders", model="orders",
+                             measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")]),
+        ],
+        metrics=[
+            DbtMetric.model_validate({
+                "name": "web_revenue", "type": "simple",
+                "type_params": {"measure": {
+                    "name": "revenue",
+                    "filter": "{{ Dimension('orders__channel') }} = 'web'",
+                }},
+            }),
+            DbtMetric(
+                name="web_rev_plus_one",
+                type="derived",
+                type_params=DbtMetricTypeParams(
+                    expr="web_revenue + 1",
+                    metrics=[DbtMetricInput(name="web_revenue")],
+                ),
+            ),
+        ],
+    )
+    result = _convert(project)
+    # The derived formula references the filtered metric, not the bare base measure.
+    assert "web_revenue" in _measure(result, "web_rev_plus_one").formula
+    # And web_revenue itself materialized with a channel filter.
+    web = _measure(result, "web_revenue")
+    col = _column_for(result, web.formula)
+    assert col.filter is not None and "channel" in col.filter
+
+
 def test_filtered_simple_metric_over_non_additive_measure_clean_fails() -> None:
     """A filtered simple metric whose measure is semi-additive must clean-fail,
     not silently materialize as a plain filtered SUM."""

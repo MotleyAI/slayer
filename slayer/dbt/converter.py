@@ -1681,30 +1681,38 @@ class DbtToSlayerConverter:
     def _resolve_metric_to_name(self, metric_name: str) -> Optional[str]:
         """Resolve a metric name to a formula reference (bare ModelMeasure name).
 
-        For an *unfiltered* simple metric — which the converter does not
+        For a *plain unfiltered* simple metric — which the converter does not
         materialize — resolves to the backing dbt measure name instead. Falls
         back to ``_resolve_measure_to_name`` when ``metric_name`` is a measure.
         """
         for m in self.project.metrics:
             if m.name != metric_name:
                 continue
-            if (
-                m.type
-                and m.type.lower() == "simple"
-                and not m.filter
-                and m.type_params is not None
-                and m.type_params.measure_name
-                and not (
-                    m.type_params.measure
-                    and (
-                        m.type_params.measure.join_to_timespine
-                        or m.type_params.measure.fill_nulls_with is not None
-                    )
-                )
-            ):
+            if m.type and m.type.lower() == "simple" and self._simple_metric_is_plain(m):
                 return self._resolve_measure_to_name(m.type_params.measure_name)
             return metric_name
         return self._resolve_measure_to_name(metric_name)
+
+    @staticmethod
+    def _simple_metric_is_plain(m: DbtMetric) -> bool:
+        """Whether a simple metric is a *plain* re-aggregation that the
+        converter does NOT materialize as its own ``ModelMeasure`` (so a
+        reference collapses to the backing measure).
+
+        It is plain only when it carries no filter at all — neither
+        ``metric.filter`` NOR ``type_params.measure.filter`` — and no time-spine
+        gap fill. A filter on either side means it was materialized as a
+        filtered ModelMeasure under the metric's own name, and a time-spine
+        metric is clean-failed; in both cases the reference must stay the
+        metric name, not the unfiltered base measure.
+        """
+        tp = m.type_params
+        if tp is None or not tp.measure_name or m.filter:
+            return False
+        mref = tp.measure
+        if mref and (mref.filter or mref.join_to_timespine or mref.fill_nulls_with is not None):
+            return False
+        return True
 
     def _resolve_measure_to_name(self, measure_name: str) -> Optional[str]:
         """Resolve a dbt measure name to a formula reference (bare name)."""
