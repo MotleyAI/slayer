@@ -1047,6 +1047,19 @@ class DbtToSlayerConverter:
         if has_filter:
             rep = self._derived_filtered_input_ref(metric, m_input)
             return rep, rep is None
+        # Plain reference: an input naming a simple metric that was itself
+        # clean-failed (timespine / measure-less) is never materialized, so the
+        # formula would reference a nonexistent measure — clean-fail instead.
+        if self._input_unmaterialized(m_input.name):
+            self._fail_metric(
+                metric, category="derived_metric", severity="dropped",
+                message=(
+                    f"Derived metric '{metric.name}': input '{m_input.name}' is an "
+                    f"unsupported simple metric that was not materialized."
+                ),
+                suggestion="Make the input metric convertible, or inline its measure.",
+            )
+            return None, True
         return self._resolve_metric_to_name(m_input.name), False
 
     def _derived_filtered_input_ref(
@@ -1144,6 +1157,16 @@ class DbtToSlayerConverter:
         combined (metric-level + per-input) filter into a leaf when present."""
         raw_filter = self._combine_filters(metric.filter, side.filter)
         if not raw_filter:
+            if self._input_unmaterialized(side.name):
+                self._fail_metric(
+                    metric, category="ratio_metric", severity="dropped",
+                    message=(
+                        f"Ratio metric '{metric.name}': input '{side.name}' is an "
+                        f"unsupported simple metric that was not materialized."
+                    ),
+                    suggestion="Make the input metric convertible, or inline its measure.",
+                )
+                return None
             return self._resolve_metric_to_name(side.name) or side.name
 
         leaf = self._resolve_input_to_leaf(side.name)
@@ -1335,62 +1358,32 @@ class DbtToSlayerConverter:
     def _filter_reachable(
         self, raw: str, source_sm: DbtSemanticModel
     ) -> Tuple[bool, Optional[str]]:
-        """Whether every ``Dimension('entity__dim')`` in ``raw`` is reachable
-        from ``source_sm`` by walking the join graph transitively — not just a
-        one-hop entity-name check, so a legal multi-hop filter (e.g.
-        ``orders → customers → regions``) passes."""
-        reachable = self._reachable_entity_names(source_sm)
+        """Whether every ``Dimension('entity__dim')`` in ``raw`` resolves to a
+        filter SLayer can actually emit from ``source_sm``.
+
+        ``convert_dbt_filter`` lowers ``Dimension('entity__dim')`` to a
+        **one-hop** ``<entity_owner_model>.<dim>`` reference, which only
+        resolves when that model is **directly** joined to the source model —
+        i.e. the entity is declared on the source model itself. A multi-hop
+        filter (e.g. ``orders → customers → regions``) would need the full
+        ``customers__regions.dim`` join path, which the dbt filter converter
+        cannot produce, so it is clean-failed rather than emitted as a broken
+        one-hop path. (Full multi-hop cross-model filter support is tracked
+        separately — DEV-1445.)
+        """
+        source_entity_names = {e.name for e in source_sm.entities}
+        if source_sm.primary_entity:
+            source_entity_names.add(source_sm.primary_entity)
         for mm in _DIMENSION_RE.finditer(raw):
             entity_name, dim_name = mm.group(1), mm.group(2)
-            if entity_name == source_sm.name or entity_name in reachable:
+            if entity_name == source_sm.name or entity_name in source_entity_names:
                 continue
             return False, (
                 f"filter dimension '{entity_name}__{dim_name}' is not reachable "
-                f"from model '{source_sm.name}' (no join to entity '{entity_name}')"
+                f"from model '{source_sm.name}' via a direct join (multi-hop "
+                f"cross-model filters are not exactly expressible)"
             )
         return True, None
-
-    def _reachable_entity_names(self, source_sm: DbtSemanticModel) -> set:
-        """BFS over the join graph from ``source_sm``, returning every entity
-        name (and model name) reachable transitively.
-
-        Two semantic models are joinable when they share an entity (the
-        ``EntityRegistry`` indexes every primary/unique entity to its owning
-        models, so following a model's entities to their primary models walks
-        both foreign-key joins and shared-primary peer joins). Repeating the
-        walk yields multi-hop reachability.
-        """
-        reachable: set = set()
-        visited_models: set = set()
-        queue = [source_sm.name]
-        while queue:
-            mname = queue.pop()
-            if mname in visited_models:
-                continue
-            visited_models.add(mname)
-            sm = self._dbt_models_by_name.get(mname)
-            if sm is None:
-                continue
-            reachable |= self._model_entity_names(sm)
-            queue.extend(self._peer_model_names(sm))
-        return reachable
-
-    @staticmethod
-    def _model_entity_names(sm: DbtSemanticModel) -> set:
-        """The model's own name plus every entity name it declares."""
-        names = {sm.name}
-        if sm.primary_entity:
-            names.add(sm.primary_entity)
-        names.update(e.name for e in sm.entities)
-        return names
-
-    def _peer_model_names(self, sm: DbtSemanticModel) -> set:
-        """Models sharing any of ``sm``'s entities as a primary/unique entity."""
-        peers: set = set()
-        for e in sm.entities:
-            for peer_model, _expr in self.entity_registry._primaries.get(e.name, []):
-                peers.add(peer_model)
-        return peers
 
     def _filtered_leaf_ref(
         self,
@@ -1504,6 +1497,23 @@ class DbtToSlayerConverter:
                 return self._resolve_input_to_leaf(mtc.type_params.measure_name)
             return None  # ratio / derived / cumulative / conversion → multi-aggregate
         return None
+
+    def _input_unmaterialized(self, name: str) -> bool:
+        """Whether ``name`` refers to a simple metric that is *not* materialized
+        as a ModelMeasure (measure-less ``metric_aggregation_params`` or a
+        time-spine gap-fill). Such a metric is clean-failed in
+        ``_convert_simple_metric``, so a derived/ratio input referencing it
+        would point at a measure that does not exist on the model."""
+        for m in self.project.metrics:
+            if m.name != name or (m.type or "").lower() != "simple":
+                continue
+            tp = m.type_params
+            if tp is None or tp.metric_aggregation_params is not None:
+                return True
+            mref = tp.measure
+            if mref and (mref.join_to_timespine or mref.fill_nulls_with is not None):
+                return True
+        return False
 
     def _find_metric_source_model(self, metric: DbtMetric) -> Optional[str]:
         """Determine the source model for a metric.

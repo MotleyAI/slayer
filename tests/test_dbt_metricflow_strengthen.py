@@ -689,10 +689,12 @@ def test_cross_model_filter_unreachable_clean_fails() -> None:
                for e in _all_report_entries(result))
 
 
-def test_cross_model_filter_pushes_down_through_multi_hop_join() -> None:
-    """DEV-1595 review: reachability walks the join graph transitively, so a
-    filter on a model two hops away (orders → customers → regions) pushes down
-    instead of clean-failing."""
+def test_cross_model_filter_multi_hop_clean_fails() -> None:
+    """A filter on a model two hops away (orders → customers → regions) is
+    clean-failed: the dbt filter converter only emits a one-hop
+    ``regions.zone`` path, which would not resolve from orders (it needs the
+    full ``customers__regions.zone`` join path). Full multi-hop support is
+    tracked separately (DEV-1445)."""
     project = DbtProject(
         semantic_models=[
             DbtSemanticModel(
@@ -726,9 +728,40 @@ def test_cross_model_filter_pushes_down_through_multi_hop_join() -> None:
         ],
     )
     result = _convert(project)
-    m = _measure(result, "zone_a_revenue", model="orders")
-    col = _column_for(result, m.formula, model="orders")
-    assert col.filter is not None and "zone" in col.filter
+    assert all(m.name != "zone_a_revenue" for m in _model(result, "orders").measures)
+    assert any("zone_a_revenue" in (e.metric_name or e.message)
+               for e in _all_report_entries(result))
+
+
+def test_derived_input_referencing_unsupported_simple_clean_fails() -> None:
+    """A derived metric whose input is an unsupported (non-materialized) simple
+    metric must clean-fail, not emit a formula referencing a missing measure."""
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(name="orders", model="orders",
+                             measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")]),
+        ],
+        metrics=[
+            # Unsupported: time-spine gap fill → not materialized.
+            DbtMetric.model_validate({
+                "name": "gap_filled_rev",
+                "type": "simple",
+                "type_params": {"measure": {"name": "revenue", "fill_nulls_with": 0}},
+            }),
+            DbtMetric(
+                name="rev_minus_gap",
+                type="derived",
+                type_params=DbtMetricTypeParams(
+                    expr="gap_filled_rev - 1",
+                    metrics=[DbtMetricInput(name="gap_filled_rev")],
+                ),
+            ),
+        ],
+    )
+    result = _convert(project)
+    assert all(m.name != "rev_minus_gap" for m in _model(result).measures)
+    assert any("rev_minus_gap" in (e.metric_name or e.message)
+               for e in _all_report_entries(result))
 
 
 # ───────────────── Part 4 — measure-less / timespine clean-fails ─────────────────
