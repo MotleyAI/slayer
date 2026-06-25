@@ -763,6 +763,47 @@ def test_cross_model_filter_foreign_entity_without_owner_clean_fails() -> None:
                for e in _all_report_entries(result))
 
 
+def test_cross_model_filter_ambiguous_multi_owner_entity_clean_fails() -> None:
+    """A foreign entity owned as primary by more than one model can't be
+    unambiguously qualified to a single join, so it clean-fails instead of
+    being lowered to a possibly-wrong model."""
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(
+                name="orders", model="orders",
+                entities=[
+                    DbtEntity(name="order_id", type="primary", expr="id"),
+                    DbtEntity(name="party", type="foreign", expr="party_id"),
+                ],
+                measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")],
+            ),
+            # Two models both declare 'party' as their primary entity.
+            DbtSemanticModel(
+                name="agreement_party", model="agreement_party",
+                entities=[DbtEntity(name="party", type="primary", expr="id")],
+                dimensions=[DbtDimension(name="tier", type="categorical")],
+            ),
+            DbtSemanticModel(
+                name="billing_party", model="billing_party",
+                entities=[DbtEntity(name="party", type="primary", expr="id")],
+                dimensions=[DbtDimension(name="tier", type="categorical")],
+            ),
+        ],
+        metrics=[
+            DbtMetric(
+                name="tier_x_revenue",
+                type="simple",
+                type_params=DbtMetricTypeParams(measure="revenue"),
+                filter="{{ Dimension('party__tier') }} = 'X'",
+            ),
+        ],
+    )
+    result = _convert(project)
+    assert all(m.name != "tier_x_revenue" for m in _model(result).measures)
+    assert any("tier_x_revenue" in (e.metric_name or e.message)
+               for e in _all_report_entries(result))
+
+
 def test_derived_input_referencing_unsupported_simple_clean_fails() -> None:
     """A derived metric whose input is an unsupported (non-materialized) simple
     metric must clean-fail, not emit a formula referencing a missing measure."""

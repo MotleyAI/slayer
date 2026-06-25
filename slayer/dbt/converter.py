@@ -1430,11 +1430,24 @@ class DbtToSlayerConverter:
         if etype in ("primary", "unique") or entity_name == source_sm.primary_entity:
             return True, None  # local primary/unique → bare dim on the source table
         if etype == "foreign":
-            owner = self.entity_registry.resolve_entity_to_model(entity_name)
-            if owner is None or owner == source_sm.name:
+            owners = sorted({
+                m for m, _expr in self.entity_registry._primaries.get(entity_name, [])
+                if m != source_sm.name
+            })
+            if not owners:
                 return False, (
                     f"filter dimension '{entity_name}__{dim_name}' references entity "
                     f"'{entity_name}', which has no joinable owner model"
+                )
+            if len(owners) > 1:
+                # ``convert_dbt_filter`` qualifies the filter to a single owner
+                # (the lexicographically first), so a multi-owner entity would
+                # be lowered to a possibly-wrong model. Clean-fail rather than
+                # emit an ambiguously-qualified filter.
+                return False, (
+                    f"filter dimension '{entity_name}__{dim_name}' references entity "
+                    f"'{entity_name}', which is owned by multiple models {owners}; "
+                    f"the filter cannot be unambiguously qualified to one join"
                 )
             return True, None  # one-hop join → <owner>.<dim>
         return False, (
