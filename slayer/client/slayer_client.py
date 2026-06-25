@@ -471,8 +471,8 @@ class SlayerClient:
         format: str = "markdown",
         num_rows: int = 3,
         show_sql: bool = False,
-        sections: Optional[List[str]] = None,
-        descriptions_max_chars: Optional[int] = None,
+        sections: list[str] | None = None,
+        descriptions_max_chars: int | None = None,
     ) -> str:
         """Inspect EXACTLY one entity by reference and kind (DEV-1588).
 
@@ -522,10 +522,10 @@ class SlayerClient:
         format: str,
         num_rows: int,
         show_sql: bool,
-        sections: Optional[List[str]],
-        descriptions_max_chars: Optional[int],
-    ) -> Dict[str, Any]:
-        body: Dict[str, Any] = {
+        sections: list[str] | None,
+        descriptions_max_chars: int | None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
             "reference": reference,
             "entity_type": entity_type,
             "compact": compact,
@@ -587,8 +587,8 @@ class SlayerClient:
         format: str = "markdown",
         num_rows: int = 3,
         show_sql: bool = False,
-        sections: Optional[List[str]] = None,
-        descriptions_max_chars: Optional[int] = None,
+        sections: list[str] | None = None,
+        descriptions_max_chars: int | None = None,
     ) -> str:
         """Synchronous variant of :meth:`inspect` (DEV-1588)."""
         if self._storage is not None:

@@ -181,8 +181,8 @@ class InspectRequest(BaseModel):
     format: str = "markdown"
     num_rows: int = 3
     show_sql: bool = False
-    sections: Optional[List[str]] = None
-    descriptions_max_chars: Optional[int] = None
+    sections: list[str] | None = None
+    descriptions_max_chars: int | None = None
 
 
 def _slayer_version() -> str:
@@ -728,7 +728,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             }
         },
     )
-    async def inspect(request: InspectRequest) -> Dict[str, Any]:
+    async def inspect(request: InspectRequest) -> dict[str, Any]:
         try:
             result = await inspect_service.inspect(
                 reference=request.reference,

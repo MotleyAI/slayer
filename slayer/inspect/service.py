@@ -14,7 +14,6 @@ Exposed on four surfaces: the MCP ``inspect`` tool, REST ``POST
 from __future__ import annotations
 
 import json
-from typing import List, Optional
 
 from slayer.core.errors import (
     AmbiguousModelError,
@@ -68,7 +67,7 @@ class InspectService:
         self,
         *,
         storage: StorageBackend,
-        engine: Optional["SlayerQueryEngine"] = None,
+        engine: SlayerQueryEngine | None = None,
     ) -> None:
         self._storage = storage
         self._engine = engine
@@ -86,8 +85,8 @@ class InspectService:
         format: str = "markdown",
         num_rows: int = 3,
         show_sql: bool = False,
-        sections: Optional[List[str]] = None,
-        descriptions_max_chars: Optional[int] = None,
+        sections: list[str] | None = None,
+        descriptions_max_chars: int | None = None,
     ) -> str:
         # 1. Argument validation (raise ValueError).
         if entity_type not in VALID_ENTITY_TYPES:
@@ -107,7 +106,7 @@ class InspectService:
             )
 
         # 2. Model-only-arg warnings (skip entirely for model entity_type).
-        warnings: List[str] = self._model_only_arg_warnings(
+        warnings: list[str] = self._model_only_arg_warnings(
             entity_type=entity_type,
             num_rows=num_rows,
             show_sql=show_sql,
@@ -151,11 +150,11 @@ class InspectService:
         entity_type: str,
         num_rows: int,
         show_sql: bool,
-        sections: Optional[List[str]],
-    ) -> List[str]:
+        sections: list[str] | None,
+    ) -> list[str]:
         if entity_type == "model":
             return []
-        out: List[str] = []
+        out: list[str] = []
         # num_rows: warns for all non-model kinds when != default.
         if num_rows != 3:
             out.append(_warn_line(arg="num_rows", entity_type=entity_type))
@@ -174,7 +173,7 @@ class InspectService:
 
     @staticmethod
     def _truncate_description_field(
-        text: str, max_chars: Optional[int],
+        text: str, max_chars: int | None,
     ) -> str:
         """Truncate only the ``Description: <value>`` line(s) of a rendered
         entity blob — NOT the whole render. Mirrors ``inspect_model``'s
@@ -183,7 +182,7 @@ class InspectService:
         survive a small ``descriptions_max_chars``."""
         if max_chars is None:
             return text
-        out: List[str] = []
+        out: list[str] = []
         for line in text.split("\n"):
             if line.startswith(_DESCRIPTION_PREFIX):
                 value = line[len(_DESCRIPTION_PREFIX):]
@@ -197,7 +196,7 @@ class InspectService:
         return "\n".join(out)
 
     @staticmethod
-    def _markdown_with_warnings(body: str, warnings: List[str]) -> str:
+    def _markdown_with_warnings(body: str, warnings: list[str]) -> str:
         if not warnings:
             return body
         warn_block = "\n".join(f"> Warning: {w}" for w in warnings)
@@ -215,8 +214,8 @@ class InspectService:
         reference: str,
         compact: bool,
         fmt: str,
-        descriptions_max_chars: Optional[int],
-        warnings: List[str],
+        descriptions_max_chars: int | None,
+        warnings: list[str],
     ) -> str:
         if not reference.startswith("memory:"):
             return (
@@ -281,8 +280,8 @@ class InspectService:
         reference: str,
         compact: bool,
         fmt: str,
-        descriptions_max_chars: Optional[int],
-        warnings: List[str],
+        descriptions_max_chars: int | None,
+        warnings: list[str],
     ) -> str:
         try:
             res = await resolve_entity(
@@ -302,7 +301,7 @@ class InspectService:
         canonical = res.canonical_forms[0]
 
         known = set(await self._storage.list_datasources())
-        ds_name: Optional[str] = None
+        ds_name: str | None = None
         if "." not in canonical and canonical in known:
             ds_name = canonical
         elif reference in known:
@@ -324,8 +323,8 @@ class InspectService:
         ds_name: str,
         compact: bool,
         fmt: str,
-        descriptions_max_chars: Optional[int],
-        warnings: List[str],
+        descriptions_max_chars: int | None,
+        warnings: list[str],
     ) -> str:
         cfg = await self._storage.get_datasource(ds_name)
         description = cfg.description if cfg is not None else None
@@ -368,7 +367,7 @@ class InspectService:
                 "warnings": warnings,
             }, indent=2, default=str)
 
-        md_lines: List[str] = [f"Datasource: {ds_name}"]
+        md_lines: list[str] = [f"Datasource: {ds_name}"]
         if trunc_desc:
             md_lines.append(f"Description: {trunc_desc}")
         for m in models:
@@ -392,9 +391,9 @@ class InspectService:
         fmt: str,
         num_rows: int,
         show_sql: bool,
-        sections: Optional[List[str]],
-        descriptions_max_chars: Optional[int],
-        warnings: List[str],
+        sections: list[str] | None,
+        descriptions_max_chars: int | None,
+        warnings: list[str],
     ) -> str:
         try:
             canonical = await self._resolve_model_canonical(reference)
@@ -455,7 +454,7 @@ class InspectService:
             return json.dumps(payload, indent=2, default=str)
         return self._markdown_with_warnings(rendered, warnings)
 
-    async def _resolve_model_canonical(self, reference: str) -> Optional[str]:
+    async def _resolve_model_canonical(self, reference: str) -> str | None:
         """Resolve ``reference`` to a 2-part ``<ds>.<model>`` canonical id,
         applying the Case-D entity_type=model override (a resolver that
         picked a datasource for a name that is also a model)."""
@@ -500,8 +499,8 @@ class InspectService:
         entity_type: str,
         compact: bool,
         fmt: str,
-        descriptions_max_chars: Optional[int],
-        warnings: List[str],
+        descriptions_max_chars: int | None,
+        warnings: list[str],
     ) -> str:
         try:
             res = await resolve_entity(
@@ -558,8 +557,8 @@ class InspectService:
         entity_type: str,
         compact: bool,
         fmt: str,
-        descriptions_max_chars: Optional[int],
-        warnings: List[str],
+        descriptions_max_chars: int | None,
+        warnings: list[str],
     ) -> str:
         trunc_desc = _truncate_description(
             text=entry.description, max_chars=descriptions_max_chars,
