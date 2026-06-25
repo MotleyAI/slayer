@@ -18,6 +18,9 @@ A policy is set once, at engine (or local-engine client) construction:
 ```python
 from slayer.core.policy import SessionPolicy, ColumnFilterRule
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.yaml_storage import YAMLStorage
+
+storage = YAMLStorage(base_dir="./slayer_data")  # your configured backend
 
 policy = SessionPolicy(data_filters=[
     ColumnFilterRule(column="organization_uuid", value="7ef3ab6c-...."),
@@ -29,10 +32,10 @@ Every query the engine runs is now tenant-scoped, with no model or query
 changes:
 
 ```python
-resp = await engine.execute(SlayerQuery(
-    source_model="orders",
-    measures=[ModelMeasure(formula="*:count")],
-))
+resp = await engine.execute({
+    "source_model": "orders",
+    "measures": [{"formula": "*:count"}],
+})
 # -> count of THIS org's orders only; a join to customers/regions is
 #    org-scoped on every side too.
 ```
@@ -43,7 +46,7 @@ The same `policy=` argument works on the local-engine client:
 from slayer.client import SlayerClient
 
 client = SlayerClient(storage=storage, policy=policy)
-df = client.query_df(SlayerQuery(source_model="orders", measures=[...]))
+df = client.query_df({"source_model": "orders", "measures": [{"formula": "*:count"}]})
 ```
 
 ## Operator: scalar vs list

@@ -21,6 +21,8 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
 
+A query carries no tenant scoping of its own. To force every query through an engine to one tenant's rows — joins and sub-queries included — configure a policy at engine construction; see [Row-Level Security](row-level-security.md).
+
 ## Dimensions
 
 Each entry in `dimensions` is either a bare string (the canonical short form for a column without a custom label) or a `ColumnRef` dict with `name` and optional `label`. Both styles support dotted paths for joined models, auto-resolved via the join graph.
