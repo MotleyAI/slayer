@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from slayer.core.enums import DataType, JoinType
 from slayer.core.format import NumberFormat, NumberFormatType
+from slayer.core.formula import parse_formula
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.dbt.entities import EntityRegistry
@@ -239,6 +240,7 @@ class DbtToSlayerConverter:
         for metric in self.project.metrics:
             self._convert_metric(metric)
 
+        self._prune_dangling_measures()
         self._mirror_inner_joins()
 
         if self.include_hidden_models and self.project.regular_models:
@@ -270,6 +272,50 @@ class DbtToSlayerConverter:
                         join_pairs=reverse_pairs,
                         join_type=JoinType.INNER,
                     ))
+
+    def _prune_dangling_measures(self) -> None:
+        """Drop+report any ``ModelMeasure`` whose formula references a name that
+        does not resolve on its model (DEV-1595 robust validation pass).
+
+        A derived / ratio metric whose input metric was itself clean-failed
+        (measure-less, time-spine gap-fill, unreachable filter, filtered-leaf
+        clean-fail, or a transitively-dropped dependency) leaves a bare formula
+        reference to a measure that was never materialized. Rather than predict
+        every such case inline at conversion time, this final pass validates the
+        emitted formulas against the actual model and removes the ones that
+        can't resolve — running to a fixpoint so a measure depending on a
+        just-dropped one is dropped too.
+        """
+        for model in self._models_by_name.values():
+            self._prune_model_measures(model)
+
+    def _prune_model_measures(self, model: SlayerModel) -> None:
+        agg_names = frozenset(a.name for a in model.aggregations)
+        changed = True
+        while changed:
+            changed = False
+            named = {m.name: m.formula for m in model.measures if m.name}
+            survivors: List[ModelMeasure] = []
+            for m in model.measures:
+                others = {k: v for k, v in named.items() if k != m.name}
+                try:
+                    parse_formula(m.formula, extra_agg_names=agg_names, named_measures=others)
+                    survivors.append(m)
+                except (ValueError, RecursionError) as exc:
+                    self._unconverted.append(ConversionWarning(
+                        model_name=model.name,
+                        metric_name=m.name,
+                        category="dangling_reference",
+                        severity="dropped",
+                        message=(
+                            f"Measure '{m.name}' references a name that does not resolve "
+                            f"on model '{model.name}' and was dropped: {exc}"
+                        ),
+                        suggestion="Ensure every referenced metric/measure converts successfully.",
+                    ))
+                    changed = True
+            if changed:
+                model.measures = survivors
 
     def _convert_regular_models(self, existing_names: set) -> List[SlayerModel]:
         """Convert orphan dbt models (not wrapped by semantic_models) to hidden SLayer models."""
@@ -1047,19 +1093,9 @@ class DbtToSlayerConverter:
         if has_filter:
             rep = self._derived_filtered_input_ref(metric, m_input)
             return rep, rep is None
-        # Plain reference: an input naming a simple metric that was itself
-        # clean-failed (timespine / measure-less) is never materialized, so the
-        # formula would reference a nonexistent measure — clean-fail instead.
-        if self._input_unmaterialized(m_input.name):
-            self._fail_metric(
-                metric, category="derived_metric", severity="dropped",
-                message=(
-                    f"Derived metric '{metric.name}': input '{m_input.name}' is an "
-                    f"unsupported simple metric that was not materialized."
-                ),
-                suggestion="Make the input metric convertible, or inline its measure.",
-            )
-            return None, True
+        # A plain reference to an input metric that was itself clean-failed (and
+        # so never materialized) leaves a dangling bare name in the formula; the
+        # post-conversion _prune_dangling_measures pass catches and reports it.
         return self._resolve_metric_to_name(m_input.name), False
 
     def _derived_filtered_input_ref(
@@ -1157,16 +1193,8 @@ class DbtToSlayerConverter:
         combined (metric-level + per-input) filter into a leaf when present."""
         raw_filter = self._combine_filters(metric.filter, side.filter)
         if not raw_filter:
-            if self._input_unmaterialized(side.name):
-                self._fail_metric(
-                    metric, category="ratio_metric", severity="dropped",
-                    message=(
-                        f"Ratio metric '{metric.name}': input '{side.name}' is an "
-                        f"unsupported simple metric that was not materialized."
-                    ),
-                    suggestion="Make the input metric convertible, or inline its measure.",
-                )
-                return None
+            # A ratio side referencing a clean-failed (non-materialized) metric
+            # leaves a dangling formula name that _prune_dangling_measures drops.
             return self._resolve_metric_to_name(side.name) or side.name
 
         leaf = self._resolve_input_to_leaf(side.name)
@@ -1370,20 +1398,50 @@ class DbtToSlayerConverter:
         cannot produce, so it is clean-failed rather than emitted as a broken
         one-hop path. (Full multi-hop cross-model filter support is tracked
         separately — DEV-1445.)
+
+        A foreign entity declared on the source but with **no joinable owner
+        model** is also clean-failed: ``convert_dbt_filter`` would fall back to
+        a bare ``dim`` name that doesn't exist on the source table. (Whether a
+        reachable model actually has the column isn't verified here — undeclared
+        dimensions are legitimately bare table columns, and column existence is
+        a query-time schema-drift concern, consistent with the rest of the
+        converter.)
         """
-        source_entity_names = {e.name for e in source_sm.entities}
-        if source_sm.primary_entity:
-            source_entity_names.add(source_sm.primary_entity)
+        entity_types = {e.name: e.type for e in source_sm.entities}
         for mm in _DIMENSION_RE.finditer(raw):
-            entity_name, dim_name = mm.group(1), mm.group(2)
-            if entity_name == source_sm.name or entity_name in source_entity_names:
-                continue
-            return False, (
-                f"filter dimension '{entity_name}__{dim_name}' is not reachable "
-                f"from model '{source_sm.name}' via a direct join (multi-hop "
-                f"cross-model filters are not exactly expressible)"
+            ok, reason = self._entity_filter_reachable(
+                mm.group(1), mm.group(2), source_sm, entity_types
             )
+            if not ok:
+                return False, reason
         return True, None
+
+    def _entity_filter_reachable(
+        self,
+        entity_name: str,
+        dim_name: str,
+        source_sm: DbtSemanticModel,
+        entity_types: Dict[str, str],
+    ) -> Tuple[bool, Optional[str]]:
+        """Reachability decision for a single ``entity__dim`` filter token."""
+        if entity_name == source_sm.name:
+            return True, None  # the source table's own column
+        etype = entity_types.get(entity_name)
+        if etype in ("primary", "unique") or entity_name == source_sm.primary_entity:
+            return True, None  # local primary/unique → bare dim on the source table
+        if etype == "foreign":
+            owner = self.entity_registry.resolve_entity_to_model(entity_name)
+            if owner is None or owner == source_sm.name:
+                return False, (
+                    f"filter dimension '{entity_name}__{dim_name}' references entity "
+                    f"'{entity_name}', which has no joinable owner model"
+                )
+            return True, None  # one-hop join → <owner>.<dim>
+        return False, (
+            f"filter dimension '{entity_name}__{dim_name}' is not reachable from "
+            f"model '{source_sm.name}' via a direct join (multi-hop cross-model "
+            f"filters are not exactly expressible)"
+        )
 
     def _filtered_leaf_ref(
         self,
@@ -1497,23 +1555,6 @@ class DbtToSlayerConverter:
                 return self._resolve_input_to_leaf(mtc.type_params.measure_name)
             return None  # ratio / derived / cumulative / conversion → multi-aggregate
         return None
-
-    def _input_unmaterialized(self, name: str) -> bool:
-        """Whether ``name`` refers to a simple metric that is *not* materialized
-        as a ModelMeasure (measure-less ``metric_aggregation_params`` or a
-        time-spine gap-fill). Such a metric is clean-failed in
-        ``_convert_simple_metric``, so a derived/ratio input referencing it
-        would point at a measure that does not exist on the model."""
-        for m in self.project.metrics:
-            if m.name != name or (m.type or "").lower() != "simple":
-                continue
-            tp = m.type_params
-            if tp is None or tp.metric_aggregation_params is not None:
-                return True
-            mref = tp.measure
-            if mref and (mref.join_to_timespine or mref.fill_nulls_with is not None):
-                return True
-        return False
 
     def _find_metric_source_model(self, metric: DbtMetric) -> Optional[str]:
         """Determine the source model for a metric.

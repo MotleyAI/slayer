@@ -733,6 +733,36 @@ def test_cross_model_filter_multi_hop_clean_fails() -> None:
                for e in _all_report_entries(result))
 
 
+def test_cross_model_filter_foreign_entity_without_owner_clean_fails() -> None:
+    """A filter on a foreign entity that no model owns as primary clean-fails:
+    convert_dbt_filter would otherwise fall back to a bare, invalid column."""
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(
+                name="orders", model="orders",
+                entities=[
+                    DbtEntity(name="order_id", type="primary", expr="id"),
+                    # 'vendor' is foreign but no semantic model declares it primary.
+                    DbtEntity(name="vendor", type="foreign", expr="vendor_id"),
+                ],
+                measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")],
+            ),
+        ],
+        metrics=[
+            DbtMetric(
+                name="vendor_x_revenue",
+                type="simple",
+                type_params=DbtMetricTypeParams(measure="revenue"),
+                filter="{{ Dimension('vendor__tier') }} = 'X'",
+            ),
+        ],
+    )
+    result = _convert(project)
+    assert all(m.name != "vendor_x_revenue" for m in _model(result).measures)
+    assert any("vendor_x_revenue" in (e.metric_name or e.message)
+               for e in _all_report_entries(result))
+
+
 def test_derived_input_referencing_unsupported_simple_clean_fails() -> None:
     """A derived metric whose input is an unsupported (non-materialized) simple
     metric must clean-fail, not emit a formula referencing a missing measure."""
