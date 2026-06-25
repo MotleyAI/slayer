@@ -6,7 +6,7 @@ Flow: SlayerQuery → _enrich() → EnrichedQuery → SQLGenerator → SQL → e
 import decimal
 import logging
 from contextvars import ContextVar
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from pydantic import BaseModel, Field as PydanticField, model_validator
 import sqlalchemy as sa
@@ -49,7 +49,7 @@ from slayer.storage.base import StorageBackend
 logger = logging.getLogger(__name__)
 
 
-def _sql_client_cache_key(datasource: DatasourceConfig) -> Tuple[str, str]:
+def _sql_client_cache_key(datasource: DatasourceConfig) -> tuple[str, str]:
     """Cache key for ``SlayerQueryEngine._sql_clients``.
 
     Mirrors ``engine_factory``'s cache key so two datasources differing
@@ -66,7 +66,7 @@ def _sql_client_cache_key(datasource: DatasourceConfig) -> Tuple[str, str]:
 # engine don't see each other's in-flight state — each asyncio task gets its
 # own copy of the context. The default=None + lazy-init pattern below means
 # only tasks that actually hit a query-backed join target allocate a set.
-_join_target_resolving_var: ContextVar[Optional[set]] = ContextVar(
+_join_target_resolving_var: ContextVar[set | None] = ContextVar(
     "_join_target_resolving", default=None
 )
 
@@ -77,7 +77,7 @@ _join_target_resolving_var: ContextVar[Optional[set]] = ContextVar(
 # _resolve_model_inner to differentiate forward/self refs from genuine
 # misspellings, so the user gets a clear error instead of "Model 'X' not found".
 # Each entry maps a forbidden target name to the stage that tried to reach it.
-_forbidden_sibling_refs_var: ContextVar[Optional[Dict[str, str]]] = ContextVar(
+_forbidden_sibling_refs_var: ContextVar[dict[str, str] | None] = ContextVar(
     "_forbidden_sibling_refs", default=None
 )
 
@@ -102,10 +102,10 @@ _PLACEHOLDER_FILL_VALUE = "0"
 
 def _merge_query_variables(
     *,
-    outer: Optional[Dict[str, Any]],
-    stage: Optional[Dict[str, Any]],
-    runtime: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
+    outer: dict[str, Any] | None,
+    stage: dict[str, Any] | None,
+    runtime: dict[str, Any] | None,
+) -> dict[str, Any]:
     """Merge variable layers per spec precedence: ``runtime > stage > outer``.
 
     Model-level defaults are folded into ``outer`` by the caller before
@@ -115,8 +115,8 @@ def _merge_query_variables(
 
 
 def _apply_placeholder_fill(
-    query: SlayerQuery, effective: Dict[str, Any]
-) -> Dict[str, Any]:
+    query: SlayerQuery, effective: dict[str, Any]
+) -> dict[str, Any]:
     """Add ``{var: '0'}`` for any unresolved ``{var}`` placeholder in
     ``query.filters`` so save-time dry-run SQL generation can proceed even
     when a runtime variable has no default.
@@ -153,17 +153,17 @@ def _build_explain_sql(dialect: str, sql: str) -> str:
 class FieldMetadata(BaseModel):
     """Metadata for a single field in the query response."""
 
-    label: Optional[str] = None
-    format: Optional[NumberFormat] = None
+    label: str | None = None
+    format: NumberFormat | None = None
 
 
 class ResponseAttributes(BaseModel):
     """Field metadata for a query response, split by type."""
 
-    dimensions: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
-    measures: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
+    dimensions: dict[str, FieldMetadata] = PydanticField(default_factory=dict)
+    measures: dict[str, FieldMetadata] = PydanticField(default_factory=dict)
 
-    def get(self, column: str) -> Optional[FieldMetadata]:
+    def get(self, column: str) -> FieldMetadata | None:
         """Look up metadata for a column across both dicts."""
         return self.dimensions.get(column) or self.measures.get(column)
 
@@ -171,9 +171,9 @@ class ResponseAttributes(BaseModel):
 class SlayerResponse(BaseModel):
     """Response from a SLayer query."""
 
-    data: List[Dict[str, Any]]
-    columns: List[str] = PydanticField(default_factory=list)
-    sql: Optional[str] = None
+    data: list[dict[str, Any]]
+    columns: list[str] = PydanticField(default_factory=list)
+    sql: str | None = None
     attributes: ResponseAttributes = PydanticField(default_factory=ResponseAttributes)
 
     @model_validator(mode="after")
@@ -212,7 +212,7 @@ def _infer_aggregated_format(
     model: SlayerModel,
     measure_name: str,
     aggregation: str,
-) -> Optional[NumberFormat]:
+) -> NumberFormat | None:
     """Infer NumberFormat for an aggregated measure based on aggregation type and source measure format.
 
     Rules:
@@ -250,14 +250,14 @@ class SlayerQueryEngine:
         self,
         storage: StorageBackend,
         *,
-        policy: Optional[SessionPolicy] = None,
+        policy: SessionPolicy | None = None,
     ):
         self.storage = storage
         # Cache key: (connection_string, runtime_fingerprint) — matches
         # ``engine_factory``'s cache so Snowflake datasources sharing a
         # connection_name but differing in warehouse/role/database/schema
         # get distinct clients (DEV-1551).
-        self._sql_clients: Dict[Tuple[str, str], SlayerSQLClient] = {}
+        self._sql_clients: dict[tuple[str, str], SlayerSQLClient] = {}
         # DEV-1578: immutable, engine-global forced-filter policy. When set,
         # every generated SQL is rewritten to scope each physical table to the
         # configured tenant before execution / dry-run / explain / profiling.
@@ -266,7 +266,7 @@ class SlayerQueryEngine:
         # (ds_key, schema, table, column). Only ``True``/``False`` are cached;
         # an unconfirmable ``None`` is re-probed so a transient introspection
         # failure self-heals once the datasource recovers.
-        self._column_presence_cache: Dict[Tuple, bool] = {}
+        self._column_presence_cache: dict[tuple, bool] = {}
 
     def _apply_policy(
         self, *, sql: str, dialect: str, datasource: DatasourceConfig
@@ -290,7 +290,7 @@ class SlayerQueryEngine:
         datasource: DatasourceConfig,
         scoped_table: ScopedTable,
         column: str,
-    ) -> Optional[bool]:
+    ) -> bool | None:
         """Return whether ``column`` exists on ``scoped_table`` in
         ``datasource``: ``True`` / ``False`` / ``None`` (cannot confirm).
 
@@ -348,8 +348,8 @@ class SlayerQueryEngine:
 
     @staticmethod
     def _scope_named_queries_to_prior(
-        named_queries: Dict[str, "SlayerQuery"], stage_name: Optional[str]
-    ) -> Dict[str, "SlayerQuery"]:
+        named_queries: dict[str, "SlayerQuery"], stage_name: str | None
+    ) -> dict[str, "SlayerQuery"]:
         """Slice an insertion-ordered named-queries dict to entries that
         come strictly before ``stage_name``.
 
@@ -368,7 +368,7 @@ class SlayerQueryEngine:
         """
         if not stage_name or stage_name not in named_queries:
             return named_queries
-        out: Dict[str, "SlayerQuery"] = {}
+        out: dict[str, "SlayerQuery"] = {}
         for k, v in named_queries.items():
             if k == stage_name:
                 return out
@@ -416,13 +416,13 @@ class SlayerQueryEngine:
 
     @staticmethod
     def _index_query_list_by_name(
-        rest: List["SlayerQuery"], root: "SlayerQuery",
-    ) -> Dict[str, "SlayerQuery"]:
+        rest: list["SlayerQuery"], root: "SlayerQuery",
+    ) -> dict[str, "SlayerQuery"]:
         """Build ``{name: query}`` for non-final entries, validating that
         every non-final entry has a unique name and that the root's
         name (if any) doesn't collide.
         """
-        rest_by_name: Dict[str, "SlayerQuery"] = {}
+        rest_by_name: dict[str, "SlayerQuery"] = {}
         for q in rest:
             if not q.name:
                 raise ValueError(
@@ -442,8 +442,8 @@ class SlayerQueryEngine:
     @classmethod
     def _validate_query_list_invariants(
         cls,
-        queries: List["SlayerQuery"],
-        rest: List["SlayerQuery"],
+        queries: list["SlayerQuery"],
+        rest: list["SlayerQuery"],
         root: "SlayerQuery",
         sibling_names: set,
     ) -> None:
@@ -472,7 +472,7 @@ class SlayerQueryEngine:
     @classmethod
     def _build_dependency_graph(
         cls,
-        rest_by_name: Dict[str, "SlayerQuery"],
+        rest_by_name: dict[str, "SlayerQuery"],
         sibling_names: set,
     ) -> tuple:
         """Build the (in_degree, dependents) adjacency for Kahn's.
@@ -481,8 +481,8 @@ class SlayerQueryEngine:
         the count of siblings ``X`` depends on; ``dependents[X]`` is the
         list of siblings that depend on ``X``.
         """
-        in_degree: Dict[str, int] = dict.fromkeys(rest_by_name, 0)
-        dependents: Dict[str, List[str]] = {name: [] for name in rest_by_name}
+        in_degree: dict[str, int] = dict.fromkeys(rest_by_name, 0)
+        dependents: dict[str, list[str]] = {name: [] for name in rest_by_name}
         for name, q in rest_by_name.items():
             for prereq in cls._extract_sibling_refs(q, sibling_names):
                 dependents[prereq].append(name)
@@ -491,21 +491,21 @@ class SlayerQueryEngine:
 
     @staticmethod
     def _kahn_sort(
-        in_degree: Dict[str, int],
-        dependents: Dict[str, List[str]],
-    ) -> List[str]:
+        in_degree: dict[str, int],
+        dependents: dict[str, list[str]],
+    ) -> list[str]:
         """Topologically sort by Kahn's algorithm. Cycle → ValueError.
 
         Mutates ``in_degree`` in place; callers shouldn't reuse it.
         The frontier is kept sorted for deterministic output order across
         runs.
         """
-        frontier: List[str] = sorted(n for n, d in in_degree.items() if d == 0)
-        sorted_names: List[str] = []
+        frontier: list[str] = sorted(n for n, d in in_degree.items() if d == 0)
+        sorted_names: list[str] = []
         while frontier:
             n = frontier.pop(0)
             sorted_names.append(n)
-            unlocked: List[str] = []
+            unlocked: list[str] = []
             for dep in dependents[n]:
                 in_degree[dep] -= 1
                 if in_degree[dep] == 0:
@@ -522,8 +522,8 @@ class SlayerQueryEngine:
     @classmethod
     def _topologically_order_queries(
         cls,
-        queries: List["SlayerQuery"],
-    ) -> List["SlayerQuery"]:
+        queries: list["SlayerQuery"],
+    ) -> list["SlayerQuery"]:
         """Re-order a runtime query list so every stage appears after the
         siblings it references via ``source_model`` or
         ``joins.target_model``. Lets callers submit a DAG in any order —
@@ -564,11 +564,11 @@ class SlayerQueryEngine:
     async def execute(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
-        variables: Optional[Dict[str, Any]] = None,
+        variables: dict[str, Any] | None = None,
         *,
         dry_run: bool = False,
         explain: bool = False,
-        data_source: Optional[str] = None,
+        data_source: str | None = None,
     ) -> SlayerResponse:
         runtime_kwarg = variables or {}
 
@@ -623,10 +623,10 @@ class SlayerQueryEngine:
     async def _execute_by_name(
         self,
         name: str,
-        runtime_kwarg: Dict[str, Any],
+        runtime_kwarg: dict[str, Any],
         dry_run: bool = False,
         explain: bool = False,
-        data_source: Optional[str] = None,
+        data_source: str | None = None,
     ) -> SlayerResponse:
         """Run the backing query of a query-backed model by name."""
         model = await self.storage.get_model(name, data_source=data_source)
@@ -640,7 +640,7 @@ class SlayerQueryEngine:
 
         stages = list(model.source_queries)
         main_query = stages[-1]
-        named_queries: Dict[str, SlayerQuery] = {}
+        named_queries: dict[str, SlayerQuery] = {}
         for q in stages[:-1]:
             if q.name:
                 if q.name in named_queries:
@@ -674,12 +674,12 @@ class SlayerQueryEngine:
     async def _execute_pipeline(  # NOSONAR S3776 — linear pipeline (resolve→enrich→generate→execute); breaking it up obscures the order of operations
         self,
         query: SlayerQuery,
-        named_queries: Dict[str, SlayerQuery],
-        runtime_kwarg: Dict[str, Any],
+        named_queries: dict[str, SlayerQuery],
+        runtime_kwarg: dict[str, Any],
         *,
         dry_run: bool = False,
         explain: bool = False,
-        prefer_data_source: Optional[str] = None,
+        prefer_data_source: str | None = None,
     ) -> SlayerResponse:
         """Shared pipeline used by both ``execute()`` and ``_execute_by_name()``.
 
@@ -739,8 +739,8 @@ class SlayerQueryEngine:
         # entry is included only if its alias is part of the public
         # projection (filter-extracted hidden transforms, ORDER-BY
         # aggregates, and window-arg hoists are silently dropped).
-        dim_meta: Dict[str, FieldMetadata] = {}
-        measure_meta: Dict[str, FieldMetadata] = {}
+        dim_meta: dict[str, FieldMetadata] = {}
+        measure_meta: dict[str, FieldMetadata] = {}
         for d in enriched.dimensions:
             if d.alias in public_aliases and (d.label or d.format):
                 dim_meta[d.alias] = FieldMetadata(label=d.label, format=d.format)
@@ -896,7 +896,7 @@ class SlayerQueryEngine:
         return touched
 
     async def _expand_join_graph(
-        self, *, touched: "set[str]", data_source: Optional[str]
+        self, *, touched: "set[str]", data_source: str | None
     ) -> None:
         """Follow each touched model's joins transitively, adding reachable
         target_model names to ``touched``. Visited-set guarded to avoid
@@ -944,7 +944,7 @@ class SlayerQueryEngine:
             # time), so attribution only needs the parent's data_source.
             data_sources: set[str] = {model.data_source} if model.data_source else set()
 
-            collected: List[Any] = []
+            collected: list[Any] = []
             for ds_name in data_sources or {None}:
                 try:
                     entries = await self.validate_models(data_source=ds_name)
@@ -982,7 +982,7 @@ class SlayerQueryEngine:
         types) and falls back to the first allowed aggregation otherwise.
         Skips primary-key columns (they're identifiers, not values to probe).
         """
-        measures: List[ModelMeasure] = []
+        measures: list[ModelMeasure] = []
         for c in model.columns:
             if c.hidden or c.primary_key:
                 continue
@@ -999,8 +999,8 @@ class SlayerQueryEngine:
     async def get_column_types(
         self,
         model_name: str,
-        data_source: Optional[str] = None,
-    ) -> Dict[str, str]:
+        data_source: str | None = None,
+    ) -> dict[str, str]:
         """Infer column types for a model's columns via a type-probe query.
 
         Builds a real query through the engine's enrich+generate pipeline
@@ -1077,37 +1077,58 @@ class SlayerQueryEngine:
             return {}
 
         # Map qualified aliases (e.g., "orders.revenue_max") back to bare measure names
-        result: Dict[str, str] = {}
+        result: dict[str, str] = {}
         for em in enriched.measures:
             if em.alias in raw_types:
                 result[em.source_measure_name or em.name] = raw_types[em.alias]
         return result
 
+    async def aclose(self) -> None:
+        """Dispose every cached client's async engine; keep the clients themselves.
+
+        Per-instance async engines bind their asyncpg/aiomysql pool to the loop
+        that first opened a connection; closing that loop without disposing
+        leaks the server-side connections (asyncpg.Connection.close needs a
+        live loop). Clients are kept so ``_sync_engine`` survives — important
+        for ``:memory:`` SQLite, whose StaticPool pins the connection holding
+        all data.
+        """
+        for client in self._sql_clients.values():
+            await client.aclose()
+
     def execute_sync(
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
-        variables: Optional[Dict[str, Any]] = None,
+        variables: dict[str, Any] | None = None,
         *,
         dry_run: bool = False,
         explain: bool = False,
     ) -> SlayerResponse:
-        """Synchronous wrapper for execute(). For CLI, notebooks, and scripts."""
+        """Synchronous wrapper for execute(). Disposes per-call async engines
+        in ``finally`` so they don't outlive their owning loop — see ``aclose``.
+        """
         from slayer.async_utils import run_sync
 
-        return run_sync(
-            self.execute(query, variables=variables, dry_run=dry_run, explain=explain)
-        )
+        async def _run_and_cleanup() -> SlayerResponse:
+            try:
+                return await self.execute(
+                    query, variables=variables, dry_run=dry_run, explain=explain,
+                )
+            finally:
+                await self.aclose()
+
+        return run_sync(_run_and_cleanup())
 
     async def edit_model_remove(
         self,
         *,
         model_name: str,
-        data_source: Optional[str],
-        remove_columns: Optional[List[str]] = None,
-        remove_measures: Optional[List[str]] = None,
-        remove_aggregations: Optional[List[str]] = None,
-        remove_joins: Optional[List[str]] = None,
-        remove_filters: Optional[List[str]] = None,
+        data_source: str | None,
+        remove_columns: list[str] | None = None,
+        remove_measures: list[str] | None = None,
+        remove_aggregations: list[str] | None = None,
+        remove_joins: list[str] | None = None,
+        remove_filters: list[str] | None = None,
     ) -> SlayerModel:
         """Apply surgical removals to a persisted model.
 
@@ -1174,13 +1195,13 @@ class SlayerQueryEngine:
         return updated
 
     async def delete_model_by_name(
-        self, *, model_name: str, data_source: Optional[str]
+        self, *, model_name: str, data_source: str | None
     ) -> bool:
         """Delete a persisted model by name. Returns True if the model existed."""
         return await self.storage.delete_model(model_name, data_source=data_source)
 
     async def apply_drift_deletes(
-        self, deletes: "List[Any]"
+        self, deletes: "list[Any]"
     ) -> "Any":
         """Apply each ``ToDeleteEntry`` via the engine helpers and return
         the combined ``ApplyDriftResult`` (applied, errors, residual).
@@ -1197,8 +1218,8 @@ class SlayerQueryEngine:
             ApplyError,
         )
 
-        applied: List[AppliedEntry] = []
-        errors: List[ApplyError] = []
+        applied: list[AppliedEntry] = []
+        errors: list[ApplyError] = []
         touched_ds: set[str] = set()
 
         for entry in deletes:
@@ -1241,7 +1262,7 @@ class SlayerQueryEngine:
                 )
 
         # Re-validate the touched datasources to compute residual drift.
-        residual: List[Any] = []
+        residual: list[Any] = []
         for ds_name in touched_ds:
             try:
                 residual.extend(await self.validate_models(data_source=ds_name))
@@ -1258,8 +1279,8 @@ class SlayerQueryEngine:
         )
 
     async def validate_models(
-        self, data_source: Optional[str] = None
-    ) -> "List[Any]":
+        self, data_source: str | None = None
+    ) -> "list[Any]":
         """Diff persisted models against live database schemas.
 
         Returns the minimal list of deletes needed for SQL generation to
@@ -1280,7 +1301,7 @@ class SlayerQueryEngine:
                 return []
             identities = await self.storage._list_all_model_identities()
             ds_model_names = [n for d, n in identities if d == data_source]
-            models: List[SlayerModel] = []
+            models: list[SlayerModel] = []
             for name in ds_model_names:
                 m = await self.storage.get_model(name, data_source=data_source)
                 if m is not None:
@@ -1295,13 +1316,13 @@ class SlayerQueryEngine:
         if not ds_names:
             return []
 
-        async def _validate_one(name: str) -> "List[ToDeleteEntry]":
+        async def _validate_one(name: str) -> "list[ToDeleteEntry]":
             return await self.validate_models(data_source=name)
 
         results = await _asyncio.gather(
             *(_validate_one(n) for n in ds_names), return_exceptions=True
         )
-        out: List = []
+        out: list = []
         for r in results:
             if isinstance(r, BaseException):
                 logger.warning("validate_models: per-DS validation failed: %s", r)
@@ -1313,8 +1334,8 @@ class SlayerQueryEngine:
         self,
         query: "SlayerQuery | list[SlayerQuery] | dict | list[dict]",
         name: str,
-        description: Optional[str] = None,
-        variables: Optional[Dict[str, Any]] = None,
+        description: str | None = None,
+        variables: dict[str, Any] | None = None,
         save: bool = True,
     ) -> SlayerModel:
         """Synchronous wrapper for create_model_from_query()."""
@@ -1333,10 +1354,10 @@ class SlayerQueryEngine:
     async def _expand_query_backed_model(
         self,
         model: SlayerModel,
-        outer_vars: Optional[Dict[str, Any]],
-        runtime_kwarg: Optional[Dict[str, Any]],
+        outer_vars: dict[str, Any] | None,
+        runtime_kwarg: dict[str, Any] | None,
         dry_run_placeholders: bool,
-        _resolving: Optional[set],
+        _resolving: set | None,
     ) -> SlayerModel:
         """If ``model`` is query-backed, expand its ``source_queries`` into a
         virtual model (with rendered SQL). Otherwise return ``model`` unchanged.
@@ -1365,10 +1386,10 @@ class SlayerQueryEngine:
         query_model,
         named_queries: dict = None,
         _resolving: set = None,
-        outer_vars: Optional[Dict[str, Any]] = None,
-        runtime_kwarg: Optional[Dict[str, Any]] = None,
+        outer_vars: dict[str, Any] | None = None,
+        runtime_kwarg: dict[str, Any] | None = None,
         dry_run_placeholders: bool = False,
-        prefer_data_source: Optional[str] = None,
+        prefer_data_source: str | None = None,
     ) -> SlayerModel:
         """Resolve query.source_model — handles str, SlayerModel, and ModelExtension."""
         from slayer.core.query import ModelExtension
@@ -1452,10 +1473,10 @@ class SlayerQueryEngine:
         model_name: str,
         named_queries: dict[str, SlayerQuery] = None,
         _resolving: set = None,
-        outer_vars: Optional[Dict[str, Any]] = None,
-        runtime_kwarg: Optional[Dict[str, Any]] = None,
+        outer_vars: dict[str, Any] | None = None,
+        runtime_kwarg: dict[str, Any] | None = None,
         dry_run_placeholders: bool = False,
-        prefer_data_source: Optional[str] = None,
+        prefer_data_source: str | None = None,
     ) -> SlayerModel:
         """Resolve a model by name — checks named queries first, then storage."""
         named_queries = named_queries or {}
@@ -1486,10 +1507,10 @@ class SlayerQueryEngine:
         model_name: str,
         named_queries: dict[str, SlayerQuery],
         _resolving: set = None,
-        outer_vars: Optional[Dict[str, Any]] = None,
-        runtime_kwarg: Optional[Dict[str, Any]] = None,
+        outer_vars: dict[str, Any] | None = None,
+        runtime_kwarg: dict[str, Any] | None = None,
         dry_run_placeholders: bool = False,
-        prefer_data_source: Optional[str] = None,
+        prefer_data_source: str | None = None,
     ) -> SlayerModel:
         # Named query overrides stored model
         if model_name in named_queries:
@@ -1552,8 +1573,8 @@ class SlayerQueryEngine:
         self,
         query: "SlayerQuery | list[SlayerQuery] | dict | list[dict]",
         name: str,
-        description: Optional[str] = None,
-        variables: Optional[Dict[str, Any]] = None,
+        description: str | None = None,
+        variables: dict[str, Any] | None = None,
         save: bool = True,
     ) -> SlayerModel:
         """Create a query-backed model from a query (or list of stages).
@@ -1602,7 +1623,7 @@ class SlayerQueryEngine:
         # up the old storage entry when a query-backed model's resolved
         # data_source changes (e.g. its backing query now points at a
         # different upstream datasource).
-        prior_data_source: Optional[str] = None
+        prior_data_source: str | None = None
         if model.source_queries:
             try:
                 identity = await self.storage.resolve_model_identity(model.name)
@@ -1671,7 +1692,7 @@ class SlayerQueryEngine:
         query: SlayerQuery,
         model: SlayerModel,
         named_queries: dict[str, SlayerQuery] = None,
-        dialect: Optional[str] = None,
+        dialect: str | None = None,
         *,
         drop_unreachable_filters: bool = False,
     ) -> EnrichedQuery:
@@ -1800,7 +1821,7 @@ class SlayerQueryEngine:
     async def _render_query_backed_join_target(
         self,
         target: SlayerModel,
-        outer_query_variables: Optional[Dict[str, Any]],
+        outer_query_variables: dict[str, Any] | None,
     ) -> SlayerModel:
         """Resolve a query-backed model used as a JOIN target.
 
@@ -1849,8 +1870,8 @@ class SlayerQueryEngine:
         named_queries: dict[str, SlayerQuery] = None,
         override_name: str = None,
         _resolving: set = None,
-        outer_vars: Optional[Dict[str, Any]] = None,
-        runtime_kwarg: Optional[Dict[str, Any]] = None,
+        outer_vars: dict[str, Any] | None = None,
+        runtime_kwarg: dict[str, Any] | None = None,
         dry_run_placeholders: bool = False,
     ) -> SlayerModel:
         """Build a virtual SlayerModel from a nested query's result.
@@ -1889,7 +1910,7 @@ class SlayerQueryEngine:
         scoped = self._scope_named_queries_to_prior(
             named_queries, inner_query.name
         )
-        forbidden_now: Dict[str, str] = {}
+        forbidden_now: dict[str, str] = {}
         if scoped is not named_queries and inner_query.name:
             for k in named_queries:
                 if k not in scoped:
@@ -2044,7 +2065,7 @@ class SlayerQueryEngine:
 
         # One Column per result column — each is potentially both a dimension
         # (group-by) or measure (with colon-aggregation) at query time.
-        cols: List[Column] = []
+        cols: list[Column] = []
         for _, short, dtype, label, desc, fmt in column_map:
             cols.append(Column(name=short, sql=short, type=dtype, label=label, description=desc, format=fmt))
 
@@ -2203,7 +2224,7 @@ class SlayerQueryEngine:
         if not query.measures:
             return query
 
-        kept: List = []
+        kept: list = []
         extra_dims = list(query.dimensions or [])
         moved = False
 
@@ -2592,7 +2613,7 @@ class SlayerQueryEngine:
         return ds
 
     @staticmethod
-    def _dialect_for_type(ds_type: Optional[str]) -> str:
+    def _dialect_for_type(ds_type: str | None) -> str:
         """Map a datasource-config ``type`` string to a sqlglot dialect name.
 
         Delegates to ``dialect_for_ds_type`` in ``slayer.sql.dialects``

@@ -14,7 +14,6 @@ import logging
 import os
 import ssl
 import sys
-from typing import Optional
 
 from slayer.pg_facade.auth import validate_bind_address, validate_tls_pair
 from slayer.pg_facade.connection import PgConnection
@@ -30,8 +29,8 @@ async def serve(
     port: int,
     engine,
     storage,
-    token: Optional[str] = None,
-    tls_ctx: Optional[ssl.SSLContext] = None,
+    token: str | None = None,
+    tls_ctx: ssl.SSLContext | None = None,
 ) -> None:
     """Bind and serve forever. Validates the bind/token combination first."""
     validate_bind_address(host=host, token=token)
@@ -54,7 +53,7 @@ async def serve(
         await server.serve_forever()
 
 
-def _build_tls_context(cert: Optional[str], key: Optional[str]) -> Optional[ssl.SSLContext]:
+def _build_tls_context(cert: str | None, key: str | None) -> ssl.SSLContext | None:
     validate_tls_pair(cert=cert, key=key)
     if cert is None or key is None:
         return None
@@ -64,12 +63,12 @@ def _build_tls_context(cert: Optional[str], key: Optional[str]) -> Optional[ssl.
     return ctx
 
 
-def _resolve_token(token_arg: Optional[str]) -> Optional[str]:
+def _resolve_token(token_arg: str | None) -> str | None:
     """``--token`` wins over the ``$SLAYER_PG_TOKEN`` env var."""
     return token_arg or os.environ.get("SLAYER_PG_TOKEN")
 
 
-def _resolve_host(*, host_arg: Optional[str], demo: bool, token: Optional[str]) -> str:
+def _resolve_host(*, host_arg: str | None, demo: bool, token: str | None) -> str:
     """Explicit --host wins; --demo without a token defaults to loopback so the
     no-token fallback applies; otherwise bind all interfaces."""
     if host_arg is not None:
@@ -92,7 +91,7 @@ def run_pg_serve(args, *, resolve_storage, prepare_demo) -> None:
         prepare_demo(args, storage)
 
     engine = SlayerQueryEngine(storage=storage)
-    token: Optional[str] = _resolve_token(args.token)
+    token: str | None = _resolve_token(args.token)
     host = _resolve_host(host_arg=args.host, demo=args.demo, token=token)
 
     try:

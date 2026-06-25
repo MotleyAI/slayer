@@ -25,14 +25,20 @@ differs.
 
 from __future__ import annotations
 
+import json
 import re
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
 
+import sqlalchemy as sa
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
 from slayer.sql.dialects._alias_mangle import decode_alias, encode_alias
 from slayer.sql.dialects.base import SqlDialect
+
+if TYPE_CHECKING:
+    from slayer.core.models import DatasourceConfig
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +84,7 @@ class BigqueryDialect(SqlDialect):
     sqlglot_name: str = "bigquery"
     ds_type_aliases: frozenset[str] = frozenset({"bigquery"})
     # BigQuery has no SQL-level EXPLAIN.
-    explain_prefix: Optional[str] = None
+    explain_prefix: str | None = None
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
@@ -136,3 +142,39 @@ class BigqueryDialect(SqlDialect):
         consumers see SLayer's universal dotted alias shape regardless of
         whether the query ran against BigQuery or another dialect."""
         return [{decode_alias(k): v for k, v in row.items()} for row in rows]
+
+    def build_engine(
+        self,
+        datasource: "DatasourceConfig",
+        *,
+        connection_string: str,
+    ) -> "sa.Engine | None":
+        """Construct the SQLAlchemy engine with inline service-account JSON
+        when ``DatasourceConfig.credentials_json`` is set.
+
+        ``sqlalchemy-bigquery`` accepts a ``credentials_info`` kwarg on
+        ``create_engine`` — a dict matching the service-account key file's
+        shape. Parse the JSON string into a dict and pass it through; the
+        BigQuery client builds credentials from it directly, no temp file
+        needed. When ``credentials_json`` is unset, return ``None`` so
+        ``engine_factory`` falls back to the default ``create_engine`` and
+        the BigQuery client picks up Application Default Credentials.
+        """
+        credentials_json = datasource.credentials_json
+        if not credentials_json:
+            return None
+        try:
+            credentials_info = json.loads(credentials_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Datasource '{datasource.name}': credentials_json is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(credentials_info, dict):
+            raise ValueError(
+                f"Datasource '{datasource.name}': credentials_json must be a JSON object"
+            )
+        return sa.create_engine(
+            connection_string,
+            credentials_info=credentials_info,
+            pool_pre_ping=True,
+        )

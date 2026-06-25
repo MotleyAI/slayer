@@ -19,7 +19,6 @@ model's actual backend.
 from __future__ import annotations
 
 import re
-from typing import List
 
 from slayer.core.formula import ALL_TRANSFORMS, ParsedFilter
 from slayer.core.refs import AGG_REF_RE
@@ -60,7 +59,7 @@ def _reject_dsl_constructs(formula: str) -> None:
         )
 
 
-def _bare_column_refs(formula: str) -> List[str]:
+def _bare_column_refs(formula: str) -> list[str]:
     """Best-effort extraction of column-like identifiers from a SQL-mode
     predicate, used so downstream join-detection sees the same shape it
     saw before DEV-1369 round 2 dropped sqlglot from this path. Skips
@@ -69,7 +68,7 @@ def _bare_column_refs(formula: str) -> List[str]:
     ``status`` → ``status``) and excludes function-call heads.
     """
     stripped = _strip_string_literals(formula)
-    refs: List[str] = []
+    refs: list[str] = []
     for match in re.finditer(r"\b[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*\b", stripped):
         token = match.group(0)
         # Skip if immediately followed by `(` (function call)

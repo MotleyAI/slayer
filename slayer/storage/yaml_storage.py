@@ -23,7 +23,8 @@ to ``counters.yaml.legacy`` if present. Both renames are idempotent: if a
 
 import contextlib
 import os
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any
+from collections.abc import Iterator
 
 import yaml
 from pydantic import ValidationError
@@ -112,8 +113,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         with open(path, "w") as f:
             yaml.dump(data, f, sort_keys=False)
 
-    async def _list_all_model_identities(self) -> List[Tuple[str, str]]:
-        result: List[Tuple[str, str]] = []
+    async def _list_all_model_identities(self) -> list[tuple[str, str]]:
+        result: list[tuple[str, str]] = []
         if not os.path.isdir(self.models_dir):
             return result
         for ds in sorted(os.listdir(self.models_dir)):
@@ -128,8 +129,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def get_model(
         self,
         name: str,
-        data_source: Optional[str] = None,
-    ) -> Optional[SlayerModel]:
+        data_source: str | None = None,
+    ) -> SlayerModel | None:
         target = await self._resolve_target_or_none(name, data_source=data_source)
         if target is None:
             return None
@@ -166,9 +167,9 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         data_source: str,
         model_name: str,
         column_name: str,
-        sampled: Optional[str],
-        sampled_values: Optional[List[str]],
-        distinct_count: Optional[int],
+        sampled: str | None,
+        sampled_values: list[str] | None,
+        distinct_count: int | None,
     ) -> None:
         path = self._model_path(data_source, model_name)
         if not os.path.exists(path):
@@ -204,7 +205,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         with open(path, "w") as f:
             yaml.dump(data, f, sort_keys=False)
 
-    async def get_datasource(self, name: str) -> Optional[DatasourceConfig]:
+    async def get_datasource(self, name: str) -> DatasourceConfig | None:
         # DEV-1405: sanitize before composing the filesystem path.
         _validate_path_component(name, kind="datasource name")
         path = os.path.join(self.datasources_dir, f"{name}.yaml")
@@ -224,7 +225,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 f"Datasource '{name}': invalid config — {exc}"
             ) from exc
 
-    async def list_datasources(self) -> List[str]:
+    async def list_datasources(self) -> list[str]:
         result = []
         for filename in sorted(os.listdir(self.datasources_dir)):
             if filename.endswith((".yaml", ".yml")):
@@ -240,7 +241,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     # ---- datasource priority -----------------------------------------------
 
-    async def get_datasource_priority(self) -> List[str]:
+    async def get_datasource_priority(self) -> list[str]:
         if not os.path.exists(self._priority_path):
             return []
         with open(self._priority_path) as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
@@ -250,13 +251,13 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             return []
         return [str(p) for p in priority]
 
-    async def _set_datasource_priority_raw(self, priority: List[str]) -> None:
+    async def _set_datasource_priority_raw(self, priority: list[str]) -> None:
         with open(self._priority_path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
             yaml.dump({"priority": list(priority)}, f, sort_keys=False)
 
     # ---- memories (DEV-1357 v2) -------------------------------------------
 
-    def _read_yaml_list(self, path: str) -> List[Dict[str, Any]]:
+    def _read_yaml_list(self, path: str) -> list[dict[str, Any]]:
         if not os.path.exists(path):
             return []
         with open(path) as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
@@ -265,7 +266,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             return []
         return [d for d in data if isinstance(d, dict)]
 
-    def _write_yaml_list(self, path: str, rows: List[Dict[str, Any]]) -> None:
+    def _write_yaml_list(self, path: str, rows: list[dict[str, Any]]) -> None:
         with open(path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
             yaml.dump(rows, f, sort_keys=False)
 
@@ -300,12 +301,12 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         return str(max_id + 1)
 
     def _normalize_legacy_rows(
-        self, rows: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        self, rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """DEV-1428: dedupe legacy duplicate rows where the same logical
         id exists in both int and str form. Fails loud when their content
         differs."""
-        seen: Dict[str, Dict[str, Any]] = {}
+        seen: dict[str, dict[str, Any]] = {}
         for row in rows:
             raw = row.get("id")
             if isinstance(raw, bool):
@@ -337,7 +338,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         return list(seen.values())
 
     @staticmethod
-    def _rows_content_equal(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    def _rows_content_equal(a: dict[str, Any], b: dict[str, Any]) -> bool:
         # DEV-1428: "content" excludes ``created_at`` — two legacy rows for
         # the same logical memory may carry different timestamps (e.g. one
         # written on int-id v1, then re-saved as str on v2). The plan's
@@ -355,7 +356,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         rows.append(memory.model_dump(mode="json"))
         self._write_yaml_list(self._memories_path, rows)
 
-    async def _get_memory_row(self, memory_id: str) -> Optional[Memory]:
+    async def _get_memory_row(self, memory_id: str) -> Memory | None:
         rows = self._normalize_legacy_rows(
             self._read_yaml_list(self._memories_path),
         )
@@ -365,8 +366,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         return None
 
     async def _list_memories_rows(
-        self, *, entities: Optional[List[str]]
-    ) -> List[Memory]:
+        self, *, entities: list[str] | None
+    ) -> list[Memory]:
         rows = self._normalize_legacy_rows(
             self._read_yaml_list(self._memories_path),
         )

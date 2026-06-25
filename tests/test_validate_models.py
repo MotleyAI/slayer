@@ -19,7 +19,6 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import pytest
 
@@ -56,10 +55,10 @@ from slayer.storage.yaml_storage import YAMLStorage
 def _orders_model(
     *,
     data_source: str = "ds",
-    columns: Optional[List[Column]] = None,
-    joins: Optional[List[ModelJoin]] = None,
-    measures: Optional[List[ModelMeasure]] = None,
-    filters: Optional[List[str]] = None,
+    columns: list[Column] | None = None,
+    joins: list[ModelJoin] | None = None,
+    measures: list[ModelMeasure] | None = None,
+    filters: list[str] | None = None,
     sql_table: str = "orders",
 ) -> SlayerModel:
     return SlayerModel(
@@ -81,8 +80,8 @@ def _orders_model(
 
 def _live_orders(
     *,
-    columns: Optional[Dict[str, DataType]] = None,
-    pk_columns: Optional[set[str]] = None,
+    columns: dict[str, DataType] | None = None,
+    pk_columns: set[str] | None = None,
 ) -> LiveTable:
     return LiveTable(
         columns=columns
@@ -96,7 +95,7 @@ def _live_orders(
     )
 
 
-def _entry_for(model_name: str, entries: List) -> Optional[object]:
+def _entry_for(model_name: str, entries: list) -> object | None:
     for e in entries:
         if e.model_name == model_name:
             return e
@@ -997,8 +996,8 @@ class TestValidateModelsSqliteProbe:
         workspace: Path,
         *,
         values: list,
-        columns: List[Column],
-        measures: Optional[List[ModelMeasure]] = None,
+        columns: list[Column],
+        measures: list[ModelMeasure] | None = None,
         ds_type: str = "sqlite",
     ) -> tuple[SlayerQueryEngine, str]:
         """Persist a sensordata model whose ``tempstabidx`` column is

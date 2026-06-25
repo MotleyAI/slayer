@@ -19,7 +19,7 @@ Storage is a real YAMLStorage in tempdir; ``embed_batch`` /
 from __future__ import annotations
 
 import tempfile
-from typing import List, Optional, cast
+from typing import cast
 
 import pytest
 
@@ -46,14 +46,14 @@ def stub_available(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class _RecordingEmbedBatch:
     def __init__(self) -> None:
-        self.calls: List[List[str]] = []
+        self.calls: list[list[str]] = []
         self.override_none: set = set()
 
     async def __call__(
-        self, texts: List[str], *, model: Optional[str] = None,
-    ) -> List[Optional[List[float]]]:
+        self, texts: list[str], *, model: str | None = None,
+    ) -> list[list[float] | None]:
         self.calls.append(list(texts))
-        out: List[Optional[List[float]]] = []
+        out: list[list[float] | None] = []
         for global_idx, text in enumerate(texts):
             if (len(self.calls) - 1, global_idx) in self.override_none:
                 out.append(None)
@@ -210,9 +210,9 @@ async def test_refresh_model_subtree_per_entry_failure_warns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def partial_failure(  # NOSONAR(S7503)
-        texts: List[str], *, model: Optional[str] = None,
-    ) -> List[Optional[List[float]]]:
-        out: List[Optional[List[float]]] = []
+        texts: list[str], *, model: str | None = None,
+    ) -> list[list[float] | None]:
+        out: list[list[float] | None] = []
         for i, _ in enumerate(texts):
             out.append(None if i == 0 else [0.1, 0.2, 0.3])
         return out
@@ -330,8 +330,8 @@ async def test_apply_pending_persists_partial_batch_on_some_embed_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def partial_failure(  # NOSONAR(S7503)
-        texts: List[str], *, model: Optional[str] = None,
-    ) -> List[Optional[List[float]]]:
+        texts: list[str], *, model: str | None = None,
+    ) -> list[list[float] | None]:
         return [None] + [[0.1, 0.2, 0.3]] * (len(texts) - 1)
 
     monkeypatch.setattr(

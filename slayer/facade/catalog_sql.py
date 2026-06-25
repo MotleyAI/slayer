@@ -40,7 +40,7 @@ import hashlib
 import json
 import logging
 import zlib
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import duckdb
 import sqlglot
@@ -70,7 +70,7 @@ DEFAULT_OWNER_OID = 10
 # Well-known Postgres system catalog OIDs. Hardcoded so ``'pg_class'::regclass``
 # resolves to ``1259`` (matching ``pg_description.classoid``) and Metabase's
 # get-tables JOIN works end-to-end.
-KNOWN_SYSTEM_OIDS: Dict[str, int] = {
+KNOWN_SYSTEM_OIDS: dict[str, int] = {
     "pg_class": 1259,
     "pg_namespace": 2615,
     "pg_attribute": 1249,
@@ -92,7 +92,7 @@ from slayer.pg_facade.protocol import (  # noqa: E402 — wire OIDs co-located h
     OID_TIMESTAMP,
 )
 
-_TYPE_META: Dict[int, Tuple[str, int, str]] = {
+_TYPE_META: dict[int, tuple[str, int, str]] = {
     OID_BOOL: ("bool", 1, "B"),
     OID_INT8: ("int8", 8, "N"),
     OID_TEXT: ("text", -1, "S"),
@@ -104,12 +104,12 @@ _TYPE_META: Dict[int, Tuple[str, int, str]] = {
 # Inverse of _TYPE_META: type name → OID. Used to resolve ``::regtype``
 # casts to the underlying ``pg_type.oid`` so catalog queries like
 # ``WHERE oid = 'int8'::regtype`` work.
-_KNOWN_TYPE_OIDS: Dict[str, int] = {
+_KNOWN_TYPE_OIDS: dict[str, int] = {
     typname: oid for oid, (typname, _len, _cat) in _TYPE_META.items()
 }
 
 
-_UDT_NAME_BY_DATATYPE: Dict[DataType, str] = {
+_UDT_NAME_BY_DATATYPE: dict[DataType, str] = {
     DataType.BOOLEAN: "bool",
     DataType.INT: "int8",
     DataType.TEXT: "text",
@@ -138,16 +138,16 @@ class CatalogRelation(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     name: str
-    columns: List[FacadeColumn]
-    rows: List[Dict[str, Any]]
+    columns: list[FacadeColumn]
+    rows: list[dict[str, Any]]
 
 
 # --- corpus builder ---------------------------------------------------------
 
 
 def build_catalog_relations(
-    catalog: FacadeCatalog, datasource: Optional[str] = None,
-) -> List[CatalogRelation]:
+    catalog: FacadeCatalog, datasource: str | None = None,
+) -> list[CatalogRelation]:
     """Build every catalog table from ``catalog``.
 
     ``datasource`` is used as the ``catalog_name`` / ``table_catalog``
@@ -164,7 +164,7 @@ def build_catalog_relations(
     ``_is_*`` information_schema relations.
     """
     ds = datasource or catalog.catalog_name
-    out: List[CatalogRelation] = []
+    out: list[CatalogRelation] = []
     out.append(_build_pg_namespace())
     out.append(_build_pg_class(catalog))
     out.append(_build_pg_attribute(catalog))
@@ -252,7 +252,7 @@ def _build_pg_class(catalog: FacadeCatalog) -> CatalogRelation:
         FacadeColumn(name="relispartition", type=DataType.BOOLEAN),
     ]
     rows = []
-    seen_oids: Dict[int, str] = {}
+    seen_oids: dict[int, str] = {}
     for ds, tbl in _all_tables(catalog):
         oid = _table_oid(ds, tbl)
         _check_collision(seen_oids, oid, f"{ds}.{tbl.name}")
@@ -381,7 +381,7 @@ def _build_pg_description(catalog: FacadeCatalog) -> CatalogRelation:
         FacadeColumn(name="objsubid", type=DataType.INT),
         FacadeColumn(name="description", type=DataType.TEXT),
     ]
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     for ds, tbl in _all_tables(catalog):
         oid = _table_oid(ds, tbl)
         if tbl.description:
@@ -542,7 +542,7 @@ def _build_is_columns(catalog: FacadeCatalog, datasource: str) -> CatalogRelatio
         FacadeColumn(name="description", type=DataType.TEXT),
         FacadeColumn(name="label", type=DataType.TEXT),
     ]
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     # DEV-1567: exclude cross-model entries — they leak as dotted "columns"
     # that Metabase fingerprint scans then project (see local_metrics
     # docstring in slayer/facade/catalog.py).
@@ -653,7 +653,7 @@ def _build_is_metrics(
         FacadeColumn(name="data_type", type=DataType.TEXT),
         FacadeColumn(name="label", type=DataType.TEXT),
     ]
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     for sch in catalog.schemas:
         for tbl in sch.tables:
             for m in tbl.metrics:
@@ -686,7 +686,7 @@ def _build_is_dimensions(
         FacadeColumn(name="label", type=DataType.TEXT),
         FacadeColumn(name="is_time", type=DataType.BOOLEAN),
     ]
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     for sch in catalog.schemas:
         for tbl in sch.tables:
             for d in tbl.dimensions:
@@ -700,7 +700,7 @@ def _build_is_dimensions(
     return CatalogRelation(name="_is_dimensions", columns=columns, rows=rows)
 
 
-def _check_collision(seen: Dict[int, str], oid: int, key: str) -> None:
+def _check_collision(seen: dict[int, str], oid: int, key: str) -> None:
     prior = seen.get(oid)
     if prior is not None and prior != key:
         raise ValueError(
@@ -873,7 +873,7 @@ def _has_catalog_function_call(parsed: exp.Expression) -> bool:
 # Constant-return stubs are AST-rewritten directly to literals (no DuckDB
 # macros). This sidesteps DuckDB's lack of macro arity overloading — the
 # corpus has 2-arg and 3-arg variants of has_*_privilege.
-_CONSTANT_STUB_LITERALS: Dict[str, Any] = {
+_CONSTANT_STUB_LITERALS: dict[str, Any] = {
     "has_table_privilege": True,
     "has_any_column_privilege": True,
     "has_schema_privilege": True,
@@ -887,7 +887,7 @@ _CONSTANT_STUB_LITERALS: Dict[str, Any] = {
 # registered with a single arity per name. ``obj_description`` has two
 # Postgres arities; the 2-arg form is normalised to the 1-arg by dropping
 # the second argument at rewrite time.
-_LOOKUP_STUB_NAMES: Dict[str, str] = {
+_LOOKUP_STUB_NAMES: dict[str, str] = {
     "format_type": "_slayer_format_type",
     "obj_description": "_slayer_obj_description",
     "col_description": "_slayer_col_description",
@@ -895,7 +895,7 @@ _LOOKUP_STUB_NAMES: Dict[str, str] = {
 }
 
 
-def _function_name_lower(node: exp.Expression) -> Optional[str]:
+def _function_name_lower(node: exp.Expression) -> str | None:
     """Return the lowercased function name for any kind of function node,
     or None if ``node`` isn't a function call."""
     if isinstance(node, exp.Anonymous):
@@ -920,7 +920,7 @@ def _to_literal(value: Any) -> exp.Expression:
     return exp.Literal.string(str(value))
 
 
-def _unwrap_qualified_stub_call(node: exp.Expression) -> Optional[exp.Expression]:
+def _unwrap_qualified_stub_call(node: exp.Expression) -> exp.Expression | None:
     """Detect ``information_schema.<stub>(args)`` (and the same for
     ``pg_catalog.``) and rewrite the qualified call as a bare private-name
     Anonymous so DuckDB resolves the macro.
@@ -972,9 +972,9 @@ class _AstRewriter:
     """
 
     def __init__(self, *, datasource: str,
-                 regclass_map: Optional[Dict[str, int]] = None) -> None:
+                 regclass_map: dict[str, int] | None = None) -> None:
         self.datasource = datasource
-        self.regclass_map: Dict[str, int] = regclass_map or {}
+        self.regclass_map: dict[str, int] = regclass_map or {}
 
     def rewrite(self, parsed: exp.Expression) -> exp.Expression:
         # Strip schema qualifiers AND rewrite information_schema names first
@@ -1176,7 +1176,7 @@ class _AstRewriter:
         return exp.Anonymous(this="slayer_regclass_oid", expressions=[inner])
 
     @staticmethod
-    def _cast_target_kind(node: exp.Cast) -> Optional[str]:
+    def _cast_target_kind(node: exp.Cast) -> str | None:
         to = node.args.get("to")
         if to is None:
             return None
@@ -1231,7 +1231,7 @@ class _AstRewriter:
 
     def _substitute_qualified_context_call(
         self, node: exp.Expression,
-    ) -> Optional[exp.Expression]:
+    ) -> exp.Expression | None:
         """Replace ``pg_catalog.<ctx-fn>`` (and ``pg_catalog.<ctx-fn>()``)
         as a whole so the outer ``Dot`` doesn't end up wrapping a string
         literal (``pg_catalog.'jaffle'`` — invalid SQL).
@@ -1256,7 +1256,7 @@ class _AstRewriter:
 
     def _substitute_qualified_context_column(
         self, node: exp.Expression,
-    ) -> Optional[exp.Expression]:
+    ) -> exp.Expression | None:
         """Replace ``pg_catalog.<bareword-ctx-fn>`` where sqlglot parses the
         whole thing as ``Column(this=<ctx-fn>, table='pg_catalog')`` — the
         no-parens shape (``pg_catalog.current_user``,
@@ -1279,7 +1279,7 @@ class _AstRewriter:
             return None
         return self._literal_for_context_name(str(ident.this).lower())
 
-    def _substitute_dedicated_func(self, node: exp.Expression) -> Optional[exp.Expression]:
+    def _substitute_dedicated_func(self, node: exp.Expression) -> exp.Expression | None:
         """Dedicated sqlglot Func subclasses (typed nodes for niladic ctx fns)."""
         if isinstance(node, (exp.CurrentDatabase, getattr(exp, "CurrentCatalog", exp.CurrentDatabase))):
             return exp.Literal.string(self.datasource)
@@ -1289,7 +1289,7 @@ class _AstRewriter:
             return exp.Literal.string("public")
         return None
 
-    def _substitute_bareword_column(self, node: exp.Expression) -> Optional[exp.Expression]:
+    def _substitute_bareword_column(self, node: exp.Expression) -> exp.Expression | None:
         """sqlglot parses ``current_role`` (no parens) as a Column reference.
         Treat single-token unqualified Column refs naming a known niladic ctx
         function as that function. ``node.table`` is ``""`` (not None) for an
@@ -1301,14 +1301,14 @@ class _AstRewriter:
             return None
         return self._literal_for_context_name(str(ident.this).lower())
 
-    def _substitute_anonymous_function(self, node: exp.Expression) -> Optional[exp.Expression]:
+    def _substitute_anonymous_function(self, node: exp.Expression) -> exp.Expression | None:
         """Less-common Anonymous function spellings — fallback path."""
         name = _function_name_lower(node)
         if name is None:
             return None
         return self._literal_for_context_name(name)
 
-    def _literal_for_context_name(self, name: str) -> Optional[exp.Expression]:
+    def _literal_for_context_name(self, name: str) -> exp.Expression | None:
         if name in {"current_database", "current_catalog",
                     "currentdatabase", "currentcatalog"}:
             return exp.Literal.string(self.datasource)
@@ -1405,7 +1405,7 @@ class _AstRewriter:
 # --- DuckDB type mapping ----------------------------------------------------
 
 
-_DUCKDB_TO_DATATYPE: Dict[str, DataType] = {
+_DUCKDB_TO_DATATYPE: dict[str, DataType] = {
     # ints
     "TINYINT": DataType.INT, "SMALLINT": DataType.INT,
     "INTEGER": DataType.INT, "BIGINT": DataType.INT, "HUGEINT": DataType.INT,
@@ -1442,7 +1442,7 @@ def _duckdb_typename_to_datatype(typename: str) -> DataType:
 # --- DuckDB type mapping for table columns at creation time ----------------
 
 
-_DATATYPE_TO_DUCKDB_CREATE: Dict[DataType, str] = {
+_DATATYPE_TO_DUCKDB_CREATE: dict[DataType, str] = {
     DataType.INT: "BIGINT",
     DataType.DOUBLE: "DOUBLE",
     DataType.TEXT: "VARCHAR",
@@ -1484,7 +1484,7 @@ class CatalogSqlExecutor:
             pass
         # OID lookup for the regclass UDF: maps both schema-qualified and
         # bare names to OIDs (system catalogs + user tables).
-        self._regclass_map: Dict[str, int] = dict(KNOWN_SYSTEM_OIDS)
+        self._regclass_map: dict[str, int] = dict(KNOWN_SYSTEM_OIDS)
         for ds, tbl in _all_tables(catalog):
             oid = _table_oid(ds, tbl)
             self._regclass_map[f"public.{tbl.name}"] = oid
@@ -1541,7 +1541,7 @@ class CatalogSqlExecutor:
             ["VARCHAR"], "INTEGER",
         )
 
-    def _regclass_oid(self, text: Optional[str]) -> int:
+    def _regclass_oid(self, text: str | None) -> int:
         if text is None:
             return 0
         # Both schema-qualified and bare lookups go through the same map.
@@ -1560,9 +1560,9 @@ class CatalogSqlExecutor:
             raise TranslationError(str(exc)) from exc
         if description is None:
             return RowBatch(columns=[], rows=[])
-        columns: List[FacadeColumn] = []
-        col_keys: List[str] = []
-        seen_keys: Dict[str, int] = {}
+        columns: list[FacadeColumn] = []
+        col_keys: list[str] = []
+        seen_keys: dict[str, int] = {}
         for col in description:
             name = col[0]
             typename = col[1] if len(col) > 1 else "VARCHAR"
@@ -1631,7 +1631,7 @@ def _fingerprint(catalog: FacadeCatalog, datasource: str) -> str:
 
 
 def executor_for(
-    catalog: FacadeCatalog, datasource: Optional[str] = None,
+    catalog: FacadeCatalog, datasource: str | None = None,
 ) -> CatalogSqlExecutor:
     """Return a process-cached ``CatalogSqlExecutor`` for ``catalog``.
 

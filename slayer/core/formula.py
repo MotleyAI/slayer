@@ -17,11 +17,12 @@ import io
 import re
 import tokenize
 import warnings
-from typing import Any, Dict, List, Literal, Mapping, Optional, Union
+from typing import Any, Literal
+from collections.abc import Mapping
 
 from pydantic import BaseModel, Field
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS
+from slayer.core.enums import BUILTIN_AGGREGATIONS, normalize_aggregation_name
 from slayer.core.refs import (
     AGG_REF_RE as _AGG_REF_RE,
     IDENT_OR_PATH_RE as _IDENT_OR_PATH_RE,
@@ -52,43 +53,88 @@ RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
 
 ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
 
-# DEV-1378: string-hygiene scalar functions accepted inline in Mode B
-# (DSL) filters. These are pass-through to the emitted SQL; sqlglot
-# handles per-dialect spelling at SQL-generation time. Names are
-# lowercase only (matching SLayer's existing transform convention —
-# ``cumsum``, ``rank``, ``time_shift``). The SQL ``||`` concat operator
-# is rewritten to ``concat(...)`` by ``_preprocess_concat`` before AST
-# parsing.
-STRING_HYGIENE_OPS = frozenset({
-    "lower",
-    "upper",
-    "trim",
-    "replace",
-    "substr",
-    "instr",
-    "length",
-    "concat",
+# Canonical Mode B scalar-function allowlist. Consulted uniformly by every
+# Mode B surface — top-level ``ModelMeasure.formula`` calls, inside-arithmetic
+# calls, and ``SlayerQuery.filters`` — case-insensitively. Pass-through to
+# emitted SQL; sqlglot handles per-dialect spelling. Extending: add to this
+# set only — never create parallel allowlists.
+SCALAR_PASSTHROUGH = frozenset({
+    # NULL handling
+    "coalesce", "nullif", "ifnull",
+    # Math
+    "round", "abs", "ceil", "ceiling", "floor",
+    "power", "pow", "sqrt", "exp",
+    "ln", "log", "log10", "log2",
+    "mod", "sign", "trunc",
+    # Min/max scalar (NOT the agg forms — those are min:/max:)
+    "greatest", "least",
+    # String
+    "lower", "upper", "trim", "ltrim", "rtrim",
+    "replace", "substr", "substring",
+    "instr", "length", "concat",
 })
 
-CallCategory = Literal["transform", "hygiene", "like_internal", "unknown"]
+CallCategory = Literal["transform", "scalar", "like_internal", "unknown"]
 
 _LIKE_INTERNAL_NAMES = frozenset({"__like__", "__notlike__"})
 
 
 def _classify_call_name(name: str) -> CallCategory:
-    """Categorize a function-call identifier for the formula and filter walkers.
-
-    Single source of truth shared by ``_parse_node`` (formula → FieldSpec) and
-    ``_call_to_sql`` (filter → SQL string). Each walker still decides what
-    to do with the category; this helper just classifies the name.
-    """
+    """Categorize a Mode B function-call identifier — shared by the formula
+    and filter walkers."""
     if name in ALL_TRANSFORMS:
         return "transform"
-    if name in STRING_HYGIENE_OPS:
-        return "hygiene"
+    if name.lower() in SCALAR_PASSTHROUGH:
+        return "scalar"
     if name in _LIKE_INTERNAL_NAMES:
         return "like_internal"
     return "unknown"
+
+
+def _validate_scalar_call(node: ast.Call, original: str) -> None:
+    """Arity check for top-level scalar calls. ``round`` / ``abs`` have specific
+    shapes worth catching early; other scalars in ``SCALAR_PASSTHROUGH`` have
+    variable arity (``coalesce``, ``greatest``, …) and are validated by sqlglot
+    at SQL-emission time."""
+    name = node.func.id.lower()
+    if node.keywords:
+        raise ValueError(
+            f"'{name}' does not accept keyword arguments. Formula: {original!r}"
+        )
+    if name == "abs":
+        if len(node.args) != 1:
+            raise ValueError(
+                f"'abs' requires exactly one argument. Formula: {original!r}"
+            )
+    elif name == "round":
+        if len(node.args) not in (1, 2):
+            raise ValueError(
+                f"'round' accepts 1 or 2 arguments (expression[, ndigits]). "
+                f"Formula: {original!r}"
+            )
+        if len(node.args) == 2 and not _is_integer_literal(node.args[1]):
+            raise ValueError(
+                f"'round' ndigits (2nd argument) must be an integer literal. "
+                f"Formula: {original!r}"
+            )
+
+
+def _is_integer_literal(node: ast.AST) -> bool:
+    """True for an integer constant or a negated integer constant (``-2``).
+
+    Booleans are rejected — ``True``/``False`` are ``int`` subclasses but are
+    not meaningful ndigits values.
+    """
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, int) and not isinstance(node.value, bool)
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.USub)
+        and isinstance(node.operand, ast.Constant)
+    ):
+        v = node.operand.value
+        return isinstance(v, int) and not isinstance(v, bool)
+    return False
 
 
 class AggregatedMeasureRef(BaseModel):
@@ -105,15 +151,15 @@ class AggregatedMeasureRef(BaseModel):
     """
     measure_name: str = Field(description="Measure name, e.g. 'revenue', 'customers.revenue', '*'")
     aggregation_name: str = Field(description="Aggregation name, e.g. 'sum', 'weighted_avg'")
-    agg_args: List[str] = Field(default_factory=list, description="Positional aggregation args")
-    agg_kwargs: Dict[str, str] = Field(default_factory=dict, description="Keyword aggregation args")
+    agg_args: list[str] = Field(default_factory=list, description="Positional aggregation args")
+    agg_kwargs: dict[str, str] = Field(default_factory=dict, description="Keyword aggregation args")
 
 
 class ArithmeticField(BaseModel):
     """An arithmetic expression over measures only (no transform calls inside)."""
     sql: str = Field(description="Preprocessed formula with placeholders for aggregated refs")
-    measure_names: List[str] = Field(description="Placeholder IDs or bare measure names")
-    agg_refs: Dict[str, AggregatedMeasureRef] = Field(default_factory=dict)
+    measure_names: list[str] = Field(description="Placeholder IDs or bare measure names")
+    agg_refs: dict[str, AggregatedMeasureRef] = Field(default_factory=dict)
     is_predicate: bool = Field(
         default=False,
         description="True when the top-level AST node is a comparison or boolean op "
@@ -126,8 +172,8 @@ class TransformField(BaseModel):
     """A transform function call, possibly wrapping another transform or arithmetic."""
     transform: str = Field(description="Transform name: cumsum, lag, lead, change, change_pct, rank, percent_rank, dense_rank, ntile, time_shift, first, last, consecutive_periods")
     inner: "FieldSpec" = Field(description="The measure or expression being transformed")
-    args: List[Any] = Field(default_factory=list, description="Extra transform args (offset, granularity, etc.)")
-    kwargs: Dict[str, Any] = Field(
+    args: list[Any] = Field(default_factory=list, description="Extra transform args (offset, granularity, etc.)")
+    kwargs: dict[str, Any] = Field(
         default_factory=dict,
         description=(
             "Keyword args from the call site, e.g. partition_by=[...] for the "
@@ -143,9 +189,9 @@ class MixedArithmeticField(BaseModel):
     as a CTE step, then the arithmetic references its result.
     """
     sql: str = Field(description="Preprocessed formula with placeholders")
-    measure_names: List[str] = Field(description="Placeholder IDs or bare measure names")
-    sub_transforms: List[tuple] = Field(description="List of (placeholder_name, TransformField)")
-    agg_refs: Dict[str, AggregatedMeasureRef] = Field(default_factory=dict)
+    measure_names: list[str] = Field(description="Placeholder IDs or bare measure names")
+    sub_transforms: list[tuple] = Field(description="List of (placeholder_name, TransformField)")
+    agg_refs: dict[str, AggregatedMeasureRef] = Field(default_factory=dict)
     is_predicate: bool = Field(
         default=False,
         description="True when the top-level AST node is a comparison or boolean op "
@@ -155,7 +201,7 @@ class MixedArithmeticField(BaseModel):
 
 
 # The parsed result of a single field
-FieldSpec = Union[AggregatedMeasureRef, ArithmeticField, TransformField, MixedArithmeticField]
+FieldSpec = AggregatedMeasureRef | ArithmeticField | TransformField | MixedArithmeticField
 
 # Rebuild TransformField which uses a forward reference to FieldSpec
 TransformField.model_rebuild()
@@ -198,7 +244,7 @@ def _find_balanced_close(s: str, start: int) -> int:
 
 def _rewrite_funcstyle_aggregations(
     formula: str,
-    extra_agg_names: Optional[frozenset[str]] = None,
+    extra_agg_names: frozenset[str] | None = None,
 ) -> str:
     """Rewrite function-style aggregation calls to colon syntax.
 
@@ -344,31 +390,66 @@ def _split_args(s: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _preprocess_agg_refs(formula: str) -> tuple[str, Dict[str, AggregatedMeasureRef]]:
+def _split_agg_arglist(args_str: str | None) -> tuple[list[str], dict[str, str]]:
+    """Parse a colon-aggregation ``(...)`` arglist into (positional, keyword).
+
+    ``args_str`` is the raw ``(...)`` capture (with parens) or ``None``.
+    ``price:weighted_avg(weight=quantity)`` → ``([], {"weight": "quantity"})``;
+    ``revenue:last(ordered_at)`` → ``(["ordered_at"], {})``.
+    """
+    agg_args: list[str] = []
+    agg_kwargs: dict[str, str] = {}
+    if not args_str:
+        return agg_args, agg_kwargs
+    inner = args_str[1:-1].strip()
+    if not inner:
+        return agg_args, agg_kwargs
+    for part in inner.split(","):
+        part = part.strip()
+        if "=" in part:
+            key, val = part.split("=", 1)
+            agg_kwargs[key.strip()] = val.strip()
+        else:
+            agg_args.append(part)
+    return agg_args, agg_kwargs
+
+
+def _preprocess_agg_refs(
+    formula: str,
+    custom_agg_names: frozenset[str] = frozenset(),
+) -> tuple[str, dict[str, AggregatedMeasureRef]]:
     """Replace colon-syntax aggregated measure refs with placeholder identifiers.
 
     Returns (preprocessed_formula, {placeholder: AggregatedMeasureRef}).
+
+    ``custom_agg_names`` are the reachable custom-aggregation names (the source
+    model plus its join graph); a colon token matching one exactly is left
+    un-normalized so a custom aggregation takes precedence over alias/casing
+    healing (DEV-1576). This is parse-time and model-set-scoped, not per-ref
+    target-scoped: in a mixed-model graph a custom name on one model suppresses
+    healing of that same token on a different model. The failure mode is benign
+    — the un-healed token simply resolves (custom agg) or raises an explicit
+    "Unknown aggregation" at enrichment; it never silently picks the wrong
+    aggregation. Per-ref scoping would require deferring the heal past parse,
+    which would desync the canonical filter/ORDER-BY aliases built here.
     """
-    refs: Dict[str, AggregatedMeasureRef] = {}
+    refs: dict[str, AggregatedMeasureRef] = {}
     counter = [0]
 
     def _replace(match: re.Match) -> str:
         measure_name = match.group(1)
-        agg_name = match.group(2)
-        args_str = match.group(3)
-
-        agg_args: list[str] = []
-        agg_kwargs: dict[str, str] = {}
-        if args_str:
-            inner = args_str[1:-1].strip()
-            if inner:
-                for part in inner.split(","):
-                    part = part.strip()
-                    if "=" in part:
-                        key, val = part.split("=", 1)
-                        agg_kwargs[key.strip()] = val.strip()
-                    else:
-                        agg_args.append(part)
+        # DEV-1576: heal aggregation-name aliases / casing at the single colon-
+        # syntax chokepoint (shared by parse_formula and parse_filter). Unknown
+        # names pass through unchanged so the §3 enrichment error still fires.
+        # A model-level custom aggregation named like an alias key / builtin
+        # casing wins — skip healing for an exact custom-name match so it still
+        # resolves at enrichment.
+        raw_agg = match.group(2)
+        agg_name = (
+            raw_agg if raw_agg in custom_agg_names
+            else normalize_aggregation_name(raw_agg)
+        )
+        agg_args, agg_kwargs = _split_agg_arglist(match.group(3))
 
         placeholder = f"__agg{counter[0]}__"
         counter[0] += 1
@@ -426,7 +507,7 @@ def _expand_named_measures(
     except (tokenize.TokenError, IndentationError, SyntaxError):
         return formula
 
-    def _significant(idx: int, step: int) -> Optional[tokenize.TokenInfo]:
+    def _significant(idx: int, step: int) -> tokenize.TokenInfo | None:
         skip_types = {tokenize.NEWLINE, tokenize.NL, tokenize.ENCODING,
                       tokenize.ENDMARKER, tokenize.COMMENT, tokenize.INDENT,
                       tokenize.DEDENT}
@@ -439,7 +520,7 @@ def _expand_named_measures(
             return t
         return None
 
-    replacements: List[tuple] = []  # (start_pos, end_pos, replacement_text)
+    replacements: list[tuple] = []  # (start_pos, end_pos, replacement_text)
     for i, tok in enumerate(tokens):
         if tok.type != tokenize.NAME or tok.string not in named_measures:
             continue
@@ -481,8 +562,8 @@ def _expand_named_measures(
 
 def parse_formula(
     formula: str,
-    extra_agg_names: Optional[frozenset[str]] = None,
-    named_measures: Optional[Mapping[str, str]] = None,
+    extra_agg_names: frozenset[str] | None = None,
+    named_measures: Mapping[str, str] | None = None,
 ) -> FieldSpec:
     """Parse a formula string into a FieldSpec.
 
@@ -510,7 +591,9 @@ def parse_formula(
     # Rewrite function-style aggregations (e.g., sum(revenue) → revenue:sum)
     formula = _rewrite_funcstyle_aggregations(formula, extra_agg_names)
     # Preprocess colon syntax into ast-parseable placeholders
-    processed, agg_refs = _preprocess_agg_refs(formula)
+    processed, agg_refs = _preprocess_agg_refs(
+        formula=formula, custom_agg_names=extra_agg_names or frozenset()
+    )
 
     try:
         tree = ast.parse(processed, mode="eval")
@@ -523,7 +606,7 @@ def parse_formula(
 def _parse_node(
     node: ast.AST,
     original: str,
-    agg_refs: Optional[Dict[str, AggregatedMeasureRef]] = None,
+    agg_refs: dict[str, AggregatedMeasureRef] | None = None,
 ) -> FieldSpec:
     """Recursively parse an AST node into a FieldSpec."""
     if agg_refs is None:
@@ -554,10 +637,19 @@ def _parse_node(
             raise ValueError(f"Unsupported function call in formula: {original!r}")
 
         func_name = node.func.id
-        if _classify_call_name(func_name) != "transform":
+        category = _classify_call_name(func_name)
+        if category == "scalar":
+            # Pass-through SCALAR_PASSTHROUGH call. Route through
+            # _parse_mixed_arithmetic so inner aggregated refs and nested
+            # transforms are registered/extracted.
+            _validate_scalar_call(node, original)
+            return _parse_mixed_arithmetic(node, original, agg_refs)
+        if category != "transform":
             raise ValueError(
-                f"Unknown transform function '{func_name}'. "
-                f"Supported: {', '.join(sorted(ALL_TRANSFORMS))}"
+                f"Unknown function '{func_name}' in formula {original!r}. "
+                f"Supported scalar functions: "
+                f"{', '.join(sorted(SCALAR_PASSTHROUGH))}. "
+                f"Transforms: {', '.join(sorted(ALL_TRANSFORMS))}."
             )
 
         if not node.args:
@@ -634,7 +726,7 @@ def _replace_calls_in_arith(
     sub_transforms: list[tuple],
     measure_names: list[str],
     counter: list[int],
-    agg_refs: Dict[str, AggregatedMeasureRef],
+    agg_refs: dict[str, AggregatedMeasureRef],
     original: str,
 ) -> ast.AST:
     """Walk the AST, replacing transform Call nodes with Name placeholders."""
@@ -677,9 +769,20 @@ def _replace_calls_in_arith(
         return node
 
     if isinstance(node, ast.Call):
-        # Non-transform call (e.g. nullif, coalesce) wrapping aggregated refs.
-        # Recurse into args/keywords so any __aggN__ placeholders inside get
-        # registered in measure_names; otherwise they leak to emitted SQL.
+        # Non-transform scalar call wrapping aggregated refs (e.g. nullif,
+        # coalesce, abs). Validate the name against the canonical Mode B
+        # allowlist — previously any name passed through, which was a
+        # consistency bug (top-level had a strict allowlist while
+        # inside-arithmetic accepted anything).
+        if isinstance(node.func, ast.Name):
+            name = node.func.id
+            if name not in ALL_TRANSFORMS and name.lower() not in SCALAR_PASSTHROUGH:
+                raise ValueError(
+                    f"Unknown function {name!r} in formula {kwargs['original']!r}. "
+                    f"Supported scalar functions: "
+                    f"{', '.join(sorted(SCALAR_PASSTHROUGH))}. "
+                    f"Transforms: {', '.join(sorted(ALL_TRANSFORMS))}."
+                )
         node.args = [_replace_calls_in_arith(a, **kwargs) for a in node.args]
         for kw in node.keywords:
             kw.value = _replace_calls_in_arith(kw.value, **kwargs)
@@ -691,7 +794,7 @@ def _replace_calls_in_arith(
 def _parse_mixed_arithmetic(
     node: ast.AST,
     original: str,
-    agg_refs: Optional[Dict[str, AggregatedMeasureRef]] = None,
+    agg_refs: dict[str, AggregatedMeasureRef] | None = None,
 ) -> MixedArithmeticField:
     """Parse arithmetic that contains transform calls.
 
@@ -737,7 +840,7 @@ def _parse_literal(node: ast.AST, original: str) -> Any:
 
 
 # Per-transform kwarg whitelist. Empty set means the transform takes no kwargs.
-_ALLOWED_TRANSFORM_KWARGS: Dict[str, frozenset] = {
+_ALLOWED_TRANSFORM_KWARGS: dict[str, frozenset] = {
     "rank": frozenset({"partition_by"}),
     "percent_rank": frozenset({"partition_by"}),
     "dense_rank": frozenset({"partition_by"}),
@@ -761,8 +864,8 @@ def _parse_dotted_name(node: ast.AST, original: str) -> str:
 
 
 def _parse_transform_kwargs(  # NOSONAR S3776 — straight-line whitelist + per-kwarg validation; splitting into helpers would force threading transform/original through every call just to preserve the error-message context
-    transform: str, keywords: List[ast.keyword], original: str
-) -> Dict[str, Any]:
+    transform: str, keywords: list[ast.keyword], original: str
+) -> dict[str, Any]:
     """Parse and validate a transform's keyword arguments.
 
     Each transform has a fixed kwarg whitelist (see ``_ALLOWED_TRANSFORM_KWARGS``).
@@ -771,7 +874,7 @@ def _parse_transform_kwargs(  # NOSONAR S3776 — straight-line whitelist + per-
     path, or list of those.
     """
     allowed = _ALLOWED_TRANSFORM_KWARGS.get(transform, frozenset())
-    parsed: Dict[str, Any] = {}
+    parsed: dict[str, Any] = {}
 
     for kw in keywords:
         if kw.arg is None:
@@ -839,10 +942,10 @@ class ParsedFilter(BaseModel):
     as-is (they get qualified with the model name during SQL generation).
     """
     sql: str = Field(description="SQL WHERE condition, e.g. \"status = 'completed'\"")
-    columns: List[str] = Field(description="Column names referenced in the filter")
+    columns: list[str] = Field(description="Column names referenced in the filter")
     is_having: bool = Field(default=False, description="True if this is a HAVING filter (aggregate condition)")
     is_post_filter: bool = Field(default=False, description="True if this references a computed column (transform/expression)")
-    synthesized_aliases: List[str] = Field(
+    synthesized_aliases: list[str] = Field(
         default_factory=list,
         description=(
             "Canonical aggregation aliases this filter introduced from "
@@ -852,7 +955,7 @@ class ParsedFilter(BaseModel):
             "regex that would let typos like ``made_up_sum`` through."
         ),
     )
-    agg_refs: List["AggregatedMeasureRef"] = Field(
+    agg_refs: list["AggregatedMeasureRef"] = Field(
         default_factory=list,
         description=(
             "Aggregated measure references extracted from colon syntax in "
@@ -866,11 +969,10 @@ class ParsedFilter(BaseModel):
 
 
 # LHS of a LIKE / NOT LIKE may be a bare/dotted identifier OR a single
-# hygiene-call (e.g. ``lower(name)``, ``trim(customers.email)``). The
-# call alternative is matched before the dotted-identifier alternative
-# so that ``lower(name) like 'a%'`` resolves to the call form.
-# ``[^()]*`` keeps this to one level of parens — nested hygiene calls
-# inside LIKE (e.g. ``concat(lower(a), b) like '%'``) still fall through.
+# scalar call (e.g. ``lower(name)``, ``trim(customers.email)``). The call
+# alternative is matched first so ``lower(name) like 'a%'`` resolves to
+# the call form. ``[^()]*`` keeps this to one level of parens — nested
+# scalar calls (``concat(lower(a), b) like '%'``) still fall through.
 _LIKE_RE = re.compile(
     r"\b(\w+\([^()]*\)|(?:\w+\.)*\w+)\s+(not\s+)?like\s+('[^']*')",
     flags=re.IGNORECASE,
@@ -930,7 +1032,7 @@ def _preprocess_concat(formula: str) -> str:
     parts = _STRING_LITERAL_RE.split(formula)
     literals = _STRING_LITERAL_RE.findall(formula)
     rewritten_parts = [p.replace("||", "<<") for p in parts]
-    out: List[str] = []
+    out: list[str] = []
     for i, p in enumerate(rewritten_parts):
         out.append(p)
         if i < len(literals):
@@ -967,8 +1069,8 @@ def _preprocess_sql_operators(formula: str) -> str:
 
 def parse_filter(
     formula: str,
-    extra_agg_names: Optional[frozenset[str]] = None,
-    named_measures: Optional[Mapping[str, str]] = None,
+    extra_agg_names: frozenset[str] | None = None,
+    named_measures: Mapping[str, str] | None = None,
 ) -> ParsedFilter:
     """Parse a Mode B (DSL) filter formula into a ParsedFilter.
 
@@ -982,8 +1084,8 @@ def parse_filter(
     - ``LIKE`` / ``NOT LIKE``, ``IS NULL`` / ``IS NOT NULL``
 
     Rejects unknown function calls (the Python AST walker raises on any
-    call other than the internal ``__like__`` / ``__notlike__`` helpers
-    and a small allowlist of string-hygiene scalar operators).
+    call outside ``SCALAR_PASSTHROUGH`` and the internal ``__like__`` /
+    ``__notlike__`` helpers).
 
     Pre-rejects raw ``OVER (...)`` window-function syntax via
     :func:`has_window_function` (the rank-family transforms cover the
@@ -1035,7 +1137,9 @@ def parse_filter(
     # Include agg args/kwargs in the canonical name so e.g.
     # ``revenue:sum(window='90d') > 100`` matches the windowed measure's alias
     # ``orders.revenue_sum_window_90d`` and not the bare ``orders.revenue_sum``.
-    processed, agg_refs = _preprocess_agg_refs(processed)
+    processed, agg_refs = _preprocess_agg_refs(
+        formula=processed, custom_agg_names=extra_agg_names or frozenset()
+    )
     agg_canonical = {
         ph: canonical_agg_name(
             measure_name=ref.measure_name,
@@ -1064,7 +1168,7 @@ def parse_filter(
     )
 
 
-_BINOP_OP_MAP: Dict[type, str] = {
+_BINOP_OP_MAP: dict[type, str] = {
     ast.Add: "+", ast.Sub: "-", ast.Mult: "*",
     ast.Div: "/", ast.Mod: "%", ast.Pow: "**",
 }
@@ -1082,7 +1186,7 @@ _BINOP_OP_MAP: Dict[type, str] = {
 # That adds at most one harmless paren on mixed-precedence Pow
 # expressions and guarantees ``(a ** b) ** c`` doesn't silently
 # re-associate to ``a ** (b ** c)``.
-_BINOP_PRECEDENCE: Dict[type, int] = {
+_BINOP_PRECEDENCE: dict[type, int] = {
     ast.Mult: 2, ast.Div: 2, ast.Mod: 2,
     ast.Add: 1, ast.Sub: 1,
 }
@@ -1192,7 +1296,7 @@ def _seq_to_sql(node, recur) -> str:
     return f"({', '.join(elts)})"
 
 
-def _flatten_lshift_chain(node: ast.AST, recur) -> List[str]:
+def _flatten_lshift_chain(node: ast.AST, recur) -> list[str]:
     """Flatten a chain of ``ast.BinOp(LShift)`` nodes into a flat list of
     SQL strings. Used by ``_binop_to_sql`` to fold a ``a || b || c`` chain
     (which arrives as left-associative LShift after `_preprocess_concat`)
@@ -1229,7 +1333,7 @@ def _binop_to_sql(node: ast.BinOp, original: str, recur) -> str:
 
 def _emit_binop_operand(
     child: ast.AST,
-    parent_prec: Optional[int],
+    parent_prec: int | None,
     *,
     is_right: bool,
     recur,
@@ -1273,15 +1377,12 @@ def _call_to_sql(node: ast.Call, original: str, recur) -> str:
     if category == "like_internal" and len(node.args) >= 2:
         sql_op = "LIKE" if func_name == "__like__" else "NOT LIKE"
         return f"{recur(node.args[0])} {sql_op} '{_get_string_arg(node.args[1], original)}'"
-    if category == "hygiene":
-        # DEV-1378: lowercase string-hygiene scalars (lower / upper / trim /
-        # replace / substr / instr / length / concat). Args recurse through
-        # the standard handler, so nested calls and literal/integer
-        # constants render correctly. sqlglot translates per-dialect at
-        # SQL-generation time.
+    if category == "scalar":
+        # SCALAR_PASSTHROUGH: pass through with the user-written casing
+        # preserved; sqlglot re-spells per dialect at SQL-generation time.
         if node.keywords:
             raise ValueError(
-                f"String-hygiene function {func_name!r} does not accept "
+                f"Filter scalar function {func_name!r} does not accept "
                 f"keyword arguments: {original!r}"
             )
         arg_sqls = [recur(a) for a in node.args]
@@ -1388,7 +1489,7 @@ def _get_string_arg(node: ast.AST, original: str) -> str:
     raise ValueError(f"Expected a string argument in filter: {original!r}")
 
 
-def _collect_names(node: ast.AST) -> List[str]:
+def _collect_names(node: ast.AST) -> list[str]:
     """Collect all Name and dotted Attribute references from an AST subtree."""
     names = []
     # Collect dotted names (model.measure) first to avoid also collecting the bare Name part

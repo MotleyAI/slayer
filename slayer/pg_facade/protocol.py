@@ -16,7 +16,6 @@ Framing:
 from __future__ import annotations
 
 import struct
-from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -110,7 +109,7 @@ class FieldDescription(BaseModel):
     column_attr: int = 0
 
 
-def encode_row_description(fields: List[FieldDescription]) -> bytes:
+def encode_row_description(fields: list[FieldDescription]) -> bytes:
     payload = struct.pack(">h", len(fields))
     for f in fields:
         payload += _cstr(f.name)
@@ -126,7 +125,7 @@ def encode_row_description(fields: List[FieldDescription]) -> bytes:
     return _msg(b"T", payload)
 
 
-def encode_data_row(values: List[Optional[bytes]]) -> bytes:
+def encode_data_row(values: list[bytes | None]) -> bytes:
     payload = struct.pack(">h", len(values))
     for v in values:
         if v is None:
@@ -164,7 +163,7 @@ def encode_portal_suspended() -> bytes:
     return _msg(b"s", b"")
 
 
-def encode_parameter_description(oids: List[int]) -> bytes:
+def encode_parameter_description(oids: list[int]) -> bytes:
     payload = struct.pack(">h", len(oids))
     for oid in oids:
         payload += struct.pack(">i", oid)
@@ -195,21 +194,21 @@ def encode_notice_response(*, code: str, message: str, severity: str = "NOTICE")
 
 class StartupMessage(BaseModel):
     protocol_version: int
-    parameters: Dict[str, str]
+    parameters: dict[str, str]
 
 
 class ParseMessage(BaseModel):
     name: str
     query: str
-    parameter_oids: List[int]
+    parameter_oids: list[int]
 
 
 class BindMessage(BaseModel):
     portal: str
     statement: str
-    parameter_format_codes: List[int]
-    parameter_values: List[Optional[bytes]]
-    result_format_codes: List[int]
+    parameter_format_codes: list[int]
+    parameter_values: list[bytes | None]
+    result_format_codes: list[int]
 
 
 class DescribeMessage(BaseModel):
@@ -275,7 +274,7 @@ def decode_startup(body: bytes) -> StartupMessage:
     null terminator."""
     r = _Reader(buf=body)
     version = r.int32()
-    params: Dict[str, str] = {}
+    params: dict[str, str] = {}
     while r.pos < len(body):
         if body[r.pos:r.pos + 1] == b"\x00":
             break
@@ -311,7 +310,7 @@ def decode_bind(body: bytes) -> BindMessage:
     n_fmt = _nonneg_count(r.int16(), "parameter format code")
     fmt_codes = [r.int16() for _ in range(n_fmt)]
     n_params = _nonneg_count(r.int16(), "parameter")
-    values: List[Optional[bytes]] = []
+    values: list[bytes | None] = []
     for _ in range(n_params):
         length = r.int32()
         if length == -1:
@@ -355,13 +354,13 @@ def decode_close(body: bytes) -> CloseMessage:
 # --- generic message splitting (used by the connection layer + tests) --------
 
 
-def split_messages(buf: bytes) -> List[Tuple[str, bytes]]:
+def split_messages(buf: bytes) -> list[tuple[str, bytes]]:
     """Split a byte stream of tagged messages into ``[(type_char, body), …]``.
 
     Used by tests to verify encoded server messages and by any client-side
     helper. The body excludes the type byte and the length prefix.
     """
-    out: List[Tuple[str, bytes]] = []
+    out: list[tuple[str, bytes]] = []
     pos = 0
     while pos < len(buf):
         type_char = buf[pos:pos + 1].decode("ascii")
@@ -372,14 +371,14 @@ def split_messages(buf: bytes) -> List[Tuple[str, bytes]]:
     return out
 
 
-def validate_format_codes(codes: List[int]) -> None:
+def validate_format_codes(codes: list[int]) -> None:
     """Reject format codes outside ``{text, binary}`` (protocol violation)."""
     for c in codes:
         if c not in (FORMAT_TEXT, FORMAT_BINARY):
             raise ValueError(f"invalid format code {c!r} (must be 0=text or 1=binary)")
 
 
-def parse_result_format_codes(codes: List[int], column_count: int) -> List[int]:
+def parse_result_format_codes(codes: list[int], column_count: int) -> list[int]:
     """Resolve Bind result-format codes to one entry per result column.
 
     Per the protocol: 0 codes → all text; 1 code → applies to every column;

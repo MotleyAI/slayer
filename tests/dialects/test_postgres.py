@@ -194,3 +194,67 @@ def test_postgres_register_udfs_is_noop() -> None:
 
 def test_postgres_build_explain_sql() -> None:
     assert PostgresDialect().build_explain_sql("SELECT 1") == "EXPLAIN ANALYZE SELECT 1"
+
+
+# ---------------------------------------------------------------------------
+# DEV-1576: rewrite_target_ast — numeric cast for 2-arg ROUND
+#
+# Postgres has no ``round(double precision, integer)`` — only
+# ``round(numeric, integer)``. The target-keyed hook wraps the first arg of a
+# 2-arg ROUND in a numeric CAST so 2-arg round over a DOUBLE measure executes.
+# 1-arg round and abs are untouched.
+# ---------------------------------------------------------------------------
+
+
+def test_postgres_rewrite_target_ast_casts_two_arg_round() -> None:
+    d = PostgresDialect()
+    tree = sqlglot.parse_one("ROUND(x, 2)", dialect="postgres")
+    out = d.rewrite_target_ast(tree).sql(dialect="postgres").upper()
+    assert "ROUND(CAST(" in out
+    assert "AS DECIMAL" in out or "AS NUMERIC" in out
+
+
+def test_postgres_rewrite_target_ast_one_arg_round_unchanged() -> None:
+    d = PostgresDialect()
+    tree = sqlglot.parse_one("ROUND(x)", dialect="postgres")
+    out = d.rewrite_target_ast(tree).sql(dialect="postgres").upper()
+    assert "CAST(" not in out
+
+
+def test_postgres_rewrite_target_ast_abs_unchanged() -> None:
+    d = PostgresDialect()
+    tree = sqlglot.parse_one("ABS(x)", dialect="postgres")
+    out = d.rewrite_target_ast(tree).sql(dialect="postgres").upper()
+    assert "CAST(" not in out
+
+
+def test_postgres_rewrite_target_ast_idempotent() -> None:
+    d = PostgresDialect()
+    once = d.rewrite_target_ast(sqlglot.parse_one("ROUND(x, 2)", dialect="postgres"))
+    twice = d.rewrite_target_ast(once)
+    assert once.sql(dialect="postgres") == twice.sql(dialect="postgres")
+
+
+def test_postgres_rewrite_target_ast_casts_round_over_expression() -> None:
+    d = PostgresDialect()
+    tree = sqlglot.parse_one("ROUND(SUM(amount) / 7, 2)", dialect="postgres")
+    out = d.rewrite_target_ast(tree).sql(dialect="postgres").upper()
+    assert "ROUND(CAST(" in out
+
+
+def test_postgres_parse_predicate_casts_two_arg_round() -> None:
+    # DEV-1576: a 2-arg ROUND in a Mode-A SQL filter (parsed via
+    # _parse_predicate) must get the same numeric cast as projections.
+    from slayer.sql.generator import SQLGenerator
+    gen = SQLGenerator(dialect="postgres")
+    out = gen._parse_predicate("round(amount, 2) > 5").sql(dialect="postgres").upper()
+    assert "ROUND(CAST(" in out
+
+
+def test_postgres_rewrite_target_ast_preserves_json_extract() -> None:
+    # The new hook must only touch ROUND — leave everything else alone.
+    d = PostgresDialect()
+    tree = sqlglot.parse_one("SELECT json_extract(j, '$.k') FROM t", dialect="postgres")
+    before = tree.sql(dialect="postgres")
+    after = d.rewrite_target_ast(tree).sql(dialect="postgres")
+    assert before == after

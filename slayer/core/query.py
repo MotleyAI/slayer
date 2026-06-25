@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime
 import logging
 import re
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, field_validator, model_validator
 
@@ -38,7 +38,7 @@ def _validate_query_filter_string(formula: str) -> None:
         raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")
 
 
-def substitute_variables(filter_str: str, variables: Dict[str, Any]) -> str:
+def substitute_variables(filter_str: str, variables: dict[str, Any]) -> str:
     """Substitute {variable} placeholders in a filter string.
 
     - {var_name} is replaced with the variable's value (str or number, inserted as-is).
@@ -110,8 +110,8 @@ class ColumnRef(BaseModel):
     on the query's model.
     """
     name: str
-    model: Optional[str] = None
-    label: Optional[str] = None
+    model: str | None = None
+    label: str | None = None
 
     @model_validator(mode="after")
     def _parse_dotted_name(self) -> "ColumnRef":
@@ -197,17 +197,40 @@ def _coerce_order_column(v: Any) -> Any:
     return v
 
 
+# DEV-1575: the accepted ORDER BY direction vocabulary (case-insensitive),
+# mapping every synonym to the canonical lowercase form the SQL generator
+# compares against (``direction == "asc"``). Single source of truth shared by
+# the shorthand-healing detector (``_process_order_item``) and the
+# ``OrderItem.direction`` normalizing validator.
+_DIRECTION_NORMALIZE = {
+    "asc": "asc",
+    "ascending": "asc",
+    "desc": "desc",
+    "descending": "desc",
+}
+
+
+def _is_direction(value: Any) -> bool:
+    """True if ``value`` is a recognized direction word (case/whitespace-insensitive)."""
+    return isinstance(value, str) and value.strip().lower() in _DIRECTION_NORMALIZE
+
+
 class TimeDimension(BaseModel):
     dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)]
     granularity: TimeGranularity
-    date_range: Optional[List[str]] = None
-    label: Optional[str] = None
+    date_range: list[str] | None = None
+    label: str | None = None
 
 
 class OrderItem(BaseModel):
+    # DEV-1575: reject stray keys so a mixed canonical+shorthand item
+    # (e.g. ``{"column": "x", "b": "asc"}``) raises loudly instead of silently
+    # dropping the extra key.
+    model_config = ConfigDict(extra="forbid")
+
     column: Annotated[ColumnRef, BeforeValidator(_coerce_order_column)]
     direction: str = "asc"
-    raw_formula: Optional[str] = None
+    raw_formula: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -221,6 +244,24 @@ class OrderItem(BaseModel):
                 if ":" in rewritten or _FUNCSTYLE_CALL_PATTERN.match(rewritten):
                     data = {**data, "raw_formula": rewritten}
         return data
+
+    @field_validator("direction")
+    @classmethod
+    def _normalize_direction(cls, v: str) -> str:
+        """DEV-1575: normalize direction to canonical ``asc``/``desc`` (case- and
+        whitespace-insensitive, accepting ``ascending``/``descending`` synonyms),
+        rejecting anything else.
+
+        The SQL generator compares ``direction == "asc"`` strictly, so a
+        non-normalized value (``"ASC"``, ``"ascending"``) would silently emit
+        DESC. Normalizing here fixes that for both healed and canonical items.
+        """
+        if _is_direction(v):
+            return _DIRECTION_NORMALIZE[v.strip().lower()]
+        raise ValueError(
+            "order direction must be one of asc/desc/ascending/descending "
+            f"(case-insensitive), got {v!r}"
+        )
 
 
 def _coerce_measures(v: Any) -> Any:
@@ -241,6 +282,56 @@ def _coerce_dimensions(v: Any) -> Any:
     return [{"name": item} if isinstance(item, str) else item for item in v]
 
 
+def _process_order_item(item: Any) -> list:
+    """DEV-1575: heal a single ``order`` entry, returning the list of canonical
+    items it expands to.
+
+    LLM agents frequently write a shorthand dict mapping column → direction
+    instead of the canonical ``{"column", "direction"}`` shape. A dict with no
+    ``column``/``direction`` key whose values are *all* direction words is
+    treated as shorthand and expanded — one canonical item per key, preserving
+    insertion order (so a single-key dict yields one item and a multi-key dict
+    yields several). Everything else passes through unchanged: canonical dicts
+    (their stray keys are policed by ``OrderItem``'s ``extra="forbid"``) and
+    malformed input (rejected by ``OrderItem`` validation).
+    """
+    if not isinstance(item, dict):
+        return [item]
+    # A dict carrying a reserved key is canonical-intended; never reinterpret it
+    # as shorthand. extra="forbid" on OrderItem rejects any stray keys.
+    if "column" in item or "direction" in item:
+        return [item]
+    if (
+        item
+        and all(isinstance(k, str) for k in item)
+        and all(_is_direction(val) for val in item.values())
+    ):
+        return [{"column": k, "direction": val} for k, val in item.items()]
+    return [item]
+
+
+def _coerce_order(v: Any) -> Any:
+    """DEV-1575: heal shorthand ``order`` items before ``OrderItem`` validation.
+
+    Accepts the canonical ``list``/``tuple`` of items, healing each shorthand
+    dict (see ``_process_order_item``). A bare single item passed without the
+    enclosing list (a ``dict`` or an ``OrderItem``) is wrapped into a
+    one-element list; any other non-list input raises (mirrors the
+    ``_coerce_measures``/``_coerce_dimensions`` convention).
+    """
+    if v is None:
+        return v
+    if not isinstance(v, (list, tuple)):
+        if isinstance(v, (dict, OrderItem)):
+            v = [v]
+        else:
+            raise TypeError(f"'order' must be a list, got {type(v).__name__}")
+    result: list = []
+    for item in v:
+        result.extend(_process_order_item(item))
+    return result
+
+
 class ModelExtension(BaseModel):
     """Extend an existing model with extra columns, measures, or joins.
 
@@ -249,12 +340,12 @@ class ModelExtension(BaseModel):
     stored model.
     """
     source_name: str                                # Model/query to extend
-    columns: Optional[List] = None                  # Extra Column objects
-    measures: Optional[List[ModelMeasure]] = None   # Extra ModelMeasure formulas
-    joins: Optional[List] = None                    # Extra ModelJoin objects
+    columns: list | None = None                  # Extra Column objects
+    measures: list[ModelMeasure] | None = None   # Extra ModelMeasure formulas
+    joins: list | None = None                    # Extra ModelJoin objects
 
 
-def _get_source_model_name(source_model: object) -> Optional[str]:
+def _get_source_model_name(source_model: object) -> str | None:
     """Extract the model name from any source_model type.
 
     Works before model resolution — handles str, dict, ModelExtension,
@@ -308,9 +399,9 @@ class SlayerQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: int = 3
-    name: Optional[str] = None  # For referencing this query from other queries in a list
+    name: str | None = None  # For referencing this query from other queries in a list
     source_model: object  # str (model name), SlayerModel (inline), or ModelExtension
-    measures: Annotated[Optional[List[ModelMeasure]], BeforeValidator(_coerce_measures)] = None
+    measures: Annotated[list[ModelMeasure] | None, BeforeValidator(_coerce_measures)] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -319,7 +410,7 @@ class SlayerQuery(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def _validate_query_name(cls, v: Optional[str]) -> Optional[str]:
+    def _validate_query_name(cls, v: str | None) -> str | None:
         # Share the same rejection rules as SlayerModel.name —
         # SlayerQuery names occupy the same naming space when persisted
         # as query-backed models. Rejects ``__`` (join-path alias
@@ -329,14 +420,14 @@ class SlayerQuery(BaseModel):
             return v
         from slayer.core.models import _validate_model_name
         return _validate_model_name(v, "Query")
-    dimensions: Annotated[Optional[List[ColumnRef]], BeforeValidator(_coerce_dimensions)] = None
-    time_dimensions: Optional[List[TimeDimension]] = None
-    main_time_dimension: Optional[str] = None  # Explicit time dimension for transforms (overrides auto-detection)
-    filters: Optional[List[str]] = None
-    variables: Optional[Dict[str, Any]] = None  # Variable values for filter substitution
-    order: Optional[List[OrderItem]] = None
-    limit: Optional[int] = None
-    offset: Optional[int] = None
+    dimensions: Annotated[list[ColumnRef] | None, BeforeValidator(_coerce_dimensions)] = None
+    time_dimensions: list[TimeDimension] | None = None
+    main_time_dimension: str | None = None  # Explicit time dimension for transforms (overrides auto-detection)
+    filters: list[str] | None = None
+    variables: dict[str, Any] | None = None  # Variable values for filter substitution
+    order: Annotated[list[OrderItem] | None, BeforeValidator(_coerce_order)] = None
+    limit: int | None = None
+    offset: int | None = None
     whole_periods_only: bool = False
     # DEV-1543: opt out of the auto "distinct dimension tuples" GROUP BY
     # for dim-only queries. Default ``True`` preserves the Cube.js-style
@@ -443,7 +534,7 @@ class SlayerQuery(BaseModel):
         if model_name is None:
             return self
 
-        updates: Dict[str, Any] = {}
+        updates: dict[str, Any] = {}
         pattern = re.compile(r"\b" + re.escape(model_name) + r"\.")
 
         # Dimensions

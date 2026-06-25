@@ -8,7 +8,6 @@ screenshots make the facade obvious.
 
 from __future__ import annotations
 
-from typing import List, Tuple
 
 import slayer
 
@@ -23,7 +22,7 @@ def version_string() -> str:
     )
 
 
-def parameter_status_defaults() -> List[Tuple[str, str]]:
+def parameter_status_defaults() -> list[tuple[str, str]]:
     """The ParameterStatus burst sent after auth, before the first
     ReadyForQuery. UTC + UTF8 keep timestamp / encoding handling unambiguous."""
     return [

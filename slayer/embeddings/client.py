@@ -25,7 +25,7 @@ import logging
 import os
 import warnings
 from functools import lru_cache
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any
 
 
 DEFAULT_EMBEDDING_MODEL = "openai/text-embedding-3-small"
@@ -109,10 +109,10 @@ _CAP_FALLBACK = 8192
 _HASH_PREFIX_CHARS = 16
 
 
-_CAP_CACHE: Dict[str, int] = {}
+_CAP_CACHE: dict[str, int] = {}
 
 
-def _try_get_max_tokens(model: str) -> Optional[int]:
+def _try_get_max_tokens(model: str) -> int | None:
     """Best-effort ``litellm.utils.get_max_tokens`` lookup. Returns the
     cap if it's a positive int, else ``None``. Never raises."""
     try:
@@ -128,7 +128,7 @@ def _try_get_max_tokens(model: str) -> Optional[int]:
     return None
 
 
-def _resolve_model_cap(resolved_model: str) -> Optional[int]:
+def _resolve_model_cap(resolved_model: str) -> int | None:
     """Look up the model's max-token cap, trying provider-prefixed name
     first and the bare name as a fallback. Caches only positive-int
     successes so a transient lookup failure isn't sticky."""
@@ -173,7 +173,7 @@ def _strip_provider_prefix(model: str) -> str:
 
 
 def truncate_text_for_model(
-    text: str, *, model: Optional[str] = None,
+    text: str, *, model: str | None = None,
 ) -> str:
     """Truncate ``text`` to the resolved model's token cap minus a
     fixed 256-token margin (DEV-1557).
@@ -230,14 +230,14 @@ def truncate_text_for_model(
     return truncated
 
 
-def _get_bad_request_exception_classes() -> Tuple[Type[BaseException], ...]:
+def _get_bad_request_exception_classes() -> tuple[type[BaseException], ...]:
     """Return the exception class(es) representing litellm's
     ``BadRequestError`` — empty tuple if neither ``litellm`` nor
     ``litellm.exceptions`` exposes one. Tuple form lets us use the
     result directly in an ``except`` clause; an empty tuple safely
     catches nothing so the generic-exception fallback path takes over.
     """
-    classes: List[Type[BaseException]] = []
+    classes: list[type[BaseException]] = []
     try:
         import litellm  # noqa: PLC0415 — lazy
     except Exception:  # noqa: BLE001
@@ -260,11 +260,11 @@ def _get_bad_request_exception_classes() -> Tuple[Type[BaseException], ...]:
     return tuple(classes)
 
 
-def _parse_vectors(response: Any, n: int) -> List[Optional[List[float]]]:
+def _parse_vectors(response: Any, n: int) -> list[list[float] | None]:
     """Pack a litellm aembedding response into ``n`` per-slot vectors,
     padding short responses with ``None``."""
     data = getattr(response, "data", None) or []
-    out: List[Optional[List[float]]] = []
+    out: list[list[float] | None] = []
     for entry in data:
         if isinstance(entry, dict):
             vec = entry.get("embedding")
@@ -282,15 +282,15 @@ def _parse_vectors(response: Any, n: int) -> List[Optional[List[float]]]:
 async def _per_input_retry(
     litellm: Any,
     resolved_model: str,
-    truncated_texts: List[str],
-    bad_request_classes: Tuple[Type[BaseException], ...],
-) -> List[Optional[List[float]]]:
+    truncated_texts: list[str],
+    bad_request_classes: tuple[type[BaseException], ...],
+) -> list[list[float] | None]:
     """Embed each text in ``truncated_texts`` individually. On a
     per-text ``BadRequestError`` the slot is ``None`` and the loop
     continues; on any other exception we treat it as a global failure
     shape (rate limit / auth / network), mark the current slot and
     every remaining slot ``None``, and return early."""
-    results: List[Optional[List[float]]] = []
+    results: list[list[float] | None] = []
     for idx, text in enumerate(truncated_texts):
         try:
             response = await litellm.aembedding(
@@ -320,8 +320,8 @@ async def _per_input_retry(
 
 
 async def embed_batch(
-    texts: List[str], *, model: Optional[str] = None,
-) -> List[Optional[List[float]]]:
+    texts: list[str], *, model: str | None = None,
+) -> list[list[float] | None]:
     """Embed a batch of texts via ``litellm.aembedding`` (DEV-1557).
 
     Each text is preemptively truncated to fit the resolved model's
@@ -372,11 +372,11 @@ async def embed_batch(
     return _parse_vectors(response, len(truncated))
 
 
-_QUERY_CACHE: "dict[tuple[str, str], List[float]]" = {}
+_QUERY_CACHE: "dict[tuple[str, str], list[float]]" = {}
 _QUERY_CACHE_MAX = 64
 
 
-async def embed_query(text: str, *, model: Optional[str] = None) -> Optional[List[float]]:
+async def embed_query(text: str, *, model: str | None = None) -> list[float] | None:
     """Embed a single query string with a small process-wide LRU cache.
 
     Returns ``None`` when the extra is not installed or the embedding call

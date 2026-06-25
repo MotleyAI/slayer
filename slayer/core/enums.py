@@ -2,7 +2,7 @@
 
 import datetime  # noqa: F401  (kept for downstream imports of TimeGranularity)
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 
 class StrEnum(str, Enum):
@@ -27,7 +27,7 @@ class DataType(StrEnum):
 # from older agent input (MCP/REST/CLI), pseudo-types (count/sum/...) drop to
 # None so the field falls through to its default. Used by both Column and
 # ModelMeasure validators in slayer/core/models.py.
-_LEGACY_DATATYPE_ALIASES: dict[str, Optional[str]] = {
+_LEGACY_DATATYPE_ALIASES: dict[str, str | None] = {
     # Pre-rename canonical values.
     "string": "TEXT",
     "number": "DOUBLE",
@@ -148,6 +148,41 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "var_samp", "var_pop",
     "corr", "covar_samp", "covar_pop",
 })
+
+# DEV-1576: unambiguous aggregation-name aliases that LLM agents routinely
+# emit. ``normalize_aggregation_name`` lowercases the incoming token and maps
+# it through this table; the result is only adopted when it lands in
+# ``BUILTIN_AGGREGATIONS``. ``stddev``/``var``/``variance`` map to the *sample*
+# variants, matching Postgres' bare ``stddev``/``variance`` defaults.
+AGGREGATION_ALIASES: dict[str, str] = {
+    "countd": "count_distinct",
+    "countdistinct": "count_distinct",  # also matches "countDistinct" once lowercased
+    "stddev": "stddev_samp",
+    "var": "var_samp",
+    "variance": "var_samp",
+}
+
+
+def normalize_aggregation_name(name: str) -> str:
+    """Coerce an aggregation token to its canonical SLayer spelling.
+
+    Lowercases the token and applies :data:`AGGREGATION_ALIASES`. The
+    normalized form is only adopted when it is a real built-in aggregation;
+    otherwise the **original** string is returned unchanged so genuinely
+    unknown names still raise downstream (and custom aggregation names keep
+    their exact casing). Examples::
+
+        "countd"        -> "count_distinct"
+        "countDistinct" -> "count_distinct"
+        "stddev"        -> "stddev_samp"
+        "SUM"           -> "sum"
+        "myCustomAgg"   -> "myCustomAgg"  (unchanged — not a builtin)
+        "bogus"         -> "bogus"        (unchanged — still raises later)
+    """
+    lowered = name.lower()
+    candidate = AGGREGATION_ALIASES.get(lowered, lowered)
+    return candidate if candidate in BUILTIN_AGGREGATIONS else name
+
 
 # Built-in aggregation SQL formulas (for aggregations that use a template).
 # {value} = measure's SQL expression; {param_name} = parameter values.

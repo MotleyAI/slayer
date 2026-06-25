@@ -104,6 +104,30 @@ async def test_cross_model_dim_derived_column_via_query(tmp_path) -> None:
     assert "B.foo_raw / 100.0" in _norm(sql), f"Expected qualified B.foo_raw, got:\n{sql}"
 
 
+async def test_quoted_self_identity_column_emits_quoted_and_no_cycle(tmp_path) -> None:
+    """A column whose sql is the double-quoted form of its own name
+    (``"legalEntityType"`` for a mixed-case physical column) is a base
+    reference, not a derived one. It must resolve without a false
+    ColumnCycleError and emit the quoted identifier so case-folding dialects
+    reach the right physical column."""
+    engine, storage = _engine_with_storage(tmp_path)
+    model = SlayerModel(
+        name="merchant",
+        data_source="test",
+        sql_table="merchant",
+        columns=[
+            Column(name="legalEntityType", sql='"legalEntityType"', type=DataType.TEXT),
+        ],
+    )
+    await storage.save_model(model)
+    query = SlayerQuery(
+        source_model="merchant",
+        dimensions=[ColumnRef(name="legalEntityType")],
+    )
+    sql = await _gen_sql(engine, query, model)
+    assert '"legalEntityType"' in sql, f"Expected quoted identifier preserved, got:\n{sql}"
+
+
 # ---------------------------------------------------------------------------
 # 2. The original DEV-1333 bug: A.Column.sql references B's derived column.
 # ---------------------------------------------------------------------------

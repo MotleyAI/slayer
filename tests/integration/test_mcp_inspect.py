@@ -8,7 +8,7 @@ Run with: poetry run pytest tests/integration/test_mcp_inspect.py -m integration
 """
 
 import sqlite3
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 
@@ -257,7 +257,7 @@ class TestInspectModelEndToEnd:
     """Full ``inspect_model`` run against the SQLite fixture — confirms every
     section of the markdown output is produced end-to-end."""
 
-    async def _call(self, server: Any, *, name: str, arguments: Optional[dict] = None) -> str:
+    async def _call(self, server: Any, *, name: str, arguments: dict | None = None) -> str:
         content, _ = await server.call_tool(name=name, arguments=arguments or {})
         return content[0].text
 
@@ -333,7 +333,7 @@ class TestInspectModelSectionGatingIntegration:
     short-circuits actually take effect when sections are dropped.
     """
 
-    async def _call(self, server: Any, *, name: str, arguments: Optional[dict] = None) -> str:
+    async def _call(self, server: Any, *, name: str, arguments: dict | None = None) -> str:
         content, _ = await server.call_tool(name=name, arguments=arguments or {})
         return content[0].text
 

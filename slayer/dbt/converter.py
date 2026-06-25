@@ -16,7 +16,6 @@ collisions, conversion metrics) are returned in
 import logging
 import re
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
 
 import sqlalchemy as sa
 from pydantic import BaseModel, Field
@@ -42,7 +41,7 @@ from slayer.engine.ingestion import introspect_table_to_model
 logger = logging.getLogger(__name__)
 
 # Map dbt aggregation names to SLayer aggregation names
-_AGG_MAP: Dict[str, str] = {
+_AGG_MAP: dict[str, str] = {
     "sum": "sum",
     "average": "avg",
     "avg": "avg",
@@ -68,16 +67,16 @@ class DbtConversionError(Exception):
 
 class ConversionWarning(BaseModel):
     """A warning or info message from the conversion process."""
-    model_name: Optional[str] = None
-    metric_name: Optional[str] = None
+    model_name: str | None = None
+    metric_name: str | None = None
     message: str
 
 
 class ConversionResult(BaseModel):
     """Result of converting a DbtProject to SLayer representations."""
-    models: List[SlayerModel] = Field(default_factory=list)
-    unconverted_metrics: List[ConversionWarning] = Field(default_factory=list)
-    warnings: List[ConversionWarning] = Field(default_factory=list)
+    models: list[SlayerModel] = Field(default_factory=list)
+    unconverted_metrics: list[ConversionWarning] = Field(default_factory=list)
+    warnings: list[ConversionWarning] = Field(default_factory=list)
 
 
 def _map_agg(dbt_agg: str) -> str:
@@ -113,12 +112,12 @@ def _convert_dimension(dim: DbtDimension) -> Column:
 
 
 def _convert_measures(
-    dbt_measures: List[DbtMeasure],
+    dbt_measures: list[DbtMeasure],
     *,
     sm_name: str,
     existing_column_names: set,
-    unconverted: List[ConversionWarning],
-) -> Tuple[List[Column], List[ModelMeasure]]:
+    unconverted: list[ConversionWarning],
+) -> tuple[list[Column], list[ModelMeasure]]:
     """Convert dbt measures into a (Columns, ModelMeasures) pair.
 
     Each unique measure expression yields a single ``Column`` whose name is
@@ -137,7 +136,7 @@ def _convert_measures(
     ``cumsum``) is rejected by the Pydantic validator; the dbt measure is
     routed to ``unconverted`` and skipped.
     """
-    groups: Dict[str, List[DbtMeasure]] = defaultdict(list)
+    groups: dict[str, list[DbtMeasure]] = defaultdict(list)
     for m in dbt_measures:
         key = m.expr or m.name
         groups[key].append(m)
@@ -145,8 +144,8 @@ def _convert_measures(
     # All dbt-measure names, taken to be the eventual ``ModelMeasure`` names.
     measure_names = {m.name for m in dbt_measures}
 
-    columns: List[Column] = []
-    measures: List[ModelMeasure] = []
+    columns: list[Column] = []
+    measures: list[ModelMeasure] = []
     used_column_names = set(existing_column_names)
 
     for expr_key, group in groups.items():
@@ -200,7 +199,7 @@ class DbtToSlayerConverter:
         self,
         project: DbtProject,
         data_source: str,
-        sa_engine: Optional[sa.Engine] = None,
+        sa_engine: sa.Engine | None = None,
         include_hidden_models: bool = False,
     ) -> None:
         self.project = project
@@ -208,15 +207,15 @@ class DbtToSlayerConverter:
         self.sa_engine = sa_engine
         self.include_hidden_models = include_hidden_models
         self.entity_registry = EntityRegistry()
-        self._warnings: List[ConversionWarning] = []
-        self._unconverted: List[ConversionWarning] = []
+        self._warnings: list[ConversionWarning] = []
+        self._unconverted: list[ConversionWarning] = []
         # {model_name: SlayerModel} for metric resolution
-        self._models_by_name: Dict[str, SlayerModel] = {}
+        self._models_by_name: dict[str, SlayerModel] = {}
         # {model_name: DbtSemanticModel} for looking up entities
-        self._dbt_models_by_name: Dict[str, DbtSemanticModel] = {}
+        self._dbt_models_by_name: dict[str, DbtSemanticModel] = {}
         # {regular_model_name: raw_code} — used to inline SQL into semantic
         # models whose underlying dbt model is a query rather than a table.
-        self._regular_models_sql: Dict[str, str] = {
+        self._regular_models_sql: dict[str, str] = {
             rm.name: rm.raw_code
             for rm in project.regular_models
             if rm.raw_code
@@ -229,7 +228,7 @@ class DbtToSlayerConverter:
         for sm in self.project.semantic_models:
             self._dbt_models_by_name[sm.name] = sm
 
-        models: List[SlayerModel] = []
+        models: list[SlayerModel] = []
         for sm in self.project.semantic_models:
             model = self._convert_semantic_model(sm)
             models.append(model)
@@ -270,7 +269,7 @@ class DbtToSlayerConverter:
                         join_type=JoinType.INNER,
                     ))
 
-    def _convert_regular_models(self, existing_names: set) -> List[SlayerModel]:
+    def _convert_regular_models(self, existing_names: set) -> list[SlayerModel]:
         """Convert orphan dbt models (not wrapped by semantic_models) to hidden SLayer models."""
         if self.sa_engine is None:
             self._warnings.append(ConversionWarning(
@@ -283,7 +282,7 @@ class DbtToSlayerConverter:
 
         engine = self.sa_engine
         inspector = sa.inspect(engine)
-        results: List[SlayerModel] = []
+        results: list[SlayerModel] = []
         for rm in self.project.regular_models:
             if rm.name in existing_names:
                 continue
@@ -298,7 +297,7 @@ class DbtToSlayerConverter:
         rm: DbtRegularModel,
         sa_engine: sa.Engine,
         inspector: sa.engine.Inspector,
-    ) -> Optional[SlayerModel]:
+    ) -> SlayerModel | None:
         """Introspect a regular dbt model and wrap it as a hidden SlayerModel."""
         table_name = rm.alias or rm.name
         try:
@@ -353,8 +352,8 @@ class DbtToSlayerConverter:
 
         ref_name = sm.model or sm.name
 
-        sql_source: Optional[str] = None
-        sql_table: Optional[str] = None
+        sql_source: str | None = None
+        sql_table: str | None = None
         if ref_name in self._regular_models_sql:
             resolved, warnings = resolve_refs(
                 self._regular_models_sql[ref_name],
@@ -373,7 +372,7 @@ class DbtToSlayerConverter:
         if sm.defaults and sm.defaults.agg_time_dimension:
             default_time_dim = sm.defaults.agg_time_dimension
 
-        cols: List[Column] = [_convert_dimension(d) for d in sm.dimensions]
+        cols: list[Column] = [_convert_dimension(d) for d in sm.dimensions]
 
         # Add primary key column for primary/unique entities.
         entity_col_names = {c.name for c in cols}
@@ -743,7 +742,7 @@ class DbtToSlayerConverter:
 
     # ── Resolution helpers ────────────────────────────────────────────
 
-    def _find_measure_model(self, measure_name: str) -> Optional[DbtSemanticModel]:
+    def _find_measure_model(self, measure_name: str) -> DbtSemanticModel | None:
         """Find which dbt semantic model contains a given measure."""
         for sm in self.project.semantic_models:
             for m in sm.measures:
@@ -751,7 +750,7 @@ class DbtToSlayerConverter:
                     return sm
         return None
 
-    def _find_metric_source_model(self, metric: DbtMetric) -> Optional[str]:
+    def _find_metric_source_model(self, metric: DbtMetric) -> str | None:
         """Determine the source model for a metric.
 
         Walks ``measure``, ``metrics``, and ``numerator``/``denominator`` and
@@ -765,7 +764,7 @@ class DbtToSlayerConverter:
         sources = self._collect_metric_sources_from_params(metric.type_params)
         return next(iter(sources)) if len(sources) == 1 else None
 
-    def _collect_metric_sources(self, metric_name: str, _seen: Optional[set] = None) -> set:
+    def _collect_metric_sources(self, metric_name: str, _seen: set | None = None) -> set:
         """Collect every distinct semantic-model name a metric ultimately resolves to.
 
         Recurses through derived (``metrics``) and ratio
@@ -789,7 +788,7 @@ class DbtToSlayerConverter:
         return {sm.name} if sm else set()
 
     def _collect_metric_sources_from_params(
-        self, type_params: DbtMetricTypeParams, *, seen: Optional[set] = None
+        self, type_params: DbtMetricTypeParams, *, seen: set | None = None
     ) -> set:
         """Shared shape-walker used by both entry points above."""
         sources: set = set()
@@ -806,7 +805,7 @@ class DbtToSlayerConverter:
             sources |= self._collect_metric_sources(side.name, _seen=seen)
         return sources
 
-    def _resolve_metric_to_name(self, metric_name: str) -> Optional[str]:
+    def _resolve_metric_to_name(self, metric_name: str) -> str | None:
         """Resolve a metric name to a formula reference.
 
         Returns the bare ``ModelMeasure`` name when the metric was lowered
@@ -833,7 +832,7 @@ class DbtToSlayerConverter:
             return metric_name
         return self._resolve_measure_to_name(metric_name)
 
-    def _resolve_measure_to_name(self, measure_name: str) -> Optional[str]:
+    def _resolve_measure_to_name(self, measure_name: str) -> str | None:
         """Resolve a dbt measure name to a formula reference.
 
         After ``_convert_measures`` has run, the dbt measure name is the

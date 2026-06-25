@@ -25,7 +25,6 @@ caller asks for no topic in particular.
 from __future__ import annotations
 
 from importlib.resources import files
-from typing import Optional
 
 __all__ = (
     "render_help",
@@ -88,7 +87,7 @@ def available_topic_names() -> tuple[str, ...]:
     return _TOPIC_ORDER
 
 
-def render_help(topic: Optional[str] = None) -> str:
+def render_help(topic: str | None = None) -> str:
     """Render help content.
 
     * No topic (``None``, empty, or whitespace-only): return the intro body.

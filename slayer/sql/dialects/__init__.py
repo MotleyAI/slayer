@@ -14,8 +14,6 @@ exposes two lookup functions:
 
 from __future__ import annotations
 
-from typing import Optional
-
 from slayer.sql.dialects._tier2 import (
     DatabricksDialect,
     OracleDialect,
@@ -96,7 +94,7 @@ def get_dialect(sqlglot_name: str) -> SqlDialect:
     return _BY_SQLGLOT_NAME[sqlglot_name]
 
 
-def dialect_for_ds_type(ds_type: Optional[str]) -> SqlDialect:
+def dialect_for_ds_type(ds_type: str | None) -> SqlDialect:
     """Lenient lookup by datasource-config ``type`` string.
 
     Falls back to ``PostgresDialect`` for ``None``, empty, OR unknown

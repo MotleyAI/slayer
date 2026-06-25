@@ -18,10 +18,6 @@ slayer pg-serve --demo
 
 # Production-ish — non-loopback bind requires a password token
 slayer pg-serve --host 0.0.0.0 --token "$(pass slayer-token)"
-
-# TLS-enabled
-slayer pg-serve --host 0.0.0.0 --token TOK \
-    --tls-cert /etc/ssl/slayer.crt --tls-key /etc/ssl/slayer.key
 ```
 
 Flags:
@@ -31,7 +27,6 @@ Flags:
 | `--host HOST` | Bind address. Default `0.0.0.0`. With `--demo` and no token, defaults to `127.0.0.1` for the loopback fallback. |
 | `--port PORT` | Default `5145`. |
 | `--token T` | Password token. Falls back to `$SLAYER_PG_TOKEN`. Required for non-loopback binds. |
-| `--tls-cert C` / `--tls-key K` | TLS certificate + key pair (must be supplied together). |
 | `--demo` | Generate + ingest the bundled Jaffle Shop dataset before starting. |
 | `--storage PATH` | Storage path (same as the REST + MCP servers). |
 
@@ -84,7 +79,7 @@ In Metabase: **Admin → Databases → Add database → PostgreSQL** and fill in
 | Database name | the SLayer **datasource** (e.g. `jaffle_shop`) |
 | Username | anything non-empty (ignored) |
 | Password | the `--token` value (`pick-a-secret`) |
-| SSL | off (unless you started with `--tls-cert`/`--tls-key`) |
+| SSL | off |
 
 Or as a single JDBC connection string:
 
@@ -120,7 +115,8 @@ against them. Project named metrics (`revenue_sum`) or write `SUM(amount)` /
   at startup.
 * With a token, the server requests a cleartext password
   (`AuthenticationCleartextPassword`); the client's password must equal the token.
-  Combine with TLS (or a loopback bind) so the password is not sent in the clear.
+  Use a loopback bind (or a trusted network) so the password is not sent in the clear.
+  Let us know if you would like us to support TLS. 
 
 ## SQL Surface
 
@@ -276,10 +272,10 @@ per column — `asyncpg` (which requests binary results) and `psql` (text) both 
 
 ## Install
 
-The facade is pure-stdlib; the extra exists only to keep the install path consistent:
+The facade is pure-stdlib — no extra is needed. It ships with the base install:
 
 ```bash
-pip install "motley-slayer[pg_facade]"
+pip install motley-slayer
 ```
 
 ## Testing your changes

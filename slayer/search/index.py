@@ -19,7 +19,6 @@ The index is rebuilt fresh per ``search`` call (no persistence in v1).
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
 
 import tantivy
 from pydantic import BaseModel, ConfigDict
@@ -48,7 +47,7 @@ class IndexHit(BaseModel):
     canonical: str
     text: str
     score: float
-    memory_id: Optional[str] = None  # populated only when kind == "memory"
+    memory_id: str | None = None  # populated only when kind == "memory"
 
 
 # ---------------------------------------------------------------------------
@@ -83,10 +82,10 @@ def _add_doc(
 
 def build_in_memory_index(
     *,
-    memories: List[Memory],
-    models: List[SlayerModel],
-    datasources: List[str],
-    datasource_descriptions: Optional[Dict[str, Optional[str]]] = None,
+    memories: list[Memory],
+    models: list[SlayerModel],
+    datasources: list[str],
+    datasource_descriptions: dict[str, str | None] | None = None,
 ) -> tantivy.Index:
     """Build a fresh in-RAM tantivy index covering the corpus.
 
@@ -124,18 +123,18 @@ class Corpus(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     index: "tantivy.Index"
-    canonical_to_text: Dict[str, str]
-    canonical_to_kind: Dict[str, str]
-    canonical_to_description: Dict[str, Optional[str]] = {}
+    canonical_to_text: dict[str, str]
+    canonical_to_kind: dict[str, str]
+    canonical_to_description: dict[str, str | None] = {}
 
 
 def _collect_render_pairs(
     *,
-    memories: List[Memory],
-    visible_models: List[SlayerModel],
-    datasources: List[str],
-    datasource_descriptions: Optional[Dict[str, Optional[str]]] = None,
-) -> List[Tuple[str, str, str, Optional[str]]]:
+    memories: list[Memory],
+    visible_models: list[SlayerModel],
+    datasources: list[str],
+    datasource_descriptions: dict[str, str | None] | None = None,
+) -> list[tuple[str, str, str, str | None]]:
     """Return ``[(canonical_id, kind, rendered_text, description), ...]``
     for every doc that goes into the index. Routes through the unified
     dispatch helpers in ``slayer.search.render`` (DEV-1513). Hidden
@@ -146,8 +145,8 @@ def _collect_render_pairs(
     ``canonical_id → description`` map symmetrical to the existing
     canonical-text map.
     """
-    out: List[Tuple[str, str, str, Optional[str]]] = []
-    models_by_ds: Dict[str, List[SlayerModel]] = {}
+    out: list[tuple[str, str, str, str | None]] = []
+    models_by_ds: dict[str, list[SlayerModel]] = {}
     for m in visible_models:
         models_by_ds.setdefault(m.data_source, []).append(m)
     descriptions = datasource_descriptions or {}
@@ -175,10 +174,10 @@ def _collect_render_pairs(
 
 def build_in_memory_corpus(
     *,
-    memories: List[Memory],
-    models: List[SlayerModel],
-    datasources: List[str],
-    datasource_descriptions: Optional[Dict[str, Optional[str]]] = None,
+    memories: list[Memory],
+    models: list[SlayerModel],
+    datasources: list[str],
+    datasource_descriptions: dict[str, str | None] | None = None,
 ) -> Corpus:
     """Build the index AND the parallel canonical lookup maps in one walk.
 
@@ -210,9 +209,9 @@ def build_in_memory_corpus(
         datasources=datasources,
         datasource_descriptions=datasource_descriptions,
     )
-    canonical_to_text: Dict[str, str] = {}
-    canonical_to_kind: Dict[str, str] = {}
-    canonical_to_description: Dict[str, Optional[str]] = {}
+    canonical_to_text: dict[str, str] = {}
+    canonical_to_kind: dict[str, str] = {}
+    canonical_to_description: dict[str, str | None] = {}
     for canonical, kind, text, description in pairs:
         # Memory docs use ``id="memory:<int>"`` and ``canonical="<int>"``
         # to match the DEV-1375 tantivy schema; entity docs use the same
@@ -251,8 +250,8 @@ def _apply_kind_filter(
     *,
     query: "tantivy.Query",
     schema: "tantivy.Schema",
-    kind_filter: Optional[str],
-    exclude_kind: Optional[str],
+    kind_filter: str | None,
+    exclude_kind: str | None,
 ) -> "tantivy.Query":
     """Wrap ``query`` in a boolean query that ``Must`` includes (or
     ``MustNot`` excludes) docs whose ``kind`` field exactly equals the
@@ -277,10 +276,10 @@ def search_index(
     index: tantivy.Index,
     question: str,
     limit: int = 20,
-    fields: Optional[List[str]] = None,
-    kind_filter: Optional[str] = None,
-    exclude_kind: Optional[str] = None,
-) -> List[IndexHit]:
+    fields: list[str] | None = None,
+    kind_filter: str | None = None,
+    exclude_kind: str | None = None,
+) -> list[IndexHit]:
     """Run a tantivy query against ``index``.
 
     Args:
@@ -323,12 +322,12 @@ def search_index(
     )
     searcher = index.searcher()
     raw_hits = searcher.search(query, limit).hits
-    out: List[IndexHit] = []
+    out: list[IndexHit] = []
     for score, address in raw_hits:
         doc = searcher.doc(address)
         kind = str(doc.get_first("kind"))
         canonical = str(doc.get_first("canonical"))
-        memory_id: Optional[str] = None
+        memory_id: str | None = None
         if kind == "memory":
             memory_id = canonical or None
         out.append(IndexHit(

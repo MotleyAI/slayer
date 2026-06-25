@@ -1,6 +1,6 @@
 [project]
 name = "motley-slayer"
-version = "0.8.0"
+version = "0.8.3"
 description = "A lightweight, agent-first semantic layer for AI agents"
 requires-python = ">=3.11"
 license = "MIT"
@@ -85,9 +85,6 @@ bigquery = ["sqlalchemy-bigquery"]
 dbt = ["dbt-core"]
 docs = ["mkdocs-material"]
 flight = ["pyarrow"]
-# The Postgres wire-protocol facade is pure-stdlib; the empty extra keeps the
-# `pip install motley-slayer[pg_facade]` install path consistent.
-pg_facade = []
 advanced_search = ["litellm", "numpy", "ladybug"]
 embedding_search = ["litellm", "numpy"]  # legacy alias for advanced_search without graph support
 all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "dbt-core", "pyarrow", "litellm", "numpy", "ladybug"]

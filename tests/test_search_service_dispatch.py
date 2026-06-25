@@ -20,7 +20,7 @@ Pins the public write-side surface introduced by the facade refactor:
 from __future__ import annotations
 
 import tempfile
-from typing import AsyncIterator, List, Optional
+from collections.abc import AsyncIterator
 
 import pytest_asyncio
 
@@ -53,9 +53,9 @@ class _RecordingRetriever(Retriever):
     def __init__(
         self, *,
         name: str,
-        upsert_warn: Optional[str] = None,
-        subtree_warn: Optional[str] = None,
-        ds_warn: Optional[str] = None,
+        upsert_warn: str | None = None,
+        subtree_warn: str | None = None,
+        ds_warn: str | None = None,
         raise_on_upsert: bool = False,
         raise_on_subtree: bool = False,
         raise_on_datasource: bool = False,
@@ -67,20 +67,20 @@ class _RecordingRetriever(Retriever):
         self._raise_on_upsert = raise_on_upsert
         self._raise_on_subtree = raise_on_subtree
         self._raise_on_datasource = raise_on_datasource
-        self.upsert_calls: List[Memory] = []
-        self.subtree_calls: List[SlayerModel] = []
-        self.ds_calls: List[str] = []
+        self.upsert_calls: list[Memory] = []
+        self.subtree_calls: list[SlayerModel] = []
+        self.ds_calls: list[str] = []
 
     async def retrieve(self, **kwargs) -> RetrievalResult:
         return RetrievalResult()
 
-    async def upsert_memory(self, memory: Memory) -> List[str]:
+    async def upsert_memory(self, memory: Memory) -> list[str]:
         self.upsert_calls.append(memory)
         if self._raise_on_upsert:
             raise RuntimeError(f"{self.name} boom")
         return [self._upsert_warn] if self._upsert_warn else []
 
-    async def refresh_model_subtree(self, model: SlayerModel) -> List[str]:
+    async def refresh_model_subtree(self, model: SlayerModel) -> list[str]:
         self.subtree_calls.append(model)
         if self._raise_on_subtree:
             raise RuntimeError(f"{self.name} subtree-boom")
@@ -90,9 +90,9 @@ class _RecordingRetriever(Retriever):
         self,
         *,
         name: str,
-        models: List[SlayerModel],
-        description: Optional[str] = None,
-    ) -> List[str]:
+        models: list[SlayerModel],
+        description: str | None = None,
+    ) -> list[str]:
         self.ds_calls.append(name)
         if self._raise_on_datasource:
             raise RuntimeError(f"{self.name} ds-boom")

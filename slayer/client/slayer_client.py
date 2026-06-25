@@ -1,16 +1,15 @@
 """Python client for SLayer API."""
 
 import logging
-from collections.abc import Mapping as ABCMapping, Sequence as ABCSequence
+from collections.abc import (
+    Mapping,
+    Mapping as ABCMapping,
+    Sequence,
+    Sequence as ABCSequence,
+)
 from typing import (
     TYPE_CHECKING,
     Any,
-    Dict,
-    List,
-    Mapping,
-    Optional,
-    Sequence,
-    Union,
 )
 from urllib.parse import quote
 
@@ -34,12 +33,12 @@ logger = logging.getLogger(__name__)
 # ``{"queries": [...]}`` (REST) also accept; ``str`` runs a query-backed model
 # by name. ``Mapping``/``Sequence`` (not ``Dict``/``List``) so callers passing
 # ``list[dict[str, str]]`` aren't rejected by pyright's invariance check.
-QueryInput = Union[
-    SlayerQuery,
-    Mapping[str, Any],
-    Sequence[Union[SlayerQuery, Mapping[str, Any]]],
-    str,
-]
+QueryInput = (
+    SlayerQuery
+    | Mapping[str, Any]
+    | Sequence[SlayerQuery | Mapping[str, Any]]
+    | str
+)
 
 
 class SlayerClient:
@@ -63,9 +62,9 @@ class SlayerClient:
     def __init__(
         self,
         url: str = "http://localhost:5143",
-        storage: Optional[Any] = None,
+        storage: Any | None = None,
         *,
-        policy: Optional["SessionPolicy"] = None,
+        policy: "SessionPolicy | None" = None,
     ):
         self.url = url.rstrip("/")
         self._storage = storage
@@ -88,8 +87,8 @@ class SlayerClient:
         self,
         method: str,
         path: str,
-        json: Optional[Dict] = None,
-        params: Optional[Dict] = None,
+        json: dict | None = None,
+        params: dict | None = None,
     ) -> Any:
         try:
             import httpx
@@ -106,8 +105,8 @@ class SlayerClient:
         self,
         method: str,
         path: str,
-        json: Optional[Dict] = None,
-        params: Optional[Dict] = None,
+        json: dict | None = None,
+        params: dict | None = None,
     ) -> Any:
         try:
             import httpx
@@ -121,7 +120,7 @@ class SlayerClient:
             return resp.json()
 
     @staticmethod
-    def _validated_dump(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    def _validated_dump(payload: Mapping[str, Any]) -> dict[str, Any]:
         """Round-trip a single-query payload through ``SlayerQuery`` so
         the server sees the normalised JSON-mode shape. Necessary because
         the server's ``QueryRequest`` declares ``measures`` /
@@ -140,7 +139,7 @@ class SlayerClient:
         *,
         dry_run: bool = False,
         explain: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Convert any accepted input shape into the JSON body for
         ``POST /query``. Single source of truth shared by sync + async
         transports. Never mutates caller-owned dicts or lists.
@@ -161,7 +160,7 @@ class SlayerClient:
         both accept them).
         """
         if isinstance(query, str):
-            body: Dict[str, Any] = {"name": query}
+            body: dict[str, Any] = {"name": query}
         elif isinstance(query, SlayerQuery):
             body = query.model_dump(mode="json", exclude_none=True)
         elif isinstance(query, ABCSequence) and not isinstance(
@@ -169,7 +168,7 @@ class SlayerClient:
         ):
             # ``str`` is also a Sequence but already handled above; guard the
             # binary string types here too so they raise via the else-branch.
-            serialised: List[Dict[str, Any]] = []
+            serialised: list[dict[str, Any]] = []
             for i, item in enumerate(query):
                 if isinstance(item, SlayerQuery):
                     serialised.append(
@@ -226,7 +225,7 @@ class SlayerClient:
         """Parse an API JSON response into a SlayerResponse."""
         from slayer.core.format import NumberFormat
 
-        def _parse_meta_dict(d: dict) -> Dict[str, FieldMetadata]:
+        def _parse_meta_dict(d: dict) -> dict[str, FieldMetadata]:
             out = {}
             for k, v in (d or {}).items():
                 fmt = None
@@ -286,7 +285,7 @@ class SlayerClient:
         """
         return await self.query(query=query, explain=True)
 
-    async def list_models(self, data_source: Optional[str] = None) -> List[str]:
+    async def list_models(self, data_source: str | None = None) -> list[str]:
         if self._storage is not None:
             names = await self._storage.list_models(data_source=data_source)
             return list(names)
@@ -296,29 +295,29 @@ class SlayerClient:
     async def get_model(
         self,
         name: str,
-        data_source: Optional[str] = None,
-    ) -> Optional[Any]:
+        data_source: str | None = None,
+    ) -> Any | None:
         if self._storage is not None:
             return await self._storage.get_model(name, data_source=data_source)
         params = {"data_source": data_source} if data_source else None
         return await self._request(method="GET", path=f"/models/{name}", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
-    async def create_model(self, model: Dict[str, Any]) -> Dict[str, str]:
+    async def create_model(self, model: dict[str, Any]) -> dict[str, str]:
         return await self._request(method="POST", path="/models", json=model)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
-    async def list_datasources(self) -> List[str]:
+    async def list_datasources(self) -> list[str]:
         return await self._request(method="GET", path="/datasources")
 
-    async def create_datasource(self, datasource: Dict[str, Any]) -> Dict[str, str]:
+    async def create_datasource(self, datasource: dict[str, Any]) -> dict[str, str]:
         return await self._request(method="POST", path="/datasources", json=datasource)
 
-    async def get_datasource_priority(self) -> List[str]:
+    async def get_datasource_priority(self) -> list[str]:
         if self._storage is not None:
             return await self._storage.get_datasource_priority()
         body = await self._request(method="GET", path="/datasources/priority")
         return list(body.get("priority", []))
 
-    async def set_datasource_priority(self, priority: List[str]) -> None:
+    async def set_datasource_priority(self, priority: list[str]) -> None:
         if self._storage is not None:
             await self._storage.set_datasource_priority(list(priority))
             return
@@ -354,9 +353,9 @@ class SlayerClient:
         self,
         *,
         learning: str,
-        linked_entities: Union[List[str], SlayerQuery, Dict[str, Any]],
-        id: Optional[str] = None,  # noqa: A002 — public kwarg matching MCP / REST
-        description: Optional[str] = None,
+        linked_entities: list[str] | SlayerQuery | dict[str, Any],
+        id: str | None = None,  # noqa: A002 — public kwarg matching MCP / REST
+        description: str | None = None,
     ) -> SaveMemoryResponse:
         """Save a memory: a learning text + linked entities (or an
         inline SlayerQuery to extract entities from). DEV-1428:
@@ -373,7 +372,7 @@ class SlayerClient:
                 description=description,
             )
             return response
-        body: Dict[str, Any] = {
+        body: dict[str, Any] = {
             "learning": learning,
             "linked_entities": self._coerce_linked_entities(linked_entities),
         }
@@ -385,7 +384,7 @@ class SlayerClient:
         return SaveMemoryResponse.model_validate(result)
 
     async def forget_memory(
-        self, identifier: Union[int, str]
+        self, identifier: int | str
     ) -> ForgetMemoryResponse:
         if self._storage is not None:
             return await self._memory_service().forget_memory(
@@ -405,12 +404,12 @@ class SlayerClient:
     async def search(
         self,
         *,
-        entities: Optional[List[str]] = None,
-        query: Optional[Union[SlayerQuery, Dict[str, Any]]] = None,
-        question: Optional[str] = None,
-        datasource: Optional[str] = None,
+        entities: list[str] | None = None,
+        query: SlayerQuery | dict[str, Any] | None = None,
+        question: str | None = None,
+        datasource: str | None = None,
         max_results: int = 10,
-        cypher_filter: Optional[str] = None,
+        cypher_filter: str | None = None,
         compact: bool = True,
     ) -> "SearchResponse":
         """Up to three-channel semantic search over memories + canonical
@@ -458,7 +457,7 @@ class SlayerClient:
                 cypher_filter=cypher_filter,
                 compact=compact,
             )
-        body: Dict[str, Any] = {
+        body: dict[str, Any] = {
             "max_results": max_results,
             "compact": compact,
         }
@@ -474,6 +473,83 @@ class SlayerClient:
             body["cypher_filter"] = cypher_filter
         result = await self._request(method="POST", path="/search", json=body)
         return SearchResponse.model_validate(result)
+
+    async def inspect(
+        self,
+        *,
+        reference: str,
+        entity_type: str,
+        compact: bool = True,
+        format: str = "markdown",
+        num_rows: int = 3,
+        show_sql: bool = False,
+        sections: list[str] | None = None,
+        descriptions_max_chars: int | None = None,
+    ) -> str:
+        """Inspect EXACTLY one entity by reference and kind (DEV-1588).
+
+        A single-entity point-lookup (no fusion / ranking / bundled
+        memories). ``entity_type`` is required, one of
+        ``datasource``/``model``/``column``/``measure``/``aggregation``/
+        ``memory``.
+        """
+        if self._storage is not None:
+            # Local import: slayer.inspect.service transitively imports the
+            # search render stack (tantivy), which is not part of the client
+            # extras. Remote-only installs that never call .inspect() must
+            # not blow up at module-import time.
+            from slayer.inspect.service import InspectService
+
+            return await InspectService(
+                storage=self._storage, engine=self._engine,
+            ).inspect(
+                reference=reference,
+                entity_type=entity_type,
+                compact=compact,
+                format=format,
+                num_rows=num_rows,
+                show_sql=show_sql,
+                sections=sections,
+                descriptions_max_chars=descriptions_max_chars,
+            )
+        body = self._build_inspect_body(
+            reference=reference,
+            entity_type=entity_type,
+            compact=compact,
+            format=format,
+            num_rows=num_rows,
+            show_sql=show_sql,
+            sections=sections,
+            descriptions_max_chars=descriptions_max_chars,
+        )
+        resp = await self._request(method="POST", path="/inspect", json=body)
+        return resp["result"]
+
+    @staticmethod
+    def _build_inspect_body(
+        *,
+        reference: str,
+        entity_type: str,
+        compact: bool,
+        format: str,
+        num_rows: int,
+        show_sql: bool,
+        sections: list[str] | None,
+        descriptions_max_chars: int | None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "reference": reference,
+            "entity_type": entity_type,
+            "compact": compact,
+            "format": format,
+            "num_rows": num_rows,
+            "show_sql": show_sql,
+        }
+        if sections is not None:
+            body["sections"] = sections
+        if descriptions_max_chars is not None:
+            body["descriptions_max_chars"] = descriptions_max_chars
+        return body
 
     # ----- Sync API (for notebooks, scripts, CLI) -----
 
@@ -514,6 +590,45 @@ class SlayerClient:
         """
         return self.query_sync(query=query, explain=True)
 
+    def inspect_sync(
+        self,
+        *,
+        reference: str,
+        entity_type: str,
+        compact: bool = True,
+        format: str = "markdown",
+        num_rows: int = 3,
+        show_sql: bool = False,
+        sections: list[str] | None = None,
+        descriptions_max_chars: int | None = None,
+    ) -> str:
+        """Synchronous variant of :meth:`inspect` (DEV-1588)."""
+        if self._storage is not None:
+            from slayer.async_utils import run_sync
+
+            return run_sync(self.inspect(
+                reference=reference,
+                entity_type=entity_type,
+                compact=compact,
+                format=format,
+                num_rows=num_rows,
+                show_sql=show_sql,
+                sections=sections,
+                descriptions_max_chars=descriptions_max_chars,
+            ))
+        body = self._build_inspect_body(
+            reference=reference,
+            entity_type=entity_type,
+            compact=compact,
+            format=format,
+            num_rows=num_rows,
+            show_sql=show_sql,
+            sections=sections,
+            descriptions_max_chars=descriptions_max_chars,
+        )
+        resp = self._request_sync(method="POST", path="/inspect", json=body)
+        return resp["result"]
+
     def query_df(self, query: QueryInput):
         """Execute a query and return a pandas DataFrame (sync).
 
@@ -526,8 +641,8 @@ class SlayerClient:
         result = self.query_sync(query=query)
         return pd.DataFrame(result.data)
 
-    def list_models_sync(self) -> List[str]:
+    def list_models_sync(self) -> list[str]:
         return self._request_sync(method="GET", path="/models")
 
-    def get_model_sync(self, name: str) -> Dict[str, Any]:
+    def get_model_sync(self, name: str) -> dict[str, Any]:
         return self._request_sync("GET", f"/models/{name}")

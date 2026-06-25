@@ -16,7 +16,6 @@ translator path (not the executor).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
 
 import pytest
 
@@ -104,11 +103,11 @@ def _translate(sql: str, catalog: FacadeCatalog):
 # --- corpus loading ---------------------------------------------------------
 
 
-def _load_corpus_statements() -> List[str]:
+def _load_corpus_statements() -> list[str]:
     """Yield each ``-- #N ...`` block from the captured corpus as a single string."""
     text = FIXTURE.read_text(encoding="utf-8")
-    statements: List[str] = []
-    current: List[str] = []
+    statements: list[str] = []
+    current: list[str] = []
     capturing = False
     for line in text.splitlines():
         if line.startswith("-- #") and " first seen at " in line:

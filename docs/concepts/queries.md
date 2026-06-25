@@ -99,6 +99,8 @@ A time dimension with a required granularity and an optional date range. Support
 
 ## OrderItem
 
+A sort specification: `column` is the short alias (`status`, `revenue_sum`, `*:count`), `direction` is `asc` or `desc`.
+
 ```json
 {"column": "*:count", "direction": "desc"}
 ```

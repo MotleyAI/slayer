@@ -13,7 +13,8 @@ import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
-from typing import Any, AsyncIterator, Generator
+from typing import Any
+from collections.abc import AsyncIterator, Generator
 
 import pytest
 import pytest_asyncio

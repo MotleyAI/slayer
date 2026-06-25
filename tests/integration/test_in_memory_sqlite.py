@@ -9,7 +9,7 @@ Marked integration because it touches a real on-disk SQLite file.
 """
 
 from pathlib import Path
-from typing import Iterable
+from collections.abc import Iterable
 
 import pytest
 import sqlalchemy as sa

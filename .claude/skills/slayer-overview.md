@@ -27,7 +27,7 @@ Query-backed models support two access patterns: **run by name** (`engine.execut
 
 ## MCP Tools
 
-Discovery: `list_datasources`, `models_summary`, `inspect_model` (with sample data)
+Discovery: `list_datasources`, `models_summary`, `inspect` (single-entity point lookup by `reference` + required `entity_type`; the model path carries sample data). `inspect_model` is DEPRECATED — use `inspect`.
 Querying: `query`
 Model editing: `create_model`, `edit_model`, `delete_model`
 Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (includes table listing by default), `edit_datasource`, `delete_datasource`, `set_datasource_priority`
