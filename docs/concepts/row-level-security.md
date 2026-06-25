@@ -117,3 +117,10 @@ exactly the SQL that would execute, including the wraps.
   available.
 - Only the column-filter rule kind exists. Join-path rules (auto-filtering by
   walking a join to a tenant table) are out of scope for v1.
+- The wrap aliases each table by its bare name (`(SELECT * FROM public.orders
+  WHERE ...) AS orders`). SLayer-generated SQL references columns by table
+  alias, so this is transparent. A hand-written `sql`-mode model that
+  *schema-qualifies its own column references* (`SELECT public.orders.id ...`)
+  is the one shape that won't resolve against the wrapped alias — such a query
+  errors rather than executing. It fails safe (it cannot leak another tenant's
+  rows); reference columns by table name (`orders.id`) instead.

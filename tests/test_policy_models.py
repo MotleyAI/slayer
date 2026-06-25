@@ -33,7 +33,7 @@ def test_list_value_coerced_to_tuple():
 
 def test_numeric_and_bool_scalar_values():
     assert ColumnFilterRule(column="tenant_id", value=42).value == 42
-    assert ColumnFilterRule(column="ratio", value=3.5).value == 3.5
+    assert ColumnFilterRule(column="ratio", value=3.5).value == pytest.approx(3.5)
     assert ColumnFilterRule(column="is_active", value=True).value is True
 
 

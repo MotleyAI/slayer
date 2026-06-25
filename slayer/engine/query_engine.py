@@ -302,8 +302,11 @@ class SlayerQueryEngine:
         re-probed on the next query.
         """
         schema = scoped_table.schema_name or datasource.schema_name
+        # Include catalog in the key so two tables differing only by catalog
+        # (e.g. BigQuery project) never share a cached presence fact.
         key = (
             _sql_client_cache_key(datasource),
+            scoped_table.catalog,
             schema,
             scoped_table.name,
             column,

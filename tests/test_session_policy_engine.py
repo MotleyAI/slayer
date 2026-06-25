@@ -118,6 +118,31 @@ def test_none_result_is_not_cached(engine, tmp_path, monkeypatch):
     assert engine._column_present(datasource=ds, scoped_table=st, column="org") is True
 
 
+def test_catalog_differentiates_cache_key(engine, tmp_path, monkeypatch):
+    """Two tables differing only by catalog must not share a cached presence
+    fact (no cross-catalog collision)."""
+    calls = {"n": 0}
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return [{"name": "org"}]
+
+    monkeypatch.setattr(qe, "_safe_get_columns", counting)
+    ds = _ds(tmp_path)
+    a = engine._column_present(
+        datasource=ds,
+        scoped_table=ScopedTable(catalog="cat_a", name="orders"),
+        column="org",
+    )
+    b = engine._column_present(
+        datasource=ds,
+        scoped_table=ScopedTable(catalog="cat_b", name="orders"),
+        column="org",
+    )
+    assert a is True and b is True
+    assert calls["n"] == 2  # distinct catalogs -> distinct keys -> re-probed
+
+
 def test_schema_resolves_ast_first(engine, tmp_path, monkeypatch):
     seen = {}
 

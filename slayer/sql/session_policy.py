@@ -93,6 +93,43 @@ def _physical_tables(ast: exp.Expression) -> list:
     return physical
 
 
+def _predicates_for_table(
+    *,
+    scoped: ScopedTable,
+    policy: SessionPolicy,
+    has_column: HasColumn,
+) -> list:
+    """Return the predicates that apply to ``scoped`` (one per rule whose
+    column the table has). Raises :class:`ForcedFilterError` on a fail-closed
+    condition (unconfirmable column, or ``block`` on a confirmed-absent
+    column). A ``pass`` rule whose column is absent contributes nothing."""
+    predicates = []
+    for rule in policy.data_filters:
+        present = has_column(scoped, rule.column)
+        if present is None:
+            raise ForcedFilterError(
+                f"Forced filter rule {_rule_label(rule)}: could not confirm "
+                f"column '{rule.column}' on table '{scoped.name}'; failing "
+                f"closed.",
+                table=scoped.name,
+                column=rule.column,
+                rule_name=rule.name,
+            )
+        if present is False:
+            if rule.on_unapplicable == "block":
+                raise ForcedFilterError(
+                    f"Forced filter rule {_rule_label(rule)} requires column "
+                    f"'{rule.column}' on table '{scoped.name}', which does not "
+                    f"have it.",
+                    table=scoped.name,
+                    column=rule.column,
+                    rule_name=rule.name,
+                )
+            continue  # "pass": skip this rule for this table
+        predicates.append(_build_predicate(rule))
+    return predicates
+
+
 def _wrap_table(table: exp.Table, predicates: list) -> None:
     """Replace ``table`` in place with ``(SELECT * FROM <table> WHERE ...) AS
     <original_alias>``."""
@@ -135,30 +172,9 @@ def apply_session_policy(
 
     for table in _physical_tables(ast):
         scoped = _scoped_table(table)
-        predicates = []
-        for rule in policy.data_filters:
-            present = has_column(scoped, rule.column)
-            if present is None:
-                raise ForcedFilterError(
-                    f"Forced filter rule {_rule_label(rule)}: could not "
-                    f"confirm column '{rule.column}' on table "
-                    f"'{scoped.name}'; failing closed.",
-                    table=scoped.name,
-                    column=rule.column,
-                    rule_name=rule.name,
-                )
-            if present is False:
-                if rule.on_unapplicable == "block":
-                    raise ForcedFilterError(
-                        f"Forced filter rule {_rule_label(rule)} requires "
-                        f"column '{rule.column}' on table '{scoped.name}', "
-                        f"which does not have it.",
-                        table=scoped.name,
-                        column=rule.column,
-                        rule_name=rule.name,
-                    )
-                continue  # "pass": skip this rule for this table
-            predicates.append(_build_predicate(rule))
+        predicates = _predicates_for_table(
+            scoped=scoped, policy=policy, has_column=has_column
+        )
         if predicates:
             _wrap_table(table, predicates)
 
