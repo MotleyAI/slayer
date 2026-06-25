@@ -1507,6 +1507,25 @@ class DbtToSlayerConverter:
     ) -> Optional[Tuple[str, DataType, Optional[NumberFormat], str]]:
         """Compute ``(column_expr, type, format, agg_call)`` for a filtered
         leaf, preserving special measure semantics; ``None`` on clean-fail."""
+        if dbt_measure.non_additive_dimension is not None:
+            # A semi-additive measure can't be lowered to a plain filtered
+            # aggregate — that would drop the non-additive semantics. This is the
+            # choke point for both the simple-metric-filter path and the
+            # derived/ratio push-down path.
+            self._fail_metric(
+                metric, category="non_additive_dimension", severity="dropped",
+                message=(
+                    f"Filtered metric '{metric.name}' wraps a non-additive "
+                    f"(semi-additive) measure '{dbt_measure.name}', which is not "
+                    f"exactly expressible as a filtered aggregate."
+                ),
+                suggestion=(
+                    "Express as balance:last(<time_col>) / first(...) or a "
+                    "multi-stage query."
+                ),
+                raw={"non_additive_dimension": dbt_measure.non_additive_dimension.model_dump()},
+            )
+            return None
         agg = dbt_measure.agg.lower()
         if agg == "sum_boolean":
             expr = dbt_measure.expr or dbt_measure.name
@@ -1587,11 +1606,19 @@ class DbtToSlayerConverter:
                 and mtc.type_params
                 and mtc.type_params.measure_name
             ):
-                inner = self._resolve_input_to_leaf_filtered(mtc.type_params.measure_name)
+                tp = mtc.type_params
+                mref = tp.measure
+                # Unsupported simple-metric shapes (measure-less aggregation,
+                # time-spine gap fill) are clean-failed elsewhere; they must NOT
+                # be resurrected as plain pushable aggregates here.
+                if tp.metric_aggregation_params is not None:
+                    return None
+                if mref and (mref.join_to_timespine or mref.fill_nulls_with is not None):
+                    return None
+                inner = self._resolve_input_to_leaf_filtered(tp.measure_name)
                 if inner is None:
                     return None
                 inner_sm, inner_measure, inner_filter = inner
-                mref = mtc.type_params.measure
                 own_filter = self._combine_filters(
                     mtc.filter, mref.filter if mref else None
                 )

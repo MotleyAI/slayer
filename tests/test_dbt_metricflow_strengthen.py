@@ -763,6 +763,64 @@ def test_cross_model_filter_foreign_entity_without_owner_clean_fails() -> None:
                for e in _all_report_entries(result))
 
 
+def test_filtered_simple_metric_over_non_additive_measure_clean_fails() -> None:
+    """A filtered simple metric whose measure is semi-additive must clean-fail,
+    not silently materialize as a plain filtered SUM."""
+    measure = DbtMeasure.model_validate({
+        "name": "balance", "agg": "sum", "expr": "amount",
+        "non_additive_dimension": {"name": "ds", "window_choice": "max",
+                                   "window_groupings": ["account_id"]},
+    })
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(name="orders", model="orders", measures=[measure]),
+        ],
+        metrics=[
+            DbtMetric(
+                name="us_balance", type="simple",
+                type_params=DbtMetricTypeParams(measure="balance"),
+                filter="{{ Dimension('orders__region') }} = 'US'",
+            ),
+        ],
+    )
+    result = _convert(project)
+    assert all(m.name != "us_balance" for m in _model(result).measures)
+    assert any("us_balance" in (e.metric_name or e.message)
+               for e in _all_report_entries(result))
+
+
+def test_derived_input_filter_over_timespine_metric_clean_fails() -> None:
+    """A per-input filter over a time-spine (unsupported) simple metric must
+    clean-fail in the push-down, not resurrect it as a plain aggregate."""
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(name="orders", model="orders",
+                             measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")]),
+        ],
+        metrics=[
+            DbtMetric.model_validate({
+                "name": "gap_filled_rev", "type": "simple",
+                "type_params": {"measure": {"name": "revenue", "fill_nulls_with": 0}},
+            }),
+            DbtMetric(
+                name="us_gap_rev",
+                type="derived",
+                type_params=DbtMetricTypeParams(
+                    expr="gap_filled_rev",
+                    metrics=[DbtMetricInput(
+                        name="gap_filled_rev",
+                        filter="{{ Dimension('orders__region') }} = 'US'",
+                    )],
+                ),
+            ),
+        ],
+    )
+    result = _convert(project)
+    assert all(m.name != "us_gap_rev" for m in _model(result).measures)
+    assert any("us_gap_rev" in (e.metric_name or e.message)
+               for e in _all_report_entries(result))
+
+
 def test_input_filter_intersects_referenced_metric_filter() -> None:
     """When a derived input adds a filter on top of an already-filtered simple
     metric, BOTH filters must apply to the leaf — the referenced metric's filter
