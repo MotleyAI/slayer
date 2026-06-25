@@ -1371,15 +1371,26 @@ class DbtToSlayerConverter:
             sm = self._dbt_models_by_name.get(mname)
             if sm is None:
                 continue
-            reachable.add(sm.name)
-            if sm.primary_entity:
-                reachable.add(sm.primary_entity)
-            for e in sm.entities:
-                reachable.add(e.name)
-                for peer_model, _expr in self.entity_registry._primaries.get(e.name, []):
-                    if peer_model not in visited_models:
-                        queue.append(peer_model)
+            reachable |= self._model_entity_names(sm)
+            queue.extend(self._peer_model_names(sm))
         return reachable
+
+    @staticmethod
+    def _model_entity_names(sm: DbtSemanticModel) -> set:
+        """The model's own name plus every entity name it declares."""
+        names = {sm.name}
+        if sm.primary_entity:
+            names.add(sm.primary_entity)
+        names.update(e.name for e in sm.entities)
+        return names
+
+    def _peer_model_names(self, sm: DbtSemanticModel) -> set:
+        """Models sharing any of ``sm``'s entities as a primary/unique entity."""
+        peers: set = set()
+        for e in sm.entities:
+            for peer_model, _expr in self.entity_registry._primaries.get(e.name, []):
+                peers.add(peer_model)
+        return peers
 
     def _filtered_leaf_ref(
         self,
