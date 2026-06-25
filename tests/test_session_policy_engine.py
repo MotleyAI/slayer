@@ -118,9 +118,9 @@ def test_none_result_is_not_cached(engine, tmp_path, monkeypatch):
     assert engine._column_present(datasource=ds, scoped_table=st, column="org") is True
 
 
-def test_catalog_differentiates_cache_key(engine, tmp_path, monkeypatch):
-    """Two tables differing only by catalog must not share a cached presence
-    fact (no cross-catalog collision)."""
+def test_cross_catalog_fails_closed(engine, tmp_path, monkeypatch):
+    """A ref naming a catalog other than the connection's own can't be
+    confirmed by schema-only introspection -> fail closed, without probing."""
     calls = {"n": 0}
 
     def counting(*a, **k):
@@ -128,19 +128,28 @@ def test_catalog_differentiates_cache_key(engine, tmp_path, monkeypatch):
         return [{"name": "org"}]
 
     monkeypatch.setattr(qe, "_safe_get_columns", counting)
+    ds = _ds(tmp_path)  # database is the probe.db path
+    present = engine._column_present(
+        datasource=ds,
+        scoped_table=ScopedTable(catalog="other_project", name="orders"),
+        column="org",
+    )
+    assert present is None
+    assert calls["n"] == 0  # never probed the wrong relation
+
+
+def test_matching_catalog_introspects_normally(engine, tmp_path, monkeypatch):
+    """A ref whose catalog equals the connection's own catalog probes
+    normally (no over-blocking)."""
+    monkeypatch.setattr(qe, "_safe_get_columns", lambda *a, **k: [{"name": "org"}])
     ds = _ds(tmp_path)
-    a = engine._column_present(
+    present = engine._column_present(
         datasource=ds,
-        scoped_table=ScopedTable(catalog="cat_a", name="orders"),
+        # case-insensitive match against datasource.database
+        scoped_table=ScopedTable(catalog=ds.database.upper(), name="orders"),
         column="org",
     )
-    b = engine._column_present(
-        datasource=ds,
-        scoped_table=ScopedTable(catalog="cat_b", name="orders"),
-        column="org",
-    )
-    assert a is True and b is True
-    assert calls["n"] == 2  # distinct catalogs -> distinct keys -> re-probed
+    assert present is True
 
 
 def test_schema_resolves_ast_first(engine, tmp_path, monkeypatch):

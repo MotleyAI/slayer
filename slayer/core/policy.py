@@ -75,7 +75,10 @@ class SessionPolicy(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    version: int = 1
+    # Only the v1 schema is understood. An unknown version must fail closed
+    # (raise) rather than be silently interpreted by the v1 rewrite path,
+    # since this object defines tenant-scoping behaviour.
+    version: Literal[1] = 1
     data_filters: Tuple[ColumnFilterRule, ...] = ()
 
     @field_validator("data_filters", mode="before")

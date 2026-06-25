@@ -6,7 +6,7 @@ query — base, joins, profiling/sample data, dry-run preview — to the
 configured tenant, that the column-presence probe is cached, and that the
 ``block`` / ``pass`` semantics behave on a tenant-less (shared) table.
 
-Run with: pytest tests/integration/test_integration_rls.py -m integration
+Run with: poetry run pytest tests/integration/test_integration_rls.py -m integration
 """
 
 import sqlite3

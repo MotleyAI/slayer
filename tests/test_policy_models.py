@@ -98,6 +98,13 @@ def test_empty_policy_defaults():
     assert isinstance(policy.data_filters, tuple)
 
 
+def test_policy_unknown_version_rejected():
+    """Unknown schema versions fail closed rather than running through the v1
+    rewrite path."""
+    with pytest.raises(ValidationError):
+        SessionPolicy(version=2)
+
+
 def test_policy_data_filters_list_coerced_to_tuple():
     policy = SessionPolicy(
         data_filters=[ColumnFilterRule(column="org", value="x")]

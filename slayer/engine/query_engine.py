@@ -302,6 +302,18 @@ class SlayerQueryEngine:
         re-probed on the next query.
         """
         schema = scoped_table.schema_name or datasource.schema_name
+        # Cross-catalog refs can't be confirmed: SQLAlchemy's column
+        # introspection takes no catalog argument, so a three-part
+        # ``catalog.schema.table`` naming a catalog other than the
+        # connection's own would probe the wrong relation. Fail closed
+        # (consistent with the unconfirmable-presence rule) rather than risk
+        # an under-filter under ``on_unapplicable="pass"``. Single-catalog
+        # refs (catalog matches the connection, or no catalog) probe normally.
+        if scoped_table.catalog and (
+            not datasource.database
+            or scoped_table.catalog.casefold() != datasource.database.casefold()
+        ):
+            return None
         # Include catalog in the key so two tables differing only by catalog
         # (e.g. BigQuery project) never share a cached presence fact.
         key = (
