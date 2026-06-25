@@ -16,7 +16,6 @@ from __future__ import annotations
 import hmac
 import ipaddress
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,7 @@ def _is_loopback(host: str) -> bool:
     return any(ip in net for net in _LOOPBACK_NETWORKS)
 
 
-def validate_bind_address(*, host: str, token: Optional[str]) -> None:
+def validate_bind_address(*, host: str, token: str | None) -> None:
     """Raise ``ValueError`` if binding a non-loopback address without a token."""
     if token:
         return
@@ -53,7 +52,7 @@ def validate_bind_address(*, host: str, token: Optional[str]) -> None:
     )
 
 
-def validate_tls_pair(*, cert: Optional[str], key: Optional[str]) -> None:
+def validate_tls_pair(*, cert: str | None, key: str | None) -> None:
     """TLS cert/key must be supplied together or not at all."""
     if (cert is None) != (key is None):
         raise ValueError(
@@ -62,7 +61,7 @@ def validate_tls_pair(*, cert: Optional[str], key: Optional[str]) -> None:
         )
 
 
-def verify_password(client_password: str, expected: Optional[str]) -> bool:
+def verify_password(client_password: str, expected: str | None) -> bool:
     """Constant-time cleartext-password check.
 
     When no token is configured (``expected is None``) any non-empty password

@@ -11,10 +11,11 @@ Per-entity versions evolve independently. ``CURRENT_VERSIONS[entity]`` is the
 version that ``.save_*()`` will write today.
 """
 
-from typing import Any, Callable, Dict, Tuple
+from typing import Any
+from collections.abc import Callable
 
 # Per-entity current version. Bump independently when an entity's schema changes.
-CURRENT_VERSIONS: Dict[str, int] = {
+CURRENT_VERSIONS: dict[str, int] = {
     "SlayerModel": 7,
     "SlayerQuery": 3,
     "DatasourceConfig": 2,
@@ -23,7 +24,7 @@ CURRENT_VERSIONS: Dict[str, int] = {
 }
 
 # Registry: (entity_name, source_version) -> converter producing source_version+1.
-_REGISTRY: Dict[Tuple[str, int], Callable[[dict], dict]] = {}
+_REGISTRY: dict[tuple[str, int], Callable[[dict], dict]] = {}
 
 
 def register_migration(

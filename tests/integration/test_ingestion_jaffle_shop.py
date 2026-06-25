@@ -13,7 +13,6 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Dict
 
 import pytest
 import yaml
@@ -86,7 +85,7 @@ def jaffle_models(jaffle_duckdb_path):
 # ``column_name -> (DataType, primary_key, format_type_or_None)``. Columns
 # whose source name contained a dot (joined columns) are excluded by
 # ``_columns_to_model`` and so are not listed here.
-_EXPECTED_COLUMNS: Dict[str, Dict[str, tuple]] = {
+_EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
     "customers": {
         "id": (DataType.TEXT, True, None),
         "name": (DataType.TEXT, False, None),
@@ -135,7 +134,7 @@ _EXPECTED_COLUMNS: Dict[str, Dict[str, tuple]] = {
 
 
 # Expected direct joins per model. Values are sets of (target_model, src_col, tgt_col).
-_EXPECTED_JOINS: Dict[str, set] = {
+_EXPECTED_JOINS: dict[str, set] = {
     "customers": set(),
     "stores": set(),
     "products": set(),

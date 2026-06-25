@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime
 import logging
 import re
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, field_validator, model_validator
 
@@ -38,7 +38,7 @@ def _validate_query_filter_string(formula: str) -> None:
         raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")
 
 
-def substitute_variables(filter_str: str, variables: Dict[str, Any]) -> str:
+def substitute_variables(filter_str: str, variables: dict[str, Any]) -> str:
     """Substitute {variable} placeholders in a filter string.
 
     - {var_name} is replaced with the variable's value (str or number, inserted as-is).
@@ -110,8 +110,8 @@ class ColumnRef(BaseModel):
     on the query's model.
     """
     name: str
-    model: Optional[str] = None
-    label: Optional[str] = None
+    model: str | None = None
+    label: str | None = None
 
     @model_validator(mode="after")
     def _parse_dotted_name(self) -> "ColumnRef":
@@ -218,8 +218,8 @@ def _is_direction(value: Any) -> bool:
 class TimeDimension(BaseModel):
     dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)]
     granularity: TimeGranularity
-    date_range: Optional[List[str]] = None
-    label: Optional[str] = None
+    date_range: list[str] | None = None
+    label: str | None = None
 
 
 class OrderItem(BaseModel):
@@ -230,7 +230,7 @@ class OrderItem(BaseModel):
 
     column: Annotated[ColumnRef, BeforeValidator(_coerce_order_column)]
     direction: str = "asc"
-    raw_formula: Optional[str] = None
+    raw_formula: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -340,12 +340,12 @@ class ModelExtension(BaseModel):
     stored model.
     """
     source_name: str                                # Model/query to extend
-    columns: Optional[List] = None                  # Extra Column objects
-    measures: Optional[List[ModelMeasure]] = None   # Extra ModelMeasure formulas
-    joins: Optional[List] = None                    # Extra ModelJoin objects
+    columns: list | None = None                  # Extra Column objects
+    measures: list[ModelMeasure] | None = None   # Extra ModelMeasure formulas
+    joins: list | None = None                    # Extra ModelJoin objects
 
 
-def _get_source_model_name(source_model: object) -> Optional[str]:
+def _get_source_model_name(source_model: object) -> str | None:
     """Extract the model name from any source_model type.
 
     Works before model resolution — handles str, dict, ModelExtension,
@@ -399,9 +399,9 @@ class SlayerQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: int = 3
-    name: Optional[str] = None  # For referencing this query from other queries in a list
+    name: str | None = None  # For referencing this query from other queries in a list
     source_model: object  # str (model name), SlayerModel (inline), or ModelExtension
-    measures: Annotated[Optional[List[ModelMeasure]], BeforeValidator(_coerce_measures)] = None
+    measures: Annotated[list[ModelMeasure] | None, BeforeValidator(_coerce_measures)] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -410,7 +410,7 @@ class SlayerQuery(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def _validate_query_name(cls, v: Optional[str]) -> Optional[str]:
+    def _validate_query_name(cls, v: str | None) -> str | None:
         # Share the same rejection rules as SlayerModel.name —
         # SlayerQuery names occupy the same naming space when persisted
         # as query-backed models. Rejects ``__`` (join-path alias
@@ -420,14 +420,14 @@ class SlayerQuery(BaseModel):
             return v
         from slayer.core.models import _validate_model_name
         return _validate_model_name(v, "Query")
-    dimensions: Annotated[Optional[List[ColumnRef]], BeforeValidator(_coerce_dimensions)] = None
-    time_dimensions: Optional[List[TimeDimension]] = None
-    main_time_dimension: Optional[str] = None  # Explicit time dimension for transforms (overrides auto-detection)
-    filters: Optional[List[str]] = None
-    variables: Optional[Dict[str, Any]] = None  # Variable values for filter substitution
-    order: Annotated[Optional[List[OrderItem]], BeforeValidator(_coerce_order)] = None
-    limit: Optional[int] = None
-    offset: Optional[int] = None
+    dimensions: Annotated[list[ColumnRef] | None, BeforeValidator(_coerce_dimensions)] = None
+    time_dimensions: list[TimeDimension] | None = None
+    main_time_dimension: str | None = None  # Explicit time dimension for transforms (overrides auto-detection)
+    filters: list[str] | None = None
+    variables: dict[str, Any] | None = None  # Variable values for filter substitution
+    order: Annotated[list[OrderItem] | None, BeforeValidator(_coerce_order)] = None
+    limit: int | None = None
+    offset: int | None = None
     whole_periods_only: bool = False
     # DEV-1543: opt out of the auto "distinct dimension tuples" GROUP BY
     # for dim-only queries. Default ``True`` preserves the Cube.js-style
@@ -534,7 +534,7 @@ class SlayerQuery(BaseModel):
         if model_name is None:
             return self
 
-        updates: Dict[str, Any] = {}
+        updates: dict[str, Any] = {}
         pattern = re.compile(r"\b" + re.escape(model_name) + r"\.")
 
         # Dimensions

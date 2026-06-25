@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
-from typing import AsyncIterator, List, Optional
+from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
@@ -84,7 +84,7 @@ _LEARNING_TOPICS = [
 ]
 
 
-def _make_models() -> List[SlayerModel]:
+def _make_models() -> list[SlayerModel]:
     return [
         SlayerModel(
             name="orders",
@@ -148,7 +148,7 @@ def _make_models() -> List[SlayerModel]:
     ]
 
 
-def _entities_for_topic(topic: str) -> List[str]:
+def _entities_for_topic(topic: str) -> list[str]:
     """Pick canonical entity tags for a learning-topic string. Pulled
     out of ``_seed_invariance_corpus`` so each branch stays separate
     from the seeding loop's control flow."""
@@ -372,8 +372,8 @@ async def storage_with_embeddings(
         # vector so ranks vary across docs but are reproducible across
         # interpreter runs (Python's built-in ``hash`` is randomised
         # per process, so use sha256 here).
-        def _vec(text: str) -> List[float]:
-            out: List[float] = []
+        def _vec(text: str) -> list[float]:
+            out: list[float] = []
             for i in range(8):
                 digest = hashlib.sha256(
                     f"{text}|{i}".encode("utf-8"),
@@ -383,13 +383,13 @@ async def storage_with_embeddings(
             return out
 
         async def stub_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch async signature
-            texts: List[str], *, model: Optional[str] = None,
-        ) -> List[Optional[List[float]]]:
+            texts: list[str], *, model: str | None = None,
+        ) -> list[list[float] | None]:
             return [_vec(t) for t in texts]
 
         async def stub_embed_query(  # NOSONAR(S7503) — stub matches embed_query async signature
-            text: str, *, model: Optional[str] = None,
-        ) -> List[float]:
+            text: str, *, model: str | None = None,
+        ) -> list[float]:
             return _vec(text)
 
         monkeypatch.setattr(

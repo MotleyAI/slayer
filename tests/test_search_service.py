@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import tempfile
-from typing import AsyncIterator, Tuple
+from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
@@ -506,7 +506,7 @@ async def test_memory_hit_query_field_is_on_searchhit() -> None:
 
 
 @pytest_asyncio.fixture
-async def stale_setup() -> AsyncIterator[Tuple[StorageBackend, SlayerQueryEngine]]:
+async def stale_setup() -> AsyncIterator[tuple[StorageBackend, SlayerQueryEngine]]:
     """SQLite-backed storage + engine with a populated ``orders`` table
     AND a stored ``orders`` model whose ``status`` column has stale
     sample-value data (``sampled_values=None``)."""
@@ -553,7 +553,7 @@ async def stale_setup() -> AsyncIterator[Tuple[StorageBackend, SlayerQueryEngine
 
 @pytest.mark.asyncio
 async def test_search_service_accepts_engine_kwarg(
-    stale_setup: Tuple[StorageBackend, SlayerQueryEngine],
+    stale_setup: tuple[StorageBackend, SlayerQueryEngine],
 ) -> None:
     """DEV-1516: SearchService now accepts an optional ``engine=`` kwarg so
     the search path can run the sample-refresh helper. Codex finding #1.
@@ -582,7 +582,7 @@ async def test_search_service_engine_default_none_works(
 
 @pytest.mark.asyncio
 async def test_search_refreshes_stale_categorical_column_hit(
-    stale_setup: Tuple[StorageBackend, SlayerQueryEngine],
+    stale_setup: tuple[StorageBackend, SlayerQueryEngine],
 ) -> None:
     """DEV-1516 core contract: when search returns a stale categorical
     column hit, the helper fires, persists, and the hit's ``text``
@@ -614,7 +614,7 @@ async def test_search_refreshes_stale_categorical_column_hit(
 
 @pytest.mark.asyncio
 async def test_search_refreshes_stale_column_hit_via_question_corpus(
-    stale_setup: Tuple[StorageBackend, SlayerQueryEngine],
+    stale_setup: tuple[StorageBackend, SlayerQueryEngine],
 ) -> None:
     """Codex round-3 finding #2: refresh must also apply to column hits that
     surface via the question/corpus path (channels 2 & 3), not only the
@@ -654,7 +654,7 @@ async def test_search_refreshes_stale_column_hit_via_question_corpus(
 
 @pytest.mark.asyncio
 async def test_search_no_refresh_when_engine_is_none(
-    stale_setup: Tuple[StorageBackend, SlayerQueryEngine],
+    stale_setup: tuple[StorageBackend, SlayerQueryEngine],
 ) -> None:
     """Without an engine the refresh hook is a no-op. The hit still
     surfaces (with stale text); storage stays untouched."""
@@ -679,7 +679,7 @@ async def test_search_no_refresh_when_engine_is_none(
 
 @pytest.mark.asyncio
 async def test_search_stale_text_preserved_when_profile_raises(
-    stale_setup: Tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
+    stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
 ) -> None:
     """If the helper's profile_column raises, the search hit falls back to
     the original (stale) rendered text. No crash. Storage stays untouched.
@@ -738,7 +738,7 @@ async def test_search_stale_text_preserved_when_profile_raises(
 
 @pytest.mark.asyncio
 async def test_search_numeric_column_hit_not_refreshed(
-    stale_setup: Tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
+    stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
 ) -> None:
     """The helper is categorical-only. A numeric column hit must NOT
     trigger profile_column from the search refresh path.
@@ -784,7 +784,7 @@ async def test_search_numeric_column_hit_not_refreshed(
 
 @pytest.mark.asyncio
 async def test_search_per_model_serialization_concurrent_hits(
-    stale_setup: Tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
+    stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
 ) -> None:
     """Codex finding #2: storage.update_column_sampled does a model-level
     read-modify-write. Two stale-column hits on the SAME model must NOT
@@ -883,7 +883,7 @@ async def test_search_per_model_serialization_concurrent_hits(
 
 @pytest.mark.asyncio
 async def test_search_cross_model_concurrency_is_allowed(
-    stale_setup: Tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
+    stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
 ) -> None:
     """Codex round-3 finding #4: per the plan, refresh serializes within a
     ``(data_source, model_name)`` group AND parallelizes across groups via

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import List, Optional, Set, Tuple
 
 from slayer.core.models import SlayerModel
 from slayer.embeddings import client as embedding_client
@@ -46,7 +45,7 @@ def _memory_canonical_id(memory_id: str) -> str:
     return f"{_MEMORY_PREFIX}{memory_id}"
 
 
-def _memory_id_from_canonical(canonical_id: str) -> Optional[str]:
+def _memory_id_from_canonical(canonical_id: str) -> str | None:
     """Parse a memory row's canonical id back into the str memory id.
 
     Returns ``None`` when the input is not exactly of the shape
@@ -65,11 +64,11 @@ def _memory_id_from_canonical(canonical_id: str) -> Optional[str]:
 
 
 def _filter_embedding_corpus_by_datasource(
-    rows: List[Embedding],
+    rows: list[Embedding],
     *,
     datasource: str,
-    eligible_memory_canonicals: Set[str],
-) -> List[Embedding]:
+    eligible_memory_canonicals: set[str],
+) -> list[Embedding]:
     """DEV-1409: narrow the embedding corpus to rows that survive a
     datasource filter. Memory rows must appear in
     ``eligible_memory_canonicals`` (already datasource-filtered
@@ -90,7 +89,7 @@ def _filter_embedding_corpus_by_datasource(
 
 def _rank_embedding_kind(
     *, rows, normalised_query, np, normalise_matrix, top_k_cosine,
-) -> List[str]:
+) -> list[str]:
     """Rank one kind of embedding rows by cosine similarity to the
     pre-normalised query vector. Returns the rows' ``canonical_id``
     strings in descending similarity order."""
@@ -153,7 +152,7 @@ class EmbeddingRetriever(Retriever):
         self,
         *,
         storage: StorageBackend,
-        model_name: Optional[str] = None,
+        model_name: str | None = None,
     ) -> None:
         self._storage = storage
         self._model_name = model_name or current_model()
@@ -166,13 +165,13 @@ class EmbeddingRetriever(Retriever):
     # Read side
     # ------------------------------------------------------------------
 
-    async def fetch_corpus(self) -> List[Embedding]:
+    async def fetch_corpus(self) -> list[Embedding]:
         """Return every embedding row under the active model name."""
         return await self._storage.list_embeddings(
             embedding_model_name=self._model_name,
         )
 
-    async def embed_question(self, question: str) -> Optional[List[float]]:
+    async def embed_question(self, question: str) -> list[float] | None:
         """Embed a search query string. ``None`` when the channel is
         unavailable or the call fails."""
         return await embedding_client.embed_query(
@@ -182,12 +181,12 @@ class EmbeddingRetriever(Retriever):
     async def retrieve(
         self,
         *,
-        query_entities: List[str],
-        question: Optional[str],
-        all_memories: List[Memory],
+        query_entities: list[str],
+        question: str | None,
+        all_memories: list[Memory],
         valid_canonicals: set,
-        corpus: Optional[Corpus],
-        datasource: Optional[str],
+        corpus: Corpus | None,
+        datasource: str | None,
     ) -> RetrievalResult:
         """Run cosine over the embedding corpus, returning BOTH memory
         and entity rankings from a single ``fetch_corpus`` +
@@ -271,7 +270,7 @@ class EmbeddingRetriever(Retriever):
             normalise_matrix=normalise_matrix,
             top_k_cosine=top_k_cosine,
         )
-        memory_ranking: List[str] = []
+        memory_ranking: list[str] = []
         for canonical in ranked_memory_canonicals:
             memory_id = _memory_id_from_canonical(canonical)
             if memory_id is not None:
@@ -292,7 +291,7 @@ class EmbeddingRetriever(Retriever):
     # Write side — create / refresh hooks
     # ------------------------------------------------------------------
 
-    async def upsert_memory(self, memory: Memory) -> List[str]:
+    async def upsert_memory(self, memory: Memory) -> list[str]:
         """Refresh the embedding for a single memory. Returns warning
         strings (empty on success or hash-skip). Stays silent on the
         write path when the channel is unavailable — that's "feature
@@ -312,9 +311,9 @@ class EmbeddingRetriever(Retriever):
         self,
         *,
         name: str,
-        models: List[SlayerModel],
-        description: Optional[str] = None,
-    ) -> List[str]:
+        models: list[SlayerModel],
+        description: str | None = None,
+    ) -> list[str]:
         """Refresh the embedding for one datasource doc.
 
         Routes through the unified :func:`render_datasource_pair` so the
@@ -337,7 +336,7 @@ class EmbeddingRetriever(Retriever):
         )
         return await self._apply_pending([pending])
 
-    async def refresh_model_subtree(self, model: SlayerModel) -> List[str]:
+    async def refresh_model_subtree(self, model: SlayerModel) -> list[str]:
         """Refresh the model doc + every visible column + named measures
         + custom aggregations in a single batch call.
 
@@ -348,7 +347,7 @@ class EmbeddingRetriever(Retriever):
         """
         if not embedding_client.is_available():
             return []
-        pending: List[_PendingRefresh] = [
+        pending: list[_PendingRefresh] = [
             _PendingRefresh(
                 canonical_id=re.canonical_id,
                 entity_kind=re.kind,  # type: ignore[arg-type]
@@ -363,8 +362,8 @@ class EmbeddingRetriever(Retriever):
     # ------------------------------------------------------------------
 
     async def _apply_pending(
-        self, pending: List[_PendingRefresh],
-    ) -> List[str]:
+        self, pending: list[_PendingRefresh],
+    ) -> list[str]:
         """Hash-skip, batch-embed, and persist. Returns warning strings.
 
         DEV-1405: two batched storage round-trips per call — one
@@ -378,8 +377,8 @@ class EmbeddingRetriever(Retriever):
             return []
         texts = [p.text for p in stale]
         vectors = await embed_batch(texts, model=self._model_name)
-        warnings: List[str] = []
-        rows: List[Embedding] = []
+        warnings: list[str] = []
+        rows: list[Embedding] = []
         for p, vec in zip(stale, vectors):
             if vec is None:
                 warnings.append(
@@ -411,8 +410,8 @@ class EmbeddingRetriever(Retriever):
         return warnings
 
     async def _filter_stale(
-        self, pending: List[_PendingRefresh],
-    ) -> Tuple[List[_PendingRefresh], int]:
+        self, pending: list[_PendingRefresh],
+    ) -> tuple[list[_PendingRefresh], int]:
         """Drop pending entries whose stored content_hash already
         matches. Returns ``(stale_entries, fresh_skipped_count)``.
         DEV-1405: one batched ``get_embeddings_for_canonical_ids`` call
@@ -421,7 +420,7 @@ class EmbeddingRetriever(Retriever):
             canonical_ids=[p.canonical_id for p in pending],
             embedding_model_name=self._model_name,
         )
-        stale: List[_PendingRefresh] = []
+        stale: list[_PendingRefresh] = []
         fresh = 0
         for p in pending:
             match = existing.get(p.canonical_id)

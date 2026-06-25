@@ -5,7 +5,7 @@ import copy
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -68,8 +68,8 @@ class RefreshSamplesResult(BaseModel):
     that didn't resolve in the requested scope — those are reported as
     a hard error so typos fail fast."""
 
-    errors: List[str] = Field(default_factory=list)
-    unresolved_models: List[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    unresolved_models: list[str] = Field(default_factory=list)
 
 
 def _add_storage_arg(parser):
@@ -727,8 +727,8 @@ async def _refresh_samples_async(*, args, storage) -> "RefreshSamplesResult":
     and (optional) model filters, accumulate per-column errors and the
     names of any user-specified models that didn't resolve."""
     engine = SlayerQueryEngine(storage=storage)
-    errors: List[str] = []
-    unresolved_models: List[str] = []
+    errors: list[str] = []
+    unresolved_models: list[str] = []
     data_source = args.data_source
     models = args.models
     if data_source is None:
@@ -891,7 +891,7 @@ def _run_storage_migrate_types(args) -> None:
 
 def _resolve_datasource_for_cli_refinement(
     *, inner, ds_name: str, model_name: str, needs_double: bool,
-) -> Optional[Any]:
+) -> Any | None:
     """Resolve the datasource for ``slayer storage migrate-types``.
 
     Returns the ``DatasourceConfig`` when present, ``None`` when missing
@@ -918,7 +918,7 @@ def _resolve_datasource_for_cli_refinement(
 
 
 def _print_refinement_diff(
-    *, ds_name: str, model_name: str, upgraded: dict, types_before: Dict[str, str],
+    *, ds_name: str, model_name: str, upgraded: dict, types_before: dict[str, str],
 ) -> None:
     """Print before→after diffs for columns whose type changed during
     refinement. Migration-only aliases are excluded because ``types_before``
@@ -986,7 +986,7 @@ def _refine_one_model_for_cli(
     return True
 
 
-async def _load_raw_model_dict(storage, data_source: str, name: str) -> Optional[dict]:
+async def _load_raw_model_dict(storage, data_source: str, name: str) -> dict | None:
     """Read a model's raw on-disk dict bypassing Pydantic's validator chain."""
     import json as _json
     import os as _os
@@ -1208,7 +1208,7 @@ _REMOVE_SECTIONS = (
 )
 
 
-def _format_edit_entry_lines(entry) -> List[str]:
+def _format_edit_entry_lines(entry) -> list[str]:
     lines = [f"EDIT MODEL: {entry.model_name} (datasource: {entry.data_source})"]
     for attr, label in _REMOVE_SECTIONS:
         values = getattr(entry.remove, attr)
@@ -1223,7 +1223,7 @@ def _format_validate_models_output(entries) -> str:
     """Render a List[ToDeleteEntry] as human-readable text for CLI output."""
     if not entries:
         return "No drift detected."
-    lines: List[str] = []
+    lines: list[str] = []
     for entry in entries:
         if entry.tool == "delete_model":
             lines.append(

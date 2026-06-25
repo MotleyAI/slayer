@@ -23,7 +23,7 @@ import datetime as _dt
 import math
 import struct
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any
 
 from slayer.core.enums import DataType
 from slayer.pg_facade.protocol import (
@@ -35,7 +35,7 @@ from slayer.pg_facade.protocol import (
     OID_TIMESTAMP,
 )
 
-DATATYPE_TO_OID: Dict[DataType, int] = {
+DATATYPE_TO_OID: dict[DataType, int] = {
     DataType.TEXT: OID_TEXT,
     DataType.INT: OID_INT8,
     DataType.DOUBLE: OID_FLOAT8,
@@ -49,7 +49,7 @@ _PG_EPOCH_DATE = _dt.date(2000, 1, 1)
 _PG_EPOCH_DATETIME = _dt.datetime(2000, 1, 1)
 
 
-def datatype_to_oid(dt: Optional[DataType]) -> int:
+def datatype_to_oid(dt: DataType | None) -> int:
     """Map a SLayer ``DataType`` to a Postgres OID; unknown / None → text."""
     if dt is None:
         return OID_TEXT
@@ -61,7 +61,7 @@ def datatype_to_oid(dt: Optional[DataType]) -> int:
 
 def value_to_text(  # NOSONAR(S3776) — flat per-Python-type dispatch
     value: Any, oid: int = OID_TEXT,
-) -> Optional[bytes]:
+) -> bytes | None:
     """Encode an engine value as Postgres text-format bytes (``None`` → SQL NULL).
 
     ``oid`` lets the encoder coerce values to match the declared column type.
@@ -124,7 +124,7 @@ def _format_timestamp(value: _dt.datetime) -> str:
 # --- binary-format output ----------------------------------------------------
 
 
-def value_to_binary(value: Any, oid: int) -> Optional[bytes]:
+def value_to_binary(value: Any, oid: int) -> bytes | None:
     """Encode an engine value as Postgres binary-format bytes for ``oid``
     (``None`` → SQL NULL)."""
     if value is None:

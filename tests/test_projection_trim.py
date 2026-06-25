@@ -13,7 +13,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import re
-from typing import Any, List
+from typing import Any
 
 import pytest
 import sqlglot
@@ -57,7 +57,7 @@ def _norm(s: str) -> str:
     return " ".join(s.split())
 
 
-def _outer_select_columns(sql: str, *, dialect: str = "postgres") -> List[str]:
+def _outer_select_columns(sql: str, *, dialect: str = "postgres") -> list[str]:
     """Return the list of alias names projected by the OUTERMOST SELECT.
 
     For ``SELECT a, b FROM (...)`` the outer projection is ``[a, b]``.
@@ -68,14 +68,14 @@ def _outer_select_columns(sql: str, *, dialect: str = "postgres") -> List[str]:
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     if not isinstance(parsed, exp.Select):  # pragma: no cover — defensive
         return []
-    out: List[str] = []
+    out: list[str] = []
     for proj in parsed.expressions:
         # ``alias_or_name`` returns the alias if present, else the bare name.
         out.append(proj.alias_or_name)
     return out
 
 
-def _all_aliases_in_sql(sql: str) -> List[str]:
+def _all_aliases_in_sql(sql: str) -> list[str]:
     """Return every alias-name that appears as a quoted identifier in the SQL.
 
     Useful for "alias X appears in some CTE" assertions without committing
@@ -84,7 +84,7 @@ def _all_aliases_in_sql(sql: str) -> List[str]:
     return re.findall(r'"([^"]+)"', sql)
 
 
-def _outer_order_by_references(sql: str, *, dialect: str = "postgres") -> List[str]:
+def _outer_order_by_references(sql: str, *, dialect: str = "postgres") -> list[str]:
     """Return identifier names referenced by the outermost ORDER BY clause."""
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     if not isinstance(parsed, exp.Select):  # pragma: no cover
@@ -92,7 +92,7 @@ def _outer_order_by_references(sql: str, *, dialect: str = "postgres") -> List[s
     order = parsed.args.get("order")
     if order is None:
         return []
-    refs: List[str] = []
+    refs: list[str] = []
     for ordered in order.expressions:
         col = ordered.this
         if isinstance(col, exp.Column):
@@ -1431,7 +1431,7 @@ class TestCallSitesAndContractPins:
         # Spy on the generate calls to capture the render_mode used by
         # get_column_types. We replace the bound method on the class with
         # a wrapper that records the kwargs.
-        captured: List[dict] = []
+        captured: list[dict] = []
         original_generate = SQLGenerator.generate
 
         def _wrapper(self, *args, **kwargs):

@@ -18,7 +18,7 @@ import asyncio
 import logging
 import re
 import struct
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from collections.abc import Iterable
 
 import sqlglot
 import sqlglot.errors
@@ -78,7 +78,7 @@ PUBLIC_SCHEMA = "public"
 # ``integer_datetimes``, ``is_superuser``, ``in_hot_standby``,
 # ``default_transaction_read_only`` are GUC_REPORT in real Postgres too but
 # the facade doesn't expose them as settable, so we don't list them here.
-_GUC_REPORT_NAMES: Dict[str, str] = {
+_GUC_REPORT_NAMES: dict[str, str] = {
     "application_name": "application_name",
     "client_encoding": "client_encoding",
     "datestyle": "DateStyle",
@@ -93,18 +93,18 @@ _GUC_REPORT_NAMES: Dict[str, str] = {
 # DEV-1570 type aliases — populated by ``_build_column_type_index`` below and
 # cached per-connection. Declared here so the ``__init__`` annotation can
 # reference them without a forward-ref dance.
-ColumnTypeKey = Tuple[str, str, str]  # (schema_lower, table_lower, column_lower)
-ColumnTypeIndex = Dict[ColumnTypeKey, DataType]
+ColumnTypeKey = tuple[str, str, str]  # (schema_lower, table_lower, column_lower)
+ColumnTypeIndex = dict[ColumnTypeKey, DataType]
 
 
 class _PreparedStatement(BaseModel):
     sql: str
-    parameter_oids: List[int]
+    parameter_oids: list[int]
 
 
 class _Portal(BaseModel):
     sql: str
-    result_format_codes: List[int]
+    result_format_codes: list[int]
 
 
 class _Done(Exception):
@@ -121,7 +121,7 @@ class PgConnection:
         *,
         engine,
         storage,
-        token: Optional[str],
+        token: str | None,
         tls_ctx=None,
     ) -> None:
         self._reader = reader
@@ -131,15 +131,15 @@ class PgConnection:
         self._token = token
         self._tls_ctx = tls_ctx
         self._tx_state: bytes = proto.TX_IDLE
-        self._datasource: Optional[str] = None
-        self._catalog: Optional[FacadeCatalog] = None
-        self._statements: Dict[str, _PreparedStatement] = {}
-        self._portals: Dict[str, _Portal] = {}
+        self._datasource: str | None = None
+        self._catalog: FacadeCatalog | None = None
+        self._statements: dict[str, _PreparedStatement] = {}
+        self._portals: dict[str, _Portal] = {}
         # Lazily-built (schema, table, column) -> DataType lookup, used by the
         # DEV-1570 empty-string-vs-non-text Bind rewrite. Built once per
         # connection on first need; ``None`` until then so connections that
         # never bind candidates pay zero cost.
-        self._column_type_index: Optional[ColumnTypeIndex] = None
+        self._column_type_index: ColumnTypeIndex | None = None
         # Extended protocol: after an error the backend discards every message
         # until the next Sync, then resumes with ReadyForQuery.
         self._skip_until_sync = False
@@ -147,7 +147,7 @@ class PgConnection:
         # set_config writes; consulted by SHOW / current_setting reads. Seeded
         # from the module-level SESSION_SETTING_SEED via dict(...) so each
         # connection owns its own copy (never aliasing the seed).
-        self._session_settings: Dict[str, str] = dict(SESSION_SETTING_SEED)
+        self._session_settings: dict[str, str] = dict(SESSION_SETTING_SEED)
         # DEV-1569: when True, ``_describe_sql`` is in flight — translator
         # calls must remain pure. Suppresses application of any session-
         # setting mutation hints surfaced by the probe matcher during a
@@ -175,7 +175,7 @@ class PgConnection:
 
     # ----- startup ----------------------------------------------------------
 
-    async def _read_startup_frame(self) -> Optional[bytes]:
+    async def _read_startup_frame(self) -> bytes | None:
         """Read a startup-style frame (no type byte). Returns the body (starting
         with the 4-byte code) or ``None`` on EOF / malformed length."""
         try:
@@ -191,7 +191,7 @@ class PgConnection:
         except asyncio.IncompleteReadError:
             return None
 
-    async def _handle_startup(self) -> Optional[proto.StartupMessage]:
+    async def _handle_startup(self) -> proto.StartupMessage | None:
         while True:
             body = await self._read_startup_frame()
             if body is None:
@@ -267,7 +267,7 @@ class PgConnection:
 
     # ----- datasource resolution -------------------------------------------
 
-    async def _resolve_datasource(self, database: Optional[str]) -> bool:
+    async def _resolve_datasource(self, database: str | None) -> bool:
         datasources = await self._storage.list_datasources()
         if database and database in datasources:
             self._datasource = database
@@ -282,7 +282,7 @@ class PgConnection:
 
     async def _build_catalog(self) -> FacadeCatalog:
         assert self._datasource is not None
-        models: List[SlayerModel] = []
+        models: list[SlayerModel] = []
         names = await self._storage.list_models(data_source=self._datasource)
         for name in names:
             model = await self._storage.get_model(name=name, data_source=self._datasource)
@@ -455,7 +455,7 @@ class PgConnection:
         empty_string_null_params = self._empty_string_null_params_for_bind(
             sql=stmt.sql, raw_values=bind.parameter_values, oids=oids,
         )
-        literals: List[str] = []
+        literals: list[str] = []
         for i, (raw, fmt, oid) in enumerate(
             zip(bind.parameter_values, formats, oids), start=1,
         ):
@@ -480,8 +480,8 @@ class PgConnection:
         return _PARAM_PLACEHOLDER.sub(repl, stmt.sql)
 
     def _empty_string_null_params_for_bind(
-        self, *, sql: str, raw_values, oids: List[int],
-    ) -> Set[int]:
+        self, *, sql: str, raw_values, oids: list[int],
+    ) -> set[int]:
         # DEV-1570: pre-classify $N indices whose bound value is an empty
         # text-OID payload AND whose AST occurrence targets a non-TEXT catalog
         # column. Those positions emit ``NULL`` rather than ``''`` so DuckDB
@@ -533,8 +533,8 @@ class PgConnection:
             )
 
     def _describe_sql(
-        self, sql: str, *, result_formats: Optional[List[int]],
-        param_oids: Optional[List[int]] = None,
+        self, sql: str, *, result_formats: list[int] | None,
+        param_oids: list[int] | None = None,
     ) -> None:
         # DEV-1558 fix: the catalog executor's Describe path runs the SQL
         # against DuckDB to obtain the cursor's column description. When the
@@ -653,7 +653,7 @@ class PgConnection:
         return facade_match_probe(parsed)
 
     async def _run_statement(
-        self, sql: str, *, result_formats: Optional[List[int]], send_row_description: bool,
+        self, sql: str, *, result_formats: list[int] | None, send_row_description: bool,
     ) -> bool:
         """Translate + respond. Returns False if an error was sent."""
         try:
@@ -696,7 +696,7 @@ class PgConnection:
         return False
 
     def _emit_row_batch(
-        self, batch: RowBatch, result_formats: Optional[List[int]], send_row_description: bool,
+        self, batch: RowBatch, result_formats: list[int] | None, send_row_description: bool,
     ) -> None:
         formats = proto.parse_result_format_codes(result_formats or [], len(batch.columns))
         if send_row_description:
@@ -724,7 +724,7 @@ class PgConnection:
         self._writer.write(proto.encode_command_complete(f"SELECT {len(batch.rows)}"))
 
     async def _run_query(
-        self, result: QueryResult, result_formats: Optional[List[int]], send_row_description: bool,
+        self, result: QueryResult, result_formats: list[int] | None, send_row_description: bool,
     ) -> bool:
         try:
             response = await self._engine.execute(
@@ -757,8 +757,8 @@ class PgConnection:
         return True
 
     def _fields_for_result(
-        self, result, result_formats: Optional[List[int]],
-    ) -> Optional[List[proto.FieldDescription]]:
+        self, result, result_formats: list[int] | None,
+    ) -> list[proto.FieldDescription] | None:
         if isinstance(result, (ProbeResult, InfoSchemaResult, PgCatalogResult)):
             cols = result.batch.columns
             formats = proto.parse_result_format_codes(result_formats or [], len(cols))
@@ -782,7 +782,7 @@ class PgConnection:
 
     # ----- transaction state -------------------------------------------------
 
-    def _apply_tx_command(self, command_tag: Optional[str]) -> None:
+    def _apply_tx_command(self, command_tag: str | None) -> None:
         if command_tag in ("BEGIN", "START TRANSACTION"):
             self._tx_state = proto.TX_IN_TRANSACTION
         elif command_tag in ("COMMIT", "ROLLBACK", "END"):
@@ -882,7 +882,7 @@ class PgConnection:
 # declaring text OIDs for parameters that compared against int columns
 # (``objsubid = $N``), which the literal ``''`` sentinel turned into
 # an unanswerable text-vs-int comparison.
-_TYPED_SENTINEL_BY_OID: Dict[int, str] = {
+_TYPED_SENTINEL_BY_OID: dict[int, str] = {
     proto.OID_TEXT: "CAST(NULL AS VARCHAR)",
     proto.OID_INT8: "CAST(NULL AS BIGINT)",
     proto.OID_FLOAT8: "CAST(NULL AS DOUBLE)",
@@ -892,7 +892,7 @@ _TYPED_SENTINEL_BY_OID: Dict[int, str] = {
 }
 
 
-def _substitute_typed_sentinels(sql: str, param_oids: List[int]) -> str:
+def _substitute_typed_sentinels(sql: str, param_oids: list[int]) -> str:
     """Replace each ``$N`` placeholder with a typed sentinel literal
     derived from ``param_oids[N-1]``. Falls back to bare ``NULL`` when
     the OID is unknown (e.g. extra placeholders past the declared list)
@@ -1019,7 +1019,7 @@ def _classify_empty_string_param_targets(
     *, sql: str,
     column_type_index: ColumnTypeIndex,
     candidate_param_indices: Iterable[int],
-) -> Set[int]:
+) -> set[int]:
     """Return the subset of ``candidate_param_indices`` whose AST occurrences
     appear in a comparison / IN / BETWEEN predicate against a column that
     resolves via ``column_type_index`` to a non-TEXT ``DataType``.
@@ -1063,9 +1063,9 @@ def _classify_empty_string_param_targets(
 
 def _map_column_tables(
     *, parsed: exp.Expression, column_type_index: ColumnTypeIndex,
-) -> Dict[int, Optional[Tuple[str, str]]]:
+) -> dict[int, tuple[str, str] | None]:
     """Resolve every Column node to its owning scope's (schema, table)."""
-    column_to_table: Dict[int, Optional[Tuple[str, str]]] = {}
+    column_to_table: dict[int, tuple[str, str] | None] = {}
     for scope in traverse_scope(parsed):
         sources = _resolved_table_sources(scope.sources)
         for col in scope.find_all(exp.Column):
@@ -1078,13 +1078,13 @@ def _map_column_tables(
 
 def _collect_non_text_params(
     *, parsed: exp.Expression,
-    candidates: Set[int],
-    column_to_table: Dict[int, Optional[Tuple[str, str]]],
+    candidates: set[int],
+    column_to_table: dict[int, tuple[str, str] | None],
     column_type_index: ColumnTypeIndex,
-) -> Set[int]:
+) -> set[int]:
     """Walk comparison / IN / BETWEEN nodes; collect $N indices whose paired
     Column resolves to a non-TEXT ``DataType``."""
-    result: Set[int] = set()
+    result: set[int] = set()
     for node in parsed.walk():
         for col, param_idx in _column_param_pairs_from_node(node):
             if param_idx not in candidates:
@@ -1099,7 +1099,7 @@ def _collect_non_text_params(
     return result
 
 
-def _column_param_pairs_from_node(node) -> Iterable[Tuple[exp.Column, int]]:
+def _column_param_pairs_from_node(node) -> Iterable[tuple[exp.Column, int]]:
     """Yield (Column, param_index) pairs for each comparison-shape node."""
     if isinstance(node, _COMPARISON_NODE_TYPES):
         yield from _pair_column_and_param(node.this, node.expression)
@@ -1117,7 +1117,7 @@ def _column_param_pairs_from_node(node) -> Iterable[Tuple[exp.Column, int]]:
             yield from _pair_column_and_param(value, el)
 
 
-def _try_extract_column(node) -> Optional[exp.Column]:
+def _try_extract_column(node) -> exp.Column | None:
     """Return the underlying ``exp.Column`` if ``node`` is one (optionally
     wrapped in semantically-transparent ``exp.Paren`` layers). CAST / function
     / arithmetic wrappers around a column are documented out of scope —
@@ -1129,7 +1129,7 @@ def _try_extract_column(node) -> Optional[exp.Column]:
     return node if isinstance(node, exp.Column) else None
 
 
-def _try_extract_param_index(node) -> Optional[int]:
+def _try_extract_param_index(node) -> int | None:
     """Return the 1-based ``$N`` index if ``node`` is an ``exp.Parameter``
     (optionally wrapped in ``exp.Paren`` and/or ``exp.Cast`` layers).
 
@@ -1151,7 +1151,7 @@ def _try_extract_param_index(node) -> Optional[int]:
         return None
 
 
-def _pair_column_and_param(left, right) -> Iterable[Tuple[exp.Column, int]]:
+def _pair_column_and_param(left, right) -> Iterable[tuple[exp.Column, int]]:
     """Two operands where one is a bare Column and the other is a $N
     Parameter -> yield (Column, $N). Returns nothing if both sides are
     the same kind or if neither is a Column / Parameter."""
@@ -1169,7 +1169,7 @@ def _pair_column_and_param(left, right) -> Iterable[Tuple[exp.Column, int]]:
         yield col, param_idx
 
 
-def _resolved_table_sources(sources) -> Dict[str, Tuple[str, str]]:
+def _resolved_table_sources(sources) -> dict[str, tuple[str, str]]:
     """Given ``Scope.sources``, return ``{alias_lower: (schema_lower, table_lower)}``.
 
     Sources whose value is another ``Scope`` (CTE / derived subquery)
@@ -1181,13 +1181,13 @@ def _resolved_table_sources(sources) -> Dict[str, Tuple[str, str]]:
     information_schema requires an explicit qualifier — bare names like
     ``columns`` never resolve there (Codex round 1, finding #4).
     """
-    result: Dict[str, Tuple[str, str]] = {}
+    result: dict[str, tuple[str, str]] = {}
     for alias, src in sources.items():
         if not isinstance(src, exp.Table):
             continue
         tbl_name = src.name.lower()
         db_part = src.args.get("db")
-        schema: Optional[str] = None
+        schema: str | None = None
         if db_part is not None:
             schema_raw = db_part.name if hasattr(db_part, "name") else str(db_part)
             schema = schema_raw.lower()
@@ -1201,9 +1201,9 @@ def _resolved_table_sources(sources) -> Dict[str, Tuple[str, str]]:
 
 def _resolve_column_table(
     *, col: exp.Column,
-    scope_sources: Dict[str, Tuple[str, str]],
+    scope_sources: dict[str, tuple[str, str]],
     column_type_index: ColumnTypeIndex,
-) -> Optional[Tuple[str, str]]:
+) -> tuple[str, str] | None:
     """Resolve a Column node to ``(schema, table_name)`` via its owning
     scope's sources. Returns ``None`` if unresolvable (no scope match,
     ambiguous bare name, or table not in scope)."""
@@ -1216,7 +1216,7 @@ def _resolve_column_table(
             return scope_sources[table_q]
         return None
     name_lower = col.name.lower()
-    matches: List[Tuple[str, str]] = []
+    matches: list[tuple[str, str]] = []
     for _alias, (schema, tbl) in scope_sources.items():
         if (schema, tbl, name_lower) in column_type_index:
             matches.append((schema, tbl))
@@ -1225,7 +1225,7 @@ def _resolve_column_table(
     return None
 
 
-def _resolve_param_oids(stmt: _PreparedStatement) -> List[int]:
+def _resolve_param_oids(stmt: _PreparedStatement) -> list[int]:
     """The parameter OIDs to report in ParameterDescription.
 
     asyncpg leaves ``Parse`` parameter OIDs empty and relies on the server to
@@ -1253,7 +1253,7 @@ def _is_tx_end(stmt: exp.Expression) -> bool:
     return False
 
 
-def _command_tag(command_tag: Optional[str]) -> str:
+def _command_tag(command_tag: str | None) -> str:
     if command_tag in ("BEGIN", "START TRANSACTION"):
         return "BEGIN"
     if command_tag is None:
@@ -1272,7 +1272,7 @@ def _sqlstate_for(exc: TranslationError) -> str:
     return proto.SQLSTATE_FEATURE_NOT_SUPPORTED
 
 
-def _encode_value(value, oid: int, fmt: int) -> Optional[bytes]:
+def _encode_value(value, oid: int, fmt: int) -> bytes | None:
     if fmt == proto.FORMAT_BINARY:
         return value_to_binary(value, oid)
     return value_to_text(value, oid)

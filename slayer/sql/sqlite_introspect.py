@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Optional
 
 import sqlalchemy as sa
 from pydantic import BaseModel
@@ -53,7 +52,7 @@ def _quote_sqlite_ident(name: str) -> str:
     return exp.to_identifier(name, quoted=True).sql(dialect="sqlite")
 
 
-def _qualified_table(table: str, schema: Optional[str]) -> str:
+def _qualified_table(table: str, schema: str | None) -> str:
     """Build a quoted, optionally schema-qualified SQLite table reference."""
     tname = _quote_sqlite_ident(table)
     if schema:
@@ -74,7 +73,7 @@ class _ProbeCounts(BaseModel):
 
 def _run_main_probe(
     *, conn: sa.engine.Connection, qtable: str, qcol: str, table: str, column: str,
-) -> Optional[_ProbeCounts]:
+) -> _ProbeCounts | None:
     """Run the main probe aggregate. Returns ``None`` on driver failure
     (after logging a WARNING)."""
     scan_cap_plus_one = PROBE_SCAN_CAP + 1
@@ -110,7 +109,7 @@ def _run_main_probe(
 
 def _classify_text_branch(
     *, conn: sa.engine.Connection, qtable: str, qcol: str, table: str, column: str,
-) -> Optional[DataType]:
+) -> DataType | None:
     """The ``n_text > 0`` decision branch — runs the bounded distinct-text
     coerce probe and classifies. Returns the verdict (DOUBLE / TEXT) or
     ``None`` on coerce-probe driver failure (after logging a WARNING).
@@ -154,7 +153,7 @@ def _classify_text_branch(
 
 def _classify_no_evidence(
     *, counts: _ProbeCounts, table: str, column: str,
-) -> Optional[DataType]:
+) -> DataType | None:
     """The all-zero-evidence branch — saturated, empty, or all-NULL all
     decline to certify INT. Returns ``None`` after logging a WARNING for
     saturated samples; returns ``None`` silently for empty / all-NULL;
@@ -179,8 +178,8 @@ def probe_sqlite_integer_column(
     conn: sa.engine.Connection,
     table: str,
     column: str,
-    schema: Optional[str] = None,
-) -> Optional[DataType]:
+    schema: str | None = None,
+) -> DataType | None:
     """Probe one SQLite column's actual storage classes and return the
     appropriate :class:`DataType`.
 

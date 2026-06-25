@@ -27,7 +27,8 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
 
 import sqlalchemy as sa
 from sqlglot import exp
@@ -83,7 +84,7 @@ class BigqueryDialect(SqlDialect):
     sqlglot_name: str = "bigquery"
     ds_type_aliases: frozenset[str] = frozenset({"bigquery"})
     # BigQuery has no SQL-level EXPLAIN.
-    explain_prefix: Optional[str] = None
+    explain_prefix: str | None = None
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
@@ -147,7 +148,7 @@ class BigqueryDialect(SqlDialect):
         datasource: "DatasourceConfig",
         *,
         connection_string: str,
-    ) -> Optional["sa.Engine"]:
+    ) -> "sa.Engine | None":
         """Construct the SQLAlchemy engine with inline service-account JSON
         when ``DatasourceConfig.credentials_json`` is set.
 

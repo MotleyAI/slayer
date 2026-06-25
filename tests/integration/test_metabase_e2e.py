@@ -17,7 +17,7 @@ import datetime as dt
 import logging
 import math
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import pytest
 
@@ -62,11 +62,11 @@ async def _scalar(host: str, port: int, password: str, sql: str) -> Any:
         await conn.close()
 
 
-def _dataset_rows(payload: Dict[str, Any]) -> List[List[Any]]:
+def _dataset_rows(payload: dict[str, Any]) -> list[list[Any]]:
     return payload.get("data", {}).get("rows", []) or []
 
 
-def _dataset_cols(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _dataset_cols(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return payload.get("data", {}).get("cols", []) or []
 
 
@@ -213,7 +213,7 @@ def _wait_until(predicate, *, timeout_s: float = 20, interval_s: float = 0.5) ->
 
 def _wait_until_stable(
     getter, *, timeout_s: float = 20, settle_s: float = 2.0, interval_s: float = 0.5,
-) -> Tuple[bool, Any]:
+) -> tuple[bool, Any]:
     """Poll ``getter()`` until its value stops changing for ``settle_s``
     seconds. Returns ``(stabilized, last_value)`` so callers can
     distinguish a real settle from a timeout — silently returning the
@@ -1273,7 +1273,7 @@ def test_concurrent_dataset_requests(metabase_e2e_env: MetabaseE2EEnv) -> None:
 async def test_asyncpg_concurrent_connections(metabase_e2e_env: MetabaseE2EEnv) -> None:
     host, port = metabase_e2e_env.pg_primary
 
-    async def one(idx: int) -> Tuple[int, str]:
+    async def one(idx: int) -> tuple[int, str]:
         conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
         try:
             # Each connection sets its own application_name marker so we can

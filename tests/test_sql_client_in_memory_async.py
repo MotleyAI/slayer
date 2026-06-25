@@ -20,7 +20,8 @@ bypasses the client and writes directly through the engine.
 """
 
 import asyncio
-from typing import Any, Iterable
+from typing import Any
+from collections.abc import Iterable
 
 import pytest
 import sqlalchemy as sa

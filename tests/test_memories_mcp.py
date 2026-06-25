@@ -19,7 +19,8 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from typing import Any, Generator, Optional
+from typing import Any
+from collections.abc import Generator
 
 import pytest
 
@@ -162,7 +163,7 @@ async def _call(
     mcp_server,
     *,
     name: str,
-    arguments: Optional[dict[str, Any]] = None,
+    arguments: dict[str, Any] | None = None,
 ) -> str:
     content_blocks, _ = await mcp_server.call_tool(
         name=name, arguments=arguments or {}
@@ -170,7 +171,7 @@ async def _call(
     return content_blocks[0].text
 
 
-def _try_parse_json(text: str) -> Optional[dict]:
+def _try_parse_json(text: str) -> dict | None:
     try:
         return json.loads(text)
     except json.JSONDecodeError:

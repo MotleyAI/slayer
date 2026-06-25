@@ -10,7 +10,6 @@ template method) so it fires for every save path uniformly — direct
 create/edit, and the migration write-back (the migration path passes
 ``_validate=False`` so legacy cyclic data remains loadable).
 """
-from typing import Tuple
 
 import pytest
 
@@ -53,7 +52,7 @@ def _abc_chain(
     a_foo_sql: str,
     c_x_sql: str,
     c_joins_back_to_a: bool = False,
-) -> Tuple[SlayerModel, SlayerModel, SlayerModel]:
+) -> tuple[SlayerModel, SlayerModel, SlayerModel]:
     """The canonical A → B → C three-model scaffold used by the strict
     alias-walk tests. ``foo`` on A and ``x`` on C are derived; their
     expressions are the per-test variable.

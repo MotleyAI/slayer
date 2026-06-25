@@ -27,7 +27,8 @@ T-SQL is the most divergent Tier-1 dialect:
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Optional
+from typing import Any
+from collections.abc import Callable
 
 import sqlglot
 from sqlglot import exp
@@ -65,7 +66,7 @@ _TSQL_DOTTED_ALIAS_RE = re.compile(r"\[(\w+(?:\.\w+)+)\]", re.ASCII)
 class TsqlDialect(SqlDialect):
     sqlglot_name: str = "tsql"
     ds_type_aliases: frozenset[str] = frozenset({"mssql", "sqlserver", "tsql"})
-    explain_prefix: Optional[str] = "SET SHOWPLAN_ALL ON;"
+    explain_prefix: str | None = "SET SHOWPLAN_ALL ON;"
     explain_postfix: str = "; SET SHOWPLAN_ALL OFF"
     log10_native: bool = True
     log2_native: bool = False
@@ -222,10 +223,10 @@ class TsqlDialect(SqlDialect):
         *,
         inner_sql: str,
         public: list[str],
-        order: Optional[exp.Expression],
-        limit: Optional[exp.Expression],
-        offset_arg: Optional[exp.Expression],
-        parse: Optional[Callable[[str], exp.Expression]] = None,
+        order: exp.Expression | None,
+        limit: exp.Expression | None,
+        offset_arg: exp.Expression | None,
+        parse: Callable[[str], exp.Expression] | None = None,
     ) -> str:
         """T-SQL: hoist inner top-level CTEs to the outer statement AND
         transpose detached pagination to ``TOP`` / ``FETCH NEXT N ROWS

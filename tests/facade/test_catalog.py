@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import List
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
@@ -27,10 +26,10 @@ def _model(
     *,
     name: str,
     data_source: str = "ds1",
-    columns: List[Column] | None = None,
-    measures: List[ModelMeasure] | None = None,
-    aggregations: List[Aggregation] | None = None,
-    joins: List[ModelJoin] | None = None,
+    columns: list[Column] | None = None,
+    measures: list[ModelMeasure] | None = None,
+    aggregations: list[Aggregation] | None = None,
+    joins: list[ModelJoin] | None = None,
     hidden: bool = False,
     sql: str | None = None,
     description: str | None = None,

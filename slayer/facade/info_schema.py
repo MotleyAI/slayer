@@ -23,7 +23,6 @@ own wire format.
 
 from __future__ import annotations
 
-from typing import List, Optional
 
 import sqlglot.expressions as exp
 
@@ -49,7 +48,7 @@ SUPPORTED_INFO_SCHEMA_TABLES = frozenset({
 _CATALOG_NAME_LOWER = CATALOG_NAME.lower()
 
 
-def _is_information_schema_from(node: exp.Expression) -> Optional[str]:
+def _is_information_schema_from(node: exp.Expression) -> str | None:
     """If ``node`` is ``SELECT ... FROM information_schema.<TABLE>``,
     return the uppercased table name; else ``None``.
 
@@ -94,7 +93,7 @@ def _is_information_schema_from(node: exp.Expression) -> Optional[str]:
 
 def match_info_schema(
     *, parsed: exp.Expression, catalog: FacadeCatalog,
-) -> Optional[RowBatch]:
+) -> RowBatch | None:
     """Return the canned ``INFORMATION_SCHEMA.<table>`` answer or ``None``."""
     table_name = _is_information_schema_from(parsed)
     if table_name is None:
@@ -126,7 +125,7 @@ def _serve_metrics(*, catalog: FacadeCatalog) -> RowBatch:
         FacadeColumn(name="data_type", type=DataType.TEXT),
         FacadeColumn(name="label", type=DataType.TEXT),
     ]
-    rows: List[dict] = []
+    rows: list[dict] = []
     for sch in catalog.schemas:
         for tbl in sch.tables:
             for m in tbl.metrics:
@@ -153,7 +152,7 @@ def _serve_dimensions(*, catalog: FacadeCatalog) -> RowBatch:
         FacadeColumn(name="label", type=DataType.TEXT),
         FacadeColumn(name="is_time", type=DataType.BOOLEAN),
     ]
-    rows: List[dict] = []
+    rows: list[dict] = []
     for sch in catalog.schemas:
         for tbl in sch.tables:
             for d in tbl.dimensions:
@@ -189,7 +188,7 @@ def _serve_tables(*, catalog: FacadeCatalog) -> RowBatch:
         FacadeColumn(name="table_name", type=DataType.TEXT),
         FacadeColumn(name="table_type", type=DataType.TEXT),
     ]
-    rows: List[dict] = []
+    rows: list[dict] = []
     for sch in catalog.schemas:
         for tbl in sch.tables:
             rows.append({
@@ -224,7 +223,7 @@ def _serve_columns(*, catalog: FacadeCatalog) -> RowBatch:
         FacadeColumn(name="is_nullable", type=DataType.TEXT),  # Postgres YES/NO
         FacadeColumn(name="column_kind", type=DataType.TEXT),  # METRIC / DIMENSION
     ]
-    rows: List[dict] = []
+    rows: list[dict] = []
     for sch in catalog.schemas:
         for tbl in sch.tables:
             position = 1

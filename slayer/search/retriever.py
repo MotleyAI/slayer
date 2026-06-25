@@ -26,7 +26,6 @@ within one (DEV-1514, Codex Findings 1 & 2).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -51,10 +50,10 @@ class RetrievalResult(BaseModel):
       query embedding failed").
     """
 
-    memory_ranking: List[str] = Field(default_factory=list)
-    text_by_id: Dict[str, str] = Field(default_factory=dict)
-    entity_ranking: List[str] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
+    memory_ranking: list[str] = Field(default_factory=list)
+    text_by_id: dict[str, str] = Field(default_factory=dict)
+    entity_ranking: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class Retriever(ABC):
@@ -68,12 +67,12 @@ class Retriever(ABC):
     async def retrieve(
         self,
         *,
-        query_entities: List[str],
-        question: Optional[str],
-        all_memories: List[Memory],
+        query_entities: list[str],
+        question: str | None,
+        all_memories: list[Memory],
         valid_canonicals: set,
-        corpus: Optional[Corpus],
-        datasource: Optional[str],
+        corpus: Corpus | None,
+        datasource: str | None,
     ) -> RetrievalResult:
         """Return the channel's memory + entity rankings (plus any
         per-call warnings). Empty rankings indicate "channel inactive
@@ -84,19 +83,19 @@ class Retriever(ABC):
     # Create / refresh hooks — default no-op
     # ------------------------------------------------------------------
 
-    async def upsert_memory(self, memory: Memory) -> List[str]:  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
+    async def upsert_memory(self, memory: Memory) -> list[str]:  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
         return []
 
-    async def refresh_model_subtree(self, model: SlayerModel) -> List[str]:  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
+    async def refresh_model_subtree(self, model: SlayerModel) -> list[str]:  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
         return []
 
     async def refresh_datasource(  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
         self,
         *,
         name: str,
-        models: List[SlayerModel],
-        description: Optional[str] = None,
-    ) -> List[str]:
+        models: list[SlayerModel],
+        description: str | None = None,
+    ) -> list[str]:
         return []
 
     # ------------------------------------------------------------------

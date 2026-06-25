@@ -8,7 +8,8 @@ import asyncio
 import json
 import shutil
 import tempfile
-from typing import Any, AsyncIterator, Generator
+from typing import Any
+from collections.abc import AsyncIterator, Generator
 
 import pytest
 import pytest_asyncio

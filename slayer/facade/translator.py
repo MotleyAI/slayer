@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 import re
 from contextvars import ContextVar
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
+from collections.abc import Callable, Sequence
 
 import sqlglot
 import sqlglot.errors
@@ -104,7 +104,7 @@ class SetSettingOp(BaseModel):
 class ResetSettingOp(BaseModel):
     """``RESET <name>`` (``name`` set) or ``RESET ALL`` (``reset_all=True``)."""
 
-    name: Optional[str] = None
+    name: str | None = None
     reset_all: bool = False
 
 
@@ -121,11 +121,11 @@ class ProbeMatcherOutcome(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     batch: RowBatch
-    settings_mutation: Optional[SetSettingOp] = None
+    settings_mutation: SetSettingOp | None = None
 
 
 ProbeMatcher = Callable[
-    [exp.Expression], Optional[Union[RowBatch, ProbeMatcherOutcome]],
+    [exp.Expression], RowBatch | ProbeMatcherOutcome | None,
 ]
 
 
@@ -147,7 +147,7 @@ class ProbeResult(TranslatorResult):
     matchers return ``None`` here."""
 
     batch: RowBatch
-    settings_mutation: Optional[SetSettingOp] = None
+    settings_mutation: SetSettingOp | None = None
 
 
 class InfoSchemaResult(TranslatorResult):
@@ -177,9 +177,9 @@ class NoOpResult(TranslatorResult):
     intent. Both are PG-facade-only; the Flight facade ignores them.
     """
 
-    command_tag: Optional[str] = None
-    set_setting: Optional[SetSettingOp] = None
-    reset_setting: Optional[ResetSettingOp] = None
+    command_tag: str | None = None
+    set_setting: SetSettingOp | None = None
+    reset_setting: ResetSettingOp | None = None
 
 
 class QueryResult(TranslatorResult):
@@ -198,10 +198,10 @@ class QueryResult(TranslatorResult):
     """
 
     query: SlayerQuery
-    column_name_mapping: List[Tuple[str, str]]
+    column_name_mapping: list[tuple[str, str]]
     facade_table: FacadeTable
     schema_name: str
-    projection_types: "List[Optional['DataType']]"
+    projection_types: "list[DataType | None]"
 
     @property
     def flight_table(self) -> FacadeTable:
@@ -240,7 +240,7 @@ AGG_OVER_MEASURE_MESSAGE = (
 # --- AST helpers -------------------------------------------------------------
 
 
-_TIME_GRAIN_NAMES: Dict[str, TimeGranularity] = {
+_TIME_GRAIN_NAMES: dict[str, TimeGranularity] = {
     "year": TimeGranularity.YEAR,
     "quarter": TimeGranularity.QUARTER,
     "month": TimeGranularity.MONTH,
@@ -253,7 +253,7 @@ _TIME_GRAIN_NAMES: Dict[str, TimeGranularity] = {
 
 # sqlglot represents the unwrapped one-arg time functions as dedicated nodes
 # (exp.Month, exp.Year, …). date_trunc is exp.DateTrunc with a literal unit.
-_TIME_GRAIN_CLASSES: Dict[type, TimeGranularity] = {
+_TIME_GRAIN_CLASSES: dict[type, TimeGranularity] = {
     exp.Year: TimeGranularity.YEAR,
     exp.Quarter: TimeGranularity.QUARTER,
     exp.Month: TimeGranularity.MONTH,
@@ -265,14 +265,14 @@ _TIME_GRAIN_CLASSES: Dict[type, TimeGranularity] = {
 
 # sqlglot aggregate-function AST classes → SLayer aggregation names. COUNT is
 # handled separately (it has *-arg and DISTINCT variants).
-_AGG_CLASS_TO_NAME: Dict[type, str] = {
+_AGG_CLASS_TO_NAME: dict[type, str] = {
     exp.Sum: "sum",
     exp.Avg: "avg",
     exp.Min: "min",
     exp.Max: "max",
 }
 
-_COMPARATOR_SQL: Dict[type, str] = {
+_COMPARATOR_SQL: dict[type, str] = {
     exp.GT: ">",
     exp.GTE: ">=",
     exp.LT: "<",
@@ -304,7 +304,7 @@ _COMPARATOR_SQL: Dict[type, str] = {
 # Callers needing exact NUMERIC precision, narrow integer wire widths, or
 # TZ-aware timestamps must compute upstream. See pg-facade.md
 # §"CAST coarse-OID mapping" for the user-facing table.
-_SQLGLOT_TYPE_TO_DATATYPE: Dict[exp.DataType.Type, DataType] = {
+_SQLGLOT_TYPE_TO_DATATYPE: dict[exp.DataType.Type, DataType] = {
     exp.DataType.Type.TEXT: DataType.TEXT,
     exp.DataType.Type.VARCHAR: DataType.TEXT,
     exp.DataType.Type.CHAR: DataType.TEXT,
@@ -332,7 +332,7 @@ _SQLGLOT_TYPE_TO_DATATYPE: Dict[exp.DataType.Type, DataType] = {
 # other target we'd push the failure into value_to_text / value_to_binary at
 # response time, surfacing as an opaque connection error instead of a clean
 # translation error. Identity (X→X) is always admitted; computed implicitly.
-_CAST_ADMITTED_TARGETS: Dict[DataType, frozenset] = {
+_CAST_ADMITTED_TARGETS: dict[DataType, frozenset] = {
     DataType.DATE: frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TEXT}),
     DataType.TIMESTAMP: frozenset({DataType.TIMESTAMP, DataType.DATE, DataType.TEXT}),
     DataType.INT: frozenset({DataType.INT, DataType.DOUBLE, DataType.TEXT}),
@@ -379,7 +379,7 @@ _LOSSY_GROUP_BY_CAST_PAIRS: frozenset = frozenset({
 _GROUP_BY_KIND = "GROUP BY"
 
 
-def _sqlglot_type_to_datatype(node: exp.DataType) -> Optional[DataType]:
+def _sqlglot_type_to_datatype(node: exp.DataType) -> DataType | None:
     """Map a sqlglot ``DataType`` node to a SLayer ``DataType``.
 
     Returns ``None`` when the type member isn't in the mapping (UUID, JSON,
@@ -389,7 +389,7 @@ def _sqlglot_type_to_datatype(node: exp.DataType) -> Optional[DataType]:
     return _SQLGLOT_TYPE_TO_DATATYPE.get(node.this)
 
 
-def _is_admitted_cast(source: Optional[DataType], target: DataType) -> bool:
+def _is_admitted_cast(source: DataType | None, target: DataType) -> bool:
     """Strict per-pair admission. ``None`` source admits only ``TEXT``."""
     if source is None:
         return target is DataType.TEXT
@@ -401,8 +401,8 @@ def _is_admitted_cast(source: Optional[DataType], target: DataType) -> bool:
 def _column_to_dotted(
     col: exp.Column,
     *,
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
 ) -> str:
     """Reconstruct the dotted reference from a sqlglot ``Column``.
 
@@ -423,7 +423,7 @@ def _column_to_dotted(
     built — so ``"Stores"."name"`` with ``alias_map={"Stores": "stores"}``
     yields ``"stores.name"`` (the SLayer cross-model dotted form).
     """
-    parts: List[str] = []
+    parts: list[str] = []
     for key in ("catalog", "db", "table"):
         node = col.args.get(key)
         if node is None:
@@ -436,8 +436,8 @@ def _column_to_dotted(
 
 
 def _apply_alias_remap(
-    parts: List[str], alias_map: Optional[Dict[str, str]],
-) -> List[str]:
+    parts: list[str], alias_map: dict[str, str] | None,
+) -> list[str]:
     """If ``parts`` is at least 2-part and the table-qualifier (second-to-
     last element) matches an entry in ``alias_map`` (case-insensitive),
     rewrite it to the target model name. Otherwise return ``parts``
@@ -465,8 +465,8 @@ def _apply_alias_remap(
 
 
 def _apply_strip_prefix(
-    parts: List[str], strip_prefix: Optional[Tuple[str, str]],
-) -> List[str]:
+    parts: list[str], strip_prefix: tuple[str, str] | None,
+) -> list[str]:
     """Drop the leading ``schema.table.`` qualifier from ``parts`` when it
     matches ``strip_prefix``. Four-part catalog-qualified refs drop the
     leading 3; three-part drops the leading 2; two-part drops the
@@ -499,7 +499,7 @@ def _apply_strip_prefix(
 
 def _detect_time_grain_date_trunc(
     node: exp.Expression,
-) -> Optional[Tuple[TimeGranularity, exp.Column]]:
+) -> tuple[TimeGranularity, exp.Column] | None:
     """Plain ``DATE_TRUNC(<unit>, <col>)`` detector.
 
     Does NOT unwrap any day offsets on the column side — a bare
@@ -530,7 +530,7 @@ def _detect_time_grain_date_trunc(
     return grain, col
 
 
-def _date_trunc_unit(node: exp.Expression) -> Optional[str]:
+def _date_trunc_unit(node: exp.Expression) -> str | None:
     """Return the lowercase unit string of a ``DATE_TRUNC``/``TIMESTAMP_TRUNC``
     node, or ``None`` if not a trunc call. Used by the Sunday-week wrapper
     detector below."""
@@ -546,7 +546,7 @@ def _date_trunc_unit(node: exp.Expression) -> Optional[str]:
 
 def _detect_sunday_week_wrapper(
     node: exp.Expression,
-) -> Optional[Tuple[TimeGranularity, exp.Column]]:
+) -> tuple[TimeGranularity, exp.Column] | None:
     """Recognise the complete Metabase Sunday-week wrapper as a single shape.
 
     Full pattern (the one Metabase emits for a week breakout on a DATE
@@ -590,7 +590,7 @@ def _detect_sunday_week_wrapper(
     return TimeGranularity.WEEK_SUNDAY, unwrapped_col
 
 
-def _day_interval_sign(node: exp.Expression) -> Optional[int]:
+def _day_interval_sign(node: exp.Expression) -> int | None:
     """Return ``+1`` for ``INTERVAL '1 day'``, ``-1`` for ``INTERVAL '-1 day'``,
     or ``None`` if ``node`` isn't a one-day interval at all.
 
@@ -659,7 +659,7 @@ def _unwrap_signed_day_offset(
 
 def _detect_time_grain_single_arg(
     node: exp.Expression,
-) -> Optional[Tuple[TimeGranularity, exp.Column]]:
+) -> tuple[TimeGranularity, exp.Column] | None:
     """Dedicated AST classes like ``exp.Month`` / ``exp.Year``."""
     for cls, grain in _TIME_GRAIN_CLASSES.items():
         if isinstance(node, cls):
@@ -672,7 +672,7 @@ def _detect_time_grain_single_arg(
 
 def _detect_time_grain_anonymous(
     node: exp.Anonymous,
-) -> Optional[Tuple[TimeGranularity, exp.Column]]:
+) -> tuple[TimeGranularity, exp.Column] | None:
     """``hour(col)`` / ``minute(col)`` / ``second(col)`` come through here."""
     grain = _TIME_GRAIN_NAMES.get(str(node.this).lower())
     if grain is None:
@@ -683,7 +683,7 @@ def _detect_time_grain_anonymous(
     return None
 
 
-def _detect_time_grain(node: exp.Expression) -> Optional[Tuple[TimeGranularity, exp.Column]]:
+def _detect_time_grain(node: exp.Expression) -> tuple[TimeGranularity, exp.Column] | None:
     """If ``node`` is ``<grain>(<column>)`` or ``date_trunc('<grain>', <column>)``,
     return ``(granularity, column)``. Otherwise ``None``.
 
@@ -727,8 +727,8 @@ def _detect_time_grain(node: exp.Expression) -> Optional[Tuple[TimeGranularity, 
 def _alias_for_time_grain(
     grain: TimeGranularity, col: exp.Column,
     *,
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
 ) -> str:
     """The flat projection name we expose for ``month(ordered_at)`` etc.
 
@@ -747,7 +747,7 @@ class _AggCall(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     agg: str  # SLayer aggregation name: sum/avg/min/max/count/count_distinct
-    inner_ref: Optional[str] = None  # dotted column ref, or None for COUNT(*)
+    inner_ref: str | None = None  # dotted column ref, or None for COUNT(*)
     inner_is_column: bool = False  # False → COUNT(*) or non-column arg
     is_count_star: bool = False  # True only for the literal COUNT(*)
 
@@ -755,9 +755,9 @@ class _AggCall(BaseModel):
 def _detect_aggregate(  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; splitting hides the shape
     node: exp.Expression,
     *,
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
-) -> Optional[_AggCall]:
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
+) -> _AggCall | None:
     """If ``node`` is a SQL aggregate call, classify it; else ``None``.
 
     ``COUNT(*)`` → ``count`` / ``inner_ref=None``. ``COUNT(DISTINCT col)`` →
@@ -846,7 +846,7 @@ def _assert_local_metric(metric: FacadeMetric) -> None:
 
 
 def _metric_for_aggregate(
-    call: _AggCall, table: FacadeTable, metrics_by_formula: Dict[str, FacadeMetric],
+    call: _AggCall, table: FacadeTable, metrics_by_formula: dict[str, FacadeMetric],
 ) -> FacadeMetric:
     """Resolve an aggregate call to its catalog ``FacadeMetric``.
 
@@ -878,16 +878,16 @@ def _metric_for_aggregate(
 # --- table resolution --------------------------------------------------------
 
 
-def _flatten_catalog(catalog: FacadeCatalog) -> Dict[str, List[Tuple[str, FacadeTable]]]:
+def _flatten_catalog(catalog: FacadeCatalog) -> dict[str, list[tuple[str, FacadeTable]]]:
     """Build a (model_name → [(schema, table), …]) index for bare-name lookup."""
-    by_name: Dict[str, List[Tuple[str, FacadeTable]]] = {}
+    by_name: dict[str, list[tuple[str, FacadeTable]]] = {}
     for sch in catalog.schemas:
         for tbl in sch.tables:
             by_name.setdefault(tbl.name, []).append((sch.name, tbl))
     return by_name
 
 
-def _unwrap_identifier(node: Optional[exp.Expression]) -> Optional[str]:
+def _unwrap_identifier(node: exp.Expression | None) -> str | None:
     """Pull the string value out of a sqlglot identifier-ish node."""
     if node is None:
         return None
@@ -896,7 +896,7 @@ def _unwrap_identifier(node: Optional[exp.Expression]) -> Optional[str]:
 
 def _resolve_qualified_table(
     *, schema_str: str, table_name: str, catalog: FacadeCatalog,
-) -> Tuple[str, FacadeTable]:
+) -> tuple[str, FacadeTable]:
     # Try the exact schema match first — if a catalog actually carries a
     # ``public`` schema (or whatever name the user passed), honour the
     # explicit qualifier.
@@ -921,7 +921,7 @@ def _resolve_qualified_table(
 
 def _resolve_bare_table(
     *, table_name: str, catalog: FacadeCatalog,
-) -> Tuple[str, FacadeTable]:
+) -> tuple[str, FacadeTable]:
     matches = _flatten_catalog(catalog).get(table_name, [])
     if not matches:
         raise TranslationError(f"Unknown table: {table_name!r}")
@@ -936,7 +936,7 @@ def _resolve_bare_table(
 
 def _resolve_table(
     from_clause: exp.From, catalog: FacadeCatalog,
-) -> Tuple[str, FacadeTable]:
+) -> tuple[str, FacadeTable]:
     """Resolve a SELECT's FROM into ``(schema_name, FacadeTable)``.
 
     Handles the three qualification forms (§6.1):
@@ -979,25 +979,25 @@ class _ProjectionItem(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     projected_name: str  # what the BI tool sees (alias or natural name)
-    metric: Optional[FacadeMetric] = None
-    dimension: Optional[FacadeDimension] = None
-    time_grain: Optional[TimeGranularity] = None
-    time_grain_underlying: Optional[FacadeDimension] = None
+    metric: FacadeMetric | None = None
+    dimension: FacadeDimension | None = None
+    time_grain: TimeGranularity | None = None
+    time_grain_underlying: FacadeDimension | None = None
     # DEV-1566: target type when the projection was CAST(<column> AS <type>).
     # Overrides projection_types[i] at _record_metric / _record_dimension time,
     # leaving engine_alias and the SlayerQuery measure/dimension untouched.
-    cast_target: Optional[DataType] = None
+    cast_target: DataType | None = None
 
 
 def _resolve_time_grain_projection(
     *,
     grain: TimeGranularity,
     col: exp.Column,
-    alias_name: Optional[str],
+    alias_name: str | None,
     table: FacadeTable,
-    dims_by_name: Dict[str, FacadeDimension],
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
+    dims_by_name: dict[str, FacadeDimension],
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
 ) -> _ProjectionItem:
     dotted = _column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
     dim = dims_by_name.get(dotted)
@@ -1024,9 +1024,9 @@ def _resolve_time_grain_projection(
 def _resolve_aggregate_projection(
     *,
     call: _AggCall,
-    alias_name: Optional[str],
+    alias_name: str | None,
     table: FacadeTable,
-    metrics_by_formula: Dict[str, FacadeMetric],
+    metrics_by_formula: dict[str, FacadeMetric],
 ) -> _ProjectionItem:
     """Map a SQL aggregate call to the same projection item a bare metric
     name would produce (DEV-1486 decision 21)."""
@@ -1042,12 +1042,12 @@ def _resolve_aggregate_projection(
 def _resolve_column_projection(
     *,
     body: exp.Column,
-    alias_name: Optional[str],
+    alias_name: str | None,
     table: FacadeTable,
-    metrics_by_name: Dict[str, FacadeMetric],
-    dims_by_name: Dict[str, FacadeDimension],
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
+    metrics_by_name: dict[str, FacadeMetric],
+    dims_by_name: dict[str, FacadeDimension],
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
 ) -> _ProjectionItem:
     dotted = _column_to_dotted(body, strip_prefix=strip_prefix, alias_map=alias_map)
     if dotted in metrics_by_name:
@@ -1069,7 +1069,7 @@ def _resolve_column_projection(
 
 def _detect_column_cast(
     body: exp.Expression,
-) -> Optional[Tuple[exp.Column, DataType]]:
+) -> tuple[exp.Column, DataType] | None:
     """If ``body`` is ``CAST(<bare or qualified Column> AS <supported_type>)``,
     return ``(inner_col, target_data_type)``. Otherwise ``None``.
 
@@ -1092,12 +1092,12 @@ def _resolve_column_cast_projection(
     *,
     body: exp.Column,
     cast_target: DataType,
-    alias_name: Optional[str],
+    alias_name: str | None,
     table: FacadeTable,
-    metrics_by_name: Dict[str, FacadeMetric],
-    dims_by_name: Dict[str, FacadeDimension],
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
+    metrics_by_name: dict[str, FacadeMetric],
+    dims_by_name: dict[str, FacadeDimension],
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
 ) -> _ProjectionItem:
     """Resolve ``CAST(<column> AS <type>)`` to a projection item that runs
     the bare column through the engine and overrides the wire OID via
@@ -1126,7 +1126,7 @@ def _resolve_column_cast_projection(
 
 # DEV-1558 B5: hygiene-scalar wrappers Metabase uses for fingerprint queries.
 # Each maps a sqlglot AST class to a human-readable name for the WARNING log.
-_HYGIENE_FUNC_CLASSES: Dict[type, str] = {
+_HYGIENE_FUNC_CLASSES: dict[type, str] = {
     exp.Substring: "SUBSTRING",
     exp.Upper: "UPPER",
     exp.Lower: "LOWER",
@@ -1145,7 +1145,7 @@ _HYGIENE_ANONYMOUS_NAMES = {"substr", "substring", "left", "right",
                             "upper", "lower", "trim", "length"}
 
 
-def _detect_hygiene_wrapper(body: exp.Expression) -> Optional[Tuple[str, exp.Column]]:
+def _detect_hygiene_wrapper(body: exp.Expression) -> tuple[str, exp.Column] | None:
     """If ``body`` is a hygiene-scalar wrapper around exactly one column
     reference, return ``(printable_func_name, inner_col)``. Otherwise None.
     """
@@ -1165,7 +1165,7 @@ def _detect_hygiene_wrapper(body: exp.Expression) -> Optional[Tuple[str, exp.Col
 
 
 def _is_fingerprint_shape_wrap(
-    inner_col: exp.Column, *, strip_prefix: Optional[Tuple[str, str]],
+    inner_col: exp.Column, *, strip_prefix: tuple[str, str] | None,
 ) -> bool:
     """True iff ``inner_col`` is shaped like Metabase's fingerprint
     projection — a 3-part qualified column reference whose
@@ -1192,9 +1192,9 @@ def _is_fingerprint_shape_wrap(
     return len(stripped) < len(raw)
 
 
-def _raw_column_parts(col: exp.Column) -> List[str]:
+def _raw_column_parts(col: exp.Column) -> list[str]:
     """The qualifier parts plus leaf identifier of ``col``, in order."""
-    parts: List[str] = []
+    parts: list[str] = []
     for key in ("catalog", "db", "table"):
         node = col.args.get(key)
         if node is None:
@@ -1208,10 +1208,10 @@ def _raw_column_parts(col: exp.Column) -> List[str]:
 def _build_projection_lookups(
     table: FacadeTable,
     *,
-    extra_dims_by_name: Optional[Dict[str, FacadeDimension]] = None,
-    extra_metrics_by_name: Optional[Dict[str, FacadeMetric]] = None,
-    extra_metrics_by_formula: Optional[Dict[str, FacadeMetric]] = None,
-) -> Tuple[Dict[str, FacadeMetric], Dict[str, FacadeMetric], Dict[str, FacadeDimension]]:
+    extra_dims_by_name: dict[str, FacadeDimension] | None = None,
+    extra_metrics_by_name: dict[str, FacadeMetric] | None = None,
+    extra_metrics_by_formula: dict[str, FacadeMetric] | None = None,
+) -> tuple[dict[str, FacadeMetric], dict[str, FacadeMetric], dict[str, FacadeDimension]]:
     """Assemble the (metrics_by_name, metrics_by_formula, dims_by_name)
     lookup dicts from the catalog's table metadata, overlaid with the
     DEV-1565 dynamic-join extras when supplied."""
@@ -1230,13 +1230,13 @@ def _build_projection_lookups(
 def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-expression shapes; one branch per shape by design
     expressions: Sequence[exp.Expression], table: FacadeTable,
     *,
-    schema_name: Optional[str] = None,
-    alias_map: Optional[Dict[str, str]] = None,
-    extra_dims_by_name: Optional[Dict[str, FacadeDimension]] = None,
-    extra_metrics_by_name: Optional[Dict[str, FacadeMetric]] = None,
-    extra_metrics_by_formula: Optional[Dict[str, FacadeMetric]] = None,
+    schema_name: str | None = None,
+    alias_map: dict[str, str] | None = None,
+    extra_dims_by_name: dict[str, FacadeDimension] | None = None,
+    extra_metrics_by_name: dict[str, FacadeMetric] | None = None,
+    extra_metrics_by_formula: dict[str, FacadeMetric] | None = None,
     allow_column_cast: bool = True,
-) -> List[_ProjectionItem]:
+) -> list[_ProjectionItem]:
     """Walk the projection list, classifying each item against the table.
 
     DEV-1565: when a LEFT JOIN to a dynamic-fallback target is in play,
@@ -1260,16 +1260,16 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
     # DEV-1558 B5: when the FROM was schema-qualified (e.g. "public"."orders"),
     # let column refs that lead with the same `schema.table.` prefix resolve
     # to the bare column.
-    strip_prefix: Optional[Tuple[str, str]] = (
+    strip_prefix: tuple[str, str] | None = (
         (schema_name, table.name) if schema_name else None
     )
 
-    out: List[_ProjectionItem] = []
+    out: list[_ProjectionItem] = []
     for expr in expressions:
         if isinstance(expr, exp.Star):
             raise TranslationError(SELECT_STAR_MESSAGE)
 
-        alias_name: Optional[str] = None
+        alias_name: str | None = None
         body: exp.Expression = expr
         if isinstance(expr, exp.Alias):
             alias_name = str(expr.alias)
@@ -1350,9 +1350,9 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
 # --- WHERE translation -------------------------------------------------------
 
 
-def _split_and_chain(node: exp.Expression) -> List[exp.Expression]:
+def _split_and_chain(node: exp.Expression) -> list[exp.Expression]:
     """Flatten a top-level AND chain into its conjuncts."""
-    out: List[exp.Expression] = []
+    out: list[exp.Expression] = []
     stack = [node]
     while stack:
         cur = stack.pop()
@@ -1367,9 +1367,9 @@ def _split_and_chain(node: exp.Expression) -> List[exp.Expression]:
 def _lift_time_between(
     conj: exp.Between, time_dim_names: set[str],
     *,
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
-) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
+) -> tuple[str, str | None, str | None] | None:
     col = conj.this
     if not isinstance(col, exp.Column):
         return None
@@ -1386,9 +1386,9 @@ def _lift_time_between(
 def _lift_time_comparator(
     conj: exp.Expression, time_dim_names: set[str],
     *,
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
-) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
+) -> tuple[str, str | None, str | None] | None:
     col = conj.this
     if not isinstance(col, exp.Column):
         return None
@@ -1405,9 +1405,9 @@ def _lift_time_comparator(
 
 def _aggregate_alias_for_column(
     side: exp.Expression,
-    items_by_projected_name: Dict[str, "_ProjectionItem"],
-    *, strip_prefix: Optional[Tuple[str, str]] = None,
-) -> Optional["_ProjectionItem"]:
+    items_by_projected_name: dict[str, "_ProjectionItem"],
+    *, strip_prefix: tuple[str, str] | None = None,
+) -> "_ProjectionItem | None":
     """If ``side`` is a column reference whose dotted (strip_prefix-aware)
     name matches an aggregate projection's ``projected_name``, return that
     projection item; else ``None``.
@@ -1429,9 +1429,9 @@ def _aggregate_alias_for_column(
 
 def _try_aggregate_alias_filter(
     conj: exp.Expression,
-    items_by_projected_name: Dict[str, "_ProjectionItem"],
-    *, strip_prefix: Optional[Tuple[str, str]] = None,
-) -> Optional[str]:
+    items_by_projected_name: dict[str, "_ProjectionItem"],
+    *, strip_prefix: tuple[str, str] | None = None,
+) -> str | None:
     """If ``conj`` is ``<aggregate-alias-col> <cmp> <literal>`` (in either
     order), return the colon-form filter string. If one side matches an
     aggregate alias but the other side is not a literal, raise. Return
@@ -1466,9 +1466,9 @@ def _try_aggregate_alias_filter(
 def _classify_where_conjunct(
     conj: exp.Expression, time_dim_names: set[str],
     *,
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
-) -> Tuple[Optional[Tuple[str, Optional[str], Optional[str]]], Optional[str]]:
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
+) -> tuple[tuple[str, str | None, str | None] | None, str | None]:
     """Classify a single conjunct.
 
     Returns ``((time_dim, date_range_lo, date_range_hi), None)`` if this is
@@ -1504,8 +1504,8 @@ def _classify_where_conjunct(
 def _normalise_predicate_columns(
     node: exp.Expression,
     *,
-    strip_prefix: Optional[Tuple[str, str]],
-    alias_map: Optional[Dict[str, str]] = None,
+    strip_prefix: tuple[str, str] | None,
+    alias_map: dict[str, str] | None = None,
 ) -> exp.Expression:
     """Walk ``node`` and rewrite every ``exp.Column``: apply ``alias_map``
     first (so ``<JoinAlias>.<col>`` becomes ``<model>.<col>``), then
@@ -1537,7 +1537,7 @@ def _normalise_predicate_columns(
     return node.transform(rewrite)
 
 
-def _literal_str(node: Optional[exp.Expression]) -> Optional[str]:
+def _literal_str(node: exp.Expression | None) -> str | None:
     if node is None:
         return None
     if isinstance(node, exp.Literal):
@@ -1568,7 +1568,7 @@ def _quote_keyword_aliases(sql: str) -> str:
 
 
 def _parse_with_keyword_alias_fallback(
-    sql: str, *, dialect: Optional[str],
+    sql: str, *, dialect: str | None,
 ) -> exp.Expression:
     """Parse ``sql`` with sqlglot. On failure, retry once with unquoted
     SQL keyword aliases auto-quoted — Metabase's table-privileges CTE
@@ -1588,13 +1588,13 @@ def _parse_with_keyword_alias_fallback(
 
 
 def _apply_where(
-    where: Optional[exp.Where],
-    time_dims_built: Dict[str, TimeDimension],
-    items_by_projected_name: Dict[str, "_ProjectionItem"],
-    filters_out: List[str],
+    where: exp.Where | None,
+    time_dims_built: dict[str, TimeDimension],
+    items_by_projected_name: dict[str, "_ProjectionItem"],
+    filters_out: list[str],
     *,
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
 ) -> None:
     """Walk the WHERE chain; route aggregate-alias refs to colon-form
     filters (DEV-1568), lift time-dim filters, append verbatim rest."""
@@ -1625,14 +1625,14 @@ def _apply_where(
 
 
 def _apply_having(
-    having: Optional[exp.Having],
+    having: exp.Having | None,
     table: FacadeTable,
-    items_by_projected_name: Dict[str, "_ProjectionItem"],
-    filters_out: List[str],
+    items_by_projected_name: dict[str, "_ProjectionItem"],
+    filters_out: list[str],
     *,
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
-    extra_metrics_by_formula: Optional[Dict[str, FacadeMetric]] = None,
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
+    extra_metrics_by_formula: dict[str, FacadeMetric] | None = None,
 ) -> None:
     """Map ``HAVING <agg(col)> <cmp> <literal>`` (DEV-1486 decision 21) and
     ``HAVING <agg-alias-col> <cmp> <literal>`` (DEV-1568) conjuncts to
@@ -1687,7 +1687,7 @@ def _flip_comparator(op_sql: str) -> str:
 # --- ORDER BY / GROUP BY -----------------------------------------------------
 
 
-def _item_cast_source_type(item: _ProjectionItem) -> Optional[DataType]:
+def _item_cast_source_type(item: _ProjectionItem) -> DataType | None:
     """Return the underlying source DataType of a CAST-projected item, or
     None when the source type is unknown (custom metric without a declared
     ``data_type``). Caller MUST gate on ``item.cast_target is not None``
@@ -1702,7 +1702,7 @@ def _item_cast_source_type(item: _ProjectionItem) -> Optional[DataType]:
 
 
 def _cast_pair_is_lossy(
-    *, source: Optional[DataType], target: DataType,
+    *, source: DataType | None, target: DataType,
     lossy_pairs: frozenset,
 ) -> bool:
     """A cast is lossy when either: (a) the source is known and (source,
@@ -1718,7 +1718,7 @@ def _cast_pair_is_lossy(
 
 
 def _lossy_cast_error_message(
-    *, kind: str, name: str, source: Optional[DataType], target: DataType,
+    *, kind: str, name: str, source: DataType | None, target: DataType,
 ) -> str:
     """One-line user-facing message for the lossy-CAST-pair rejection. The
     ``kind`` is ``ORDER BY`` or ``GROUP BY``; ``name`` is the user-visible
@@ -1757,12 +1757,12 @@ def _reject_lossy_cast_or_pass(
 
 def _resolve_order_by_item(
     body: exp.Expression,
-    item_by_projected_name: Dict[str, _ProjectionItem],
-    metric_item_by_formula: Dict[str, _ProjectionItem],
+    item_by_projected_name: dict[str, _ProjectionItem],
+    metric_item_by_formula: dict[str, _ProjectionItem],
     *,
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
-) -> Tuple[_ProjectionItem, str]:
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
+) -> tuple[_ProjectionItem, str]:
     """Look up the projection item an ORDER BY term resolves to.
 
     Tries the bare-name lookup first (alias or canonical metric name from
@@ -1788,12 +1788,12 @@ def _resolve_order_by_item(
 
 
 def _translate_order_by(
-    order: Optional[exp.Order],
-    item_by_projected_name: Dict[str, _ProjectionItem],
+    order: exp.Order | None,
+    item_by_projected_name: dict[str, _ProjectionItem],
     *,
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
-) -> List[OrderItem]:
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
+) -> list[OrderItem]:
     if order is None:
         return []
     # DEV-1568: when a SELECT aliases an aggregate (``SUM(revenue) AS "rev"``)
@@ -1802,12 +1802,12 @@ def _translate_order_by(
     # — but ``item_by_projected_name`` is keyed on the user alias (``"rev"``).
     # Build a fallback map keyed by ``metric.measure_formula`` so a repeated
     # aggregate call resolves to the same projection the alias does.
-    metric_item_by_formula: Dict[str, _ProjectionItem] = {
+    metric_item_by_formula: dict[str, _ProjectionItem] = {
         item.metric.measure_formula: item
         for item in item_by_projected_name.values()
         if item.metric is not None
     }
-    out: List[OrderItem] = []
+    out: list[OrderItem] = []
     for ord_expr in order.args.get("expressions") or []:
         if not isinstance(ord_expr, exp.Ordered):
             continue
@@ -1838,8 +1838,8 @@ def _translate_order_by(
 def _order_by_name(
     body: exp.Expression,
     *,
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
 ) -> str:
     """Resolve an ORDER BY term to its projected name.
 
@@ -1863,12 +1863,12 @@ def _order_by_name(
 
 
 def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; extraction adds indirection
-    group: Optional[exp.Group],
-    derived: List[str],
-    item_by_projected_name: Dict[str, _ProjectionItem],
+    group: exp.Group | None,
+    derived: list[str],
+    item_by_projected_name: dict[str, _ProjectionItem],
     *,
-    strip_prefix: Optional[Tuple[str, str]] = None,
-    alias_map: Optional[Dict[str, str]] = None,
+    strip_prefix: tuple[str, str] | None = None,
+    alias_map: dict[str, str] | None = None,
 ) -> None:
     """Apply the strict-on-extras / lenient-on-omissions policy (§6.1).
 
@@ -1881,7 +1881,7 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
     if group is None:
         return
     derived_set = set(derived)
-    user_items: List[str] = []
+    user_items: list[str] = []
     for g in group.args.get("expressions") or []:
         if isinstance(g, exp.Column):
             user_items.append(_column_to_dotted(g, strip_prefix=strip_prefix, alias_map=alias_map))
@@ -1926,7 +1926,7 @@ def _is_ignorable_group_item(item: str) -> bool:
 
 
 def _reject_lossy_cast_in_implicit_grouping(
-    group: Optional[exp.Group], items: Sequence[_ProjectionItem],
+    group: exp.Group | None, items: Sequence[_ProjectionItem],
 ) -> None:
     """DEV-1566 — Codex round 12: when the user omits an explicit GROUP BY
     but projects at least one dimension, SLayer auto-groups (dim-only-dedup
@@ -1969,7 +1969,7 @@ def _is_start_transaction(node: exp.Expression) -> bool:
     return body_name == "START" and alias_name == "TRANSACTION"
 
 
-def _extract_set_setting(parsed: exp.Set) -> Optional[SetSettingOp]:
+def _extract_set_setting(parsed: exp.Set) -> SetSettingOp | None:
     """Extract a ``SetSettingOp`` from a clean ``SET <name> = <value>`` /
     ``SET <name> TO <value>`` AST. Returns ``None`` for multi-item SETs or
     SetItem shapes whose body isn't a single ``EQ(Column(Identifier), rhs)``
@@ -2002,7 +2002,7 @@ def _extract_set_setting(parsed: exp.Set) -> Optional[SetSettingOp]:
     return SetSettingOp(name=name, value=value)
 
 
-def _extract_setting_value(rhs: Optional[exp.Expression]) -> Optional[str]:
+def _extract_setting_value(rhs: exp.Expression | None) -> str | None:
     """Return the string value of a ``SET`` rhs node, robust across the
     parser's literal vs. identifier vs. variable encodings:
 
@@ -2039,7 +2039,7 @@ def _extract_setting_value(rhs: Optional[exp.Expression]) -> Optional[str]:
     return None
 
 
-def _extract_reset_setting(parsed: exp.Command) -> Optional[ResetSettingOp]:
+def _extract_reset_setting(parsed: exp.Command) -> ResetSettingOp | None:
     """Extract ``RESET <name>`` or ``RESET ALL`` intent from an ``exp.Command``
     root. Returns ``None`` for the bare ``RESET`` spelling — defensive
     fallback (drivers don't emit this in practice).
@@ -2085,7 +2085,7 @@ def _command_expression_text(expr) -> str:
     return str(expr)
 
 
-def _extract_command_form_set(parsed: exp.Command) -> Optional[SetSettingOp]:
+def _extract_command_form_set(parsed: exp.Command) -> SetSettingOp | None:
     """For an ``exp.Command(this='SET', expression='<raw>')`` root, try to
     parse the raw expression text into a ``(name, value)`` pair.
 
@@ -2124,7 +2124,7 @@ def _extract_command_form_set(parsed: exp.Command) -> Optional[SetSettingOp]:
     return SetSettingOp(name=name.lower(), value=value)
 
 
-def _classify_noop_root(parsed: exp.Expression) -> Optional[NoOpResult]:
+def _classify_noop_root(parsed: exp.Expression) -> NoOpResult | None:
     """Classify SET/SHOW/BEGIN/COMMIT/ROLLBACK roots into a NoOpResult with a
     facade-neutral ``command_tag``; ``None`` if not a no-op root.
 
@@ -2173,7 +2173,7 @@ def _classify_noop_root(parsed: exp.Expression) -> Optional[NoOpResult]:
 
 
 def _unwrap_probe(
-    probe: "Union[RowBatch, ProbeMatcherOutcome]",
+    probe: "RowBatch | ProbeMatcherOutcome",
 ) -> ProbeResult:
     """Normalise a probe matcher's return value into a ``ProbeResult``.
 
@@ -2194,10 +2194,10 @@ def translate(
     sql: str,
     catalog: FacadeCatalog,
     *,
-    dialect: Optional[str] = None,
-    probe_matcher: Optional[ProbeMatcher] = None,
+    dialect: str | None = None,
+    probe_matcher: ProbeMatcher | None = None,
     catalog_sql_executor: (
-        "Optional[CatalogSqlExecutorProtocol | Callable[[], CatalogSqlExecutorProtocol]]"
+        "CatalogSqlExecutorProtocol | Callable[[], CatalogSqlExecutorProtocol] | None"
     ) = None,
     allow_column_cast: bool = True,
 ) -> TranslatorResult:
@@ -2292,13 +2292,13 @@ class _ProjectionPlan(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    measures: List[dict]
-    dimension_refs: List[ColumnRef]
-    time_dims: List[TimeDimension]
-    time_dim_by_name: Dict[str, TimeDimension]
-    derived_dims: List[str]
-    column_name_mapping: List[Tuple[str, str]]
-    projection_types: List[Optional[DataType]]
+    measures: list[dict]
+    dimension_refs: list[ColumnRef]
+    time_dims: list[TimeDimension]
+    time_dim_by_name: dict[str, TimeDimension]
+    derived_dims: list[str]
+    column_name_mapping: list[tuple[str, str]]
+    projection_types: list[DataType | None]
 
 
 def _record_metric(
@@ -2379,7 +2379,7 @@ def _build_projection_plan(
 
 def _index_items_by_canonical_form(
     items: Sequence[_ProjectionItem],
-) -> Dict[str, _ProjectionItem]:
+) -> dict[str, _ProjectionItem]:
     """Index projection items by alias plus canonical forms (time-grain only).
 
     Time-grain items are also keyed by ``grain(col)`` so an unaliased
@@ -2397,7 +2397,7 @@ def _index_items_by_canonical_form(
     strict-on-extras error and the user aliases the CAST projection to
     reference it (``SELECT CAST(c AS T) AS x ... ORDER BY x``).
     """
-    by_name: Dict[str, _ProjectionItem] = {item.projected_name: item for item in items}
+    by_name: dict[str, _ProjectionItem] = {item.projected_name: item for item in items}
     for item in items:
         if item.time_grain is not None and item.time_grain_underlying is not None:
             canonical = (
@@ -2407,7 +2407,7 @@ def _index_items_by_canonical_form(
     return by_name
 
 
-def _parse_int_literal(node: Optional[exp.Expression]) -> Optional[int]:
+def _parse_int_literal(node: exp.Expression | None) -> int | None:
     """Pull an int out of ``LIMIT N`` / ``OFFSET N`` style nodes."""
     if node is None or not isinstance(node.expression, exp.Literal):
         return None
@@ -2436,10 +2436,10 @@ class _JoinPlan(BaseModel):
 
 def _parse_left_join(
     *,
-    parsed_joins: List[exp.Join],
+    parsed_joins: list[exp.Join],
     parent_table: FacadeTable,
     catalog: FacadeCatalog,
-) -> Optional[_JoinPlan]:
+) -> _JoinPlan | None:
     """Validate and parse the single LEFT JOIN on the SELECT, if any.
 
     Returns ``None`` when no joins are present. Raises ``TranslationError``
@@ -2496,7 +2496,7 @@ def _reject_non_left_join(join: exp.Join) -> None:
 
 def _resolve_join_subquery_target(
     join: exp.Join, catalog: FacadeCatalog,
-) -> Tuple[FacadeTable, str, str]:
+) -> tuple[FacadeTable, str, str]:
     """Validate the right-side subquery shape and resolve its FROM table.
 
     Returns ``(target_facade_table, target_schema, join_alias)``. Raises
@@ -2563,11 +2563,11 @@ def _resolve_join_subquery_target(
 
 def _parse_on_clause(
     *,
-    on: Optional[exp.Expression],
+    on: exp.Expression | None,
     parent_table: FacadeTable,
     target_table: FacadeTable,
     alias: str,
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     """Parse the ON clause as exactly one equality between a parent-table-
     qualified column and a join-alias-qualified column.
 
@@ -2611,7 +2611,7 @@ def _parse_on_clause(
     )
 
 
-def _on_qualifier(col: exp.Column) -> Optional[str]:
+def _on_qualifier(col: exp.Column) -> str | None:
     """The table-qualifier of an ON-clause column ref, or None if bare."""
     table_node = col.args.get("table")
     if table_node is None:
@@ -2620,7 +2620,7 @@ def _on_qualifier(col: exp.Column) -> Optional[str]:
 
 
 def _matches_parent_qualifier(
-    qual: Optional[str], parent_name: str,
+    qual: str | None, parent_name: str,
 ) -> bool:
     """True if the qualifier names the parent table (case-insensitive).
     Schema-prefix form is handled by ``_column_to_dotted``'s strip path,
@@ -2628,7 +2628,7 @@ def _matches_parent_qualifier(
     return qual is not None and _ci_eq(qual, parent_name)
 
 
-def _ci_eq(a: Optional[str], b: Optional[str]) -> bool:
+def _ci_eq(a: str | None, b: str | None) -> bool:
     return a is not None and b is not None and a.lower() == b.lower()
 
 
@@ -2691,7 +2691,7 @@ def _classify_against_parent_joins(
     target_name: str,
     source_col: str,
     target_col: str,
-) -> Tuple[bool, bool]:
+) -> tuple[bool, bool]:
     """Match the emitted (target_model, join_pairs) against the parent's
     configured joins.
 
@@ -2727,9 +2727,9 @@ def _classify_against_parent_joins(
 def _materialise_dynamic_join_lookups(
     *,
     target_model: SlayerModel,
-    extra_dims_by_name: Dict[str, FacadeDimension],
-    extra_metrics_by_name: Dict[str, FacadeMetric],
-    extra_metrics_by_formula: Dict[str, FacadeMetric],
+    extra_dims_by_name: dict[str, FacadeDimension],
+    extra_metrics_by_name: dict[str, FacadeMetric],
+    extra_metrics_by_formula: dict[str, FacadeMetric],
 ) -> None:
     """For a dynamic-join target (no configured BFS expansion in the
     catalog), build the bare-col dims and col×agg metrics keyed by
@@ -2808,14 +2808,14 @@ class _JoinOverlays(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    alias_map: Optional[Dict[str, str]] = None
-    extra_dims_by_name: Dict[str, FacadeDimension] = {}
-    extra_metrics_by_name: Dict[str, FacadeMetric] = {}
-    extra_metrics_by_formula: Dict[str, FacadeMetric] = {}
+    alias_map: dict[str, str] | None = None
+    extra_dims_by_name: dict[str, FacadeDimension] = {}
+    extra_metrics_by_name: dict[str, FacadeMetric] = {}
+    extra_metrics_by_formula: dict[str, FacadeMetric] = {}
 
 
 def _prepare_join_overlays(
-    join_plan: Optional[_JoinPlan], parent_name: str,
+    join_plan: _JoinPlan | None, parent_name: str,
 ) -> _JoinOverlays:
     """Build the alias map + (for dynamic joins) the materialised lookup
     overlays, and emit the join-related warnings. Extracted from
@@ -2836,7 +2836,7 @@ def _prepare_join_overlays(
     return overlays
 
 
-def _build_item_index(items: List[_ProjectionItem]) -> Dict[str, _ProjectionItem]:
+def _build_item_index(items: list[_ProjectionItem]) -> dict[str, _ProjectionItem]:
     """Map every projection item by its user-facing name PLUS its canonical
     secondary key (time-grain canonical form for `CAST(date_trunc(...))`
     GROUP BY matches; dimension_ref dotted form for joined-col aliased
@@ -2850,7 +2850,7 @@ def _build_item_index(items: List[_ProjectionItem]) -> Dict[str, _ProjectionItem
     explicitly named the bare column (and the engine ordering already
     matches that intent).
     """
-    out: Dict[str, _ProjectionItem] = {item.projected_name: item for item in items}
+    out: dict[str, _ProjectionItem] = {item.projected_name: item for item in items}
     for item in items:
         if item.time_grain is not None and item.time_grain_underlying is not None:
             canonical = (
@@ -2886,7 +2886,7 @@ def _translate_slayer_select(
 
     # DEV-1558 B5: every helper that resolves a column ref needs the same
     # ``(schema, table)`` prefix-strip context as ``_resolve_projection``.
-    strip_prefix: Optional[Tuple[str, str]] = (
+    strip_prefix: tuple[str, str] | None = (
         (schema_name, table.name) if schema_name else None
     )
 
@@ -2916,7 +2916,7 @@ def _translate_slayer_select(
     )
     _reject_lossy_cast_in_implicit_grouping(group, items)
 
-    filters: List[str] = []
+    filters: list[str] = []
     _apply_where(
         parsed.args.get("where"), plan.time_dim_by_name,
         item_by_projected_name, filters,

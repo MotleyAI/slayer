@@ -19,7 +19,7 @@ must use the ``memory:<id>`` prefix.
 """
 
 from datetime import datetime, timezone
-from typing import Any, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -87,9 +87,9 @@ class Memory(BaseModel):
     version: int = 2
     id: str = ""
     learning: str
-    description: Optional[str] = None
-    entities: List[str] = Field(default_factory=list)
-    query: Optional[SlayerQuery] = None
+    description: str | None = None
+    entities: list[str] = Field(default_factory=list)
+    query: SlayerQuery | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
     @model_validator(mode="before")
@@ -143,7 +143,7 @@ class Memory(BaseModel):
 
     @field_validator("description")
     @classmethod
-    def _check_description_length(cls, value: Optional[str]) -> Optional[str]:
+    def _check_description_length(cls, value: str | None) -> str | None:
         """DEV-1549: hard cap so a single memory hit can never balloon
         the search payload."""
         if value is not None and len(value) > MEMORY_DESCRIPTION_MAX_CHARS:
@@ -161,8 +161,8 @@ class Memory(BaseModel):
 
 class SaveMemoryResponse(BaseModel):
     memory_id: str
-    resolved_entities: List[str]
-    warnings: List[str] = Field(default_factory=list)
+    resolved_entities: list[str]
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ForgetMemoryResponse(BaseModel):

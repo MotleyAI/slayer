@@ -22,7 +22,6 @@ engines.
 from __future__ import annotations
 
 import logging
-from typing import Dict, Tuple
 
 import sqlalchemy as sa
 import sqlalchemy.event as sa_event
@@ -35,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 # Engine cache. Key = (connection_string, runtime_fingerprint).
-_engine_cache: Dict[Tuple[str, str], sa.Engine] = {}
+_engine_cache: dict[tuple[str, str], sa.Engine] = {}
 
 
 def _runtime_fingerprint(datasource: DatasourceConfig) -> str:

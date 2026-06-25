@@ -5,7 +5,8 @@ import os
 import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
+from collections.abc import Callable
 
 from slayer.core.errors import AmbiguousModelError, MemoryNotFoundError
 from slayer.core.models import DatasourceConfig, SlayerModel
@@ -25,11 +26,11 @@ from slayer.storage.type_refinement import (
 
 
 def _write_sample_fields(
-    col: Dict[str, Any],
+    col: dict[str, Any],
     *,
-    sampled: Optional[str],
-    sampled_values: Optional[List[str]],
-    distinct_count: Optional[int],
+    sampled: str | None,
+    sampled_values: list[str] | None,
+    distinct_count: int | None,
 ) -> None:
     """Apply the DEV-1375 + DEV-1480 sample-field write convention to a
     column dict in place: ``None`` pops the corresponding key, non-None
@@ -199,7 +200,7 @@ class StorageBackend(ABC):
         """
 
     @abstractmethod
-    async def _list_all_model_identities(self) -> List[Tuple[str, str]]:
+    async def _list_all_model_identities(self) -> list[tuple[str, str]]:
         """Return every saved ``(data_source, name)`` pair.
 
         Backends override this with whatever is cheapest (filesystem walk,
@@ -211,13 +212,13 @@ class StorageBackend(ABC):
     async def get_model(
         self,
         name: str,
-        data_source: Optional[str] = None,
-    ) -> Optional[SlayerModel]: ...
+        data_source: str | None = None,
+    ) -> SlayerModel | None: ...
 
     async def delete_model(
         self,
         name: str,
-        data_source: Optional[str] = None,
+        data_source: str | None = None,
     ) -> bool:
         """Delete one model by ``(data_source, name)`` and cascade-delete
         every embedding row tagged with that model's canonical prefix.
@@ -259,9 +260,9 @@ class StorageBackend(ABC):
         data_source: str,
         model_name: str,
         column_name: str,
-        sampled: Optional[str],
-        sampled_values: Optional[List[str]],
-        distinct_count: Optional[int],
+        sampled: str | None,
+        sampled_values: list[str] | None,
+        distinct_count: int | None,
     ) -> None:
         """Patch a single column's sample-value fields in-place (DEV-1375 +
         DEV-1480).
@@ -281,8 +282,8 @@ class StorageBackend(ABC):
         self,
         name: str,
         *,
-        data_source: Optional[str],
-    ) -> Optional[Tuple[str, str]]:
+        data_source: str | None,
+    ) -> tuple[str, str] | None:
         """Sanitize inputs and resolve a bare ``name`` to its
         ``(data_source, name)`` identity via the priority list.
 
@@ -395,10 +396,10 @@ class StorageBackend(ABC):
     async def save_datasource(self, datasource: DatasourceConfig) -> None: ...
 
     @abstractmethod
-    async def get_datasource(self, name: str) -> Optional[DatasourceConfig]: ...
+    async def get_datasource(self, name: str) -> DatasourceConfig | None: ...
 
     @abstractmethod
-    async def list_datasources(self) -> List[str]: ...
+    async def list_datasources(self) -> list[str]: ...
 
     async def delete_datasource(self, name: str) -> bool:
         """Delete the datasource config and cascade-delete every embedding
@@ -434,7 +435,7 @@ class StorageBackend(ABC):
     # ---- datasource priority (bare-name disambiguation) -------------------
 
     @abstractmethod
-    async def get_datasource_priority(self) -> List[str]:
+    async def get_datasource_priority(self) -> list[str]:
         """Return the configured priority order (most-preferred first).
 
         Empty list = no priority configured; bare-name lookups raise
@@ -442,11 +443,11 @@ class StorageBackend(ABC):
         """
 
     @abstractmethod
-    async def _set_datasource_priority_raw(self, priority: List[str]) -> None:
+    async def _set_datasource_priority_raw(self, priority: list[str]) -> None:
         """Persist the priority list verbatim. Validation happens in the
         public ``set_datasource_priority`` wrapper below."""
 
-    async def set_datasource_priority(self, priority: List[str]) -> None:
+    async def set_datasource_priority(self, priority: list[str]) -> None:
         """Validate and persist the datasource priority list.
 
         Each entry must already exist as a saved ``DatasourceConfig``;
@@ -465,7 +466,7 @@ class StorageBackend(ABC):
 
     # ---- list_models with auto-detect or required arg ----------------------
 
-    async def list_models(self, data_source: Optional[str] = None) -> List[str]:
+    async def list_models(self, data_source: str | None = None) -> list[str]:
         """List model names within a single datasource.
 
         Resolution rules:
@@ -511,8 +512,8 @@ class StorageBackend(ABC):
         self,
         name: str,
         *,
-        prefer_data_source: Optional[str] = None,
-    ) -> Optional[Tuple[str, str]]:
+        prefer_data_source: str | None = None,
+    ) -> tuple[str, str] | None:
         """Resolve a bare model name to a ``(data_source, name)`` tuple.
 
         * No matches → ``None``.
@@ -560,10 +561,10 @@ class StorageBackend(ABC):
         be preserved when present."""
 
     @abstractmethod
-    async def _get_memory_row(self, memory_id: str) -> Optional[Memory]:
+    async def _get_memory_row(self, memory_id: str) -> Memory | None:
         """Read a ``Memory`` by id; return ``None`` when not present."""
 
-    async def get_memory_row(self, memory_id: str) -> Optional[Memory]:
+    async def get_memory_row(self, memory_id: str) -> Memory | None:
         """Non-raising existence check / fetch. Public so the resolver
         and the ingest-time cleanup pass can probe without catching
         ``MemoryNotFoundError``."""
@@ -571,8 +572,8 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def _list_memories_rows(
-        self, *, entities: Optional[List[str]]
-    ) -> List[Memory]:
+        self, *, entities: list[str] | None
+    ) -> list[Memory]:
         """Return every ``Memory`` whose stored entity set has non-empty
         intersection with ``entities``. ``entities=None`` returns all rows.
         ``entities=[]`` returns ``[]`` (intersection with the empty set is
@@ -594,10 +595,10 @@ class StorageBackend(ABC):
         self,
         *,
         learning: str,
-        entities: List[str],
-        query: Optional[SlayerQuery] = None,
-        id: Optional[str] = None,  # noqa: A002 — public kwarg matching MCP / REST
-        description: Optional[str] = None,
+        entities: list[str],
+        query: SlayerQuery | None = None,
+        id: str | None = None,  # noqa: A002 — public kwarg matching MCP / REST
+        description: str | None = None,
     ) -> Memory:
         """Persist a memory.
 
@@ -620,7 +621,7 @@ class StorageBackend(ABC):
         else:
             assigned_id = await self._next_memory_seq()
             preserved_created_at = None
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "id": assigned_id,
             "learning": learning,
             "description": description,
@@ -640,8 +641,8 @@ class StorageBackend(ABC):
         return row
 
     async def list_memories(
-        self, *, entities: Optional[List[str]] = None
-    ) -> List[Memory]:
+        self, *, entities: list[str] | None = None
+    ) -> list[Memory]:
         return await self._list_memories_rows(entities=entities)
 
     async def delete_memory(self, memory_id: str) -> None:
@@ -782,13 +783,13 @@ class StorageBackend(ABC):
     @abstractmethod
     async def get_embedding(
         self, *, canonical_id: str, embedding_model_name: str,
-    ) -> Optional[Embedding]:
+    ) -> Embedding | None:
         """Fetch one embedding row; ``None`` when no row matches."""
 
     @abstractmethod
     async def list_embeddings(
         self, *, embedding_model_name: str,
-    ) -> List[Embedding]:
+    ) -> list[Embedding]:
         """Return every row for ``embedding_model_name``. Used by the
         search service to load the entire corpus into a numpy matrix."""
 
@@ -815,7 +816,7 @@ class StorageBackend(ABC):
     # working unchanged; the bundled backends override these to issue one
     # round-trip via :class:`SidecarEmbeddingStore`.
 
-    async def save_embeddings(self, rows: List[Embedding]) -> None:
+    async def save_embeddings(self, rows: list[Embedding]) -> None:
         """Persist many embedding rows in one round-trip. Default
         implementation calls :meth:`save_embedding` for each row."""
         for row in rows:
@@ -824,14 +825,14 @@ class StorageBackend(ABC):
     async def get_embeddings_for_canonical_ids(
         self,
         *,
-        canonical_ids: List[str],
+        canonical_ids: list[str],
         embedding_model_name: str,
-    ) -> Dict[str, "Embedding"]:
+    ) -> dict[str, "Embedding"]:
         """Fetch every embedding row in ``canonical_ids`` under the given
         ``embedding_model_name`` in one round-trip. Returns a dict keyed
         by ``canonical_id``; missing ids are simply absent from the dict.
         Default implementation calls :meth:`get_embedding` for each id."""
-        out: Dict[str, Embedding] = {}
+        out: dict[str, Embedding] = {}
         for canonical_id in canonical_ids:
             row = await self.get_embedding(
                 canonical_id=canonical_id,
@@ -846,7 +847,7 @@ class StorageBackend(ABC):
 # Storage factory with pluggable registry
 # ---------------------------------------------------------------------------
 
-_STORAGE_REGISTRY: Dict[str, Callable[[str], StorageBackend]] = {}
+_STORAGE_REGISTRY: dict[str, Callable[[str], StorageBackend]] = {}
 
 
 def register_storage(scheme: str, factory: Callable[[str], StorageBackend]) -> None:

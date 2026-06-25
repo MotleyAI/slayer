@@ -29,7 +29,6 @@ pre-filter, every memory in storage would be returned.)
 
 from __future__ import annotations
 
-from typing import List, Tuple
 
 from rank_bm25 import BM25Plus
 
@@ -37,9 +36,9 @@ from slayer.memories.models import Memory
 
 
 def bm25_rank(
-    memories: List[Memory],
-    query_entities: List[str],
-) -> List[Tuple[Memory, float]]:
+    memories: list[Memory],
+    query_entities: list[str],
+) -> list[tuple[Memory, float]]:
     """Rank ``memories`` against ``query_entities`` using BM25Plus.
 
     Returns ``(memory, score)`` pairs sorted by score descending.
@@ -68,7 +67,7 @@ def bm25_rank(
     bm25 = BM25Plus(tokenised)
     scores = bm25.get_scores(list(query_set))
 
-    paired: List[Tuple[Memory, float]] = [
+    paired: list[tuple[Memory, float]] = [
         (memories[i], float(scores[i])) for i in eligible
     ]
     paired.sort(key=lambda pair: pair[1], reverse=True)

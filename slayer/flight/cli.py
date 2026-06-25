@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +91,7 @@ def run_flight_serve(args, *, resolve_storage, prepare_demo) -> None:
     engine = SlayerQueryEngine(storage=storage)
     handlers = FlightHandlers(engine=engine, storage=storage)
 
-    token: Optional[str] = args.token or os.environ.get("SLAYER_FLIGHT_TOKEN")
+    token: str | None = args.token or os.environ.get("SLAYER_FLIGHT_TOKEN")
 
     host = _resolve_host(host_arg=args.host, demo=args.demo, token=token)
 
@@ -112,7 +111,7 @@ def run_flight_serve(args, *, resolve_storage, prepare_demo) -> None:
     server.serve()
 
 
-def _resolve_host(*, host_arg: Optional[str], demo: bool, token: Optional[str]) -> str:
+def _resolve_host(*, host_arg: str | None, demo: bool, token: str | None) -> str:
     """Apply the §7.1 demo-loopback default.
 
     If --host is not explicitly given AND --demo is set AND no token is

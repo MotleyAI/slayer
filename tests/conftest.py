@@ -2,7 +2,7 @@
 
 import os
 import tempfile
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import pytest
 

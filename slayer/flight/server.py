@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Iterator, Optional
+from collections.abc import Iterator
 
 import pyarrow.flight as fl
 
@@ -89,9 +89,9 @@ class FlightSqlServer(fl.FlightServerBase):
         *,
         location: str,
         handlers: FlightHandlers,
-        token: Optional[str] = None,
-        tls_cert: Optional[str] = None,
-        tls_key: Optional[str] = None,
+        token: str | None = None,
+        tls_cert: str | None = None,
+        tls_key: str | None = None,
     ) -> None:
         tls_certificates = []
         if tls_cert is not None and tls_key is not None:
@@ -251,9 +251,9 @@ def build_server(
     host: str,
     port: int,
     handlers: FlightHandlers,
-    token: Optional[str] = None,
-    tls_cert: Optional[str] = None,
-    tls_key: Optional[str] = None,
+    token: str | None = None,
+    tls_cert: str | None = None,
+    tls_key: str | None = None,
 ) -> FlightSqlServer:
     """Factory wrapping ``FlightSqlServer`` with startup-time validation.
 

@@ -20,7 +20,6 @@ Two dialects were promoted out of this file to their own Tier 1 modules:
 
 from __future__ import annotations
 
-from typing import Optional
 
 from slayer.sql.dialects.base import SqlDialect
 
@@ -28,7 +27,7 @@ from slayer.sql.dialects.base import SqlDialect
 class RedshiftDialect(SqlDialect):
     sqlglot_name: str = "redshift"
     ds_type_aliases: frozenset[str] = frozenset({"redshift"})
-    explain_prefix: Optional[str] = "EXPLAIN"
+    explain_prefix: str | None = "EXPLAIN"
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = False
@@ -37,7 +36,7 @@ class RedshiftDialect(SqlDialect):
 class TrinoDialect(SqlDialect):
     sqlglot_name: str = "trino"
     ds_type_aliases: frozenset[str] = frozenset({"trino"})
-    explain_prefix: Optional[str] = "EXPLAIN ANALYZE"
+    explain_prefix: str | None = "EXPLAIN ANALYZE"
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
@@ -47,7 +46,7 @@ class PrestoDialect(SqlDialect):
     sqlglot_name: str = "presto"
     # Athena uses the Presto dialect via this alias.
     ds_type_aliases: frozenset[str] = frozenset({"presto", "athena"})
-    explain_prefix: Optional[str] = "EXPLAIN ANALYZE"
+    explain_prefix: str | None = "EXPLAIN ANALYZE"
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
@@ -56,7 +55,7 @@ class PrestoDialect(SqlDialect):
 class DatabricksDialect(SqlDialect):
     sqlglot_name: str = "databricks"
     ds_type_aliases: frozenset[str] = frozenset({"databricks"})
-    explain_prefix: Optional[str] = "EXPLAIN EXTENDED"
+    explain_prefix: str | None = "EXPLAIN EXTENDED"
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
@@ -65,7 +64,7 @@ class DatabricksDialect(SqlDialect):
 class SparkDialect(SqlDialect):
     sqlglot_name: str = "spark"
     ds_type_aliases: frozenset[str] = frozenset({"spark"})
-    explain_prefix: Optional[str] = "EXPLAIN EXTENDED"
+    explain_prefix: str | None = "EXPLAIN EXTENDED"
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
@@ -74,7 +73,7 @@ class SparkDialect(SqlDialect):
 class OracleDialect(SqlDialect):
     sqlglot_name: str = "oracle"
     ds_type_aliases: frozenset[str] = frozenset({"oracle"})
-    explain_prefix: Optional[str] = "EXPLAIN PLAN FOR"
+    explain_prefix: str | None = "EXPLAIN PLAN FOR"
     explain_postfix: str = ""
     # Oracle has neither LOG10 nor LOG2 as single-arg functions — keep
     # the canonical 2-arg LOG(base, x) form.

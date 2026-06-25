@@ -14,7 +14,6 @@ Pins the Tantivy retriever's contract:
 from __future__ import annotations
 
 import time
-from typing import List
 from unittest.mock import patch
 
 from slayer.core.enums import DataType
@@ -42,7 +41,7 @@ def _model(name: str = "orders") -> SlayerModel:
     )
 
 
-def _memories() -> List[Memory]:
+def _memories() -> list[Memory]:
     return [
         Memory(id="1", learning="amount column is in cents",
                entities=["mydb.orders.amount"]),
@@ -135,7 +134,7 @@ async def test_two_kind_filtered_queries_run_sequentially() -> None:
     """
     retriever = TantivyRetriever()
     corpus = _build_corpus()
-    call_kind_filters: List[object] = []
+    call_kind_filters: list[object] = []
 
     def fake_search_index(*, index, question, limit, kind_filter=None,
                           exclude_kind=None, fields=None):
