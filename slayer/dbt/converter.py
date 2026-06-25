@@ -77,6 +77,10 @@ _STANDARD_GRAINS: frozenset = frozenset({
 # an info-level caveat when ``target_dialect`` is one of them.
 _NO_PERCENTILE_DIALECTS: frozenset = frozenset({"mysql", "tsql", "mssql", "sqlserver"})
 
+# Shared workaround text for an unreachable cross-model filter (used by the
+# simple / ratio / derived push-down paths).
+_JOIN_REACHABILITY_SUGGESTION = "Add the required join, or filter on a local dimension."
+
 
 class DbtConversionError(Exception):
     """Raised when a dbt project cannot be converted to SLayer shape.
@@ -764,17 +768,15 @@ class DbtToSlayerConverter:
             return True
         return False
 
-    def _convert_simple_metric(self, metric: DbtMetric) -> None:
-        """A simple metric is a (filtered) re-aggregation of a single measure.
-
-        Without a filter: nothing to do — the underlying measure is already
-        addressable as a ModelMeasure. With a filter: push it down into a leaf
-        Column carrying the CASE-WHEN ``filter`` and reference it from a
-        ModelMeasure.
-        """
-        tp = metric.type_params
-
-        if tp and tp.metric_aggregation_params is not None:
+    def _simple_metric_unsupported(
+        self, metric: DbtMetric, tp: Optional[DbtMetricTypeParams]
+    ) -> bool:
+        """Route the unsupported simple-metric shapes (measure-less aggregation
+        via ``metric_aggregation_params``, time-spine gap filling) to the
+        report; return ``True`` when one fired."""
+        if tp is None:
+            return False
+        if tp.metric_aggregation_params is not None:
             self._fail_metric(
                 metric,
                 category="measure_less_metric",
@@ -786,19 +788,8 @@ class DbtToSlayerConverter:
                 suggestion="Define an explicit measure on the semantic model.",
                 raw={"metric_aggregation_params": tp.metric_aggregation_params.model_dump()},
             )
-            return
-
-        measure_name = tp.measure_name if tp else None
-        if not measure_name:
-            self._fail_metric(
-                metric,
-                category="simple_metric",
-                severity="unconverted",
-                message=f"Simple metric '{metric.name}' has no measure reference.",
-            )
-            return
-
-        mref = tp.measure if tp else None
+            return True
+        mref = tp.measure
         if mref and (mref.join_to_timespine or mref.fill_nulls_with is not None):
             self._fail_metric(
                 metric,
@@ -812,8 +803,33 @@ class DbtToSlayerConverter:
                 raw={"join_to_timespine": mref.join_to_timespine,
                      "fill_nulls_with": mref.fill_nulls_with},
             )
+            return True
+        return False
+
+    def _convert_simple_metric(self, metric: DbtMetric) -> None:
+        """A simple metric is a (filtered) re-aggregation of a single measure.
+
+        Without a filter: nothing to do — the underlying measure is already
+        addressable as a ModelMeasure. With a filter: push it down into a leaf
+        Column carrying the CASE-WHEN ``filter`` and reference it from a
+        ModelMeasure.
+        """
+        tp = metric.type_params
+
+        if self._simple_metric_unsupported(metric, tp):
             return
 
+        measure_name = tp.measure_name if tp else None
+        if not measure_name:
+            self._fail_metric(
+                metric,
+                category="simple_metric",
+                severity="unconverted",
+                message=f"Simple metric '{metric.name}' has no measure reference.",
+            )
+            return
+
+        mref = tp.measure if tp else None
         raw_filter = self._combine_filters(metric.filter, mref.filter if mref else None)
         if not raw_filter:
             return  # unfiltered simple metric — the measure is already addressable.
@@ -835,7 +851,7 @@ class DbtToSlayerConverter:
                 category="cross_model_filter",
                 severity="dropped",
                 message=f"Metric '{metric.name}': {reason}.",
-                suggestion="Add the required join, or filter on a local dimension.",
+                suggestion=_JOIN_REACHABILITY_SUGGESTION,
             )
             return
 
@@ -893,19 +909,9 @@ class DbtToSlayerConverter:
             )
             return
 
-        formula = expr
-        if tp.metrics:
-            for m_input in tp.metrics:
-                ref_name = m_input.alias or m_input.name
-                replacement, clean_failed = self._derived_input_replacement(metric, m_input)
-                if clean_failed:
-                    return
-                if replacement and replacement != ref_name:
-                    formula = re.sub(
-                        rf"\b{re.escape(ref_name)}\b",
-                        replacement.replace("\\", r"\\"),
-                        formula,
-                    )
+        formula, clean_failed = self._substitute_derived_inputs(metric, tp, expr)
+        if clean_failed:
+            return
 
         source_model_name = self._find_metric_source_model(metric)
         if source_model_name is None:
@@ -927,6 +933,28 @@ class DbtToSlayerConverter:
             return
 
         self._add_model_measure(slayer_model=slayer_model, metric=metric, formula=formula)
+
+    def _substitute_derived_inputs(
+        self, metric: DbtMetric, tp: DbtMetricTypeParams, expr: str
+    ) -> Tuple[str, bool]:
+        """Substitute each derived input ref in ``expr`` with its resolved form.
+
+        Returns ``(formula, clean_failed)``; ``clean_failed=True`` means an
+        input routed a report entry and the metric should be abandoned.
+        """
+        formula = expr
+        for m_input in tp.metrics or []:
+            ref_name = m_input.alias or m_input.name
+            replacement, clean_failed = self._derived_input_replacement(metric, m_input)
+            if clean_failed:
+                return formula, True
+            if replacement and replacement != ref_name:
+                formula = re.sub(
+                    rf"\b{re.escape(ref_name)}\b",
+                    replacement.replace("\\", r"\\"),
+                    formula,
+                )
+        return formula, False
 
     def _offset_window_ref(self, metric: DbtMetric, m_input: DbtMetricInput) -> Optional[str]:
         """Lower an ``offset_window`` input to ``time_shift(<input>, -N, '<gran>')``.
@@ -1044,7 +1072,7 @@ class DbtToSlayerConverter:
             self._fail_metric(
                 metric, category="cross_model_filter", severity="dropped",
                 message=f"Derived metric '{metric.name}': {reason}.",
-                suggestion="Add the required join, or filter on a local dimension.",
+                suggestion=_JOIN_REACHABILITY_SUGGESTION,
             )
             return None
         slayer_model = self._models_by_name.get(source_sm.name)
@@ -1137,7 +1165,7 @@ class DbtToSlayerConverter:
             self._fail_metric(
                 metric, category="cross_model_filter", severity="dropped",
                 message=f"Ratio metric '{metric.name}': {reason}.",
-                suggestion="Add the required join, or filter on a local dimension.",
+                suggestion=_JOIN_REACHABILITY_SUGGESTION,
             )
             return None
 
@@ -1193,6 +1221,21 @@ class DbtToSlayerConverter:
             )
             return
 
+        slayer_model = self._cumulative_source_model(metric, measure_name)
+        if slayer_model is None:
+            return
+
+        self._add_model_measure(
+            slayer_model=slayer_model,
+            metric=metric,
+            formula=f"cumsum({measure_ref})",
+        )
+
+    def _cumulative_source_model(
+        self, metric: DbtMetric, measure_name: str
+    ) -> Optional[SlayerModel]:
+        """Resolve the SlayerModel a cumulative metric folds into, routing the
+        not-found / not-converted cases to the report (returns ``None``)."""
         source_model_name = self._find_metric_source_model(metric)
         if source_model_name is None:
             # measure lives on exactly one model — fall back to that.
@@ -1203,8 +1246,7 @@ class DbtToSlayerConverter:
                 metric, category="cumulative_metric", severity="unconverted",
                 message=f"Could not determine source model for cumulative metric '{metric.name}'.",
             )
-            return
-
+            return None
         slayer_model = self._models_by_name.get(source_model_name)
         if slayer_model is None:
             self._fail_metric(
@@ -1214,13 +1256,8 @@ class DbtToSlayerConverter:
                     f"'{metric.name}' was not converted."
                 ),
             )
-            return
-
-        self._add_model_measure(
-            slayer_model=slayer_model,
-            metric=metric,
-            formula=f"cumsum({measure_ref})",
-        )
+            return None
+        return slayer_model
 
     def _cumulative_clean_fail(
         self,
@@ -1299,19 +1336,50 @@ class DbtToSlayerConverter:
         self, raw: str, source_sm: DbtSemanticModel
     ) -> Tuple[bool, Optional[str]]:
         """Whether every ``Dimension('entity__dim')`` in ``raw`` is reachable
-        from ``source_sm`` (local prefix or an entity it joins to)."""
-        source_entity_names = {e.name for e in source_sm.entities}
-        if source_sm.primary_entity:
-            source_entity_names.add(source_sm.primary_entity)
+        from ``source_sm`` by walking the join graph transitively — not just a
+        one-hop entity-name check, so a legal multi-hop filter (e.g.
+        ``orders → customers → regions``) passes."""
+        reachable = self._reachable_entity_names(source_sm)
         for mm in _DIMENSION_RE.finditer(raw):
             entity_name, dim_name = mm.group(1), mm.group(2)
-            if entity_name == source_sm.name or entity_name in source_entity_names:
+            if entity_name == source_sm.name or entity_name in reachable:
                 continue
             return False, (
                 f"filter dimension '{entity_name}__{dim_name}' is not reachable "
                 f"from model '{source_sm.name}' (no join to entity '{entity_name}')"
             )
         return True, None
+
+    def _reachable_entity_names(self, source_sm: DbtSemanticModel) -> set:
+        """BFS over the join graph from ``source_sm``, returning every entity
+        name (and model name) reachable transitively.
+
+        Two semantic models are joinable when they share an entity (the
+        ``EntityRegistry`` indexes every primary/unique entity to its owning
+        models, so following a model's entities to their primary models walks
+        both foreign-key joins and shared-primary peer joins). Repeating the
+        walk yields multi-hop reachability.
+        """
+        reachable: set = set()
+        visited_models: set = set()
+        queue = [source_sm.name]
+        while queue:
+            mname = queue.pop()
+            if mname in visited_models:
+                continue
+            visited_models.add(mname)
+            sm = self._dbt_models_by_name.get(mname)
+            if sm is None:
+                continue
+            reachable.add(sm.name)
+            if sm.primary_entity:
+                reachable.add(sm.primary_entity)
+            for e in sm.entities:
+                reachable.add(e.name)
+                for peer_model, _expr in self.entity_registry._primaries.get(e.name, []):
+                    if peer_model not in visited_models:
+                        queue.append(peer_model)
+        return reachable
 
     def _filtered_leaf_ref(
         self,

@@ -689,6 +689,48 @@ def test_cross_model_filter_unreachable_clean_fails() -> None:
                for e in _all_report_entries(result))
 
 
+def test_cross_model_filter_pushes_down_through_multi_hop_join() -> None:
+    """DEV-1595 review: reachability walks the join graph transitively, so a
+    filter on a model two hops away (orders → customers → regions) pushes down
+    instead of clean-failing."""
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(
+                name="orders", model="orders",
+                entities=[
+                    DbtEntity(name="order_id", type="primary", expr="id"),
+                    DbtEntity(name="customer", type="foreign", expr="customer_id"),
+                ],
+                measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")],
+            ),
+            DbtSemanticModel(
+                name="customers", model="customers",
+                entities=[
+                    DbtEntity(name="customer", type="primary", expr="id"),
+                    DbtEntity(name="region", type="foreign", expr="region_id"),
+                ],
+            ),
+            DbtSemanticModel(
+                name="regions", model="regions",
+                entities=[DbtEntity(name="region", type="primary", expr="id")],
+                dimensions=[DbtDimension(name="zone", type="categorical")],
+            ),
+        ],
+        metrics=[
+            DbtMetric(
+                name="zone_a_revenue",
+                type="simple",
+                type_params=DbtMetricTypeParams(measure="revenue"),
+                filter="{{ Dimension('region__zone') }} = 'A'",
+            ),
+        ],
+    )
+    result = _convert(project)
+    m = _measure(result, "zone_a_revenue", model="orders")
+    col = _column_for(result, m.formula, model="orders")
+    assert col.filter is not None and "zone" in col.filter
+
+
 # ───────────────── Part 4 — measure-less / timespine clean-fails ─────────────────
 
 
