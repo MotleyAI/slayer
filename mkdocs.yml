@@ -27,6 +27,7 @@ nav:
       - Schema Drift: concepts/schema-drift.md
       - Memories: concepts/memories.md
       - Search: concepts/search.md
+      - Row-Level Security: concepts/row-level-security.md
   - Reference:
       - MCP Server: reference/mcp.md
       - REST API: reference/rest-api.md

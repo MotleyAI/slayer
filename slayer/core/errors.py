@@ -7,7 +7,7 @@ message format is decided by the layer that raises it.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, List, Tuple
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from slayer.engine.schema_drift import ToDeleteEntry  # noqa: F401
@@ -114,6 +114,38 @@ class ColumnCycleError(SlayerError, ValueError):
         self.cycle: List[Tuple[str, str]] = list(cycle)
         chain = " → ".join(f"{m}.{c}" for m, c in self.cycle)
         super().__init__(f"Circular column reference detected: {chain}")
+
+
+class ForcedFilterError(SlayerError):
+    """Raised by the session-policy forced-filter rewrite (DEV-1578).
+
+    Fired when a configured ``ColumnFilterRule`` cannot be safely applied to a
+    physical table referenced by a query:
+
+    - the table **confirms it lacks** the rule's column and the rule's
+      ``on_unapplicable`` is ``"block"`` (the default), or
+    - the column's presence **cannot be confirmed** (introspection error) —
+      a fail-closed security control that blocks regardless of
+      ``on_unapplicable``, or
+    - the rewrite is asked to operate on a non-SELECT statement root.
+
+    Carries the offending ``table``, ``column``, and ``rule_name`` (the
+    rule's optional ``name``) for diagnostics; any may be ``None`` for the
+    statement-root guard.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        table: Optional[str] = None,
+        column: Optional[str] = None,
+        rule_name: Optional[str] = None,
+    ) -> None:
+        self.table = table
+        self.column = column
+        self.rule_name = rule_name
+        super().__init__(message)
 
 
 class DistinctDimensionValuesError(SlayerError, ValueError):

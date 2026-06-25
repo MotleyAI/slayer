@@ -48,8 +48,8 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.sql.sql_predicate import parse_sql_predicate
+from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.engine.ingestion import (
-    _safe_get_columns,
     _safe_get_pk_constraint,
     _sa_type_is_float,
     _sa_type_to_data_type,

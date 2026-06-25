@@ -22,6 +22,7 @@ from slayer.memories.models import (
 )
 
 if TYPE_CHECKING:
+    from slayer.core.policy import SessionPolicy
     from slayer.search.service import SearchResponse
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,8 @@ class SlayerClient:
         self,
         url: str = "http://localhost:5143",
         storage: Optional[Any] = None,
+        *,
+        policy: Optional["SessionPolicy"] = None,
     ):
         self.url = url.rstrip("/")
         self._storage = storage
@@ -70,7 +73,16 @@ class SlayerClient:
         if storage is not None:
             from slayer.engine.query_engine import SlayerQueryEngine
 
-            self._engine = SlayerQueryEngine(storage=storage)
+            self._engine = SlayerQueryEngine(storage=storage, policy=policy)
+        elif policy is not None:
+            # DEV-1578: forced-filter policy is enforced in the local engine
+            # only. Silently ignoring it in HTTP mode would disable a security
+            # control, so fail fast instead.
+            raise ValueError(
+                "policy= is only supported in local-engine mode (pass "
+                "storage=...); server-side policy over HTTP is not yet "
+                "available."
+            )
 
     async def _request(
         self,
