@@ -1597,34 +1597,33 @@ class DbtToSlayerConverter:
             dbt_measure = next((m for m in sm.measures if m.name == name), None)
             if dbt_measure is not None:
                 return sm, dbt_measure, None
-        for mtc in self.project.metrics:
-            if mtc.name != name:
-                continue
-            if (
-                mtc.type
-                and mtc.type.lower() == "simple"
-                and mtc.type_params
-                and mtc.type_params.measure_name
-            ):
-                tp = mtc.type_params
-                mref = tp.measure
-                # Unsupported simple-metric shapes (measure-less aggregation,
-                # time-spine gap fill) are clean-failed elsewhere; they must NOT
-                # be resurrected as plain pushable aggregates here.
-                if tp.metric_aggregation_params is not None:
-                    return None
-                if mref and (mref.join_to_timespine or mref.fill_nulls_with is not None):
-                    return None
-                inner = self._resolve_input_to_leaf_filtered(tp.measure_name)
-                if inner is None:
-                    return None
-                inner_sm, inner_measure, inner_filter = inner
-                own_filter = self._combine_filters(
-                    mtc.filter, mref.filter if mref else None
-                )
-                return inner_sm, inner_measure, self._combine_filters(own_filter, inner_filter)
-            return None  # ratio / derived / cumulative / conversion → multi-aggregate
-        return None
+        metric = next((m for m in self.project.metrics if m.name == name), None)
+        if metric is None:
+            return None
+        tp = metric.type_params
+        if (metric.type or "").lower() == "simple" and tp and tp.measure_name:
+            return self._resolve_simple_metric_leaf(metric)
+        return None  # ratio / derived / cumulative / conversion → multi-aggregate
+
+    def _resolve_simple_metric_leaf(
+        self, mtc: DbtMetric
+    ) -> Optional[Tuple[DbtSemanticModel, DbtMeasure, Optional[str]]]:
+        """Resolve a *simple* metric input to its filtered leaf, accumulating
+        the metric's own filter. Unsupported shapes (measure-less, time-spine)
+        return ``None`` so the push-down clean-fails rather than resurrecting
+        them as plain aggregates."""
+        tp = mtc.type_params
+        mref = tp.measure
+        if tp.metric_aggregation_params is not None:
+            return None
+        if mref and (mref.join_to_timespine or mref.fill_nulls_with is not None):
+            return None
+        inner = self._resolve_input_to_leaf_filtered(tp.measure_name)
+        if inner is None:
+            return None
+        inner_sm, inner_measure, inner_filter = inner
+        own_filter = self._combine_filters(mtc.filter, mref.filter if mref else None)
+        return inner_sm, inner_measure, self._combine_filters(own_filter, inner_filter)
 
     def _find_metric_source_model(self, metric: DbtMetric) -> Optional[str]:
         """Determine the source model for a metric.
