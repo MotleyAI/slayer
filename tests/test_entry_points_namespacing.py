@@ -20,7 +20,7 @@ storage-namespacing tests + the new API endpoints.
 """
 
 import tempfile
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -67,7 +67,7 @@ def _ds(name: str) -> DatasourceConfig:
     return DatasourceConfig(name=name, type="postgres", host="h")
 
 
-async def _call_mcp(server, *, name: str, arguments: Optional[dict[str, Any]] = None) -> str:
+async def _call_mcp(server, *, name: str, arguments: dict[str, Any] | None = None) -> str:
     """Invoke an MCP tool and return its text result."""
     blocks, _ = await server.call_tool(name=name, arguments=arguments or {})
     return blocks[0].text

@@ -11,12 +11,12 @@ optional fields fills them in as ``None`` on validation. We bump the
 Other dialects ignore the new fields entirely.
 """
 
-from typing import Any, Dict
+from typing import Any
 
 from slayer.storage.migrations import register_migration
 
 
 @register_migration("DatasourceConfig", 1)
-def _datasource_v1_to_v2(data: Dict[str, Any]) -> Dict[str, Any]:
+def _datasource_v1_to_v2(data: dict[str, Any]) -> dict[str, Any]:
     """v1 → v2: no-op forward; new fields default to None via Pydantic."""
     return data

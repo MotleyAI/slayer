@@ -26,7 +26,6 @@ behaviour as a normal query against a down DS would.
 from __future__ import annotations
 
 import logging
-from typing import Optional, Tuple
 
 
 from slayer.core.enums import DataType
@@ -36,7 +35,7 @@ from slayer.core.models import DatasourceConfig
 logger = logging.getLogger(__name__)
 
 
-def _column_is_base(sql: Optional[str]) -> bool:
+def _column_is_base(sql: str | None) -> bool:
     """A column whose ``sql`` is ``None`` or a single bare identifier is a
     "base" column — it claims a live database column. Derived expressions
     (``amount * 2``, ``length(name)``, ``customers.region``, etc.) are not.
@@ -54,7 +53,7 @@ def _is_sqlite_datasource(datasource: DatasourceConfig) -> bool:
     return (datasource.type or "").lower() == "sqlite"
 
 
-def _is_auto_default_integer_format_dict(fmt: Optional[dict]) -> bool:
+def _is_auto_default_integer_format_dict(fmt: dict | None) -> bool:
     """Dict-shape mirror of
     :func:`slayer.engine.ingestion._is_auto_default_integer_format` —
     detects the auto-ingested ``NumberFormat(type=INTEGER)`` default so
@@ -71,7 +70,7 @@ def _is_auto_default_integer_format_dict(fmt: Optional[dict]) -> bool:
     )
 
 
-def _format_for_widened_type_dict(verdict: DataType) -> Optional[dict]:
+def _format_for_widened_type_dict(verdict: DataType) -> dict | None:
     if verdict is DataType.DOUBLE:
         return {"type": "float"}
     return None  # TEXT clears format
@@ -135,7 +134,7 @@ def has_sqlite_widenable_columns(d: dict) -> bool:
 
 def _parse_sql_table_with_default_schema(
     sql_table: str, datasource: DatasourceConfig,
-) -> Tuple[Optional[str], str]:
+) -> tuple[str | None, str]:
     """Split ``sql_table`` into ``(schema, table)``, falling back to
     ``datasource.schema_name`` when the name is unqualified. This honours
     attached SQLite schemas instead of silently using ``main``.
@@ -148,9 +147,9 @@ def _parse_sql_table_with_default_schema(
 
 
 def _safe_probe(
-    *, conn, table: str, column: str, schema: Optional[str],
+    *, conn, table: str, column: str, schema: str | None,
     sql_table: str, persisted_type: str,
-) -> Optional[DataType]:
+) -> DataType | None:
     """Run the probe with a defence-in-depth try/except so the refinement
     loop never aborts on an unexpected exception."""
     from slayer.sql.sqlite_introspect import probe_sqlite_integer_column
@@ -206,7 +205,7 @@ def _apply_format_flip(
 
 
 def _refine_one_column(
-    *, conn, col: dict, d: dict, table_name: str, schema_name: Optional[str],
+    *, conn, col: dict, d: dict, table_name: str, schema_name: str | None,
     sql_table: str,
 ) -> bool:
     """Run the probe for one column and apply the verdict. Returns True if

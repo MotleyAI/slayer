@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import sqlalchemy as sa
 
@@ -100,7 +100,7 @@ def _cell_is_present(value: Any) -> bool:
     return True
 
 
-def _truncate_description(text: Optional[str], max_chars: Optional[int]) -> Optional[str]:
+def _truncate_description(text: str | None, max_chars: int | None) -> str | None:
     """Trim a description to ``max_chars`` and append the truncation marker.
 
     Returns the input unchanged when ``max_chars`` is ``None`` or the text is
@@ -114,7 +114,7 @@ def _truncate_description(text: Optional[str], max_chars: Optional[int]) -> Opti
     return text[:max_chars] + _TRUNCATION_MARKER
 
 
-def _format_meta(meta: Optional[Dict[str, Any]]) -> Optional[str]:
+def _format_meta(meta: dict[str, Any] | None) -> str | None:
     """Compact JSON for the ``inspect_model`` meta cell.
 
     Returns ``None`` when ``meta`` is ``None`` so ``_markdown_table``'s
@@ -126,8 +126,8 @@ def _format_meta(meta: Optional[Dict[str, Any]]) -> Optional[str]:
 
 
 def _resolve_inspect_sections(
-    sections: Optional[List[str]],
-) -> Tuple[List[str], List[str]]:
+    sections: list[str] | None,
+) -> tuple[list[str], list[str]]:
     """Validate and normalise the ``sections`` argument for ``inspect_model``.
 
     Returns ``(resolved, unknown)`` where ``resolved`` is the list of valid
@@ -155,11 +155,11 @@ def _resolve_inspect_sections(
 
 def _render_inspect_footer(
     *,
-    included: List[str],
-    names_only: List[str],
-    omitted: List[str],
-    unknown: List[str],
-) -> Optional[str]:
+    included: list[str],
+    names_only: list[str],
+    omitted: list[str],
+    unknown: list[str],
+) -> str | None:
     """Build the per-call truncation footer for ``inspect_model``.
 
     Returns ``None`` when there is nothing to report (no trimming, no
@@ -167,7 +167,7 @@ def _render_inspect_footer(
     """
     if not (names_only or omitted or unknown):
         return None
-    lines: List[str] = []
+    lines: list[str] = []
     if unknown:
         # repr() escapes newlines / quote chars so a caller-supplied value
         # like "foo\n> evil" can't forge additional footer lines.
@@ -186,7 +186,7 @@ def _render_inspect_footer(
     return "\n".join(lines) if lines else None
 
 
-def _markdown_table(rows: List[Dict[str, Any]], columns: List[str]) -> str:
+def _markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
     """Render a list of row dicts as a GitHub-flavored markdown table.
 
     Columns with no present cell across every row are dropped automatically so
@@ -227,11 +227,11 @@ def _markdown_table(rows: List[Dict[str, Any]], columns: List[str]) -> str:
 
 def _choose_sample_dims(
     model: SlayerModel,
-) -> Tuple[List[Dict[str, str]], set]:
+) -> tuple[list[dict[str, str]], set]:
     """Pick up to two categorical (TEXT/BOOLEAN) non-hidden, non-PK columns to
     group the sample by, so they aren't also aggregated as measures
     (count_distinct(status) grouped by status is always 1)."""
-    dims: List[Dict[str, str]] = []
+    dims: list[dict[str, str]] = []
     dim_names: set = set()
     for c in model.columns:
         if c.hidden or c.primary_key:
@@ -249,8 +249,8 @@ def _choose_sample_dims(
 def _choose_sample_agg(
     column: Column,
     *,
-    measure_types: Dict[str, str],
-) -> Optional[str]:
+    measure_types: dict[str, str],
+) -> str | None:
     """Pick a sample aggregation for ``column``, or ``None`` to skip it.
 
     - With a restricted ``allowed_aggregations`` that excludes ``avg``: prefer
@@ -279,8 +279,8 @@ def _choose_sample_agg(
 def _build_sample_query_args(
     model: SlayerModel,
     num_rows: int,
-    measure_types: Optional[Dict[str, str]] = None,
-) -> Dict[str, Any]:
+    measure_types: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Build the ``SlayerQuery`` payload for ``inspect_model``'s sample data.
 
     First measure is always ``*:count``; then one aggregation per non-hidden,
@@ -289,7 +289,7 @@ def _build_sample_query_args(
     measure_types = measure_types or {}
     dims, dim_names = _choose_sample_dims(model)
 
-    measures: List[Dict[str, str]] = [{"formula": "*:count"}]
+    measures: list[dict[str, str]] = [{"formula": "*:count"}]
     for c in model.columns:
         if c.hidden or c.primary_key or c.name in dim_names:
             continue
@@ -307,10 +307,10 @@ def _build_sample_query_args(
 
 
 def _strip_model_prefix(
-    columns: List[str],
-    data: List[Dict[str, Any]],
+    columns: list[str],
+    data: list[dict[str, Any]],
     model_name: str,
-) -> Tuple[List[str], List[Dict[str, Any]]]:
+) -> tuple[list[str], list[dict[str, Any]]]:
     """Drop the redundant ``{model_name}.`` prefix from sample-data column keys.
 
     Keeps the markdown table compact (the model name already appears in the
@@ -328,7 +328,7 @@ def _strip_model_prefix(
 
 async def _get_row_count(
     model: SlayerModel, engine: SlayerQueryEngine,
-) -> Optional[int]:
+) -> int | None:
     """Return the total row count of ``model``'s underlying table, or ``None``
     on any failure. Uses a bare ``*:count`` query — the same aggregation a user
     would run to ask for the count.
@@ -360,7 +360,7 @@ async def _get_row_count(
 async def _collect_measure_profile(
     model: SlayerModel,
     engine: SlayerQueryEngine,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Probe min/max for each non-hidden, non-primary-key NUMERIC/TEMPORAL
     column via a single batched query.
 
@@ -394,7 +394,7 @@ async def _collect_measure_profile(
          "type": str(c.type)}
         for c in columns
     ]
-    measures_payload: List[Dict[str, str]] = []
+    measures_payload: list[dict[str, str]] = []
     for c in columns:
         measures_payload.append({"formula": f"_slayer_probe_{c.name}:min"})
         measures_payload.append({"formula": f"_slayer_probe_{c.name}:max"})
@@ -409,7 +409,7 @@ async def _collect_measure_profile(
     except Exception:
         return {}
 
-    result: Dict[str, str] = {}
+    result: dict[str, str] = {}
     for c in columns:
         mn = row.get(f"{model.name}._slayer_probe_{c.name}_min")
         mx = row.get(f"{model.name}._slayer_probe_{c.name}_max")
@@ -420,7 +420,7 @@ async def _collect_measure_profile(
     return result
 
 
-def _build_backing_query_info(model: SlayerModel) -> Optional[dict]:
+def _build_backing_query_info(model: SlayerModel) -> dict | None:
     """Build the ``backing_query`` block for inspect_model output.
 
     Returns ``None`` for non-query-backed models. For query-backed models,
@@ -435,7 +435,7 @@ def _build_backing_query_info(model: SlayerModel) -> Optional[dict]:
     from slayer.core.query import extract_placeholder_names
 
     all_placeholders: set = set()
-    stage_dicts: List[dict] = []
+    stage_dicts: list[dict] = []
     # A placeholder is "required" only if it has no default at any layer the
     # engine consults: model.query_variables OR the stage's own variables.
     defaulted: set = set(model.query_variables.keys())
@@ -482,7 +482,7 @@ def _render_stage_field_list(key: str, val: list) -> str:
     return "; ".join(_render_field_value(v) for v in val)
 
 
-def _render_source_model(src: Any) -> Optional[str]:
+def _render_source_model(src: Any) -> str | None:
     """Render a stage's ``source_model`` (str or ModelExtension dict)."""
     if isinstance(src, str):
         return f"- source_model: `{src}`"
@@ -493,10 +493,10 @@ def _render_source_model(src: Any) -> Optional[str]:
     return None
 
 
-def _render_stage(i: int, stage: dict, total: int) -> List[str]:
+def _render_stage(i: int, stage: dict, total: int) -> list[str]:
     """Render one stage's markdown lines."""
     title = stage.get("name") or ("final" if i == total else f"stage {i}")
-    out: List[str] = [f"\n**{i}. {title}**"]
+    out: list[str] = [f"\n**{i}. {title}**"]
     src_line = _render_source_model(stage.get("source_model"))
     if src_line:
         out.append(src_line)
@@ -510,7 +510,7 @@ def _render_stage(i: int, stage: dict, total: int) -> List[str]:
 
 def _backing_query_markdown_section(info: dict) -> str:
     """Format the ``backing_query`` info as a markdown section."""
-    lines: List[str] = ["## Backing Query"]
+    lines: list[str] = ["## Backing Query"]
     stages = info.get("stages") or []
     for i, stage in enumerate(stages, start=1):
         lines.extend(_render_stage(i, stage, len(stages)))
@@ -541,8 +541,8 @@ def _source_type_for(model: SlayerModel) -> str:
 # ---------------------------------------------------------------------------
 
 def model_skeleton_fields(
-    *, model: SlayerModel, max_chars: Optional[int] = None,
-) -> Dict[str, Any]:
+    *, model: SlayerModel, max_chars: int | None = None,
+) -> dict[str, Any]:
     """Cheap, DB-free structured skeleton of a model.
 
     Shape: ``{name, canonical_id, description, column_names, measure_names,
@@ -566,12 +566,12 @@ def model_skeleton_fields(
     }
 
 
-def _skeleton_csv(names: List[str]) -> str:
+def _skeleton_csv(names: list[str]) -> str:
     return ", ".join(names) if names else _NONE_PLACEHOLDER
 
 
 def render_model_skeleton(
-    *, model: SlayerModel, max_chars: Optional[int] = None,
+    *, model: SlayerModel, max_chars: int | None = None,
 ) -> str:
     """Heading-less markdown schema skeleton (DB-free).
 
@@ -581,7 +581,7 @@ def render_model_skeleton(
     ``models_summary(compact)``). The caller prepends the ``#``/``##`` heading.
     """
     fields = model_skeleton_fields(model=model, max_chars=max_chars)
-    lines: List[str] = []
+    lines: list[str] = []
     if fields["description"]:
         lines.append(fields["description"])
     lines.append(f"Columns: {_skeleton_csv(fields['column_names'])}")
@@ -595,12 +595,12 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     *,
     model: SlayerModel,
     storage: StorageBackend,
-    engine: Optional[SlayerQueryEngine],
+    engine: SlayerQueryEngine | None,
     num_rows: int = 3,
     show_sql: bool = False,
     format: str = "markdown",
-    sections: Optional[List[str]] = None,
-    descriptions_max_chars: Optional[int] = None,
+    sections: list[str] | None = None,
+    descriptions_max_chars: int | None = None,
     compact: bool = True,
 ) -> str:
     """Render a complete-yet-compact view of an already-resolved model.
@@ -638,12 +638,12 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     ]
 
     truncated_model_desc = _truncate_description(model.description, descriptions_max_chars)
-    out_sections: List[str] = [f"# Model: `{model.name}`"]
+    out_sections: list[str] = [f"# Model: `{model.name}`"]
     if truncated_model_desc:
         out_sections.append(truncated_model_desc)
 
     # Metadata bullets (incl. row_count from a cheap *:count query)
-    meta: List[str] = []
+    meta: list[str] = []
     if model.data_source:
         meta.append(f"- **data_source:** `{model.data_source}`")
     if model.sql_table:
@@ -656,7 +656,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         meta.append("- **hidden:** true")
     if model.meta is not None:
         meta.append(f"- **meta:** {json.dumps(model.meta, sort_keys=True, default=str)}")
-    row_count: Optional[int] = None
+    row_count: int | None = None
     if engine is not None:
         row_count = await _get_row_count(model=model, engine=engine)
     if row_count is not None:
@@ -687,12 +687,12 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     # DB-hitting computations — skip when their consumers aren't requested
     # (and when no engine is available, DEV-1588).
     # ------------------------------------------------------------------
-    profile_by_name: Dict[str, str] = {}
-    profile_values_by_name: Dict[str, Optional[List[str]]] = {}
-    distinct_count_by_name: Dict[str, Optional[int]] = {}
-    measure_profile: Dict[str, str] = {}
+    profile_by_name: dict[str, str] = {}
+    profile_values_by_name: dict[str, list[str] | None] = {}
+    distinct_count_by_name: dict[str, int | None] = {}
+    measure_profile: dict[str, str] = {}
     if engine is not None and "columns" in included_set:
-        uncached_columns: List[Column] = []
+        uncached_columns: list[Column] = []
         for c in model.columns:
             if c.hidden or c.primary_key:
                 continue
@@ -734,9 +734,9 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
 
             async def _persist_sample(
                 *, col_name: str,
-                sampled: Optional[str],
-                sampled_values: Optional[List[str]],
-                distinct_count: Optional[int],
+                sampled: str | None,
+                sampled_values: list[str] | None,
+                distinct_count: int | None,
             ) -> None:
                 try:
                     await storage.update_column_sampled(
@@ -834,7 +834,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
 
     # ``measure_types`` informs the sample query's choice of avg vs
     # count_distinct. Only needed when ``samples`` is in the included set.
-    measure_types: Dict[str, str] = {}
+    measure_types: dict[str, str] = {}
     if engine is not None and "samples" in included_set:
         measure_types = await engine.get_column_types(
             model_name=model.name,
@@ -846,7 +846,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     # ------------------------------------------------------------------
     visible_columns = [c for c in model.columns if not c.hidden]
     if "columns" in included_set:
-        col_rows: List[Dict[str, Any]] = []
+        col_rows: list[dict[str, Any]] = []
         for c in visible_columns:
             aggs = ", ".join(c.allowed_aggregations) if c.allowed_aggregations else "all"
             # DEV-1480: key-presence check (not ``or`` truthiness) so an
@@ -889,7 +889,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     # Measures section
     # ------------------------------------------------------------------
     if "measures" in included_set:
-        measure_rows: List[Dict[str, Any]] = []
+        measure_rows: list[dict[str, Any]] = []
         for mm in model.measures:
             measure_rows.append({
                 "name": mm.name,
@@ -916,7 +916,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     # ------------------------------------------------------------------
     if "aggregations" in included_set:
         if model.aggregations:
-            agg_rows: List[Dict[str, Any]] = []
+            agg_rows: list[dict[str, Any]] = []
             for a in model.aggregations:
                 if a.params:
                     if show_sql:
@@ -951,7 +951,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     # Joins section
     # ------------------------------------------------------------------
     if "joins" in included_set:
-        join_rows: List[Dict[str, Any]] = []
+        join_rows: list[dict[str, Any]] = []
         for j in model.joins:
             pairs = "; ".join(f"{src} = {tgt}" for src, tgt in j.join_pairs)
             join_rows.append({
@@ -974,9 +974,9 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     # ------------------------------------------------------------------
     # Sample data (fully omitted when not in sections / no engine)
     # ------------------------------------------------------------------
-    sample_sql: Optional[str] = None
-    sample_data: Optional[Dict[str, Any]] = None
-    sample_error: Optional[str] = None
+    sample_sql: str | None = None
+    sample_data: dict[str, Any] | None = None
+    sample_error: str | None = None
     if engine is not None and "samples" in included_set:
         query_args = _build_sample_query_args(
             model=model, num_rows=num_rows, measure_types=measure_types,
@@ -1021,8 +1021,8 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     # ``None``; query-bearing memories are recall-only. Auto-pruned when
     # no learning-shaped memory matches.
     # ------------------------------------------------------------------
-    relevant_learnings: List[Any] = []
-    wanted: List[str] = []
+    relevant_learnings: list[Any] = []
+    wanted: list[str] = []
     if "learnings" in included_set:
         ds = model.data_source
         wanted = [f"{ds}.{model.name}"]
@@ -1070,7 +1070,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     )
 
     if fmt == "json":
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model_name": model.name,
             "description": truncated_model_desc,
             "data_source": model.data_source,
@@ -1092,7 +1092,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
 
         # Columns
         if "columns" in included_set:
-            col_payloads: List[Dict[str, Any]] = []
+            col_payloads: list[dict[str, Any]] = []
             for c in visible_columns:
                 # DEV-1480 key-presence (not ``or`` truthiness) so empty
                 # string ``sampled=""`` (all-NULL categorical) survives.

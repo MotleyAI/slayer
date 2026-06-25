@@ -11,7 +11,6 @@ advanced_search extra.
 from __future__ import annotations
 
 import re
-from typing import Set
 
 from slayer.core.errors import SlayerError
 
@@ -38,7 +37,7 @@ _NAIVE_PATTERN = re.compile(
 _AS_ID_RE = re.compile(pattern=r"\bAS\s+id\b", flags=re.IGNORECASE)
 
 
-def parse_naive_label_filter(cypher: str) -> Set[str]:
+def parse_naive_label_filter(cypher: str) -> set[str]:
     """Parse a simple MATCH (n:Label1:Label2) RETURN n.id AS id expression
     and return the set of kind strings to filter search results on.
 
@@ -62,7 +61,7 @@ def parse_naive_label_filter(cypher: str) -> Set[str]:
         )
     labels_str = match.group("labels")
     labels = [lb.strip() for lb in re.split(r"\s*:\s*", labels_str) if lb.strip()]
-    kinds: Set[str] = set()
+    kinds: set[str] = set()
     for label in labels:
         kind = _LABEL_TO_KIND.get(label.lower())
         if kind is None:

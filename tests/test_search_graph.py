@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 from unittest.mock import patch
 
 import pytest

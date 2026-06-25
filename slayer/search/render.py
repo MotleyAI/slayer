@@ -27,7 +27,6 @@ Spec rules pinned by ``tests/test_search_render.py``:
 from __future__ import annotations
 
 import json
-from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -57,10 +56,10 @@ class RenderedEntity(BaseModel):
     canonical_id: str
     kind: str
     text: str
-    description: Optional[str] = None
+    description: str | None = None
 
 
-def _named_children_csv(items: List[tuple[str, str]]) -> str:
+def _named_children_csv(items: list[tuple[str, str]]) -> str:
     """Render ``[("a", "column"), ("b", "column")]`` as ``"a (column), b (column)"``."""
     return ", ".join(f"{name} ({kind})" for name, kind in items)
 
@@ -73,8 +72,8 @@ def _named_children_csv(items: List[tuple[str, str]]) -> str:
 def render_datasource_text(
     *,
     name: str,
-    models: List[SlayerModel],
-    description: Optional[str] = None,
+    models: list[SlayerModel],
+    description: str | None = None,
 ) -> str:
     """Datasource doc: name + own description (when set) + named-child
     mentions for each model.
@@ -87,7 +86,7 @@ def render_datasource_text(
     ``DatasourceConfig.description`` field, in parity with the other
     entity render helpers.
     """
-    lines: List[str] = [f"Datasource: {name}"]
+    lines: list[str] = [f"Datasource: {name}"]
     if description:
         lines.append(f"Description: {description}")
     visible = [m for m in models if not m.hidden]
@@ -103,8 +102,8 @@ def render_datasource_text(
 def render_datasource_pair(
     *,
     name: str,
-    models: List[SlayerModel],
-    description: Optional[str] = None,
+    models: list[SlayerModel],
+    description: str | None = None,
 ) -> RenderedEntity:
     """Unified dispatch (DEV-1513) for the datasource doc. Used by both
     the tantivy corpus builder and the embedding refresh path so the
@@ -133,7 +132,7 @@ def render_datasource_pair(
 def render_model_text(*, model: SlayerModel) -> str:
     """Model doc: own metadata, non-named children in full, named children
     by name + kind only."""
-    lines: List[str] = [
+    lines: list[str] = [
         f"Model: {model.data_source}.{model.name}",
     ]
     if model.description:
@@ -198,7 +197,7 @@ def render_model_text(*, model: SlayerModel) -> str:
 
 def render_column_text(*, model: SlayerModel, column: Column) -> str:
     """Column doc: parent qualifier + per-field metadata + cached sample."""
-    lines: List[str] = [
+    lines: list[str] = [
         f"Column: {model.data_source}.{model.name}.{column.name}",
         f"Type: {column.type}",
     ]
@@ -257,7 +256,7 @@ def render_column_text(*, model: SlayerModel, column: Column) -> str:
 
 def render_measure_text(*, model: SlayerModel, measure: ModelMeasure) -> str:
     name = measure.name or ""
-    lines: List[str] = [
+    lines: list[str] = [
         f"Measure: {model.data_source}.{model.name}.{name}",
         f"Formula: {measure.formula}",
     ]
@@ -274,7 +273,7 @@ def render_measure_text(*, model: SlayerModel, measure: ModelMeasure) -> str:
 
 
 def render_aggregation_text(*, model: SlayerModel, aggregation: Aggregation) -> str:
-    lines: List[str] = [
+    lines: list[str] = [
         f"Aggregation: {model.data_source}.{model.name}.{aggregation.name}",
     ]
     if aggregation.formula:
@@ -303,7 +302,7 @@ def render_memory_text(*, memory: Memory) -> str:
     ``Memory.description``. Without this, installs without the optional
     embedding extra would lose recall for the new field.
     """
-    lines: List[str] = [memory.learning]
+    lines: list[str] = [memory.learning]
     if memory.description:
         lines.append(memory.description)
     if memory.entities:
@@ -319,7 +318,7 @@ def compact_description_from_learning(learning: str) -> str:
     No special-case for ``description:`` keyword lines (the user
     explicitly rejected that during spec review).
     """
-    para: List[str] = []
+    para: list[str] = []
     started = False
     for line in learning.splitlines():
         if line.strip():
@@ -354,7 +353,7 @@ def render_memory_text_for_embedding(*, memory: Memory) -> str:
 
 def collect_model_entity_pairs(
     *, model: SlayerModel, include_hidden: bool = False
-) -> List[RenderedEntity]:
+) -> list[RenderedEntity]:
     """Walk a model's subtree (model + columns + named measures
     + custom aggregations) into the unified ``RenderedEntity`` shape.
 
@@ -379,7 +378,7 @@ def collect_model_entity_pairs(
     if model.hidden and not include_hidden:
         return []
     qualifier = f"{model.data_source}.{model.name}"
-    out: List[RenderedEntity] = [RenderedEntity(
+    out: list[RenderedEntity] = [RenderedEntity(
         canonical_id=qualifier,
         kind="model",
         text=render_model_text(model=model),

@@ -39,7 +39,7 @@ import asyncio
 import os
 import re
 from functools import lru_cache
-from typing import Any, Dict, FrozenSet, Optional
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -227,7 +227,7 @@ def _insert_nodes(
     datasource_names: list[str],
     visible_models: dict,
     memories: list,
-    datasource_descriptions: Optional[Dict[str, Optional[str]]] = None,
+    datasource_descriptions: dict[str, str | None] | None = None,
 ) -> None:
     """Insert all node rows into the graph.
 
@@ -445,7 +445,7 @@ async def build_graph(storage: StorageBackend) -> tuple[Any, Any]:
 
     # DEV-1549: load datasource descriptions so the graph schema can
     # expose `Datasource.description` for cypher_filter queries.
-    datasource_descriptions: Dict[str, Optional[str]] = {}
+    datasource_descriptions: dict[str, str | None] = {}
     for ds_name in datasource_names:
         cfg = await storage.get_datasource(ds_name)
         datasource_descriptions[ds_name] = (
@@ -531,7 +531,7 @@ async def _get_or_rebuild(storage: StorageBackend) -> tuple[Any, Any]:
     key = _storage_key(storage)
 
     try:
-        current_fp: Optional[str] = await storage.graph_fingerprint()
+        current_fp: str | None = await storage.graph_fingerprint()
     except OSError:
         current_fp = None
 
@@ -562,7 +562,7 @@ async def _get_or_rebuild(storage: StorageBackend) -> tuple[Any, Any]:
 async def get_filtered_ids(
     cypher: str,
     storage: StorageBackend,
-) -> FrozenSet[str]:
+) -> frozenset[str]:
     """Execute a Cypher query against the storage graph and return the
     frozenset of id strings from the result's ``id`` column.
 

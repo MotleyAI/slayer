@@ -16,7 +16,8 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any
+from collections.abc import Iterable
 
 import pytest
 
@@ -384,15 +385,15 @@ class TestMemoryEmbeddingRefresh:
     datasource doc. Failures attribute to the offending memory by id."""
 
     @staticmethod
-    def _enable_channel(monkeypatch: pytest.MonkeyPatch) -> List[List[str]]:
+    def _enable_channel(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         """Override the conftest autouse fixture for this test. Returns a
         list that captures every ``embed_batch`` call's text payload."""
         monkeypatch.setattr(embedding_client, "is_available", lambda: True)
-        calls: List[List[str]] = []
+        calls: list[list[str]] = []
 
         async def fake_embed_batch(  # NOSONAR(S7503) — must be `async def` to match the patched embed_batch signature
-            texts: List[str], *, model: Optional[str] = None,
-        ) -> List[Optional[List[float]]]:
+            texts: list[str], *, model: str | None = None,
+        ) -> list[list[float] | None]:
             calls.append(list(texts))
             return [[0.1, 0.2, 0.3] for _ in texts]
 
@@ -557,11 +558,11 @@ class TestMemoryEmbeddingRefresh:
         # clarity.
         assert embedding_client.is_available() is False
 
-        called: List[List[str]] = []
+        called: list[list[str]] = []
 
         async def should_not_be_called(  # NOSONAR(S7503) — must be `async def` to match the patched embed_batch signature
-            texts: List[str], *, model: Optional[str] = None,
-        ) -> List[Optional[List[float]]]:
+            texts: list[str], *, model: str | None = None,
+        ) -> list[list[float] | None]:
             called.append(list(texts))
             return [None for _ in texts]
 
@@ -694,14 +695,14 @@ def _create_probe_workspace_db(
 async def _persist_int_model(
     storage, ds_name: str, table: str, column: str,
     *,
-    column_format: Optional[NumberFormat] = None,
-    extra_meta: Optional[dict] = None,
+    column_format: NumberFormat | None = None,
+    extra_meta: dict | None = None,
     description: str = "",
-    label: Optional[str] = None,
+    label: str | None = None,
 ) -> None:
     """Persist a model with the target column hard-coded as type=INT,
     simulating a pre-DEV-1538 ingest."""
-    col_kwargs: Dict[str, Any] = {
+    col_kwargs: dict[str, Any] = {
         "name": column,
         "sql": column,
         "type": DataType.INT,

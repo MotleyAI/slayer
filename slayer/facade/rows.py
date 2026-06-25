@@ -11,7 +11,7 @@ messages.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -26,5 +26,5 @@ class FacadeColumn(BaseModel):
 class RowBatch(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    columns: List[FacadeColumn]
-    rows: List[Dict[str, Any]]
+    columns: list[FacadeColumn]
+    rows: list[dict[str, Any]]

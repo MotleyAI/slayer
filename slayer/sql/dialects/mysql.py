@@ -11,7 +11,7 @@ is actually ``VAR_POP`` — silently wrong sample variance).
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from sqlglot import exp
 
@@ -21,7 +21,7 @@ from slayer.sql.dialects.base import SqlDialect, _build_covar_decomposition
 class MysqlDialect(SqlDialect):
     sqlglot_name: str = "mysql"
     ds_type_aliases: frozenset[str] = frozenset({"mysql", "mariadb"})
-    explain_prefix: Optional[str] = "EXPLAIN FORMAT=JSON"
+    explain_prefix: str | None = "EXPLAIN FORMAT=JSON"
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True

@@ -20,7 +20,7 @@ import sys
 import tempfile
 from collections import deque
 from importlib.util import find_spec
-from typing import IO, TYPE_CHECKING, List, Optional, Tuple
+from typing import IO, TYPE_CHECKING
 
 from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig, SlayerModel
@@ -129,7 +129,7 @@ def resolve_demo_db_path(storage_path: str) -> str:
     return os.path.join(demo_dir, "jaffle_shop.duckdb")
 
 
-def _stream_fileno(stream) -> Optional[int]:
+def _stream_fileno(stream) -> int | None:
     """Return ``stream.fileno()`` if it points at a real file descriptor, else None.
 
     ipykernel / nbclient replace ``sys.stdout`` / ``sys.stderr`` with shim
@@ -144,7 +144,7 @@ def _stream_fileno(stream) -> Optional[int]:
         return None
 
 
-def _jafgen_cmd(years: int) -> List[str]:
+def _jafgen_cmd(years: int) -> list[str]:
     """Build the jafgen invocation without relying on PATH exposure.
 
     ``uv tool install motley-slayer`` (and pipx) link only slayer's own entry
@@ -171,7 +171,7 @@ def generate_data(
     output_dir: str,
     years: int = 1,
     *,
-    stream: Optional[IO[str]] = None,
+    stream: IO[str] | None = None,
 ) -> str:
     """Run ``jafgen`` into ``output_dir``; return the path to the generated CSVs.
 
@@ -232,7 +232,7 @@ def generate_data(
 
 def create_schema(
     conn: "duckdb.DuckDBPyConnection",
-    schema_path: Optional[str] = None,
+    schema_path: str | None = None,
 ) -> None:
     """Create the Jaffle Shop tables on ``conn``.
 
@@ -372,7 +372,7 @@ def build_jaffle_shop(
     *,
     years: int = 2,
     force: bool = False,
-    stream: Optional[IO[str]] = None,
+    stream: IO[str] | None = None,
 ) -> bool:
     """Generate the Jaffle Shop DuckDB at ``db_path`` if it does not already exist.
 
@@ -415,8 +415,8 @@ def ensure_demo_datasource(
     years: int = 2,
     ingest_models: bool = True,
     assume_yes: bool = True,
-    stream: Optional[IO[str]] = None,
-) -> Tuple[DatasourceConfig, List[SlayerModel], bool]:
+    stream: IO[str] | None = None,
+) -> tuple[DatasourceConfig, list[SlayerModel], bool]:
     """Ensure the Jaffle Shop demo is fully set up in ``storage``.
 
     - Builds the DuckDB at ``<storage_base_dir>/demo/jaffle_shop.duckdb`` if missing.
@@ -465,11 +465,11 @@ def ensure_demo_datasource(
     from slayer.engine.ingestion import ingest_datasource
 
     models = ingest_datasource(datasource=ds)
-    written: List[SlayerModel] = []
+    written: list[SlayerModel] = []
     for model in models:
         if model.name in DEFAULT_TIME_DIMENSIONS:
             model.default_time_dimension = DEFAULT_TIME_DIMENSIONS[model.name]
-        existing_model: Optional[SlayerModel] = run_sync(
+        existing_model: SlayerModel | None = run_sync(
             storage.get_model(name=model.name, data_source=name)
         )
         if existing_model is not None and not assume_yes:

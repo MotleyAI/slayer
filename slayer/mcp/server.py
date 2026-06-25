@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import sqlalchemy as sa
 
@@ -90,8 +90,8 @@ def _get_schemas(ds: DatasourceConfig) -> list[str]:
 
 
 def _fetch_tables(
-    ds: DatasourceConfig, schema_name: Optional[str] = None,
-) -> Tuple[Optional[List[str]], Optional[str]]:
+    ds: DatasourceConfig, schema_name: str | None = None,
+) -> tuple[list[str] | None, str | None]:
     """Inspect a datasource's table names.
 
     Returns ``(tables, None)`` on success or ``(None, friendly_error_message)``
@@ -121,7 +121,7 @@ def _empty_ingest_message(*, schema_name: str, ds: DatasourceConfig) -> str:
     return "\n".join(lines)
 
 
-def _render_new_models_section(new_models: List[Any]) -> List[str]:
+def _render_new_models_section(new_models: list[Any]) -> list[str]:
     if not new_models:
         return []
     lines = [f"Created {len(new_models)} new model(s):"]
@@ -132,7 +132,7 @@ def _render_new_models_section(new_models: List[Any]) -> List[str]:
     return lines
 
 
-def _render_updated_section(updated: List[Any]) -> List[str]:
+def _render_updated_section(updated: list[Any]) -> list[str]:
     if not updated:
         return []
     lines = [f"Updated {len(updated)} existing model(s):"]
@@ -146,7 +146,7 @@ def _render_updated_section(updated: List[Any]) -> List[str]:
     return lines
 
 
-def _render_unchanged_section(unchanged: List[Any]) -> List[str]:
+def _render_unchanged_section(unchanged: list[Any]) -> list[str]:
     if not unchanged:
         return []
     return [
@@ -155,7 +155,7 @@ def _render_unchanged_section(unchanged: List[Any]) -> List[str]:
     ]
 
 
-def _render_drift_section(to_delete: List[Any]) -> List[str]:
+def _render_drift_section(to_delete: list[Any]) -> list[str]:
     if not to_delete:
         return []
     out = ["", "Pending drift (run validate_models / apply manually):"]
@@ -163,7 +163,7 @@ def _render_drift_section(to_delete: List[Any]) -> List[str]:
     return out
 
 
-def _render_errors_section(errors: List[Any]) -> List[str]:
+def _render_errors_section(errors: list[Any]) -> list[str]:
     if not errors:
         return []
     out = ["", f"Errors ({len(errors)}):"]
@@ -199,7 +199,7 @@ def _render_ingest_result(
         if not a.created and not a.new_columns and not a.new_joins
     ]
 
-    lines: List[str] = []
+    lines: list[str] = []
     lines.extend(_render_new_models_section(new_models))
     lines.extend(_render_updated_section(updated))
     lines.extend(_render_unchanged_section(unchanged))
@@ -287,25 +287,25 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     )
 
     @mcp.tool(description=_help_description)
-    async def help(topic: Optional[str] = None) -> str:  # noqa: A001 — intentional shadow of builtin inside factory
+    async def help(topic: str | None = None) -> str:  # noqa: A001 — intentional shadow of builtin inside factory
         return render_help(topic=topic)
 
     @mcp.tool()
     async def query(  # NOSONAR S107 — FastMCP introspects this signature to expose each query option as a typed MCP tool argument; collapsing into a dict would degrade the agent-facing schema
         source_model: str | ModelExtension | SlayerModel,
-        measures: Optional[List[Dict[str, str]]] = None,
-        dimensions: Optional[List[str]] = None,
-        filters: Optional[List[str]] = None,
-        time_dimensions: Optional[List[Dict[str, Any]]] = None,
-        order: Optional[List[Dict[str, str]]] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
+        measures: list[dict[str, str]] | None = None,
+        dimensions: list[str] | None = None,
+        filters: list[str] | None = None,
+        time_dimensions: list[dict[str, Any]] | None = None,
+        order: list[dict[str, str]] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
         whole_periods_only: bool = False,
         show_sql: bool = False,
         dry_run: bool = False,
         explain: bool = False,
         format: str = "markdown",
-        variables: Optional[Dict[str, Any]] = None,
+        variables: dict[str, Any] | None = None,
         distinct_dimension_values: bool = True,
     ) -> str:
         """Query data from a semantic model. Call inspect(reference="<ds>.<model>", entity_type="model") first to see available columns and measures.
@@ -347,7 +347,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Before calling this tool, run ``search`` first, supplying the entities you're thinking of using (and/or the query itself via the ``query`` arg, or a free-text ``question``). Read the returned memories and consider any matching example queries before formulating the final query.
         """
-        data: Dict[str, Any] = {"source_model": source_model}
+        data: dict[str, Any] = {"source_model": source_model}
         if dimensions:
             data["dimensions"] = list(dimensions)
         if filters:
@@ -438,8 +438,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
     @mcp.tool()
     async def query_nested(
-        queries: List[Dict[str, Any]],
-        variables: Optional[Dict[str, Any]] = None,
+        queries: list[dict[str, Any]],
+        variables: dict[str, Any] | None = None,
         show_sql: bool = False,
         dry_run: bool = False,
         explain: bool = False,
@@ -560,7 +560,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             return f"Datasource '{datasource_name}' not found."
 
         all_names = await storage.list_models(data_source=datasource_name)
-        matched: List[SlayerModel] = []
+        matched: list[SlayerModel] = []
         for n in all_names:
             try:
                 m = await storage.get_model(n, data_source=datasource_name)
@@ -621,11 +621,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 indent=2,
             )
 
-        sections: List[str] = [
+        sections: list[str] = [
             f"# Datasource: `{datasource_name}` — {len(matched)} model(s)"
         ]
         for m in matched:
-            model_lines: List[str] = [f"## `{m.name}`"]
+            model_lines: list[str] = [f"## `{m.name}`"]
             if m.description:
                 model_lines.append(m.description)
 
@@ -684,9 +684,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         num_rows: int = 3,
         show_sql: bool = False,
         format: str = "markdown",
-        sections: Optional[List[str]] = None,
-        descriptions_max_chars: Optional[int] = None,
-        data_source: Optional[str] = None,
+        sections: list[str] | None = None,
+        descriptions_max_chars: int | None = None,
+        data_source: str | None = None,
         compact: bool = True,
     ) -> str:
         """DEPRECATED: use the ``inspect`` tool. Return a complete-yet-compact view of a semantic model.
@@ -772,8 +772,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         format: str = "markdown",
         num_rows: int = 3,
         show_sql: bool = False,
-        sections: Optional[List[str]] = None,
-        descriptions_max_chars: Optional[int] = None,
+        sections: list[str] | None = None,
+        descriptions_max_chars: int | None = None,
     ) -> str:
         """Inspect EXACTLY one entity by reference and kind.
 
@@ -829,14 +829,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     @mcp.tool()
     async def create_model(
         name: str,
-        sql_table: Optional[str] = None,
-        sql: Optional[str] = None,
-        data_source: Optional[str] = None,
-        description: Optional[str] = None,
-        columns: Optional[List[Dict[str, Any]]] = None,
-        measures: Optional[List[Dict[str, Any]]] = None,
-        query: Optional[Any] = None,
-        variables: Optional[Dict[str, Any]] = None,
+        sql_table: str | None = None,
+        sql: str | None = None,
+        data_source: str | None = None,
+        description: str | None = None,
+        columns: list[dict[str, Any]] | None = None,
+        measures: list[dict[str, Any]] | None = None,
+        query: Any | None = None,
+        variables: dict[str, Any] | None = None,
     ) -> str:
         """Create a new semantic model, either from a database table or from a query.
 
@@ -935,7 +935,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         id_field: str,
         changes: list,
         label: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Upsert a named entity in *entity_list*.
 
         Returns an error string on validation failure, ``None`` on success.
@@ -970,23 +970,23 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     @mcp.tool()
     async def edit_model(
         model_name: str,
-        description: Optional[str] = None,
-        data_source: Optional[str] = None,
-        new_data_source: Optional[str] = None,
-        default_time_dimension: Optional[str] = None,
-        sql_table: Optional[str] = None,
-        sql: Optional[str] = None,
-        source_queries: Optional[List[Dict[str, Any]]] = None,
+        description: str | None = None,
+        data_source: str | None = None,
+        new_data_source: str | None = None,
+        default_time_dimension: str | None = None,
+        sql_table: str | None = None,
+        sql: str | None = None,
+        source_queries: list[dict[str, Any]] | None = None,
         query_variables: Any = _UNSET,
-        hidden: Optional[bool] = None,
-        columns: Optional[List[Dict[str, Any]]] = None,
-        measures: Optional[List[Dict[str, Any]]] = None,
-        aggregations: Optional[List[Dict[str, Any]]] = None,
-        joins: Optional[List[Dict[str, Any]]] = None,
-        add_filters: Optional[List[str]] = None,
-        remove_filters: Optional[List[str]] = None,
-        remove: Optional[Dict[str, List[str]]] = None,
-        meta: Optional[Dict[str, Any]] = _UNSET,
+        hidden: bool | None = None,
+        columns: list[dict[str, Any]] | None = None,
+        measures: list[dict[str, Any]] | None = None,
+        aggregations: list[dict[str, Any]] | None = None,
+        joins: list[dict[str, Any]] | None = None,
+        add_filters: list[str] | None = None,
+        remove_filters: list[str] | None = None,
+        remove: dict[str, list[str]] | None = None,
+        meta: dict[str, Any] | None = _UNSET,
     ) -> str:
         """Edit an existing model in a single call — update metadata, upsert columns/measures/aggregations/joins,
         manage filters, and remove entities.
@@ -1053,7 +1053,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             return f"Model '{model_name}' not found."
 
         original_data_source = model.data_source
-        changes: List[str] = []
+        changes: list[str] = []
         # DEV-1375: track refresh-triggering changes so the post-save hook
         # knows whether to refresh just the touched columns or every
         # column on the model.
@@ -1309,7 +1309,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # changed the indexed text. Best-effort: any raise here is
         # captured into ``refresh_warnings`` so the save's success
         # status survives a flaky embedding API.
-        refresh_warnings: List[str] = []
+        refresh_warnings: list[str] = []
         if changed_columns or model_level_change or model_doc_changed:
             try:
                 refresh_warnings = await handle_edit_refresh(
@@ -1346,13 +1346,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     async def create_datasource(
         name: str,
         type: str,
-        host: Optional[str] = None,
-        port: Optional[int] = None,
-        database: Optional[str] = None,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        connection_string: Optional[str] = None,
-        schema_name: Optional[str] = None,
+        host: str | None = None,
+        port: int | None = None,
+        database: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        connection_string: str | None = None,
+        schema_name: str | None = None,
         auto_ingest: bool = True,
     ) -> str:
         """Create a database connection, verify it, and auto-ingest models. Use ${ENV_VAR} syntax in credentials to reference environment variables.
@@ -1512,7 +1512,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     @mcp.tool()
     async def edit_datasource(
         name: str,
-        description: Optional[str] = None,
+        description: str | None = None,
     ) -> str:
         """Update a datasource's metadata.
 
@@ -1540,9 +1540,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # round-7 review: the refresh is post-save and best-effort —
         # log a warning if it raises and surface a partial-success
         # message rather than telling the agent the save itself failed.
-        refresh_warning: Optional[str] = None
+        refresh_warning: str | None = None
         if description is not None and description != old_description:
-            models_in_ds: List[SlayerModel] = []
+            models_in_ds: list[SlayerModel] = []
             for model_name in await storage.list_models(data_source=name):
                 m = await storage.get_model(model_name, data_source=name)
                 if m is not None:
@@ -1570,7 +1570,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     # -----------------------------------------------------------------------
 
     @mcp.tool()
-    async def delete_model(name: str, data_source: Optional[str] = None) -> str:
+    async def delete_model(name: str, data_source: str | None = None) -> str:
         """Delete a semantic model.
 
         Args:
@@ -1588,7 +1588,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         return f"Model '{name}' not found."
 
     @mcp.tool()
-    async def validate_models(data_source: Optional[str] = None) -> str:
+    async def validate_models(data_source: str | None = None) -> str:
         """Diff persisted SLayer models against the live database schema(s).
 
         Returns a JSON-serialized list of pending delete operations
@@ -1668,7 +1668,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )
 
     @mcp.tool()
-    async def set_datasource_priority(priority: List[str]) -> str:
+    async def set_datasource_priority(priority: list[str]) -> str:
         """Configure how SLayer disambiguates bare model names that exist in
         multiple datasources.
 
@@ -1714,8 +1714,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     async def save_memory(
         learning: str,
         linked_entities: Any,
-        id: Optional[str] = None,  # noqa: A002 — MCP arg name
-        description: Optional[str] = None,
+        id: str | None = None,  # noqa: A002 — MCP arg name
+        description: str | None = None,
     ) -> str:
         """Save an agent memory: a free-form note plus the SLayer
         entities it concerns.
@@ -1824,12 +1824,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
     @mcp.tool()
     async def search(
-        entities: Optional[List[str]] = None,
+        entities: list[str] | None = None,
         query: Any = None,
-        question: Optional[str] = None,
-        datasource: Optional[str] = None,
+        question: str | None = None,
+        datasource: str | None = None,
         max_results: int = 10,
-        cypher_filter: Optional[str] = None,
+        cypher_filter: str | None = None,
         compact: bool = True,
     ) -> str:
         """Up to three-channel semantic search over memories + canonical entities.
@@ -1902,12 +1902,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     return mcp
 
 
-def _build_dict(**kwargs: Any) -> Dict[str, Any]:
+def _build_dict(**kwargs: Any) -> dict[str, Any]:
     """Build a dict from keyword arguments, excluding None values."""
     return {k: v for k, v in kwargs.items() if v is not None}
 
 
-def _format_table(data: List[Dict[str, Any]], columns: List[str], max_rows: int = 50) -> str:
+def _format_table(data: list[dict[str, Any]], columns: list[str], max_rows: int = 50) -> str:
     """Format data as a pipe-separated table (used for sample data display)."""
     if not data:
         return "No results."
@@ -1927,14 +1927,14 @@ def _format_table(data: List[Dict[str, Any]], columns: List[str], max_rows: int 
     return result
 
 
-def _format_json(data: List[Dict[str, Any]], columns: List[str]) -> str:
+def _format_json(data: list[dict[str, Any]], columns: list[str]) -> str:
     """Format data as JSON array."""
     import json
 
     return json.dumps(data, default=str)
 
 
-def _format_csv(data: List[Dict[str, Any]], columns: List[str]) -> str:
+def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
     """Format data as CSV."""
     if not data:
         return ""
@@ -1959,7 +1959,7 @@ def _format_output(result: SlayerResponse, fmt: str) -> str:
     return _format_json(data=result.data, columns=result.columns)
 
 
-def _format_field_meta(entries: Dict[str, Any]) -> List[str]:
+def _format_field_meta(entries: dict[str, Any]) -> list[str]:
     """Format a dict of field metadata entries into lines."""
     lines = []
     for col, fm in entries.items():

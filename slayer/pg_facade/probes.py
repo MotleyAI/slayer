@@ -24,7 +24,6 @@ optional ``SetSettingOp`` hint.
 
 from __future__ import annotations
 
-from typing import Dict, Optional
 
 import sqlglot.expressions as exp
 
@@ -38,7 +37,7 @@ from slayer.pg_facade.identity import PG_SERVER_VERSION
 # are case-insensitive). Values align with what the startup
 # ``ParameterStatus`` burst (identity.py) advertises for the same setting,
 # so a client SHOW immediately after connect agrees with the burst.
-SESSION_SETTING_SEED: Dict[str, str] = {
+SESSION_SETTING_SEED: dict[str, str] = {
     "search_path": '"$user", public',
     "transaction_isolation": "read committed",
     "standard_conforming_strings": "on",
@@ -63,14 +62,14 @@ SHOW_ALIASES = {
 }
 
 
-def _single(name: str, value: Optional[str], dtype: DataType = DataType.TEXT) -> RowBatch:
+def _single(name: str, value: str | None, dtype: DataType = DataType.TEXT) -> RowBatch:
     return RowBatch(
         columns=[FacadeColumn(name=name, type=dtype)],
         rows=[{name: value}],
     )
 
 
-def _single_projection(parsed: exp.Expression) -> Optional[exp.Expression]:
+def _single_projection(parsed: exp.Expression) -> exp.Expression | None:
     if not isinstance(parsed, exp.Select):
         return None
     exprs = parsed.args.get("expressions") or []
@@ -82,7 +81,7 @@ def _single_projection(parsed: exp.Expression) -> Optional[exp.Expression]:
     return body
 
 
-def _show_setting_name(parsed: exp.Expression) -> Optional[str]:
+def _show_setting_name(parsed: exp.Expression) -> str | None:
     if not isinstance(parsed, exp.Command):
         return None
     if str(parsed.this).upper() != "SHOW":
@@ -94,7 +93,7 @@ def _show_setting_name(parsed: exp.Expression) -> Optional[str]:
     return name.strip().strip("'\"")
 
 
-def _anonymous_name(node: exp.Expression) -> Optional[str]:
+def _anonymous_name(node: exp.Expression) -> str | None:
     if isinstance(node, exp.Anonymous):
         return str(node.this).lower()
     return None
@@ -102,8 +101,8 @@ def _anonymous_name(node: exp.Expression) -> Optional[str]:
 
 def match_pg_probe(
     parsed: exp.Expression, *, datasource: str, version_str: str,
-    session_settings: Optional[Dict[str, str]] = None,
-) -> Optional[RowBatch]:
+    session_settings: dict[str, str] | None = None,
+) -> RowBatch | None:
     """Return a datasource-aware canned ``RowBatch`` for a Postgres probe,
     else ``None`` (caller falls back to the shared probe matcher).
 
@@ -156,8 +155,8 @@ def match_pg_probe(
 
 def match_pg_probe_with_mutation(
     parsed: exp.Expression, *, datasource: str, version_str: str,
-    session_settings: Optional[Dict[str, str]] = None,
-) -> Optional[ProbeMatcherOutcome]:
+    session_settings: dict[str, str] | None = None,
+) -> ProbeMatcherOutcome | None:
     """Mutation-aware variant of :func:`match_pg_probe`. Returns a
     :class:`ProbeMatcherOutcome` carrying both the row batch and (for
     ``set_config(name, value, ...)`` matches) a :class:`SetSettingOp`
@@ -180,7 +179,7 @@ def match_pg_probe_with_mutation(
     return ProbeMatcherOutcome(batch=batch, settings_mutation=mutation)
 
 
-def _extract_set_config_mutation(parsed: exp.Expression) -> Optional[SetSettingOp]:
+def _extract_set_config_mutation(parsed: exp.Expression) -> SetSettingOp | None:
     """Inspect a parsed AST root for ``SELECT set_config('<name>', '<value>',
     <is_local>)`` and return a ``SetSettingOp`` carrying the (lowercased
     name, raw value) pair; return ``None`` otherwise.
@@ -253,7 +252,7 @@ def _is_truthy_boolean_literal(value: str) -> bool:
     )
 
 
-def _first_literal(node: exp.Anonymous, index: int) -> Optional[str]:
+def _first_literal(node: exp.Anonymous, index: int) -> str | None:
     """Return the string value of the ``index``-th argument of ``node`` if it
     is a string literal (or a CAST around a string literal). Returns
     ``None`` otherwise.
@@ -274,7 +273,7 @@ def _first_literal(node: exp.Anonymous, index: int) -> Optional[str]:
     return None
 
 
-def _setting_value(node: exp.Anonymous, settings: Dict[str, str]) -> str:
+def _setting_value(node: exp.Anonymous, settings: dict[str, str]) -> str:
     """``current_setting('<name>')`` → ``settings[name]`` (lowercased lookup);
     unknown settings return the empty string."""
     setting = (_first_literal(node, 0) or "").lower()

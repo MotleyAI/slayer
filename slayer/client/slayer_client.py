@@ -1,16 +1,15 @@
 """Python client for SLayer API."""
 
 import logging
-from collections.abc import Mapping as ABCMapping, Sequence as ABCSequence
+from collections.abc import (
+    Mapping,
+    Mapping as ABCMapping,
+    Sequence,
+    Sequence as ABCSequence,
+)
 from typing import (
     TYPE_CHECKING,
     Any,
-    Dict,
-    List,
-    Mapping,
-    Optional,
-    Sequence,
-    Union,
 )
 from urllib.parse import quote
 
@@ -33,12 +32,12 @@ logger = logging.getLogger(__name__)
 # ``{"queries": [...]}`` (REST) also accept; ``str`` runs a query-backed model
 # by name. ``Mapping``/``Sequence`` (not ``Dict``/``List``) so callers passing
 # ``list[dict[str, str]]`` aren't rejected by pyright's invariance check.
-QueryInput = Union[
-    SlayerQuery,
-    Mapping[str, Any],
-    Sequence[Union[SlayerQuery, Mapping[str, Any]]],
-    str,
-]
+QueryInput = (
+    SlayerQuery
+    | Mapping[str, Any]
+    | Sequence[SlayerQuery | Mapping[str, Any]]
+    | str
+)
 
 
 class SlayerClient:
@@ -62,7 +61,7 @@ class SlayerClient:
     def __init__(
         self,
         url: str = "http://localhost:5143",
-        storage: Optional[Any] = None,
+        storage: Any | None = None,
     ):
         self.url = url.rstrip("/")
         self._storage = storage
@@ -76,8 +75,8 @@ class SlayerClient:
         self,
         method: str,
         path: str,
-        json: Optional[Dict] = None,
-        params: Optional[Dict] = None,
+        json: dict | None = None,
+        params: dict | None = None,
     ) -> Any:
         try:
             import httpx
@@ -94,8 +93,8 @@ class SlayerClient:
         self,
         method: str,
         path: str,
-        json: Optional[Dict] = None,
-        params: Optional[Dict] = None,
+        json: dict | None = None,
+        params: dict | None = None,
     ) -> Any:
         try:
             import httpx
@@ -109,7 +108,7 @@ class SlayerClient:
             return resp.json()
 
     @staticmethod
-    def _validated_dump(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    def _validated_dump(payload: Mapping[str, Any]) -> dict[str, Any]:
         """Round-trip a single-query payload through ``SlayerQuery`` so
         the server sees the normalised JSON-mode shape. Necessary because
         the server's ``QueryRequest`` declares ``measures`` /
@@ -128,7 +127,7 @@ class SlayerClient:
         *,
         dry_run: bool = False,
         explain: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Convert any accepted input shape into the JSON body for
         ``POST /query``. Single source of truth shared by sync + async
         transports. Never mutates caller-owned dicts or lists.
@@ -149,7 +148,7 @@ class SlayerClient:
         both accept them).
         """
         if isinstance(query, str):
-            body: Dict[str, Any] = {"name": query}
+            body: dict[str, Any] = {"name": query}
         elif isinstance(query, SlayerQuery):
             body = query.model_dump(mode="json", exclude_none=True)
         elif isinstance(query, ABCSequence) and not isinstance(
@@ -157,7 +156,7 @@ class SlayerClient:
         ):
             # ``str`` is also a Sequence but already handled above; guard the
             # binary string types here too so they raise via the else-branch.
-            serialised: List[Dict[str, Any]] = []
+            serialised: list[dict[str, Any]] = []
             for i, item in enumerate(query):
                 if isinstance(item, SlayerQuery):
                     serialised.append(
@@ -214,7 +213,7 @@ class SlayerClient:
         """Parse an API JSON response into a SlayerResponse."""
         from slayer.core.format import NumberFormat
 
-        def _parse_meta_dict(d: dict) -> Dict[str, FieldMetadata]:
+        def _parse_meta_dict(d: dict) -> dict[str, FieldMetadata]:
             out = {}
             for k, v in (d or {}).items():
                 fmt = None
@@ -274,7 +273,7 @@ class SlayerClient:
         """
         return await self.query(query=query, explain=True)
 
-    async def list_models(self, data_source: Optional[str] = None) -> List[str]:
+    async def list_models(self, data_source: str | None = None) -> list[str]:
         if self._storage is not None:
             names = await self._storage.list_models(data_source=data_source)
             return list(names)
@@ -284,29 +283,29 @@ class SlayerClient:
     async def get_model(
         self,
         name: str,
-        data_source: Optional[str] = None,
-    ) -> Optional[Any]:
+        data_source: str | None = None,
+    ) -> Any | None:
         if self._storage is not None:
             return await self._storage.get_model(name, data_source=data_source)
         params = {"data_source": data_source} if data_source else None
         return await self._request(method="GET", path=f"/models/{name}", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
-    async def create_model(self, model: Dict[str, Any]) -> Dict[str, str]:
+    async def create_model(self, model: dict[str, Any]) -> dict[str, str]:
         return await self._request(method="POST", path="/models", json=model)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
-    async def list_datasources(self) -> List[str]:
+    async def list_datasources(self) -> list[str]:
         return await self._request(method="GET", path="/datasources")
 
-    async def create_datasource(self, datasource: Dict[str, Any]) -> Dict[str, str]:
+    async def create_datasource(self, datasource: dict[str, Any]) -> dict[str, str]:
         return await self._request(method="POST", path="/datasources", json=datasource)
 
-    async def get_datasource_priority(self) -> List[str]:
+    async def get_datasource_priority(self) -> list[str]:
         if self._storage is not None:
             return await self._storage.get_datasource_priority()
         body = await self._request(method="GET", path="/datasources/priority")
         return list(body.get("priority", []))
 
-    async def set_datasource_priority(self, priority: List[str]) -> None:
+    async def set_datasource_priority(self, priority: list[str]) -> None:
         if self._storage is not None:
             await self._storage.set_datasource_priority(list(priority))
             return
@@ -342,9 +341,9 @@ class SlayerClient:
         self,
         *,
         learning: str,
-        linked_entities: Union[List[str], SlayerQuery, Dict[str, Any]],
-        id: Optional[str] = None,  # noqa: A002 — public kwarg matching MCP / REST
-        description: Optional[str] = None,
+        linked_entities: list[str] | SlayerQuery | dict[str, Any],
+        id: str | None = None,  # noqa: A002 — public kwarg matching MCP / REST
+        description: str | None = None,
     ) -> SaveMemoryResponse:
         """Save a memory: a learning text + linked entities (or an
         inline SlayerQuery to extract entities from). DEV-1428:
@@ -361,7 +360,7 @@ class SlayerClient:
                 description=description,
             )
             return response
-        body: Dict[str, Any] = {
+        body: dict[str, Any] = {
             "learning": learning,
             "linked_entities": self._coerce_linked_entities(linked_entities),
         }
@@ -373,7 +372,7 @@ class SlayerClient:
         return SaveMemoryResponse.model_validate(result)
 
     async def forget_memory(
-        self, identifier: Union[int, str]
+        self, identifier: int | str
     ) -> ForgetMemoryResponse:
         if self._storage is not None:
             return await self._memory_service().forget_memory(
@@ -393,12 +392,12 @@ class SlayerClient:
     async def search(
         self,
         *,
-        entities: Optional[List[str]] = None,
-        query: Optional[Union[SlayerQuery, Dict[str, Any]]] = None,
-        question: Optional[str] = None,
-        datasource: Optional[str] = None,
+        entities: list[str] | None = None,
+        query: SlayerQuery | dict[str, Any] | None = None,
+        question: str | None = None,
+        datasource: str | None = None,
         max_results: int = 10,
-        cypher_filter: Optional[str] = None,
+        cypher_filter: str | None = None,
         compact: bool = True,
     ) -> "SearchResponse":
         """Up to three-channel semantic search over memories + canonical
@@ -446,7 +445,7 @@ class SlayerClient:
                 cypher_filter=cypher_filter,
                 compact=compact,
             )
-        body: Dict[str, Any] = {
+        body: dict[str, Any] = {
             "max_results": max_results,
             "compact": compact,
         }
@@ -472,8 +471,8 @@ class SlayerClient:
         format: str = "markdown",
         num_rows: int = 3,
         show_sql: bool = False,
-        sections: Optional[List[str]] = None,
-        descriptions_max_chars: Optional[int] = None,
+        sections: list[str] | None = None,
+        descriptions_max_chars: int | None = None,
     ) -> str:
         """Inspect EXACTLY one entity by reference and kind (DEV-1588).
 
@@ -523,10 +522,10 @@ class SlayerClient:
         format: str,
         num_rows: int,
         show_sql: bool,
-        sections: Optional[List[str]],
-        descriptions_max_chars: Optional[int],
-    ) -> Dict[str, Any]:
-        body: Dict[str, Any] = {
+        sections: list[str] | None,
+        descriptions_max_chars: int | None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
             "reference": reference,
             "entity_type": entity_type,
             "compact": compact,
@@ -588,8 +587,8 @@ class SlayerClient:
         format: str = "markdown",
         num_rows: int = 3,
         show_sql: bool = False,
-        sections: Optional[List[str]] = None,
-        descriptions_max_chars: Optional[int] = None,
+        sections: list[str] | None = None,
+        descriptions_max_chars: int | None = None,
     ) -> str:
         """Synchronous variant of :meth:`inspect` (DEV-1588)."""
         if self._storage is not None:
@@ -630,8 +629,8 @@ class SlayerClient:
         result = self.query_sync(query=query)
         return pd.DataFrame(result.data)
 
-    def list_models_sync(self) -> List[str]:
+    def list_models_sync(self) -> list[str]:
         return self._request_sync(method="GET", path="/models")
 
-    def get_model_sync(self, name: str) -> Dict[str, Any]:
+    def get_model_sync(self, name: str) -> dict[str, Any]:
         return self._request_sync("GET", f"/models/{name}")

@@ -15,7 +15,6 @@ millisecond; if profiling makes the case, a follow-up adds a
 from __future__ import annotations
 
 import logging
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -40,7 +39,7 @@ logger = logging.getLogger(__name__)
 # expansion (§5.1 rule 3) and the custom-agg expansion (rule 4) both
 # skip these for built-ins. Custom aggs with non-empty ``params`` are
 # also skipped per rule 4 for the same reason.
-_PARAMETRIC_BUILTIN_AGGS: FrozenSet[str] = frozenset({
+_PARAMETRIC_BUILTIN_AGGS: frozenset[str] = frozenset({
     "weighted_avg", "percentile", "corr", "covar_samp", "covar_pop",
 })
 
@@ -50,16 +49,16 @@ CATALOG_NAME = "slayer"
 
 class FacadeMetric(BaseModel):
     name: str
-    description: Optional[str] = None
-    label: Optional[str] = None
-    data_type: Optional[DataType] = None
+    description: str | None = None
+    label: str | None = None
+    data_type: DataType | None = None
     measure_formula: str
 
 
 class FacadeDimension(BaseModel):
     name: str
-    description: Optional[str] = None
-    label: Optional[str] = None
+    description: str | None = None
+    label: str | None = None
     data_type: DataType
     is_time: bool
     dimension_ref: str
@@ -74,7 +73,7 @@ class FacadeJoin(BaseModel):
     exposed, mirroring the BFS dim/metric filter.
     """
     target_model: str
-    join_pairs: List[List[str]]
+    join_pairs: list[list[str]]
     join_type: JoinType = JoinType.LEFT
 
 
@@ -85,29 +84,29 @@ class FacadeTable(BaseModel):
 
     name: str
     table_type: str
-    description: Optional[str] = None
-    metrics: List[FacadeMetric]
-    dimensions: List[FacadeDimension]
-    joins: List[FacadeJoin] = Field(default_factory=list)
+    description: str | None = None
+    metrics: list[FacadeMetric]
+    dimensions: list[FacadeDimension]
+    joins: list[FacadeJoin] = Field(default_factory=list)
     # In-memory handle to the underlying SlayerModel — required by the
     # translator for ON-clause column validation (hidden FK/PK columns
     # don't appear on `dimensions`) and for the dynamic-join lookup
     # materialisation (DEV-1565). Excluded from any future serialisation
     # of FacadeCatalog.
-    model_ref: Optional[SlayerModel] = Field(default=None, exclude=True)
+    model_ref: SlayerModel | None = Field(default=None, exclude=True)
 
 
 class FacadeSchema(BaseModel):
     name: str
-    tables: List[FacadeTable]
+    tables: list[FacadeTable]
 
 
 class FacadeCatalog(BaseModel):
     catalog_name: str = CATALOG_NAME
-    schemas: List[FacadeSchema]
+    schemas: list[FacadeSchema]
 
 
-def local_metrics(table: FacadeTable) -> List[FacadeMetric]:
+def local_metrics(table: FacadeTable) -> list[FacadeMetric]:
     """Metrics that should appear in the per-table flat-column view
     (``pg_attribute`` / ``INFORMATION_SCHEMA.COLUMNS``) — saved
     ``ModelMeasure`` entries only.
@@ -163,7 +162,7 @@ def local_metrics(table: FacadeTable) -> List[FacadeMetric]:
     ]
 
 
-def local_dimensions(table: FacadeTable) -> List[FacadeDimension]:
+def local_dimensions(table: FacadeTable) -> list[FacadeDimension]:
     """Mirror of :func:`local_metrics` for dimensions: drop cross-model
     entries (single-hop and multi-hop joined dimensions). Unlike
     metrics, dimensions don't have a synthetic-vs-user-authored split —
@@ -174,7 +173,7 @@ def local_dimensions(table: FacadeTable) -> List[FacadeDimension]:
 
 def build_catalog(
     *,
-    models_by_datasource: Dict[str, List[SlayerModel]],
+    models_by_datasource: dict[str, list[SlayerModel]],
     bfs_depth: int = DEFAULT_BFS_DEPTH,
 ) -> FacadeCatalog:
     """Build a ``FacadeCatalog`` snapshot.
@@ -184,10 +183,10 @@ def build_catalog(
     list_models(data_source=...)`` so cross-datasource joins are naturally
     constrained (SLayer doesn't auto-mirror joins across datasources).
     """
-    schemas: List[FacadeSchema] = []
+    schemas: list[FacadeSchema] = []
     for datasource, models in models_by_datasource.items():
-        by_name: Dict[str, SlayerModel] = {m.name: m for m in models}
-        tables: List[FacadeTable] = []
+        by_name: dict[str, SlayerModel] = {m.name: m for m in models}
+        tables: list[FacadeTable] = []
         for model in models:
             if model.hidden:
                 continue
@@ -231,7 +230,7 @@ def _column_types_supported(*, model: SlayerModel) -> bool:
 def _build_table(
     *,
     model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel],
+    models_by_name: dict[str, SlayerModel],
     bfs_depth: int,
 ) -> FacadeTable:
     table_type = _table_type(model=model)
@@ -253,13 +252,13 @@ def _build_table(
 
 
 def _facade_joins_for(
-    *, model: SlayerModel, models_by_name: Dict[str, SlayerModel],
-) -> List[FacadeJoin]:
+    *, model: SlayerModel, models_by_name: dict[str, SlayerModel],
+) -> list[FacadeJoin]:
     """Expose every direct (single-hop) join whose target is a non-hidden
     model in the same catalog. Mirrors the BFS filter so the translator's
     existence check never matches a join that isn't otherwise addressable
     (DEV-1565)."""
-    out: List[FacadeJoin] = []
+    out: list[FacadeJoin] = []
     for j in model.joins:
         target = models_by_name.get(j.target_model)
         if target is None or target.hidden:
@@ -285,9 +284,9 @@ def _table_type(*, model: SlayerModel) -> str:
 def _walk_join_paths(
     *,
     root: SlayerModel,
-    models_by_name: Dict[str, SlayerModel],
+    models_by_name: dict[str, SlayerModel],
     max_depth: int,
-) -> List[Tuple[List[str], SlayerModel]]:
+) -> list[tuple[list[str], SlayerModel]]:
     """BFS the join graph from ``root`` up to ``max_depth`` hops.
 
     Returns a list of (path, target_model) tuples where ``path`` is the
@@ -299,10 +298,10 @@ def _walk_join_paths(
     ``A→B→A`` revisit is allowed (a legitimate query shape when the
     join columns differ); past ``max_depth`` the BFS terminates.
     """
-    out: List[Tuple[List[str], SlayerModel]] = []
+    out: list[tuple[list[str], SlayerModel]] = []
     if max_depth <= 0:
         return out
-    queue: List[Tuple[SlayerModel, List[str]]] = [(root, [])]
+    queue: list[tuple[SlayerModel, list[str]]] = [(root, [])]
     while queue:
         current, path = queue.pop(0)
         if len(path) >= max_depth:
@@ -317,7 +316,7 @@ def _walk_join_paths(
     return out
 
 
-def _path_dotted(path: List[str]) -> str:
+def _path_dotted(path: list[str]) -> str:
     """Convert a join path to its dotted reference form.
 
     Used uniformly for both the catalog-facing metric / dimension ``name``
@@ -336,7 +335,7 @@ def _path_dotted(path: List[str]) -> str:
 # leaves BI tools (Metabase fingerprint, dbt schema scan) discovering
 # them as queryable columns whose execution then fails with
 # "Aggregation 'first' on measure '<col>' requires a time column".
-_TIME_DEPENDENT_AGGREGATIONS: FrozenSet[str] = frozenset({"first", "last"})
+_TIME_DEPENDENT_AGGREGATIONS: frozenset[str] = frozenset({"first", "last"})
 
 
 def _model_has_resolvable_time_dimension(model: SlayerModel) -> bool:
@@ -354,8 +353,8 @@ def _model_has_resolvable_time_dimension(model: SlayerModel) -> bool:
 
 
 def _eligible_aggregations(
-    *, column: Column, model: Optional[SlayerModel] = None,
-) -> Set[str]:
+    *, column: Column, model: SlayerModel | None = None,
+) -> set[str]:
     """Per §5.1.3: default-by-type ∩ explicit whitelist, with PK clamp.
 
     When ``model`` is given AND it has no time dimension, time-dependent
@@ -375,7 +374,7 @@ def _eligible_aggregations(
     return base
 
 
-def _eligible_custom_aggregations(*, model: SlayerModel) -> List[Aggregation]:
+def _eligible_custom_aggregations(*, model: SlayerModel) -> list[Aggregation]:
     """Per §5.1.4: custom aggs that use only ``{value}`` (no extra params)."""
     return [agg for agg in model.aggregations if not agg.params]
 
@@ -383,8 +382,8 @@ def _eligible_custom_aggregations(*, model: SlayerModel) -> List[Aggregation]:
 def _metric_expansion(
     *,
     model: SlayerModel,
-    reachable: List[Tuple[List[str], SlayerModel]],
-) -> List[FacadeMetric]:
+    reachable: list[tuple[list[str], SlayerModel]],
+) -> list[FacadeMetric]:
     local = _local_metrics_for(model=model)
     out = list(local)
     # Apply BFS-derived joined metrics. Rules 1-4 are computed on ``J``
@@ -433,7 +432,7 @@ def _synthetic_row_count(model: SlayerModel) -> FacadeMetric:
     )
 
 
-def _saved_model_measures(model: SlayerModel) -> List[FacadeMetric]:
+def _saved_model_measures(model: SlayerModel) -> list[FacadeMetric]:
     """Rule 2: every saved ``ModelMeasure`` with a name."""
     return [
         FacadeMetric(
@@ -448,7 +447,7 @@ def _saved_model_measures(model: SlayerModel) -> List[FacadeMetric]:
     ]
 
 
-def _column_x_builtin_aggs(model: SlayerModel) -> List[FacadeMetric]:
+def _column_x_builtin_aggs(model: SlayerModel) -> list[FacadeMetric]:
     """Rule 3: column × eligible-builtin-agg cartesian."""
     return [
         FacadeMetric(
@@ -464,7 +463,7 @@ def _column_x_builtin_aggs(model: SlayerModel) -> List[FacadeMetric]:
     ]
 
 
-def _column_x_custom_aggs(model: SlayerModel) -> List[FacadeMetric]:
+def _column_x_custom_aggs(model: SlayerModel) -> list[FacadeMetric]:
     """Rule 4: column × parameterless custom aggs. Custom aggs are not
     gated by ``DEFAULT_AGGREGATIONS_BY_TYPE``, so we expose them on every
     non-hidden column. Custom-agg output type is opaque."""
@@ -485,7 +484,7 @@ def _column_x_custom_aggs(model: SlayerModel) -> List[FacadeMetric]:
     ]
 
 
-def _local_metrics_for(*, model: SlayerModel) -> List[FacadeMetric]:
+def _local_metrics_for(*, model: SlayerModel) -> list[FacadeMetric]:
     """Apply rules 1-4 to a single model in isolation (no join walk)."""
     return [
         _synthetic_row_count(model),
@@ -495,9 +494,9 @@ def _local_metrics_for(*, model: SlayerModel) -> List[FacadeMetric]:
     ]
 
 
-def _local_dimensions_for(*, model: SlayerModel) -> List[FacadeDimension]:
+def _local_dimensions_for(*, model: SlayerModel) -> list[FacadeDimension]:
     """Bare-column dims for a single model in isolation (no join walk)."""
-    out: List[FacadeDimension] = []
+    out: list[FacadeDimension] = []
     for col in model.columns:
         if col.hidden:
             continue
@@ -514,7 +513,7 @@ def _local_dimensions_for(*, model: SlayerModel) -> List[FacadeDimension]:
 
 def build_local_view(
     model: SlayerModel,
-) -> Tuple[List[FacadeDimension], List[FacadeMetric]]:
+) -> tuple[list[FacadeDimension], list[FacadeMetric]]:
     """Build the bare-column dims + col×agg metrics for a single model
     in isolation (no join walk). Used by the translator's dynamic-join
     lookup materialisation (DEV-1565) so a join the catalog's BFS didn't
@@ -524,13 +523,13 @@ def build_local_view(
     return _local_dimensions_for(model=model), _local_metrics_for(model=model)
 
 
-def _describe_column_agg(*, column: Column, agg: str) -> Optional[str]:
+def _describe_column_agg(*, column: Column, agg: str) -> str | None:
     if column.description:
         return f"{column.description} ({agg})"
     return None
 
 
-def _agg_output_type(*, column: Column, agg: str) -> Optional[DataType]:
+def _agg_output_type(*, column: Column, agg: str) -> DataType | None:
     """Coarse-grained output-type inference for column × agg pairs.
 
     Used only to populate ``INFORMATION_SCHEMA.METRICS.data_type``; the
@@ -557,9 +556,9 @@ def _agg_output_type(*, column: Column, agg: str) -> Optional[DataType]:
 def _dimension_expansion(
     *,
     model: SlayerModel,
-    reachable: List[Tuple[List[str], SlayerModel]],
-) -> List[FacadeDimension]:
-    out: List[FacadeDimension] = []
+    reachable: list[tuple[list[str], SlayerModel]],
+) -> list[FacadeDimension]:
+    out: list[FacadeDimension] = []
     for col in model.columns:
         if col.hidden:
             continue

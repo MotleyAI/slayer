@@ -9,7 +9,7 @@ the extended/binary protocol, transactions, and concurrency end-to-end.
 from __future__ import annotations
 
 import asyncio
-from typing import Iterator, Tuple
+from collections.abc import Iterator
 
 import pytest
 
@@ -21,7 +21,7 @@ asyncpg = pytest.importorskip("asyncpg")
 
 
 @pytest.fixture(scope="module")
-def pg_demo_server() -> Iterator[Tuple[str, int]]:
+def pg_demo_server() -> Iterator[tuple[str, int]]:
     loop, thread, host, port = start_pg_demo_server(token=None)
     try:
         yield host, port
@@ -31,7 +31,7 @@ def pg_demo_server() -> Iterator[Tuple[str, int]]:
 
 
 @pytest.fixture(scope="module")
-def pg_demo_server_with_token() -> Iterator[Tuple[str, int, str]]:
+def pg_demo_server_with_token() -> Iterator[tuple[str, int, str]]:
     token = "s3cret"
     loop, thread, host, port = start_pg_demo_server(token=token)
     try:

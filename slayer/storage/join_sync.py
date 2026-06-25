@@ -12,7 +12,6 @@ v4 (DEV-1330): join targets are resolved within the parent model's
 ``data_source`` only — cross-datasource joins are never auto-mirrored.
 """
 
-from typing import Dict, List, Optional, Set, Tuple
 
 from slayer.core.enums import JoinType
 from slayer.core.models import DatasourceConfig, ModelJoin, SlayerModel
@@ -60,7 +59,7 @@ async def _mirror_inner_joins(model: SlayerModel, storage: StorageBackend) -> No
 async def _remove_inner_joins_to(
     source_name: str,
     source_data_source: str,
-    target_names: Set[str],
+    target_names: set[str],
     storage: StorageBackend,
 ) -> None:
     """Remove inner joins that point back to *source_name* from each target.
@@ -158,7 +157,7 @@ class JoinSyncStorage(StorageBackend):
     async def delete_model(
         self,
         name: str,
-        data_source: Optional[str] = None,
+        data_source: str | None = None,
     ) -> bool:
         await self._ensure_reconciled()
         if data_source is None:
@@ -200,15 +199,15 @@ class JoinSyncStorage(StorageBackend):
 
     # -- pure delegation --------------------------------------------------
 
-    async def _list_all_model_identities(self) -> List[Tuple[str, str]]:
+    async def _list_all_model_identities(self) -> list[tuple[str, str]]:
         await self._ensure_reconciled()
         return await self._inner._list_all_model_identities()
 
     async def get_model(
         self,
         name: str,
-        data_source: Optional[str] = None,
-    ) -> Optional[SlayerModel]:
+        data_source: str | None = None,
+    ) -> SlayerModel | None:
         await self._ensure_reconciled()
         return await self._inner.get_model(name, data_source=data_source)
 
@@ -218,9 +217,9 @@ class JoinSyncStorage(StorageBackend):
         data_source: str,
         model_name: str,
         column_name: str,
-        sampled: Optional[str],
-        sampled_values: Optional[List[str]],
-        distinct_count: Optional[int],
+        sampled: str | None,
+        sampled_values: list[str] | None,
+        distinct_count: int | None,
     ) -> None:
         return await self._inner.update_column_sampled(
             data_source=data_source,
@@ -234,19 +233,19 @@ class JoinSyncStorage(StorageBackend):
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         return await self._inner.save_datasource(datasource)
 
-    async def get_datasource(self, name: str) -> Optional[DatasourceConfig]:
+    async def get_datasource(self, name: str) -> DatasourceConfig | None:
         return await self._inner.get_datasource(name)
 
-    async def list_datasources(self) -> List[str]:
+    async def list_datasources(self) -> list[str]:
         return await self._inner.list_datasources()
 
     async def delete_datasource(self, name: str) -> bool:
         return await self._inner.delete_datasource(name)
 
-    async def get_datasource_priority(self) -> List[str]:
+    async def get_datasource_priority(self) -> list[str]:
         return await self._inner.get_datasource_priority()
 
-    async def _set_datasource_priority_raw(self, priority: List[str]) -> None:
+    async def _set_datasource_priority_raw(self, priority: list[str]) -> None:
         return await self._inner._set_datasource_priority_raw(priority)
 
     # -- memories (DEV-1357 v2 / DEV-1428) — pure delegation --------------
@@ -254,12 +253,12 @@ class JoinSyncStorage(StorageBackend):
     async def _save_memory_row(self, memory: Memory) -> None:
         await self._inner._save_memory_row(memory)
 
-    async def _get_memory_row(self, memory_id: str) -> Optional[Memory]:
+    async def _get_memory_row(self, memory_id: str) -> Memory | None:
         return await self._inner._get_memory_row(memory_id)
 
     async def _list_memories_rows(
-        self, *, entities: Optional[List[str]]
-    ) -> List[Memory]:
+        self, *, entities: list[str] | None
+    ) -> list[Memory]:
         return await self._inner._list_memories_rows(entities=entities)
 
     async def _delete_memory_row(self, memory_id: str) -> bool:
@@ -280,12 +279,12 @@ class JoinSyncStorage(StorageBackend):
     async def save_embedding(self, row: Embedding) -> None:
         await self._inner.save_embedding(row)
 
-    async def save_embeddings(self, rows: List[Embedding]) -> None:
+    async def save_embeddings(self, rows: list[Embedding]) -> None:
         await self._inner.save_embeddings(rows)
 
     async def get_embedding(
         self, *, canonical_id: str, embedding_model_name: str,
-    ) -> Optional[Embedding]:
+    ) -> Embedding | None:
         return await self._inner.get_embedding(
             canonical_id=canonical_id,
             embedding_model_name=embedding_model_name,
@@ -294,9 +293,9 @@ class JoinSyncStorage(StorageBackend):
     async def get_embeddings_for_canonical_ids(
         self,
         *,
-        canonical_ids: List[str],
+        canonical_ids: list[str],
         embedding_model_name: str,
-    ) -> Dict[str, Embedding]:
+    ) -> dict[str, Embedding]:
         return await self._inner.get_embeddings_for_canonical_ids(
             canonical_ids=canonical_ids,
             embedding_model_name=embedding_model_name,
@@ -304,7 +303,7 @@ class JoinSyncStorage(StorageBackend):
 
     async def list_embeddings(
         self, *, embedding_model_name: str,
-    ) -> List[Embedding]:
+    ) -> list[Embedding]:
         return await self._inner.list_embeddings(
             embedding_model_name=embedding_model_name,
         )

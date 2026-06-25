@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import struct
 import types
-from typing import List, Optional, Tuple
 
 import pytest
 
@@ -45,10 +44,10 @@ class _FakeStorage:
     def __init__(self, models_by_ds) -> None:
         self._models_by_ds = models_by_ds
 
-    async def list_datasources(self) -> List[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
+    async def list_datasources(self) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
         return list(self._models_by_ds)
 
-    async def list_models(self, *, data_source: str) -> List[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
+    async def list_models(self, *, data_source: str) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
         return [m.name for m in self._models_by_ds.get(data_source, [])]
 
     async def get_model(self, *, name: str, data_source: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
@@ -141,7 +140,7 @@ def _terminate() -> bytes:
     return _frame(b"X", b"")
 
 
-def _parse(name: str, sql: str, oids: Tuple[int, ...] = ()) -> bytes:
+def _parse(name: str, sql: str, oids: tuple[int, ...] = ()) -> bytes:
     body = name.encode() + b"\x00" + sql.encode() + b"\x00" + struct.pack(">h", len(oids))
     for o in oids:
         body += struct.pack(">i", o)
@@ -150,9 +149,9 @@ def _parse(name: str, sql: str, oids: Tuple[int, ...] = ()) -> bytes:
 
 def _bind(
     portal: str, stmt: str, *,
-    values: Tuple[Optional[bytes], ...] = (),
-    param_formats: Tuple[int, ...] = (),
-    result_formats: Tuple[int, ...] = (),
+    values: tuple[bytes | None, ...] = (),
+    param_formats: tuple[int, ...] = (),
+    result_formats: tuple[int, ...] = (),
 ) -> bytes:
     body = portal.encode() + b"\x00" + stmt.encode() + b"\x00"
     body += struct.pack(">h", len(param_formats))
@@ -190,7 +189,7 @@ def _close(kind: str, name: str) -> bytes:
 
 
 async def _run(
-    input_bytes: bytes, *, token: Optional[str] = None, storage=None, engine=None,
+    input_bytes: bytes, *, token: str | None = None, storage=None, engine=None,
     tls_ctx=None,
 ) -> _FakeWriter:
     reader = asyncio.StreamReader()
@@ -208,19 +207,19 @@ async def _run(
     return writer
 
 
-def _messages(buf: bytes, *, leading_raw: int = 0) -> List[Tuple[str, bytes]]:
+def _messages(buf: bytes, *, leading_raw: int = 0) -> list[tuple[str, bytes]]:
     return proto.split_messages(bytes(buf[leading_raw:]))
 
 
-def _types(msgs: List[Tuple[str, bytes]]) -> List[str]:
+def _types(msgs: list[tuple[str, bytes]]) -> list[str]:
     return [t for t, _ in msgs]
 
 
-def _ready_statuses(msgs: List[Tuple[str, bytes]]) -> List[bytes]:
+def _ready_statuses(msgs: list[tuple[str, bytes]]) -> list[bytes]:
     return [body for t, body in msgs if t == "Z"]
 
 
-def _error_sqlstate(body: bytes) -> Optional[str]:
+def _error_sqlstate(body: bytes) -> str | None:
     i = 0
     while i < len(body) and body[i:i + 1] != b"\x00":
         ftype = body[i:i + 1]
@@ -1003,7 +1002,7 @@ async def test_simple_query_catalog_union_routes_to_executor() -> None:
 # --- DEV-1569: per-connection SET state ---
 
 
-def _show_value(msgs: List[Tuple[str, bytes]]) -> str:
+def _show_value(msgs: list[tuple[str, bytes]]) -> str:
     """Pull the single-text-column value out of the last DataRow in `msgs`.
 
     The format is: ``count(i16) | length(i32) | bytes``. SHOW always returns
@@ -1014,11 +1013,11 @@ def _show_value(msgs: List[Tuple[str, bytes]]) -> str:
     return body[6:6 + length].decode()
 
 
-def _parameter_status(msgs: List[Tuple[str, bytes]]) -> List[Tuple[str, str]]:
+def _parameter_status(msgs: list[tuple[str, bytes]]) -> list[tuple[str, str]]:
     """Decode every ParameterStatus message (``S``) in the stream into
     ``[(name, value), …]``. Note that startup ParameterStatus burst messages
     are included too — callers filter by name."""
-    out: List[Tuple[str, str]] = []
+    out: list[tuple[str, str]] = []
     for t, body in msgs:
         if t != "S":
             continue
@@ -1029,8 +1028,8 @@ def _parameter_status(msgs: List[Tuple[str, bytes]]) -> List[Tuple[str, str]]:
     return out
 
 
-def _command_complete_tags(msgs: List[Tuple[str, bytes]]) -> List[str]:
-    out: List[str] = []
+def _command_complete_tags(msgs: list[tuple[str, bytes]]) -> list[str]:
+    out: list[str] = []
     for t, body in msgs:
         if t != "C":
             continue
@@ -1501,7 +1500,7 @@ async def test_two_connections_isolated_under_set_config() -> None:
 # --- DEV-1569 Codex round 2 follow-ups ---
 
 
-def _index_of_first(msgs: List[Tuple[str, bytes]], pred) -> int:
+def _index_of_first(msgs: list[tuple[str, bytes]], pred) -> int:
     for i, (t, body) in enumerate(msgs):
         if pred(t, body):
             return i
@@ -1781,8 +1780,8 @@ async def test_set_pushes_parameter_status_for_all_reportable_names(
 
 
 async def _run_capturing(
-    input_bytes: bytes, *, token: Optional[str] = None, storage=None, engine=None,
-) -> Tuple[_FakeWriter, PgConnection]:
+    input_bytes: bytes, *, token: str | None = None, storage=None, engine=None,
+) -> tuple[_FakeWriter, PgConnection]:
     """Variant of ``_run`` that returns both the writer and the connection
     so tests can introspect ``conn._portals`` post-Bind."""
     reader = asyncio.StreamReader()

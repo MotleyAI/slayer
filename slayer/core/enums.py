@@ -2,7 +2,7 @@
 
 import datetime  # noqa: F401  (kept for downstream imports of TimeGranularity)
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 
 class StrEnum(str, Enum):
@@ -27,7 +27,7 @@ class DataType(StrEnum):
 # from older agent input (MCP/REST/CLI), pseudo-types (count/sum/...) drop to
 # None so the field falls through to its default. Used by both Column and
 # ModelMeasure validators in slayer/core/models.py.
-_LEGACY_DATATYPE_ALIASES: dict[str, Optional[str]] = {
+_LEGACY_DATATYPE_ALIASES: dict[str, str | None] = {
     # Pre-rename canonical values.
     "string": "TEXT",
     "number": "DOUBLE",

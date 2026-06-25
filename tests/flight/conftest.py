@@ -18,7 +18,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Callable, Iterator, Tuple
+from collections.abc import Callable, Iterator
 
 import pytest
 
@@ -121,7 +121,7 @@ def jaydebeapi_connect(jdbc_jar: Path) -> Callable[..., object]:
 
 
 @pytest.fixture
-def capture_stub(tmp_path: Path) -> Iterator[Tuple[str, Path]]:
+def capture_stub(tmp_path: Path) -> Iterator[tuple[str, Path]]:
     """Spin up a CaptureFlightServer on an ephemeral port.
 
     Yields ``(grpc_location, log_path)`` where ``log_path`` accumulates one

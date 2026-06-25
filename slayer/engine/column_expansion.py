@@ -17,7 +17,8 @@ unresolved derived references.
 """
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict, Optional, Set, Tuple
+from typing import Any
+from collections.abc import Awaitable, Callable
 
 import sqlglot
 from sqlglot import exp
@@ -26,7 +27,7 @@ from sqlglot.optimizer.scope import ScopeType, traverse_scope
 from slayer.core.errors import ColumnCycleError
 from slayer.core.models import Column, SlayerModel
 
-ResolveModel = Callable[..., Awaitable[Optional[SlayerModel]]]
+ResolveModel = Callable[..., Awaitable[SlayerModel | None]]
 
 
 def _is_trivial_base(*, column: Column) -> bool:
@@ -46,7 +47,7 @@ def _is_trivial_base(*, column: Column) -> bool:
     return sql == column.name
 
 
-def _root_scope_column_ids(*, parsed: exp.Expression) -> Set[int]:
+def _root_scope_column_ids(*, parsed: exp.Expression) -> set[int]:
     """Return the ``id()`` set of ``exp.Column`` nodes that lexically belong
     to the root scope of ``parsed`` (DEV-1410).
 
@@ -67,7 +68,7 @@ def _root_scope_column_ids(*, parsed: exp.Expression) -> Set[int]:
     if not isinstance(parsed, exp.Expression):
         return set()
     wrapper = exp.Select(expressions=[exp.Alias(this=parsed.copy(), alias="_")])
-    scope_node_ids: Dict[int, ScopeType] = {}
+    scope_node_ids: dict[int, ScopeType] = {}
     for scope in traverse_scope(wrapper):
         scope_node_ids[id(scope.expression)] = scope.scope_type
     if not scope_node_ids:
@@ -89,10 +90,10 @@ def _root_scope_column_ids(*, parsed: exp.Expression) -> Set[int]:
         # wrapper just wraps a deep copy and ``find_all`` walks in
         # document order.
         return set()
-    root_ids: Set[int] = set()
+    root_ids: set[int] = set()
     for w_col, p_col in zip(wrapper_cols, parsed_cols):
-        node: Optional[exp.Expression] = w_col.parent
-        scope_type: Optional[ScopeType] = None
+        node: exp.Expression | None = w_col.parent
+        scope_type: ScopeType | None = None
         while node is not None:
             if id(node) in scope_node_ids:
                 scope_type = scope_node_ids[id(node)]
@@ -109,9 +110,9 @@ async def _walk_path_to_target(
     source_alias: str,
     table_alias: str,
     resolve_model: ResolveModel,
-    named_queries: Dict[str, Any],
+    named_queries: dict[str, Any],
     is_root: bool,
-) -> Tuple[Optional[SlayerModel], Optional[str]]:
+) -> tuple[SlayerModel | None, str | None]:
     """Resolve a ``table_alias`` (e.g. ``B`` or ``B__C``) seen inside a
     Column.sql to the terminal joined model and the canonical alias to use
     in emitted SQL.
@@ -157,11 +158,11 @@ async def _process_column_node(
     model: SlayerModel,
     alias_path: str,
     resolve_model: ResolveModel,
-    named_queries: Dict[str, Any],
+    named_queries: dict[str, Any],
     dialect: str,
-    visited: Tuple[Tuple[str, str], ...],
+    visited: tuple[tuple[str, str], ...],
     is_root: bool,
-    root_scope_ids: Set[int],
+    root_scope_ids: set[int],
 ) -> None:
     """Resolve one ``exp.Column`` node in the parsed AST, mutating it in
     place. Encapsulates the multi-branch decision that drives expansion:
@@ -248,15 +249,15 @@ async def _process_column_node(
 
 async def expand_derived_refs(
     *,
-    sql: Optional[str],
+    sql: str | None,
     model: SlayerModel,
     alias_path: str,
     resolve_model: ResolveModel,
-    named_queries: Optional[Dict[str, Any]] = None,
+    named_queries: dict[str, Any] | None = None,
     dialect: str,
-    visited: Optional[Tuple[Tuple[str, str], ...]] = None,
+    visited: tuple[tuple[str, str], ...] | None = None,
     is_root: bool = True,
-) -> Optional[str]:
+) -> str | None:
     """Recursively expand cross-model and local derived-column references
     inside ``sql``.
 

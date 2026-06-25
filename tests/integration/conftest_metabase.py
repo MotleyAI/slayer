@@ -21,7 +21,8 @@ import shutil
 import subprocess
 import time
 import uuid
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any
+from collections.abc import Iterator
 
 import pytest
 import requests
@@ -86,22 +87,22 @@ class MetabaseClient:
             response=resp,
         )
 
-    def post(self, path: str, json_body: Optional[dict] = None, *, timeout: int = 30) -> dict:
+    def post(self, path: str, json_body: dict | None = None, *, timeout: int = 30) -> dict:
         resp = self._session.post(self._url(path), json=json_body or {}, timeout=timeout)
         self._raise_with_body(resp, path)
         return resp.json() if resp.content else {}
 
-    def get(self, path: str, params: Optional[dict] = None, *, timeout: int = 30) -> Any:
+    def get(self, path: str, params: dict | None = None, *, timeout: int = 30) -> Any:
         resp = self._session.get(self._url(path), params=params, timeout=timeout)
         self._raise_with_body(resp, path)
         return resp.json() if resp.content else {}
 
-    def put(self, path: str, json_body: Optional[dict] = None, *, timeout: int = 30) -> dict:
+    def put(self, path: str, json_body: dict | None = None, *, timeout: int = 30) -> dict:
         resp = self._session.put(self._url(path), json=json_body or {}, timeout=timeout)
         self._raise_with_body(resp, path)
         return resp.json() if resp.content else {}
 
-    def post_raw(self, path: str, json_body: Optional[dict] = None, *, timeout: int = 30):
+    def post_raw(self, path: str, json_body: dict | None = None, *, timeout: int = 30):
         """POST without raise_for_status — for error-envelope tests."""
         return self._session.post(self._url(path), json=json_body or {}, timeout=timeout)
 
@@ -160,10 +161,10 @@ class MetabaseE2EEnv(BaseModel):
     session_token: str
     client: MetabaseClient
     token_db_id: int
-    pg_primary: Tuple[str, int]
+    pg_primary: tuple[str, int]
     pg_primary_password: str
-    pg_auth: Tuple[str, int, str]
-    log_records: List[logging.LogRecord]
+    pg_auth: tuple[str, int, str]
+    log_records: list[logging.LogRecord]
     pg_primary_storage: Any
 
     def make_client(self, db_id: int) -> MetabaseClient:
@@ -193,7 +194,7 @@ def _docker_available() -> bool:
     return result.returncode == 0 and result.stdout.strip() != ""
 
 
-def _run_metabase_container() -> Tuple[str, int]:
+def _run_metabase_container() -> tuple[str, int]:
     """Start the Metabase container; return ``(container_id, host_port)``."""
     container_name = f"slayer-mb-e2e-{uuid.uuid4().hex[:8]}"
     cmd = [
@@ -238,7 +239,7 @@ def _run_metabase_container() -> Tuple[str, int]:
     return container_id, host_port
 
 
-def _stop_container(container_id: Optional[str]) -> None:
+def _stop_container(container_id: str | None) -> None:
     if not container_id:
         return
     try:
@@ -282,7 +283,7 @@ def _wait_for_health(base_url: str, timeout_s: int) -> bool:
     return False
 
 
-def _fetch_setup_token(base_url: str) -> Optional[str]:
+def _fetch_setup_token(base_url: str) -> str | None:
     r = requests.get(f"{base_url}/api/session/properties", timeout=10)
     r.raise_for_status()
     props = r.json()
@@ -376,10 +377,10 @@ def _register_database(
 
 def _wait_for_metadata(
     base_url: str, session_token: str, db_id: int, *, min_tables: int, timeout_s: int
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_s
     headers = {"X-Metabase-Session": session_token}
-    last_payload: Dict[str, Any] = {}
+    last_payload: dict[str, Any] = {}
     while time.monotonic() < deadline:
         r = requests.get(
             f"{base_url}/api/database/{db_id}/metadata",
@@ -405,7 +406,7 @@ def _wait_for_metadata(
 
 def _bootstrap_metabase_session(
     *, container_id: str, host_port: int, port_a: int, port_b: int,
-) -> Tuple[str, str, int, int]:
+) -> tuple[str, str, int, int]:
     """Boot Metabase, run first-time setup, register both pg-serve databases.
 
     Returns ``(base_url, session_token, db_id_no_token, db_id_token)``.
@@ -460,11 +461,11 @@ def metabase_e2e_env() -> Iterator[MetabaseE2EEnv]:
     if not _docker_available():
         pytest.skip("Docker is unavailable; the metabase_e2e suite needs a working Docker daemon")
 
-    log_records: List[logging.LogRecord] = []
+    log_records: list[logging.LogRecord] = []
     storage_sink: list = []
     loop_a = thread_a = None
     loop_b = thread_b = None
-    container_id: Optional[str] = None
+    container_id: str | None = None
 
     try:
         loop_a, thread_a, host_a, port_a = start_pg_demo_server(
@@ -521,14 +522,14 @@ def metabase_e2e_env() -> Iterator[MetabaseE2EEnv]:
 
 
 # Used by tests that re-emit the env in a per-test mutation context.
-def encode_native_query(sql: str) -> Dict[str, Any]:
+def encode_native_query(sql: str) -> dict[str, Any]:
     """Convenience helper used by native-SQL tests (E.7, G.4, etc.)."""
     return {"type": "native", "native": {"query": sql, "template-tags": {}}}
 
 
-def encode_mbql_query(*, source_table: int, **extras: Any) -> Dict[str, Any]:
+def encode_mbql_query(*, source_table: int, **extras: Any) -> dict[str, Any]:
     """Build an MBQL ``query`` body for ``/api/dataset``."""
-    inner: Dict[str, Any] = {"source-table": source_table}
+    inner: dict[str, Any] = {"source-table": source_table}
     inner.update(extras)
     return {"type": "query", "query": inner}
 

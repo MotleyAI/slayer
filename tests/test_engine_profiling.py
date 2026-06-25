@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import tempfile
-from typing import Optional
 
 import pytest
 
@@ -781,7 +780,7 @@ async def test_refresh_continues_after_per_column_failure(sqlite_setup, monkeypa
     call_count = {"n": 0}
     real_profile_column = profile_column
 
-    async def boom_then_ok(*, model, column, engine) -> Optional[ColumnSample]:
+    async def boom_then_ok(*, model, column, engine) -> ColumnSample | None:
         call_count["n"] += 1
         if column.name == "amount":
             raise RuntimeError("simulated profile failure")

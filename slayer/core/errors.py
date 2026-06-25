@@ -7,7 +7,7 @@ message format is decided by the layer that raises it.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, List, Tuple
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from slayer.engine.schema_drift import ToDeleteEntry  # noqa: F401
@@ -35,7 +35,7 @@ class AmbiguousModelError(SlayerError):
     priority`` CLI subcommand, etc.).
     """
 
-    def __init__(self, name: str, candidates: List[str]) -> None:
+    def __init__(self, name: str, candidates: list[str]) -> None:
         self.name = name
         self.candidates = list(candidates)
         super().__init__(
@@ -85,8 +85,8 @@ class SchemaDriftError(SlayerError):
 
     def __init__(
         self,
-        models: List[str],
-        to_delete: List[Any],
+        models: list[str],
+        to_delete: list[Any],
         original: BaseException,
     ) -> None:
         self.models = list(models)
@@ -110,8 +110,8 @@ class ColumnCycleError(SlayerError, ValueError):
     compile-time cycle raise) continue to work unchanged.
     """
 
-    def __init__(self, cycle: List[Tuple[str, str]]) -> None:
-        self.cycle: List[Tuple[str, str]] = list(cycle)
+    def __init__(self, cycle: list[tuple[str, str]]) -> None:
+        self.cycle: list[tuple[str, str]] = list(cycle)
         chain = " → ".join(f"{m}.{c}" for m, c in self.cycle)
         super().__init__(f"Circular column reference detected: {chain}")
 

@@ -15,7 +15,6 @@ handshake handler — see Task 15a's xfail note for the JDBC token gap).
 from __future__ import annotations
 
 import threading
-from typing import Tuple
 
 import pyarrow.flight as fl
 import pytest
@@ -61,7 +60,7 @@ def _bearer_options(token: str | None) -> fl.FlightCallOptions:
 # ----- catalog commands ------------------------------------------------------
 
 
-def test_get_catalogs(flight_demo_server: Tuple[str, int]) -> None:
+def test_get_catalogs(flight_demo_server: tuple[str, int]) -> None:
     host, port = flight_demo_server
     client = _client(host=host, port=port)
     descriptor = _descriptor_for(
@@ -73,7 +72,7 @@ def test_get_catalogs(flight_demo_server: Tuple[str, int]) -> None:
     assert any(r["catalog_name"] == "slayer" for r in rows)
 
 
-def test_get_db_schemas(flight_demo_server: Tuple[str, int]) -> None:
+def test_get_db_schemas(flight_demo_server: tuple[str, int]) -> None:
     host, port = flight_demo_server
     client = _client(host=host, port=port)
     descriptor = _descriptor_for(
@@ -85,7 +84,7 @@ def test_get_db_schemas(flight_demo_server: Tuple[str, int]) -> None:
     assert "jaffle_shop" in names
 
 
-def test_get_tables(flight_demo_server: Tuple[str, int]) -> None:
+def test_get_tables(flight_demo_server: tuple[str, int]) -> None:
     host, port = flight_demo_server
     client = _client(host=host, port=port)
     descriptor = _descriptor_for(fsql_pb.CommandGetTables(), "CommandGetTables")
@@ -97,7 +96,7 @@ def test_get_tables(flight_demo_server: Tuple[str, int]) -> None:
     assert ("jaffle_shop", "customers") in pairs
 
 
-def test_get_table_types(flight_demo_server: Tuple[str, int]) -> None:
+def test_get_table_types(flight_demo_server: tuple[str, int]) -> None:
     host, port = flight_demo_server
     client = _client(host=host, port=port)
     descriptor = _descriptor_for(
@@ -109,7 +108,7 @@ def test_get_table_types(flight_demo_server: Tuple[str, int]) -> None:
     assert {"TABLE", "VIEW"} <= rows
 
 
-def test_get_primary_keys_empty(flight_demo_server: Tuple[str, int]) -> None:
+def test_get_primary_keys_empty(flight_demo_server: tuple[str, int]) -> None:
     host, port = flight_demo_server
     client = _client(host=host, port=port)
     cmd = fsql_pb.CommandGetPrimaryKeys()
@@ -123,7 +122,7 @@ def test_get_primary_keys_empty(flight_demo_server: Tuple[str, int]) -> None:
     assert "column_name" in table.schema.names
 
 
-def test_get_sql_info(flight_demo_server: Tuple[str, int]) -> None:
+def test_get_sql_info(flight_demo_server: tuple[str, int]) -> None:
     host, port = flight_demo_server
     client = _client(host=host, port=port)
     descriptor = _descriptor_for(fsql_pb.CommandGetSqlInfo(), "CommandGetSqlInfo")
@@ -163,7 +162,7 @@ def _execute_prepared(client: fl.FlightClient, handle: bytes):
     return client.do_get(info.endpoints[0].ticket).read_all()
 
 
-def test_prepared_statement_row_count(flight_demo_server: Tuple[str, int]) -> None:
+def test_prepared_statement_row_count(flight_demo_server: tuple[str, int]) -> None:
     host, port = flight_demo_server
     client = _client(host=host, port=port)
     resp = _create_prepared(client, "SELECT row_count FROM orders")
@@ -174,7 +173,7 @@ def test_prepared_statement_row_count(flight_demo_server: Tuple[str, int]) -> No
     assert int(table.to_pylist()[0]["row_count"]) > 0
 
 
-def test_prepared_statement_time_grain(flight_demo_server: Tuple[str, int]) -> None:
+def test_prepared_statement_time_grain(flight_demo_server: tuple[str, int]) -> None:
     host, port = flight_demo_server
     client = _client(host=host, port=port)
     sql = (
@@ -190,7 +189,7 @@ def test_prepared_statement_time_grain(flight_demo_server: Tuple[str, int]) -> N
         assert int(row["row_count"]) > 0
 
 
-def test_prepared_statement_cross_model_dim(flight_demo_server: Tuple[str, int]) -> None:
+def test_prepared_statement_cross_model_dim(flight_demo_server: tuple[str, int]) -> None:
     host, port = flight_demo_server
     client = _client(host=host, port=port)
     resp = _create_prepared(
@@ -202,7 +201,7 @@ def test_prepared_statement_cross_model_dim(flight_demo_server: Tuple[str, int])
 
 
 def test_prepared_statement_info_schema_metrics(
-    flight_demo_server: Tuple[str, int],
+    flight_demo_server: tuple[str, int],
 ) -> None:
     host, port = flight_demo_server
     client = _client(host=host, port=port)
@@ -222,7 +221,7 @@ def test_prepared_statement_info_schema_metrics(
     ],
 )
 def test_prepared_statement_probe_queries(
-    flight_demo_server: Tuple[str, int], probe_sql: str,
+    flight_demo_server: tuple[str, int], probe_sql: str,
 ) -> None:
     host, port = flight_demo_server
     client = _client(host=host, port=port)
@@ -238,7 +237,7 @@ def test_prepared_statement_probe_queries(
 # ----- error paths -----------------------------------------------------------
 
 
-def test_select_star_rejected(flight_demo_server: Tuple[str, int]) -> None:
+def test_select_star_rejected(flight_demo_server: tuple[str, int]) -> None:
     host, port = flight_demo_server
     client = _client(host=host, port=port)
     with pytest.raises(fl.FlightServerError) as excinfo:
@@ -246,7 +245,7 @@ def test_select_star_rejected(flight_demo_server: Tuple[str, int]) -> None:
     assert "SELECT * not supported" in str(excinfo.value)
 
 
-def test_dml_rejected(flight_demo_server: Tuple[str, int]) -> None:
+def test_dml_rejected(flight_demo_server: tuple[str, int]) -> None:
     host, port = flight_demo_server
     client = _client(host=host, port=port)
     with pytest.raises(fl.FlightServerError) as excinfo:
@@ -254,7 +253,7 @@ def test_dml_rejected(flight_demo_server: Tuple[str, int]) -> None:
     assert "read-only" in str(excinfo.value).lower()
 
 
-def test_close_prepared_statement(flight_demo_server: Tuple[str, int]) -> None:
+def test_close_prepared_statement(flight_demo_server: tuple[str, int]) -> None:
     """``ActionClosePreparedStatementRequest`` is a no-op; it must complete cleanly."""
     host, port = flight_demo_server
     client = _client(host=host, port=port)
@@ -270,7 +269,7 @@ def test_close_prepared_statement(flight_demo_server: Tuple[str, int]) -> None:
 
 
 def test_auth_positive(
-    flight_demo_server_with_token: Tuple[str, int, str],
+    flight_demo_server_with_token: tuple[str, int, str],
 ) -> None:
     """With the correct bearer token attached on every RPC, the server accepts."""
     host, port, token = flight_demo_server_with_token
@@ -285,7 +284,7 @@ def test_auth_positive(
 
 
 def test_auth_negative_missing_token(
-    flight_demo_server_with_token: Tuple[str, int, str],
+    flight_demo_server_with_token: tuple[str, int, str],
 ) -> None:
     """Without an Authorization header the server rejects with UNAUTHENTICATED."""
     host, port, _token = flight_demo_server_with_token
@@ -296,7 +295,7 @@ def test_auth_negative_missing_token(
 
 
 def test_auth_negative_wrong_token(
-    flight_demo_server_with_token: Tuple[str, int, str],
+    flight_demo_server_with_token: tuple[str, int, str],
 ) -> None:
     host, port, _token = flight_demo_server_with_token
     client = _client(host=host, port=port)
@@ -308,7 +307,7 @@ def test_auth_negative_wrong_token(
 # ----- concurrency -----------------------------------------------------------
 
 
-def test_n10_concurrent_prepared_statements(flight_demo_server: Tuple[str, int]) -> None:
+def test_n10_concurrent_prepared_statements(flight_demo_server: tuple[str, int]) -> None:
     """Ten parallel prepared-statement round-trips against the same server."""
     host, port = flight_demo_server
 
