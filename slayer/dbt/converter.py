@@ -1104,7 +1104,7 @@ class DbtToSlayerConverter:
         """Push a derived input's per-input filter into its single-aggregate
         leaf, returning the filtered colon-form ref (or ``None`` on clean-fail).
         """
-        leaf = self._resolve_input_to_leaf(m_input.name)
+        leaf = self._resolve_input_to_leaf_filtered(m_input.name)
         if leaf is None:
             self._fail_metric(
                 metric, category="filter_pushdown", severity="dropped",
@@ -1115,8 +1115,11 @@ class DbtToSlayerConverter:
                 suggestion="Filter a simple-aggregate input, or use a multi-stage model.",
             )
             return None
-        source_sm, dbt_measure = leaf
-        ok, reason = self._filter_reachable(m_input.filter, source_sm)
+        source_sm, dbt_measure, chain_filter = leaf
+        # Intersect the input's filter with any filter the referenced simple
+        # metric already carries, so the referenced metric's filter isn't lost.
+        raw_filter = self._combine_filters(chain_filter, m_input.filter)
+        ok, reason = self._filter_reachable(raw_filter, source_sm)
         if not ok:
             self._fail_metric(
                 metric, category="cross_model_filter", severity="dropped",
@@ -1132,7 +1135,7 @@ class DbtToSlayerConverter:
             slayer_model=slayer_model,
             source_sm=source_sm,
             dbt_measure=dbt_measure,
-            raw_filter=m_input.filter,
+            raw_filter=raw_filter,
         )
 
     def _convert_ratio_metric(self, metric: DbtMetric) -> None:
@@ -1197,7 +1200,7 @@ class DbtToSlayerConverter:
             # leaves a dangling formula name that _prune_dangling_measures drops.
             return self._resolve_metric_to_name(side.name) or side.name
 
-        leaf = self._resolve_input_to_leaf(side.name)
+        leaf = self._resolve_input_to_leaf_filtered(side.name)
         if leaf is None:
             self._fail_metric(
                 metric, category="filter_pushdown", severity="dropped",
@@ -1210,7 +1213,10 @@ class DbtToSlayerConverter:
             )
             return None
 
-        source_sm, dbt_measure = leaf
+        source_sm, dbt_measure, chain_filter = leaf
+        # Intersect with any filter the referenced simple metric already carries
+        # so it isn't silently dropped.
+        raw_filter = self._combine_filters(chain_filter, raw_filter)
         ok, reason = self._filter_reachable(raw_filter, source_sm)
         if not ok:
             self._fail_metric(
@@ -1551,11 +1557,27 @@ class DbtToSlayerConverter:
     ) -> Optional[Tuple[DbtSemanticModel, DbtMeasure]]:
         """Resolve a ratio/derived input to its single-aggregate leaf measure,
         or ``None`` when it's a multi-aggregate (ratio/derived/cumulative) metric."""
+        res = self._resolve_input_to_leaf_filtered(name)
+        return (res[0], res[1]) if res else None
+
+    def _resolve_input_to_leaf_filtered(
+        self, name: str
+    ) -> Optional[Tuple[DbtSemanticModel, DbtMeasure, Optional[str]]]:
+        """Like :meth:`_resolve_input_to_leaf`, but also accumulates the raw
+        filter(s) encountered along the resolution chain.
+
+        When an input names a *filtered* simple metric (its own ``filter`` or a
+        ``measure.filter``), that filter must be intersected with any additional
+        per-input / metric-level filter during push-down — otherwise the
+        referenced metric's filter is silently dropped, widening results.
+        Returns ``(source_model, leaf_measure, accumulated_raw_filter)`` or
+        ``None`` for a multi-aggregate input.
+        """
         sm = self._find_measure_model(name)
         if sm is not None:
             dbt_measure = next((m for m in sm.measures if m.name == name), None)
             if dbt_measure is not None:
-                return sm, dbt_measure
+                return sm, dbt_measure, None
         for mtc in self.project.metrics:
             if mtc.name != name:
                 continue
@@ -1565,7 +1587,15 @@ class DbtToSlayerConverter:
                 and mtc.type_params
                 and mtc.type_params.measure_name
             ):
-                return self._resolve_input_to_leaf(mtc.type_params.measure_name)
+                inner = self._resolve_input_to_leaf_filtered(mtc.type_params.measure_name)
+                if inner is None:
+                    return None
+                inner_sm, inner_measure, inner_filter = inner
+                mref = mtc.type_params.measure
+                own_filter = self._combine_filters(
+                    mtc.filter, mref.filter if mref else None
+                )
+                return inner_sm, inner_measure, self._combine_filters(own_filter, inner_filter)
             return None  # ratio / derived / cumulative / conversion → multi-aggregate
         return None
 

@@ -763,6 +763,45 @@ def test_cross_model_filter_foreign_entity_without_owner_clean_fails() -> None:
                for e in _all_report_entries(result))
 
 
+def test_input_filter_intersects_referenced_metric_filter() -> None:
+    """When a derived input adds a filter on top of an already-filtered simple
+    metric, BOTH filters must apply to the leaf — the referenced metric's filter
+    must not be silently dropped (which would widen results)."""
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(
+                name="orders", model="orders",
+                entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")],
+            ),
+        ],
+        metrics=[
+            DbtMetric(
+                name="us_revenue", type="simple",
+                type_params=DbtMetricTypeParams(measure="revenue"),
+                filter="{{ Dimension('orders__region') }} = 'US'",
+            ),
+            DbtMetric(
+                name="us_web_revenue",
+                type="derived",
+                type_params=DbtMetricTypeParams(
+                    expr="us_revenue",
+                    metrics=[DbtMetricInput(
+                        name="us_revenue",
+                        filter="{{ Dimension('orders__channel') }} = 'web'",
+                    )],
+                ),
+            ),
+        ],
+    )
+    result = _convert(project)
+    m = _measure(result, "us_web_revenue")
+    col = _column_for(result, m.formula)
+    assert col.filter is not None
+    assert "region" in col.filter and "US" in col.filter
+    assert "channel" in col.filter and "web" in col.filter
+
+
 def test_cross_model_filter_ambiguous_multi_owner_entity_clean_fails() -> None:
     """A foreign entity owned as primary by more than one model can't be
     unambiguously qualified to a single join, so it clean-fails instead of
