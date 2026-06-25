@@ -142,7 +142,7 @@ All three fold into a `ModelMeasure` on the source semantic model. Inputs are re
 
 #### Supported mappings
 
-Every legal dbt construct that reaches the importer is either represented exactly or [failed cleanly](#clean-fail-unsupported). Represented exactly:
+Every legal dbt construct that reaches the importer is either represented exactly or [failed cleanly](#clean-fail-and-unsupported). Represented exactly:
 
 | dbt construct | SLayer representation |
 | --- | --- |
@@ -158,7 +158,7 @@ Every legal dbt construct that reaches the importer is either represented exactl
 | Unbounded cumulative | `cumsum(measure)` |
 | `config.meta`, semantic-model `label` | carried onto the corresponding entity's `meta` |
 
-#### Clean-fail / unsupported
+#### Clean-fail and unsupported
 
 Constructs that cannot be expressed exactly are **failed cleanly** — never converted to approximate or wrong SQL. Each is routed to the conversion report with a category, severity, and documented workaround, and the raw construct is stashed into the owning entity's `meta` so nothing is silently lost.
 

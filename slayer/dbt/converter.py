@@ -851,11 +851,14 @@ class DbtToSlayerConverter:
             return
 
         leaf_ref = self._filtered_leaf_ref(
+            metric=metric,
             slayer_model=slayer_model,
             source_sm=source_sm,
             dbt_measure=dbt_measure,
             raw_filter=raw_filter,
         )
+        if leaf_ref is None:
+            return  # clean-failed (e.g. filtered percentile without a value)
         self._add_model_measure(slayer_model=slayer_model, metric=metric, formula=leaf_ref)
 
     def _convert_derived_metric(self, metric: DbtMetric) -> None:
@@ -894,22 +897,9 @@ class DbtToSlayerConverter:
         if tp.metrics:
             for m_input in tp.metrics:
                 ref_name = m_input.alias or m_input.name
-                if m_input.offset_to_grain is not None:
-                    self._fail_metric(
-                        metric, category="offset_to_grain", severity="dropped",
-                        message=(
-                            f"Derived metric '{metric.name}': input '{ref_name}' uses "
-                            f"offset_to_grain; SLayer has no truncate-to-grain shift."
-                        ),
-                        suggestion="Use cumsum(...) and put the grain dimension in the query.",
-                    )
+                replacement, clean_failed = self._derived_input_replacement(metric, m_input)
+                if clean_failed:
                     return
-                if m_input.offset_window is not None:
-                    replacement = self._offset_window_ref(metric, m_input)
-                    if replacement is None:
-                        return  # clean-failed
-                else:
-                    replacement = self._resolve_metric_to_name(m_input.name)
                 if replacement and replacement != ref_name:
                     formula = re.sub(
                         rf"\b{re.escape(ref_name)}\b",
@@ -985,6 +975,88 @@ class DbtToSlayerConverter:
             _, dbt_measure = leaf
             resolved_input = dbt_measure.name
         return f"time_shift({resolved_input}, -{window.count}, '{gran}')"
+
+    def _derived_input_replacement(
+        self, metric: DbtMetric, m_input: DbtMetricInput
+    ) -> Tuple[Optional[str], bool]:
+        """Resolve one derived-metric input to its formula replacement.
+
+        Returns ``(replacement, clean_failed)``. ``clean_failed=True`` means a
+        report entry was emitted and the whole metric should be abandoned;
+        ``replacement is None`` with ``clean_failed=False`` means no
+        substitution is needed (the input ref already matches its name).
+        Handles ``offset_to_grain`` (clean-fail), ``offset_window`` →
+        ``time_shift``, per-input ``filter`` → leaf push-down, and the
+        unsupported offset+filter combination (clean-fail).
+        """
+        ref_name = m_input.alias or m_input.name
+        if m_input.offset_to_grain is not None:
+            self._fail_metric(
+                metric, category="offset_to_grain", severity="dropped",
+                message=(
+                    f"Derived metric '{metric.name}': input '{ref_name}' uses "
+                    f"offset_to_grain; SLayer has no truncate-to-grain shift."
+                ),
+                suggestion="Use cumsum(...) and put the grain dimension in the query.",
+            )
+            return None, True
+
+        has_offset = m_input.offset_window is not None
+        has_filter = bool(m_input.filter)
+        if has_offset and has_filter:
+            self._fail_metric(
+                metric, category="filter_pushdown", severity="dropped",
+                message=(
+                    f"Derived metric '{metric.name}': input '{ref_name}' combines "
+                    f"offset_window with a per-input filter; not exactly expressible."
+                ),
+                suggestion="Split the offset and the filter into separate inputs.",
+            )
+            return None, True
+        if has_offset:
+            rep = self._offset_window_ref(metric, m_input)
+            return rep, rep is None
+        if has_filter:
+            rep = self._derived_filtered_input_ref(metric, m_input)
+            return rep, rep is None
+        return self._resolve_metric_to_name(m_input.name), False
+
+    def _derived_filtered_input_ref(
+        self, metric: DbtMetric, m_input: DbtMetricInput
+    ) -> Optional[str]:
+        """Push a derived input's per-input filter into its single-aggregate
+        leaf, returning the filtered colon-form ref (or ``None`` on clean-fail).
+        """
+        leaf = self._resolve_input_to_leaf(m_input.name)
+        if leaf is None:
+            self._fail_metric(
+                metric, category="filter_pushdown", severity="dropped",
+                message=(
+                    f"Derived metric '{metric.name}': input '{m_input.name}' carries a "
+                    f"filter but is not a single aggregate; not exactly expressible."
+                ),
+                suggestion="Filter a simple-aggregate input, or use a multi-stage model.",
+            )
+            return None
+        source_sm, dbt_measure = leaf
+        ok, reason = self._filter_reachable(m_input.filter, source_sm)
+        if not ok:
+            self._fail_metric(
+                metric, category="cross_model_filter", severity="dropped",
+                message=f"Derived metric '{metric.name}': {reason}.",
+                suggestion="Add the required join, or filter on a local dimension.",
+            )
+            return None
+        slayer_model = self._models_by_name.get(source_sm.name)
+        if slayer_model is None:
+            return None
+        return self._filtered_leaf_ref(
+            metric=metric,
+            slayer_model=slayer_model,
+            source_sm=source_sm,
+            dbt_measure=dbt_measure,
+            raw_filter=m_input.filter,
+        )
 
     def _convert_ratio_metric(self, metric: DbtMetric) -> None:
         """A ratio metric is numerator / denominator over two measures/metrics.
@@ -1070,6 +1142,7 @@ class DbtToSlayerConverter:
             return None
 
         return self._filtered_leaf_ref(
+            metric=metric,
             slayer_model=slayer_model,
             source_sm=source_sm,
             dbt_measure=dbt_measure,
@@ -1097,38 +1170,9 @@ class DbtToSlayerConverter:
         period_agg = ctp.period_agg if ctp else None
         measure_name = tp.measure_name or (ctp.measure if ctp else None)
 
-        if window is not None:
-            self._fail_metric(
-                metric, category="windowed_cumulative", severity="dropped",
-                message=(
-                    f"Cumulative metric '{metric.name}' has a rolling window; a windowed "
-                    f"running total with period re-aggregation is not exactly expressible."
-                ),
-                suggestion="Use cumsum(measure) for an unbounded running total.",
-                raw={"window": window.model_dump()},
-            )
-            return
-        if grain_to_date is not None:
-            self._fail_metric(
-                metric, category="grain_to_date_cumulative", severity="dropped",
-                message=(
-                    f"Cumulative metric '{metric.name}' uses grain_to_date; reset-at-grain "
-                    f"can't bake into a saved measure (it is query-grain-dependent)."
-                ),
-                suggestion="Use cumsum(measure) and put the grain dimension in the query.",
-                raw={"grain_to_date": grain_to_date},
-            )
-            return
-        if period_agg is not None and period_agg.lower() != "first":
-            self._fail_metric(
-                metric, category="period_agg", severity="dropped",
-                message=(
-                    f"Cumulative metric '{metric.name}' uses period_agg='{period_agg}'; "
-                    f"only the default (first) running total is exactly expressible."
-                ),
-                suggestion="Use the default period_agg (first) for cumsum(measure).",
-                raw={"period_agg": period_agg},
-            )
+        if self._cumulative_clean_fail(
+            metric, window=window, grain_to_date=grain_to_date, period_agg=period_agg
+        ):
             return
 
         if not measure_name:
@@ -1178,6 +1222,55 @@ class DbtToSlayerConverter:
             formula=f"cumsum({measure_ref})",
         )
 
+    def _cumulative_clean_fail(
+        self,
+        metric: DbtMetric,
+        *,
+        window: Optional[DbtMetricTimeWindow],
+        grain_to_date: Optional[str],
+        period_agg: Optional[str],
+    ) -> bool:
+        """Route the query-grain-dependent cumulative variants to the report.
+
+        Returns ``True`` (and emits a report entry) for a rolling window,
+        grain-to-date reset, or non-default ``period_agg``; ``False`` when the
+        cumulative is the unbounded form SLayer maps to ``cumsum(measure)``.
+        """
+        if window is not None:
+            self._fail_metric(
+                metric, category="windowed_cumulative", severity="dropped",
+                message=(
+                    f"Cumulative metric '{metric.name}' has a rolling window; a windowed "
+                    f"running total with period re-aggregation is not exactly expressible."
+                ),
+                suggestion="Use cumsum(measure) for an unbounded running total.",
+                raw={"window": window.model_dump()},
+            )
+            return True
+        if grain_to_date is not None:
+            self._fail_metric(
+                metric, category="grain_to_date_cumulative", severity="dropped",
+                message=(
+                    f"Cumulative metric '{metric.name}' uses grain_to_date; reset-at-grain "
+                    f"can't bake into a saved measure (it is query-grain-dependent)."
+                ),
+                suggestion="Use cumsum(measure) and put the grain dimension in the query.",
+                raw={"grain_to_date": grain_to_date},
+            )
+            return True
+        if period_agg is not None and period_agg.lower() != "first":
+            self._fail_metric(
+                metric, category="period_agg", severity="dropped",
+                message=(
+                    f"Cumulative metric '{metric.name}' uses period_agg='{period_agg}'; "
+                    f"only the default (first) running total is exactly expressible."
+                ),
+                suggestion="Use the default period_agg (first) for cumsum(measure).",
+                raw={"period_agg": period_agg},
+            )
+            return True
+        return False
+
     # ── Filter push-down helpers ───────────────────────────────────────
 
     @staticmethod
@@ -1223,24 +1316,29 @@ class DbtToSlayerConverter:
     def _filtered_leaf_ref(
         self,
         *,
+        metric: DbtMetric,
         slayer_model: SlayerModel,
         source_sm: DbtSemanticModel,
         dbt_measure: DbtMeasure,
         raw_filter: str,
-    ) -> str:
+    ) -> Optional[str]:
         """Get-or-create the filtered leaf Column for ``(model, expr, filter)``
-        and return the colon-form formula referencing it.
+        and return the colon-form formula referencing it (or ``None`` on a
+        clean-fail that has already been routed to the report).
 
         Dedup key is ``(model, column_expr, normalized_filter)`` — the
         aggregation lives on the formula, so multiple aggregations over the
-        same filtered column share one Column.
+        same filtered column share one Column. Special measure forms are
+        preserved exactly: ``sum_boolean`` builds the CASE-WHEN INT column and
+        aggregates with ``:sum``; ``percentile`` keeps its ``p=`` argument
+        (and clean-fails on a missing value / discrete / approximate flags).
         """
+        leaf = self._filtered_leaf_spec(metric, dbt_measure)
+        if leaf is None:
+            return None  # clean-failed inside _filtered_leaf_spec
+        column_expr, col_type, col_format, agg_call = leaf
+
         slayer_filter = self._convert_filter(raw_filter, source_sm)
-        column_expr = (
-            dbt_measure.expr
-            if (dbt_measure.expr and dbt_measure.expr != dbt_measure.name)
-            else dbt_measure.name
-        )
         key = (slayer_model.name, column_expr, slayer_filter)
         col_name = self._filtered_columns.get(key)
         if col_name is None:
@@ -1248,12 +1346,43 @@ class DbtToSlayerConverter:
             slayer_model.columns.append(Column(
                 name=col_name,
                 sql=column_expr,
-                type=DataType.DOUBLE,
-                format=_FLOAT_FORMAT,
+                type=col_type,
+                format=col_format,
                 filter=slayer_filter,
             ))
             self._filtered_columns[key] = col_name
-        return f"{col_name}:{_map_agg(dbt_measure.agg)}"
+        return f"{col_name}:{agg_call}"
+
+    def _filtered_leaf_spec(
+        self, metric: DbtMetric, dbt_measure: DbtMeasure
+    ) -> Optional[Tuple[str, DataType, Optional[NumberFormat], str]]:
+        """Compute ``(column_expr, type, format, agg_call)`` for a filtered
+        leaf, preserving special measure semantics; ``None`` on clean-fail."""
+        agg = dbt_measure.agg.lower()
+        if agg == "sum_boolean":
+            expr = dbt_measure.expr or dbt_measure.name
+            return f"CASE WHEN ({expr}) THEN 1 ELSE 0 END", DataType.INT, None, "sum"
+
+        column_expr = (
+            dbt_measure.expr
+            if (dbt_measure.expr and dbt_measure.expr != dbt_measure.name)
+            else dbt_measure.name
+        )
+        mapped = _map_agg(dbt_measure.agg)
+        if mapped == "percentile":
+            ap = dbt_measure.agg_params
+            if ap is None or ap.percentile is None or ap.use_discrete_percentile or ap.use_approximate_percentile:
+                self._fail_metric(
+                    metric, category="percentile", severity="dropped",
+                    message=(
+                        f"Filtered metric '{metric.name}' wraps a percentile measure "
+                        f"with no usable continuous percentile value."
+                    ),
+                    suggestion="Set agg_params.percentile (continuous, in [0, 1]).",
+                )
+                return None
+            return column_expr, DataType.DOUBLE, _FLOAT_FORMAT, f"percentile(p={ap.percentile})"
+        return column_expr, DataType.DOUBLE, _FLOAT_FORMAT, mapped
 
     @staticmethod
     def _alloc_column_name(slayer_model: SlayerModel, base: str) -> str:

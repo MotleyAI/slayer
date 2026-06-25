@@ -25,6 +25,15 @@ from pydantic import BaseModel, Field, field_validator
 _PLURAL_GRANULARITY_RE = re.compile(r"s$", re.IGNORECASE)
 
 
+def _clause_to_str(clause: Any) -> Optional[str]:
+    """Extract one where-clause as a string from a bare string or a DSI
+    ``{"where_sql_template": "..."}`` dict; ``None`` when empty."""
+    if isinstance(clause, dict):
+        tmpl = clause.get("where_sql_template")
+        return str(tmpl) if tmpl else None
+    return str(clause) if clause else None
+
+
 def _normalize_filter(value: Any) -> Optional[str]:
     """Normalize a DSI ``WhereFilterIntersection`` to a single filter string.
 
@@ -39,28 +48,15 @@ def _normalize_filter(value: Any) -> Optional[str]:
         return None
     if isinstance(value, str):
         return value or None
-    parts: List[str] = []
+    # Reduce the intersection (dict / list / tuple) to its clause iterable.
     if isinstance(value, dict):
-        where_filters = value.get("where_filters") or []
-        for wf in where_filters:
-            if isinstance(wf, dict):
-                tmpl = wf.get("where_sql_template")
-                if tmpl:
-                    parts.append(str(tmpl))
-            elif wf:
-                parts.append(str(wf))
+        clauses: Any = value.get("where_filters") or []
     elif isinstance(value, (list, tuple)):
-        for item in value:
-            if isinstance(item, dict):
-                tmpl = item.get("where_sql_template")
-                if tmpl:
-                    parts.append(str(tmpl))
-            elif item:
-                parts.append(str(item))
+        clauses = value
     else:
         return str(value)
 
-    parts = [p for p in parts if p]
+    parts = [c for c in (_clause_to_str(x) for x in clauses) if c]
     if not parts:
         return None
     if len(parts) == 1:
@@ -214,6 +210,20 @@ class DbtMetricInput(BaseModel):
     @classmethod
     def _normalize_filter(cls, v: Any) -> Optional[str]:
         return _normalize_filter(v)
+
+    @field_validator("offset_window", mode="before")
+    @classmethod
+    def _coerce_offset_window(cls, v: Any) -> Any:
+        """Accept the DSI object form ``{count, granularity}`` as well as the
+        string form (``"1 month"``); store canonically as a string so
+        ``DbtMetricTimeWindow.parse`` (plural normalization, custom-grain
+        clean-fail) handles it downstream in the converter."""
+        if isinstance(v, dict):
+            count = v.get("count")
+            gran = v.get("granularity")
+            if count is not None and gran:
+                return f"{count} {gran}"
+        return v
 
 
 class DbtCumulativeTypeParams(BaseModel):

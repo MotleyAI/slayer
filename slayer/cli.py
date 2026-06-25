@@ -1303,8 +1303,8 @@ def _run_import_dbt(args):
         sys.exit(1)
 
     sa_engine = None
+    ds = run_sync(storage.get_datasource(args.datasource))
     if include_hidden:
-        ds = run_sync(storage.get_datasource(args.datasource))
         if ds is None:
             storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
             print(
@@ -1315,11 +1315,16 @@ def _run_import_dbt(args):
         from slayer.sql import engine_factory
         sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
 
+    # DEV-1595: pass the datasource dialect (best-effort) so the converter can
+    # emit percentile/median caveats for dialects that lack them (MySQL/T-SQL).
+    target_dialect = ds.type if ds is not None else None
+
     converter = DbtToSlayerConverter(
         project=project,
         data_source=args.datasource,
         sa_engine=sa_engine,
         include_hidden_models=include_hidden,
+        target_dialect=target_dialect,
     )
     result = converter.convert()
     # Cached engine — engine_factory owns its lifecycle; don't dispose.

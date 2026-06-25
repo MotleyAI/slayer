@@ -54,7 +54,7 @@ dbt allows each measure within a semantic model to have its own default time dim
 
 ## Where SLayer Cannot Express dbt Constructs
 
-These constructs are **failed cleanly** by the importer — routed to the [conversion report](dbt_import.md#clean-fail-unsupported) with a workaround and stashed into the owning entity's `meta`, never converted to approximate or wrong SQL.
+These constructs are **failed cleanly** by the importer — routed to the [conversion report](dbt_import.md#clean-fail-and-unsupported) with a workaround and stashed into the owning entity's `meta`, never converted to approximate or wrong SQL.
 
 ### No Rolling-Window Cumulative
 
@@ -70,7 +70,7 @@ Entity-based sequential event tracking (e.g., "users who visited then purchased 
 
 ### Other clean-fails
 
-`offset_to_grain`, an `offset_window` on a multi-aggregate (ratio/derived) input, non-standard granularities, discrete/approximate percentile flags, `join_to_timespine` / `fill_nulls_with` gap-filling, and measure-less simple metrics (`metric_aggregation_params`) are all failed cleanly with a documented workaround — see the [clean-fail table](dbt_import.md#clean-fail-unsupported).
+`offset_to_grain`, an `offset_window` on a multi-aggregate (ratio/derived) input, non-standard granularities, discrete/approximate percentile flags, `join_to_timespine` / `fill_nulls_with` gap-filling, and measure-less simple metrics (`metric_aggregation_params`) are all failed cleanly with a documented workaround — see the [clean-fail table](dbt_import.md#clean-fail-and-unsupported).
 
 ---
 

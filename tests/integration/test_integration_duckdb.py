@@ -326,6 +326,10 @@ class TestDuckDBQueries:
         )
         result = await duckdb_env.execute(query=query)
         assert result.row_count == 3
+        # Base per-grain totals (guards the underlying aggregation path)...
+        totals = [float(r["orders.total_sum"]) for r in result.data]
+        assert totals == pytest.approx([300.0, 200.0, 375.0])
+        # ...and the cumulative running total derived from them.
         running = [float(r["orders.running"]) for r in result.data]
         assert running == pytest.approx([300.0, 500.0, 875.0])
 

@@ -20,7 +20,7 @@ from slayer.engine.enrichment import enrich_query
 from slayer.sql.generator import SQLGenerator
 
 
-async def _noop_async(**kw):
+async def _noop_async(**kw):  # NOSONAR(S7503) — must be a coroutine; awaited as an enrich_query resolver callback
     return None
 
 

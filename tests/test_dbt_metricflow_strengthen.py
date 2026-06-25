@@ -872,3 +872,158 @@ def test_percentile_on_unsupported_dialect_emits_caveat(dialect: str) -> None:
     assert _measure(result, "p95").formula == "latency:percentile(p=0.95)"
     assert any("percentile" in e.message.lower() or "percentile" in (getattr(e, "category", "") or "").lower()
                for e in _all_report_entries(result))
+
+
+# ───────── DEV-1595 review follow-ups: filtered special aggs / derived input filters ─────────
+
+
+def test_filtered_percentile_metric_preserves_p() -> None:
+    """A filtered simple metric over a percentile measure must keep its p=."""
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(
+                name="orders", model="orders",
+                measures=[DbtMeasure(name="latency_p95", agg="percentile", expr="latency",
+                                     agg_params=DbtMeasureAggParams(percentile=0.95))],
+            ),
+        ],
+        metrics=[
+            DbtMetric(name="us_latency_p95", type="simple",
+                      type_params=DbtMetricTypeParams(measure="latency_p95"),
+                      filter="{{ Dimension('orders__region') }} = 'US'"),
+        ],
+    )
+    result = _convert(project)
+    m = _measure(result, "us_latency_p95")
+    assert m.formula.endswith(":percentile(p=0.95)")
+    col = _column_for(result, m.formula)
+    assert col.filter is not None and "region" in col.filter
+
+
+def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
+    """A filtered simple metric over a sum_boolean measure must keep the
+    CASE-WHEN INT form (not collapse to SUM of a raw boolean)."""
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(
+                name="orders", model="orders",
+                measures=[DbtMeasure(name="paid_orders", agg="sum_boolean", expr="is_paid")],
+            ),
+        ],
+        metrics=[
+            DbtMetric(name="us_paid_orders", type="simple",
+                      type_params=DbtMetricTypeParams(measure="paid_orders"),
+                      filter="{{ Dimension('orders__region') }} = 'US'"),
+        ],
+    )
+    result = _convert(project)
+    m = _measure(result, "us_paid_orders")
+    assert m.formula.endswith(":sum")
+    col = _column_for(result, m.formula)
+    assert col.type == DataType.INT
+    norm = (col.sql or "").upper().replace(" ", "")
+    assert "CASEWHEN" in norm and "THEN1ELSE0END" in norm
+    assert col.filter is not None and "region" in col.filter
+
+
+def test_derived_input_filter_pushes_down() -> None:
+    """A per-input filter on a derived metric's single-aggregate input pushes
+    into that input's leaf column (DEV-1595 Part 3.5)."""
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(
+                name="orders", model="orders",
+                measures=[
+                    DbtMeasure(name="revenue", agg="sum", expr="amount"),
+                    DbtMeasure(name="cost", agg="sum", expr="cost_amount"),
+                ],
+            ),
+        ],
+        metrics=[
+            DbtMetric(name="rev_metric", type="simple",
+                      type_params=DbtMetricTypeParams(measure="revenue")),
+            DbtMetric(name="cost_metric", type="simple",
+                      type_params=DbtMetricTypeParams(measure="cost")),
+            DbtMetric(
+                name="us_rev_minus_cost",
+                type="derived",
+                type_params=DbtMetricTypeParams(
+                    expr="rev_metric - cost_metric",
+                    metrics=[
+                        DbtMetricInput(name="rev_metric",
+                                       filter="{{ Dimension('orders__region') }} = 'US'"),
+                        DbtMetricInput(name="cost_metric"),
+                    ],
+                ),
+            ),
+        ],
+    )
+    result = _convert(project)
+    cols = [c for c in _model(result).columns if c.filter]
+    assert any(c.filter and "region" in c.filter and "US" in c.filter for c in cols)
+
+
+def test_derived_input_filter_on_multi_aggregate_clean_fails() -> None:
+    """A per-input filter on a ratio (multi-aggregate) derived input clean-fails."""
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(
+                name="orders", model="orders",
+                measures=[
+                    DbtMeasure(name="revenue", agg="sum", expr="amount"),
+                    DbtMeasure(name="orders_count", agg="count", expr="id"),
+                ],
+            ),
+        ],
+        metrics=[
+            DbtMetric(name="aov", type="ratio",
+                      type_params=DbtMetricTypeParams(
+                          numerator=DbtMetricInput(name="revenue"),
+                          denominator=DbtMetricInput(name="orders_count"))),
+            DbtMetric(
+                name="us_aov_plus_one",
+                type="derived",
+                type_params=DbtMetricTypeParams(
+                    expr="aov + 1",
+                    metrics=[DbtMetricInput(name="aov",
+                                            filter="{{ Dimension('orders__region') }} = 'US'")],
+                ),
+            ),
+        ],
+    )
+    result = _convert(project)
+    assert all(m.name != "us_aov_plus_one" for m in _model(result).measures)
+    assert any("us_aov_plus_one" in (e.metric_name or e.message)
+               for e in _all_report_entries(result))
+
+
+def test_offset_window_object_form_parses() -> None:
+    """offset_window given as the DSI object {count, granularity} is accepted
+    and lowered to time_shift (not rejected at parse time)."""
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(name="orders", model="orders",
+                             measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")]),
+        ],
+        metrics=[
+            DbtMetric(name="revenue_metric", type="simple",
+                      type_params=DbtMetricTypeParams(measure="revenue")),
+            DbtMetric(
+                name="rev_obj_offset",
+                type="derived",
+                type_params=DbtMetricTypeParams(
+                    expr="revenue_metric - revenue_prev",
+                    metrics=[
+                        DbtMetricInput(name="revenue_metric"),
+                        DbtMetricInput.model_validate({
+                            "name": "revenue_metric", "alias": "revenue_prev",
+                            "offset_window": {"count": 1, "granularity": "month"},
+                        }),
+                    ],
+                ),
+            ),
+        ],
+    )
+    result = _convert(project)
+    f = _measure(result, "rev_obj_offset").formula.replace(" ", "").lower()
+    assert "time_shift(" in f and "-1" in f and "month" in f
