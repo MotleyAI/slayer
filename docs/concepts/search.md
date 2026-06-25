@@ -6,6 +6,14 @@ aggregations) using up to three parallel retrieval channels merged by
 Reciprocal Rank Fusion. It is the **only** retrieval surface — there is
 no separate recall tool.
 
+!!! tip "`search` vs `inspect`"
+    `search` is the *fusion / ranking* surface — use it to discover entities
+    or to pull an entity back **in context** with its tagged memories. When
+    you already know the exact entity and just want its definition, use the
+    [`inspect`](../reference/mcp.md) tool instead: `inspect(reference,
+    entity_type)` returns the rendered detail for **exactly one** entity —
+    no ranking, no `cypher_filter`, and no bundled memories.
+
 A third channel (dense embeddings via litellm) is gated behind the
 optional `advanced_search` extra. When the extra is not installed or
 no provider API key is configured, the embedding channel emits a

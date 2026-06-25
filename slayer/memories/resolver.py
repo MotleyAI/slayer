@@ -34,7 +34,7 @@ from collections.abc import Iterable
 from pydantic import BaseModel
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS
-from slayer.core.errors import EntityResolutionError
+from slayer.core.errors import AmbiguousModelError, EntityResolutionError
 from slayer.core.formula import (
     AggregatedMeasureRef,
     ArithmeticField,
@@ -306,8 +306,15 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
     # ----- step 3: datasource-prefix detection ---------------------------
     if segments[0] in known_dses:
         ds = segments[0]
-        # Case D: same name is also a model in some other datasource.
-        ds_as_model = await storage.resolve_model_identity(ds)
+        # Case D: same name is also a model in some other datasource. This
+        # probe is best-effort (it only drives a warning) — an *ambiguous*
+        # model leg (same name in ≥2 datasources, no priority winner) must
+        # NOT abort a perfectly valid datasource-prefixed reference, so we
+        # treat the ambiguity as "yes, also a model" and keep going.
+        try:
+            ds_as_model = await storage.resolve_model_identity(ds)
+        except AmbiguousModelError:
+            ds_as_model = (ds, ds)
         if ds_as_model is not None:
             warnings.append(
                 f"'{ds}' is both a datasource and a model; interpreted "

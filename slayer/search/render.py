@@ -351,24 +351,31 @@ def render_memory_text_for_embedding(*, memory: Memory) -> str:
 # ---------------------------------------------------------------------------
 
 
-def collect_model_entity_pairs(*, model: SlayerModel) -> list[RenderedEntity]:
-    """Walk a model's subtree (model + visible columns + named measures
+def collect_model_entity_pairs(
+    *, model: SlayerModel, include_hidden: bool = False
+) -> list[RenderedEntity]:
+    """Walk a model's subtree (model + columns + named measures
     + custom aggregations) into the unified ``RenderedEntity`` shape.
 
     Filter rules (single source of truth):
 
-    * Hidden model -> returns ``[]``.
-    * Hidden column skipped.
+    * Hidden model -> returns ``[]`` (unless ``include_hidden``).
+    * Hidden column skipped (unless ``include_hidden``).
     * ``ModelMeasure`` whose ``name is None`` skipped (defensive: the
       Pydantic validator already rejects unnamed measures, but the skip
       keeps the helper aligned with the documented filter set).
+
+    ``include_hidden=True`` (DEV-1588) is the ``inspect`` escape hatch:
+    it emits the hidden model + hidden columns so a deliberate
+    point-lookup can render them. The default (``False``) preserves the
+    search/index corpus behavior — hidden entities never leak.
 
     Used by the tantivy corpus build, the embedding refresh path, and
     the new named-entity surfacing path. The leaf ``render_*_text``
     helpers are still the single source of truth for *what* each kind's
     text looks like; this helper is the single source of truth for
     *which* entities exist and at which canonical id."""
-    if model.hidden:
+    if model.hidden and not include_hidden:
         return []
     qualifier = f"{model.data_source}.{model.name}"
     out: list[RenderedEntity] = [RenderedEntity(
@@ -378,7 +385,7 @@ def collect_model_entity_pairs(*, model: SlayerModel) -> list[RenderedEntity]:
         description=model.description,
     )]
     for column in model.columns:
-        if column.hidden:
+        if column.hidden and not include_hidden:
             continue
         out.append(RenderedEntity(
             canonical_id=f"{qualifier}.{column.name}",

@@ -161,6 +161,32 @@ The demo path generates a DuckDB at `<storage>/demo/jaffle_shop.duckdb` and is i
 
 If a datasource with the same name already exists, or (with `--ingest`) any generated model name collides with a stored model, SLayer prompts for confirmation. Use `--yes` for non-interactive use.
 
+### `slayer inspect`
+
+Point-lookup of a single entity by reference and kind. Returns the rendered
+detail for **exactly one** entity — no ranking, no bundled memories (use
+`slayer search` for an entity *in context*).
+
+```bash
+slayer inspect jaffle_shop.orders --type model
+slayer inspect jaffle_shop.orders.order_total --type column --no-compact
+slayer inspect jaffle_shop.orders.customers.region --type column --no-compact  # join path → owning model
+slayer inspect memory:42 --type memory --no-compact
+slayer inspect jaffle_shop.orders --type model --format json
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `reference` | Yes | Entity reference: canonical id, bare name, join path (resolved to the owning model), or `memory:<id>`. |
+| `--type` | Yes | Entity kind: `datasource`, `model`, `column`, `measure`, `aggregation`, or `memory`. Disambiguates same-named entities and asserts the kind. |
+| `--no-compact` | No | Return the full render. The compact default is description-only for column/measure/aggregation/datasource/memory, and a cheap **schema skeleton** (column/measure/aggregation names + join targets, zero DB calls) for `--type model`; `--no-compact` on a datasource renders a per-model skeleton for each visible model. |
+| `--format` | No | `markdown` (default) or `json`. |
+| `--num-rows` | No | (model only) Sample-data rows. Ignored with a warning for other kinds. |
+| `--show-sql` | No | (model only) Include generated SQL. No-op for column/measure/aggregation; warned for datasource/memory. |
+| `--section` | No | (model only, repeatable) Restrict to a section subset. Ignored with a warning for other kinds. |
+| `--descriptions-max-chars` | No | Truncate description fields. Applies to every kind. |
+| `--storage` | No | Storage path. |
+
 ### `slayer search`
 
 Run semantic search over memories and canonical entities (datasources, models, columns, named measures, custom aggregations). Three retrieval channels run in parallel — BM25 over memory entity tags, Tantivy full-text over memories ∪ entities, and (with the `advanced_search` extra plus a provider API key) dense embeddings — and are RRF-fused into a single ranked list. See [Search](../concepts/search.md).
