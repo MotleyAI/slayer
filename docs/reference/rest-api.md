@@ -121,6 +121,37 @@ Response:
 }
 ```
 
+### Inspect (single-entity point lookup)
+
+`POST /inspect` returns the rendered detail for **exactly one** entity by `reference` + required `entity_type` (DEV-1588). Unlike `POST /search`, there is no fusion / ranking / `cypher_filter` and no bundled memories — use `/search` when you want an entity surfaced *in context*.
+
+**`POST /inspect` body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `reference` | str | Canonical id (`mydb.orders.amount`), bare name, join path (`orders.customers.region` → resolved to the owning model), or `memory:<id>`. Normalised via the shared resolver; the normalised id is echoed in the result. |
+| `entity_type` | str | **Required.** One of `datasource`, `model`, `column`, `measure`, `aggregation`, `memory`. Disambiguates the 3-part canonical collision (a name shared by, e.g., a column and an aggregation) and asserts the kind — a mismatch returns HTTP 400. |
+| `compact` | bool | Default `true`. Description-only for column / measure / aggregation / datasource / memory; a cheap schema **skeleton** (column / measure / aggregation names + join targets, zero DB calls) for `model`. `false` returns the full render, and a per-model skeleton for each visible model for `datasource`. |
+| `format` | str | `"markdown"` (default) or `"json"`. |
+| `num_rows` | int | Sample-data rows for `entity_type="model"`. Ignored (with a warning) for other kinds. Default `3`. |
+| `show_sql` | bool | Include generated SQL for `entity_type="model"`. Ignored (with a warning) for datasource / memory; a silent no-op for column / measure / aggregation. |
+| `sections` | array[str] | Section subset for `entity_type="model"` (`columns` / `measures` / `aggregations` / `joins` / `samples` / `learnings`). Ignored (with a warning) for other kinds. |
+| `descriptions_max_chars` | int | Truncate every description field to this many characters (must be `>= 0`). Applies to every kind. |
+
+Renders hidden entities (deliberate escape hatch). Unknown fields are rejected (HTTP 422); a bad `entity_type` / `format`, a negative `descriptions_max_chars`, or an unresolvable reference returns HTTP 400.
+
+```bash
+curl -X POST http://localhost:5143/inspect \
+  -H "Content-Type: application/json" \
+  -d '{"reference": "jaffle_shop.orders", "entity_type": "model"}'
+```
+
+The response is always `{"result": <string>}` — the rendered Markdown (or, with `format="json"`, a JSON string):
+
+```json
+{"result": "# `orders`\nOne row per placed order.\nColumns: id, order_total, ...\nMeasures: ...\nAggregations: _(none)_\nJoins to: stores"}
+```
+
 ### Memories + Semantic Search
 
 `POST /search` is the single retrieval surface. It returns memories **and** entity discovery hits in one flat list, fused across up to three channels (BM25 over memory entity tags, Tantivy full-text, and — when `motley-slayer[advanced_search]` is installed and a provider API key is set — dense embeddings) via Reciprocal Rank Fusion (`k=60`). See [Search](../concepts/search.md) and [Memories](../concepts/memories.md).
