@@ -11,6 +11,10 @@ The minimalist v1 slice supports one rule kind: a **forced column filter** —
 `C IN (...)`)". This fits the common RLS shape where the same tenant column
 (e.g. `organization_uuid`) is present on every table.
 
+For a runnable walkthrough on the Jaffle Shop demo (scoping a session to one
+store, `block` vs `pass`, joins staying scoped), see the
+[Row-Level Security notebook](../examples/10_row_level_security/row_level_security_nb.ipynb).
+
 ## Configuring a policy
 
 A policy is set once, at engine (or local-engine client) construction:
