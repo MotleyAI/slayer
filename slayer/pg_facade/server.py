@@ -15,7 +15,7 @@ import os
 import ssl
 import sys
 
-from slayer.pg_facade.auth import validate_bind_address, validate_tls_pair
+from slayer.pg_facade.auth import Authenticator, validate_bind_address, validate_tls_pair
 from slayer.pg_facade.connection import PgConnection
 
 logger = logging.getLogger(__name__)
@@ -30,14 +30,19 @@ async def serve(
     engine,
     storage,
     token: str | None = None,
+    authenticator: Authenticator | None = None,
     tls_ctx: ssl.SSLContext | None = None,
 ) -> None:
     """Bind and serve forever. Validates the bind/token combination first."""
-    validate_bind_address(host=host, token=token)
+    # A custom authenticator that prompts for a password counts as auth, so the
+    # non-loopback-requires-a-secret rule is satisfied even without a token.
+    authenticated = authenticator is not None and authenticator.requires_password
+    validate_bind_address(host=host, token=token, authenticated=authenticated)
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         conn = PgConnection(
-            reader, writer, engine=engine, storage=storage, token=token, tls_ctx=tls_ctx,
+            reader, writer, engine=engine, storage=storage,
+            token=token, authenticator=authenticator, tls_ctx=tls_ctx,
         )
         try:
             await conn.run()

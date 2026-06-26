@@ -45,7 +45,7 @@ from slayer.facade.translator import (
 )
 from slayer.facade.catalog_sql import build_catalog_relations, executor_for
 from slayer.pg_facade import protocol as proto
-from slayer.pg_facade.auth import verify_password
+from slayer.pg_facade.auth import Authenticator, StaticTokenAuthenticator
 from slayer.pg_facade.identity import parameter_status_defaults, version_string
 from slayer.pg_facade.probes import (
     SESSION_SETTING_SEED,
@@ -121,14 +121,19 @@ class PgConnection:
         *,
         engine,
         storage,
-        token: str | None,
+        token: str | None = None,
+        authenticator: Authenticator | None = None,
         tls_ctx=None,
     ) -> None:
         self._reader = reader
         self._writer = writer
         self._engine = engine
         self._storage = storage
-        self._token = token
+        # ``authenticator`` wins; ``token`` is kept for back-compat and wraps
+        # into the default static-token authenticator.
+        self._authenticator: Authenticator = authenticator or StaticTokenAuthenticator(token)
+        # Opaque host-defined principal set on successful auth (tenant/user).
+        self._principal: object | None = None
         self._tls_ctx = tls_ctx
         self._tx_state: bytes = proto.TX_IDLE
         self._datasource: str | None = None
@@ -161,7 +166,7 @@ class PgConnection:
             startup = await self._handle_startup()
             if startup is None:
                 return
-            if not await self._authenticate():
+            if not await self._authenticate(startup):
                 return
             if not await self._resolve_datasource(startup.parameters.get("database")):
                 return
@@ -235,32 +240,39 @@ class PgConnection:
 
     # ----- auth -------------------------------------------------------------
 
-    async def _authenticate(self) -> bool:
-        if self._token is None:
-            self._writer.write(proto.encode_authentication_ok())
+    async def _authenticate(self, startup: proto.StartupMessage) -> bool:
+        username = startup.parameters.get("user")
+        database = startup.parameters.get("database")
+
+        password: str | None = None
+        if self._authenticator.requires_password:
+            self._writer.write(proto.encode_authentication_cleartext_password())
             await self._flush()
-            return True
-        self._writer.write(proto.encode_authentication_cleartext_password())
-        await self._flush()
-        msg = await self._read_message()
-        if msg is None:
-            return False
-        type_char, body = msg
-        if type_char != "p":
-            await self._send_error(
-                code=proto.SQLSTATE_INVALID_AUTHORIZATION,
-                message="expected password message",
-                severity="FATAL",
-            )
-            return False
-        password = proto.decode_password(body)
-        if not verify_password(password, self._token):
+            msg = await self._read_message()
+            if msg is None:
+                return False
+            type_char, body = msg
+            if type_char != "p":
+                await self._send_error(
+                    code=proto.SQLSTATE_INVALID_AUTHORIZATION,
+                    message="expected password message",
+                    severity="FATAL",
+                )
+                return False
+            password = proto.decode_password(body)
+
+        outcome = await self._authenticator.authenticate(
+            username=username, password=password, database=database
+        )
+        if not outcome.ok:
             await self._send_error(
                 code=proto.SQLSTATE_INVALID_PASSWORD,
-                message="password authentication failed",
+                message=outcome.message,
                 severity="FATAL",
             )
             return False
+
+        self._principal = outcome.principal
         self._writer.write(proto.encode_authentication_ok())
         await self._flush()
         return True
