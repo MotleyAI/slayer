@@ -27,6 +27,7 @@ nav:
       - Schema Drift: concepts/schema-drift.md
       - Memories: concepts/memories.md
       - Search: concepts/search.md
+      - Row-Level Security: concepts/row-level-security.md
   - Reference:
       - MCP Server: reference/mcp.md
       - REST API: reference/rest-api.md
@@ -65,6 +66,8 @@ nav:
       - Lightning Talk:
           - examples/09_lightning_talk/lightning_talk.md
           - Notebook: examples/09_lightning_talk/lightning_talk_nb.ipynb
+      - Row-Level Security:
+          - Notebook: examples/10_row_level_security/row_level_security_nb.ipynb
       - Schema Drift (worked example): examples/schema-drift.md
   - Configuration:
       - Datasources: configuration/datasources.md

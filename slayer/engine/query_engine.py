@@ -9,10 +9,12 @@ from contextvars import ContextVar
 from typing import Any
 
 from pydantic import BaseModel, Field as PydanticField, model_validator
+import sqlalchemy as sa
 from sqlglot import exp
 
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
 from slayer.core.errors import AmbiguousModelError
+from slayer.core.policy import SessionPolicy
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import (
     Column,
@@ -35,10 +37,13 @@ from slayer.engine.enriched import (
     public_projection_aliases,
 )
 from slayer.engine.enrichment import enrich_query
+from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.dialects import dialect_for_ds_type, get_dialect
+from slayer.sql import engine_factory
 from slayer.sql.engine_factory import _runtime_fingerprint
 from slayer.sql.generator import SQLGenerator
+from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -241,13 +246,107 @@ class SlayerQueryEngine:
     SQLGenerator for SQL generation.
     """
 
-    def __init__(self, storage: StorageBackend):
+    def __init__(
+        self,
+        storage: StorageBackend,
+        *,
+        policy: SessionPolicy | None = None,
+    ):
         self.storage = storage
         # Cache key: (connection_string, runtime_fingerprint) — matches
         # ``engine_factory``'s cache so Snowflake datasources sharing a
         # connection_name but differing in warehouse/role/database/schema
         # get distinct clients (DEV-1551).
         self._sql_clients: dict[tuple[str, str], SlayerSQLClient] = {}
+        # DEV-1578: immutable, engine-global forced-filter policy. When set,
+        # every generated SQL is rewritten to scope each physical table to the
+        # configured tenant before execution / dry-run / explain / profiling.
+        self.policy = policy
+        # Cache of confirmed column-presence facts keyed by
+        # (ds_key, schema, table, column). Only ``True``/``False`` are cached;
+        # an unconfirmable ``None`` is re-probed so a transient introspection
+        # failure self-heals once the datasource recovers.
+        self._column_presence_cache: dict[tuple, bool] = {}
+
+    def _apply_policy(
+        self, *, sql: str, dialect: str, datasource: DatasourceConfig
+    ) -> str:
+        """Rewrite ``sql`` to enforce the forced-filter policy, or return it
+        unchanged when no policy is configured (zero overhead)."""
+        if not (self.policy and self.policy.data_filters):
+            return sql
+        return apply_session_policy(
+            sql,
+            dialect=dialect,
+            policy=self.policy,
+            has_column=lambda scoped, column: self._column_present(
+                datasource=datasource, scoped_table=scoped, column=column
+            ),
+        )
+
+    def _column_present(
+        self,
+        *,
+        datasource: DatasourceConfig,
+        scoped_table: ScopedTable,
+        column: str,
+    ) -> bool | None:
+        """Return whether ``column`` exists on ``scoped_table`` in
+        ``datasource``: ``True`` / ``False`` / ``None`` (cannot confirm).
+
+        Introspects via the shared ``_safe_get_columns`` helper (Inspector
+        with INFORMATION_SCHEMA fallback). The schema is the table's parsed
+        qualifier, else the datasource default. Only confirmed ``True`` /
+        ``False`` results are cached; a ``None`` (any introspection error or
+        empty result) is returned uncached so a transient failure is
+        re-probed on the next query.
+        """
+        schema = scoped_table.schema_name or datasource.schema_name
+        # Cross-catalog refs can't be confirmed: SQLAlchemy's column
+        # introspection takes no catalog argument, so a three-part
+        # ``catalog.schema.table`` naming a catalog other than the
+        # connection's own would probe the wrong relation. Fail closed
+        # (consistent with the unconfirmable-presence rule) rather than risk
+        # an under-filter under ``on_unapplicable="pass"``. Single-catalog
+        # refs (catalog matches the connection, or no catalog) probe normally.
+        if scoped_table.catalog and (
+            not datasource.database
+            or scoped_table.catalog.casefold() != datasource.database.casefold()
+        ):
+            return None
+        # Include catalog in the key so two tables differing only by catalog
+        # (e.g. BigQuery project) never share a cached presence fact.
+        key = (
+            _sql_client_cache_key(datasource),
+            scoped_table.catalog,
+            schema,
+            scoped_table.name,
+            column,
+        )
+        if key in self._column_presence_cache:
+            return self._column_presence_cache[key]
+        try:
+            sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
+            inspector = sa.inspect(sa_engine)
+            cols = _safe_get_columns(
+                inspector, sa_engine, scoped_table.name, schema
+            )
+        except Exception as exc:  # introspection failed -> cannot confirm
+            logger.warning(
+                "Forced filter: column-presence probe failed for %s.%s "
+                "(column %r): %s",
+                schema or "<default>",
+                scoped_table.name,
+                column,
+                exc,
+            )
+            return None
+        if not cols:
+            return None  # no columns resolved -> cannot confirm
+        names = {str(c.get("name", "")).lower() for c in cols}
+        present = column.lower() in names
+        self._column_presence_cache[key] = present
+        return present
 
     def _get_join_target_resolving(self) -> set:
         """Return the per-task in-flight join-target name set, allocating one
@@ -638,6 +737,10 @@ class SlayerQueryEngine:
         # shown to the user — pin ``outer`` mode so the projection is
         # trimmed to public_projection_aliases(enriched).
         sql = generator.generate(enriched=enriched, render_mode="outer")
+        # DEV-1578: forced-filter rewrite. Applied here — before the dry_run
+        # return and before execution — so dry_run, explain, real execution,
+        # and profiling all see the same tenant-scoped SQL.
+        sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
         logger.debug("Generated SQL:\n%s", sql)
 
         # DEV-1444: the response's attributes + expected_columns must mirror
@@ -970,6 +1073,11 @@ class SlayerQueryEngine:
             # ``outer`` mode explicitly so a future default-change cannot
             # silently shift type-probe behaviour.
             sql = generator.generate(enriched=enriched, render_mode="outer")
+            # DEV-1578: type probing is a user-visible execution path, so it
+            # must honour the forced-filter policy too. A policy failure
+            # (block / fail-closed) degrades to {} via this try/except rather
+            # than leaking an unscoped probe.
+            sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
         except Exception:
             logger.warning("get_column_types enrich/generate failed for model '%s'", model_name)
             return {}
