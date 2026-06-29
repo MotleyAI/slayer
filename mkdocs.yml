@@ -65,6 +65,9 @@ nav:
       - Lightning Talk:
           - examples/09_lightning_talk/lightning_talk.md
           - Notebook: examples/09_lightning_talk/lightning_talk_nb.ipynb
+      - dbt MetricFlow Import:
+          - examples/10_dbt_metricflow/dbt_metricflow.md
+          - Notebook: examples/10_dbt_metricflow/dbt_metricflow_nb.ipynb
       - Schema Drift (worked example): examples/schema-drift.md
   - Configuration:
       - Datasources: configuration/datasources.md

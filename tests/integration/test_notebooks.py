@@ -10,6 +10,7 @@ leak into another).
 """
 
 import shutil
+import socket
 from pathlib import Path
 
 import pytest
@@ -55,8 +56,28 @@ def notebook_path(request):
     return request.param
 
 
+# The dbt MetricFlow notebook bootstraps by shallow-cloning an upstream GitHub
+# repo on first run. If that clone cache is absent AND GitHub is unreachable,
+# skip rather than fail — the notebook cannot bootstrap offline. Once cloned,
+# the cache makes it network-free.
+_METRICFLOW_NB_DIR = "10_dbt_metricflow"
+
+
+def _github_reachable(host: str = "github.com", port: int = 443, timeout: float = 5.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def test_notebook_runs_without_errors(notebook_path):
     """Execute the notebook and assert it completes without errors."""
+    if _METRICFLOW_NB_DIR in notebook_path.parts:
+        clone_cache = notebook_path.parent / ".cache" / "semantic-layer-llm-benchmarking"
+        if not clone_cache.exists() and not _github_reachable():
+            pytest.skip("GitHub unreachable; cannot bootstrap the MetricFlow notebook")
+
     with open(notebook_path) as f:
         nb = nbformat.read(f, as_version=4)
 
