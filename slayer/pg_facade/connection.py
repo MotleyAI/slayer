@@ -157,7 +157,13 @@ class PgConnection:
         self._engine_factory = engine_factory
         # ``authenticator`` wins; ``token`` is kept for back-compat and wraps
         # into the default static-token authenticator.
-        self._authenticator: Authenticator = authenticator or StaticTokenAuthenticator(token)
+        # Explicit ``is None`` check — a custom authenticator whose
+        # ``__bool__``/``__len__`` is falsey must not silently fall back
+        # to the static-token path.
+        self._authenticator: Authenticator = (
+            authenticator if authenticator is not None
+            else StaticTokenAuthenticator(token)
+        )
         # Opaque host-defined principal set on successful auth (tenant/user).
         self._principal: object | None = None
         self._tls_ctx = tls_ctx
@@ -306,7 +312,18 @@ class PgConnection:
                     severity="FATAL",
                 )
                 return False
-            password = proto.decode_password(body)
+            try:
+                password = proto.decode_password(body)
+            except (ValueError, struct.error):
+                # Keep auth-phase malformed input on the wire-protocol
+                # path; without this, the client gets a silent disconnect
+                # instead of a Postgres error response.
+                await self._send_error(
+                    code=proto.SQLSTATE_PROTOCOL_VIOLATION,
+                    message="malformed password message",
+                    severity="FATAL",
+                )
+                return False
 
         outcome = await self._authenticator.authenticate(
             username=username, password=password, database=database

@@ -43,8 +43,12 @@ async def serve(
     """
     # A custom authenticator that prompts for a password counts as auth, so the
     # non-loopback-requires-a-secret rule is satisfied even without a token.
+    # When an authenticator is supplied, ``PgConnection`` ignores ``token``
+    # entirely — so the bind guard must check the auth mechanism that will
+    # ACTUALLY be enforced, not a stale token that would never be consulted.
     authenticated = authenticator is not None and authenticator.requires_password
-    validate_bind_address(host=host, token=token, authenticated=authenticated)
+    effective_token = None if authenticator is not None else token
+    validate_bind_address(host=host, token=effective_token, authenticated=authenticated)
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         conn = PgConnection(
