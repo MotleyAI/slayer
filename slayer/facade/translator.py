@@ -202,6 +202,10 @@ class QueryResult(TranslatorResult):
     facade_table: FacadeTable
     schema_name: str
     projection_types: "list[DataType | None]"
+    # Datasource the engine should execute against, resolved from the FROM
+    # (and any joined) table's model. ``None`` for catalogs whose models carry
+    # no datasource; the facade falls back to its connection datasource.
+    data_source: str | None = None
 
     @property
     def flight_table(self) -> FacadeTable:
@@ -932,6 +936,34 @@ def _resolve_bare_table(
             f"{candidates}"
         )
     return matches[0]
+
+
+def _resolve_query_datasource(
+    *, table: FacadeTable, join_plan: "_JoinPlan | None",
+) -> str | None:
+    """Datasource the engine should execute the query against, or raise.
+
+    SLayer cannot execute a query spanning datasources, so when the FROM table
+    and an explicitly joined table resolve to different datasources we reject
+    with a clear message instead of letting the engine fail opaquely. Catalog
+    BFS joins are scoped per datasource, so only explicit cross-schema JOINs
+    can trigger this.
+    """
+    sources: set[str] = set()
+    if table.model_ref is not None and table.model_ref.data_source:
+        sources.add(table.model_ref.data_source)
+    if (
+        join_plan is not None
+        and join_plan.target_table.model_ref is not None
+        and join_plan.target_table.model_ref.data_source
+    ):
+        sources.add(join_plan.target_table.model_ref.data_source)
+    if len(sources) > 1:
+        raise TranslationError(
+            "cross-datasource queries are not supported (referenced "
+            f"datasources: {sorted(sources)})"
+        )
+    return next(iter(sources), None)
 
 
 def _resolve_table(
@@ -2895,6 +2927,7 @@ def _translate_slayer_select(
         parent_table=table,
         catalog=catalog,
     )
+    data_source = _resolve_query_datasource(table=table, join_plan=join_plan)
     overlays = _prepare_join_overlays(join_plan, table.name)
 
     items = _resolve_projection(
@@ -2957,4 +2990,5 @@ def _translate_slayer_select(
         facade_table=table,
         schema_name=schema_name,
         projection_types=plan.projection_types,
+        data_source=data_source,
     )
