@@ -740,7 +740,12 @@ class PgConnection:
     ) -> bool:
         try:
             response = await self._engine.execute(
-                query=result.query, data_source=self._datasource,
+                query=result.query,
+                # The translator resolves the per-query datasource from the
+                # referenced model(s) (and rejects cross-datasource joins); fall
+                # back to the connection datasource for catalogs whose models
+                # carry none.
+                data_source=result.data_source or self._datasource,
             )
         except Exception as exc:  # noqa: BLE001 — surface any engine error to the client
             await self._send_error(code=proto.SQLSTATE_INTERNAL_ERROR, message=str(exc))

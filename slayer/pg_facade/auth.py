@@ -143,9 +143,10 @@ class StaticTokenAuthenticator:
     def requires_password(self) -> bool:
         return self._token is not None
 
-    async def authenticate(
-        self, *, username: str | None, password: str | None, database: str | None
+    async def authenticate(  # NOSONAR(S7503,S1172) — Authenticator protocol conformance: async is required so callers can `await`, and username/database are part of the protocol signature for richer authenticators (LDAP, RLS-aware) even though the static-token impl is identity-blind
+        self, *, username: str | None, password: str | None, database: str | None,
     ) -> AuthOutcome:
+        del username, database  # static-token auth is identity-blind
         # requires_password is False here, so the facade passed password=None;
         # treat the no-token loopback case as an unconditional accept.
         if self._token is None:

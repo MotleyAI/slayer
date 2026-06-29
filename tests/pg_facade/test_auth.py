@@ -14,6 +14,8 @@ from slayer.pg_facade.auth import (
     verify_password,
 )
 
+_TEST_TOKEN = "s3cret"  # NOSONAR(S2068) — test fixture, not a real credential
+
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "127.5.5.5", "::1", "localhost"])
 def test_loopback_hosts_recognised(host: str) -> None:
@@ -75,19 +77,19 @@ def test_verify_password_none_token_accepts_any_nonempty() -> None:
 
 
 def test_verify_password_constant_time_match() -> None:
-    assert verify_password("s3cret", "s3cret") is True
-    assert verify_password("wrong", "s3cret") is False
+    assert verify_password(_TEST_TOKEN, _TEST_TOKEN) is True
+    assert verify_password("wrong", _TEST_TOKEN) is False
 
 
 def test_verify_password_empty_rejected_even_with_token() -> None:
-    assert verify_password("", "s3cret") is False
+    assert verify_password("", _TEST_TOKEN) is False
 
 
 # --- pluggable authenticator -------------------------------------------------
 
 
 def test_static_authenticator_satisfies_protocol() -> None:
-    assert isinstance(StaticTokenAuthenticator("s3cret"), Authenticator)
+    assert isinstance(StaticTokenAuthenticator(_TEST_TOKEN), Authenticator)
 
 
 def test_static_authenticator_no_token_skips_prompt() -> None:
@@ -102,13 +104,13 @@ async def test_static_authenticator_no_token_accepts() -> None:
 
 
 def test_static_authenticator_with_token_prompts() -> None:
-    assert StaticTokenAuthenticator("s3cret").requires_password is True
+    assert StaticTokenAuthenticator(_TEST_TOKEN).requires_password is True
 
 
 async def test_static_authenticator_password_match() -> None:
-    auth = StaticTokenAuthenticator("s3cret")
-    assert (await auth.authenticate(username="u", password="s3cret", database=None)).ok is True
-    assert (await auth.authenticate(username="u", password="nope", database=None)).ok is False
+    auth = StaticTokenAuthenticator(_TEST_TOKEN)
+    assert (await auth.authenticate(username="u", password=_TEST_TOKEN, database=None)).ok is True
+    assert (await auth.authenticate(username="u", password="nope", database=None)).ok is False  # NOSONAR(S2068) — test fixture, not a real credential
 
 
 def test_auth_outcome_defaults() -> None:
