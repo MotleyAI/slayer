@@ -16,7 +16,7 @@ import ssl
 import sys
 
 from slayer.pg_facade.auth import Authenticator, validate_bind_address, validate_tls_pair
-from slayer.pg_facade.connection import PgConnection
+from slayer.pg_facade.connection import EngineFactory, PgConnection, StorageProvider
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +27,20 @@ async def serve(
     *,
     host: str,
     port: int,
-    engine,
-    storage,
+    engine=None,
+    storage=None,
     token: str | None = None,
     authenticator: Authenticator | None = None,
+    storage_provider: StorageProvider | None = None,
+    engine_factory: EngineFactory | None = None,
     tls_ctx: ssl.SSLContext | None = None,
 ) -> None:
-    """Bind and serve forever. Validates the bind/token combination first."""
+    """Bind and serve forever. Validates the bind/token combination first.
+
+    Supply either a static ``engine`` + ``storage``, or a ``storage_provider``
+    that resolves a per-connection (e.g. tenant-scoped) storage from the
+    authenticated principal.
+    """
     # A custom authenticator that prompts for a password counts as auth, so the
     # non-loopback-requires-a-secret rule is satisfied even without a token.
     authenticated = authenticator is not None and authenticator.requires_password
@@ -42,7 +49,9 @@ async def serve(
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         conn = PgConnection(
             reader, writer, engine=engine, storage=storage,
-            token=token, authenticator=authenticator, tls_ctx=tls_ctx,
+            token=token, authenticator=authenticator,
+            storage_provider=storage_provider, engine_factory=engine_factory,
+            tls_ctx=tls_ctx,
         )
         try:
             await conn.run()
