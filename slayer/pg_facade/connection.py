@@ -205,6 +205,25 @@ class PgConnection:
             return
         except (asyncio.IncompleteReadError, ConnectionResetError):
             return
+        finally:
+            await self._close_scoped_storage()
+
+    async def _close_scoped_storage(self) -> None:
+        """Release a per-connection storage built by ``storage_provider``.
+
+        Host providers can return a storage holding a scoped resource (e.g. a
+        tenant-bound DB session); calling its optional ``aclose`` on connection
+        teardown prevents leaks. Static storage has no ``aclose`` and is skipped.
+        """
+        if self._storage_provider is None:
+            return
+        aclose = getattr(self._storage, "aclose", None)
+        if aclose is None:
+            return
+        try:
+            await aclose()
+        except Exception:  # noqa: BLE001 — teardown best-effort; never mask the real flow
+            logger.exception("pg facade: scoped storage close failed")
 
     # ----- startup ----------------------------------------------------------
 

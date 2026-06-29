@@ -2211,3 +2211,38 @@ async def test_storage_provider_scopes_connection_after_auth() -> None:
     assert not any(t == "E" for t, _ in _messages(writer.buffer))
     assert engine.last_data_source == "hr"
     assert conn._storage is scoped_storage
+
+
+async def test_storage_provider_storage_closed_on_connection_end() -> None:
+    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    closed = {"called": False}
+
+    async def _aclose():
+        closed["called"] = True
+
+    scoped_storage.aclose = _aclose  # type: ignore[attr-defined]
+    engine = _CapturingEngine([])
+
+    async def provider(principal):
+        return scoped_storage
+
+    inp = _startup(user="u", database="acme") + _query("SELECT 1") + _terminate()
+    await _run_conn(
+        inp, storage=_storage(), engine=engine,
+        storage_provider=provider, engine_factory=lambda storage: engine,
+    )
+    assert closed["called"] is True
+
+
+async def test_static_storage_not_closed() -> None:
+    # No storage_provider → the static storage's aclose (if any) is never called.
+    storage = _storage()
+    closed = {"called": False}
+
+    async def _aclose():
+        closed["called"] = True
+
+    storage.aclose = _aclose  # type: ignore[attr-defined]
+    inp = _startup(user="u", database="acme") + _query("SELECT 1") + _terminate()
+    await _run_conn(inp, storage=storage, engine=_CapturingEngine([]))
+    assert closed["called"] is False
