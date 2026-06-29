@@ -16,7 +16,11 @@ import sqlglot
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.facade.catalog import FacadeCatalog, build_catalog
+from slayer.facade.catalog import (
+    FacadeCatalog,
+    build_catalog,
+    build_catalog_grouped_by_schema,
+)
 from slayer.facade.catalog_sql import (
     KNOWN_SYSTEM_OIDS,
     CatalogRelation,
@@ -66,7 +70,12 @@ def _demo_catalog() -> FacadeCatalog:
             Column(name="region", type=DataType.TEXT),
         ],
     )
-    return build_catalog(models_by_datasource={"jaffle": [orders, customers]})
+    # Production builds catalogs grouped by postgres_schema (default "public"),
+    # so the demo catalog uses the same path — datasource "jaffle" folds under
+    # schema "public".
+    return build_catalog_grouped_by_schema(
+        models_by_datasource={"jaffle": [orders, customers]}
+    )
 
 
 def _executor(catalog: FacadeCatalog | None = None, *, datasource: str = "jaffle") -> CatalogSqlExecutor:
@@ -154,7 +163,7 @@ def test_view_typed_models_surface_as_pg_views() -> None:
         name="custom_view", data_source="jaffle", sql="SELECT 1 AS id",
         columns=[Column(name="id", type=DataType.INT)],
     )
-    cat = build_catalog(models_by_datasource={"jaffle": [sql_model]})
+    cat = build_catalog_grouped_by_schema(models_by_datasource={"jaffle": [sql_model]})
     relations = {r.name: r for r in build_catalog_relations(cat)}
     # pg_tables filters out VIEW-typed models (M1).
     assert relations["pg_tables"].rows == []
@@ -674,13 +683,11 @@ def test_current_schemas_non_first_index_returns_null() -> None:
     assert batch.rows == [{"s": None}]
 
 
-def test_is_schemata_is_single_row_for_multi_schema_catalog() -> None:
-    """Codex round 17: the pg facade advertises exactly one schema
-    (``public``), regardless of how many SLayer schemas / datasources
-    fold into the underlying FacadeCatalog. Verify
-    ``information_schema.schemata`` has exactly one row even when the
-    catalog carries multiple schemas."""
-    cat = build_catalog(models_by_datasource={
+def test_is_schemata_folds_datasources_to_public_by_default() -> None:
+    """DEV-1594: datasources without a custom ``postgres_schema`` fold into a
+    single ``public`` schema, so ``information_schema.schemata`` has one row
+    even when multiple datasources back the catalog."""
+    cat = build_catalog_grouped_by_schema(models_by_datasource={
         "dsA": [SlayerModel(
             name="t1", data_source="dsA", sql_table="t1",
             columns=[Column(name="x", type=DataType.INT)],
@@ -694,6 +701,37 @@ def test_is_schemata_is_single_row_for_multi_schema_catalog() -> None:
     rows = relations["_is_schemata"].rows
     assert len(rows) == 1
     assert rows[0] == {"catalog_name": "dsX", "schema_name": "public"}
+
+
+def test_is_schemata_lists_custom_postgres_schemas() -> None:
+    """A datasource with a custom ``postgres_schema`` surfaces as its own
+    schema row alongside ``public``."""
+    cat = build_catalog_grouped_by_schema(
+        models_by_datasource={
+            "dsA": [SlayerModel(
+                name="t1", data_source="dsA", sql_table="t1",
+                columns=[Column(name="x", type=DataType.INT)],
+            )],
+            "dsB": [SlayerModel(
+                name="t2", data_source="dsB", sql_table="t2",
+                columns=[Column(name="y", type=DataType.INT)],
+            )],
+        },
+        schema_by_datasource={"dsB": "warehouse"},
+    )
+    relations = {r.name: r for r in build_catalog_relations(cat, datasource="dsX")}
+    schemas = {r["schema_name"] for r in relations["_is_schemata"].rows}
+    assert schemas == {"public", "warehouse"}
+    # t2 reports its real schema in information_schema.tables.
+    t2 = next(r for r in relations["_is_tables"].rows if r["table_name"] == "t2")
+    assert t2["table_schema"] == "warehouse"
+    # pg_namespace lists the custom schema with a distinct (non-public) oid.
+    ns = {r["nspname"]: r["oid"] for r in relations["pg_namespace"].rows}
+    assert "warehouse" in ns and "public" in ns
+    assert ns["warehouse"] != ns["public"]
+    # pg_class points t2 at the warehouse namespace.
+    t2_class = next(r for r in relations["pg_class"].rows if r["relname"] == "t2")
+    assert t2_class["relnamespace"] == ns["warehouse"]
 
 
 def test_information_schema_schema_name_is_public_not_datasource() -> None:
@@ -1094,7 +1132,9 @@ def test_stable_oid_matches_crc32_not_builtin_hash() -> None:
 def test_pg_attribute_oids_match_datatype() -> None:
     from slayer.pg_facade.protocol import OID_FLOAT8, OID_TEXT
     relations = {r.name: r for r in build_catalog_relations(_demo_catalog())}
-    orders_oid = stable_oid("jaffle", "orders")
+    # Demo catalog folds datasource "jaffle" under schema "public", so table
+    # OIDs are namespaced by the schema name.
+    orders_oid = stable_oid("public", "orders")
     orders_attrs = {
         r["attname"]: r for r in relations["pg_attribute"].rows
         if r["attrelid"] == orders_oid

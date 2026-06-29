@@ -165,7 +165,7 @@ def build_catalog_relations(
     """
     ds = datasource or catalog.catalog_name
     out: list[CatalogRelation] = []
-    out.append(_build_pg_namespace())
+    out.append(_build_pg_namespace(catalog))
     out.append(_build_pg_class(catalog))
     out.append(_build_pg_attribute(catalog))
     out.append(_build_pg_type())
@@ -217,7 +217,25 @@ def _column_specs(table: FacadeTable):
         yield m.name, m.data_type if m.data_type is not None else DataType.TEXT
 
 
-def _build_pg_namespace() -> CatalogRelation:
+def _namespace_oid(schema: str) -> int:
+    """Stable namespace OID for a facade schema. ``public`` keeps Postgres's
+    well-known 2200 so clients that hardcode it keep working; other
+    ``postgres_schema`` values get a deterministic derived OID."""
+    if schema == "public":
+        return PUBLIC_NAMESPACE_OID
+    return stable_oid("namespace", schema)
+
+
+def _user_schema_names(catalog: FacadeCatalog) -> list[str]:
+    """Distinct facade schema names in catalog order (no pg_catalog / info)."""
+    seen: dict[str, None] = {}
+    for sch in catalog.schemas:
+        seen.setdefault(sch.name, None)
+    seen.setdefault("public", None)  # always advertise public, even if empty
+    return list(seen)
+
+
+def _build_pg_namespace(catalog: FacadeCatalog) -> CatalogRelation:
     columns = [
         FacadeColumn(name="oid", type=DataType.INT),
         FacadeColumn(name="nspname", type=DataType.TEXT),
@@ -225,11 +243,14 @@ def _build_pg_namespace() -> CatalogRelation:
         FacadeColumn(name="nspacl", type=DataType.TEXT),
     ]
     rows = [
-        {"oid": PUBLIC_NAMESPACE_OID, "nspname": "public",
-         "nspowner": DEFAULT_OWNER_OID, "nspacl": None},
-        {"oid": PG_CATALOG_NAMESPACE_OID, "nspname": "pg_catalog",
-         "nspowner": DEFAULT_OWNER_OID, "nspacl": None},
+        {"oid": _namespace_oid(name), "nspname": name,
+         "nspowner": DEFAULT_OWNER_OID, "nspacl": None}
+        for name in _user_schema_names(catalog)
     ]
+    rows.append(
+        {"oid": PG_CATALOG_NAMESPACE_OID, "nspname": "pg_catalog",
+         "nspowner": DEFAULT_OWNER_OID, "nspacl": None}
+    )
     return CatalogRelation(name="pg_namespace", columns=columns, rows=rows)
 
 
@@ -263,7 +284,7 @@ def _build_pg_class(catalog: FacadeCatalog) -> CatalogRelation:
         relkind = "v" if tbl.table_type == "VIEW" else "r"
         rows.append({
             "oid": oid, "relname": tbl.name,
-            "relnamespace": PUBLIC_NAMESPACE_OID, "reltype": 0,
+            "relnamespace": _namespace_oid(ds), "reltype": 0,
             "relowner": DEFAULT_OWNER_OID, "relkind": relkind,
             "relnatts": natts, "relhasindex": False, "relpersistence": "p",
             "relpages": 0, "reltuples": -1.0,
@@ -409,8 +430,8 @@ def _build_pg_stat_user_tables(catalog: FacadeCatalog) -> CatalogRelation:
         FacadeColumn(name="relname", type=DataType.TEXT),
         FacadeColumn(name="n_live_tup", type=DataType.INT),
     ]
-    rows = [{"schemaname": "public", "relname": tbl.name, "n_live_tup": None}
-            for _ds, tbl in _all_tables(catalog)]
+    rows = [{"schemaname": ds, "relname": tbl.name, "n_live_tup": None}
+            for ds, tbl in _all_tables(catalog)]
     return CatalogRelation(name="pg_stat_user_tables", columns=columns, rows=rows)
 
 
@@ -434,12 +455,12 @@ def _build_pg_tables(catalog: FacadeCatalog) -> CatalogRelation:
         FacadeColumn(name="rowsecurity", type=DataType.BOOLEAN),
     ]
     rows = []
-    for _ds, tbl in _all_tables(catalog):
+    for ds, tbl in _all_tables(catalog):
         # M1 — VIEW-typed models are excluded from pg_tables.
         if tbl.table_type != "TABLE":
             continue
         rows.append({
-            "schemaname": "public", "tablename": tbl.name,
+            "schemaname": ds, "tablename": tbl.name,
             "tableowner": "slayer", "tablespace": None,
             "hasindexes": False, "hasrules": False, "hastriggers": False,
             "rowsecurity": False,
@@ -460,11 +481,11 @@ def _build_pg_views(catalog: FacadeCatalog) -> CatalogRelation:
     # underlying SQL definition — it's a SLayer abstraction detail and
     # exposing it would leak datasource SQL through the facade.
     rows = []
-    for _ds, tbl in _all_tables(catalog):
+    for ds, tbl in _all_tables(catalog):
         if tbl.table_type != "VIEW":
             continue
         rows.append({
-            "schemaname": "public",
+            "schemaname": ds,
             "viewname": tbl.name,
             "viewowner": "slayer",
             "definition": None,
@@ -546,12 +567,12 @@ def _build_is_columns(catalog: FacadeCatalog, datasource: str) -> CatalogRelatio
     # DEV-1567: exclude cross-model entries — they leak as dotted "columns"
     # that Metabase fingerprint scans then project (see local_metrics
     # docstring in slayer/facade/catalog.py).
-    for _ds, tbl in _all_tables(catalog):
+    for ds, tbl in _all_tables(catalog):
         position = 1
         for d in local_dimensions(tbl):
             udt = _UDT_NAME_BY_DATATYPE.get(d.data_type, "text")
             rows.append({
-                "table_catalog": datasource, "table_schema": "public",
+                "table_catalog": datasource, "table_schema": ds,
                 "table_name": tbl.name, "column_name": d.name,
                 "ordinal_position": position, "column_default": None,
                 "is_nullable": "YES", "data_type": udt,
@@ -564,7 +585,7 @@ def _build_is_columns(catalog: FacadeCatalog, datasource: str) -> CatalogRelatio
         for m in local_metrics(tbl):
             udt = _UDT_NAME_BY_DATATYPE.get(m.data_type, "text") if m.data_type else "text"
             rows.append({
-                "table_catalog": datasource, "table_schema": "public",
+                "table_catalog": datasource, "table_schema": ds,
                 "table_name": tbl.name, "column_name": m.name,
                 "ordinal_position": position, "column_default": None,
                 "is_nullable": "YES", "data_type": udt,
@@ -607,18 +628,17 @@ def _build_is_key_column_usage() -> CatalogRelation:
 def _build_is_schemata(
     catalog: FacadeCatalog, datasource: str,
 ) -> CatalogRelation:
-    """The pg facade advertises exactly one schema, ``public``, so the
-    INFORMATION_SCHEMA.SCHEMATA relation contains exactly one row —
-    regardless of how many datasources / SLayer schemas are folded
-    into the underlying ``FacadeCatalog`` (Codex round 17)."""
+    """INFORMATION_SCHEMA.SCHEMATA — one row per facade schema. Datasources
+    map to schemas via ``postgres_schema`` (default ``public``); multiple
+    datasources sharing a schema collapse to one row."""
     columns = [
         FacadeColumn(name="catalog_name", type=DataType.TEXT),
         FacadeColumn(name="schema_name", type=DataType.TEXT),
     ]
-    rows = (
-        [{"catalog_name": datasource, "schema_name": "public"}]
-        if catalog.schemas else []
-    )
+    rows = [
+        {"catalog_name": datasource, "schema_name": name}
+        for name in _user_schema_names(catalog)
+    ]
     return CatalogRelation(name="_is_schemata", columns=columns, rows=rows)
 
 
@@ -631,7 +651,7 @@ def _build_is_tables(
         FacadeColumn(name="table_name", type=DataType.TEXT),
         FacadeColumn(name="table_type", type=DataType.TEXT),
     ]
-    rows = [{"table_catalog": datasource, "table_schema": "public",
+    rows = [{"table_catalog": datasource, "table_schema": sch.name,
              "table_name": tbl.name, "table_type": tbl.table_type}
             for sch in catalog.schemas for tbl in sch.tables]
     return CatalogRelation(name="_is_tables", columns=columns, rows=rows)
@@ -659,7 +679,7 @@ def _build_is_metrics(
             for m in tbl.metrics:
                 rows.append({
                     "catalog_name": datasource,
-                    "schema_name": "public", "table_name": tbl.name,
+                    "schema_name": sch.name, "table_name": tbl.name,
                     "metric_name": m.name, "description": m.description,
                     "data_type": (
                         datatype_to_jdbc(m.data_type) if m.data_type else None
@@ -692,7 +712,7 @@ def _build_is_dimensions(
             for d in tbl.dimensions:
                 rows.append({
                     "catalog_name": datasource,
-                    "schema_name": "public", "table_name": tbl.name,
+                    "schema_name": sch.name, "table_name": tbl.name,
                     "dimension_name": d.name, "description": d.description,
                     "data_type": datatype_to_jdbc(d.data_type),
                     "label": d.label, "is_time": d.is_time,

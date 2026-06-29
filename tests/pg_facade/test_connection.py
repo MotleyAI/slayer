@@ -12,7 +12,7 @@ import types
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.connection import PgConnection
 from slayer.pg_facade.probes import SESSION_SETTING_SEED
@@ -41,8 +41,10 @@ class _FakeWriter:
 
 
 class _FakeStorage:
-    def __init__(self, models_by_ds) -> None:
+    def __init__(self, models_by_ds, *, schema_by_ds=None, priority=None) -> None:
         self._models_by_ds = models_by_ds
+        self._schema_by_ds = schema_by_ds or {}
+        self._priority = priority or []
 
     async def list_datasources(self) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
         return list(self._models_by_ds)
@@ -55,6 +57,15 @@ class _FakeStorage:
             if m.name == name:
                 return m
         return None
+
+    async def get_datasource(self, datasource: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
+        schema = self._schema_by_ds.get(datasource)
+        if schema is None:
+            return None
+        return DatasourceConfig(name=datasource, postgres_schema=schema)
+
+    async def get_datasource_priority(self) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
+        return list(self._priority)
 
 
 class _FakeEngine:
@@ -90,9 +101,11 @@ class _CapturingEngine:
     def __init__(self, data) -> None:
         self.data = data
         self.last_query = None
+        self.last_data_source = None
 
     async def execute(self, *, query=None, data_source=None):  # NOSONAR(S7503) — async to satisfy the awaited interface
         self.last_query = query
+        self.last_data_source = data_source
         return types.SimpleNamespace(data=self.data)
 
 
@@ -307,18 +320,29 @@ async def test_token_empty_password_errors() -> None:
     assert _error_sqlstate(err) == proto.SQLSTATE_INVALID_PASSWORD
 
 
-async def test_unknown_database_errors_3d000() -> None:
-    writer = await _run(_startup(user="u", database="nope") + _terminate())
+async def test_any_database_name_accepted_as_logical_db() -> None:
+    # DEV-1594: the database parameter is a logical DB name, not a datasource
+    # selector — an arbitrary name connects successfully (no 3D000).
+    writer = await _run(_startup(user="u", database="nope") + _query("SELECT 1") + _terminate())
     msgs = _messages(writer.buffer)
-    err = next(body for t, body in msgs if t == "E")
-    assert _error_sqlstate(err) == proto.SQLSTATE_UNDEFINED_DATABASE
+    assert not any(t == "E" for t, _ in msgs)
+    assert any(t == "Z" for t, _ in msgs)  # ReadyForQuery — startup completed
 
 
-async def test_missing_database_errors_3d000() -> None:
-    writer = await _run(_startup(user="u") + _terminate())
+async def test_missing_database_defaults_and_connects() -> None:
+    writer = await _run(_startup(user="u") + _query("SELECT 1") + _terminate())
     msgs = _messages(writer.buffer)
-    err = next(body for t, body in msgs if t == "E")
-    assert _error_sqlstate(err) == proto.SQLSTATE_UNDEFINED_DATABASE
+    assert not any(t == "E" for t, _ in msgs)
+    assert any(t == "Z" for t, _ in msgs)
+
+
+async def test_current_database_reflects_logical_name() -> None:
+    writer = await _run(
+        _startup(user="u", database="acme") + _query("SELECT current_database()") + _terminate()
+    )
+    body = next(b for t, b in _messages(writer.buffer) if t == "D")
+    length = struct.unpack_from(">i", body, 2)[0]
+    assert body[6:6 + length] == b"acme"
 
 
 # --- simple query ------------------------------------------------------------
@@ -2115,3 +2139,75 @@ async def test_bind_empty_string_user_model_int_column() -> None:
     portal_sql = conn._portals[""].sql
     assert "NULL" in portal_sql, f"user-model INT column must rewrite: {portal_sql!r}"
     assert "''" not in portal_sql
+
+
+# --- DEV-1594: multi-datasource catalog + per-connection scoping -------------
+
+
+def _employees_model():
+    return SlayerModel(
+        name="employees", data_source="hr", sql_table="employees",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="name", type=DataType.TEXT),
+        ],
+    )
+
+
+async def _run_conn(input_bytes, *, storage, engine, storage_provider=None,
+                    engine_factory=None):
+    reader = asyncio.StreamReader()
+    reader.feed_data(input_bytes)
+    reader.feed_eof()
+    writer = _FakeWriter()
+    conn = PgConnection(
+        reader, writer, engine=engine, storage=storage,
+        storage_provider=storage_provider, engine_factory=engine_factory,
+    )
+    await conn.run()
+    return writer, conn
+
+
+async def test_multi_datasource_query_routes_to_owning_datasource() -> None:
+    storage = _FakeStorage({"jaffle": [_orders_model()], "hr": [_employees_model()]})
+    engine = _CapturingEngine([])
+    inp = _startup(user="u", database="acme") + _query("SELECT id FROM employees") + _terminate()
+    writer, _ = await _run_conn(inp, storage=storage, engine=engine)
+    assert not any(t == "E" for t, _ in _messages(writer.buffer))
+    assert engine.last_data_source == "hr"
+
+
+async def test_custom_postgres_schema_separates_and_routes() -> None:
+    storage = _FakeStorage(
+        {"jaffle": [_orders_model()], "hr": [_employees_model()]},
+        schema_by_ds={"hr": "people"},
+    )
+    engine = _CapturingEngine([])
+    inp = (
+        _startup(user="u", database="acme")
+        + _query("SELECT id FROM people.employees")
+        + _terminate()
+    )
+    writer, _ = await _run_conn(inp, storage=storage, engine=engine)
+    assert not any(t == "E" for t, _ in _messages(writer.buffer))
+    assert engine.last_data_source == "hr"
+
+
+async def test_storage_provider_scopes_connection_after_auth() -> None:
+    # Static storage has only jaffle; the provider swaps in an hr-only store
+    # post-auth. Querying employees succeeds only if the provider's store won.
+    static_storage = _FakeStorage({"jaffle": [_orders_model()]})
+    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    engine = _CapturingEngine([])
+
+    async def provider(principal):
+        return scoped_storage
+
+    inp = _startup(user="u", database="acme") + _query("SELECT id FROM employees") + _terminate()
+    writer, conn = await _run_conn(
+        inp, storage=static_storage, engine=engine,
+        storage_provider=provider, engine_factory=lambda storage: engine,
+    )
+    assert not any(t == "E" for t, _ in _messages(writer.buffer))
+    assert engine.last_data_source == "hr"
+    assert conn._storage is scoped_storage
