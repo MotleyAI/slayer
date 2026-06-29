@@ -60,10 +60,15 @@ async def test_connect_and_current_database(pg_demo_server) -> None:
         await conn.close()
 
 
-async def test_unknown_database_rejected(pg_demo_server) -> None:
+async def test_arbitrary_database_name_accepted(pg_demo_server) -> None:
+    # DEV-1594: the database parameter is a logical DB name, not a datasource
+    # selector — any name connects and current_database() echoes it back.
     host, port = pg_demo_server
-    with pytest.raises(asyncpg.InvalidCatalogNameError):
-        await _connect(host, port, database="nope")
+    conn = await _connect(host, port, database="nope")
+    try:
+        assert await conn.fetchval("SELECT current_database()") == "nope"
+    finally:
+        await conn.close()
 
 
 async def test_select_one(pg_demo_server) -> None:

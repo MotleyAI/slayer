@@ -1231,16 +1231,19 @@ async def test_bad_password_returns_28P01(metabase_e2e_env: MetabaseE2EEnv) -> N
     assert "28P01" in str(sqlstate) or isinstance(err, asyncpg.InvalidPasswordError)
 
 
-async def test_nonexistent_database_returns_3D000(metabase_e2e_env: MetabaseE2EEnv) -> None:  # NOSONAR(S1542) — SQLSTATE codes are conventionally uppercase
+async def test_arbitrary_database_name_is_a_logical_db(metabase_e2e_env: MetabaseE2EEnv) -> None:
+    # DEV-1594: the database parameter is a logical DB name, not a datasource
+    # selector, so an arbitrary name connects successfully (no 3D000) and
+    # current_database() echoes it back.
     host, port, token = metabase_e2e_env.pg_auth
-    with pytest.raises(Exception) as exc:
-        await asyncpg.connect(
-            host=host, port=port, user="tester", password=token,
-            database="bogus-not-a-datasource", timeout=10,
-        )
-    err = exc.value
-    sqlstate = getattr(err, "sqlstate", None) or str(err)
-    assert "3D000" in str(sqlstate) or isinstance(err, asyncpg.InvalidCatalogNameError)
+    conn = await asyncpg.connect(
+        host=host, port=port, user="tester", password=token,
+        database="some-logical-db", timeout=10,
+    )
+    try:
+        assert await conn.fetchval("SELECT current_database()") == "some-logical-db"
+    finally:
+        await conn.close()
 
 
 # ---------------------------------------------------------------------------
