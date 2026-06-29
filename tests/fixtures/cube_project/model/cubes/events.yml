@@ -1,0 +1,22 @@
+cubes:
+  - name: base_events
+    sql_table: public.events
+    public: false
+    dimensions:
+      - name: id
+        sql: "{CUBE}.id"
+        type: number
+        primary_key: true
+      - name: event_type
+        sql: "{CUBE}.event_type"
+        type: string
+    measures:
+      - name: count
+        type: count
+  - name: clicks
+    extends: base_events
+    sql_table: public.clicks
+    measures:
+      - name: click_value
+        type: sum
+        sql: "{CUBE}.value"
