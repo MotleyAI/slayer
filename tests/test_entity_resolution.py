@@ -16,7 +16,7 @@ they bubble up to MCP / CLI surfaces.
 from __future__ import annotations
 
 import tempfile
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio

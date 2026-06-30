@@ -18,13 +18,7 @@ import logging
 from typing import (
     Annotated,
     Any,
-    Dict,
-    List,
     Literal,
-    Optional,
-    Set,
-    Tuple,
-    Union,
 )
 
 import sqlalchemy as sa
@@ -48,8 +42,8 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.sql.sql_predicate import parse_sql_predicate
+from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.engine.ingestion import (
-    _safe_get_columns,
     _safe_get_pk_constraint,
     _sa_type_is_float,
     _sa_type_to_data_type,
@@ -74,10 +68,10 @@ class DeleteReason(BaseModel):
 class RemoveSpec(BaseModel):
     """Per-entity removal spec, mirroring the MCP ``edit_model`` ``remove=`` shape."""
 
-    columns: List[str] = Field(default_factory=list)
-    measures: List[str] = Field(default_factory=list)
-    aggregations: List[str] = Field(default_factory=list)
-    joins: List[str] = Field(default_factory=list)
+    columns: list[str] = Field(default_factory=list)
+    measures: list[str] = Field(default_factory=list)
+    aggregations: list[str] = Field(default_factory=list)
+    joins: list[str] = Field(default_factory=list)
 
 
 class EditModelDelete(BaseModel):
@@ -87,8 +81,8 @@ class EditModelDelete(BaseModel):
     model_name: str
     data_source: str
     remove: RemoveSpec = Field(default_factory=RemoveSpec)
-    remove_filters: List[str] = Field(default_factory=list)
-    reasons: List[DeleteReason] = Field(default_factory=list)
+    remove_filters: list[str] = Field(default_factory=list)
+    reasons: list[DeleteReason] = Field(default_factory=list)
 
 
 class WholeModelDelete(BaseModel):
@@ -97,11 +91,11 @@ class WholeModelDelete(BaseModel):
     tool: Literal["delete_model"] = "delete_model"
     model_name: str
     data_source: str
-    reasons: List[DeleteReason] = Field(default_factory=list)
+    reasons: list[DeleteReason] = Field(default_factory=list)
 
 
 ToDeleteEntry = Annotated[
-    Union[EditModelDelete, WholeModelDelete], Field(discriminator="tool")
+    EditModelDelete | WholeModelDelete, Field(discriminator="tool")
 ]
 
 
@@ -111,11 +105,11 @@ class ModelAddition(BaseModel):
     model_name: str
     data_source: str
     created: bool = False  # True if the model was new
-    new_columns: List[str] = Field(default_factory=list)
-    new_joins: List[str] = Field(default_factory=list)
+    new_columns: list[str] = Field(default_factory=list)
+    new_joins: list[str] = Field(default_factory=list)
     # DEV-1538: persisted INT columns whose type widened (to DOUBLE or TEXT)
     # because the SQLite affinity probe disagreed with the declared type.
-    widened_columns: List[str] = Field(default_factory=list)
+    widened_columns: list[str] = Field(default_factory=list)
 
 
 class IngestionError(BaseModel):
@@ -129,9 +123,9 @@ class IngestionError(BaseModel):
 class IdempotentIngestResult(BaseModel):
     """Combined return shape of the idempotent ``ingest_datasource`` pass."""
 
-    additions: List[ModelAddition] = Field(default_factory=list)
-    to_delete: List[ToDeleteEntry] = Field(default_factory=list)
-    errors: List[IngestionError] = Field(default_factory=list)
+    additions: list[ModelAddition] = Field(default_factory=list)
+    to_delete: list[ToDeleteEntry] = Field(default_factory=list)
+    errors: list[IngestionError] = Field(default_factory=list)
 
 
 class AppliedEntry(BaseModel):
@@ -154,9 +148,9 @@ class ApplyError(BaseModel):
 class ApplyDriftResult(BaseModel):
     """Combined return shape of ``apply_drift_deletes``."""
 
-    applied: List[AppliedEntry] = Field(default_factory=list)
-    errors: List[ApplyError] = Field(default_factory=list)
-    residual: List[ToDeleteEntry] = Field(default_factory=list)
+    applied: list[AppliedEntry] = Field(default_factory=list)
+    errors: list[ApplyError] = Field(default_factory=list)
+    residual: list[ToDeleteEntry] = Field(default_factory=list)
 
 
 # ===========================================================================
@@ -173,10 +167,10 @@ class LiveTable(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    columns: Dict[str, DataType] = Field(default_factory=dict)
-    pk_columns: Set[str] = Field(default_factory=set)
+    columns: dict[str, DataType] = Field(default_factory=dict)
+    pk_columns: set[str] = Field(default_factory=set)
     # Each entry: (local_column, ref_table, ref_column)
-    fk_relationships: List[Tuple[str, str, str]] = Field(default_factory=list)
+    fk_relationships: list[tuple[str, str, str]] = Field(default_factory=list)
 
 
 # ===========================================================================
@@ -205,7 +199,7 @@ def data_type_bucket(dt: DataType) -> str:
     return str(dt)
 
 
-def _is_bare_identifier(s: Optional[str]) -> bool:
+def _is_bare_identifier(s: str | None) -> bool:
     """``s`` is a bare SQL identifier (alphanumeric + underscore, no leading digit)."""
     if not s:
         return False
@@ -215,7 +209,7 @@ def _is_bare_identifier(s: Optional[str]) -> bool:
     return all(c.isalnum() or c == "_" for c in s)
 
 
-def _column_is_base(col_sql: Optional[str]) -> bool:
+def _column_is_base(col_sql: str | None) -> bool:
     """A Column whose ``sql`` is None or a bare identifier is a "base"
     column — it claims a live column. Derived expressions
     (``amount * 2``, ``customers.region``, etc.) do not.
@@ -232,10 +226,10 @@ def _column_is_base(col_sql: Optional[str]) -> bool:
 
 def _diff_sql_table_columns(
     *, model: SlayerModel, live_table: LiveTable
-) -> Tuple[List[str], List[DeleteReason]]:
+) -> tuple[list[str], list[DeleteReason]]:
     """Per-column diff of a sql_table-mode model against live columns."""
-    dropped: List[str] = []
-    reasons: List[DeleteReason] = []
+    dropped: list[str] = []
+    reasons: list[DeleteReason] = []
     for col in model.columns:
         # Only compare base columns directly. Derived columns are handled
         # by cascade.
@@ -270,12 +264,12 @@ def _diff_sql_table_joins(
     *,
     model: SlayerModel,
     live_table: LiveTable,
-    available_models_in_ds: Set[str],
-) -> Tuple[List[str], List[DeleteReason]]:
+    available_models_in_ds: set[str],
+) -> tuple[list[str], list[DeleteReason]]:
     """Per-join diff of a sql_table-mode model against live FK columns and
     in-datasource model availability."""
-    dropped: List[str] = []
-    reasons: List[DeleteReason] = []
+    dropped: list[str] = []
+    reasons: list[DeleteReason] = []
     # ``join.join_pairs[*][0]`` is the semantic column name (``Column.name``).
     # Resolve to the physical column name via ``Column.sql`` before checking
     # against the live table — for a base column like
@@ -322,9 +316,9 @@ def _diff_sql_table_joins(
 def diff_sql_table_model(
     *,
     model: SlayerModel,
-    live_table: Optional[LiveTable],
-    available_models_in_ds: Set[str],
-) -> Tuple[Optional[ToDeleteEntry], Set[str]]:
+    live_table: LiveTable | None,
+    available_models_in_ds: set[str],
+) -> tuple[ToDeleteEntry | None, set[str]]:
     """Diff a sql_table-mode model against live introspection.
 
     Returns ``(entry_or_None, dropped_column_names)``.
@@ -384,8 +378,8 @@ def diff_sql_table_model(
 def diff_sql_model(
     *,
     model: SlayerModel,
-    live_columns: Optional[Dict[str, DataType]],
-) -> Tuple[Optional[ToDeleteEntry], Set[str]]:
+    live_columns: dict[str, DataType] | None,
+) -> tuple[ToDeleteEntry | None, set[str]]:
     """Diff a sql-mode model against trial-execute cursor metadata.
 
     ``live_columns is None`` ⇒ trial-execute failed ⇒ ``WholeModelDelete``.
@@ -409,8 +403,8 @@ def diff_sql_model(
             {c.name for c in model.columns},
         )
 
-    dropped_cols: List[str] = []
-    reasons: List[DeleteReason] = []
+    dropped_cols: list[str] = []
+    reasons: list[DeleteReason] = []
     for col in model.columns:
         # Cursor exposes ALIAS names — match by col.name first, fall back to
         # col.sql for legacy cases where a Column's name differs from its
@@ -463,7 +457,7 @@ def diff_sql_model(
 # ===========================================================================
 
 
-def _extract_column_refs_from_sql(sql: str) -> List[Tuple[Optional[str], str]]:
+def _extract_column_refs_from_sql(sql: str) -> list[tuple[str | None, str]]:
     """Return all ``(table_alias, column_name)`` refs in a SQL expression.
 
     ``table_alias`` is ``None`` for bare identifiers, the raw alias string
@@ -475,7 +469,7 @@ def _extract_column_refs_from_sql(sql: str) -> List[Tuple[Optional[str], str]]:
         parsed = sqlglot.parse_one(sql)
     except Exception:
         return []
-    refs: List[Tuple[Optional[str], str]] = []
+    refs: list[tuple[str | None, str]] = []
     for col in parsed.find_all(exp.Column):
         if col.args.get("db") or col.args.get("catalog"):
             continue
@@ -485,21 +479,21 @@ def _extract_column_refs_from_sql(sql: str) -> List[Tuple[Optional[str], str]]:
     return refs
 
 
-def _agg_ref_names(agg_refs: Dict[str, AggregatedMeasureRef]) -> Set[str]:
+def _agg_ref_names(agg_refs: dict[str, AggregatedMeasureRef]) -> set[str]:
     """Names from a ``measure:agg`` placeholder map, excluding ``*``."""
     return {ref.measure_name for ref in agg_refs.values() if ref.measure_name != "*"}
 
 
 def _bare_measure_names(
-    measure_names: List[str],
-    agg_refs: Dict[str, AggregatedMeasureRef],
+    measure_names: list[str],
+    agg_refs: dict[str, AggregatedMeasureRef],
     *,
-    skip_placeholder_prefix: Optional[str] = None,
-) -> Set[str]:
+    skip_placeholder_prefix: str | None = None,
+) -> set[str]:
     """Filter raw ``measure_names`` to the ones that are not colon-syntax
     placeholders, optionally also stripping sub-transform placeholders.
     """
-    out: Set[str] = set()
+    out: set[str] = set()
     for n in measure_names:
         if n in agg_refs:
             continue
@@ -509,7 +503,7 @@ def _bare_measure_names(
     return out
 
 
-def _walk_field_spec_measure_refs(spec: Any) -> Set[str]:
+def _walk_field_spec_measure_refs(spec: Any) -> set[str]:
     """Walk a ``FieldSpec`` (parse_formula output) and return the set of
     measure_name strings (which may be dotted: ``"customers.revenue"``).
     """
@@ -534,8 +528,8 @@ def _walk_field_spec_measure_refs(spec: Any) -> Set[str]:
 def _measure_formula_refs(
     formula: str,
     *,
-    named_measures: Optional[Dict[str, str]] = None,
-) -> Set[str]:
+    named_measures: dict[str, str] | None = None,
+) -> set[str]:
     """Best-effort: parse ``formula`` and return the set of column / measure
     names it references. Returns the empty set on any parse failure.
 
@@ -551,7 +545,7 @@ def _measure_formula_refs(
     return _walk_field_spec_measure_refs(spec)
 
 
-def _filter_refs(filter_str: str) -> List[str]:
+def _filter_refs(filter_str: str) -> list[str]:
     """Best-effort: return list of column references in a SQL-mode filter.
 
     Used to scan ``Column.filter`` / ``SlayerModel.filters`` strings (Mode A
@@ -564,7 +558,7 @@ def _filter_refs(filter_str: str) -> List[str]:
     return list(pf.columns)
 
 
-def _filter_refs_dsl(filter_str: str) -> List[str]:
+def _filter_refs_dsl(filter_str: str) -> list[str]:
     """Best-effort: return list of column / measure references in a DSL filter.
 
     Used to scan ``SlayerQuery.filters`` strings (Mode B DSL — DEV-1369),
@@ -592,8 +586,8 @@ def _walk_alias_to_target_model(
     *,
     source_model: SlayerModel,
     table_alias: str,
-    models_by_name: Dict[str, SlayerModel],
-) -> Optional[SlayerModel]:
+    models_by_name: dict[str, SlayerModel],
+) -> SlayerModel | None:
     """Resolve a ``__``-delimited path alias starting from ``source_model``
     to the terminal joined model. Returns None if any hop fails.
     """
@@ -616,8 +610,8 @@ def _resolve_dotted_ref_to_model(
     *,
     source_model: SlayerModel,
     dotted_ref: str,
-    models_by_name: Dict[str, SlayerModel],
-) -> Tuple[Optional[SlayerModel], Optional[str]]:
+    models_by_name: dict[str, SlayerModel],
+) -> tuple[SlayerModel | None, str | None]:
     """Resolve a dotted measure/column ref like ``customers.region`` or
     ``customers.regions.name`` to ``(target_model, leaf_name)``.
 
@@ -639,13 +633,13 @@ def _resolve_dotted_ref_to_model(
 # ===========================================================================
 
 
-def _pk_columns(model: SlayerModel) -> Set[str]:
+def _pk_columns(model: SlayerModel) -> set[str]:
     return {c.name for c in model.columns if c.primary_key}
 
 
 def _ensure_edit_entry(
     *,
-    edit_entries: Dict[str, EditModelDelete],
+    edit_entries: dict[str, EditModelDelete],
     model: SlayerModel,
 ) -> EditModelDelete:
     if model.name not in edit_entries:
@@ -658,8 +652,8 @@ def _ensure_edit_entry(
 
 def _add_dropped_column(
     *,
-    edit_entries: Dict[str, EditModelDelete],
-    dropped_cols: Dict[str, Set[str]],
+    edit_entries: dict[str, EditModelDelete],
+    dropped_cols: dict[str, set[str]],
     model: SlayerModel,
     column_name: str,
     reason: str,
@@ -679,8 +673,8 @@ def _add_dropped_column(
 
 def _add_dropped_measure(
     *,
-    edit_entries: Dict[str, EditModelDelete],
-    dropped_measures: Dict[str, Set[str]],
+    edit_entries: dict[str, EditModelDelete],
+    dropped_measures: dict[str, set[str]],
     model: SlayerModel,
     measure_name: str,
     reason: str,
@@ -699,8 +693,8 @@ def _add_dropped_measure(
 
 def _add_dropped_join(
     *,
-    edit_entries: Dict[str, EditModelDelete],
-    dropped_joins: Dict[str, Set[str]],
+    edit_entries: dict[str, EditModelDelete],
+    dropped_joins: dict[str, set[str]],
     model: SlayerModel,
     target_name: str,
     reason: str,
@@ -719,7 +713,7 @@ def _add_dropped_join(
 
 def _add_remove_filter(
     *,
-    edit_entries: Dict[str, EditModelDelete],
+    edit_entries: dict[str, EditModelDelete],
     model: SlayerModel,
     filter_text: str,
     reason: str,
@@ -742,8 +736,8 @@ def _add_remove_filter(
 def _resolve_stage_source_to_base(
     *,
     source_model: object,
-    prior_stages_by_name: Dict[str, SlayerQuery],
-) -> Optional[str]:
+    prior_stages_by_name: dict[str, SlayerQuery],
+) -> str | None:
     """Walk a ``source_model`` reference (str / SlayerModel / ModelExtension /
     prior-stage-name) back to a real persisted base model name.
 
@@ -751,7 +745,7 @@ def _resolve_stage_source_to_base(
     underlying model — we follow it transparently so query-backed drift
     attribution doesn't silently skip extension-wrapped stages.
     """
-    seen: Set[str] = set()
+    seen: set[str] = set()
     current = source_model
     while True:
         if isinstance(current, str):
@@ -784,29 +778,29 @@ class _StageGraph(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    stage_source_name: Optional[str] = None
-    extension_targets: Set[str] = Field(default_factory=set)
-    reachable: Set[str] = Field(default_factory=set)
-    models_by_name: Dict[str, SlayerModel] = Field(default_factory=dict)
+    stage_source_name: str | None = None
+    extension_targets: set[str] = Field(default_factory=set)
+    reachable: set[str] = Field(default_factory=set)
+    models_by_name: dict[str, SlayerModel] = Field(default_factory=dict)
 
 
 def _build_stage_graph(
     *,
     stage: SlayerQuery,
-    stage_source_name: Optional[str],
-    models_by_name: Dict[str, SlayerModel],
+    stage_source_name: str | None,
+    models_by_name: dict[str, SlayerModel],
 ) -> _StageGraph:
     """Build a ``_StageGraph`` for a single stage. ``stage_source_name`` is
     the resolved base model name (str), or ``None`` for inline / unresolved
     sources.
     """
     extension_targets = _stage_join_targets(stage)
-    reachable: Set[str] = set()
+    reachable: set[str] = set()
     if stage_source_name:
         reachable.add(stage_source_name)
     reachable |= extension_targets
     frontier = list(reachable)
-    visited: Set[str] = set()
+    visited: set[str] = set()
     while frontier:
         name = frontier.pop()
         if name in visited:
@@ -832,7 +826,7 @@ def _attribute_ref_to_base(
     ref: str,
     base_name: str,
     graph: _StageGraph,
-) -> Optional[str]:
+) -> str | None:
     """Walk ``ref`` through the stage's join graph and return the leaf
     column name when it resolves to ``base_name``, else ``None``.
 
@@ -868,8 +862,8 @@ def _attribute_ref_to_base(
 
 def _measure_refs_on_base(
     stage: SlayerQuery, base_name: str, graph: _StageGraph
-) -> Set[str]:
-    out: Set[str] = set()
+) -> set[str]:
+    out: set[str] = set()
     for m in stage.measures or []:
         formula = getattr(m, "formula", None)
         if not formula:
@@ -885,8 +879,8 @@ def _measure_refs_on_base(
 
 def _dimension_refs_on_base(
     stage: SlayerQuery, base_name: str, graph: _StageGraph
-) -> Set[str]:
-    out: Set[str] = set()
+) -> set[str]:
+    out: set[str] = set()
     for d in stage.dimensions or []:
         full = getattr(d, "full_name", None) or str(d)
         attributed = _attribute_ref_to_base(
@@ -899,8 +893,8 @@ def _dimension_refs_on_base(
 
 def _time_dimension_refs_on_base(
     stage: SlayerQuery, base_name: str, graph: _StageGraph
-) -> Set[str]:
-    out: Set[str] = set()
+) -> set[str]:
+    out: set[str] = set()
     for td in stage.time_dimensions or []:
         attributed = _attribute_ref_to_base(
             ref=td.dimension.full_name, base_name=base_name, graph=graph
@@ -912,8 +906,8 @@ def _time_dimension_refs_on_base(
 
 def _filter_refs_on_base(
     stage: SlayerQuery, base_name: str, graph: _StageGraph
-) -> Set[str]:
-    out: Set[str] = set()
+) -> set[str]:
+    out: set[str] = set()
     # ``SlayerQuery.filters`` are Mode B (DSL) — go through the DSL parser
     # so colon-syntax aggregations and transforms surface their underlying
     # measure names. ``_filter_refs`` (SQL-mode) would drop them silently.
@@ -931,8 +925,8 @@ def _stage_referenced_columns_for_base(
     *,
     stage: SlayerQuery,
     base_name: str,
-    graph: Optional[_StageGraph] = None,
-) -> Set[str]:
+    graph: _StageGraph | None = None,
+) -> set[str]:
     """Return the set of column names referenced *on* ``base_name`` by a
     single source_queries stage. Walks the stage's join graph (passed via
     ``graph``) so multi-hop dotted refs and ModelExtension-added joins are
@@ -957,7 +951,7 @@ def _stage_referenced_columns_for_base(
     )
 
 
-def _stage_join_targets(stage: SlayerQuery) -> Set[str]:
+def _stage_join_targets(stage: SlayerQuery) -> set[str]:
     """Return the set of join target_model names referenced by a stage.
 
     ``SlayerQuery`` itself has no ``joins`` field; joins on a stage live
@@ -968,7 +962,7 @@ def _stage_join_targets(stage: SlayerQuery) -> Set[str]:
     """
     source = getattr(stage, "source_model", None)
     joins = getattr(source, "joins", None) or []
-    out: Set[str] = set()
+    out: set[str] = set()
     for j in joins:
         target = getattr(j, "target_model", None)
         if isinstance(target, str):
@@ -981,9 +975,9 @@ def _check_stage_against_base(
     stage: SlayerQuery,
     base_name: str,
     graph: _StageGraph,
-    dropped_cols: Dict[str, Set[str]],
-    pk_per_model: Dict[str, Set[str]],
-) -> Set[str]:
+    dropped_cols: dict[str, set[str]],
+    pk_per_model: dict[str, set[str]],
+) -> set[str]:
     """Return the set of dropped column names on ``base_name`` that this
     stage references (resolved through the stage's join graph).
 
@@ -1004,8 +998,8 @@ def _stage_uses_dropped_join(
     stage: SlayerQuery,
     base_name: str,
     graph: _StageGraph,
-    dropped_joins: Dict[str, Set[str]],
-) -> Optional[str]:
+    dropped_joins: dict[str, set[str]],
+) -> str | None:
     """If ``stage`` references any column under a join target that's been
     dropped on ``base_name``, return the conflicting target; else None.
 
@@ -1036,12 +1030,12 @@ def _check_stage_for_whole_drop(
     base_name: str,
     qb_name: str,
     graph: _StageGraph,
-    whole_dropped_models: Set[str],
-    dropped_cols: Dict[str, Set[str]],
-    dropped_joins: Dict[str, Set[str]],
-    pk_per_model: Dict[str, Set[str]],
-    candidate_base_names: Set[str],
-) -> Optional[DeleteReason]:
+    whole_dropped_models: set[str],
+    dropped_cols: dict[str, set[str]],
+    dropped_joins: dict[str, set[str]],
+    pk_per_model: dict[str, set[str]],
+    candidate_base_names: set[str],
+) -> DeleteReason | None:
     """Decide whether a single stage of a query-backed model triggers the
     whole-drop. Returns a ``DeleteReason`` on the first matching trigger,
     or ``None`` when the stage has no fatal references.
@@ -1099,13 +1093,13 @@ def _check_stage_for_whole_drop(
 def _query_backed_should_whole_drop(
     *,
     qb_model: SlayerModel,
-    dropped_cols: Dict[str, Set[str]],
-    dropped_joins: Dict[str, Set[str]],
-    whole_dropped_models: Set[str],
-    pk_per_model: Dict[str, Set[str]],
-    candidate_base_names: Optional[Set[str]] = None,
-    models_by_name: Optional[Dict[str, SlayerModel]] = None,
-) -> Optional[DeleteReason]:
+    dropped_cols: dict[str, set[str]],
+    dropped_joins: dict[str, set[str]],
+    whole_dropped_models: set[str],
+    pk_per_model: dict[str, set[str]],
+    candidate_base_names: set[str] | None = None,
+    models_by_name: dict[str, SlayerModel] | None = None,
+) -> DeleteReason | None:
     """Return a non-None DeleteReason when this query-backed model should be
     whole-dropped due to cascading from base-model drift, else None.
 
@@ -1122,7 +1116,7 @@ def _query_backed_should_whole_drop(
     models_by_name = models_by_name or {}
 
     for i, stage in enumerate(stages):
-        prior_by_name: Dict[str, SlayerQuery] = {}
+        prior_by_name: dict[str, SlayerQuery] = {}
         for s in stages[:i]:
             s_name = getattr(s, "name", None)
             if s_name:
@@ -1180,13 +1174,13 @@ class _CascadeState:
     def __init__(
         self,
         *,
-        models_by_name: Dict[str, SlayerModel],
-        edit_entries: Dict[str, EditModelDelete],
-        whole_entries: Dict[str, WholeModelDelete],
-        dropped_cols: Dict[str, Set[str]],
-        dropped_measures: Dict[str, Set[str]],
-        dropped_joins: Dict[str, Set[str]],
-        pk_per_model: Dict[str, Set[str]],
+        models_by_name: dict[str, SlayerModel],
+        edit_entries: dict[str, EditModelDelete],
+        whole_entries: dict[str, WholeModelDelete],
+        dropped_cols: dict[str, set[str]],
+        dropped_measures: dict[str, set[str]],
+        dropped_joins: dict[str, set[str]],
+        pk_per_model: dict[str, set[str]],
     ) -> None:
         self.models_by_name = models_by_name
         self.edit_entries = edit_entries
@@ -1196,18 +1190,18 @@ class _CascadeState:
         self.dropped_joins = dropped_joins
         self.pk_per_model = pk_per_model
 
-    def cascadable(self, name: str) -> Set[str]:
+    def cascadable(self, name: str) -> set[str]:
         """Cascadable column drops on ``name`` (excludes PKs — rule 7)."""
         return self.dropped_cols.get(name, set()) - self.pk_per_model.get(name, set())
 
 
 def _column_ref_targets_dropped(
     *,
-    table_alias: Optional[str],
+    table_alias: str | None,
     ref_col: str,
     model: SlayerModel,
     state: _CascadeState,
-) -> Tuple[bool, Optional[SlayerModel]]:
+) -> tuple[bool, SlayerModel | None]:
     """Decide if a single ``(table_alias, ref_col)`` reference resolves to a
     dropped column. Returns ``(is_dropped, resolved_target_model)``.
     """
@@ -1225,7 +1219,7 @@ def _column_ref_targets_dropped(
 
 def _first_dropped_sql_column_ref(
     *, col: Column, model: SlayerModel, state: _CascadeState
-) -> Optional[Tuple[SlayerModel, str]]:
+) -> tuple[SlayerModel, str] | None:
     """Return ``(target_model, ref_col)`` for the first reference in
     ``col.sql`` that resolves to a dropped column, or ``None`` when
     nothing in the column's SQL references a dropped target.
@@ -1272,7 +1266,7 @@ def _cascade_derived_columns(
 
 def _measure_drop_cause(
     *, ref: str, model: SlayerModel, state: _CascadeState
-) -> Optional[str]:
+) -> str | None:
     """If the measure ref resolves to a dropped column or measure, return a
     reason string; otherwise None.
     """
@@ -1292,10 +1286,10 @@ def _measure_drop_cause(
 
 def _first_dropped_cause(
     *,
-    refs: Set[str],
+    refs: set[str],
     model: SlayerModel,
     state: _CascadeState,
-) -> Optional[str]:
+) -> str | None:
     """Return the cause string for the first ref that resolves to a dropped
     column or measure, or ``None`` when nothing in ``refs`` is dropped.
     """
@@ -1409,7 +1403,7 @@ def _cascade_filters(*, model: SlayerModel, state: _CascadeState) -> bool:
 
 
 def _cascade_query_backed(
-    *, models: List[SlayerModel], state: _CascadeState
+    *, models: list[SlayerModel], state: _CascadeState
 ) -> bool:
     """Rule 6: query-backed model whose source_queries chain transitively
     references dropped state — whole-drop."""
@@ -1446,14 +1440,14 @@ def _cascade_query_backed(
 
 def _cascade_one_pass(
     *,
-    models: List[SlayerModel],
-    models_by_name: Dict[str, SlayerModel],
-    edit_entries: Dict[str, EditModelDelete],
-    whole_entries: Dict[str, WholeModelDelete],
-    dropped_cols: Dict[str, Set[str]],
-    dropped_measures: Dict[str, Set[str]],
-    dropped_joins: Dict[str, Set[str]],
-    pk_per_model: Dict[str, Set[str]],
+    models: list[SlayerModel],
+    models_by_name: dict[str, SlayerModel],
+    edit_entries: dict[str, EditModelDelete],
+    whole_entries: dict[str, WholeModelDelete],
+    dropped_cols: dict[str, set[str]],
+    dropped_measures: dict[str, set[str]],
+    dropped_joins: dict[str, set[str]],
+    pk_per_model: dict[str, set[str]],
 ) -> bool:
     """Run a single cascade pass; return True if anything new was added.
 
@@ -1492,13 +1486,13 @@ def _cascade_one_pass(
 def _seed_one_diff_entry(
     *,
     model_name: str,
-    entry: Optional[ToDeleteEntry],
-    cols: Set[str],
-    edit_entries: Dict[str, EditModelDelete],
-    whole_entries: Dict[str, WholeModelDelete],
-    dropped_cols: Dict[str, Set[str]],
-    dropped_measures: Dict[str, Set[str]],
-    dropped_joins: Dict[str, Set[str]],
+    entry: ToDeleteEntry | None,
+    cols: set[str],
+    edit_entries: dict[str, EditModelDelete],
+    whole_entries: dict[str, WholeModelDelete],
+    dropped_cols: dict[str, set[str]],
+    dropped_measures: dict[str, set[str]],
+    dropped_joins: dict[str, set[str]],
 ) -> None:
     """Apply one ``(entry, dropped_columns)`` diff result to the cascade
     state dicts."""
@@ -1520,14 +1514,14 @@ def _seed_one_diff_entry(
 
 def _seed_state_from_diffs(
     *,
-    diffs_iterables: Tuple[
-        Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]], ...
+    diffs_iterables: tuple[
+        dict[str, tuple[ToDeleteEntry | None, set[str]]], ...
     ],
-    edit_entries: Dict[str, EditModelDelete],
-    whole_entries: Dict[str, WholeModelDelete],
-    dropped_cols: Dict[str, Set[str]],
-    dropped_measures: Dict[str, Set[str]],
-    dropped_joins: Dict[str, Set[str]],
+    edit_entries: dict[str, EditModelDelete],
+    whole_entries: dict[str, WholeModelDelete],
+    dropped_cols: dict[str, set[str]],
+    dropped_measures: dict[str, set[str]],
+    dropped_joins: dict[str, set[str]],
 ) -> None:
     """Populate the cascade state dicts from the base per-model diffs."""
     for diffs in diffs_iterables:
@@ -1546,13 +1540,13 @@ def _seed_state_from_diffs(
 
 def _collapse_entries(
     *,
-    edit_entries: Dict[str, EditModelDelete],
-    whole_entries: Dict[str, WholeModelDelete],
-) -> List[ToDeleteEntry]:
+    edit_entries: dict[str, EditModelDelete],
+    whole_entries: dict[str, WholeModelDelete],
+) -> list[ToDeleteEntry]:
     """Apply the collapse rule (whole-drop preempts edit on the same model)
     and return the final, name-sorted list of delete entries.
     """
-    final: List[ToDeleteEntry] = []
+    final: list[ToDeleteEntry] = []
     for name in sorted(set(edit_entries.keys()) | set(whole_entries.keys())):
         if name in whole_entries:
             final.append(whole_entries[name])
@@ -1563,21 +1557,21 @@ def _collapse_entries(
 
 def compute_datasource_drops(
     *,
-    models: List[SlayerModel],
-    sql_table_diffs: Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]],
-    sql_diffs: Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]],
-) -> List[ToDeleteEntry]:
+    models: list[SlayerModel],
+    sql_table_diffs: dict[str, tuple[ToDeleteEntry | None, set[str]]],
+    sql_diffs: dict[str, tuple[ToDeleteEntry | None, set[str]]],
+) -> list[ToDeleteEntry]:
     """Combine per-model base diffs with cascade walking and the collapse rule.
 
     Pure: takes pre-computed diffs as input and returns the final flat
     list. Caller is responsible for restricting ``models`` to a single
     datasource — cascade walking does not cross datasource boundaries.
     """
-    edit_entries: Dict[str, EditModelDelete] = {}
-    whole_entries: Dict[str, WholeModelDelete] = {}
-    dropped_cols: Dict[str, Set[str]] = {}
-    dropped_measures: Dict[str, Set[str]] = {}
-    dropped_joins: Dict[str, Set[str]] = {}
+    edit_entries: dict[str, EditModelDelete] = {}
+    whole_entries: dict[str, WholeModelDelete] = {}
+    dropped_cols: dict[str, set[str]] = {}
+    dropped_measures: dict[str, set[str]] = {}
+    dropped_joins: dict[str, set[str]] = {}
 
     _seed_state_from_diffs(
         diffs_iterables=(sql_table_diffs, sql_diffs),
@@ -1619,8 +1613,8 @@ def compute_datasource_drops(
 def _live_schema_for_datasource(
     *,
     datasource: DatasourceConfig,
-    schema: Optional[str] = None,
-) -> Dict[str, LiveTable]:
+    schema: str | None = None,
+) -> dict[str, LiveTable]:
     """Return ``{table_name: LiveTable}`` for every live table in the DS,
     using SQLAlchemy ``Inspector`` and the same fallback path as
     auto-ingestion (``slayer/engine/ingestion.py``).
@@ -1630,7 +1624,7 @@ def _live_schema_for_datasource(
     try:
         inspector = sa.inspect(sa_engine)
         table_names = list(inspector.get_table_names(schema=schema))
-        out: Dict[str, LiveTable] = {}
+        out: dict[str, LiveTable] = {}
         for table_name in table_names:
             try:
                 out[table_name] = _introspect_one_table(
@@ -1661,7 +1655,7 @@ def _introspect_one_table(
     inspector: sa.engine.Inspector,
     sa_engine: sa.Engine,
     table_name: str,
-    schema: Optional[str],
+    schema: str | None,
 ) -> LiveTable:
     """Build a ``LiveTable`` for one table via the existing safe-introspection
     path used by ``slayer/engine/ingestion.py``.
@@ -1670,7 +1664,7 @@ def _introspect_one_table(
     pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, schema)
     pk_columns = set(pk.get("constrained_columns", []) or [])
 
-    columns: Dict[str, DataType] = {}
+    columns: dict[str, DataType] = {}
     for col in cols_meta:
         col_type = col["type"]
         if isinstance(col_type, DataType):
@@ -1681,7 +1675,7 @@ def _introspect_one_table(
             # collapse to NUMBER.
             _ = _sa_type_is_float(col_type)
 
-    fks: List[Tuple[str, str, str]] = []
+    fks: list[tuple[str, str, str]] = []
     try:
         for fk in inspector.get_foreign_keys(table_name, schema=schema):
             constrained = fk.get("constrained_columns") or []
@@ -1714,7 +1708,7 @@ async def _live_columns_for_sql_model(
     *,
     model: SlayerModel,
     client: SlayerSQLClient,
-) -> Optional[Dict[str, DataType]]:
+) -> dict[str, DataType] | None:
     """Trial-execute ``model.sql`` with a 0-row guard and return cursor types.
 
     Returns ``None`` when the trial-execute itself fails — callers map that
@@ -1762,8 +1756,8 @@ def _strip_ident_quotes(ident: str) -> str:
 
 
 def _resolve_live_table(
-    *, sql_table: str, live_tables: Dict[str, LiveTable]
-) -> Optional[LiveTable]:
+    *, sql_table: str, live_tables: dict[str, LiveTable]
+) -> LiveTable | None:
     """Look up a model's ``sql_table`` in the live introspection map,
     falling back to the bare name when the persisted value is schema-
     qualified (``schema.table``) and unquoting double-quoted identifiers
@@ -1799,8 +1793,8 @@ def _is_validate_models_base_column(col: Column) -> bool:
 
 def _probe_validate_models_column(
     *, conn, model: SlayerModel, col: Column, table_name: str,
-    schema_name: Optional[str],
-) -> Optional[DataType]:
+    schema_name: str | None,
+) -> DataType | None:
     """Run the affinity probe for one column in a validate_models pass."""
     from slayer.sql.sqlite_introspect import probe_sqlite_integer_column
     try:
@@ -1835,8 +1829,8 @@ def _sqlite_probe_int_drift_for_model(
     *,
     model: SlayerModel,
     sa_engine,
-    default_schema: Optional[str] = None,
-) -> List[Tuple[str, DataType, DeleteReason]]:
+    default_schema: str | None = None,
+) -> list[tuple[str, DataType, DeleteReason]]:
     """DEV-1538: probe-driven type-drift detection on SQLite.
 
     For every persisted base column with ``Column.type == DataType.INT``,
@@ -1864,7 +1858,7 @@ def _sqlite_probe_int_drift_for_model(
     else:
         schema_name, table_name = default_schema or None, model.sql_table
 
-    drifts: List[Tuple[str, DataType, DeleteReason]] = []
+    drifts: list[tuple[str, DataType, DeleteReason]] = []
     with sa_engine.connect() as conn:
         for col in model.columns:
             if not _is_validate_models_base_column(col):
@@ -1886,8 +1880,8 @@ def _sqlite_probe_int_drift_for_model(
 async def _sqlite_probe_drifts_for_models(
     *,
     datasource: DatasourceConfig,
-    sql_table_models: List[SlayerModel],
-) -> Dict[str, List[Tuple[str, DataType, DeleteReason]]]:
+    sql_table_models: list[SlayerModel],
+) -> dict[str, list[tuple[str, DataType, DeleteReason]]]:
     """Run the SQLite probe for every model in one synchronous worker so
     the engine + connection lifecycle is shared across the validate pass."""
     if not sql_table_models:
@@ -1895,11 +1889,11 @@ async def _sqlite_probe_drifts_for_models(
     if (datasource.type or "").lower() != "sqlite":
         return {m.name: [] for m in sql_table_models}
 
-    def _run() -> Dict[str, List[Tuple[str, DataType, DeleteReason]]]:
+    def _run() -> dict[str, list[tuple[str, DataType, DeleteReason]]]:
         from slayer.sql import engine_factory
         sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
         try:
-            out: Dict[str, List[Tuple[str, DataType, DeleteReason]]] = {}
+            out: dict[str, list[tuple[str, DataType, DeleteReason]]] = {}
             default_schema = datasource.schema_name or None
             for m in sql_table_models:
                 out[m.name] = _sqlite_probe_int_drift_for_model(
@@ -1918,9 +1912,9 @@ async def _sqlite_probe_drifts_for_models(
 def _merge_probe_drifts_into_diff(
     *,
     model: SlayerModel,
-    base_diff: Tuple[Optional[ToDeleteEntry], Set[str]],
-    probe_drifts: List[Tuple[str, DataType, DeleteReason]],
-) -> Tuple[Optional[ToDeleteEntry], Set[str]]:
+    base_diff: tuple[ToDeleteEntry | None, set[str]],
+    probe_drifts: list[tuple[str, DataType, DeleteReason]],
+) -> tuple[ToDeleteEntry | None, set[str]]:
     """Merge ``probe_drifts`` from
     :func:`_sqlite_probe_int_drift_for_model` into a model's
     ``(entry, dropped_columns)`` diff so the cascade fixed-point walk in
@@ -1968,10 +1962,10 @@ def _merge_probe_drifts_into_diff(
 def _diff_one_sql_table_model(
     *,
     model: SlayerModel,
-    live_tables: Dict[str, "LiveTable"],
-    available_in_ds: Set[str],
-    probe_drifts: List[Tuple[str, DataType, DeleteReason]],
-) -> Tuple[Optional[ToDeleteEntry], Set[str]]:
+    live_tables: dict[str, "LiveTable"],
+    available_in_ds: set[str],
+    probe_drifts: list[tuple[str, DataType, DeleteReason]],
+) -> tuple[ToDeleteEntry | None, set[str]]:
     """Per-model body of :func:`_collect_sql_table_diffs` — resolves the
     live table, runs ``diff_sql_table_model``, and merges any DEV-1538
     SQLite probe drifts so the cascade walk treats them as regular drops."""
@@ -1991,9 +1985,9 @@ def _diff_one_sql_table_model(
 async def _collect_sql_table_diffs(
     *,
     datasource: DatasourceConfig,
-    sql_table_models: List[SlayerModel],
-    available_in_ds: Set[str],
-) -> Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]]:
+    sql_table_models: list[SlayerModel],
+    available_in_ds: set[str],
+) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
     """Run live SQLAlchemy introspection (off the event loop) and diff each
     sql_table-mode model against it. On SQLite, additionally run the
     DEV-1538 affinity probe per persisted INT base column and merge any
@@ -2028,11 +2022,11 @@ async def _collect_sql_table_diffs(
 async def _collect_sql_diffs(
     *,
     datasource: DatasourceConfig,
-    sql_models: List[SlayerModel],
-    sql_clients: Optional[Dict[Tuple[str, str], SlayerSQLClient]],
-) -> Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]]:
+    sql_models: list[SlayerModel],
+    sql_clients: dict[tuple[str, str], SlayerSQLClient] | None,
+) -> dict[str, tuple[ToDeleteEntry | None, set[str]]]:
     """Trial-execute each sql-mode model concurrently and produce its diff."""
-    out: Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]] = {}
+    out: dict[str, tuple[ToDeleteEntry | None, set[str]]] = {}
     if not sql_models:
         return out
     # DEV-1551: SlayerQueryEngine._sql_clients is tuple-keyed
@@ -2056,9 +2050,9 @@ async def _collect_sql_diffs(
 async def validate_datasource(
     *,
     datasource: DatasourceConfig,
-    models: List[SlayerModel],
-    sql_clients: Optional[Dict[Tuple[str, str], SlayerSQLClient]] = None,
-) -> List[ToDeleteEntry]:
+    models: list[SlayerModel],
+    sql_clients: dict[tuple[str, str], SlayerSQLClient] | None = None,
+) -> list[ToDeleteEntry]:
     """Validate every persisted model in ``models`` (all in the same DS)
     against the live schema of ``datasource``. Read-only.
     """

@@ -14,14 +14,13 @@ retriever — that change requires no facade modification.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
 
 from slayer.memories.models import Memory
 from slayer.search.index import Corpus, IndexHit, search_index
 from slayer.search.retriever import RetrievalResult, Retriever
 
 
-def _count_corpus_kinds(corpus: Corpus) -> Tuple[int, int]:
+def _count_corpus_kinds(corpus: Corpus) -> tuple[int, int]:
     """Return ``(memory_count, entity_count)`` for a built corpus.
 
     Used to pass ``limit = full per-kind corpus size`` to each
@@ -47,18 +46,18 @@ class TantivyRetriever(Retriever):
     async def retrieve(
         self,
         *,
-        query_entities: List[str],
-        question: Optional[str],
-        all_memories: List[Memory],
+        query_entities: list[str],
+        question: str | None,
+        all_memories: list[Memory],
         valid_canonicals: set,
-        corpus: Optional[Corpus],
-        datasource: Optional[str],
+        corpus: Corpus | None,
+        datasource: str | None,
     ) -> RetrievalResult:
         if corpus is None or not question or not question.strip():
             return RetrievalResult()
 
         memory_count, entity_count = _count_corpus_kinds(corpus)
-        memory_hits: List[IndexHit] = (
+        memory_hits: list[IndexHit] = (
             search_index(
                 index=corpus.index,
                 question=question,
@@ -68,7 +67,7 @@ class TantivyRetriever(Retriever):
             if memory_count > 0
             else []
         )
-        entity_hits: List[IndexHit] = (
+        entity_hits: list[IndexHit] = (
             search_index(
                 index=corpus.index,
                 question=question,
@@ -79,8 +78,8 @@ class TantivyRetriever(Retriever):
             else []
         )
 
-        memory_ranking: List[str] = []
-        text_by_id: Dict[str, str] = {}
+        memory_ranking: list[str] = []
+        text_by_id: dict[str, str] = {}
         for hit in memory_hits:
             if hit.memory_id is None:
                 continue

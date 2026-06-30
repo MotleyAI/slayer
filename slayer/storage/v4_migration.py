@@ -28,7 +28,6 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from typing import List, Optional
 
 import yaml
 
@@ -70,7 +69,7 @@ def _model_v3_to_v4(data: dict) -> dict:
 def _resolve_orphan_data_source(
     *,
     name: str,
-    available_datasources: List[str],
+    available_datasources: list[str],
 ) -> str:
     """Either auto-fill from the only datasource present, or raise."""
     if len(available_datasources) == 1:
@@ -89,7 +88,7 @@ def _resolve_orphan_data_source(
 # ---------------------------------------------------------------------------
 
 
-def _yaml_list_datasource_names(datasources_dir: str) -> List[str]:
+def _yaml_list_datasource_names(datasources_dir: str) -> list[str]:
     if not os.path.isdir(datasources_dir):
         return []
     return [
@@ -162,7 +161,7 @@ def _sqlite_models_has_data_source_column(conn: sqlite3.Connection) -> bool:
     return any(r[1] == "data_source" for r in rows)
 
 
-def _sqlite_list_datasource_names(conn: sqlite3.Connection) -> List[str]:
+def _sqlite_list_datasource_names(conn: sqlite3.Connection) -> list[str]:
     cur = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='datasources'"
     )
@@ -191,10 +190,10 @@ def migrate_sqlite_schema(db_path: str) -> None:
         rows = conn.execute("SELECT name, data FROM models").fetchall()
         available = _sqlite_list_datasource_names(conn)
 
-        migrated: List[tuple] = []
+        migrated: list[tuple] = []
         for name, blob in rows:
             data = json.loads(blob)
-            ds: Optional[str] = data.get("data_source") or None
+            ds: str | None = data.get("data_source") or None
             if not ds:
                 ds = _resolve_orphan_data_source(name=name, available_datasources=available)
                 data["data_source"] = ds

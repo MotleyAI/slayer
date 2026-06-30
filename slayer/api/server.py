@@ -2,7 +2,7 @@
 
 import logging
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,6 +19,7 @@ from slayer.core.format import NumberFormat
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
@@ -31,34 +32,34 @@ class QueryRequest(BaseModel):
     # to pass through to SlayerQuery's pre-validate hook.
     model_config = ConfigDict(extra="allow")
 
-    name: Optional[str] = None  # Run-by-name: backing query for a query-backed model
+    name: str | None = None  # Run-by-name: backing query for a query-backed model
     # ``source_model`` accepts a string (stored model name) or a dict
     # — the dict form is an inline ``ModelExtension`` (``{"source_name":
     # "<model>", "columns": [...], "joins": [...]}``) or an inline
     # ``SlayerModel`` (``{"name": "...", "sql_table": "...", "data_source":
     # "...", "columns": [...]}``). The full polymorphism is handled by
     # ``SlayerQuery.model_validate`` downstream.
-    source_model: Optional[Union[str, Dict[str, Any]]] = None
+    source_model: str | dict[str, Any] | None = None
     # ``measures`` and ``dimensions`` accept bare strings as a shorthand,
     # mirroring the Python API: ``"*:count"`` is lifted to
     # ``{"formula": "*:count"}``, ``"status"`` to ``{"name": "status"}``.
     # ``SlayerQuery``'s before-validators (``_coerce_measures`` /
     # ``_coerce_dimensions``) do the actual lifting downstream.
-    measures: Optional[List[Union[str, Dict[str, Any]]]] = None
-    dimensions: Optional[List[Union[str, Dict[str, Any]]]] = None
-    time_dimensions: Optional[List[Dict[str, Any]]] = None
-    filters: Optional[List[str]] = None
-    order: Optional[List[Dict[str, Any]]] = None
-    limit: Optional[int] = None
-    offset: Optional[int] = None
-    whole_periods_only: Optional[bool] = None
+    measures: list[str | dict[str, Any]] | None = None
+    dimensions: list[str | dict[str, Any]] | None = None
+    time_dimensions: list[dict[str, Any]] | None = None
+    filters: list[str] | None = None
+    order: list[dict[str, Any]] | None = None
+    limit: int | None = None
+    offset: int | None = None
+    whole_periods_only: bool | None = None
     # DEV-1543: opt out of the dim-only auto-dedup GROUP BY. Default
     # (``None`` here) keeps the v3 SlayerQuery default (``True``). Set
     # ``False`` to emit raw rows.
-    distinct_dimension_values: Optional[bool] = None
-    dry_run: Optional[bool] = None
-    explain: Optional[bool] = None
-    variables: Optional[Dict[str, Any]] = None
+    distinct_dimension_values: bool | None = None
+    dry_run: bool | None = None
+    explain: bool | None = None
+    variables: dict[str, Any] | None = None
 
 
 class QueryListRequest(BaseModel):
@@ -73,39 +74,39 @@ class QueryListRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    queries: List[Dict[str, Any]]
-    variables: Optional[Dict[str, Any]] = None
-    dry_run: Optional[bool] = None
-    explain: Optional[bool] = None
+    queries: list[dict[str, Any]]
+    variables: dict[str, Any] | None = None
+    dry_run: bool | None = None
+    explain: bool | None = None
 
 
 class FieldMetadataResponse(BaseModel):
-    label: Optional[str] = None
-    format: Optional[NumberFormat] = None
+    label: str | None = None
+    format: NumberFormat | None = None
 
 
 class AttributesResponse(BaseModel):
-    dimensions: Dict[str, FieldMetadataResponse] = {}
-    measures: Dict[str, FieldMetadataResponse] = {}
+    dimensions: dict[str, FieldMetadataResponse] = {}
+    measures: dict[str, FieldMetadataResponse] = {}
 
 
 class QueryResponse(BaseModel):
-    data: List[Dict[str, Any]]
+    data: list[dict[str, Any]]
     row_count: int
-    columns: List[str]
-    sql: Optional[str] = None
-    attributes: Optional[AttributesResponse] = None
+    columns: list[str]
+    sql: str | None = None
+    attributes: AttributesResponse | None = None
 
 
 class IngestRequest(BaseModel):
     datasource: str
-    include_tables: Optional[List[str]] = None
-    exclude_tables: Optional[List[str]] = None
-    schema_name: Optional[str] = None
+    include_tables: list[str] | None = None
+    exclude_tables: list[str] | None = None
+    schema_name: str | None = None
 
 
 class ValidateModelsRequest(BaseModel):
-    data_source: Optional[str] = None
+    data_source: str | None = None
 
 
 class DatasourcePriorityRequest(BaseModel):
@@ -114,7 +115,7 @@ class DatasourcePriorityRequest(BaseModel):
     shape and FastAPI rejects mistyped payloads with 422 instead of
     silently coercing them downstream.
     """
-    priority: List[str] = []
+    priority: list[str] = []
 
 
 class SaveMemoryRequest(BaseModel):
@@ -139,8 +140,8 @@ class SaveMemoryRequest(BaseModel):
 
     learning: str
     linked_entities: Any
-    id: Optional[str] = None
-    description: Optional[str] = None
+    id: str | None = None
+    description: str | None = None
 
 
 class SearchRequest(BaseModel):
@@ -159,13 +160,32 @@ class SearchRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    entities: Optional[List[str]] = None
-    query: Optional[Any] = None
-    question: Optional[str] = None
-    datasource: Optional[str] = None
+    entities: list[str] | None = None
+    query: Any | None = None
+    question: str | None = None
+    datasource: str | None = None
     max_results: int = Field(default=10, ge=1)
-    cypher_filter: Optional[str] = None
+    cypher_filter: str | None = None
     compact: bool = True
+
+
+class InspectRequest(BaseModel):
+    """Body for ``POST /inspect`` (DEV-1588). Mirrors the MCP / CLI /
+    SlayerClient ``inspect`` surfaces — a point-lookup of one entity, or a
+    homogeneous-kind batch when ``reference`` is a list (DEV-1612)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # DEV-1612: a list is a homogeneous-kind batch (one ``entity_type`` for
+    # every id). A single str keeps single-id behaviour byte-for-byte.
+    reference: str | list[str]
+    entity_type: str
+    compact: bool = True
+    format: str = "markdown"
+    num_rows: int = 3
+    show_sql: bool = False
+    sections: list[str] | None = None
+    descriptions_max_chars: int | None = None
 
 
 def _slayer_version() -> str:
@@ -201,7 +221,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     app.mount("/mcp", mcp_app)
 
     @app.get("/health")
-    async def health() -> Dict[str, str]:
+    async def health() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.post(
@@ -220,7 +240,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         },
     )
     async def query(
-        request: Union[QueryRequest, QueryListRequest],
+        request: QueryRequest | QueryListRequest,
     ) -> QueryResponse:
         try:
             # Multi-stage DAG: body is ``{"queries": [...], "variables": ...,
@@ -296,7 +316,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 )
             attrs = result.attributes
 
-            def _convert_meta(d: dict) -> Dict[str, FieldMetadataResponse]:
+            def _convert_meta(d: dict) -> dict[str, FieldMetadataResponse]:
                 return {k: FieldMetadataResponse(label=v.label, format=v.format) for k, v in d.items()}
 
             attributes = None
@@ -331,8 +351,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 
     @app.get("/models")
     async def list_models(
-        data_source: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        data_source: str | None = None,
+    ) -> list[dict[str, Any]]:
         identities = await storage._list_all_model_identities()
         result = []
         for ds_name, name in identities:
@@ -341,7 +361,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             model = await storage.get_model(name, data_source=ds_name)
             if model is None or model.hidden:
                 continue
-            entry: Dict[str, Any] = {"name": name, "data_source": ds_name}
+            entry: dict[str, Any] = {"name": name, "data_source": ds_name}
             if model.description:
                 entry["description"] = model.description
             result.append(entry)
@@ -361,8 +381,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     )
     async def get_model(
         name: str,
-        data_source: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        data_source: str | None = None,
+    ) -> dict[str, Any]:
         try:
             model = await storage.get_model(name, data_source=data_source)
         except AmbiguousModelError as exc:
@@ -384,7 +404,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         "/models",
         responses={400: {"description": "Model failed validation (e.g. user-supplied cache fields on a query-backed model, save-time SQL generation failure)."}},
     )
-    async def create_model(model: SlayerModel) -> Dict[str, str]:
+    async def create_model(model: SlayerModel) -> dict[str, str]:
         # Route through engine.save_model so query-backed models get cache
         # populated (and user-supplied cache fields are rejected).
         try:
@@ -397,7 +417,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         "/models/{name}",
         responses={400: {"description": "Body name does not match path name, or model failed validation."}},
     )
-    async def update_model(name: str, model: SlayerModel) -> Dict[str, str]:
+    async def update_model(name: str, model: SlayerModel) -> dict[str, str]:
         if model.name != name:
             raise HTTPException(
                 status_code=400,
@@ -423,8 +443,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     )
     async def delete_model(
         name: str,
-        data_source: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        data_source: str | None = None,
+    ) -> dict[str, Any]:
         try:
             deleted = await storage.delete_model(name, data_source=data_source)
         except AmbiguousModelError as exc:
@@ -440,7 +460,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         return {"status": "deleted", "name": name}
 
     @app.get("/datasources/priority")
-    async def get_datasource_priority() -> Dict[str, List[str]]:
+    async def get_datasource_priority() -> dict[str, list[str]]:
         return {"priority": await storage.get_datasource_priority()}
 
     @app.put(
@@ -454,7 +474,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             }
         },
     )
-    async def put_datasource_priority(body: DatasourcePriorityRequest) -> Dict[str, Any]:
+    async def put_datasource_priority(body: DatasourcePriorityRequest) -> dict[str, Any]:
         priority = list(body.priority)
         try:
             await storage.set_datasource_priority(priority)
@@ -463,18 +483,18 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         return {"status": "ok", "priority": priority}
 
     @app.get("/datasources")
-    async def list_datasources() -> List[Dict[str, Any]]:
+    async def list_datasources() -> list[dict[str, Any]]:
         result = []
         for name in await storage.list_datasources():
             ds = await storage.get_datasource(name)
-            entry: Dict[str, Any] = {"name": name}
+            entry: dict[str, Any] = {"name": name}
             if ds:
                 entry["type"] = ds.type
             result.append(entry)
         return result
 
     @app.get("/datasources/{name}")
-    async def get_datasource(name: str) -> Dict[str, Any]:
+    async def get_datasource(name: str) -> dict[str, Any]:
         ds = await storage.get_datasource(name)
         if ds is None:
             raise HTTPException(
@@ -488,12 +508,12 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         return data
 
     @app.post("/datasources")
-    async def create_datasource(datasource: DatasourceConfig) -> Dict[str, str]:
+    async def create_datasource(datasource: DatasourceConfig) -> dict[str, str]:
         await storage.save_datasource(datasource)
         return {"status": "created", "name": datasource.name}
 
     @app.delete("/datasources/{name}")
-    async def delete_datasource(name: str) -> Dict[str, Any]:
+    async def delete_datasource(name: str) -> dict[str, Any]:
         deleted = await storage.delete_datasource(name)
         if not deleted:
             raise HTTPException(
@@ -516,7 +536,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     )
     async def validate_models_endpoint(
         request: ValidateModelsRequest,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Diff persisted SlayerModels against live DB schemas. Read-only."""
         if request.data_source is not None:
             ds_check = await storage.get_datasource(request.data_source)
@@ -555,7 +575,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             },
         },
     )
-    async def ingest(request: IngestRequest) -> Dict[str, Any]:
+    async def ingest(request: IngestRequest) -> dict[str, Any]:
         # Strip newlines from the user-controlled datasource name before it
         # reaches the log or the response detail (S5145 — log-injection
         # surface). The ds value already round-tripped through Pydantic so
@@ -634,7 +654,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             }
         },
     )
-    async def save_memory(request: SaveMemoryRequest) -> Dict[str, Any]:
+    async def save_memory(request: SaveMemoryRequest) -> dict[str, Any]:
         try:
             response = await memory_service.save_memory(
                 learning=request.learning,
@@ -657,7 +677,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             404: {"description": "Memory not found."},
         },
     )
-    async def delete_memory(memory_id: str) -> Dict[str, Any]:
+    async def delete_memory(memory_id: str) -> dict[str, Any]:
         try:
             response = await memory_service.forget_memory(identifier=memory_id)
         except MemoryNotFoundError as exc:
@@ -683,7 +703,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             }
         },
     )
-    async def search(request: SearchRequest) -> Dict[str, Any]:
+    async def search(request: SearchRequest) -> dict[str, Any]:
         try:
             response = await search_service.search(
                 entities=request.entities,
@@ -697,5 +717,34 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         except (SlayerError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return response.model_dump(mode="json")
+
+    inspect_service = InspectService(storage=storage, engine=engine)
+
+    @app.post(
+        "/inspect",
+        responses={
+            400: {
+                "description": (
+                    "Invalid input: bad entity_type / format, negative "
+                    "descriptions_max_chars, or an unresolvable reference."
+                )
+            }
+        },
+    )
+    async def inspect(request: InspectRequest) -> dict[str, Any]:
+        try:
+            result = await inspect_service.inspect(
+                reference=request.reference,
+                entity_type=request.entity_type,
+                compact=request.compact,
+                format=request.format,
+                num_rows=request.num_rows,
+                show_sql=request.show_sql,
+                sections=request.sections,
+                descriptions_max_chars=request.descriptions_max_chars,
+            )
+        except (SlayerError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"result": result}
 
     return app

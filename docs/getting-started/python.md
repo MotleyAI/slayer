@@ -75,6 +75,22 @@ result.sql         # generated SQL (when dry_run or explain is set)
 result.attributes  # ResponseAttributes with .dimensions and .measures dicts
 ```
 
+### Tenant scoping (row-level security)
+
+Pass a `policy=` to the engine (or the local-mode client) to silently scope
+every query to one tenant — joins, sub-queries, and sample data included. The
+agent cannot read, override, or disable it:
+
+```python
+from slayer.core.policy import SessionPolicy, ColumnFilterRule
+
+engine = SlayerQueryEngine(storage=storage, policy=SessionPolicy(
+    data_filters=[ColumnFilterRule(column="organization_uuid", value="7ef3...")],
+))
+```
+
+See [Row-Level Security](../concepts/row-level-security.md) for the full model.
+
 ## Remote mode (client → server)
 
 Connect to a running SLayer server:

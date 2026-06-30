@@ -17,7 +17,7 @@ This separation means:
 - The query engine controls resolution logic (placeholder expansion, join resolution)
 """
 
-from typing import Dict, List, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -32,19 +32,19 @@ class EnrichedDimension(BaseModel):
     """A dimension with its SQL expression fully resolved."""
 
     name: str
-    sql: Optional[str]
+    sql: str | None
     type: DataType
     alias: str = Field(description="Result column name, e.g. 'orders.status'")
     model_name: str
-    label: Optional[str] = Field(default=None, description="Human-readable label")
-    format: Optional[NumberFormat] = Field(default=None, description="Number format from the source dimension")
+    label: str | None = Field(default=None, description="Human-readable label")
+    format: NumberFormat | None = Field(default=None, description="Number format from the source dimension")
 
 
 class EnrichedMeasure(BaseModel):
     """A measure with its SQL expression and aggregation fully resolved."""
 
     name: str
-    sql: Optional[str] = Field(description="SQL expression; None for *:count (COUNT(*))")
+    sql: str | None = Field(description="SQL expression; None for *:count (COUNT(*))")
     aggregation: str = Field(description="Aggregation name: sum, avg, count, weighted_avg, etc.")
     alias: str = Field(description="Result column name, e.g. 'orders.revenue_sum'")
     user_declared: bool = Field(
@@ -57,19 +57,19 @@ class EnrichedMeasure(BaseModel):
         ),
     )
     model_name: str
-    aggregation_def: Optional[Aggregation] = Field(default=None, description="Full aggregation definition (formula, params)")
-    agg_kwargs: Dict[str, str] = Field(default_factory=dict, description="Query-time aggregation param overrides")
-    window: Optional[str] = Field(default=None, description="Trailing time window for windowed sum/avg aggregations")
-    window_time_alias: Optional[str] = Field(default=None, description="Time dimension alias used for windowed aggregations")
-    label: Optional[str] = Field(default=None, description="Human-readable label")
-    time_column: Optional[str] = Field(default=None, description="Explicit time col for first/last (overrides query default)")
-    source_measure_name: Optional[str] = Field(default=None, description="Original measure name before canonicalization")
-    filter_sql: Optional[str] = Field(default=None, description="Resolved SQL condition for filtered measures (CASE WHEN)")
-    filter_columns: List[str] = Field(
+    aggregation_def: Aggregation | None = Field(default=None, description="Full aggregation definition (formula, params)")
+    agg_kwargs: dict[str, str] = Field(default_factory=dict, description="Query-time aggregation param overrides")
+    window: str | None = Field(default=None, description="Trailing time window for windowed sum/avg aggregations")
+    window_time_alias: str | None = Field(default=None, description="Time dimension alias used for windowed aggregations")
+    label: str | None = Field(default=None, description="Human-readable label")
+    time_column: str | None = Field(default=None, description="Explicit time col for first/last (overrides query default)")
+    source_measure_name: str | None = Field(default=None, description="Original measure name before canonicalization")
+    filter_sql: str | None = Field(default=None, description="Resolved SQL condition for filtered measures (CASE WHEN)")
+    filter_columns: list[str] = Field(
         default_factory=list,
         description="Resolved (qualified) column names referenced by the filter, for join planning",
     )
-    type: Optional[DataType] = Field(
+    type: DataType | None = Field(
         default=None,
         description=(
             "DEV-1361: declared result type of the aggregation. When set, "
@@ -77,7 +77,7 @@ class EnrichedMeasure(BaseModel):
             "Inherits from ModelMeasure.type at enrichment time."
         ),
     )
-    column_type: Optional[DataType] = Field(
+    column_type: DataType | None = Field(
         default=None,
         description=(
             "DEV-1361: source column's declared type — wraps the inner "
@@ -104,12 +104,12 @@ class EnrichedTimeDimension(BaseModel):
     """A time dimension with resolved SQL and granularity."""
 
     name: str
-    sql: Optional[str]
+    sql: str | None
     granularity: TimeGranularity
-    date_range: Optional[List[str]]
+    date_range: list[str] | None
     alias: str
     model_name: str
-    label: Optional[str] = None
+    label: str | None = None
 
 
 class EnrichedExpression(BaseModel):
@@ -130,8 +130,8 @@ class EnrichedExpression(BaseModel):
             "expressions (e.g. desugared change/change_pct arithmetic)."
         ),
     )
-    label: Optional[str] = None
-    type: Optional[DataType] = Field(
+    label: str | None = None
+    type: DataType | None = Field(
         default=None,
         description=(
             "DEV-1361: declared result type — when set, the outer SELECT "
@@ -163,10 +163,10 @@ class EnrichedTransform(BaseModel):
     measure_alias: str = Field(description="Alias of the measure in the base CTE to transform")
     alias: str = Field(description="Result column name")
     offset: int = Field(description="For time_shift: number of rows or calendar units")
-    granularity: Optional[str] = Field(default=None, description="For time_shift: year, month, quarter, etc.")
-    time_alias: Optional[str] = Field(default=None, description="Alias of the time dimension column for ORDER BY")
-    partition_aliases: List[str] = Field(default_factory=list, description="Dimension aliases to PARTITION BY")
-    n: Optional[int] = Field(default=None, description="Bucket count for ntile(measure, n=...)")
+    granularity: str | None = Field(default=None, description="For time_shift: year, month, quarter, etc.")
+    time_alias: str | None = Field(default=None, description="Alias of the time dimension column for ORDER BY")
+    partition_aliases: list[str] = Field(default_factory=list, description="Dimension aliases to PARTITION BY")
+    n: int | None = Field(default=None, description="Bucket count for ntile(measure, n=...)")
     predicate_is_boolean: bool = Field(
         default=False,
         description="True when the transform's measure_alias points at a boolean expression "
@@ -174,8 +174,8 @@ class EnrichedTransform(BaseModel):
         "Postgres rejects 'boolean <> integer' so the numeric `IS NOT NULL AND <> 0` "
         "predicate cannot be used.",
     )
-    label: Optional[str] = None
-    type: Optional[DataType] = Field(
+    label: str | None = None
+    type: DataType | None = Field(
         default=None,
         description=(
             "DEV-1361: declared result type — when set, the window-layer "
@@ -192,30 +192,30 @@ class EnrichedQuery(BaseModel):
     """
 
     model_name: str
-    sql_table: Optional[str] = None
-    sql: Optional[str] = None
+    sql_table: str | None = None
+    sql: str | None = None
 
-    resolved_joins: List[tuple] = Field(default_factory=list, description="[(target_table_sql, target_alias, join_condition, join_type), ...]")
+    resolved_joins: list[tuple] = Field(default_factory=list, description="[(target_table_sql, target_alias, join_condition, join_type), ...]")
 
-    dimensions: List[EnrichedDimension] = Field(default_factory=list)
-    measures: List[EnrichedMeasure] = Field(default_factory=list)
-    time_dimensions: List[EnrichedTimeDimension] = Field(default_factory=list)
+    dimensions: list[EnrichedDimension] = Field(default_factory=list)
+    measures: list[EnrichedMeasure] = Field(default_factory=list)
+    time_dimensions: list[EnrichedTimeDimension] = Field(default_factory=list)
 
-    expressions: List[EnrichedExpression] = Field(default_factory=list)
-    transforms: List[EnrichedTransform] = Field(default_factory=list)
+    expressions: list[EnrichedExpression] = Field(default_factory=list)
+    transforms: list[EnrichedTransform] = Field(default_factory=list)
 
-    cross_model_measures: List["CrossModelMeasure"] = Field(default_factory=list)
+    cross_model_measures: list["CrossModelMeasure"] = Field(default_factory=list)
 
-    last_agg_time_column: Optional[str] = Field(default=None, description="Time column for first/last aggregation (ORDER BY for ROW_NUMBER)")
+    last_agg_time_column: str | None = Field(default=None, description="Time column for first/last aggregation (ORDER BY for ROW_NUMBER)")
 
-    filters: List[ParsedFilter] = Field(default_factory=list)
-    order: Optional[List[OrderItem]] = None
-    limit: Optional[int] = None
-    offset: Optional[int] = None
+    filters: list[ParsedFilter] = Field(default_factory=list)
+    order: list[OrderItem] | None = None
+    limit: int | None = None
+    offset: int | None = None
 
-    field_name_aliases: Dict[str, str] = Field(default_factory=dict, description="Custom field name → enriched alias mapping (for ORDER BY resolution)")
+    field_name_aliases: dict[str, str] = Field(default_factory=dict, description="Custom field name → enriched alias mapping (for ORDER BY resolution)")
 
-    user_projection: List[str] = Field(
+    user_projection: list[str] = Field(
         default_factory=list,
         description=(
             "DEV-1444: ordered list of result-column aliases that the user "
@@ -254,18 +254,18 @@ class CrossModelMeasure(BaseModel):
     )
     alias: str = Field(description="Result column name, e.g. 'orders.customers__avg_score'")
     target_model_name: str = Field(description="The joined model name")
-    target_model_sql_table: Optional[str]
-    target_model_sql: Optional[str]
+    target_model_sql_table: str | None
+    target_model_sql: str | None
     measure: EnrichedMeasure = Field(description="The measure to aggregate")
-    join_pairs: List[List[str]] = Field(description="[[source_dim, target_dim], ...] from ModelJoin")
-    shared_dimensions: List[EnrichedDimension] = Field(description="Dimensions shared between main and target")
-    shared_time_dimensions: List[EnrichedTimeDimension] = Field(description="Time dims shared between main and target")
+    join_pairs: list[list[str]] = Field(description="[[source_dim, target_dim], ...] from ModelJoin")
+    shared_dimensions: list[EnrichedDimension] = Field(description="Dimensions shared between main and target")
+    shared_time_dimensions: list[EnrichedTimeDimension] = Field(description="Time dims shared between main and target")
     source_model_name: str = Field(description="The main query's model name")
-    source_sql_table: Optional[str] = Field(description="Main model's table")
-    source_sql: Optional[str] = Field(description="Main model's SQL")
+    source_sql_table: str | None = Field(description="Main model's table")
+    source_sql: str | None = Field(description="Main model's SQL")
     join_type: str = Field(default="left", description="'left' or 'inner'")
-    label: Optional[str] = None
-    format: Optional[NumberFormat] = Field(default=None, description="Inferred format for this cross-model measure")
+    label: str | None = None
+    format: NumberFormat | None = Field(default=None, description="Inferred format for this cross-model measure")
     rerooted_enriched: Optional["EnrichedQuery"] = Field(default=None, description="Re-rooted subquery with target as source")
 
 
@@ -274,7 +274,7 @@ EnrichedQuery.model_rebuild()
 CrossModelMeasure.model_rebuild()
 
 
-def public_projection_aliases(enriched: EnrichedQuery) -> List[str]:
+def public_projection_aliases(enriched: EnrichedQuery) -> list[str]:
     """Return the ordered list of public-projection aliases for ``enriched``.
 
     DEV-1444: the outer rendered SELECT projects exactly the
@@ -301,7 +301,7 @@ def public_projection_aliases(enriched: EnrichedQuery) -> List[str]:
     # desugaring). Matches the pre-DEV-1444 ``expected_columns`` rule
     # in ``query_engine.py``.
     internal_prefixes = ("_inner_", "_ft", "_ts")
-    out: List[str] = [d.alias for d in enriched.dimensions]
+    out: list[str] = [d.alias for d in enriched.dimensions]
     out.extend(td.alias for td in enriched.time_dimensions)
     out.extend(
         m.alias for m in enriched.measures

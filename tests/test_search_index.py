@@ -17,7 +17,6 @@ Covers:
 
 from __future__ import annotations
 
-from typing import List
 
 import pytest
 
@@ -27,7 +26,7 @@ from slayer.memories.models import Memory
 from slayer.search.index import build_in_memory_index, search_index
 
 
-def _make_models() -> List[SlayerModel]:
+def _make_models() -> list[SlayerModel]:
     return [
         SlayerModel(
             name="orders",
@@ -61,7 +60,7 @@ def _make_models() -> List[SlayerModel]:
     ]
 
 
-def _make_memories() -> List[Memory]:
+def _make_memories() -> list[Memory]:
     return [
         Memory(
             id=1,

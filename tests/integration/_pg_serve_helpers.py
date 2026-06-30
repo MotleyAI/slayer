@@ -15,7 +15,6 @@ import logging
 import tempfile
 import threading
 import time
-from typing import List, Optional, Tuple
 
 import pytest
 
@@ -29,11 +28,11 @@ DEMO_DATASOURCE = "jaffle_shop"
 
 def start_pg_demo_server(
     *,
-    token: Optional[str],
-    log_records: Optional[List[logging.LogRecord]] = None,
-    storage_sink: Optional[list] = None,
+    token: str | None,
+    log_records: list[logging.LogRecord] | None = None,
+    storage_sink: list | None = None,
     bind_host: str = "127.0.0.1",
-) -> Tuple[asyncio.AbstractEventLoop, threading.Thread, str, int]:
+) -> tuple[asyncio.AbstractEventLoop, threading.Thread, str, int]:
     """Boot a Postgres-facade server backed by the Jaffle Shop demo.
 
     Returns ``(loop, thread, host, port)``. Caller stops the server via
@@ -132,7 +131,7 @@ def start_pg_demo_server(
 
 
 class _ListHandler(logging.Handler):
-    def __init__(self, sink: List[logging.LogRecord]) -> None:
+    def __init__(self, sink: list[logging.LogRecord]) -> None:
         super().__init__()
         self._sink = sink
 

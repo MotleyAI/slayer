@@ -14,7 +14,7 @@ import os
 import sys
 import tempfile
 from contextlib import contextmanager
-from typing import Iterator
+from collections.abc import Iterator
 
 import pytest
 

@@ -16,7 +16,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from typing import Generator
+from collections.abc import Generator
 
 import pytest
 from fastapi.testclient import TestClient

@@ -6,7 +6,6 @@ PERCENTILE_CONT, CORR, COVAR_SAMP, COVAR_POP, native log10/log2.
 
 from __future__ import annotations
 
-from typing import Optional
 
 from sqlglot import exp
 
@@ -42,7 +41,7 @@ def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
 class PostgresDialect(SqlDialect):
     sqlglot_name: str = "postgres"
     ds_type_aliases: frozenset[str] = frozenset({"postgres", "postgresql"})
-    explain_prefix: Optional[str] = "EXPLAIN ANALYZE"
+    explain_prefix: str | None = "EXPLAIN ANALYZE"
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True

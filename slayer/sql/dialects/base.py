@@ -12,7 +12,8 @@ fields use class-level defaults (``sqlglot_name: str = "postgres"``).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
 
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
@@ -153,7 +154,7 @@ class SqlDialect(BaseModel):
 
     sqlglot_name: str = "postgres"
     ds_type_aliases: frozenset[str] = frozenset()
-    explain_prefix: Optional[str] = "EXPLAIN"
+    explain_prefix: str | None = "EXPLAIN"
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
@@ -384,10 +385,10 @@ class SqlDialect(BaseModel):
         *,
         inner_sql: str,
         public: list[str],
-        order: Optional[exp.Expression],
-        limit: Optional[exp.Expression],
-        offset_arg: Optional[exp.Expression],
-        parse: Optional[Callable[[str], exp.Expression]] = None,
+        order: exp.Expression | None,
+        limit: exp.Expression | None,
+        offset_arg: exp.Expression | None,
+        parse: Callable[[str], exp.Expression] | None = None,
     ) -> str:
         """Emit the DEV-1444 outer-projection wrap around ``inner_sql``.
 
@@ -524,7 +525,7 @@ class SqlDialect(BaseModel):
     def build_connection_url(
         self,
         datasource: "DatasourceConfig",
-    ) -> Optional[str]:
+    ) -> str | None:
         """Hook: dialect-specific connection-string builder.
 
         Returning ``None`` (the default) means: defer to
@@ -541,7 +542,7 @@ class SqlDialect(BaseModel):
         datasource: "DatasourceConfig",
         *,
         connection_string: str,
-    ) -> Optional["sa.Engine"]:
+    ) -> "sa.Engine | None":
         """Hook: build a dialect-specific SQLAlchemy engine.
 
         Returning ``None`` (the default) means: ``engine_factory`` falls
@@ -566,7 +567,7 @@ class SqlDialect(BaseModel):
         """
         return None
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> Optional[str]:
+    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
         """Hook: SQL to set a per-statement timeout, or ``None`` if the
         dialect doesn't expose one or the existing client.py path handles
         it via a hardcoded branch (mysql / clickhouse / postgres).
@@ -576,7 +577,7 @@ class SqlDialect(BaseModel):
         """
         return None
 
-    def map_cursor_type_code(self, type_code: int) -> Optional[str]:
+    def map_cursor_type_code(self, type_code: int) -> str | None:
         """Hook: dialect-specific cursor-type-code → SLayer category
         (one of ``"number"``, ``"string"``, ``"time"``, ``"boolean"``).
 

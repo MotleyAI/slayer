@@ -6,7 +6,8 @@ SLayer is async-first internally. These helpers let sync callers
 
 import asyncio
 import concurrent.futures
-from typing import Any, Coroutine, TypeVar
+from typing import Any, TypeVar
+from collections.abc import Coroutine
 
 T = TypeVar("T")
 

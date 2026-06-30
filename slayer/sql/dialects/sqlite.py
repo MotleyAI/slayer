@@ -15,7 +15,7 @@ delegates to them through the ``SqlDialect`` interface.
 from __future__ import annotations
 
 import math
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from sqlglot import exp
 
@@ -91,7 +91,7 @@ class _MedianAgg:
         if value is not None:
             self._vals.append(value)
 
-    def finalize(self) -> Optional[float]:
+    def finalize(self) -> float | None:
         if not self._vals:
             return None
         s = sorted(self._vals)
@@ -107,7 +107,7 @@ class _PercentileContAgg:
 
     def __init__(self) -> None:
         self._vals: list[float] = []
-        self._p: Optional[float] = None
+        self._p: float | None = None
 
     def step(self, value, p) -> None:
         if p is not None:
@@ -118,7 +118,7 @@ class _PercentileContAgg:
         if value is not None:
             self._vals.append(value)
 
-    def finalize(self) -> Optional[float]:
+    def finalize(self) -> float | None:
         if not self._vals or self._p is None:
             return None
         s = sorted(self._vals)
@@ -136,7 +136,7 @@ class _PercentileDiscAgg:
 
     def __init__(self) -> None:
         self._vals: list[float] = []
-        self._p: Optional[float] = None
+        self._p: float | None = None
 
     def step(self, value, p) -> None:
         if p is not None:
@@ -191,7 +191,7 @@ class _OneVarWelford:
 class _StddevSampAgg(_OneVarWelford):
     """Sample standard deviation. NULL when N <= 1."""
 
-    def finalize(self) -> Optional[float]:
+    def finalize(self) -> float | None:
         if self._n <= 1:
             return None
         return math.sqrt(self._m2 / (self._n - 1))
@@ -200,7 +200,7 @@ class _StddevSampAgg(_OneVarWelford):
 class _StddevPopAgg(_OneVarWelford):
     """Population standard deviation. NULL at N=0; 0 at N=1."""
 
-    def finalize(self) -> Optional[float]:
+    def finalize(self) -> float | None:
         if self._n == 0:
             return None
         if self._n == 1:
@@ -211,7 +211,7 @@ class _StddevPopAgg(_OneVarWelford):
 class _VarSampAgg(_OneVarWelford):
     """Sample variance. NULL when N <= 1."""
 
-    def finalize(self) -> Optional[float]:
+    def finalize(self) -> float | None:
         if self._n <= 1:
             return None
         return self._m2 / (self._n - 1)
@@ -220,7 +220,7 @@ class _VarSampAgg(_OneVarWelford):
 class _VarPopAgg(_OneVarWelford):
     """Population variance. NULL at N=0; 0 at N=1."""
 
-    def finalize(self) -> Optional[float]:
+    def finalize(self) -> float | None:
         if self._n == 0:
             return None
         if self._n == 1:
@@ -256,7 +256,7 @@ class _CorrAgg(_PairAgg):
     """Pearson correlation. NULL when fewer than 2 non-null pairs OR
     when either side has zero variance (matches Postgres CORR)."""
 
-    def finalize(self) -> Optional[float]:
+    def finalize(self) -> float | None:
         if self._n < 2:
             return None
         if self._m2_x == 0 or self._m2_y == 0:
@@ -267,7 +267,7 @@ class _CorrAgg(_PairAgg):
 class _CovarSampAgg(_PairAgg):
     """Sample covariance. NULL when N <= 1."""
 
-    def finalize(self) -> Optional[float]:
+    def finalize(self) -> float | None:
         if self._n <= 1:
             return None
         return self._c / (self._n - 1)
@@ -276,7 +276,7 @@ class _CovarSampAgg(_PairAgg):
 class _CovarPopAgg(_PairAgg):
     """Population covariance. NULL at N=0; 0 at N=1."""
 
-    def finalize(self) -> Optional[float]:
+    def finalize(self) -> float | None:
         if self._n == 0:
             return None
         if self._n == 1:
@@ -402,7 +402,7 @@ _WINDOW_UNIT_SQLITE = {
 class SqliteDialect(SqlDialect):
     sqlglot_name: str = "sqlite"
     ds_type_aliases: frozenset[str] = frozenset({"sqlite"})
-    explain_prefix: Optional[str] = "EXPLAIN QUERY PLAN"
+    explain_prefix: str | None = "EXPLAIN QUERY PLAN"
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True

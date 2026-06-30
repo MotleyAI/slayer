@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-from typing import List, Optional
 
 import pytest
 
@@ -30,7 +29,7 @@ def _hit(
     id_: str = "1",
     score: float = 0.5,
     text: str = "",
-    description: Optional[str] = None,
+    description: str | None = None,
 ) -> SearchHit:
     return SearchHit(
         kind=kind, id=id_, score=score, text=text, description=description,
@@ -92,7 +91,7 @@ def test_text_output_handles_multiple_hits() -> None:
 def test_text_output_takes_first_line_only(preview: str) -> None:
     response = SearchResponse(results=[_hit(description=preview)])
     output = _capture_search_print(response)
-    lines: List[str] = output.splitlines()
+    lines: list[str] = output.splitlines()
     preview_line = next(
         ln.strip() for ln in lines if ln.startswith("    ")
     )

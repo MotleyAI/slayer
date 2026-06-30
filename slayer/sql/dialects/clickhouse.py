@@ -7,7 +7,7 @@ are native. log10 and log2 are native.
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from sqlglot import exp
 
@@ -17,7 +17,7 @@ from slayer.sql.dialects.base import SqlDialect
 class ClickhouseDialect(SqlDialect):
     sqlglot_name: str = "clickhouse"
     ds_type_aliases: frozenset[str] = frozenset({"clickhouse"})
-    explain_prefix: Optional[str] = "EXPLAIN"
+    explain_prefix: str | None = "EXPLAIN"
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True

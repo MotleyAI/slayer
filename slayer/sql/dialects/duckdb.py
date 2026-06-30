@@ -7,7 +7,7 @@ log10 / log2.
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from sqlglot import exp
 
@@ -17,7 +17,7 @@ from slayer.sql.dialects.base import SqlDialect
 class DuckdbDialect(SqlDialect):
     sqlglot_name: str = "duckdb"
     ds_type_aliases: frozenset[str] = frozenset({"duckdb"})
-    explain_prefix: Optional[str] = "EXPLAIN ANALYZE"
+    explain_prefix: str | None = "EXPLAIN ANALYZE"
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True

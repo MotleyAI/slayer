@@ -61,7 +61,7 @@ def notebook_path(request):
 # than fail. The helper writes a `.complete` marker only after a fully built
 # cache, so its presence is the authoritative "network-free from here" signal;
 # a bare/partial clone dir is not enough.
-_METRICFLOW_NB_DIR = "10_dbt_metricflow"
+_METRICFLOW_NB_DIR = "11_dbt_metricflow"
 
 
 def _github_reachable(host: str = "github.com", port: int = 443, timeout: float = 5.0) -> bool:

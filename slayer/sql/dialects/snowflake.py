@@ -22,7 +22,8 @@ from the base is ``log2_native=False`` (Snowflake has no native LOG2).
 from __future__ import annotations
 
 import re as _re
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
 from urllib.parse import quote
 
 import sqlalchemy as sa
@@ -187,7 +188,7 @@ class SnowflakeDialect(SqlDialect):
 
     sqlglot_name: str = "snowflake"
     ds_type_aliases: frozenset[str] = frozenset({"snowflake"})
-    explain_prefix: Optional[str] = "EXPLAIN USING JSON"
+    explain_prefix: str | None = "EXPLAIN USING JSON"
     explain_postfix: str = ""
     log10_native: bool = True
     # No native LOG2 — falls through to canonical ``LOG(2, x)`` form.
@@ -208,8 +209,8 @@ class SnowflakeDialect(SqlDialect):
 
     def build_connection_url(
         self,
-        datasource: "DatasourceConfig",
-    ) -> Optional[str]:
+        datasource: DatasourceConfig,
+    ) -> str | None:
         """Emit the sentinel URL when ``connection_name`` is set, otherwise
         build the full snowflake-sqlalchemy URL from inline fields.
 
@@ -246,10 +247,10 @@ class SnowflakeDialect(SqlDialect):
 
     def build_engine(
         self,
-        datasource: "DatasourceConfig",
+        datasource: DatasourceConfig,
         *,
         connection_string: str,
-    ) -> Optional["sa.Engine"]:
+    ) -> sa.Engine | None:
         """When the sentinel URL is in play, route through ``creator=``
         so ``snowflake.connector.connect(connection_name=...)`` drives
         the auth path. Otherwise return None to let ``engine_factory``
@@ -301,7 +302,7 @@ class SnowflakeDialect(SqlDialect):
     def apply_session_overrides(
         self,
         dbapi_connection: Any,
-        datasource: "DatasourceConfig",
+        datasource: DatasourceConfig,
     ) -> None:
         """Issue ``USE WAREHOUSE / USE ROLE / USE DATABASE / USE SCHEMA``
         in order on a fresh DBAPI connection.
@@ -361,7 +362,7 @@ class SnowflakeDialect(SqlDialect):
     # Runtime statement hooks
     # ------------------------------------------------------------------
 
-    def statement_timeout_sql(self, timeout_seconds: int) -> Optional[str]:
+    def statement_timeout_sql(self, timeout_seconds: int) -> str | None:
         """``ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = N``.
 
         Per-session setting; takes effect for every subsequent statement
@@ -370,7 +371,7 @@ class SnowflakeDialect(SqlDialect):
         """
         return f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {timeout_seconds}"
 
-    def map_cursor_type_code(self, type_code: int) -> Optional[str]:
+    def map_cursor_type_code(self, type_code: int) -> str | None:
         """Map a snowflake-connector ``FieldType`` integer code to a
         SLayer category. Returns ``None`` for unknown codes so the caller
         can fall through to a default rather than mis-classify."""

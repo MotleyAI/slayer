@@ -23,7 +23,7 @@ output.
 from __future__ import annotations
 
 import tempfile
-from typing import AsyncIterator, List, Optional
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -182,11 +182,11 @@ async def test_embedding_refresh_model_subtree_uses_unified_helper(
     dispatch will fail."""
     from slayer.search.render import collect_model_entity_pairs
 
-    captured: List[str] = []
+    captured: list[str] = []
 
     async def stub_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch signature
-        texts: List[str], *, model: Optional[str] = None,
-    ) -> List[Optional[List[float]]]:
+        texts: list[str], *, model: str | None = None,
+    ) -> list[list[float] | None]:
         # We only need to capture the rendered texts; the embedding
         # value itself is irrelevant for this parity assertion.
         captured.extend(texts)
@@ -247,11 +247,11 @@ async def test_render_datasource_pair_used_by_index_and_embedding_paths(
     assert pair_ws.text == corpus_ws_text
 
     # Embedding-side: stub embed_batch and inspect the captured text.
-    captured: List[str] = []
+    captured: list[str] = []
 
     async def stub_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch signature
-        texts: List[str], *, model: Optional[str] = None,
-    ) -> List[Optional[List[float]]]:
+        texts: list[str], *, model: str | None = None,
+    ) -> list[list[float] | None]:
         captured.extend(texts)
         return [[0.0, 1.0]] * len(texts)
 
@@ -313,7 +313,7 @@ def test_index_corpus_path_actually_calls_collect_model_entity_pairs(
         canonical_id="SENTINEL.x", kind="model", text="SENTINEL_TEXT",
     )
 
-    def stub(*, model: SlayerModel) -> List[RenderedEntity]:  # noqa: ARG001
+    def stub(*, model: SlayerModel) -> list[RenderedEntity]:  # noqa: ARG001
         return [sentinel]
 
     monkeypatch.setattr(index_mod, "collect_model_entity_pairs", stub)
@@ -345,16 +345,16 @@ async def test_embedding_path_actually_calls_collect_model_entity_pairs(
         canonical_id="SENTINEL.x", kind="model", text=sentinel_text,
     )
 
-    def stub(*, model: SlayerModel) -> List[RenderedEntity]:  # noqa: ARG001
+    def stub(*, model: SlayerModel) -> list[RenderedEntity]:  # noqa: ARG001
         return [sentinel]
 
     monkeypatch.setattr(emb_mod, "collect_model_entity_pairs", stub)
 
-    captured: List[str] = []
+    captured: list[str] = []
 
     async def stub_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch signature
-        texts: List[str], *, model: Optional[str] = None,  # noqa: ARG001
-    ) -> List[Optional[List[float]]]:
+        texts: list[str], *, model: str | None = None,  # noqa: ARG001
+    ) -> list[list[float] | None]:
         captured.extend(texts)
         return [[0.0, 1.0]] * len(texts)
 
@@ -382,8 +382,8 @@ def test_index_corpus_path_actually_calls_render_datasource_pair(
     def stub(
         *,
         name: str,
-        models: List[SlayerModel],
-        description: Optional[str] = None,
+        models: list[SlayerModel],
+        description: str | None = None,
     ) -> RenderedEntity:  # noqa: ARG001
         return sentinel
 
@@ -415,18 +415,18 @@ async def test_embedding_path_actually_calls_render_datasource_pair(
     def stub(
         *,
         name: str,
-        models: List[SlayerModel],
-        description: Optional[str] = None,
+        models: list[SlayerModel],
+        description: str | None = None,
     ) -> RenderedEntity:  # noqa: ARG001
         return sentinel
 
     monkeypatch.setattr(emb_mod, "render_datasource_pair", stub)
 
-    captured: List[str] = []
+    captured: list[str] = []
 
     async def stub_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch signature
-        texts: List[str], *, model: Optional[str] = None,  # noqa: ARG001
-    ) -> List[Optional[List[float]]]:
+        texts: list[str], *, model: str | None = None,  # noqa: ARG001
+    ) -> list[list[float] | None]:
         captured.extend(texts)
         return [[0.0, 1.0]] * len(texts)
 

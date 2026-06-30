@@ -21,7 +21,7 @@ import base64
 import json
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.flight as fl
@@ -47,7 +47,7 @@ class CaptureFlightServer(fl.FlightServerBase):
             f.write(json.dumps(record, default=str) + "\n")
 
     @staticmethod
-    def _b64(b: Optional[bytes]) -> Optional[str]:
+    def _b64(b: bytes | None) -> str | None:
         return base64.b64encode(b).decode("ascii") if b else None
 
     @staticmethod
@@ -146,7 +146,7 @@ class CaptureFlightServer(fl.FlightServerBase):
         return []
 
     def do_action(self, context: fl.ServerCallContext, action: fl.Action):
-        body_bytes: Optional[bytes] = None
+        body_bytes: bytes | None = None
         if action.body is not None:
             body_bytes = action.body.to_pybytes()
         self._log(
@@ -172,7 +172,7 @@ class _RpcLogger:
             f.write(json.dumps(record, default=str) + "\n")
 
     @staticmethod
-    def _b64(b: Optional[bytes]) -> Optional[str]:
+    def _b64(b: bytes | None) -> str | None:
         return base64.b64encode(b).decode("ascii") if b else None
 
     @staticmethod
@@ -205,9 +205,9 @@ class RecordingFlightSqlServer(FlightSqlServer):
         location: str,
         handlers: FlightHandlers,
         log_path: Path,
-        token: Optional[str] = None,
-        tls_cert: Optional[str] = None,
-        tls_key: Optional[str] = None,
+        token: str | None = None,
+        tls_cert: str | None = None,
+        tls_key: str | None = None,
     ) -> None:
         super().__init__(
             location=location,
@@ -244,7 +244,7 @@ class RecordingFlightSqlServer(FlightSqlServer):
         return super().do_get(context, ticket)
 
     def do_action(self, context: fl.ServerCallContext, action: fl.Action):
-        body_bytes: Optional[bytes] = (
+        body_bytes: bytes | None = (
             action.body.to_pybytes() if action.body is not None else None
         )
         self._recorder._log(
