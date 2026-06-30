@@ -2246,3 +2246,69 @@ async def test_static_storage_not_closed() -> None:
     inp = _startup(user="u", database="acme") + _query("SELECT 1") + _terminate()
     await _run_conn(inp, storage=storage, engine=_CapturingEngine([]))
     assert closed["called"] is False
+
+
+# --- Review #1: scoped engine is also disposed on connection end ------------
+
+
+async def test_storage_provider_engine_disposed_on_connection_end() -> None:
+    """``_close_scoped_storage`` must dispose the engine ``_resolve_scope``
+    built — without this, a long-lived facade with ``storage_provider``
+    leaks one engine's worth of async SQL-client pools per session."""
+    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    aclosed = {"engine": False, "storage": False}
+
+    async def _storage_aclose():
+        aclosed["storage"] = True
+
+    async def _engine_aclose():
+        aclosed["engine"] = True
+
+    scoped_storage.aclose = _storage_aclose  # type: ignore[attr-defined]
+    engine = _CapturingEngine([])
+    engine.aclose = _engine_aclose  # type: ignore[attr-defined]
+
+    async def provider(principal):
+        return scoped_storage
+
+    inp = _startup(user="u", database="acme") + _query("SELECT 1") + _terminate()
+    await _run_conn(
+        inp, storage=_storage(), engine=_CapturingEngine([]),
+        storage_provider=provider, engine_factory=lambda storage: engine,
+    )
+    assert aclosed["engine"] is True, "engine.aclose must run on connection end"
+    assert aclosed["storage"] is True, "storage.aclose must run on connection end"
+
+
+# --- Review #2: static aclose-able storage not touched on early auth failure
+
+
+async def test_static_storage_aclose_not_called_when_scope_swap_did_not_run() -> None:
+    """When ``storage_provider`` is configured but ``_resolve_scope`` never
+    runs, the originally-passed static storage's ``aclose`` must NOT be
+    called — the host owns its lifecycle. Asserts the ``_owns_scoped_resources``
+    gate by constructing the connection directly and checking the flag
+    stays False until the swap actually happens."""
+    static_storage = _storage()
+    static_aclosed = {"called": False}
+
+    async def _storage_aclose():
+        static_aclosed["called"] = True
+
+    static_storage.aclose = _storage_aclose  # type: ignore[attr-defined]
+
+    async def provider(principal):
+        raise AssertionError("provider must not run before scope-resolve")
+
+    reader = asyncio.StreamReader()
+    writer = _FakeWriter()
+    conn = PgConnection(
+        reader, writer, engine=_CapturingEngine([]), storage=static_storage,
+        storage_provider=provider, engine_factory=lambda storage: None,
+    )
+    # Flag starts False; teardown is a no-op until the swap.
+    assert conn._owns_scoped_resources is False
+    await conn._close_scoped_storage()
+    assert static_aclosed["called"] is False, (
+        "static storage's aclose must not be called when scope-swap never ran"
+    )

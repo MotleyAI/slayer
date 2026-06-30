@@ -1402,3 +1402,74 @@ class TestUnknownSchemaQualifiedCallRewrite:
         # or _LOOKUP_STUB_NAMES. Pre-fix would fail with "column not found".
         batch = _run("SELECT pg_catalog.upper('hello') AS u")
         assert batch.rows == [{"u": "HELLO"}]
+
+
+# --- Review #4: regclass_map registers the real (schema, table) key ---------
+
+
+class TestRegclassMapCustomSchema:
+    """Pre-fix the regclass map only knew ``public.<table>`` and bare
+    ``<table>``. For custom postgres_schema datasources, Metabase's
+    ``COL_DESCRIPTION(FORMAT('%I.%I', table_schema, table_name)::regclass, …)``
+    looked up ``people.employees`` and got OID 0, silently dropping all
+    column descriptions in the BI tool."""
+
+    def test_regclass_map_includes_real_schema_qualified_form(self) -> None:
+        # Build a catalog whose datasource has a custom postgres_schema.
+        cat = build_catalog_grouped_by_schema(
+            models_by_datasource={"hr": [
+                SlayerModel(name="employees", data_source="hr", sql_table="employees",
+                            columns=[Column(name="id", type=DataType.INT, primary_key=True)]),
+            ]},
+            schema_by_datasource={"hr": "people"},
+        )
+        ex = CatalogSqlExecutor(catalog=cat, datasource="hr")
+        # All three lookup forms resolve to the same non-zero OID — the
+        # real ``people.employees`` form is what Metabase's COL_DESCRIPTION
+        # uses, and was missing pre-fix.
+        oid_qualified = ex._regclass_map.get("people.employees")
+        oid_public = ex._regclass_map.get("public.employees")
+        oid_bare = ex._regclass_map.get("employees")
+        assert oid_qualified is not None and oid_qualified > 0
+        assert oid_qualified == oid_public == oid_bare
+
+
+# --- Review #3: public.<table> fallback narrowed --------------------------
+
+
+class TestPublicSchemaFallbackGuard:
+    """The ``schema='public'`` fall-back now only fires when the catalog
+    has a single schema. With multiple schemas (custom postgres_schema in
+    use), ``public.<table>`` raises "Unknown schema" instead of silently
+    crossing isolation. The single-schema case (the common Metabase
+    deployment) keeps working."""
+
+    def test_public_fallback_works_with_single_schema(self) -> None:
+        """Backward-compat: one-datasource catalog accepts ``public.X``
+        as an alias for whatever the real schema name happens to be."""
+        from slayer.facade.translator import translate
+        sql = "SELECT id FROM public.orders"
+        result = translate(sql, _demo_catalog(), dialect="postgres")
+        assert result.facade_table.name == "orders"
+
+    def test_public_fallback_rejected_with_multiple_schemas(self) -> None:
+        """Isolation: with two datasources / two schemas, ``public.X``
+        can't reach across — caller must qualify with the real schema."""
+        from slayer.facade.translator import translate, TranslationError
+        cat_a = build_catalog(models_by_datasource={"sales": [
+            SlayerModel(name="orders", data_source="sales", sql_table="orders",
+                        columns=[Column(name="id", type=DataType.INT, primary_key=True)]),
+        ]})
+        cat_b = build_catalog(models_by_datasource={"hr": [
+            SlayerModel(name="people", data_source="hr", sql_table="people",
+                        columns=[Column(name="id", type=DataType.INT, primary_key=True)]),
+        ]})
+        # Merge them into one multi-schema catalog (mimics the
+        # postgres_schema-per-datasource layout).
+        from slayer.facade.catalog import FacadeCatalog as _FC
+        multi = _FC(
+            catalog_name=cat_a.catalog_name,
+            schemas=list(cat_a.schemas) + list(cat_b.schemas),
+        )
+        with pytest.raises(TranslationError, match="Unknown schema"):
+            translate("SELECT id FROM public.orders", multi, dialect="postgres")

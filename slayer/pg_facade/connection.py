@@ -156,6 +156,11 @@ class PgConnection:
         # authenticated principal after auth — e.g. a tenant-scoped store.
         self._storage_provider = storage_provider
         self._engine_factory = engine_factory
+        # Tracks whether ``_resolve_scope`` actually built per-connection
+        # storage + engine objects (so teardown disposes only what this
+        # connection owns; an auth failure before the swap mustn't touch
+        # statically-provided storage / engine the host wants to keep alive).
+        self._owns_scoped_resources: bool = False
         # ``authenticator`` wins; ``token`` is kept for back-compat and wraps
         # into the default static-token authenticator.
         # Explicit ``is None`` check — a custom authenticator whose
@@ -219,21 +224,29 @@ class PgConnection:
             await self._close_scoped_storage()
 
     async def _close_scoped_storage(self) -> None:
-        """Release a per-connection storage built by ``storage_provider``.
+        """Release the per-connection storage + engine that ``_resolve_scope``
+        built from ``storage_provider`` / ``engine_factory``.
 
-        Host providers can return a storage holding a scoped resource (e.g. a
-        tenant-bound DB session); calling its optional ``aclose`` on connection
-        teardown prevents leaks. Static storage has no ``aclose`` and is skipped.
+        Gated on ``_owns_scoped_resources`` so an auth failure before the
+        swap leaves any static storage/engine the host wants to keep alive
+        untouched. Disposes the engine too (``SlayerQueryEngine.aclose``
+        releases the async SQL-client pools — without this a long-lived
+        facade with ``storage_provider`` leaks one engine per session).
         """
-        if self._storage_provider is None:
+        if not self._owns_scoped_resources:
             return
-        aclose = getattr(self._storage, "aclose", None)
-        if aclose is None:
-            return
-        try:
-            await aclose()
-        except Exception:  # noqa: BLE001 — teardown best-effort; never mask the real flow
-            logger.exception("pg facade: scoped storage close failed")
+        engine_aclose = getattr(self._engine, "aclose", None)
+        if engine_aclose is not None:
+            try:
+                await engine_aclose()
+            except Exception:  # noqa: BLE001 — teardown best-effort
+                logger.exception("pg facade: scoped engine close failed")
+        storage_aclose = getattr(self._storage, "aclose", None)
+        if storage_aclose is not None:
+            try:
+                await storage_aclose()
+            except Exception:  # noqa: BLE001 — teardown best-effort
+                logger.exception("pg facade: scoped storage close failed")
 
     # ----- startup ----------------------------------------------------------
 
@@ -362,6 +375,9 @@ class PgConnection:
             self._storage = await self._storage_provider(self._principal)
             factory = self._engine_factory or _default_engine_factory
             self._engine = factory(self._storage)
+            # Mark only after BOTH constructions succeed — partial state
+            # would leave teardown unsure which side to dispose.
+            self._owns_scoped_resources = True
 
     async def _build_catalog(self) -> FacadeCatalog:
         models_by_datasource: dict[str, list[SlayerModel]] = {}

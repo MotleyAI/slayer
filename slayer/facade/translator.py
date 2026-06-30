@@ -955,7 +955,16 @@ def _resolve_qualified_table(
     # real ``public`` schema exists in the catalog (e.g. when the catalog
     # is keyed by the actual datasource name), accept ``public`` as a
     # synonym so Metabase's ``"public"."orders"`` keeps working.
-    if schema_str.lower() == "public":
+    #
+    # Only fall back when the catalog presents a single schema — the
+    # "no user-customized postgres_schema anywhere" case where mapping
+    # ``public`` is unambiguous. With multiple schemas present (custom
+    # postgres_schema in use), ``public.<table>`` would silently cross
+    # schema isolation; reject with "Unknown schema" instead. Real BI
+    # clients address tables via the actual schema name (read from
+    # pg_namespace); this only ever bites hand-written SQL that
+    # hard-codes ``public``.
+    if schema_str.lower() == "public" and len(catalog.schemas) == 1:
         return _resolve_bare_table(table_name=table_name, catalog=catalog)
     raise TranslationError(f"Unknown schema: {schema_str!r}")
 

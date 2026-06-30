@@ -1642,11 +1642,20 @@ class CatalogSqlExecutor:
             # Older DuckDB versions don't have lock_configuration;
             # enable_external_access alone is still binding.
             pass
-        # OID lookup for the regclass UDF: maps both schema-qualified and
-        # bare names to OIDs (system catalogs + user tables).
+        # OID lookup for the regclass UDF: maps schema-qualified and bare
+        # names to OIDs (system catalogs + user tables). Three forms are
+        # registered per table so Metabase's COL_DESCRIPTION etc. resolve
+        # whichever spelling psql / a BI tool emits:
+        # - ``<real_schema>.<table>`` — the authoritative form for custom
+        #   postgres_schema datasources (without this, COL_DESCRIPTION
+        #   silently returns OID 0 and drops descriptions);
+        # - ``public.<table>`` — the back-compat alias the facade always
+        #   advertised before custom schemas existed;
+        # - ``<table>`` — bare, for clients that don't qualify.
         self._regclass_map: dict[str, int] = dict(KNOWN_SYSTEM_OIDS)
         for ds, tbl in _all_tables(catalog):
             oid = _table_oid(ds, tbl)
+            self._regclass_map[f"{ds}.{tbl.name}"] = oid
             self._regclass_map[f"public.{tbl.name}"] = oid
             self._regclass_map[tbl.name] = oid
         self._rewriter = _AstRewriter(
