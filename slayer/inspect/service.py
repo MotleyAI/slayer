@@ -14,6 +14,7 @@ Exposed on four surfaces: the MCP ``inspect`` tool, REST ``POST
 from __future__ import annotations
 
 import json
+from typing import Any, NamedTuple
 
 from slayer.core.errors import (
     AmbiguousModelError,
@@ -50,6 +51,26 @@ _LEAF_KINDS = {"column", "measure", "aggregation"}
 
 _DESCRIPTION_PREFIX = "Description: "
 
+# DEV-1612: markdown batch blocks are separated by this rule so per-id block
+# boundaries are unambiguous even when a body carries its own ``##`` headings
+# (e.g. a datasource compact=False render lists models under ``## `model```).
+_BATCH_BLOCK_SEP = "\n\n---\n\n"
+
+
+class _OneResult(NamedTuple):
+    """The outcome of inspecting a SINGLE id (DEV-1612).
+
+    ``serialized`` is the exact per-kind output the single-id path returns
+    byte-for-byte (markdown body or JSON string). ``canonical_id`` is the
+    resolved id when available (used for the markdown batch header).
+    ``is_error`` is set explicitly on every error branch — never inferred
+    from ``canonical_id`` or from whether ``serialized`` parses as JSON.
+    """
+
+    canonical_id: str | None
+    is_error: bool
+    serialized: str
+
 
 def _warn_line(*, arg: str, entity_type: str) -> str:
     """A model-only-arg warning message (plain text, no ``> Warning:``
@@ -76,10 +97,10 @@ class InspectService:
     # Public API
     # ------------------------------------------------------------------
 
-    async def inspect(  # NOSONAR(S3776) — single linear dispatch over the six entity kinds; per-kind helpers would obscure the shared validation / warning / output-assembly flow
+    async def inspect(
         self,
         *,
-        reference: str,
+        reference: str | list[str],
         entity_type: str,
         compact: bool = True,
         format: str = "markdown",
@@ -88,7 +109,17 @@ class InspectService:
         sections: list[str] | None = None,
         descriptions_max_chars: int | None = None,
     ) -> str:
-        # 1. Argument validation (raise ValueError).
+        """Inspect EXACTLY one entity, or — DEV-1612 — a homogeneous-kind
+        BATCH of entities when ``reference`` is a list.
+
+        A ``str`` keeps its single-id behaviour and output byte-for-byte. A
+        ``list`` returns one rendered block per id, in input order, each
+        echoing its resolved canonical id; per-id resolution errors are
+        isolated (one bad id does not sink the batch). The framing is
+        input-type-driven: a one-element list is still batch-framed.
+        """
+        # 1. Global argument validation (raise ValueError). Applies once to
+        #    the whole call for both the str and list shapes.
         if entity_type not in VALID_ENTITY_TYPES:
             raise ValueError(
                 f"Invalid entity_type '{entity_type}'. Must be one of: "
@@ -104,8 +135,12 @@ class InspectService:
                 f"descriptions_max_chars must be >= 0, got "
                 f"{descriptions_max_chars}."
             )
+        if isinstance(reference, list) and not reference:
+            raise ValueError("reference list must not be empty.")
 
         # 2. Model-only-arg warnings (skip entirely for model entity_type).
+        #    These are global-arg warnings, so the SAME base list seeds every
+        #    id in a batch; each id appends its own resolver warnings to a copy.
         warnings: list[str] = self._model_only_arg_warnings(
             entity_type=entity_type,
             num_rows=num_rows,
@@ -113,7 +148,37 @@ class InspectService:
             sections=sections,
         )
 
-        # 3 + 4. Dispatch by entity_type and assemble output.
+        # 3. Single id → byte-for-byte single output. List → batch framing.
+        if isinstance(reference, str):
+            result = await self._inspect_one(
+                reference=reference, entity_type=entity_type, compact=compact,
+                fmt=fmt, num_rows=num_rows, show_sql=show_sql,
+                sections=sections, descriptions_max_chars=descriptions_max_chars,
+                warnings=warnings,
+            )
+            return result.serialized
+        return await self._inspect_batch(
+            references=reference, entity_type=entity_type, compact=compact,
+            fmt=fmt, num_rows=num_rows, show_sql=show_sql, sections=sections,
+            descriptions_max_chars=descriptions_max_chars, warnings=warnings,
+        )
+
+    async def _inspect_one(  # NOSONAR(S3776) — single linear dispatch over the six entity kinds; per-kind helpers would obscure the shared output-assembly flow
+        self,
+        *,
+        reference: str,
+        entity_type: str,
+        compact: bool,
+        fmt: str,
+        num_rows: int,
+        show_sql: bool,
+        sections: list[str] | None,
+        descriptions_max_chars: int | None,
+        warnings: list[str],
+    ) -> _OneResult:
+        """Dispatch a SINGLE id to its per-kind helper. Returns the structured
+        :class:`_OneResult` so the batch path can frame success vs error
+        explicitly (no inference)."""
         if entity_type == "model":
             return await self._inspect_model(
                 reference=reference, compact=compact, fmt=fmt,
@@ -139,6 +204,53 @@ class InspectService:
             fmt=fmt, descriptions_max_chars=descriptions_max_chars,
             warnings=warnings,
         )
+
+    async def _inspect_batch(
+        self,
+        *,
+        references: list[str],
+        entity_type: str,
+        compact: bool,
+        fmt: str,
+        num_rows: int,
+        show_sql: bool,
+        sections: list[str] | None,
+        descriptions_max_chars: int | None,
+        warnings: list[str],
+    ) -> str:
+        """DEV-1612: render a homogeneous-kind batch. Order preserved, no
+        dedup, per-id errors isolated."""
+        results: list[tuple[str, _OneResult]] = []
+        for ref in references:
+            r = await self._inspect_one(
+                reference=ref, entity_type=entity_type, compact=compact,
+                fmt=fmt, num_rows=num_rows, show_sql=show_sql,
+                sections=sections,
+                descriptions_max_chars=descriptions_max_chars,
+                warnings=warnings,
+            )
+            results.append((ref, r))
+
+        if fmt == "json":
+            elements: list[Any] = []
+            for ref, r in results:
+                if r.is_error:
+                    # Error elements are objects keyed by the INPUT ref so a
+                    # batch JSON array stays homogeneous (objects only).
+                    elements.append({"reference": ref, "error": r.serialized})
+                else:
+                    # ``serialized`` is our own freshly-emitted JSON object →
+                    # round-trips safely; default=str re-applies at the array
+                    # layer for any non-JSON-native value.
+                    elements.append(json.loads(r.serialized))
+            return json.dumps(elements, default=str)
+
+        # Markdown: one ``## <header>`` block per id, joined by the rule.
+        blocks: list[str] = []
+        for ref, r in results:
+            header = ref if r.is_error else (r.canonical_id or ref)
+            blocks.append(f"## {header}\n{r.serialized}")
+        return _BATCH_BLOCK_SEP.join(blocks)
 
     # ------------------------------------------------------------------
     # Warnings
@@ -216,21 +328,21 @@ class InspectService:
         fmt: str,
         descriptions_max_chars: int | None,
         warnings: list[str],
-    ) -> str:
+    ) -> _OneResult:
         if not reference.startswith("memory:"):
-            return (
+            return _OneResult(None, True, (
                 f"entity_type='memory' requires a 'memory:<id>' reference; "
                 f"got '{reference}'. Memory references must start with "
                 f"'memory:'."
-            )
+            ))
         memory_id = reference[len("memory:"):]
         try:
             mem = await self._storage.get_memory(memory_id)
         except MemoryNotFoundError:
-            return (
+            return _OneResult(None, True, (
                 f"No memory with id '{memory_id}' found "
                 f"(reference '{reference}')."
-            )
+            ))
 
         description = (
             mem.description
@@ -255,9 +367,10 @@ class InspectService:
                 )
             full_text = render_memory_text(memory=mem_for_render)
 
+        canonical = f"memory:{mem.id}"
         if fmt == "json":
             payload = {
-                "canonical_id": f"memory:{mem.id}",
+                "canonical_id": canonical,
                 "entity_type": "memory",
                 "description": description,
             }
@@ -266,9 +379,12 @@ class InspectService:
             if full_text:
                 payload["text"] = full_text
             payload["warnings"] = warnings
-            return json.dumps(payload)
+            return _OneResult(canonical, False, json.dumps(payload))
         body = description if compact else full_text
-        return self._markdown_with_warnings(body or "", warnings)
+        return _OneResult(
+            canonical, False,
+            self._markdown_with_warnings(body or "", warnings),
+        )
 
     # ------------------------------------------------------------------
     # Datasource
@@ -282,7 +398,7 @@ class InspectService:
         fmt: str,
         descriptions_max_chars: int | None,
         warnings: list[str],
-    ) -> str:
+    ) -> _OneResult:
         try:
             res = await resolve_entity(
                 reference, storage=self._storage, source_model=None,
@@ -291,13 +407,13 @@ class InspectService:
             # AmbiguousModelError (a SlayerError sibling, NOT a subclass of
             # EntityResolutionError) escapes resolve_entity's bare-name model
             # leg; surface its message instead of crashing the surface.
-            return str(exc)
+            return _OneResult(None, True, str(exc))
         warnings = warnings + list(res.warnings)
         if len(res.canonical_forms) != 1:
-            return (
+            return _OneResult(None, True, (
                 f"Internal error: reference '{reference}' resolved to "
                 f"{len(res.canonical_forms)} canonical forms; expected 1."
-            )
+            ))
         canonical = res.canonical_forms[0]
 
         known = set(await self._storage.list_datasources())
@@ -307,15 +423,16 @@ class InspectService:
         elif reference in known:
             ds_name = reference
         if ds_name is None:
-            return (
+            return _OneResult(None, True, (
                 f"'{reference}' is not a datasource (resolved to "
                 f"'{canonical}'). Known datasources: "
                 f"{', '.join(sorted(known))}."
-            )
-        return await self._render_datasource(
+            ))
+        body = await self._render_datasource(
             ds_name=ds_name, compact=compact, fmt=fmt,
             descriptions_max_chars=descriptions_max_chars, warnings=warnings,
         )
+        return _OneResult(ds_name, False, body)
 
     async def _render_datasource(
         self,
@@ -394,26 +511,26 @@ class InspectService:
         sections: list[str] | None,
         descriptions_max_chars: int | None,
         warnings: list[str],
-    ) -> str:
+    ) -> _OneResult:
         try:
             canonical = await self._resolve_model_canonical(reference)
         except AmbiguousModelError as exc:
             # A bare model name present in ≥2 datasources with no priority
             # winner — surface the actionable message, not an uncaught raise.
-            return str(exc)
+            return _OneResult(None, True, str(exc))
         if canonical is None:
-            return (
+            return _OneResult(None, True, (
                 f"'{reference}' does not resolve to a model. Pass a "
                 f"datasource-qualified model id (e.g. '<ds>.<model>') or a "
                 f"bare model name."
-            )
+            ))
         ds_name, model_name = canonical.split(".", 1)
         model = await self._storage.get_model(model_name, data_source=ds_name)
         if model is None:
-            return (
+            return _OneResult(None, True, (
                 f"Model '{canonical}' not found "
                 f"(reference '{reference}')."
-            )
+            ))
         if compact:
             # Schema skeleton (DEV-1588 follow-up): column / measure /
             # aggregation NAMES + join targets, zero DB calls — short-circuit
@@ -429,13 +546,15 @@ class InspectService:
                 payload["canonical_id"] = canonical
                 payload["entity_type"] = "model"
                 payload["warnings"] = warnings
-                return json.dumps(payload, indent=2, default=str)
+                return _OneResult(
+                    canonical, False, json.dumps(payload, indent=2, default=str),
+                )
             body = render_model_skeleton(
                 model=model, max_chars=descriptions_max_chars,
             )
-            return self._markdown_with_warnings(
+            return _OneResult(canonical, False, self._markdown_with_warnings(
                 f"# `{model.name}`\n{body}", warnings,
-            )
+            ))
         rendered = await render_model_inspection(
             model=model,
             storage=self._storage,
@@ -451,8 +570,12 @@ class InspectService:
             payload = json.loads(rendered)
             payload["canonical_id"] = canonical
             payload["warnings"] = warnings
-            return json.dumps(payload, indent=2, default=str)
-        return self._markdown_with_warnings(rendered, warnings)
+            return _OneResult(
+                canonical, False, json.dumps(payload, indent=2, default=str),
+            )
+        return _OneResult(
+            canonical, False, self._markdown_with_warnings(rendered, warnings),
+        )
 
     async def _resolve_model_canonical(self, reference: str) -> str | None:
         """Resolve ``reference`` to a 2-part ``<ds>.<model>`` canonical id,
@@ -501,7 +624,7 @@ class InspectService:
         fmt: str,
         descriptions_max_chars: int | None,
         warnings: list[str],
-    ) -> str:
+    ) -> _OneResult:
         try:
             res = await resolve_entity(
                 reference, storage=self._storage, source_model=None,
@@ -510,26 +633,26 @@ class InspectService:
             # AmbiguousModelError (a SlayerError sibling, NOT a subclass of
             # EntityResolutionError) escapes resolve_entity's bare-name model
             # leg; surface its message instead of crashing the surface.
-            return str(exc)
+            return _OneResult(None, True, str(exc))
         warnings = warnings + list(res.warnings)
         if len(res.canonical_forms) != 1:
-            return (
+            return _OneResult(None, True, (
                 f"Internal error: reference '{reference}' resolved to "
                 f"{len(res.canonical_forms)} canonical forms; expected 1."
-            )
+            ))
         canonical = res.canonical_forms[0]
         if canonical.count(".") != 2:
-            return (
+            return _OneResult(canonical, True, (
                 f"'{reference}' resolved to '{canonical}', which is not a "
                 f"{entity_type} (expected a '<ds>.<model>.<leaf>' id)."
-            )
+            ))
         ds_name, model_name, leaf = canonical.split(".", 2)
         model = await self._storage.get_model(model_name, data_source=ds_name)
         if model is None:
-            return (
+            return _OneResult(None, True, (
                 f"Model '{ds_name}.{model_name}' not found "
                 f"(reference '{reference}')."
-            )
+            ))
 
         pairs = collect_model_entity_pairs(model=model, include_hidden=True)
         matches = [
@@ -537,17 +660,18 @@ class InspectService:
             if p.canonical_id == canonical and p.kind == entity_type
         ]
         if len(matches) == 1:
-            return self._render_leaf_entry(
+            body = self._render_leaf_entry(
                 entry=matches[0], canonical=canonical, entity_type=entity_type,
                 compact=compact, fmt=fmt,
                 descriptions_max_chars=descriptions_max_chars,
                 warnings=warnings,
             )
-        return self._leaf_lookup_error(
+            return _OneResult(canonical, False, body)
+        return _OneResult(canonical, True, self._leaf_lookup_error(
             canonical=canonical, entity_type=entity_type, leaf=leaf,
             ds_name=ds_name, model_name=model_name, pairs=pairs,
             match_count=len(matches),
-        )
+        ))
 
     def _render_leaf_entry(
         self,

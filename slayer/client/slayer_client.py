@@ -477,7 +477,7 @@ class SlayerClient:
     async def inspect(
         self,
         *,
-        reference: str,
+        reference: str | list[str],
         entity_type: str,
         compact: bool = True,
         format: str = "markdown",
@@ -486,12 +486,15 @@ class SlayerClient:
         sections: list[str] | None = None,
         descriptions_max_chars: int | None = None,
     ) -> str:
-        """Inspect EXACTLY one entity by reference and kind (DEV-1588).
+        """Inspect EXACTLY one entity by reference and kind (DEV-1588), or a
+        homogeneous-kind BATCH when ``reference`` is a list (DEV-1612).
 
-        A single-entity point-lookup (no fusion / ranking / bundled
-        memories). ``entity_type`` is required, one of
+        A point-lookup (no fusion / ranking / bundled memories).
+        ``entity_type`` is required, one of
         ``datasource``/``model``/``column``/``measure``/``aggregation``/
-        ``memory``.
+        ``memory``, and applies to every id in a list. A single ``str`` keeps
+        its byte-for-byte single output; a list returns one block per id in
+        input order with per-id error isolation.
         """
         if self._storage is not None:
             # Local import: slayer.inspect.service transitively imports the
@@ -528,7 +531,7 @@ class SlayerClient:
     @staticmethod
     def _build_inspect_body(
         *,
-        reference: str,
+        reference: str | list[str],
         entity_type: str,
         compact: bool,
         format: str,
@@ -593,7 +596,7 @@ class SlayerClient:
     def inspect_sync(
         self,
         *,
-        reference: str,
+        reference: str | list[str],
         entity_type: str,
         compact: bool = True,
         format: str = "markdown",
@@ -602,7 +605,7 @@ class SlayerClient:
         sections: list[str] | None = None,
         descriptions_max_chars: int | None = None,
     ) -> str:
-        """Synchronous variant of :meth:`inspect` (DEV-1588)."""
+        """Synchronous variant of :meth:`inspect` (DEV-1588; batch DEV-1612)."""
         if self._storage is not None:
             from slayer.async_utils import run_sync
 

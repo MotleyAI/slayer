@@ -559,9 +559,11 @@ examples:
     )
     inspect_parser.add_argument(
         "reference",
+        nargs="+",
         help=(
-            "Entity reference: canonical id (mydb.orders.amount), bare "
-            "name, join path, or memory:<id>."
+            "Entity reference(s): canonical id (mydb.orders.amount), bare "
+            "name, join path, or memory:<id>. Pass two or more for a "
+            "homogeneous-kind batch (one --type for all)."
         ),
     )
     inspect_parser.add_argument(
@@ -785,9 +787,15 @@ def _run_inspect(*, args, storage) -> None:
     service = InspectService(
         storage=storage, engine=SlayerQueryEngine(storage=storage),
     )
+    # argparse ``nargs="+"`` always yields a list; map a single positional back
+    # to a bare str so single-id output stays byte-for-byte (DEV-1612). A direct
+    # str (older callers / tests) is passed through unchanged.
+    reference = args.reference
+    if isinstance(reference, list) and len(reference) == 1:
+        reference = reference[0]
     try:
         out = run_sync(service.inspect(
-            reference=args.reference,
+            reference=reference,
             entity_type=args.entity_type,
             compact=args.compact,
             format=args.format,

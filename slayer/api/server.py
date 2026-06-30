@@ -175,7 +175,9 @@ class InspectRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    reference: str
+    # DEV-1612: a list is a homogeneous-kind batch (one ``entity_type`` for
+    # every id). A single str keeps single-id behaviour byte-for-byte.
+    reference: str | list[str]
     entity_type: str
     compact: bool = True
     format: str = "markdown"
