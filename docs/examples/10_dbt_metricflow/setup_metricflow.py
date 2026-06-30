@@ -79,7 +79,10 @@ def _checkout_is_valid(checkout: Path) -> bool:
         return False
     try:
         return _git("rev-parse", "HEAD", cwd=checkout) == DBT_PIN_SHA
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, OSError):
+        # OSError covers a missing `git` binary; treat as "not valid" so the
+        # caller falls through to the clone path, which raises the recognized
+        # MetricFlowDemoError instead of a raw FileNotFoundError.
         return False
 
 
