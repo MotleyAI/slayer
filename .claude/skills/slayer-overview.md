@@ -23,9 +23,11 @@ SLayer is a lightweight, agent-first semantic layer. Instead of writing raw SQL,
 
 Query-backed models support two access patterns: **run by name** (`engine.execute("monthly_revenue", variables={...})` runs the stored backing query) and **as a source_model** (`{"source_model": "monthly_revenue", ...}` in another query). Variable precedence: runtime kwarg > stage > outer query > model defaults.
 
+- **SessionPolicy** (Row-Level Security, DEV-1578) — immutable, agent-invisible forced column filter passed at engine/local-client init: `SlayerQueryEngine(storage, policy=SessionPolicy(data_filters=[ColumnFilterRule(column="organization_uuid", value=...)]))`. Silently scopes every query (base, joins, CTEs, sql-mode, query-backed, profiling) to one tenant by wrapping each physical table in a filtered sub-query at the final-SQL layer. Scalar value→`=`, list→`IN`; `on_unapplicable="block"|"pass"` for tables lacking the column; unconfirmable presence fails closed. Local-engine only (HTTP `policy=` raises). See [row-level-security.md](../../docs/concepts/row-level-security.md).
+
 ## MCP Tools
 
-Discovery: `list_datasources`, `models_summary`, `inspect` (single-entity point lookup by `reference` + required `entity_type`; the model path carries sample data). `inspect_model` is DEPRECATED — use `inspect`.
+Discovery: `list_datasources`, `models_summary`, `inspect` (point lookup by `reference` + required `entity_type`; the model path carries sample data; `reference` accepts a single id or a same-kind **list** for a batched lookup). `inspect_model` is DEPRECATED — use `inspect`.
 Querying: `query`
 Model editing: `create_model`, `edit_model`, `delete_model`
 Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (includes table listing by default), `edit_datasource`, `delete_datasource`, `set_datasource_priority`
