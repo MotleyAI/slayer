@@ -165,25 +165,42 @@ def test_dml_ddl_rejected_read_only(sql: str, dialect) -> None:
 
 def test_select_star_browse_mode_expands_to_columns(dialect) -> None:
     """Browse-mode ``SELECT *`` (no GROUP BY / HAVING / aggregates)
-    expands to every non-hidden column of the table — matches psql user
-    expectations for an interactive session."""
-    result = translate(sql="SELECT * FROM orders", catalog=_catalog(), dialect=dialect)
+    expands to every non-hidden column when ``expand_star_in_browse_mode=True``
+    — pg-facade convenience for interactive psql sessions."""
+    result = translate(
+        sql="SELECT * FROM orders", catalog=_catalog(), dialect=dialect,
+        expand_star_in_browse_mode=True,
+    )
     # Resolves cleanly; produced a SlayerQuery with no measures and one
     # dimension entry per non-hidden column.
     assert result.query.measures is None
     assert result.query.dimensions is not None and len(result.query.dimensions) > 0
 
 
+def test_select_star_default_strict_for_flight(dialect) -> None:
+    """When ``expand_star_in_browse_mode=False`` (default — Flight's
+    contract), ``SELECT *`` always rejects, even in browse mode. Flight
+    clients (dbt-SL JDBC, Tableau, etc.) project explicit names by
+    construction; a bare ``*`` from them almost always means a
+    query-builder bug worth surfacing loudly."""
+    with pytest.raises(TranslationError) as exc_info:
+        translate(sql="SELECT * FROM orders", catalog=_catalog(), dialect=dialect)
+    assert "SELECT *" in str(exc_info.value)
+
+
 def test_select_star_with_aggregate_rejected(dialect) -> None:
     """``SELECT *, COUNT(*)`` and ``SELECT * ... GROUP BY ...`` still
-    reject — the old error message stays in place for the mixed cases
-    where it's actually useful guidance."""
+    reject — even with browse-mode expansion ON — since the explicit
+    "project specific names" hint is more useful guidance there."""
     for sql in (
         "SELECT *, COUNT(*) FROM orders",
         "SELECT * FROM orders GROUP BY status",
     ):
         with pytest.raises(TranslationError) as exc_info:
-            translate(sql=sql, catalog=_catalog(), dialect=dialect)
+            translate(
+                sql=sql, catalog=_catalog(), dialect=dialect,
+                expand_star_in_browse_mode=True,
+            )
         assert "SELECT *" in str(exc_info.value)
         assert "INFORMATION_SCHEMA.METRICS" in str(exc_info.value)
 

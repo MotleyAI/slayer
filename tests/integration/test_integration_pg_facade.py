@@ -357,12 +357,31 @@ async def test_cross_model_dimension(pg_demo_server) -> None:
         await conn.close()
 
 
-async def test_select_star_rejected(pg_demo_server) -> None:
+async def test_select_star_browse_mode_expands(pg_demo_server) -> None:
+    """Browse-mode ``SELECT *`` (no GROUP BY / HAVING / aggregate) expands
+    to every non-hidden column — pg-facade convenience for interactive
+    psql sessions. Replaced the previous always-rejected assertion."""
+    host, port = pg_demo_server
+    conn = await _connect(host, port)
+    try:
+        rows = await conn.fetch("SELECT * FROM orders LIMIT 1")
+        assert len(rows) >= 1
+        # At least the standard demo columns are projected.
+        keys = set(rows[0].keys())
+        assert "id" in keys and "ordered_at" in keys
+    finally:
+        await conn.close()
+
+
+async def test_select_star_with_aggregate_still_rejected(pg_demo_server) -> None:
+    """Mixing ``*`` with an aggregate (or GROUP BY) still rejects — the
+    explicit "project specific names" hint is the more useful guidance
+    when the user has clearly mixed row-level and aggregate intent."""
     host, port = pg_demo_server
     conn = await _connect(host, port)
     try:
         with pytest.raises(asyncpg.PostgresError) as exc_info:
-            await conn.fetch("SELECT * FROM orders")
+            await conn.fetch("SELECT *, COUNT(*) FROM orders")
         assert "SELECT *" in str(exc_info.value)
     finally:
         await conn.close()

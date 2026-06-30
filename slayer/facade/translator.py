@@ -2278,6 +2278,7 @@ def translate(
         "CatalogSqlExecutorProtocol | Callable[[], CatalogSqlExecutorProtocol] | None"
     ) = None,
     allow_column_cast: bool = True,
+    expand_star_in_browse_mode: bool = False,
 ) -> TranslatorResult:
     """Translate a SQL string into a TranslatorResult.
 
@@ -2286,6 +2287,14 @@ def translate(
     injects a datasource-aware one). ``catalog_sql_executor`` routes
     catalog SQL through an in-memory DuckDB (the Postgres facade does
     this; Flight passes ``None`` and falls back to ``match_info_schema``).
+
+    ``expand_star_in_browse_mode``: when True, a ``SELECT *`` with no
+    GROUP BY / HAVING / aggregate expands to every non-hidden column
+    of the table (pg-facade convenience for interactive psql sessions).
+    When False (default — Flight's contract), ``SELECT *`` always
+    raises, since Flight's clients (dbt-SL JDBC, Tableau, etc.) project
+    explicit metric/dim names by construction and a bare ``*`` from
+    them almost always indicates a query-builder bug worth surfacing.
 
     Raises ``TranslationError`` on user-visible failures.
     """
@@ -2351,6 +2360,7 @@ def translate(
     # Step 5 / 6 — SLayer-table translation.
     return _translate_slayer_select(
         parsed, catalog, allow_column_cast=allow_column_cast,
+        expand_star_in_browse_mode=expand_star_in_browse_mode,
     )
 
 
@@ -2947,6 +2957,7 @@ def _build_item_index(items: list[_ProjectionItem]) -> dict[str, _ProjectionItem
 def _translate_slayer_select(
     parsed: exp.Select, catalog: FacadeCatalog,
     *, allow_column_cast: bool = True,
+    expand_star_in_browse_mode: bool = False,
 ) -> QueryResult:
     from_clause = parsed.args.get("from_")
     if from_clause is None:
@@ -2957,17 +2968,15 @@ def _translate_slayer_select(
     schema_name, table = _resolve_table(from_clause, catalog)
 
     proj_exprs = parsed.args.get("expressions") or []
-    # SELECT * handling. In *browse mode* — no GROUP BY, no HAVING, no
-    # aggregate in the projection list — we expand ``*`` to every
-    # non-hidden column of the table, matching what a psql user would
-    # expect from "show me everything in this table". In any context that
-    # involves aggregation (a GROUP BY, HAVING, or an aggregate in the
-    # projection), the rejection stays in place because mixing ``*`` with
-    # aggregates would either force an awkward implicit-grouping shape or
-    # surface a confusing "X not in GROUP BY" downstream — the explicit
-    # "project specific names" hint is more helpful there.
+    # SELECT * handling. When ``expand_star_in_browse_mode`` is set (pg-facade
+    # only — see translate's docstring), a ``SELECT *`` with no GROUP BY /
+    # HAVING / aggregate in the projection list expands to every non-hidden
+    # column of the table. Flight's clients project explicit names by
+    # construction, so it leaves the flag default-False and ``*`` always
+    # raises there. Mixed ``*`` + aggregate cases always reject (the
+    # explicit "project specific names" hint is more useful guidance).
     if any(isinstance(e, exp.Star) for e in proj_exprs):
-        if _is_browse_mode_select(parsed, proj_exprs):
+        if expand_star_in_browse_mode and _is_browse_mode_select(parsed, proj_exprs):
             proj_exprs = _expand_select_star(proj_exprs, table)
         else:
             raise TranslationError(SELECT_STAR_MESSAGE)

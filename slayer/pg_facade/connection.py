@@ -745,6 +745,11 @@ class PgConnection:
                 self._catalog, self._database,
                 extra_relations=self._catalog_extras,
             ),
+            # Convenience for interactive psql sessions: ``SELECT * FROM t``
+            # in browse mode (no GROUP BY / HAVING / aggregate) expands to
+            # every non-hidden column. Flight stays strict (its clients
+            # always project explicit names).
+            expand_star_in_browse_mode=True,
         )
 
     def _probe_matcher(self, parsed: exp.Expression):

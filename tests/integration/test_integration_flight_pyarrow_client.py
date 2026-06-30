@@ -242,7 +242,10 @@ def test_select_star_rejected(flight_demo_server: tuple[str, int]) -> None:
     client = _client(host=host, port=port)
     with pytest.raises(fl.FlightServerError) as excinfo:
         _create_prepared(client, "SELECT * FROM orders")
-    assert "SELECT * not supported" in str(excinfo.value)
+    # Flight stays strict on SELECT * (its clients project explicit names
+    # by construction); same loose substring as the JDBC sibling so the
+    # error-message wording can evolve without breaking the test.
+    assert "SELECT *" in str(excinfo.value)
 
 
 def test_dml_rejected(flight_demo_server: tuple[str, int]) -> None:
