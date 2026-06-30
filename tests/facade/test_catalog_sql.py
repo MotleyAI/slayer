@@ -16,7 +16,11 @@ import sqlglot
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.facade.catalog import FacadeCatalog, build_catalog
+from slayer.facade.catalog import (
+    FacadeCatalog,
+    build_catalog,
+    build_catalog_grouped_by_schema,
+)
 from slayer.facade.catalog_sql import (
     KNOWN_SYSTEM_OIDS,
     CatalogRelation,
@@ -26,7 +30,7 @@ from slayer.facade.catalog_sql import (
     is_catalog_only,
     stable_oid,
 )
-from slayer.facade.rows import RowBatch
+from slayer.facade.rows import FacadeColumn, RowBatch
 from slayer.facade.translator import TranslationError
 
 
@@ -66,7 +70,12 @@ def _demo_catalog() -> FacadeCatalog:
             Column(name="region", type=DataType.TEXT),
         ],
     )
-    return build_catalog(models_by_datasource={"jaffle": [orders, customers]})
+    # Production builds catalogs grouped by postgres_schema (default "public"),
+    # so the demo catalog uses the same path — datasource "jaffle" folds under
+    # schema "public".
+    return build_catalog_grouped_by_schema(
+        models_by_datasource={"jaffle": [orders, customers]}
+    )
 
 
 def _executor(catalog: FacadeCatalog | None = None, *, datasource: str = "jaffle") -> CatalogSqlExecutor:
@@ -154,7 +163,7 @@ def test_view_typed_models_surface_as_pg_views() -> None:
         name="custom_view", data_source="jaffle", sql="SELECT 1 AS id",
         columns=[Column(name="id", type=DataType.INT)],
     )
-    cat = build_catalog(models_by_datasource={"jaffle": [sql_model]})
+    cat = build_catalog_grouped_by_schema(models_by_datasource={"jaffle": [sql_model]})
     relations = {r.name: r for r in build_catalog_relations(cat)}
     # pg_tables filters out VIEW-typed models (M1).
     assert relations["pg_tables"].rows == []
@@ -674,13 +683,11 @@ def test_current_schemas_non_first_index_returns_null() -> None:
     assert batch.rows == [{"s": None}]
 
 
-def test_is_schemata_is_single_row_for_multi_schema_catalog() -> None:
-    """Codex round 17: the pg facade advertises exactly one schema
-    (``public``), regardless of how many SLayer schemas / datasources
-    fold into the underlying FacadeCatalog. Verify
-    ``information_schema.schemata`` has exactly one row even when the
-    catalog carries multiple schemas."""
-    cat = build_catalog(models_by_datasource={
+def test_is_schemata_folds_datasources_to_public_by_default() -> None:
+    """DEV-1594: datasources without a custom ``postgres_schema`` fold into a
+    single ``public`` schema, so ``information_schema.schemata`` has one row
+    even when multiple datasources back the catalog."""
+    cat = build_catalog_grouped_by_schema(models_by_datasource={
         "dsA": [SlayerModel(
             name="t1", data_source="dsA", sql_table="t1",
             columns=[Column(name="x", type=DataType.INT)],
@@ -694,6 +701,37 @@ def test_is_schemata_is_single_row_for_multi_schema_catalog() -> None:
     rows = relations["_is_schemata"].rows
     assert len(rows) == 1
     assert rows[0] == {"catalog_name": "dsX", "schema_name": "public"}
+
+
+def test_is_schemata_lists_custom_postgres_schemas() -> None:
+    """A datasource with a custom ``postgres_schema`` surfaces as its own
+    schema row alongside ``public``."""
+    cat = build_catalog_grouped_by_schema(
+        models_by_datasource={
+            "dsA": [SlayerModel(
+                name="t1", data_source="dsA", sql_table="t1",
+                columns=[Column(name="x", type=DataType.INT)],
+            )],
+            "dsB": [SlayerModel(
+                name="t2", data_source="dsB", sql_table="t2",
+                columns=[Column(name="y", type=DataType.INT)],
+            )],
+        },
+        schema_by_datasource={"dsB": "warehouse"},
+    )
+    relations = {r.name: r for r in build_catalog_relations(cat, datasource="dsX")}
+    schemas = {r["schema_name"] for r in relations["_is_schemata"].rows}
+    assert schemas == {"public", "warehouse"}
+    # t2 reports its real schema in information_schema.tables.
+    t2 = next(r for r in relations["_is_tables"].rows if r["table_name"] == "t2")
+    assert t2["table_schema"] == "warehouse"
+    # pg_namespace lists the custom schema with a distinct (non-public) oid.
+    ns = {r["nspname"]: r["oid"] for r in relations["pg_namespace"].rows}
+    assert "warehouse" in ns and "public" in ns
+    assert ns["warehouse"] != ns["public"]
+    # pg_class points t2 at the warehouse namespace.
+    t2_class = next(r for r in relations["pg_class"].rows if r["relname"] == "t2")
+    assert t2_class["relnamespace"] == ns["warehouse"]
 
 
 def test_information_schema_schema_name_is_public_not_datasource() -> None:
@@ -1094,7 +1132,9 @@ def test_stable_oid_matches_crc32_not_builtin_hash() -> None:
 def test_pg_attribute_oids_match_datatype() -> None:
     from slayer.pg_facade.protocol import OID_FLOAT8, OID_TEXT
     relations = {r.name: r for r in build_catalog_relations(_demo_catalog())}
-    orders_oid = stable_oid("jaffle", "orders")
+    # Demo catalog folds datasource "jaffle" under schema "public", so table
+    # OIDs are namespaced by the schema name.
+    orders_oid = stable_oid("public", "orders")
     orders_attrs = {
         r["attname"]: r for r in relations["pg_attribute"].rows
         if r["attrelid"] == orders_oid
@@ -1148,3 +1188,288 @@ def test_where_clause_now_honored_against_pg_class() -> None:
     # Old behaviour: WHERE ignored. New behaviour: WHERE filters rows.
     batch = _run("SELECT relname FROM pg_catalog.pg_class WHERE relname = 'orders'")
     assert {r["relname"] for r in batch.rows} == {"orders"}
+
+
+# --- psql backslash-command coverage stubs (DEV-XXXX) -----------------------
+
+
+class TestPsqlBackslashCommandCoverage:
+    """``\\d``, ``\\du``, ``\\l`` and friends in psql expand into SQL that
+    joins these three catalogs. Before this work they raised "Unknown
+    schema: 'pg_catalog'" because the stub tables didn't exist."""
+
+    def test_pg_am_has_heap_row(self) -> None:
+        batch = _run("SELECT oid, amname FROM pg_catalog.pg_am")
+        assert {r["amname"] for r in batch.rows} == {"heap"}
+        # OID must match real Postgres for `pg_class.relam` to round-trip.
+        assert {r["oid"] for r in batch.rows} == {2}
+
+    def test_pg_roles_has_default_slayer_row(self) -> None:
+        batch = _run(
+            "SELECT rolname, rolsuper, rolcanlogin, rolconnlimit "
+            "FROM pg_catalog.pg_roles"
+        )
+        assert len(batch.rows) == 1
+        row = batch.rows[0]
+        assert row["rolname"] == "slayer"
+        assert row["rolsuper"] is False
+        assert row["rolcanlogin"] is True
+        assert row["rolconnlimit"] == -1
+
+    def test_pg_database_has_one_row_for_connected_datasource(self) -> None:
+        batch = _run("SELECT datname, datcollate, encoding FROM pg_catalog.pg_database")
+        assert len(batch.rows) == 1
+        row = batch.rows[0]
+        assert row["datname"] == "jaffle"  # _demo_catalog's datasource
+        assert row["datcollate"] == "en_US.UTF-8"
+        assert row["encoding"] == 6  # UTF8
+
+    def test_pg_encoding_to_char_round_trips_to_utf8(self) -> None:
+        batch = _run("SELECT pg_encoding_to_char(6) AS enc")
+        assert batch.rows == [{"enc": "UTF8"}]
+
+    def test_psql_backslash_d_join_through_pg_am_succeeds(self) -> None:
+        """The exact ``\\d`` JOIN shape that triggered the original failure."""
+        sql = (
+            "SELECT n.nspname AS schema_name, c.relname AS name, c.relkind "
+            "FROM pg_catalog.pg_class AS c "
+            "LEFT JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace "
+            "LEFT JOIN pg_catalog.pg_am AS am ON am.oid = c.relam "
+            "WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f', '') "
+            "AND n.nspname NOT IN ('pg_catalog', 'information_schema') "
+            "ORDER BY 1, 2"
+        )
+        batch = _run(sql)
+        names = {r["name"] for r in batch.rows}
+        # The _demo_catalog has both `orders` and `customers` — confirm
+        # the JOIN didn't drop rows because of the new pg_am wiring.
+        assert names == {"orders", "customers"}
+
+
+class TestCatalogExtensibilityHook:
+    """``build_catalog_relations(..., extra_relations=...)`` lets an embedder
+    override a default catalog table (e.g. project real per-tenant rows
+    into ``pg_roles``) or add a new one. Override is by table-name match."""
+
+    def test_extra_relations_overrides_default_pg_roles(self) -> None:
+        custom = CatalogRelation(
+            name="pg_roles",
+            columns=[
+                FacadeColumn(name="oid", type=DataType.INT),
+                FacadeColumn(name="rolname", type=DataType.TEXT),
+                FacadeColumn(name="rolcanlogin", type=DataType.BOOLEAN),
+            ],
+            rows=[
+                {"oid": 100, "rolname": "tenant_a", "rolcanlogin": True},
+                {"oid": 101, "rolname": "tenant_b", "rolcanlogin": True},
+            ],
+        )
+        relations = build_catalog_relations(
+            _demo_catalog(), datasource="jaffle", extra_relations=[custom],
+        )
+        by_name = {r.name: r for r in relations}
+        assert len(by_name["pg_roles"].rows) == 2
+        assert {r["rolname"] for r in by_name["pg_roles"].rows} == {"tenant_a", "tenant_b"}
+
+    def test_extra_relations_adds_new_table_when_no_default(self) -> None:
+        custom = CatalogRelation(
+            name="pg_extension",  # not in defaults
+            columns=[FacadeColumn(name="extname", type=DataType.TEXT)],
+            rows=[{"extname": "plpgsql"}],
+        )
+        relations = build_catalog_relations(
+            _demo_catalog(), extra_relations=[custom],
+        )
+        names = {r.name for r in relations}
+        assert "pg_extension" in names
+
+    def test_executor_for_with_extras_bypasses_cache(self) -> None:
+        """Extras opt out of caching (digesting row payloads would defeat
+        the purpose of the fingerprint-based cache)."""
+        cat = _demo_catalog()
+        a = executor_for(cat, datasource="jaffle")
+        b = executor_for(cat, datasource="jaffle")
+        assert a is b  # cached default
+        custom = CatalogRelation(
+            name="pg_roles",
+            columns=[FacadeColumn(name="rolname", type=DataType.TEXT)],
+            rows=[{"rolname": "tenant_a"}],
+        )
+        with_extras = executor_for(cat, datasource="jaffle", extra_relations=[custom])
+        assert with_extras is not a
+
+    def test_extra_relations_override_visible_at_executor(self) -> None:
+        """End-to-end: an override flows through ``executor_for`` so SQL
+        run against the catalog DuckDB sees the new rows."""
+        custom = CatalogRelation(
+            name="pg_roles",
+            columns=[FacadeColumn(name="rolname", type=DataType.TEXT)],
+            rows=[{"rolname": "tenant_a"}, {"rolname": "tenant_b"}],
+        )
+        ex = executor_for(_demo_catalog(), datasource="jaffle", extra_relations=[custom])
+        batch = ex.execute(
+            parsed=_parse("SELECT rolname FROM pg_catalog.pg_roles ORDER BY rolname"),
+            sql="SELECT rolname FROM pg_catalog.pg_roles ORDER BY rolname",
+        )
+        assert [r["rolname"] for r in batch.rows] == ["tenant_a", "tenant_b"]
+
+
+# --- routing-allowlist parity (regression: keep _PG_CATALOG_NAMES in lockstep)
+
+
+class TestCatalogRoutingAllowlistParity:
+    """``is_catalog_only`` consults a hardcoded allowlist (``_PG_CATALOG_NAMES``)
+    to decide whether a query routes to the catalog executor or falls through
+    to user-table resolution. Adding a builder without adding the name to the
+    allowlist makes the new table silently invisible at the routing layer —
+    the user gets "Unknown schema: 'pg_catalog'" even though the executor
+    knows about the table. Lock the two in step."""
+
+    def test_every_pg_builder_is_in_the_routing_allowlist(self) -> None:
+        from slayer.facade.catalog_sql import _PG_CATALOG_NAMES
+        # Every relation the builder list emits whose name starts with `pg_`
+        # must appear in the allowlist. (information_schema relations are
+        # built under `_is_<name>` and use a separate allowlist.)
+        relations = build_catalog_relations(_demo_catalog())
+        pg_names = {r.name for r in relations if r.name.startswith("pg_")}
+        missing = pg_names - _PG_CATALOG_NAMES
+        assert not missing, (
+            f"Built relation(s) {sorted(missing)} not in _PG_CATALOG_NAMES — "
+            f"queries against them route to user-table resolution and fail "
+            f"with 'Unknown schema: pg_catalog'."
+        )
+
+    @pytest.mark.parametrize("table", ["pg_am", "pg_roles", "pg_database"])
+    def test_is_catalog_only_recognises_new_pg_tables(self, table: str) -> None:
+        from slayer.facade.catalog_sql import is_catalog_only
+        sql = f"SELECT * FROM pg_catalog.{table}"
+        assert is_catalog_only(_parse(sql)) is True
+        # Bare names too (without the pg_catalog. qualifier).
+        bare = f"SELECT * FROM {table}"
+        assert is_catalog_only(_parse(bare)) is True
+
+    def test_psql_backslash_d_query_is_catalog_only(self) -> None:
+        """The actual psql-emitted ``\\d`` shape (multi-JOIN through
+        pg_class + pg_namespace + pg_am) must route to the catalog
+        executor — not to user-table resolution."""
+        from slayer.facade.catalog_sql import is_catalog_only
+        sql = (
+            "SELECT n.nspname, c.relname, c.relkind "
+            "FROM pg_catalog.pg_class c "
+            "LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+            "LEFT JOIN pg_catalog.pg_am am ON am.oid = c.relam "
+            "WHERE c.relkind IN ('r', 'v') "
+            "AND n.nspname NOT IN ('pg_catalog', 'information_schema') "
+            "ORDER BY 1, 2"
+        )
+        assert is_catalog_only(_parse(sql)) is True
+
+
+# --- Bare-the-call rewrite for unknown ``pg_catalog.<fn>`` ------------------
+
+
+class TestUnknownSchemaQualifiedCallRewrite:
+    """Unknown ``pg_catalog.<fn>(...)`` / ``information_schema.<fn>(...)``
+    calls have their schema qualifier stripped — otherwise DuckDB parses
+    the Dot as ``<schema>.<attr>`` (a column reference), which surfaces a
+    misleading "column not found in FROM clause" Binder error. The fix
+    lets native DuckDB functions resolve cleanly and surfaces a sensible
+    "function not found" for truly-unknown names."""
+
+    def test_psql_backslash_l_query_executes(self) -> None:
+        """psql's ``\\l`` calls ``pg_catalog.array_to_string`` (native to
+        DuckDB but not in our stub maps). Pre-fix: silently failed with
+        a misleading column-reference error."""
+        sql = (
+            "SELECT d.datname AS \"Name\", "
+            "pg_catalog.pg_get_userbyid(d.datdba) AS \"Owner\", "
+            "pg_catalog.pg_encoding_to_char(d.encoding) AS \"Encoding\", "
+            "d.datcollate AS \"Collate\", "
+            "pg_catalog.array_to_string(d.datacl, e'\\n') AS \"Access privileges\" "
+            "FROM pg_catalog.pg_database AS d ORDER BY 1"
+        )
+        batch = _run(sql)
+        assert len(batch.rows) == 1
+        row = batch.rows[0]
+        assert row["Name"] == "jaffle"   # _demo_catalog's datasource
+        assert row["Owner"] == "slayer"
+        assert row["Encoding"] == "UTF8"
+
+    def test_unknown_schema_qualified_call_is_bared(self) -> None:
+        """``pg_catalog.<fn>`` not in our stub maps is rewritten to a bare
+        call so DuckDB can resolve native functions transparently."""
+        # ``upper`` is native to DuckDB, NOT in _CONSTANT_STUB_LITERALS
+        # or _LOOKUP_STUB_NAMES. Pre-fix would fail with "column not found".
+        batch = _run("SELECT pg_catalog.upper('hello') AS u")
+        assert batch.rows == [{"u": "HELLO"}]
+
+
+# --- Review #4: regclass_map registers the real (schema, table) key ---------
+
+
+class TestRegclassMapCustomSchema:
+    """Pre-fix the regclass map only knew ``public.<table>`` and bare
+    ``<table>``. For custom postgres_schema datasources, Metabase's
+    ``COL_DESCRIPTION(FORMAT('%I.%I', table_schema, table_name)::regclass, …)``
+    looked up ``people.employees`` and got OID 0, silently dropping all
+    column descriptions in the BI tool."""
+
+    def test_regclass_map_includes_real_schema_qualified_form(self) -> None:
+        # Build a catalog whose datasource has a custom postgres_schema.
+        cat = build_catalog_grouped_by_schema(
+            models_by_datasource={"hr": [
+                SlayerModel(name="employees", data_source="hr", sql_table="employees",
+                            columns=[Column(name="id", type=DataType.INT, primary_key=True)]),
+            ]},
+            schema_by_datasource={"hr": "people"},
+        )
+        ex = CatalogSqlExecutor(catalog=cat, datasource="hr")
+        # All three lookup forms resolve to the same non-zero OID — the
+        # real ``people.employees`` form is what Metabase's COL_DESCRIPTION
+        # uses, and was missing pre-fix.
+        oid_qualified = ex._regclass_map.get("people.employees")
+        oid_public = ex._regclass_map.get("public.employees")
+        oid_bare = ex._regclass_map.get("employees")
+        assert oid_qualified is not None and oid_qualified > 0
+        assert oid_qualified == oid_public == oid_bare
+
+
+# --- Review #3: public.<table> fallback narrowed --------------------------
+
+
+class TestPublicSchemaFallbackGuard:
+    """The ``schema='public'`` fall-back now only fires when the catalog
+    has a single schema. With multiple schemas (custom postgres_schema in
+    use), ``public.<table>`` raises "Unknown schema" instead of silently
+    crossing isolation. The single-schema case (the common Metabase
+    deployment) keeps working."""
+
+    def test_public_fallback_works_with_single_schema(self) -> None:
+        """Backward-compat: one-datasource catalog accepts ``public.X``
+        as an alias for whatever the real schema name happens to be."""
+        from slayer.facade.translator import translate
+        sql = "SELECT id FROM public.orders"
+        result = translate(sql, _demo_catalog(), dialect="postgres")
+        assert result.facade_table.name == "orders"
+
+    def test_public_fallback_rejected_with_multiple_schemas(self) -> None:
+        """Isolation: with two datasources / two schemas, ``public.X``
+        can't reach across — caller must qualify with the real schema."""
+        from slayer.facade.translator import translate, TranslationError
+        cat_a = build_catalog(models_by_datasource={"sales": [
+            SlayerModel(name="orders", data_source="sales", sql_table="orders",
+                        columns=[Column(name="id", type=DataType.INT, primary_key=True)]),
+        ]})
+        cat_b = build_catalog(models_by_datasource={"hr": [
+            SlayerModel(name="people", data_source="hr", sql_table="people",
+                        columns=[Column(name="id", type=DataType.INT, primary_key=True)]),
+        ]})
+        # Merge them into one multi-schema catalog (mimics the
+        # postgres_schema-per-datasource layout).
+        from slayer.facade.catalog import FacadeCatalog as _FC
+        multi = _FC(
+            catalog_name=cat_a.catalog_name,
+            schemas=list(cat_a.schemas) + list(cat_b.schemas),
+        )
+        with pytest.raises(TranslationError, match="Unknown schema"):
+            translate("SELECT id FROM public.orders", multi, dialect="postgres")
