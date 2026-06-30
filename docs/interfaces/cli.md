@@ -139,16 +139,17 @@ slayer models delete orders
 
 ### `slayer inspect`
 
-Point-lookup of a single entity by reference + kind. Returns the rendered detail for **exactly one** entity — no ranking, no bundled memories (use `slayer search` for an entity *in context*).
+Point-lookup of an entity by reference + kind — no ranking, no bundled memories (use `slayer search` for an entity *in context*). Pass two or more references for a same-kind batch (DEV-1612).
 
 ```bash
 slayer inspect jaffle_shop.orders --type model
 slayer inspect jaffle_shop.orders.order_total --type column --no-compact
 slayer inspect memory:42 --type memory --no-compact
 slayer inspect jaffle_shop.orders --type model --format json
+slayer inspect jaffle_shop.orders.order_total jaffle_shop.orders.order_id --type column --no-compact  # batch
 ```
 
-`--type` is required (`datasource` / `model` / `column` / `measure` / `aggregation` / `memory`). The compact default is a schema skeleton for `--type model` (column / measure / aggregation names + joins, zero DB calls) and description-only for the other kinds; `--no-compact` returns the full render. See the [CLI reference](../reference/cli.md#slayer-inspect) for all flags.
+`--type` is required (`datasource` / `model` / `column` / `measure` / `aggregation` / `memory`) and applies to every reference. The compact default is a schema skeleton for `--type model` (column / measure / aggregation names + joins, zero DB calls) and description-only for the other kinds; `--no-compact` returns the full render. Passing multiple references returns one `## <canonical>` block per reference, in input order (a JSON array under `--format json`), with per-reference error isolation. See the [CLI reference](../reference/cli.md#slayer-inspect) for all flags.
 
 ### `slayer datasources`
 

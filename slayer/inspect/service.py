@@ -135,8 +135,13 @@ class InspectService:
                 f"descriptions_max_chars must be >= 0, got "
                 f"{descriptions_max_chars}."
             )
-        if isinstance(reference, list) and not reference:
-            raise ValueError("reference list must not be empty.")
+        if isinstance(reference, list):
+            if not reference:
+                raise ValueError("reference list must not be empty.")
+            if any(not isinstance(ref, str) for ref in reference):
+                raise ValueError("reference list must contain only strings.")
+        elif not isinstance(reference, str):
+            raise ValueError("reference must be a string or a list of strings.")
 
         # 2. Model-only-arg warnings (skip entirely for model entity_type).
         #    These are global-arg warnings, so the SAME base list seeds every
@@ -390,15 +395,13 @@ class InspectService:
     # Datasource
     # ------------------------------------------------------------------
 
-    async def _inspect_datasource(
-        self,
-        *,
-        reference: str,
-        compact: bool,
-        fmt: str,
-        descriptions_max_chars: int | None,
-        warnings: list[str],
-    ) -> _OneResult:
+    async def _resolve_single_canonical(
+        self, *, reference: str, warnings: list[str],
+    ) -> tuple[str, list[str]] | _OneResult:
+        """Resolve ``reference`` to its single canonical form for the
+        datasource / leaf paths. Returns ``(canonical, warnings)`` on success,
+        or an error ``_OneResult`` (the resolver raised, or the reference did
+        not resolve to exactly one canonical id)."""
         try:
             res = await resolve_entity(
                 reference, storage=self._storage, source_model=None,
@@ -414,7 +417,23 @@ class InspectService:
                 f"Internal error: reference '{reference}' resolved to "
                 f"{len(res.canonical_forms)} canonical forms; expected 1."
             ))
-        canonical = res.canonical_forms[0]
+        return res.canonical_forms[0], warnings
+
+    async def _inspect_datasource(
+        self,
+        *,
+        reference: str,
+        compact: bool,
+        fmt: str,
+        descriptions_max_chars: int | None,
+        warnings: list[str],
+    ) -> _OneResult:
+        resolved = await self._resolve_single_canonical(
+            reference=reference, warnings=warnings,
+        )
+        if isinstance(resolved, _OneResult):
+            return resolved
+        canonical, warnings = resolved
 
         known = set(await self._storage.list_datasources())
         ds_name: str | None = None
@@ -625,22 +644,12 @@ class InspectService:
         descriptions_max_chars: int | None,
         warnings: list[str],
     ) -> _OneResult:
-        try:
-            res = await resolve_entity(
-                reference, storage=self._storage, source_model=None,
-            )
-        except (EntityResolutionError, AmbiguousModelError) as exc:
-            # AmbiguousModelError (a SlayerError sibling, NOT a subclass of
-            # EntityResolutionError) escapes resolve_entity's bare-name model
-            # leg; surface its message instead of crashing the surface.
-            return _OneResult(None, True, str(exc))
-        warnings = warnings + list(res.warnings)
-        if len(res.canonical_forms) != 1:
-            return _OneResult(None, True, (
-                f"Internal error: reference '{reference}' resolved to "
-                f"{len(res.canonical_forms)} canonical forms; expected 1."
-            ))
-        canonical = res.canonical_forms[0]
+        resolved = await self._resolve_single_canonical(
+            reference=reference, warnings=warnings,
+        )
+        if isinstance(resolved, _OneResult):
+            return resolved
+        canonical, warnings = resolved
         if canonical.count(".") != 2:
             return _OneResult(canonical, True, (
                 f"'{reference}' resolved to '{canonical}', which is not a "

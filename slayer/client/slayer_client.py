@@ -493,8 +493,9 @@ class SlayerClient:
         ``entity_type`` is required, one of
         ``datasource``/``model``/``column``/``measure``/``aggregation``/
         ``memory``, and applies to every id in a list. A single ``str`` keeps
-        its byte-for-byte single output; a list returns one block per id in
-        input order with per-id error isolation.
+        its byte-for-byte single output; a list returns, in input order, one
+        ``## <canonical>`` block per id under ``format="markdown"`` or a JSON
+        array under ``format="json"``, with per-id error isolation.
         """
         if self._storage is not None:
             # Local import: slayer.inspect.service transitively imports the

@@ -171,7 +171,8 @@ class SearchRequest(BaseModel):
 
 class InspectRequest(BaseModel):
     """Body for ``POST /inspect`` (DEV-1588). Mirrors the MCP / CLI /
-    SlayerClient ``inspect`` surfaces — a single-entity point-lookup."""
+    SlayerClient ``inspect`` surfaces — a point-lookup of one entity, or a
+    homogeneous-kind batch when ``reference`` is a list (DEV-1612)."""
 
     model_config = ConfigDict(extra="forbid")
 

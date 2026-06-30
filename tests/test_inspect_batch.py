@@ -35,15 +35,17 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Aggregation,
     Column,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
     SlayerModel,
 )
 from slayer.inspect.service import InspectService
 from slayer.storage.yaml_storage import YAMLStorage
+
+# Reuse the canonical inspect seed (mydb.orders with amount/customer_id/big
+# columns, an aov measure, a big aggregation, and a customers join) instead of
+# copying it — keeps the two inspect suites from duplicating fixture code.
+from tests.test_inspect import _seed_basic
 
 _BLOCK_SEP = "\n\n---\n\n"
 
@@ -51,60 +53,6 @@ _BLOCK_SEP = "\n\n---\n\n"
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-async def _seed_basic(storage: YAMLStorage) -> None:
-    await storage.save_datasource(
-        DatasourceConfig(
-            name="mydb", type="sqlite", database=":memory:",
-            description="Primary analytics warehouse.",
-        )
-    )
-    await storage.save_model(SlayerModel(
-        name="customers",
-        sql_table="customers",
-        data_source="mydb",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(
-                name="region", sql="region", type=DataType.TEXT,
-                description="Customer billing region.",
-            ),
-        ],
-    ))
-    await storage.save_model(SlayerModel(
-        name="orders",
-        sql_table="orders",
-        data_source="mydb",
-        description="One row per placed order.",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(
-                name="amount", sql="amount", type=DataType.DOUBLE,
-                description="Order total in USD.",
-            ),
-            Column(
-                name="customer_id", sql="customer_id", type=DataType.INT,
-                description="FK to customers.",
-            ),
-        ],
-        measures=[
-            ModelMeasure(
-                name="aov", formula="amount:sum / *:count",
-                description="Average order value.",
-            ),
-        ],
-        aggregations=[
-            Aggregation(
-                name="big", formula="MAX({col})",
-                description="A custom aggregation named 'big'.",
-            ),
-        ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[("customer_id", "id")]),
-        ],
-    ))
-    await storage.set_datasource_priority(["mydb"])
 
 
 @pytest.fixture
@@ -171,18 +119,18 @@ class TestSingleStrBackCompat:
 class TestMarkdownBatch:
     async def test_list_ordered_blocks(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference=["mydb.orders.amount", "mydb.orders.customer_id"],
+            reference=["mydb.orders.amount", "mydb.orders.big"],
             entity_type="column", compact=False,
         )
         assert "## mydb.orders.amount" in out
-        assert "## mydb.orders.customer_id" in out
+        assert "## mydb.orders.big" in out
         # Input order preserved.
-        assert out.index("mydb.orders.amount") < out.index("mydb.orders.customer_id")
+        assert out.index("## mydb.orders.amount") < out.index("## mydb.orders.big")
         # Two blocks → exactly one separator.
         assert out.count(_BLOCK_SEP) == 1
         # Bodies present under their headers.
         assert "Order total in USD." in out
-        assert "FK to customers." in out
+        assert "Order amount, aliased." in out
 
     async def test_header_echoes_resolved_canonical(
         self, svc: InspectService
@@ -258,7 +206,7 @@ class TestMarkdownBatch:
     async def test_compact_true_vs_false_on_list(
         self, svc: InspectService
     ) -> None:
-        refs = ["mydb.orders.amount", "mydb.orders.customer_id"]
+        refs = ["mydb.orders.amount", "mydb.orders.big"]
         compact = await svc.inspect(
             reference=refs, entity_type="column", compact=True,
         )
@@ -373,6 +321,21 @@ class TestGlobalArgErrorsOnList:
         with pytest.raises(ValueError, match="empty"):
             await svc.inspect(reference=[], entity_type="column")
 
+    async def test_non_string_list_member_raises(
+        self, svc: InspectService
+    ) -> None:
+        # A malformed direct call must raise the contract error, not crash deep
+        # in a per-kind helper (e.g. _inspect_memory's startswith).
+        with pytest.raises(ValueError, match="only strings"):
+            await svc.inspect(reference=["mydb.orders.amount", 123],
+                              entity_type="column")
+
+    async def test_non_string_non_list_reference_raises(
+        self, svc: InspectService
+    ) -> None:
+        with pytest.raises(ValueError, match="string or a list"):
+            await svc.inspect(reference=123, entity_type="column")
+
     async def test_bad_entity_type_raises_for_list(
         self, svc: InspectService
     ) -> None:
@@ -481,7 +444,7 @@ class TestPerIdFieldsAcrossList:
         from slayer.inspect.model_render import _TRUNCATION_MARKER
 
         arr = json.loads(await svc.inspect(
-            reference=["mydb.orders.amount", "mydb.orders.customer_id"],
+            reference=["mydb.orders.amount", "mydb.orders.big"],
             entity_type="column", compact=True, format="json",
             descriptions_max_chars=5,
         ))

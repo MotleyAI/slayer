@@ -369,8 +369,17 @@ class TestMcpBatch:
 
         server = create_mcp_server(storage=mcp_storage)
         tool = {t.name: t for t in await server.list_tools()}["inspect"]
-        ref_schema = json.dumps(tool.inputSchema["properties"]["reference"])
-        assert "array" in ref_schema
+        ref_schema = tool.inputSchema["properties"]["reference"]
+        # Structural assertion (not a substring match): the union must keep BOTH
+        # the scalar str branch and a list[str] branch — so it would fail if the
+        # batch branch regressed to list[Any] or the scalar branch disappeared.
+        branches = ref_schema.get("anyOf") or ref_schema.get("oneOf") or [ref_schema]
+        assert any(b.get("type") == "string" for b in branches), ref_schema
+        array_branches = [b for b in branches if b.get("type") == "array"]
+        assert array_branches, ref_schema
+        assert any(
+            b.get("items", {}).get("type") == "string" for b in array_branches
+        ), ref_schema
         assert "list" in (tool.description or "").lower()
 
     async def test_inspect_tool_list_one_bad_id(
@@ -586,7 +595,7 @@ class TestSlayerClientBatch:
         assert client._engine is None  # remote mode
         captured: dict = {}
 
-        async def _fake_request(*, method, path, json=None, params=None):
+        async def _fake_request(*, method, path, json=None, params=None):  # NOSONAR(S7503) — must be a coroutine to replace the awaited _request; no await needed in the stub body
             captured.update({"json": json})
             return {"result": "REMOTE BATCH ASYNC"}
 

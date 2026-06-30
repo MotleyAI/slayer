@@ -555,7 +555,10 @@ examples:
     # ── inspect (DEV-1588) ───────────────────────────────────────────
     inspect_parser = subparsers.add_parser(
         "inspect",
-        help="Inspect exactly one entity by reference and kind (DEV-1588)",
+        help=(
+            "Inspect one entity by reference and kind, or several of the same "
+            "kind at once (pass multiple references) (DEV-1588, DEV-1612)"
+        ),
     )
     inspect_parser.add_argument(
         "reference",
