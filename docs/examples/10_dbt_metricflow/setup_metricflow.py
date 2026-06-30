@@ -117,10 +117,13 @@ def clone_dbt_project() -> Path:
             raise MetricFlowDemoError(
                 f"Fetched commit {head} != pinned {DBT_PIN_SHA}; update the pin."
             )
-    except subprocess.CalledProcessError as exc:
+    except (subprocess.CalledProcessError, OSError) as exc:
+        # OSError covers a missing `git` binary (FileNotFoundError); both map to
+        # the structured demo error the notebook / test skip-guard recognise.
         shutil.rmtree(tmp, ignore_errors=True)
+        detail = getattr(exc, "stderr", None) or exc
         raise MetricFlowDemoError(
-            f"Failed to clone {DBT_REPO_URL} @ {DBT_PIN_SHA}: {exc.stderr or exc}"
+            f"Failed to clone {DBT_REPO_URL} @ {DBT_PIN_SHA}: {detail}"
         ) from exc
 
     tmp.rename(DBT_CHECKOUT)
@@ -143,9 +146,12 @@ def load_csvs_into_duckdb(csv_dir: Path, db_path: Path) -> List[str]:
         if not csv_files:
             raise MetricFlowDemoError(f"No CSV files found in {csv_dir}")
         for csv_file in csv_files:
+            # Bind the path as a parameter so an apostrophe in the checkout path
+            # can't break the SQL string.
             conn.execute(
                 f'CREATE TABLE "{csv_file.stem}" AS '
-                f"SELECT * FROM read_csv_auto('{csv_file}', header=true)"
+                "SELECT * FROM read_csv_auto(?, header=true)",
+                [str(csv_file)],
             )
         # FireClaim.Premium is all-NULL in the CSV, so DuckDB infers VARCHAR;
         # coerce to DOUBLE so the numeric measure converts/queries correctly.
@@ -216,7 +222,12 @@ def ensure_metricflow_demo() -> "tuple[SlayerClient, Path, ConversionResult]":
     # entity" notices so the notebook output stays focused on the demo.
     logging.getLogger("slayer.dbt").setLevel(logging.ERROR)
 
-    reuse = _COMPLETE_MARKER.exists() and _checkout_is_valid(DBT_CHECKOUT) and DB_PATH.exists()
+    reuse = (
+        _COMPLETE_MARKER.exists()
+        and _checkout_is_valid(DBT_CHECKOUT)
+        and DB_PATH.exists()
+        and MODELS_DIR.exists()
+    )
     if not reuse:
         if _COMPLETE_MARKER.exists():
             _COMPLETE_MARKER.unlink()
@@ -224,8 +235,10 @@ def ensure_metricflow_demo() -> "tuple[SlayerClient, Path, ConversionResult]":
         csv_dir = dbt_path / _CSV_SUBDIR
         if not csv_dir.exists():
             raise MetricFlowDemoError(f"CSV data dir not found: {csv_dir}")
-        load_csvs_into_duckdb(csv_dir, DB_PATH)
-        result = convert_dbt_to_slayer(dbt_path, MODELS_DIR, DB_PATH)
+        load_csvs_into_duckdb(csv_dir=csv_dir, db_path=DB_PATH)
+        result = convert_dbt_to_slayer(
+            dbt_project_path=dbt_path, models_dir=MODELS_DIR, db_path=DB_PATH
+        )
         _COMPLETE_MARKER.touch()
     else:
         logger.info("Reusing cached MetricFlow demo under %s", CACHE_DIR)

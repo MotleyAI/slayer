@@ -14,6 +14,7 @@ from slayer.dbt import converter as converter_module
 from slayer.dbt.converter import DbtConversionError, DbtToSlayerConverter
 from slayer.dbt.models import (
     DbtColumnMeta,
+    DbtConfig,
     DbtDefaults,
     DbtDimension,
     DbtEntity,
@@ -1499,3 +1500,51 @@ class TestDbtConverterRenamedDataTypes:
         orders = next(m for m in result.models if m.name == "orders")
         amount = next(c for c in orders.columns if c.name == "amount")
         assert amount.type == DataType.DOUBLE
+
+
+def test_entity_metadata_merged_into_reused_pk_column() -> None:
+    """DEV-1595: when a primary/unique entity's column already exists (e.g. as a
+    dimension), the entity's role/label/description/meta is carried onto the
+    reused column instead of dropped — without clobbering values it already has.
+    """
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(
+                name="orders",
+                model="orders",
+                dimensions=[
+                    DbtDimension(
+                        name="id",
+                        type="categorical",
+                        description="dimension-owned description",
+                    ),
+                ],
+                entities=[
+                    DbtEntity(
+                        name="order",
+                        type="primary",
+                        expr="id",
+                        label="Order ID",
+                        description="entity-owned description",
+                        role="order_key",
+                        config=DbtConfig(meta={"source": "crm"}),
+                    ),
+                ],
+                measures=[DbtMeasure(name="total", agg="sum", expr="amount")],
+            ),
+        ],
+        metrics=[],
+    )
+    result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
+    orders = next(m for m in result.models if m.name == "orders")
+    id_col = next(c for c in orders.columns if c.name == "id")
+
+    assert id_col.primary_key is True
+    # Existing dimension description is preserved (entity does not clobber it).
+    assert id_col.description == "dimension-owned description"
+    # Blank label is filled from the entity.
+    assert id_col.label == "Order ID"
+    # Entity meta (config.meta + role) is carried onto the reused column.
+    assert id_col.meta is not None
+    assert id_col.meta.get("role") == "order_key"
+    assert id_col.meta.get("source") == "crm"

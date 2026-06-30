@@ -57,9 +57,10 @@ def notebook_path(request):
 
 
 # The dbt MetricFlow notebook bootstraps by shallow-cloning an upstream GitHub
-# repo on first run. If that clone cache is absent AND GitHub is unreachable,
-# skip rather than fail — the notebook cannot bootstrap offline. Once cloned,
-# the cache makes it network-free.
+# repo on first run. When that bootstrap can't complete offline, skip rather
+# than fail. The helper writes a `.complete` marker only after a fully built
+# cache, so its presence is the authoritative "network-free from here" signal;
+# a bare/partial clone dir is not enough.
 _METRICFLOW_NB_DIR = "10_dbt_metricflow"
 
 
@@ -73,9 +74,10 @@ def _github_reachable(host: str = "github.com", port: int = 443, timeout: float 
 
 def test_notebook_runs_without_errors(notebook_path):
     """Execute the notebook and assert it completes without errors."""
-    if _METRICFLOW_NB_DIR in notebook_path.parts:
-        clone_cache = notebook_path.parent / ".cache" / "semantic-layer-llm-benchmarking"
-        if not clone_cache.exists() and not _github_reachable():
+    is_metricflow = _METRICFLOW_NB_DIR in notebook_path.parts
+    if is_metricflow:
+        complete_marker = notebook_path.parent / ".cache" / ".complete"
+        if not complete_marker.exists() and not _github_reachable():
             pytest.skip("GitHub unreachable; cannot bootstrap the MetricFlow notebook")
 
     with open(notebook_path) as f:
@@ -87,4 +89,12 @@ def test_notebook_runs_without_errors(notebook_path):
         kernel_name="python3",
         resources={"metadata": {"path": str(notebook_path.parent)}},
     )
-    client.execute()
+    try:
+        client.execute()
+    except nbclient.exceptions.CellExecutionError as exc:
+        # A reachable socket but a failing `git fetch` (or a stale/partial cache)
+        # surfaces as MetricFlowDemoError mid-run; skip when GitHub is unreachable
+        # rather than reporting a bootstrap failure as a notebook bug.
+        if is_metricflow and "MetricFlowDemoError" in str(exc) and not _github_reachable():
+            pytest.skip(f"MetricFlow notebook could not bootstrap offline: {exc}")
+        raise

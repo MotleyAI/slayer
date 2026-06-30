@@ -453,9 +453,20 @@ class DbtToSlayerConverter:
                     ))
                     entity_col_names.add(col_name)
                 else:
+                    entity_meta = self._entity_meta(entity)
                     for c in cols:
                         if c.name == col_name:
                             c.primary_key = True
+                            # Carry the entity's metadata onto the reused column
+                            # without clobbering anything the column already has
+                            # (parity with the synthetic-column branch above).
+                            if c.description is None:
+                                c.description = entity.description
+                            if c.label is None:
+                                c.label = entity.label
+                            if entity_meta:
+                                c.meta = {**entity_meta, **(c.meta or {})}
+                            break
 
         if sm.primary_entity:
             pe_name = sm.primary_entity
