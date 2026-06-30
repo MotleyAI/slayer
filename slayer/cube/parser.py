@@ -29,22 +29,38 @@ def _collect_yaml_paths(directory: str) -> list[str]:
     return paths
 
 
-def _member_has_jinja(item: dict) -> bool:
+def _str_has_jinja(value) -> bool:
+    return isinstance(value, str) and contains_jinja(value)
+
+
+def _member_has_jinja(item) -> bool:
+    """True if any templatable field of a member (``sql`` / ``filter`` /
+    measure ``filters`` / ``case`` predicates) contains Jinja."""
     if not isinstance(item, dict):
         return False
-    for key in ("sql", "filter"):
-        v = item.get(key)
-        if isinstance(v, str) and contains_jinja(v):
-            return True
-    for f in item.get("filters") or []:
-        if isinstance(f, dict) and isinstance(f.get("sql"), str) and contains_jinja(f["sql"]):
-            return True
+    if _str_has_jinja(item.get("sql")) or _str_has_jinja(item.get("filter")):
+        return True
+    if any(_str_has_jinja((f or {}).get("sql")) for f in item.get("filters") or []):
+        return True
     case = item.get("case")
     if isinstance(case, dict):
-        for w in case.get("when") or []:
-            if isinstance(w, dict) and isinstance(w.get("sql"), str) and contains_jinja(w["sql"]):
-                return True
+        return any(_str_has_jinja((w or {}).get("sql")) for w in case.get("when") or [])
     return False
+
+
+def _filter_jinja(items: list, *, cube_name, path, issues, has_jinja) -> list:
+    kept = []
+    for item in items:
+        if has_jinja(item):
+            issues.append(CubeConversionIssue(
+                category=CubeIssueCategory.REQUIRES_TEMPLATING, severity="warning",
+                cube=cube_name,
+                member=item.get("name") if isinstance(item, dict) else None,
+                message=f"Member in '{path}' uses Jinja templating; skipped.",
+            ))
+        else:
+            kept.append(item)
+    return kept
 
 
 def _strip_jinja_members(raw_cube: dict, issues: list, path: str) -> None:
@@ -52,40 +68,67 @@ def _strip_jinja_members(raw_cube: dict, issues: list, path: str) -> None:
     cube_name = raw_cube.get("name")
     for key in ("dimensions", "measures", "segments"):
         items = raw_cube.get(key)
-        if not isinstance(items, list):
-            continue
-        kept = []
-        for item in items:
-            if _member_has_jinja(item) or (
-                key == "segments" and isinstance(item, dict)
-                and isinstance(item.get("sql"), str) and contains_jinja(item["sql"])
-            ):
-                issues.append(CubeConversionIssue(
-                    category=CubeIssueCategory.REQUIRES_TEMPLATING, severity="warning",
-                    cube=cube_name, member=item.get("name") if isinstance(item, dict) else None,
-                    message=f"Member in '{path}' uses Jinja templating; skipped.",
-                ))
-            else:
-                kept.append(item)
-        raw_cube[key] = kept
+        if isinstance(items, list):
+            raw_cube[key] = _filter_jinja(
+                items, cube_name=cube_name, path=path, issues=issues,
+                has_jinja=_member_has_jinja)
     joins = raw_cube.get("joins")
     if isinstance(joins, list):
-        kept = []
-        for j in joins:
-            if isinstance(j, dict) and isinstance(j.get("sql"), str) and contains_jinja(j["sql"]):
-                issues.append(CubeConversionIssue(
-                    category=CubeIssueCategory.REQUIRES_TEMPLATING, severity="warning",
-                    cube=cube_name, message=f"Join in '{path}' uses Jinja; skipped.",
-                ))
-            else:
-                kept.append(j)
-        raw_cube["joins"] = kept
+        raw_cube["joins"] = _filter_jinja(
+            joins, cube_name=cube_name, path=path, issues=issues,
+            has_jinja=lambda j: _str_has_jinja((j or {}).get("sql")))
 
 
 def _as_list(value) -> list:
     if value is None:
         return []
     return value if isinstance(value, list) else [value]
+
+
+def _load_yaml(path: str, issues: list):
+    with open(path, encoding="utf-8") as fh:
+        raw_text = fh.read()
+    try:
+        return yaml.safe_load(raw_text)
+    except yaml.YAMLError:
+        templated = contains_jinja(raw_text)
+        category = (CubeIssueCategory.REQUIRES_TEMPLATING if templated
+                    else CubeIssueCategory.PARSE_ERROR)
+        issues.append(CubeConversionIssue(
+            category=category, severity="warning",
+            message=f"File '{path}' could not be parsed as YAML"
+                    + (" (Jinja templating)." if templated else "."),
+        ))
+        return None
+
+
+def _parse_cubes(data: dict, path: str, cubes: list, issues: list) -> None:
+    for raw_cube in _as_list(data.get("cubes")):
+        if not isinstance(raw_cube, dict):
+            continue
+        _strip_jinja_members(raw_cube, issues, path)
+        try:
+            cubes.append(CubeCube.model_validate(raw_cube))
+        except Exception as exc:  # noqa: BLE001 — keep parsing the rest
+            issues.append(CubeConversionIssue(
+                category=CubeIssueCategory.PARSE_ERROR, severity="warning",
+                cube=raw_cube.get("name"),
+                message=f"Failed to parse cube in '{path}': {exc}",
+            ))
+
+
+def _parse_views(data: dict, path: str, views: list, issues: list) -> None:
+    for raw_view in _as_list(data.get("views")):
+        if not isinstance(raw_view, dict):
+            continue
+        try:
+            views.append(CubeView.model_validate(raw_view))
+        except Exception as exc:  # noqa: BLE001 — keep parsing the rest
+            issues.append(CubeConversionIssue(
+                category=CubeIssueCategory.PARSE_ERROR, severity="warning",
+                view=raw_view.get("name"),
+                message=f"Failed to parse view in '{path}': {exc}",
+            ))
 
 
 def parse_cube_project(project_path: str) -> tuple[CubeProject, list[CubeConversionIssue]]:
@@ -99,47 +142,10 @@ def parse_cube_project(project_path: str) -> tuple[CubeProject, list[CubeConvers
     issues: list[CubeConversionIssue] = []
 
     for path in _collect_yaml_paths(project_path):
-        with open(path, encoding="utf-8") as fh:
-            raw_text = fh.read()
-        try:
-            data = yaml.safe_load(raw_text)
-        except yaml.YAMLError:
-            category = (CubeIssueCategory.REQUIRES_TEMPLATING if contains_jinja(raw_text)
-                        else CubeIssueCategory.PARSE_ERROR)
-            issues.append(CubeConversionIssue(
-                category=category, severity="warning",
-                message=f"File '{path}' could not be parsed as YAML"
-                        + (" (Jinja templating)." if category == CubeIssueCategory.REQUIRES_TEMPLATING
-                           else "."),
-            ))
-            continue
-
+        data = _load_yaml(path, issues)
         if not isinstance(data, dict):
             continue
-
-        for raw_cube in _as_list(data.get("cubes")):
-            if not isinstance(raw_cube, dict):
-                continue
-            _strip_jinja_members(raw_cube, issues, path)
-            try:
-                cubes.append(CubeCube.model_validate(raw_cube))
-            except Exception as exc:  # noqa: BLE001 — keep parsing the rest
-                issues.append(CubeConversionIssue(
-                    category=CubeIssueCategory.PARSE_ERROR, severity="warning",
-                    cube=raw_cube.get("name"),
-                    message=f"Failed to parse cube in '{path}': {exc}",
-                ))
-
-        for raw_view in _as_list(data.get("views")):
-            if not isinstance(raw_view, dict):
-                continue
-            try:
-                views.append(CubeView.model_validate(raw_view))
-            except Exception as exc:  # noqa: BLE001
-                issues.append(CubeConversionIssue(
-                    category=CubeIssueCategory.PARSE_ERROR, severity="warning",
-                    view=raw_view.get("name"),
-                    message=f"Failed to parse view in '{path}': {exc}",
-                ))
+        _parse_cubes(data, path, cubes, issues)
+        _parse_views(data, path, views, issues)
 
     return CubeProject(cubes=cubes, views=views), issues

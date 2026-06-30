@@ -112,6 +112,6 @@ def test_hidden_dirs_and_target_skipped(tmp_path):
 
 
 def test_empty_dir_yields_empty_project(tmp_path):
-    project, issues = parse_cube_project(str(tmp_path))
+    project, _ = parse_cube_project(str(tmp_path))
     assert project.cubes == []
     assert project.views == []

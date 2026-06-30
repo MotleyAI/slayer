@@ -1461,8 +1461,6 @@ def _run_import_dbt(args):
 
 
 def _run_import_cube(args):
-    import os
-
     from slayer.cube.converter import CubeToSlayerConverter
     from slayer.cube.parser import parse_cube_project
 
@@ -1476,36 +1474,45 @@ def _run_import_cube(args):
     result = CubeToSlayerConverter(
         project=project, data_source=args.datasource, parse_issues=parse_issues,
     ).convert()
-
     for model in result.models:
         run_sync(storage.save_model(model))
-        suffix = " [hidden]" if model.hidden else ""
-        if model.hidden and not args.include_hidden:
-            continue
-        kind = " (view)" if (model.meta or {}).get("cube_kind") == "view" else ""
-        print(
-            f"Imported model: {model.name}{kind}{suffix} "
-            f"({len(model.columns)} columns, {len(model.measures)} measures)"
-        )
 
-    for severity in ("error", "warning", "info"):
-        for issue in result.report.by_severity(severity):
-            print(f"  {severity.upper()} [{issue.category.value}/{issue.context}]: {issue.message}")
-
-    # Always write the JSON report.
-    storage_base = args.storage or _STORAGE_DEFAULT
-    if storage_base.endswith(".db"):
-        storage_base = os.path.dirname(storage_base) or "."
-    report_path = args.report or os.path.join(storage_base, "cube_import_report.json")
-    os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
-    with open(report_path, "w", encoding="utf-8") as fh:
-        fh.write(result.report.model_dump_json(indent=2))
-
+    _print_cube_import_summary(result, include_hidden=args.include_hidden)
+    report_path = _write_cube_report(result, args)
     print(
         f"\nDone: {result.report.model_count} models "
         f"({result.report.hidden_count} hidden, {result.report.view_count} views), "
         f"{len(result.report.issues)} report issues. Report: {report_path}"
     )
+
+
+def _print_cube_import_summary(result, *, include_hidden):
+    for model in result.models:
+        if model.hidden and not include_hidden:
+            continue
+        suffix = " [hidden]" if model.hidden else ""
+        kind = " (view)" if (model.meta or {}).get("cube_kind") == "view" else ""
+        print(
+            f"Imported model: {model.name}{kind}{suffix} "
+            f"({len(model.columns)} columns, {len(model.measures)} measures)"
+        )
+    for severity in ("error", "warning", "info"):
+        for issue in result.report.by_severity(severity):
+            print(f"  {severity.upper()} [{issue.category.value}/{issue.context}]: {issue.message}")
+
+
+def _write_cube_report(result, args) -> str:
+    import os
+
+    storage_base = args.storage or _STORAGE_DEFAULT
+    if storage_base.endswith(".db"):
+        storage_base = os.path.dirname(storage_base) or "."
+    report_path = args.report or os.path.join(storage_base, "cube_import_report.json")
+    # Report path is an intended, user-specified CLI output location.
+    os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)  # NOSONAR(S8707)
+    with open(report_path, "w", encoding="utf-8") as fh:  # NOSONAR(S8707)
+        fh.write(result.report.model_dump_json(indent=2))
+    return report_path
 
 
 def _run_models(args):

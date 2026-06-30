@@ -40,7 +40,13 @@ _FORMAT_MAP = {
 }
 _DURATION_UNITS = {"day": "d", "month": "m", "week": "w", "year": "y",
                    "hour": "h", "minute": "min", "second": "s"}
+_STAR_COUNT = "*:count"
 _CUBE_INFRA_FIELDS = ("refresh_key", "calendar", "hierarchies", "access_policy", "sql_alias")
+
+
+def _sql_str_literal(value) -> str:
+    """Render a value as a single-quoted SQL string literal, escaping quotes."""
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 class _MeasureInfo(BaseModel):
@@ -172,7 +178,7 @@ class CubeToSlayerConverter:
             val = getattr(cube, field, None)
             if val is not None:
                 unmapped[field] = val
-        for key in list(unmapped):
+        for key in unmapped:
             report.add(CubeConversionIssue(
                 category=CubeIssueCategory.UNMAPPED_INFRA, severity="warning",
                 cube=cube.name, message=f"'{key}' has no SLayer equivalent; stashed in meta.",
@@ -206,7 +212,8 @@ class CubeToSlayerConverter:
                 meta=meta or None, columns=columns, measures=measures, joins=joins,
                 **source,
             )
-        except Exception as exc:  # noqa: BLE001 — illegal name etc. → report, don't crash
+        # Illegal model name etc. → report, don't crash the run.
+        except Exception as exc:  # noqa: BLE001
             report.add(CubeConversionIssue(
                 category=CubeIssueCategory.PARSE_ERROR, severity="error",
                 cube=cube.name, message=f"Could not build model: {exc}",
@@ -275,8 +282,8 @@ class CubeToSlayerConverter:
         name = names.take(dim.name)
         columns.append(Column(
             name=name, sql=sql, type=_DIM_TYPE_MAP.get(dim.type, DataType.TEXT),
-            primary_key=dim.primary_key, label=dim.title, description=dim.description,
-            meta=dim.meta,
+            primary_key=dim.primary_key, hidden=not dim.public,
+            label=dim.title, description=dim.description, meta=dim.meta,
             format=_map_format(dim.format, report, cube=cube.name, member=dim.name),
         ))
 
@@ -339,7 +346,7 @@ class CubeToSlayerConverter:
             if meas.rolling_window else None
 
         if meas.type == "count" and not meas.sql:
-            formula = "*:count" + (f"(window='{window}')" if window else "")
+            formula = _STAR_COUNT + (f"(window='{window}')" if window else "")
             self._emit_measure(measures, names, final_name, formula, meas, report, cube.name)
             info[meas.name] = _MeasureInfo(kind="star_count")
             return
@@ -397,7 +404,8 @@ class CubeToSlayerConverter:
         name = names.take(seg.name, suffix="_seg")
         columns.append(Column(
             name=name, sql=translate_cube_refs(seg.sql, mode="sql", cube=cube.name),
-            type=DataType.BOOLEAN, label=seg.title, description=seg.description, meta=seg.meta))
+            type=DataType.BOOLEAN, hidden=not seg.public,
+            label=seg.title, description=seg.description, meta=seg.meta))
         report.add(CubeConversionIssue(
             category=CubeIssueCategory.SEGMENT_AS_COLUMN, severity="info",
             cube=cube.name, member=seg.name,
@@ -474,7 +482,7 @@ class CubeToSlayerConverter:
         return good_cols, good_measures
 
     def _formula_parses(self, formula: str, known_names: set[str]) -> bool:
-        nm = {n: "*:count" for n in known_names}
+        nm = dict.fromkeys(known_names, _STAR_COUNT)
         try:
             parse_formula(formula, named_measures=nm or None)
             return True
@@ -590,7 +598,10 @@ class CubeToSlayerConverter:
         meas = [m.name for m in cube.measures]
         exclude = set(ref.excludes or [])
         if ref.includes in (None, "*"):
-            chosen = [n for n in dims + meas if n not in exclude]
+            # `includes: "*"` must not re-export members the cube marked private.
+            private = {d.name for d in cube.dimensions if not d.public} \
+                | {m.name for m in cube.measures if not m.public}
+            chosen = [n for n in dims + meas if n not in exclude and n not in private]
         else:
             chosen = [n for n in ref.includes if n not in exclude]
         chosen_set = set(chosen)
@@ -616,7 +627,7 @@ class CubeToSlayerConverter:
             return
         exported = names.take(f"{prefix}{mname}", suffix="_measure")
         if info.kind == "star_count":
-            formula = "*:count" if is_root else f"{cube_name}.*:count"
+            formula = _STAR_COUNT if is_root else f"{cube_name}.{_STAR_COUNT}"
         elif info.kind == "agg":
             base = f"{info.underlying_col}:{info.agg}"
             if is_root:
@@ -647,9 +658,9 @@ class CubeToSlayerConverter:
             values = df.get("values") or []
             col = self._resolve_view_member(member, root_cube_name)
             if op == "equals" and len(values) == 1:
-                filters.append(f"{col} = '{values[0]}'")
+                filters.append(f"{col} = {_sql_str_literal(values[0])}")
             elif op in ("equals", "in") and values:
-                vlist = ", ".join(f"'{v}'" for v in values)
+                vlist = ", ".join(_sql_str_literal(v) for v in values)
                 filters.append(f"{col} IN ({vlist})")
             else:
                 report.add(CubeConversionIssue(

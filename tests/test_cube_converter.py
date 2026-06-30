@@ -53,6 +53,19 @@ def test_cube_becomes_table_backed_model():
     assert orders.get_column("id").type == DataType.DOUBLE
 
 
+def test_public_false_dimension_is_hidden():
+    project = CubeProject(cubes=[CubeCube(
+        name="orders", sql_table="public.orders",
+        dimensions=[
+            CubeDimension(name="id", sql="{CUBE}.id", type="number"),
+            CubeDimension(name="secret", sql="{CUBE}.secret", type="string", public=False),
+        ],
+    )])
+    models, _ = _convert(project)
+    assert models["orders"].get_column("secret").hidden is True
+    assert models["orders"].get_column("id").hidden is False
+
+
 def test_public_false_cube_is_hidden_and_title_goes_to_meta():
     project = CubeProject(cubes=[CubeCube(
         name="internal", sql_table="public.internal", public=False, title="Internal",
@@ -490,7 +503,7 @@ def test_unmapped_cube_infra_stashed_and_reported(field, value):
 
 
 def test_drill_members_reported():
-    models, report = _convert(_orders_with(
+    _, report = _convert(_orders_with(
         [CubeMeasure(name="count", type="count", drill_members=["id", "status"])]))
     assert any(i.category == CubeIssueCategory.UNMAPPED_INFRA for i in report.issues)
 

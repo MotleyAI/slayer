@@ -217,6 +217,28 @@ def test_view_extends_flattens_member_lists():
     assert child_model.get_measure("total_revenue") is not None  # own
 
 
+def test_view_star_skips_private_member():
+    cubes = _orders_customers_cubes()
+    # mark a root-cube dimension private
+    cubes[0].dimensions.append(CubeDimension(name="internal_flag", sql="{CUBE}.flag",
+                                             type="string", public=False))
+    view = CubeView(name="ov", cubes=[CubeViewCubeRef(join_path="orders", includes="*")])
+    project = CubeProject(cubes=cubes, views=[view])
+    models, _ = _convert(project)
+    assert models["ov"].get_column("internal_flag") is None
+    assert models["ov"].get_column("status") is not None
+
+
+def test_view_default_filter_escapes_single_quotes():
+    view = _view()
+    view.default_filters = [{"member": "orders.status", "operator": "equals",
+                             "values": ["O'Reilly"]}]
+    project = CubeProject(cubes=_orders_customers_cubes(), views=[view])
+    models, _ = _convert(project)
+    filters = " ".join(models["orders_overview"].filters)
+    assert "O''Reilly" in filters  # single quote doubled, not "O'Reilly'"
+
+
 def test_view_dropped_when_root_cube_not_emitted():
     # orders has no source → not emitted; a view rooted on it can't be built.
     cubes = [

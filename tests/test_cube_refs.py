@@ -5,7 +5,14 @@ single-brace SQL-ref syntax — distinct from Jinja's `{{ }}` / `{% %}`.
 """
 
 
+import pytest
+
 from slayer.cube.refs import contains_jinja, parse_join_on, translate_cube_refs
+
+
+def test_translate_rejects_invalid_mode():
+    with pytest.raises(ValueError):
+        translate_cube_refs("{CUBE}.x", mode="bogus", cube="orders")
 
 
 # ── Jinja detection ────────────────────────────────────────────────────────

@@ -14,7 +14,9 @@ _REF_RE = re.compile(r"\{([^{}]+)\}")
 # Operand forms accepted inside a join ON clause.
 _OPERAND_BRACE_DOT = re.compile(r"^\{([A-Za-z_]\w*)\}\.(\w+)$")  # {CUBE}.col
 _OPERAND_BRACED = re.compile(r"^\{([^{}]+)\}$")                  # {cube.col}
-_AND_SPLIT = re.compile(r"\s+AND\s+", re.IGNORECASE)
+# `\bAND\b` (no surrounding `\s+` quantifiers) avoids the polynomial-backtracking
+# shape Sonar S5852 flags; operands are whitespace-stripped after the split.
+_AND_SPLIT = re.compile(r"\bAND\b", re.IGNORECASE)
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$")
 
 
@@ -34,9 +36,11 @@ def translate_cube_refs(text: str, *, mode: str, cube: str | None = None) -> str
     - ``{member}`` → ``member`` (same-cube sibling)
     - ``{cube.member}`` / ``{a.b.c}`` → ``cube.member`` / ``a.b.c`` (dotted)
 
-    ``mode`` (``"sql"``/``"dsl"``) does not change the syntactic rewrite — it
-    only documents the intended target layer for the caller.
+    ``mode`` (``"sql"``/``"dsl"``) documents the intended target layer for the
+    caller; it is validated but does not change the syntactic rewrite.
     """
+    if mode not in ("sql", "dsl"):
+        raise ValueError(f"mode must be 'sql' or 'dsl', got {mode!r}")
     literal_spans = [m.span() for m in _LITERAL_RE.finditer(text)]
 
     def _in_literal(pos: int) -> bool:
@@ -47,20 +51,22 @@ def translate_cube_refs(text: str, *, mode: str, cube: str | None = None) -> str
     for m in _REF_RE.finditer(text):
         if m.start() < last or _in_literal(m.start()):
             continue
-        inner = m.group(1).strip()
         out.append(text[last:m.start()])
-        if inner == "CUBE":
-            # `{CUBE}.col` → drop the `{CUBE}` AND the following dot.
-            if m.end() < len(text) and text[m.end()] == ".":
-                last = m.end() + 1
-            else:
-                out.append(cube or "")
-                last = m.end()
-            continue
-        out.append(inner)  # `{member}` / `{a.b}` → inner verbatim
-        last = m.end()
+        next_char = text[m.end()] if m.end() < len(text) else ""
+        replacement, extra = _resolve_ref(m.group(1).strip(), next_char, cube)
+        out.append(replacement)
+        last = m.end() + extra
     out.append(text[last:])
     return "".join(out)
+
+
+def _resolve_ref(inner: str, next_char: str, cube: str | None) -> tuple[str, int]:
+    """Resolve one ``{ref}`` to ``(replacement, extra_chars_consumed)``."""
+    if inner == "CUBE":
+        if next_char == ".":
+            return "", 1  # `{CUBE}.col` → drop the `{CUBE}` and the following dot
+        return cube or "", 0
+    return inner, 0  # `{member}` / `{a.b}` → inner verbatim
 
 
 def _operand_ref(operand: str) -> tuple[str, str] | None:
