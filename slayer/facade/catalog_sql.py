@@ -40,6 +40,7 @@ import hashlib
 import json
 import logging
 import zlib
+from collections.abc import Iterable
 from typing import Any
 
 import duckdb
@@ -80,7 +81,22 @@ KNOWN_SYSTEM_OIDS: dict[str, int] = {
     "pg_constraint": 2606,
     "pg_index": 2610,
     "pg_attrdef": 2604,
+    # psql backslash-command coverage stubs.
+    "pg_am": 2601,
+    "pg_database": 1262,
+    "pg_authid": 1260,
 }
+
+# Postgres heap access-method OID. Hardcoded to match real Postgres so
+# ``pg_class.relam = 2`` round-trips against any tool that knows the
+# canonical value.
+PG_AM_HEAP_OID = 2
+# Single synthetic role for ``\du`` / ``pg_get_userbyid``. The facade's
+# auth model is shared-token, so there's exactly one principal.
+PG_SLAYER_ROLE_OID = 10
+PG_SLAYER_ROLE_NAME = "slayer"
+# UTF8 is the only encoding the facade ever advertises.
+PG_ENCODING_UTF8 = 6
 
 # Per-OID metadata (typname, typlen, typcategory) for the six wire types.
 from slayer.pg_facade.protocol import (  # noqa: E402 — wire OIDs co-located here
@@ -146,7 +162,10 @@ class CatalogRelation(BaseModel):
 
 
 def build_catalog_relations(
-    catalog: FacadeCatalog, datasource: str | None = None,
+    catalog: FacadeCatalog,
+    datasource: str | None = None,
+    *,
+    extra_relations: Iterable[CatalogRelation] | None = None,
 ) -> list[CatalogRelation]:
     """Build every catalog table from ``catalog``.
 
@@ -157,11 +176,13 @@ def build_catalog_relations(
     falls back to the catalog's static name (``slayer``) for backward
     compatibility.
 
-    Returns ``CatalogRelation`` rows for the 6 existing pg_catalog tables
-    plus the 9 new ones (``pg_description`` / ``pg_stat_user_tables`` /
-    ``pg_enum`` / ``pg_tables`` / ``pg_views`` / ``pg_matviews`` /
-    ``pg_constraint`` / ``pg_index`` / ``pg_attrdef``), plus the 7
-    ``_is_*`` information_schema relations.
+    ``extra_relations`` is the extensibility hook for embedders: each
+    ``CatalogRelation`` provided either **replaces** the default builder's
+    output for that table name (override case — e.g. project real per-tenant
+    rows into ``pg_roles``) or **adds** a new relation the default doesn't
+    know about. Override is by table-name match; order of the returned
+    list places overrides where the default originally appeared, with
+    additions appended at the end.
     """
     ds = datasource or catalog.catalog_name
     out: list[CatalogRelation] = []
@@ -180,6 +201,9 @@ def build_catalog_relations(
     out.append(_build_pg_constraint())
     out.append(_build_pg_index())
     out.append(_build_pg_attrdef())
+    out.append(_build_pg_am())
+    out.append(_build_pg_database(catalog, ds))
+    out.append(_build_pg_roles())
     out.append(_build_is_columns(catalog, ds))
     out.append(_build_is_table_constraints())
     out.append(_build_is_key_column_usage())
@@ -187,6 +211,10 @@ def build_catalog_relations(
     out.append(_build_is_tables(catalog, ds))
     out.append(_build_is_metrics(catalog, ds))
     out.append(_build_is_dimensions(catalog, ds))
+    if extra_relations is not None:
+        extras = {r.name: r for r in extra_relations}
+        out = [extras.pop(r.name, r) for r in out]
+        out.extend(extras.values())
     return out
 
 
@@ -271,6 +299,9 @@ def _build_pg_class(catalog: FacadeCatalog) -> CatalogRelation:
         FacadeColumn(name="relhastriggers", type=DataType.BOOLEAN),
         FacadeColumn(name="relrowsecurity", type=DataType.BOOLEAN),
         FacadeColumn(name="relispartition", type=DataType.BOOLEAN),
+        # Access-method OID — points at ``pg_am.oid``. psql's ``\d`` LEFT
+        # JOINs on this; ``heap`` is the only access method we advertise.
+        FacadeColumn(name="relam", type=DataType.INT),
     ]
     rows = []
     seen_oids: dict[int, str] = {}
@@ -290,6 +321,7 @@ def _build_pg_class(catalog: FacadeCatalog) -> CatalogRelation:
             "relpages": 0, "reltuples": -1.0,
             "relhasrules": False, "relhastriggers": False,
             "relrowsecurity": False, "relispartition": False,
+            "relam": PG_AM_HEAP_OID,
         })
     return CatalogRelation(name="pg_class", columns=columns, rows=rows)
 
@@ -539,6 +571,90 @@ def _build_pg_attrdef() -> CatalogRelation:
     ], rows=[])
 
 
+def _build_pg_am() -> CatalogRelation:
+    """Stub access-method table. Real Postgres exposes heap/btree/hash/gist/gin/
+    brin; for the facade only ``heap`` matters (every ``pg_class.relam`` we emit
+    points at it). psql's ``\\d`` LEFT JOINs ``pg_class.relam = pg_am.oid``;
+    without ``heap`` the JOIN would yield NULL for every relation."""
+    return CatalogRelation(
+        name="pg_am",
+        columns=[
+            FacadeColumn(name="oid", type=DataType.INT),
+            FacadeColumn(name="amname", type=DataType.TEXT),
+            FacadeColumn(name="amhandler", type=DataType.INT),
+            FacadeColumn(name="amtype", type=DataType.TEXT),
+        ],
+        rows=[
+            {"oid": PG_AM_HEAP_OID, "amname": "heap",
+             "amhandler": 0, "amtype": "t"},
+        ],
+    )
+
+
+def _build_pg_roles() -> CatalogRelation:
+    """Stub roles table. SLayer's auth is shared-token (one principal at a
+    time); ``\\du`` gets one synthetic row so the listing renders. Embedders
+    can override via the ``extra_relations`` hook on ``build_catalog_relations``
+    to project real per-tenant principals."""
+    return CatalogRelation(
+        name="pg_roles",
+        columns=[
+            FacadeColumn(name="oid", type=DataType.INT),
+            FacadeColumn(name="rolname", type=DataType.TEXT),
+            FacadeColumn(name="rolsuper", type=DataType.BOOLEAN),
+            FacadeColumn(name="rolinherit", type=DataType.BOOLEAN),
+            FacadeColumn(name="rolcreaterole", type=DataType.BOOLEAN),
+            FacadeColumn(name="rolcreatedb", type=DataType.BOOLEAN),
+            FacadeColumn(name="rolcanlogin", type=DataType.BOOLEAN),
+            FacadeColumn(name="rolreplication", type=DataType.BOOLEAN),
+            FacadeColumn(name="rolconnlimit", type=DataType.INT),
+            FacadeColumn(name="rolvaliduntil", type=DataType.TIMESTAMP),
+            FacadeColumn(name="rolbypassrls", type=DataType.BOOLEAN),
+        ],
+        rows=[{
+            "oid": PG_SLAYER_ROLE_OID, "rolname": PG_SLAYER_ROLE_NAME,
+            "rolsuper": False, "rolinherit": True,
+            "rolcreaterole": False, "rolcreatedb": False,
+            "rolcanlogin": True, "rolreplication": False,
+            "rolconnlimit": -1, "rolvaliduntil": None, "rolbypassrls": False,
+        }],
+    )
+
+
+def _build_pg_database(catalog: FacadeCatalog, datasource: str) -> CatalogRelation:
+    """Stub databases table. The facade scopes one connection to one SLayer
+    datasource (= one Postgres ``database``); ``\\l`` returns a single row for
+    the connected datasource. Embedders that want to enumerate every available
+    datasource (multi-tenant management UIs, etc.) override this builder."""
+    return CatalogRelation(
+        name="pg_database",
+        columns=[
+            FacadeColumn(name="oid", type=DataType.INT),
+            FacadeColumn(name="datname", type=DataType.TEXT),
+            FacadeColumn(name="datdba", type=DataType.INT),
+            FacadeColumn(name="encoding", type=DataType.INT),
+            FacadeColumn(name="datcollate", type=DataType.TEXT),
+            FacadeColumn(name="datctype", type=DataType.TEXT),
+            FacadeColumn(name="datistemplate", type=DataType.BOOLEAN),
+            FacadeColumn(name="datallowconn", type=DataType.BOOLEAN),
+            FacadeColumn(name="datconnlimit", type=DataType.INT),
+            FacadeColumn(name="dattablespace", type=DataType.INT),
+            FacadeColumn(name="datacl", type=DataType.TEXT),
+        ],
+        rows=[{
+            "oid": stable_oid("database", datasource),
+            "datname": datasource,
+            "datdba": PG_SLAYER_ROLE_OID,
+            "encoding": PG_ENCODING_UTF8,
+            "datcollate": "en_US.UTF-8",
+            "datctype": "en_US.UTF-8",
+            "datistemplate": False, "datallowconn": True,
+            "datconnlimit": -1, "dattablespace": 1663,
+            "datacl": None,
+        }],
+    )
+
+
 def _build_is_columns(catalog: FacadeCatalog, datasource: str) -> CatalogRelation:
     """Postgres-shape information_schema.columns with SLayer extension fields.
 
@@ -735,11 +851,18 @@ def _check_collision(seen: dict[int, str], oid: int, key: str) -> None:
 # `information_schema.X` schema qualifiers are stripped before lookup; the
 # pre-rewrite pass aliases information_schema names to `_is_<X>` so those go
 # under their alias forms too.
+#
+# Must stay in lockstep with the relations built by ``build_catalog_relations``
+# above — every ``out.append(_build_pg_<name>(...))`` needs a corresponding
+# entry here, or the routing decision misclassifies the catalog query as a
+# user-table reference and falls through to "Unknown schema: 'pg_catalog'".
 _PG_CATALOG_NAMES = frozenset({
     "pg_namespace", "pg_class", "pg_attribute", "pg_type", "pg_proc",
     "pg_settings", "pg_description", "pg_stat_user_tables", "pg_enum",
     "pg_tables", "pg_views", "pg_matviews", "pg_constraint", "pg_index",
     "pg_attrdef",
+    # psql backslash-command coverage stubs.
+    "pg_am", "pg_roles", "pg_database",
 })
 
 _INFO_SCHEMA_NAMES = frozenset({
@@ -824,6 +947,7 @@ _CATALOG_FUNCTION_NAMES = frozenset({
     "current_role", "current_schemas",
     "format_type", "obj_description", "col_description", "pg_get_userbyid",
     "pg_table_is_visible", "pg_get_expr", "pg_total_relation_size",
+    "pg_encoding_to_char",
     "has_table_privilege", "has_any_column_privilege", "has_schema_privilege",
     "_pg_expandarray",
     # sqlglot's class-key forms for the dedicated Func subclasses
@@ -901,6 +1025,8 @@ _CONSTANT_STUB_LITERALS: dict[str, Any] = {
     "pg_table_is_visible": True,
     "pg_total_relation_size": 0,
     "pg_get_expr": None,
+    # SLayer always emits UTF8; ``\l`` calls this with ``d.encoding``.
+    "pg_encoding_to_char": "UTF8",
 }
 
 # Data-lookup stubs are AST-renamed to private names; the macros are
@@ -969,7 +1095,15 @@ def _unwrap_qualified_stub_call(node: exp.Expression) -> exp.Expression | None:
         if name == "obj_description" and len(args) > 1:
             args = args[:1]
         return exp.Anonymous(this=private, expressions=args)
-    return None
+    # Unknown ``pg_catalog.<fn>`` / ``information_schema.<fn>`` — strip the
+    # schema qualifier and emit a bare call. Many such names (``array_to_string``,
+    # ``string_agg``, …) are real functions in DuckDB and resolve cleanly
+    # without the qualifier. Leaving the Dot node in place makes DuckDB
+    # interpret ``pg_catalog`` as a column reference and surface a
+    # misleading "column not found" Binder error; baring the call yields
+    # either a working resolution or a sensible "function not found".
+    args = list(rhs.args.get("expressions") or [])
+    return exp.Anonymous(this=name, expressions=args)
 
 
 class _AstRewriter:
@@ -1482,7 +1616,13 @@ class CatalogSqlExecutor:
     cache via ``executor_for(catalog)``.
     """
 
-    def __init__(self, *, catalog: FacadeCatalog, datasource: str) -> None:
+    def __init__(
+        self,
+        *,
+        catalog: FacadeCatalog,
+        datasource: str,
+        extra_relations: Iterable[CatalogRelation] | None = None,
+    ) -> None:
         self._datasource = datasource
         self._conn = duckdb.connect(":memory:")
         # DEV-1558 security hardening (Codex round 9): lock down the
@@ -1512,7 +1652,9 @@ class CatalogSqlExecutor:
         self._rewriter = _AstRewriter(
             datasource=datasource, regclass_map=self._regclass_map,
         )
-        relations = build_catalog_relations(catalog, datasource)
+        relations = build_catalog_relations(
+            catalog, datasource, extra_relations=extra_relations,
+        )
         for relation in relations:
             self._register_relation(relation)
         self._register_stubs()
@@ -1651,7 +1793,10 @@ def _fingerprint(catalog: FacadeCatalog, datasource: str) -> str:
 
 
 def executor_for(
-    catalog: FacadeCatalog, datasource: str | None = None,
+    catalog: FacadeCatalog,
+    datasource: str | None = None,
+    *,
+    extra_relations: Iterable[CatalogRelation] | None = None,
 ) -> CatalogSqlExecutor:
     """Return a process-cached ``CatalogSqlExecutor`` for ``catalog``.
 
@@ -1661,13 +1806,26 @@ def executor_for(
     The pg facade always passes the real datasource explicitly because its
     catalog schema is the literal ``public``.
 
-    Cache is keyed by a stable SHA-256 of (catalog, datasource). FIFO
-    eviction at 4 entries. Single-threaded asyncio + sync execute, so no
+    ``extra_relations`` is the per-call extensibility hook. Passing it
+    BYPASSES the cache (the cache key would otherwise need to digest the
+    relations' row data, which is the expensive part we're trying to skip).
+    Embedders that want fast repeat introspection should call this once at
+    setup and hold the returned executor.
+
+    Cache (default path) is keyed by a stable SHA-256 of (catalog, datasource).
+    FIFO eviction at 4 entries. Single-threaded asyncio + sync execute, so no
     lock is needed.
     """
     if datasource is None:
         datasource = (
             catalog.schemas[0].name if catalog.schemas else catalog.catalog_name
+        )
+    if extra_relations is not None:
+        # Hot path is the default-relations cache; embedders with extras
+        # opt out of caching to avoid digesting row payloads in the key.
+        return CatalogSqlExecutor(
+            catalog=catalog, datasource=datasource,
+            extra_relations=extra_relations,
         )
     fp = _fingerprint(catalog, datasource)
     cached = _EXECUTOR_CACHE.get(fp)

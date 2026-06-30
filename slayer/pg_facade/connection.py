@@ -145,6 +145,7 @@ class PgConnection:
         storage_provider: "StorageProvider | None" = None,
         engine_factory: "EngineFactory | None" = None,
         tls_ctx=None,
+        catalog_extra_relations=None,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -167,6 +168,9 @@ class PgConnection:
         # Opaque host-defined principal set on successful auth (tenant/user).
         self._principal: object | None = None
         self._tls_ctx = tls_ctx
+        # Extensibility hook for embedders to override / extend the pg_catalog
+        # tables — see ``build_catalog_relations(..., extra_relations=...)``.
+        self._catalog_extras = catalog_extra_relations
         self._tx_state: bytes = proto.TX_IDLE
         # Logical database name (``current_database()`` / ``table_catalog``),
         # taken from the ``database`` startup parameter. NOT a model-resolution
@@ -584,6 +588,7 @@ class PgConnection:
         if self._column_type_index is None:
             self._column_type_index = _build_column_type_index(
                 catalog=self._catalog, datasource=self._database,
+                extra_relations=self._catalog_extras,
             )
         return _classify_empty_string_param_targets(
             sql=sql,
@@ -720,7 +725,10 @@ class PgConnection:
             # materialised when ``is_catalog_only(parsed)`` is True
             # (Codex round 16). Non-catalog model queries skip the
             # construction cost entirely.
-            catalog_sql_executor=lambda: executor_for(self._catalog, self._database),
+            catalog_sql_executor=lambda: executor_for(
+                self._catalog, self._database,
+                extra_relations=self._catalog_extras,
+            ),
         )
 
     def _probe_matcher(self, parsed: exp.Expression):
@@ -1032,6 +1040,7 @@ _COMPARISON_NODE_TYPES: tuple = (
 
 def _build_column_type_index(
     *, catalog: FacadeCatalog, datasource: str,
+    extra_relations=None,
 ) -> ColumnTypeIndex:
     """Build the (schema_lower, table_lower, column_lower) -> DataType lookup
     used by the Bind-time empty-string-to-NULL rewrite (DEV-1570).
@@ -1040,18 +1049,25 @@ def _build_column_type_index(
     builder-name remap), and user-model tables under ``PUBLIC_SCHEMA``.
     """
     out: ColumnTypeIndex = {}
-    _index_catalog_relations(out=out, catalog=catalog, datasource=datasource)
+    _index_catalog_relations(
+        out=out, catalog=catalog, datasource=datasource,
+        extra_relations=extra_relations,
+    )
     _index_user_tables(out=out, catalog=catalog)
     return out
 
 
 def _index_catalog_relations(
     *, out: ColumnTypeIndex, catalog: FacadeCatalog, datasource: str,
+    extra_relations=None,
 ) -> None:
     """Populate ``out`` with pg_catalog / information_schema column types
     materialised by ``build_catalog_relations``. The ``_is_<name>`` builder
     convention is remapped to the SQL-visible ``information_schema.<name>``."""
-    for rel in build_catalog_relations(catalog=catalog, datasource=datasource):
+    for rel in build_catalog_relations(
+        catalog=catalog, datasource=datasource,
+        extra_relations=extra_relations,
+    ):
         if rel.name.startswith("_is_"):
             schema = "information_schema"
             table = rel.name[len("_is_"):]

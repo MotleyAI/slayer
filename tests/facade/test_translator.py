@@ -163,11 +163,29 @@ def test_dml_ddl_rejected_read_only(sql: str, dialect) -> None:
     assert READ_ONLY_MESSAGE in str(exc_info.value)
 
 
-def test_select_star_on_table_rejected(dialect) -> None:
-    with pytest.raises(TranslationError) as exc_info:
-        translate(sql="SELECT * FROM orders", catalog=_catalog(), dialect=dialect)
-    assert "SELECT *" in str(exc_info.value)
-    assert "INFORMATION_SCHEMA.METRICS" in str(exc_info.value)
+def test_select_star_browse_mode_expands_to_columns(dialect) -> None:
+    """Browse-mode ``SELECT *`` (no GROUP BY / HAVING / aggregates)
+    expands to every non-hidden column of the table — matches psql user
+    expectations for an interactive session."""
+    result = translate(sql="SELECT * FROM orders", catalog=_catalog(), dialect=dialect)
+    # Resolves cleanly; produced a SlayerQuery with no measures and one
+    # dimension entry per non-hidden column.
+    assert result.query.measures is None
+    assert result.query.dimensions is not None and len(result.query.dimensions) > 0
+
+
+def test_select_star_with_aggregate_rejected(dialect) -> None:
+    """``SELECT *, COUNT(*)`` and ``SELECT * ... GROUP BY ...`` still
+    reject — the old error message stays in place for the mixed cases
+    where it's actually useful guidance."""
+    for sql in (
+        "SELECT *, COUNT(*) FROM orders",
+        "SELECT * FROM orders GROUP BY status",
+    ):
+        with pytest.raises(TranslationError) as exc_info:
+            translate(sql=sql, catalog=_catalog(), dialect=dialect)
+        assert "SELECT *" in str(exc_info.value)
+        assert "INFORMATION_SCHEMA.METRICS" in str(exc_info.value)
 
 
 def test_parse_error_translates(dialect) -> None:

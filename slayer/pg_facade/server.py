@@ -34,12 +34,20 @@ async def serve(
     storage_provider: StorageProvider | None = None,
     engine_factory: EngineFactory | None = None,
     tls_ctx: ssl.SSLContext | None = None,
+    catalog_extra_relations=None,
 ) -> None:
     """Bind and serve forever. Validates the bind/token combination first.
 
     Supply either a static ``engine`` + ``storage``, or a ``storage_provider``
     that resolves a per-connection (e.g. tenant-scoped) storage from the
     authenticated principal.
+
+    ``catalog_extra_relations``: optional iterable of
+    ``slayer.facade.catalog_sql.CatalogRelation`` that extends or overrides
+    the default ``pg_catalog`` / ``information_schema`` tables. Embedders
+    (e.g. Storyline) use this to project real per-tenant data into
+    ``pg_roles`` / ``pg_database`` / add new tables. Override is by table
+    name; new tables are appended.
     """
     # A custom authenticator that prompts for a password counts as auth, so the
     # non-loopback-requires-a-secret rule is satisfied even without a token.
@@ -56,6 +64,7 @@ async def serve(
             token=token, authenticator=authenticator,
             storage_provider=storage_provider, engine_factory=engine_factory,
             tls_ctx=tls_ctx,
+            catalog_extra_relations=catalog_extra_relations,
         )
         try:
             await conn.run()

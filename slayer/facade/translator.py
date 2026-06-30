@@ -228,10 +228,47 @@ class TranslationError(Exception):
 
 READ_ONLY_MESSAGE = "SLayer wire facade is read-only"
 SELECT_STAR_MESSAGE = (
-    "SELECT * not supported; project specific metric or dimension names. "
-    "Use 'SELECT * FROM INFORMATION_SCHEMA.METRICS WHERE table_name=...' "
-    "to discover available names."
+    "SELECT * with aggregates is not supported; project specific metric or "
+    "dimension names. Use 'SELECT * FROM INFORMATION_SCHEMA.METRICS "
+    "WHERE table_name=...' to discover available names."
 )
+
+
+def _is_browse_mode_select(parsed: exp.Select, proj_exprs: list[exp.Expression]) -> bool:
+    """``SELECT * FROM t`` browse-mode predicate: no GROUP BY, no HAVING,
+    no aggregate function anywhere in the projection list (incl. COUNT(*),
+    SUM/AVG/MIN/MAX, etc.). When this holds, ``*`` expands to every
+    non-hidden column of ``t``; otherwise it stays rejected so the
+    user-facing 'project specific names' hint fires for the cases where
+    it's actually useful."""
+    if parsed.args.get("group") is not None:
+        return False
+    if parsed.args.get("having") is not None:
+        return False
+    return not any(
+        isinstance(n, exp.AggFunc)
+        for proj in proj_exprs
+        for n in proj.walk()
+    )
+
+
+def _expand_select_star(
+    proj_exprs: list[exp.Expression], table: "FacadeTable",
+) -> list[exp.Expression]:
+    """Replace each top-level ``exp.Star`` with a sequence of column
+    references — one per non-hidden column on ``table`` — preserving the
+    relative order of any non-Star projections. Used by browse-mode
+    ``SELECT *`` only (see ``_is_browse_mode_select``)."""
+    column_names = [d.name for d in table.dimensions]
+    out: list[exp.Expression] = []
+    for expr in proj_exprs:
+        if isinstance(expr, exp.Star):
+            out.extend(
+                exp.Column(this=exp.to_identifier(n)) for n in column_names
+            )
+        else:
+            out.append(expr)
+    return out
 # DEV-1493: aggregating over a saved measure or a non-column expression needs
 # a multi-stage rewrite, out of scope for the current facade aggregate mapping.
 AGG_OVER_MEASURE_MESSAGE = (
@@ -2911,10 +2948,20 @@ def _translate_slayer_select(
     schema_name, table = _resolve_table(from_clause, catalog)
 
     proj_exprs = parsed.args.get("expressions") or []
-    # Reject SELECT * before catalog lookup so we get the named error
-    # instead of "Unknown projection item '*'".
+    # SELECT * handling. In *browse mode* — no GROUP BY, no HAVING, no
+    # aggregate in the projection list — we expand ``*`` to every
+    # non-hidden column of the table, matching what a psql user would
+    # expect from "show me everything in this table". In any context that
+    # involves aggregation (a GROUP BY, HAVING, or an aggregate in the
+    # projection), the rejection stays in place because mixing ``*`` with
+    # aggregates would either force an awkward implicit-grouping shape or
+    # surface a confusing "X not in GROUP BY" downstream — the explicit
+    # "project specific names" hint is more helpful there.
     if any(isinstance(e, exp.Star) for e in proj_exprs):
-        raise TranslationError(SELECT_STAR_MESSAGE)
+        if _is_browse_mode_select(parsed, proj_exprs):
+            proj_exprs = _expand_select_star(proj_exprs, table)
+        else:
+            raise TranslationError(SELECT_STAR_MESSAGE)
 
     # DEV-1558 B5: every helper that resolves a column ref needs the same
     # ``(schema, table)`` prefix-strip context as ``_resolve_projection``.
