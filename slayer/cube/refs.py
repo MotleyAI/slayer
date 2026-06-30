@@ -97,23 +97,31 @@ def parse_join_on(on_sql: str, *, source_cube: str, target_cube: str) -> list[li
     """
     pairs: list[list[str]] = []
     for part in _AND_SPLIT.split(on_sql.strip()):
-        if part.count("=") != 1 or any(op in part for op in ("<", ">", "!")):
+        pair = _equality_pair(part, source_cube=source_cube, target_cube=target_cube)
+        if pair is None:
             return None
-        left, right = part.split("=")
-        lhs = _operand_ref(left)
-        rhs = _operand_ref(right)
-        if lhs is None or rhs is None:
-            return None
-        src_col = tgt_col = None
-        for qualifier, col in (lhs, rhs):
-            if qualifier in ("CUBE", source_cube):
-                src_col = col
-            elif qualifier == target_cube:
-                tgt_col = col
-        if src_col is None or tgt_col is None:
-            return None
-        pairs.append([src_col, tgt_col])
+        pairs.append(pair)
     return pairs or None
+
+
+def _equality_pair(part: str, *, source_cube: str, target_cube: str) -> list[str] | None:
+    """Parse one ``A = B`` equality into ``[src_col, tgt_col]`` or ``None``."""
+    if part.count("=") != 1 or any(op in part for op in ("<", ">", "!")):
+        return None
+    left, right = part.split("=")
+    lhs = _operand_ref(left)
+    rhs = _operand_ref(right)
+    if lhs is None or rhs is None:
+        return None
+    src_col = tgt_col = None
+    for qualifier, col in (lhs, rhs):
+        if qualifier in ("CUBE", source_cube):
+            src_col = col
+        elif qualifier == target_cube:
+            tgt_col = col
+    if src_col is None or tgt_col is None:
+        return None
+    return [src_col, tgt_col]
 
 
 def is_bare_identifier(sql: str) -> bool:

@@ -18,7 +18,7 @@ not convert is captured in a **structured report** (Pydantic object + JSON file)
 
 ## 1. Package layout (mirrors `slayer/dbt/`)
 
-```
+```text
 slayer/cube/
   __init__.py
   models.py      # Pydantic shapes for parsed Cube YAML
@@ -61,7 +61,7 @@ table-backed models.
 
 ### Parsed Cube shapes (`models.py`, Pydantic v2, no dataclasses)
 
-```
+```text
 CubeMeasure:    name, type, sql?, title?, description?, public?=True, meta?,
                 format?, filters?: list[{sql}], drill_members?, rolling_window?,
                 multi_stage?=False, time_shift?, grain?, filter? (Tesseract),
@@ -427,7 +427,7 @@ geo split, sub_query dims. The follow-up issue tackles these alongside Tesseract
 
 ## 10. Structured report (`report.py`)
 
-```
+```python
 class CubeIssueCategory(str, Enum):  # requires_templating, parse_error,
   complex_sql, complex_measure, lossy_mapping, unsupported_join,
   unsupported_rolling_window, unsupported_format, unsupported_default_filter,
@@ -459,7 +459,7 @@ No dataclasses.)
 
 ## 11. CLI
 
-```
+```text
 slayer import-cube <cube_project_path> --datasource NAME [--storage PATH]
                    [--report PATH] [--include-hidden]
 ```
@@ -537,4 +537,3 @@ Run the full non-integration suite after implementation; fix all failures.
 - No Tesseract features built (designed in §9).
 - No MCP/REST surface (CLI + importable API only), matching `import-dbt`.
 - No round-trip SLayer→Cube export.
-```
