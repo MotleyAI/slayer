@@ -171,11 +171,14 @@ class SearchRequest(BaseModel):
 
 class InspectRequest(BaseModel):
     """Body for ``POST /inspect`` (DEV-1588). Mirrors the MCP / CLI /
-    SlayerClient ``inspect`` surfaces — a single-entity point-lookup."""
+    SlayerClient ``inspect`` surfaces — a point-lookup of one entity, or a
+    homogeneous-kind batch when ``reference`` is a list (DEV-1612)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    reference: str
+    # DEV-1612: a list is a homogeneous-kind batch (one ``entity_type`` for
+    # every id). A single str keeps single-id behaviour byte-for-byte.
+    reference: str | list[str]
     entity_type: str
     compact: bool = True
     format: str = "markdown"

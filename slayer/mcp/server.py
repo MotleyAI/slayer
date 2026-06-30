@@ -766,7 +766,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
     @mcp.tool()
     async def inspect(
-        reference: str,
+        reference: str | list[str],
         entity_type: str,
         compact: bool = True,
         format: str = "markdown",
@@ -775,20 +775,30 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         sections: list[str] | None = None,
         descriptions_max_chars: int | None = None,
     ) -> str:
-        """Inspect EXACTLY one entity by reference and kind.
+        """Inspect EXACTLY one entity by reference and kind — or a homogeneous
+        BATCH when ``reference`` is a list.
 
-        A clean single-entity point-lookup: no fusion / ranking / cypher,
-        and no bundled memories. Use ``search`` instead when you want an
-        entity surfaced *in context* (with related memories and ranked
-        neighbours).
+        A clean point-lookup: no fusion / ranking / cypher, and no bundled
+        memories. Use ``search`` instead when you want an entity surfaced *in
+        context* (with related memories and ranked neighbours).
+
+        Batch (DEV-1612): pass a ``list`` of references that all share the one
+        ``entity_type``. Returns one rendered block per id, in input order,
+        each echoing its resolved canonical id (a ``## <canonical>`` header in
+        markdown; a JSON array under ``format="json"``). Per-id resolution
+        errors are isolated — one bad id does not sink the batch (in JSON it
+        becomes a ``{"reference": ..., "error": ...}`` element). A single
+        ``str`` keeps its byte-for-byte single output; a one-element list is
+        still batch-framed.
 
         Args:
-            reference: The entity reference. Accepts canonical forms
-                (``mydb``, ``mydb.orders``, ``mydb.orders.amount``),
-                bare names, join paths (``orders.customers.region`` →
-                resolved to the owning model), and ``memory:<id>`` for
-                memories. Normalised via the shared resolver; the
-                normalised canonical id is echoed in the JSON shape.
+            reference: The entity reference, or a list of references (batch).
+                Accepts canonical forms (``mydb``, ``mydb.orders``,
+                ``mydb.orders.amount``), bare names, join paths
+                (``orders.customers.region`` → resolved to the owning model),
+                and ``memory:<id>`` for memories. Normalised via the shared
+                resolver; the normalised canonical id is echoed in the JSON
+                shape.
             entity_type: REQUIRED. One of ``datasource``, ``model``,
                 ``column``, ``measure``, ``aggregation``, ``memory``.
                 Disambiguates the 3-part canonical collision (a name
