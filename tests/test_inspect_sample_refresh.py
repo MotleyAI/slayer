@@ -29,6 +29,8 @@ from collections.abc import AsyncIterator
 import pytest
 import pytest_asyncio
 
+import slayer.engine.profiling as prof
+import slayer.inspect.model_render as mr
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
@@ -109,8 +111,6 @@ def _count_profile_calls(monkeypatch) -> list:
     delegates to) with a counter that still returns ``None`` so nothing
     persists. Returns the list its names are appended to."""
     calls: list = []
-    import slayer.engine.profiling as prof
-
     real = prof.profile_column
 
     async def counting(*, model, column, engine):  # NOSONAR(S7503)
@@ -285,8 +285,6 @@ async def test_inspect_model_passes_only_categorical_to_helper(
     ``ensure_column_sample_fresh``."""
     svc, _ = inspect_setup
     seen: list = []
-
-    import slayer.inspect.model_render as mr
 
     real = mr.ensure_column_sample_fresh
 

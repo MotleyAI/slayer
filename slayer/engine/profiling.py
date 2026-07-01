@@ -48,10 +48,17 @@ DEV-1480 changes:
 
 DEV-1516 additions:
 - :func:`ensure_column_sample_fresh` — shared cache-aware refresh helper
-  used by both ``inspect_model``'s categorical loop and the search
-  service's post-fusion column-hit hook. Returns the input column on cache
-  hit / non-categorical / failure, and an in-memory refreshed copy on
-  success (after persisting via storage).
+  used by ``inspect_model``'s categorical loop, the search service's
+  post-fusion column-hit hook, and (DEV-1615) the single-entity ``inspect``
+  point-lookup. Returns the input column on cache hit / failure, and an
+  in-memory refreshed copy on success (after persisting via storage).
+
+DEV-1615 change:
+- :func:`ensure_column_sample_fresh` back-fills BOTH categorical (top-50 +
+  distinct_count) AND numeric/temporal (min/max range) uncached columns —
+  the prior categorical-only early-return was removed. Cached columns still
+  short-circuit at :func:`_is_sample_cached` (zero added cost), so the
+  common already-profiled case pays nothing.
 """
 
 from __future__ import annotations
