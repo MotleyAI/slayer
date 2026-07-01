@@ -23,10 +23,12 @@ from __future__ import annotations
 
 import re as _re
 from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
 from urllib.parse import quote
 
 import sqlalchemy as sa
 import sqlalchemy.engine.url as _sa_url
+from sqlglot import exp
 
 from slayer.sql.dialects.base import SqlDialect
 
@@ -192,13 +194,22 @@ class SnowflakeDialect(SqlDialect):
     # No native LOG2 — falls through to canonical ``LOG(2, x)`` form.
     log2_native: bool = False
 
+    def build_approx_count_distinct(
+        self,
+        col_sql: str,
+        *,
+        parse: Callable[[str], exp.Expression],
+    ) -> exp.Expression:
+        """Snowflake: native ``APPROX_COUNT_DISTINCT(x)`` aggregate."""
+        return parse(f"APPROX_COUNT_DISTINCT({col_sql})")
+
     # ------------------------------------------------------------------
     # Connection URL / engine
     # ------------------------------------------------------------------
 
     def build_connection_url(
         self,
-        datasource: "DatasourceConfig",
+        datasource: DatasourceConfig,
     ) -> str | None:
         """Emit the sentinel URL when ``connection_name`` is set, otherwise
         build the full snowflake-sqlalchemy URL from inline fields.
@@ -236,10 +247,10 @@ class SnowflakeDialect(SqlDialect):
 
     def build_engine(
         self,
-        datasource: "DatasourceConfig",
+        datasource: DatasourceConfig,
         *,
         connection_string: str,
-    ) -> "sa.Engine | None":
+    ) -> sa.Engine | None:
         """When the sentinel URL is in play, route through ``creator=``
         so ``snowflake.connector.connect(connection_name=...)`` drives
         the auth path. Otherwise return None to let ``engine_factory``
@@ -291,7 +302,7 @@ class SnowflakeDialect(SqlDialect):
     def apply_session_overrides(
         self,
         dbapi_connection: Any,
-        datasource: "DatasourceConfig",
+        datasource: DatasourceConfig,
     ) -> None:
         """Issue ``USE WAREHOUSE / USE ROLE / USE DATABASE / USE SCHEMA``
         in order on a fresh DBAPI connection.

@@ -89,12 +89,12 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 
 | Type | Default eligible aggregations |
 |------|-------------------------------|
-| `number` | sum, avg, min, max, count, count_distinct, median, weighted_avg, percentile, first, last, stddev_samp, stddev_pop, var_samp, var_pop, corr, covar_samp, covar_pop |
-| `string` | count, count_distinct, first, last, min, max |
-| `boolean` | count, count_distinct, sum, min, max, first, last |
-| `date` / `time` | count, count_distinct, first, last, min, max |
+| `number` | sum, avg, min, max, count, count_distinct, count_distinct_approx, median, weighted_avg, percentile, first, last, stddev_samp, stddev_pop, var_samp, var_pop, corr, covar_samp, covar_pop |
+| `string` | count, count_distinct, count_distinct_approx, first, last, min, max |
+| `boolean` | count, count_distinct, count_distinct_approx, sum, min, max, first, last |
+| `date` / `time` | count, count_distinct, count_distinct_approx, first, last, min, max |
 
-Primary-key columns are always restricted to `count` / `count_distinct` regardless of type. When `allowed_aggregations` is set, every entry must already be eligible under the type-default map (or be a custom aggregation defined on this model); violations are caught at model construction time, so query-time validation is a single membership check.
+`count_distinct_approx` is dialect-aware: it emits the database-native approximate-distinct function where one exists and falls back to an exact `COUNT(DISTINCT)` where it does not (Postgres / SQLite / MySQL). Primary-key columns are always restricted to `count` / `count_distinct` / `count_distinct_approx` regardless of type. When `allowed_aggregations` is set, every entry must already be eligible under the type-default map (or be a custom aggregation defined on this model); violations are caught at model construction time, so query-time validation is a single membership check.
 
 ### Filtered columns
 

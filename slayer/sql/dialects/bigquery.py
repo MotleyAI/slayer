@@ -89,6 +89,15 @@ class BigqueryDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
 
+    def build_approx_count_distinct(
+        self,
+        col_sql: str,
+        *,
+        parse: Callable[[str], exp.Expression],
+    ) -> exp.Expression:
+        """BigQuery: native ``APPROX_COUNT_DISTINCT(x)`` aggregate."""
+        return parse(f"APPROX_COUNT_DISTINCT({col_sql})")
+
     def build_date_trunc(
         self,
         col_expr: exp.Expression,

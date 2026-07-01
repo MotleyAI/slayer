@@ -68,6 +68,9 @@ nav:
           - Notebook: examples/09_lightning_talk/lightning_talk_nb.ipynb
       - Row-Level Security:
           - Notebook: examples/10_row_level_security/row_level_security_nb.ipynb
+      - dbt MetricFlow Import:
+          - examples/11_dbt_metricflow/dbt_metricflow.md
+          - Notebook: examples/11_dbt_metricflow/dbt_metricflow_nb.ipynb
       - Schema Drift (worked example): examples/schema-drift.md
   - Configuration:
       - Datasources: configuration/datasources.md
