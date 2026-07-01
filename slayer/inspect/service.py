@@ -21,6 +21,7 @@ from slayer.core.errors import (
     EntityResolutionError,
     MemoryNotFoundError,
 )
+from slayer.engine.profiling import ensure_column_sample_fresh
 from slayer.inspect.model_render import (
     _TRUNCATION_MARKER,
     _truncate_description,
@@ -662,6 +663,35 @@ class InspectService:
                 f"Model '{ds_name}.{model_name}' not found "
                 f"(reference '{reference}')."
             ))
+
+        # DEV-1615: lazily back-fill a column's missing/stale sample values on
+        # read — same shared helper + cache-aware semantics inspect_model /
+        # search use — so this point-lookup is no longer a regression vs the
+        # tools it replaced. Gated to entity_type="column" (measures /
+        # aggregations have no sample concept) and to compact=False: the
+        # compact leaf render is description-only and never shows
+        # "Sample values:", so refreshing there would add a profiling DB query
+        # to a deliberately cheap lookup. Engine-guarded (no-op without an
+        # engine, like search's hook). Substituting the refreshed column into a
+        # model_copy BEFORE collect_model_entity_pairs makes the rendered
+        # .text reflect the fresh sample with no change to the render logic.
+        # Hidden columns are rendered but never back-filled — the helper's
+        # _is_sample_cached treats hidden/PK as cached (system-wide convention,
+        # parity with inspect_model).
+        if entity_type == "column" and not compact and self._engine is not None:
+            col = model.get_column(leaf)
+            if col is not None:
+                refreshed = await ensure_column_sample_fresh(
+                    model=model, column=col,
+                    engine=self._engine, storage=self._storage,
+                )
+                if refreshed is not col:
+                    model = model.model_copy(update={
+                        "columns": [
+                            refreshed if c.name == col.name else c
+                            for c in model.columns
+                        ],
+                    })
 
         pairs = collect_model_entity_pairs(model=model, include_hidden=True)
         matches = [
