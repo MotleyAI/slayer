@@ -32,6 +32,7 @@ from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.filters import _DIMENSION_RE, convert_dbt_filter
 from slayer.dbt.models import (
     DbtConfig,
+    DbtConversionTypeParams,
     DbtDimension,
     DbtMeasure,
     DbtMetric,
@@ -1681,30 +1682,39 @@ class DbtToSlayerConverter:
     ) -> set:
         """Shared shape-walker used by both entry points above."""
         sources: set = set()
-        if type_params.measure_name:
-            sm = self._find_measure_model(type_params.measure_name)
-            if sm:
-                sources.add(sm.name)
+        self._add_measure_source(sources, type_params.measure_name)
         ctp = type_params.cumulative_type_params
-        if ctp and ctp.measure:
-            sm = self._find_measure_model(ctp.measure)
-            if sm:
-                sources.add(sm.name)
-        conv = type_params.conversion_type_params
-        if conv:
-            for meas in (conv.base_measure, conv.conversion_measure):
-                if meas and meas.name:
-                    sm = self._find_measure_model(meas.name)
-                    if sm:
-                        sources.add(sm.name)
-        if type_params.metrics:
-            for m_input in type_params.metrics:
-                sources |= self._collect_metric_sources(m_input.name, _seen=seen)
+        if ctp:
+            self._add_measure_source(sources, ctp.measure)
+        self._add_conversion_sources(sources, type_params.conversion_type_params, seen)
+        for m_input in type_params.metrics or ():
+            sources |= self._collect_metric_sources(m_input.name, _seen=seen)
         for side in (type_params.numerator, type_params.denominator):
-            if side is None:
-                continue
-            sources |= self._collect_metric_sources(side.name, _seen=seen)
+            if side is not None:
+                sources |= self._collect_metric_sources(side.name, _seen=seen)
         return sources
+
+    def _add_measure_source(self, sources: set, measure_name: str | None) -> None:
+        """Resolve a measure name to its owning model and add it to ``sources``."""
+        if not measure_name:
+            return
+        sm = self._find_measure_model(measure_name)
+        if sm:
+            sources.add(sm.name)
+
+    def _add_conversion_sources(
+        self, sources: set, conv: DbtConversionTypeParams | None, seen: set | None
+    ) -> None:
+        """Add the source models of a conversion (funnel) metric's base/conversion
+        measures and metric refs."""
+        if conv is None:
+            return
+        for meas in (conv.base_measure, conv.conversion_measure):
+            if meas:
+                self._add_measure_source(sources, meas.name)
+        for metric_ref in (conv.base_metric, conv.conversion_metric):
+            if metric_ref:
+                sources |= self._collect_metric_sources(metric_ref, _seen=seen)
 
     def _resolve_metric_to_name(self, metric_name: str) -> str | None:
         """Resolve a metric name to a formula reference (bare ModelMeasure name).
