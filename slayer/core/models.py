@@ -730,6 +730,12 @@ class DatasourceConfig(BaseModel):
     password: str | None = None
     connection_string: str | None = None
     schema_name: str | None = None
+    # ``schema_name`` (above) is the UPSTREAM physical schema this datasource
+    # reads from (e.g. a Snowflake/Postgres source schema). ``postgres_schema``
+    # is unrelated: it's the schema name the Postgres *facade* advertises this
+    # datasource's models under. Default ``None`` => "public", so by default
+    # every datasource's models share one schema; set it to separate them.
+    postgres_schema: str | None = None
     description: str | None = None
     # Snowflake-specific (v2, DEV-1551). Other dialects ignore them.
     # ``connection_name`` is the primary auth path — when set, all credentials
@@ -777,6 +783,23 @@ class DatasourceConfig(BaseModel):
         _NO_BACK_SLASH.check(name=v, context=label)
         _NO_DOT.check(name=v, context=label)
         _NO_COLON.check(name=v, context=label)
+        return v
+
+    @field_validator("postgres_schema")
+    @classmethod
+    def _validate_postgres_schema(cls, v: str | None) -> str | None:
+        # The facade advertises models under this schema, so it must be a
+        # plain unquoted Postgres identifier. Postgres folds unquoted
+        # identifiers to lowercase, so we require lowercase to avoid the
+        # quoting ambiguity that would otherwise surprise BI tools.
+        if v is None:
+            return v
+        _require_non_empty_trimmed(v=v, context="Datasource 'postgres_schema'")
+        if not re.fullmatch(r"[a-z_][a-z0-9_]*", v):
+            raise ValueError(
+                f"Datasource 'postgres_schema' must be a lowercase Postgres "
+                f"identifier matching [a-z_][a-z0-9_]*, got {v!r}"
+            )
         return v
 
     def _get_tsql_connection_string(self) -> str:

@@ -18,7 +18,7 @@ import asyncio
 import logging
 import re
 import struct
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 
 import sqlglot
 import sqlglot.errors
@@ -28,7 +28,10 @@ from sqlglot.optimizer.scope import traverse_scope
 
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
-from slayer.facade.catalog import FacadeCatalog, build_catalog
+from slayer.facade.catalog import (
+    FacadeCatalog,
+    build_catalog_grouped_by_schema,
+)
 from slayer.facade.probe_queries import match_probe as facade_match_probe
 from slayer.facade.rows import RowBatch
 from slayer.facade.translator import (
@@ -45,7 +48,7 @@ from slayer.facade.translator import (
 )
 from slayer.facade.catalog_sql import build_catalog_relations, executor_for
 from slayer.pg_facade import protocol as proto
-from slayer.pg_facade.auth import verify_password
+from slayer.pg_facade.auth import Authenticator, StaticTokenAuthenticator
 from slayer.pg_facade.identity import parameter_status_defaults, version_string
 from slayer.pg_facade.probes import (
     SESSION_SETTING_SEED,
@@ -66,8 +69,24 @@ logger = logging.getLogger(__name__)
 _BACKEND_PID = 1
 _BACKEND_SECRET = 0
 _PARAM_PLACEHOLDER = re.compile(r"\$(\d+)")
-# The single schema the facade advertises (matches pg_namespace / current_schema).
+# The default schema the facade advertises (matches pg_namespace /
+# current_schema). Datasources without an explicit ``postgres_schema`` land here.
 PUBLIC_SCHEMA = "public"
+
+# Fallback logical-database name (``current_database()`` / ``table_catalog``)
+# when the client sends no ``database`` startup parameter.
+DEFAULT_DATABASE = "slayer"
+
+# Per-connection scoping seams: resolve a storage from the authenticated
+# principal, and an engine from that storage.
+StorageProvider = Callable[[object], Awaitable[object]]
+EngineFactory = Callable[[object], object]
+
+
+def _default_engine_factory(storage: object) -> object:
+    from slayer.engine.query_engine import SlayerQueryEngine
+
+    return SlayerQueryEngine(storage=storage)
 
 # DEV-1569: GUC_REPORT-class settings. After a successful SET / set_config /
 # RESET of one of these, the server pushes a ``ParameterStatus`` message so
@@ -119,19 +138,49 @@ class PgConnection:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         *,
-        engine,
-        storage,
-        token: str | None,
+        engine=None,
+        storage=None,
+        token: str | None = None,
+        authenticator: Authenticator | None = None,
+        storage_provider: "StorageProvider | None" = None,
+        engine_factory: "EngineFactory | None" = None,
         tls_ctx=None,
+        catalog_extra_relations=None,
     ) -> None:
         self._reader = reader
         self._writer = writer
         self._engine = engine
         self._storage = storage
-        self._token = token
+        # Optional per-connection scoping: when ``storage_provider`` is given the
+        # storage (and engine, via ``engine_factory``) is resolved from the
+        # authenticated principal after auth — e.g. a tenant-scoped store.
+        self._storage_provider = storage_provider
+        self._engine_factory = engine_factory
+        # Tracks whether ``_resolve_scope`` actually built per-connection
+        # storage + engine objects (so teardown disposes only what this
+        # connection owns; an auth failure before the swap mustn't touch
+        # statically-provided storage / engine the host wants to keep alive).
+        self._owns_scoped_resources: bool = False
+        # ``authenticator`` wins; ``token`` is kept for back-compat and wraps
+        # into the default static-token authenticator.
+        # Explicit ``is None`` check — a custom authenticator whose
+        # ``__bool__``/``__len__`` is falsey must not silently fall back
+        # to the static-token path.
+        self._authenticator: Authenticator = (
+            authenticator if authenticator is not None
+            else StaticTokenAuthenticator(token)
+        )
+        # Opaque host-defined principal set on successful auth (tenant/user).
+        self._principal: object | None = None
         self._tls_ctx = tls_ctx
+        # Extensibility hook for embedders to override / extend the pg_catalog
+        # tables — see ``build_catalog_relations(..., extra_relations=...)``.
+        self._catalog_extras = catalog_extra_relations
         self._tx_state: bytes = proto.TX_IDLE
-        self._datasource: str | None = None
+        # Logical database name (``current_database()`` / ``table_catalog``),
+        # taken from the ``database`` startup parameter. NOT a model-resolution
+        # datasource — execution routes per query (see ``QueryResult.data_source``).
+        self._database: str = DEFAULT_DATABASE
         self._catalog: FacadeCatalog | None = None
         self._statements: dict[str, _PreparedStatement] = {}
         self._portals: dict[str, _Portal] = {}
@@ -161,10 +210,9 @@ class PgConnection:
             startup = await self._handle_startup()
             if startup is None:
                 return
-            if not await self._authenticate():
+            if not await self._authenticate(startup):
                 return
-            if not await self._resolve_datasource(startup.parameters.get("database")):
-                return
+            await self._resolve_scope(startup.parameters.get("database"))
             self._catalog = await self._build_catalog()
             await self._send_startup_complete()
             await self._main_loop()
@@ -172,6 +220,33 @@ class PgConnection:
             return
         except (asyncio.IncompleteReadError, ConnectionResetError):
             return
+        finally:
+            await self._close_scoped_storage()
+
+    async def _close_scoped_storage(self) -> None:
+        """Release the per-connection storage + engine that ``_resolve_scope``
+        built from ``storage_provider`` / ``engine_factory``.
+
+        Gated on ``_owns_scoped_resources`` so an auth failure before the
+        swap leaves any static storage/engine the host wants to keep alive
+        untouched. Disposes the engine too (``SlayerQueryEngine.aclose``
+        releases the async SQL-client pools — without this a long-lived
+        facade with ``storage_provider`` leaks one engine per session).
+        """
+        if not self._owns_scoped_resources:
+            return
+        engine_aclose = getattr(self._engine, "aclose", None)
+        if engine_aclose is not None:
+            try:
+                await engine_aclose()
+            except Exception:  # noqa: BLE001 — teardown best-effort
+                logger.exception("pg facade: scoped engine close failed")
+        storage_aclose = getattr(self._storage, "aclose", None)
+        if storage_aclose is not None:
+            try:
+                await storage_aclose()
+            except Exception:  # noqa: BLE001 — teardown best-effort
+                logger.exception("pg facade: scoped storage close failed")
 
     # ----- startup ----------------------------------------------------------
 
@@ -235,65 +310,98 @@ class PgConnection:
 
     # ----- auth -------------------------------------------------------------
 
-    async def _authenticate(self) -> bool:
-        if self._token is None:
-            self._writer.write(proto.encode_authentication_ok())
+    async def _authenticate(self, startup: proto.StartupMessage) -> bool:
+        username = startup.parameters.get("user")
+        database = startup.parameters.get("database")
+
+        password: str | None = None
+        if self._authenticator.requires_password:
+            self._writer.write(proto.encode_authentication_cleartext_password())
             await self._flush()
-            return True
-        self._writer.write(proto.encode_authentication_cleartext_password())
-        await self._flush()
-        msg = await self._read_message()
-        if msg is None:
-            return False
-        type_char, body = msg
-        if type_char != "p":
-            await self._send_error(
-                code=proto.SQLSTATE_INVALID_AUTHORIZATION,
-                message="expected password message",
-                severity="FATAL",
-            )
-            return False
-        password = proto.decode_password(body)
-        if not verify_password(password, self._token):
+            msg = await self._read_message()
+            if msg is None:
+                return False
+            type_char, body = msg
+            if type_char != "p":
+                await self._send_error(
+                    code=proto.SQLSTATE_INVALID_AUTHORIZATION,
+                    message="expected password message",
+                    severity="FATAL",
+                )
+                return False
+            try:
+                password = proto.decode_password(body)
+            except (ValueError, struct.error):
+                # Keep auth-phase malformed input on the wire-protocol
+                # path; without this, the client gets a silent disconnect
+                # instead of a Postgres error response.
+                await self._send_error(
+                    code=proto.SQLSTATE_PROTOCOL_VIOLATION,
+                    message="malformed password message",
+                    severity="FATAL",
+                )
+                return False
+
+        outcome = await self._authenticator.authenticate(
+            username=username, password=password, database=database
+        )
+        if not outcome.ok:
             await self._send_error(
                 code=proto.SQLSTATE_INVALID_PASSWORD,
-                message="password authentication failed",
+                message=outcome.message,
                 severity="FATAL",
             )
             return False
+
+        self._principal = outcome.principal
         self._writer.write(proto.encode_authentication_ok())
         await self._flush()
         return True
 
-    # ----- datasource resolution -------------------------------------------
+    # ----- scope resolution ------------------------------------------------
 
-    async def _resolve_datasource(self, database: str | None) -> bool:
-        datasources = await self._storage.list_datasources()
-        if database and database in datasources:
-            self._datasource = database
-            return True
-        name = database if database else "(none)"
-        await self._send_error(
-            code=proto.SQLSTATE_UNDEFINED_DATABASE,
-            message=f'database "{name}" does not exist',
-            severity="FATAL",
-        )
-        return False
+    async def _resolve_scope(self, database: str | None) -> None:
+        """Resolve per-connection scope after auth.
+
+        The ``database`` startup parameter is the logical database name (one
+        emulated DB per instance/tenant), not a datasource selector — every
+        datasource the storage exposes appears as a schema. When a
+        ``storage_provider`` is configured, the storage (and engine) is
+        re-resolved from the authenticated principal so a host can scope the
+        connection to one tenant.
+        """
+        self._database = database or DEFAULT_DATABASE
+        if self._storage_provider is not None:
+            self._storage = await self._storage_provider(self._principal)
+            factory = self._engine_factory or _default_engine_factory
+            self._engine = factory(self._storage)
+            # Mark only after BOTH constructions succeed — partial state
+            # would leave teardown unsure which side to dispose.
+            self._owns_scoped_resources = True
 
     async def _build_catalog(self) -> FacadeCatalog:
-        assert self._datasource is not None
-        models: list[SlayerModel] = []
-        names = await self._storage.list_models(data_source=self._datasource)
-        for name in names:
-            model = await self._storage.get_model(name=name, data_source=self._datasource)
-            if model is not None:
-                models.append(model)
-        # The Postgres facade advertises a single schema `public` (matching
-        # pg_namespace / current_schema()), so the catalog's schema is named
-        # `public` — this keeps qualified `public.<table>` resolution working.
-        # The real datasource is carried separately (self._datasource) and
-        # passed to the engine as the execution hint.
-        return build_catalog(models_by_datasource={PUBLIC_SCHEMA: models})
+        models_by_datasource: dict[str, list[SlayerModel]] = {}
+        schema_by_datasource: dict[str, str] = {}
+        for datasource in await self._storage.list_datasources():
+            names = await self._storage.list_models(data_source=datasource)
+            models = [
+                model
+                for name in names
+                if (model := await self._storage.get_model(
+                    name=name, data_source=datasource,
+                )) is not None
+            ]
+            models_by_datasource[datasource] = models
+            config = await self._storage.get_datasource(datasource)
+            if config is not None and config.postgres_schema:
+                schema_by_datasource[datasource] = config.postgres_schema
+        priority = await self._storage.get_datasource_priority()
+        return build_catalog_grouped_by_schema(
+            models_by_datasource=models_by_datasource,
+            schema_by_datasource=schema_by_datasource,
+            datasource_priority=priority,
+            default_schema=PUBLIC_SCHEMA,
+        )
 
     async def _send_startup_complete(self) -> None:
         for name, value in parameter_status_defaults():
@@ -491,11 +599,12 @@ class PgConnection:
             i + 1 for i, (raw, oid) in enumerate(zip(raw_values, oids))
             if oid == proto.OID_TEXT and raw == b""
         ]
-        if not candidates or self._catalog is None or self._datasource is None:
+        if not candidates or self._catalog is None:
             return set()
         if self._column_type_index is None:
             self._column_type_index = _build_column_type_index(
-                catalog=self._catalog, datasource=self._datasource,
+                catalog=self._catalog, datasource=self._database,
+                extra_relations=self._catalog_extras,
             )
         return _classify_empty_string_param_targets(
             sql=sql,
@@ -632,7 +741,15 @@ class PgConnection:
             # materialised when ``is_catalog_only(parsed)`` is True
             # (Codex round 16). Non-catalog model queries skip the
             # construction cost entirely.
-            catalog_sql_executor=lambda: executor_for(self._catalog, self._datasource),
+            catalog_sql_executor=lambda: executor_for(
+                self._catalog, self._database,
+                extra_relations=self._catalog_extras,
+            ),
+            # Convenience for interactive psql sessions: ``SELECT * FROM t``
+            # in browse mode (no GROUP BY / HAVING / aggregate) expands to
+            # every non-hidden column. Flight stays strict (its clients
+            # always project explicit names).
+            expand_star_in_browse_mode=True,
         )
 
     def _probe_matcher(self, parsed: exp.Expression):
@@ -643,9 +760,8 @@ class PgConnection:
         ``ProbeMatcherOutcome`` carries a mutation hint that
         ``_run_statement`` applies on Execute (Describe leaves it pending).
         """
-        assert self._datasource is not None
         pg = match_pg_probe_with_mutation(
-            parsed, datasource=self._datasource, version_str=version_string(),
+            parsed, datasource=self._database, version_str=version_string(),
             session_settings=self._session_settings,
         )
         if pg is not None:
@@ -727,8 +843,14 @@ class PgConnection:
         self, result: QueryResult, result_formats: list[int] | None, send_row_description: bool,
     ) -> bool:
         try:
+            # The translator resolves the per-query datasource from the
+            # referenced model(s) and rejects cross-datasource joins. A model
+            # query always carries one; guard the impossible None rather than
+            # passing it to the engine.
+            if result.data_source is None:
+                raise ValueError("could not resolve a datasource for the query")
             response = await self._engine.execute(
-                query=result.query, data_source=self._datasource,
+                query=result.query, data_source=result.data_source,
             )
         except Exception as exc:  # noqa: BLE001 — surface any engine error to the client
             await self._send_error(code=proto.SQLSTATE_INTERNAL_ERROR, message=str(exc))
@@ -939,6 +1061,7 @@ _COMPARISON_NODE_TYPES: tuple = (
 
 def _build_column_type_index(
     *, catalog: FacadeCatalog, datasource: str,
+    extra_relations=None,
 ) -> ColumnTypeIndex:
     """Build the (schema_lower, table_lower, column_lower) -> DataType lookup
     used by the Bind-time empty-string-to-NULL rewrite (DEV-1570).
@@ -947,18 +1070,25 @@ def _build_column_type_index(
     builder-name remap), and user-model tables under ``PUBLIC_SCHEMA``.
     """
     out: ColumnTypeIndex = {}
-    _index_catalog_relations(out=out, catalog=catalog, datasource=datasource)
+    _index_catalog_relations(
+        out=out, catalog=catalog, datasource=datasource,
+        extra_relations=extra_relations,
+    )
     _index_user_tables(out=out, catalog=catalog)
     return out
 
 
 def _index_catalog_relations(
     *, out: ColumnTypeIndex, catalog: FacadeCatalog, datasource: str,
+    extra_relations=None,
 ) -> None:
     """Populate ``out`` with pg_catalog / information_schema column types
     materialised by ``build_catalog_relations``. The ``_is_<name>`` builder
     convention is remapped to the SQL-visible ``information_schema.<name>``."""
-    for rel in build_catalog_relations(catalog=catalog, datasource=datasource):
+    for rel in build_catalog_relations(
+        catalog=catalog, datasource=datasource,
+        extra_relations=extra_relations,
+    ):
         if rel.name.startswith("_is_"):
             schema = "information_schema"
             table = rel.name[len("_is_"):]
