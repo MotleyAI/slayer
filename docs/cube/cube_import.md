@@ -81,9 +81,11 @@ filterable (`completed = true`) and group-able.
 
 A Cube view (which owns no table) becomes a thin model anchored on its
 `join_path` root cube: included dimensions become derived columns
-(`sql: "customers.name"`), included measures become local or cross-model
-`ModelMeasure`s (`customers.ltv:sum`), `prefix: true` prepends the cube name,
-and `default_filters` become model filters.
+(`sql: "customers.name"`), and included measures become local or cross-model
+`ModelMeasure`s that reference the measure's **underlying column** — a joined
+measure `revenue` with `sql: {CUBE}.amount` becomes `customers.amount:sum`, not
+`customers.revenue:sum`. `prefix: true` prepends the cube name, and
+`default_filters` become model filters.
 
 ### `extends`
 
