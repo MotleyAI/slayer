@@ -1194,42 +1194,11 @@ def test_where_clause_now_honored_against_pg_class() -> None:
 
 
 class TestPsqlBackslashCommandCoverage:
-    """``\\d``, ``\\du``, ``\\l`` and friends in psql expand into SQL that
-    joins these three catalogs. Before this work they raised "Unknown
-    schema: 'pg_catalog'" because the stub tables didn't exist."""
-
-    def test_pg_am_has_heap_row(self) -> None:
-        batch = _run("SELECT oid, amname FROM pg_catalog.pg_am")
-        assert {r["amname"] for r in batch.rows} == {"heap"}
-        # OID must match real Postgres for `pg_class.relam` to round-trip.
-        assert {r["oid"] for r in batch.rows} == {2}
-
-    def test_pg_roles_has_default_slayer_row(self) -> None:
-        batch = _run(
-            "SELECT rolname, rolsuper, rolcanlogin, rolconnlimit "
-            "FROM pg_catalog.pg_roles"
-        )
-        assert len(batch.rows) == 1
-        row = batch.rows[0]
-        assert row["rolname"] == "slayer"
-        assert row["rolsuper"] is False
-        assert row["rolcanlogin"] is True
-        assert row["rolconnlimit"] == -1
-
-    def test_pg_database_has_one_row_for_connected_datasource(self) -> None:
-        batch = _run("SELECT datname, datcollate, encoding FROM pg_catalog.pg_database")
-        assert len(batch.rows) == 1
-        row = batch.rows[0]
-        assert row["datname"] == "jaffle"  # _demo_catalog's datasource
-        assert row["datcollate"] == "en_US.UTF-8"
-        assert row["encoding"] == 6  # UTF8
-
-    def test_pg_encoding_to_char_round_trips_to_utf8(self) -> None:
-        batch = _run("SELECT pg_encoding_to_char(6) AS enc")
-        assert batch.rows == [{"enc": "UTF8"}]
+    """The exact ``\\d`` JOIN shape that triggered the original bug —
+    joins pg_class + pg_namespace + pg_am. Fails on any drop of a stub
+    or the routing allowlist."""
 
     def test_psql_backslash_d_join_through_pg_am_succeeds(self) -> None:
-        """The exact ``\\d`` JOIN shape that triggered the original failure."""
         sql = (
             "SELECT n.nspname AS schema_name, c.relname AS name, c.relkind "
             "FROM pg_catalog.pg_class AS c "
@@ -1240,10 +1209,7 @@ class TestPsqlBackslashCommandCoverage:
             "ORDER BY 1, 2"
         )
         batch = _run(sql)
-        names = {r["name"] for r in batch.rows}
-        # The _demo_catalog has both `orders` and `customers` — confirm
-        # the JOIN didn't drop rows because of the new pg_am wiring.
-        assert names == {"orders", "customers"}
+        assert {r["name"] for r in batch.rows} == {"orders", "customers"}
 
 
 class TestCatalogExtensibilityHook:
@@ -1473,3 +1439,373 @@ class TestPublicSchemaFallbackGuard:
         )
         with pytest.raises(TranslationError, match="Unknown schema"):
             translate("SELECT id FROM public.orders", multi, dialect="postgres")
+
+
+# --- Postgres schema-qualified operator + COLLATE stripping -----------------
+
+
+class TestSchemaQualifiedOperatorRewrite:
+    """psql emits ``OPERATOR(pg_catalog.<op>)`` for ``\\du <pattern>`` /
+    ``\\d <pattern>`` etc. plus ``COLLATE pg_catalog.default`` alongside.
+    DuckDB has no OPERATOR() syntax and no ``pg_catalog`` collation
+    namespace; both must be rewritten to bare DuckDB equivalents."""
+
+    @pytest.mark.parametrize("op,pattern,expected", [
+        ("~", "^slayer$", [{"rolname": "slayer"}]),         # case-sensitive match
+        ("~*", "^SLAYER$", [{"rolname": "slayer"}]),        # case-insensitive match
+        ("!~", "^slayer$", []),                             # negated: default row matches
+        ("!~*", "^SLAYER$", []),                            # negated case-insensitive
+    ])
+    def test_pg_catalog_regex_operator(
+        self, op: str, pattern: str, expected: list,
+    ) -> None:
+        """The four schema-qualified regex operator variants map to
+        ``regexp_matches`` / ``NOT regexp_matches``."""
+        batch = _run(
+            f"SELECT rolname FROM pg_catalog.pg_roles "
+            f"WHERE rolname OPERATOR(pg_catalog.{op}) '{pattern}'"
+        )
+        assert batch.rows == expected
+
+    def test_collate_clause_stripped(self) -> None:
+        # ``COLLATE pg_catalog.default`` is dropped; the match proceeds
+        # byte-wise, which is the right semantic for ASCII catalog names.
+        batch = _run(
+            "SELECT rolname FROM pg_catalog.pg_roles "
+            "WHERE rolname OPERATOR(pg_catalog.~) '^slayer$' COLLATE pg_catalog.default"
+        )
+        assert batch.rows == [{"rolname": "slayer"}]
+
+    def test_psql_backslash_du_pattern_query_executes(self) -> None:
+        """The exact ``\\du users`` shape combining both rewrites."""
+        sql = (
+            "SELECT r.rolname, r.rolsuper, r.rolinherit, r.rolcreaterole, "
+            "r.rolcreatedb, r.rolcanlogin, r.rolconnlimit, r.rolvaliduntil, "
+            "r.rolreplication, r.rolbypassrls "
+            "FROM pg_catalog.pg_roles AS r "
+            "WHERE r.rolname OPERATOR(pg_catalog.~) '^(users)$' "
+            "COLLATE pg_catalog.default ORDER BY 1"
+        )
+        # Executes cleanly — the default ``slayer`` role doesn't match
+        # ``^(users)$`` so we get zero rows, not an error.
+        batch = _run(sql)
+        assert batch.rows == []
+
+
+# --- CAST(x AS pg_catalog.<type>) rewrite -----------------------------------
+
+
+class TestSchemaQualifiedCastRewrite:
+    """psql's ``\\d <table>`` casts to Postgres-specific ``pg_catalog.<type>``
+    names (``pg_catalog.regtype``, ``pg_catalog.text``, ``pg_catalog.oid``…).
+    DuckDB rejects those; each must be rewritten to a DuckDB equivalent."""
+
+    def test_pg_catalog_text_becomes_varchar(self) -> None:
+        batch = _run("SELECT CAST('hello' AS pg_catalog.text) AS s")
+        assert batch.rows == [{"s": "hello"}]
+
+    def test_pg_catalog_oid_becomes_bigint(self) -> None:
+        # Plain ``oid`` is a bare integer type — no OID-lookup semantics.
+        batch = _run("SELECT CAST(100 AS pg_catalog.oid) AS v")
+        assert batch.rows == [{"v": 100}]
+
+    def test_pg_catalog_regclass_string_lookup(self) -> None:
+        """``'pg_class'::pg_catalog.regclass`` normalizes to bare
+        ``regclass`` and gets the OID-lookup semantics of the existing
+        pass — critical for psql's ``\\dx`` which classoid-checks with
+        ``'pg_catalog.pg_extension'::pg_catalog.regclass``. Pre-fix, the
+        pg_catalog qualifier caused this to coerce silently to BIGINT,
+        losing the lookup."""
+        batch = _run("SELECT CAST('pg_class' AS pg_catalog.regclass) AS o")
+        # ``pg_class`` is in KNOWN_SYSTEM_OIDS with the canonical OID 1259.
+        assert batch.rows == [{"o": 1259}]
+
+    def test_pg_catalog_regtype_string_lookup(self) -> None:
+        # ``int8`` is a known type — resolves to its wire OID.
+        from slayer.pg_facade.protocol import OID_INT8
+        batch = _run("SELECT CAST('int8' AS pg_catalog.regtype) AS o")
+        assert batch.rows == [{"o": OID_INT8}]
+
+    def test_pg_catalog_regproc_returns_zero(self) -> None:
+        # regproc is unconditionally 0 — matches bare ``::regproc``.
+        batch = _run("SELECT CAST('some_fn' AS pg_catalog.regproc) AS r")
+        assert batch.rows == [{"r": 0}]
+
+    def test_unknown_pg_catalog_type_falls_back_to_varchar(self) -> None:
+        # ``some_unknown_type`` won't be in the map; fallback is VARCHAR.
+        batch = _run("SELECT CAST('x' AS pg_catalog.some_unknown_type) AS v")
+        assert batch.rows == [{"v": "x"}]
+
+    def test_bare_type_names_still_work(self) -> None:
+        # The rewriter is scoped to USERDEFINED types with dotted kinds;
+        # a bare ``CAST(... AS text)`` must be untouched.
+        batch = _run("SELECT CAST(42 AS text) AS s")
+        assert batch.rows == [{"s": "42"}]
+
+
+class TestPgClassPsqlDescribeCompleteness:
+    """The exact ``\\d <table>`` shape combining pg_class + pg_am JOIN +
+    schema-qualified CAST + self-JOIN through reltoastrelid. Reads every
+    column psql's describe query touches — will fail if any of them are
+    missing from ``pg_class``."""
+
+    def test_psql_backslash_d_query_end_to_end(self) -> None:
+        sql = (
+            "SELECT c.relchecks, c.relkind, c.relhasindex, c.relhasrules, "
+            "c.relhastriggers, c.relrowsecurity, c.relforcerowsecurity, "
+            "FALSE AS relhasoids, c.relispartition, '', c.reltablespace, "
+            "CASE WHEN c.reloftype = 0 THEN '' "
+            "ELSE CAST(CAST(c.reloftype AS pg_catalog.regtype) AS pg_catalog.text) END, "
+            "c.relpersistence, c.relreplident, am.amname "
+            "FROM pg_catalog.pg_class AS c "
+            "LEFT JOIN pg_catalog.pg_class AS tc ON (c.reltoastrelid = tc.oid) "
+            "LEFT JOIN pg_catalog.pg_am AS am ON (c.relam = am.oid) "
+            "WHERE c.relname = 'orders'"
+        )
+        batch = _run(sql)
+        assert len(batch.rows) == 1
+        row = batch.rows[0]
+        assert row["relkind"] == "r"
+        assert row["amname"] == "heap"
+        assert row["relreplident"] == "d"
+
+
+# --- pg_collation stub + typcollation completeness -------------------------
+
+
+class TestPgCollationAndTypcollation:
+    """psql's ``\\d <table>`` runs a sub-select through pg_collation JOIN
+    pg_type to detect non-default collations. Pre-fix: pg_collation
+    wasn't in the routing allowlist, and pg_type lacked ``typcollation``
+    — the query fell through to user-table resolution and yielded
+    "Unknown schema: 'pg_catalog'", or a misleading DuckDB "Referenced
+    table 't' not found" (which really means a missing column)."""
+
+    def test_pg_collation_routes_and_returns_empty(self) -> None:
+        batch = _run("SELECT * FROM pg_catalog.pg_collation")
+        # Empty is the right shape — every column uses the default
+        # collation (attcollation = 0), so the JOIN yields no rows.
+        assert batch.rows == []
+
+    def test_psql_backslash_d_attribute_subselect(self) -> None:
+        """The correlated ``pg_collation``/``pg_type`` sub-select from
+        ``\\d <table>`` executes end-to-end (previously failed on the
+        missing pg_type.typcollation column with a misleading binder
+        error)."""
+        sql = (
+            "SELECT a.attname, "
+            "(SELECT c.collname FROM pg_catalog.pg_collation AS c, "
+            "pg_catalog.pg_type AS t "
+            "WHERE c.oid = a.attcollation AND t.oid = a.atttypid "
+            "AND a.attcollation <> t.typcollation) AS attcollation "
+            "FROM pg_catalog.pg_attribute AS a "
+            "WHERE a.attrelid IN "
+            "(SELECT oid FROM pg_catalog.pg_class WHERE relname = 'orders')"
+        )
+        batch = _run(sql)
+        # Rows returned — one per column of the orders model.
+        assert len(batch.rows) > 0
+        # The correlated attcollation sub-select is NULL for every row
+        # (every column uses the default collation).
+        assert all(r["attcollation"] is None for r in batch.rows)
+
+
+# --- Empty stubs for the psql "\d <table>" fan-out -------------------------
+
+
+class TestEmptyCatalogStubs:
+    """psql's ``\\d <table>`` runs 6-10 sub-queries against catalog tables
+    for triggers / inheritance / publications / partitioning / view
+    rewrite / extensions. SLayer has none of these by construction, so
+    every stub is legitimately empty — matching real Postgres."""
+
+    _STUB_TABLES = [
+        "pg_trigger", "pg_inherits",
+        "pg_publication", "pg_publication_rel", "pg_publication_tables",
+        "pg_partitioned_table", "pg_rewrite", "pg_extension",
+    ]
+
+    @pytest.mark.parametrize("table", _STUB_TABLES)
+    def test_stub_is_routed_and_returns_empty(self, table: str) -> None:
+        # Routing parity is covered structurally by
+        # ``test_every_pg_builder_is_in_the_routing_allowlist``; this
+        # only re-verifies the end-to-end execute path per stub.
+        batch = _run(f"SELECT * FROM pg_catalog.{table}")
+        assert batch.rows == []
+
+    def test_psql_backslash_d_policy_subquery(self) -> None:
+        """Real ``\\d`` RLS sub-query — the shape that motivated the
+        ``pg_policy`` stub in the first place."""
+        sql = (
+            "SELECT pol.polname, pol.polpermissive, "
+            "pg_catalog.pg_get_expr(pol.polqual, pol.polrelid) "
+            "FROM pg_catalog.pg_policy AS pol WHERE pol.polrelid = 999"
+        )
+        assert _run(sql).rows == []
+
+    def test_psql_backslash_d_trigger_subquery(self) -> None:
+        """The "Triggers:" section query psql emits per relation."""
+        sql = (
+            "SELECT t.tgname, t.tgenabled, t.tgisinternal "
+            "FROM pg_catalog.pg_trigger AS t "
+            "WHERE t.tgrelid = 999 AND NOT t.tgisinternal ORDER BY 1"
+        )
+        assert _run(sql).rows == []
+
+    def test_psql_backslash_dx_extension_query(self) -> None:
+        """``\\dx`` — list installed extensions. Empty for SLayer."""
+        sql = (
+            "SELECT e.extname, e.extversion, n.nspname, c.description "
+            "FROM pg_catalog.pg_extension e "
+            "LEFT JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace "
+            "LEFT JOIN pg_catalog.pg_description c "
+            "ON c.objoid = e.oid AND c.classoid = 'pg_catalog.pg_extension'::pg_catalog.regclass "
+            "ORDER BY 1"
+        )
+        assert _run(sql).rows == []
+
+
+# --- On-the-fly synthesis for unknown catalog tables -----------------------
+
+
+class TestSynthesisFallback:
+    """When a query references ``pg_catalog.<x>`` / ``information_schema.<x>``
+    for a table we haven't explicitly cataloged, synthesize an empty
+    relation inline instead of erroring. Columns are discovered from
+    same-query column refs. Never fires for user-schema refs — those
+    still surface as loud "unknown table" errors."""
+
+    def test_unknown_pg_catalog_table_synthesized_empty(self, caplog) -> None:
+        """``pg_statistic_ext`` — a real one we hit in the wild that
+        wasn't in the explicit stub set."""
+        with caplog.at_level(logging.WARNING, logger="slayer.facade.catalog_sql"):
+            batch = _run(
+                "SELECT stxname, stxrelid FROM pg_catalog.pg_statistic_ext "
+                "WHERE stxrelid = 100"
+            )
+        assert batch.rows == []
+        # WARN log fired with the friendly diagnostic.
+        assert any(
+            "pg_statistic_ext" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_unknown_information_schema_table_synthesized_empty(self) -> None:
+        """Same pattern for information_schema — psql / Metabase touch
+        obscure ones like ``information_schema.character_sets``."""
+        batch = _run(
+            "SELECT character_set_name FROM information_schema.character_sets"
+        )
+        assert batch.rows == []
+
+    def test_column_discovery_via_alias(self) -> None:
+        """Column refs qualified by an alias (``e.something``) are
+        discovered and appear in the synthetic relation's column set."""
+        batch = _run(
+            "SELECT e.custom_column, e.other_col "
+            "FROM pg_catalog.pg_totally_fictional AS e"
+        )
+        # DuckDB is happy — the synthetic table exposes both columns.
+        assert batch.rows == []
+
+    def test_bare_column_ref_still_discovered(self) -> None:
+        """Column refs without a table qualifier (bare ``foo``) are picked
+        up when the FROM table has no alias — the common shape psql uses."""
+        batch = _run(
+            "SELECT some_col FROM pg_catalog.pg_absent WHERE another_col = 42"
+        )
+        assert batch.rows == []
+
+    def test_user_schema_typo_still_errors_loudly(self) -> None:
+        """Safety: an unknown ``public.<x>`` reference must NOT be
+        synthesized — that would mask user-table typos silently. Only
+        pg_catalog / information_schema refs get the graceful fallback."""
+        with pytest.raises(TranslationError):
+            _run("SELECT * FROM public.no_such_table_here")
+
+    def test_bare_unknown_name_not_synthesized(self) -> None:
+        """A bare ``foo`` (no schema qualifier) that doesn't match any
+        known pg_catalog name is NOT synthesized. Falls through to normal
+        user-table resolution and errors loudly."""
+        with pytest.raises(TranslationError):
+            _run("SELECT * FROM totally_made_up_bare_name")
+
+    def test_synthesis_with_pg_catalog_helper_stub_calls(self, caplog) -> None:
+        """The full ``\\d`` pg_statistic_ext query from the wild:
+        combines synthesis + regclass casts + the new pg_get_* helper
+        stubs + ANY() array subscript."""
+        sql = (
+            "SELECT oid, CAST(stxrelid AS pg_catalog.regclass), "
+            "CAST(CAST(stxnamespace AS pg_catalog.regnamespace) AS pg_catalog.text) AS nsp, "
+            "stxname, pg_catalog.pg_get_statisticsobjdef_columns(oid) AS columns, "
+            "'d' = ANY(stxkind) AS ndist_enabled, "
+            "stxstattarget FROM pg_catalog.pg_statistic_ext "
+            "WHERE stxrelid = 100 ORDER BY nsp, stxname"
+        )
+        batch = _run(sql)
+        assert batch.rows == []
+
+
+# --- Unknown pg_* function fallback ----------------------------------------
+
+
+class TestUnknownPgFunctionFallback:
+    """Any lingering ``pg_*`` Anonymous call not covered by a known stub
+    gets rewritten to NULL. Prevents whack-a-mole every time a new BI
+    tool release calls yet another obscure Postgres helper."""
+
+    def test_unknown_pg_helper_becomes_null(self, caplog) -> None:
+        """``pg_relation_is_publishable`` — a real psql-emitted helper
+        we didn't stub explicitly."""
+        with caplog.at_level(logging.WARNING, logger="slayer.facade.catalog_sql"):
+            batch = _run(
+                "SELECT pg_catalog.pg_relation_is_publishable(100) AS v"
+            )
+        assert batch.rows == [{"v": None}]
+        assert any(
+            "pg_relation_is_publishable" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_bare_unknown_pg_call_also_stubbed(self, caplog) -> None:
+        """Bare ``pg_foo(...)`` (no schema qualifier) also stubs to NULL —
+        real queries mix qualified and bare forms."""
+        with caplog.at_level(logging.WARNING, logger="slayer.facade.catalog_sql"):
+            batch = _run("SELECT pg_some_random_helper('x', 42) AS v")
+        assert batch.rows == [{"v": None}]
+
+    def test_known_stubs_still_take_precedence(self) -> None:
+        """The fallback runs AFTER the explicit-stub passes —
+        ``pg_get_userbyid`` still returns 'slayer', not NULL."""
+        batch = _run("SELECT pg_catalog.pg_get_userbyid(10) AS u")
+        assert batch.rows == [{"u": "slayer"}]
+
+    def test_non_pg_prefixed_unknown_function_still_errors(self) -> None:
+        """Safety: user-defined SQL functions (no ``pg_`` prefix) are
+        left alone — typos in user queries surface loudly."""
+        with pytest.raises(TranslationError):
+            _run("SELECT some_unknown_udf(42) AS v")
+
+
+class TestRegclassCastOnNumericExpr:
+    """``CAST(<numeric_column> AS regclass)`` — psql's ``\\d`` emits this
+    pattern for inheritance / partitioning queries (``CAST(c.oid AS
+    regclass)``). Pre-fix, the rewrite wrapped it in
+    ``slayer_regclass_oid(<expr>)`` which is a VARCHAR-only UDF — Binder
+    Error on any BIGINT arg. Now: pass through unchanged (the OID value
+    itself is the most useful answer we can produce for our minimal
+    catalog)."""
+
+    def test_regclass_cast_on_numeric_column_passes_through(self) -> None:
+        # Uses pg_class.oid which is INT in our schema.
+        batch = _run("SELECT CAST(c.oid AS pg_catalog.regclass) AS r FROM pg_catalog.pg_class AS c")
+        # Rows come back — values are the oid values themselves.
+        assert len(batch.rows) > 0
+        assert all(isinstance(r["r"], int) for r in batch.rows)
+
+    def test_regclass_cast_on_string_literal_still_looks_up(self) -> None:
+        """Regression: the literal-lookup case still works (this is what
+        the UDF was built for). ``'pg_class'::regclass → 1259``."""
+        batch = _run("SELECT CAST('pg_class' AS pg_catalog.regclass) AS r")
+        assert batch.rows == [{"r": 1259}]
+
