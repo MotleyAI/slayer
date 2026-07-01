@@ -1504,7 +1504,7 @@ def _print_cube_import_summary(result, *, include_hidden):
 def _write_cube_report(result, args) -> str:
     import os
 
-    storage_base = args.storage or _STORAGE_DEFAULT
+    storage_base = args.storage or args.models_dir or _STORAGE_DEFAULT
     if storage_base.endswith(".db"):
         storage_base = os.path.dirname(storage_base) or "."
     report_path = args.report or os.path.join(storage_base, "cube_import_report.json")

@@ -59,6 +59,19 @@ def test_import_cube_writes_models_and_report(tmp_path):
     assert report["model_count"] >= 3
 
 
+def test_import_cube_report_honors_models_dir(tmp_path):
+    # With --models-dir (and no --storage) the report lands next to the models,
+    # matching _resolve_storage's resolution chain.
+    models_dir = tmp_path / "mstore"
+    code = _run(
+        "import-cube", FIXTURE,
+        "--datasource", "cube_ds",
+        "--models-dir", str(models_dir),
+    )
+    assert code == 0
+    assert (models_dir / "cube_import_report.json").exists()
+
+
 def test_import_cube_report_path_override(tmp_path):
     storage_dir = tmp_path / "store"
     report_path = tmp_path / "custom_report.json"
