@@ -1809,3 +1809,51 @@ class TestRegclassCastOnNumericExpr:
         batch = _run("SELECT CAST('pg_class' AS pg_catalog.regclass) AS r")
         assert batch.rows == [{"r": 1259}]
 
+
+
+class TestPR213ReviewFixes:
+    """Regression tests for the four CodeRabbit findings on PR #213."""
+
+    def test_regclass_cast_from_numeric_literal_passes_through(self) -> None:
+        """``CAST(0 AS pg_catalog.regclass)`` = InvalidOid in Postgres.
+        Pre-fix, this fell through to the VARCHAR-only UDF and errored
+        on the INTEGER argument. Now: pass through unchanged (numeric
+        literals join column refs on the fast path)."""
+        batch = _run("SELECT CAST(0 AS pg_catalog.regclass) AS r")
+        assert batch.rows == [{"r": 0}]
+
+    @pytest.mark.parametrize("pg_type", [
+        "regoper", "regoperator", "regprocedure",
+    ])
+    def test_extended_reg_family_casts_return_zero(self, pg_type: str) -> None:
+        """``regoper`` / ``regoperator`` / ``regprocedure`` are in
+        ``_PG_REG_TYPES`` (normalized to bare types) but pre-fix,
+        ``_rewrite_regproc_regtype_casts`` only knew ``regproc`` and
+        ``regtype`` — the others fell through as unsupported types."""
+        batch = _run(f"SELECT CAST('anything' AS pg_catalog.{pg_type}) AS r")
+        assert batch.rows == [{"r": 0}]
+
+    def test_information_schema_synthesis_uses_is_alias(self) -> None:
+        """For synthesized ``information_schema.<x>`` tables without a
+        user alias, the subquery alias must be ``_is_<x>`` because
+        ``_strip_column_schema_qualifiers`` later rewrites bare-column
+        qualifiers to that name. Pre-fix, alias/qualifier mismatched
+        and DuckDB missed the columns."""
+        # ``character_sets`` isn't in the info-schema stub set — synthesized.
+        # This asserts the synthesis wiring: rewrite must resolve.
+        batch = _run(
+            "SELECT character_set_name FROM information_schema.character_sets"
+        )
+        assert batch.rows == []
+
+    def test_synthesized_column_with_quote_in_name_does_not_break_sql(self) -> None:
+        """Column identifiers containing ``"`` must be escaped before
+        embedding into the synth SQL — otherwise a malicious or oddly-
+        named identifier could malform the parse."""
+        # Sqlglot happily parses double-quoted identifiers with escaped
+        # inner quotes (``"foo""bar"``). Use one via an unknown catalog.
+        batch = _run(
+            'SELECT "foo""bar" FROM pg_catalog.pg_totally_unknown'
+        )
+        # Executes cleanly, returns empty rows with the odd column name.
+        assert batch.rows == []

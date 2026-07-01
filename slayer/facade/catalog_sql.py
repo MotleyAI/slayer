@@ -1623,11 +1623,14 @@ class _AstRewriter:
         if isinstance(inner, exp.Literal) and inner.is_string:
             text = inner.this  # raw string value (no quotes)
             return exp.Literal.number(self._lookup_static_regclass(text))
-        # Bare column ref (e.g. ``c.oid``): pass through unchanged. These
-        # are numeric OID columns; wrapping in the VARCHAR-only UDF would
-        # yield a Binder Error, and the OID value itself is the most
-        # useful answer we can produce for SLayer's minimal catalog.
+        # Numeric-typed inner (column ref or number literal): pass through
+        # unchanged. Column refs are OID columns like ``c.oid``, and
+        # ``CAST(0 AS regclass)`` is Postgres's InvalidOid sentinel. Both
+        # would fail against the VARCHAR-only UDF, and the numeric value
+        # itself is the most useful answer for SLayer's minimal catalog.
         if isinstance(inner, exp.Column):
+            return inner
+        if isinstance(inner, exp.Literal) and not inner.is_string:
             return inner
         # Everything else — function calls, nested casts, expressions —
         # routes through the UDF lookup. Metabase's real query uses
@@ -1659,14 +1662,15 @@ class _AstRewriter:
     # ----- 4. regproc / regtype casts ---------------------------------------
 
     def _rewrite_regproc_regtype_casts(self, node: exp.Expression) -> exp.Expression:
-        """``::regproc`` → ``0`` (pg_proc is empty in this facade).
+        """``::regproc`` / ``::regoper`` / ``::regoperator`` / ``::regprocedure``
+        → ``0`` (their catalog tables are empty in this facade).
         ``::regtype`` → ``pg_type.oid`` lookup for known type names, ``0``
         otherwise — so ``WHERE oid = 'int8'::regtype`` matches the int8
-        row in pg_type (Codex review)."""
+        row in pg_type."""
         if not isinstance(node, exp.Cast):
             return node
         target_kind = self._cast_target_kind(node)
-        if target_kind == "regproc":
+        if target_kind in {"regproc", "regoper", "regoperator", "regprocedure"}:
             return exp.Literal.number(0)
         if target_kind == "regtype":
             inner = node.this
@@ -2209,7 +2213,9 @@ class CatalogSqlExecutor:
             if schema == "information_schema" and f"_is_{name}" in self._registered_tables:
                 continue
             # Discover column names the same query references off this
-            # Table's alias (or bare name).
+            # Table's alias (or bare name). Column discovery matches on the
+            # user-visible handle (still ``pg_publication`` / ``character_sets``
+            # at this point — the strip pass hasn't run).
             handle = tbl.alias or tbl.name
             columns = self._discover_referenced_columns(root, handle)
             if not columns:
@@ -2218,7 +2224,16 @@ class CatalogSqlExecutor:
                 # something to project. Real queries always reference some
                 # column, so this is a rare path.
                 columns = ["oid"]
-            subq = self._build_empty_subquery(columns, alias=handle)
+            # For information_schema tables without a user-supplied alias,
+            # the subquery must ALIAS AS ``_is_<name>`` — that's what the
+            # downstream ``_strip_column_schema_qualifiers`` pass rewrites
+            # bare ``information_schema.character_sets.col`` refs to. If we
+            # aliased the synthetic subquery as ``character_sets``, the
+            # binder would miss the column.
+            output_alias = handle
+            if schema == "information_schema" and not tbl.alias:
+                output_alias = f"_is_{name}"
+            subq = self._build_empty_subquery(columns, alias=output_alias)
             replacements.append((tbl, subq))
             logger.warning(
                 "pg-facade: synthesized empty relation for unknown catalog "
@@ -2271,9 +2286,18 @@ class CatalogSqlExecutor:
         """Emit ``(SELECT NULL::VARCHAR AS c1, ... WHERE FALSE) AS <alias>``.
         Every column types as VARCHAR — NULL literals coerce freely to any
         downstream type, and the ``WHERE FALSE`` guarantees zero rows so
-        the type choice is only for column-shape validation."""
+        the type choice is only for column-shape validation.
+
+        Column names come from client-controlled SQL identifiers; escape
+        the ``"`` character (SQL identifier delimiter) before embedding
+        so a valid quoted-identifier column ref can't malform the SQL we
+        parse. Double the quote character per the SQL-standard escape.
+        """
+        def _quote_ident(name: str) -> str:
+            return '"' + name.replace('"', '""') + '"'
+
         select_cols = ", ".join(
-            f'NULL::VARCHAR AS "{c}"' for c in columns
+            f"NULL::VARCHAR AS {_quote_ident(c)}" for c in columns
         )
         sub_sql = f"SELECT {select_cols} WHERE FALSE"
         parsed_sub = sqlglot.parse_one(sub_sql, read="duckdb")
