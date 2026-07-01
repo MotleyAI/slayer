@@ -239,6 +239,30 @@ def test_view_default_filter_escapes_single_quotes():
     assert "O''Reilly" in filters  # single quote doubled, not "O'Reilly'"
 
 
+def test_view_object_form_includes_reports_override():
+    view = CubeView(name="ov", cubes=[CubeViewCubeRef(
+        join_path="orders",
+        includes=[{"name": "status", "format": "upper"}, "total_revenue"])])
+    project = CubeProject(cubes=_orders_customers_cubes(), views=[view])
+    models, report = _convert(project)
+    assert models["ov"].get_column("status") is not None       # name still extracted
+    assert models["ov"].get_measure("total_revenue") is not None
+    assert any(i.category == CubeIssueCategory.UNMAPPED_INFRA for i in report.issues)
+
+
+def test_view_calc_measure_reexport_reported():
+    cubes = _orders_customers_cubes()
+    cubes[0].measures.append(CubeMeasure(name="aov", type="number",
+                                         sql="{total_revenue} / {count}"))
+    view = CubeView(name="ov", cubes=[CubeViewCubeRef(join_path="orders", includes=["aov"])])
+    project = CubeProject(cubes=cubes, views=[view])
+    models, report = _convert(project)
+    # A calculated measure can't be re-exported as a facade cross-model measure
+    # in Stage 1 → reported, not silently skipped.
+    assert models["ov"].get_measure("aov") is None
+    assert any(i.category == CubeIssueCategory.COMPLEX_MEASURE for i in report.issues)
+
+
 def test_view_dropped_when_root_cube_not_emitted():
     # orders has no source → not emitted; a view rooted on it can't be built.
     cubes = [
@@ -251,6 +275,5 @@ def test_view_dropped_when_root_cube_not_emitted():
     project = CubeProject(cubes=cubes, views=[view])
     models, report = _convert(project)
     assert "ov" not in models
-    assert any(i.category in (CubeIssueCategory.AMBIGUOUS_VIEW_ROOT,
-                              CubeIssueCategory.DISCONNECTED_VIEW)
+    assert any(i.category == CubeIssueCategory.AMBIGUOUS_VIEW_ROOT
                for i in report.issues)

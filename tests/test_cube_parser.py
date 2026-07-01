@@ -111,6 +111,17 @@ def test_hidden_dirs_and_target_skipped(tmp_path):
     assert all(c.name != "ghost" for c in project.cubes)
 
 
+def test_unreadable_file_is_reported_not_fatal(tmp_path):
+    # A broken symlink with a .yml extension raises OSError on open — it must be
+    # reported like a malformed file, not abort the whole import.
+    (tmp_path / "broken.yml").symlink_to(tmp_path / "nonexistent.yml")
+    (tmp_path / "good.yml").write_text(
+        "cubes:\n  - name: ok\n    sql_table: public.ok\n")
+    project, issues = parse_cube_project(str(tmp_path))
+    assert any(c.name == "ok" for c in project.cubes)
+    assert any(i.category == CubeIssueCategory.PARSE_ERROR for i in issues)
+
+
 def test_empty_dir_yields_empty_project(tmp_path):
     project, _ = parse_cube_project(str(tmp_path))
     assert project.cubes == []

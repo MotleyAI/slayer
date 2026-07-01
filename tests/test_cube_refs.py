@@ -60,6 +60,13 @@ def test_cross_cube_member_multi_hop():
     )
 
 
+def test_translation_skips_doubled_quote_literal():
+    # A `{CUBE}` inside a literal containing an escaped (doubled) quote must be
+    # left alone — the literal regex has to be doubled-quote aware.
+    out = translate_cube_refs("status = 'can''t {CUBE}'", mode="sql", cube="orders")
+    assert out == "status = 'can''t {CUBE}'"
+
+
 def test_translation_skips_string_literals():
     # A `{CUBE}` inside a SQL string literal must be left untouched.
     out = translate_cube_refs(

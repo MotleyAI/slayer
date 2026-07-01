@@ -33,6 +33,35 @@ def _merge_cube(parent: CubeCube, child: CubeCube) -> CubeCube:
     })
 
 
+def _find_cyclic(by_name: dict) -> set[str]:
+    """Return every node that lies on an ``extends`` cycle.
+
+    Detecting the full cycle up front (rather than only the closing frame) means
+    *no* node on a cycle inherits — matching the "flattened without inheritance"
+    contract. Nodes that merely *extend into* a cycle are not cyclic; they
+    inherit the cyclic node's own (un-merged) members.
+    """
+    cyclic: set[str] = set()
+    for start in by_name:
+        path: list[str] = []
+        seen: set[str] = set()
+        cur = start
+        while cur in by_name:
+            nxt = by_name[cur].extends
+            if not nxt or nxt not in by_name:
+                break
+            if nxt in seen or nxt == cur:
+                if nxt in path:
+                    cyclic.update(path[path.index(nxt):])
+                cyclic.add(nxt)
+                cyclic.add(cur)
+                break
+            path.append(cur)
+            seen.add(cur)
+            cur = nxt
+    return cyclic
+
+
 def flatten_cube_extends(
     cubes: list[CubeCube],
 ) -> tuple[list[CubeCube], list[CubeConversionIssue]]:
@@ -40,32 +69,25 @@ def flatten_cube_extends(
     cycles reported). Every cube is still returned (hidden iff ``public: false``
     is handled downstream by the converter)."""
     by_name = {c.name: c for c in cubes}
-    issues: list[CubeConversionIssue] = []
+    cyclic = _find_cyclic(by_name)
+    issues = [CubeConversionIssue(
+        category=CubeIssueCategory.EXTENDS_CYCLE, severity="error", cube=name,
+        message=f"Cube '{name}' is in an extends cycle; flattened without inheritance.")
+        for name in sorted(cyclic)]
     resolved: dict[str, CubeCube] = {}
 
-    def resolve(name: str, chain: frozenset) -> CubeCube:
+    def resolve(name: str) -> CubeCube:
         if name in resolved:
             return resolved[name]
         cube = by_name[name]
-        if not cube.extends or cube.extends not in by_name:
+        if name in cyclic or not cube.extends or cube.extends not in by_name:
             resolved[name] = cube
             return cube
-        if cube.extends in chain:
-            issues.append(CubeConversionIssue(
-                category=CubeIssueCategory.EXTENDS_CYCLE, severity="error",
-                cube=name,
-                message=f"Cube '{name}' is in an extends cycle via '{cube.extends}'; "
-                        f"flattened without inheritance.",
-            ))
-            resolved[name] = cube
-            return cube
-        parent = resolve(cube.extends, chain | {name})
-        merged = _merge_cube(parent, cube)
+        merged = _merge_cube(resolve(cube.extends), cube)
         resolved[name] = merged
         return merged
 
-    out = [resolve(c.name, frozenset()) for c in cubes]
-    return out, issues
+    return [resolve(c.name) for c in cubes], issues
 
 
 def _merge_view(parent: CubeView, child: CubeView) -> CubeView:
@@ -83,28 +105,22 @@ def flatten_view_extends(
     """Flatten the view `extends` graph by concatenating member-contributing
     cube refs (the converter dedups members)."""
     by_name = {v.name: v for v in views}
-    issues: list[CubeConversionIssue] = []
+    cyclic = _find_cyclic(by_name)
+    issues = [CubeConversionIssue(
+        category=CubeIssueCategory.EXTENDS_CYCLE, severity="error", view=name,
+        message=f"View '{name}' is in an extends cycle; flattened without inheritance.")
+        for name in sorted(cyclic)]
     resolved: dict[str, CubeView] = {}
 
-    def resolve(name: str, chain: frozenset) -> CubeView:
+    def resolve(name: str) -> CubeView:
         if name in resolved:
             return resolved[name]
         view = by_name[name]
-        if not view.extends or view.extends not in by_name:
+        if name in cyclic or not view.extends or view.extends not in by_name:
             resolved[name] = view
             return view
-        if view.extends in chain:
-            issues.append(CubeConversionIssue(
-                category=CubeIssueCategory.EXTENDS_CYCLE, severity="error",
-                view=name,
-                message=f"View '{name}' is in an extends cycle via '{view.extends}'.",
-            ))
-            resolved[name] = view
-            return view
-        parent = resolve(view.extends, chain | {name})
-        merged = _merge_view(parent, view)
+        merged = _merge_view(resolve(view.extends), view)
         resolved[name] = merged
         return merged
 
-    out = [resolve(v.name, frozenset()) for v in views]
-    return out, issues
+    return [resolve(v.name) for v in views], issues

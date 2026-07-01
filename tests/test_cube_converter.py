@@ -302,6 +302,31 @@ def test_join_becomes_left_modeljoin_with_pairs():
     assert joins[0].join_type == JoinType.LEFT
 
 
+def test_join_to_missing_target_cube_reported():
+    project = CubeProject(cubes=[
+        CubeCube(name="orders", sql_table="public.orders",
+                 joins=[CubeJoin(name="ghost", relationship="many_to_one",
+                                 sql="{CUBE}.ghost_id = {ghost.id}")],
+                 dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")]),
+    ])
+    models, report = _convert(project)
+    assert models["orders"].joins == []
+    assert any(i.category == CubeIssueCategory.UNSUPPORTED_JOIN for i in report.issues)
+
+
+def test_case_dimension_label_escapes_quotes():
+    project = CubeProject(cubes=[CubeCube(
+        name="orders", sql_table="public.orders",
+        dimensions=[CubeDimension(name="owner", type="string", case={
+            "when": [{"sql": "{CUBE}.x = 1", "label": "Bob's"}],
+            "else": {"label": "n/a"},
+        })],
+    )])
+    models, _ = _convert(project)
+    sql = models["orders"].get_column("owner").sql
+    assert "'Bob''s'" in sql  # apostrophe doubled, not a broken literal
+
+
 def test_non_equi_join_reported_and_dropped():
     project = CubeProject(cubes=[
         CubeCube(name="orders", sql_table="public.orders",

@@ -1474,8 +1474,15 @@ def _run_import_cube(args):
     result = CubeToSlayerConverter(
         project=project, data_source=args.datasource, parse_issues=parse_issues,
     ).convert()
+    from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
     for model in result.models:
-        run_sync(storage.save_model(model))
+        try:
+            run_sync(storage.save_model(model))
+        except Exception as exc:  # noqa: BLE001 — one bad model shouldn't abort the import
+            result.report.add(CubeConversionIssue(
+                category=CubeIssueCategory.PARSE_ERROR, severity="error",
+                cube=model.name,
+                message=f"Failed to save model '{model.name}': {exc}"))
 
     _print_cube_import_summary(result, include_hidden=args.include_hidden)
     report_path = _write_cube_report(result, args)

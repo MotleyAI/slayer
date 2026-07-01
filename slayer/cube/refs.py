@@ -8,7 +8,7 @@ upstream). See DEV-1608 §3.
 import re
 
 _JINJA_RE = re.compile(r"\{\{|\{%|%\}|\}\}")
-_LITERAL_RE = re.compile(r"'[^']*'")
+_LITERAL_RE = re.compile(r"'(?:''|[^'])*'")  # SQL string literal, doubled-quote aware
 _REF_RE = re.compile(r"\{([^{}]+)\}")
 
 # Operand forms accepted inside a join ON clause.

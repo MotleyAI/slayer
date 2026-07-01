@@ -86,3 +86,18 @@ def test_extends_cycle_is_reported():
     ])
     _, report = _convert(project)
     assert any(i.category == CubeIssueCategory.EXTENDS_CYCLE for i in report.issues)
+
+
+def test_extends_cycle_flattens_without_inheritance():
+    """Every node on the cycle keeps only its own members — no ancestor merges
+    a partially-resolved cyclic node."""
+    project = CubeProject(cubes=[
+        CubeCube(name="a", extends="b", sql_table="public.a",
+                 dimensions=[CubeDimension(name="a_col", sql="{CUBE}.a_col", type="number")]),
+        CubeCube(name="b", extends="a", sql_table="public.b",
+                 dimensions=[CubeDimension(name="b_col", sql="{CUBE}.b_col", type="number")]),
+    ])
+    models, _ = _convert(project)
+    assert models["a"].get_column("a_col") is not None
+    assert models["a"].get_column("b_col") is None  # did NOT inherit across the cycle
+    assert models["b"].get_column("a_col") is None

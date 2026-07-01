@@ -59,6 +59,21 @@ def test_import_cube_writes_models_and_report(tmp_path):
     assert report["model_count"] >= 3
 
 
+def test_import_cube_survives_save_failure(tmp_path, monkeypatch):
+    # A save_model failure on one model must not abort the run — the report is
+    # still written ("report, don't crash").
+    import slayer.storage.yaml_storage as ys
+
+    async def _boom(self, model):
+        raise RuntimeError("save exploded")
+
+    monkeypatch.setattr(ys.YAMLStorage, "save_model", _boom)
+    storage_dir = tmp_path / "store"
+    code = _run("import-cube", FIXTURE, "--datasource", "cube_ds", "--storage", str(storage_dir))
+    assert code == 0
+    assert (storage_dir / "cube_import_report.json").exists()
+
+
 def test_import_cube_report_honors_models_dir(tmp_path):
     # With --models-dir (and no --storage) the report lands next to the models,
     # matching _resolve_storage's resolution chain.

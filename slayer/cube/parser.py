@@ -86,8 +86,15 @@ def _as_list(value) -> list:
 
 
 def _load_yaml(path: str, issues: list):
-    with open(path, encoding="utf-8") as fh:
-        raw_text = fh.read()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw_text = fh.read()
+    except OSError as exc:
+        issues.append(CubeConversionIssue(
+            category=CubeIssueCategory.PARSE_ERROR, severity="warning",
+            message=f"File '{path}' could not be read: {exc}",
+        ))
+        return None
     try:
         return yaml.safe_load(raw_text)
     except yaml.YAMLError:

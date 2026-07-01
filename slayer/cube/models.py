@@ -101,16 +101,19 @@ class CubeCube(BaseModel):
 
 class CubeViewCubeRef(BaseModel):
     """One entry of a view's ``cubes:`` list — a cube reached via ``join_path``
-    contributing a set of members to the view."""
+    contributing a set of members to the view.
+
+    ``includes`` is a list of member names, the string ``"*"``, or Cube's
+    per-member override object form (``[{name, alias, title, format, meta}, …]``).
+    The converter extracts the member names and reports per-member overrides as
+    unsupported (Stage 1) rather than silently dropping them.
+    """
 
     join_path: str
-    includes: list[str] | str | None = None  # list of member names, or "*"
+    includes: list[str | dict[str, Any]] | str | None = None
     excludes: list[str] = Field(default_factory=list)
     prefix: bool = False
-    alias: str | None = None
-    # Per-member overrides keyed by member name.
-    title: str | None = None
-    description: str | None = None
+    alias: str | None = None  # renames the cube for member prefixing
 
 
 class CubeView(BaseModel):

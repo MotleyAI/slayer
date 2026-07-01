@@ -54,6 +54,7 @@ class _MeasureInfo(BaseModel):
     kind: str  # "agg" | "calc" | "star_count"
     underlying_col: str | None = None
     agg: str | None = None
+    emitted_name: str | None = None  # the emitted ModelMeasure name (for pruning)
 
 
 class _Names:
@@ -201,6 +202,10 @@ class CubeToSlayerConverter:
         joins = self._convert_joins(cube, report)
         columns, measures = self._validate_offline(cube.name, columns, measures, report)
         self._dedisambiguate_namespace(columns, measures, report, cube=cube.name)
+        # Keep _measure_info in sync with what actually survived validation, so
+        # view facades never re-export a measure the model no longer has.
+        surviving = {m.name for m in measures}
+        info = {k: v for k, v in info.items() if v.emitted_name in surviving}
 
         if unmapped:
             meta["cube_unmapped"] = unmapped
@@ -291,9 +296,9 @@ class CubeToSlayerConverter:
         parts = ["CASE"]
         for when in case.get("when", []):
             cond = translate_cube_refs(when.get("sql", ""), mode="sql", cube=cube.name)
-            parts.append(f"WHEN {cond} THEN '{when.get('label', '')}'")
+            parts.append(f"WHEN {cond} THEN {_sql_str_literal(when.get('label', ''))}")
         if case.get("else"):
-            parts.append(f"ELSE '{case['else'].get('label', '')}'")
+            parts.append(f"ELSE {_sql_str_literal(case['else'].get('label', ''))}")
         parts.append("END")
         return " ".join(parts)
 
@@ -330,7 +335,7 @@ class CubeToSlayerConverter:
         # falls through to the `_measure` suffix.
         final_name = names.take(meas.name, suffix="_measure")
         if meas.type in _CALC_TYPES and meas.sql:
-            self._convert_calc_measure(cube, meas, measures, final_name, report)
+            self._convert_calc_measure(cube, meas, measures, final_name, info, report)
             return
         self._convert_agg_measure(cube, meas, columns, measures, names, dedup, info, report, final_name)
 
@@ -347,8 +352,8 @@ class CubeToSlayerConverter:
 
         if meas.type == "count" and not meas.sql:
             formula = _STAR_COUNT + (f"(window='{window}')" if window else "")
-            self._emit_measure(measures, names, final_name, formula, meas, report, cube.name)
-            info[meas.name] = _MeasureInfo(kind="star_count")
+            if self._emit_measure(measures, names, final_name, formula, meas, report, cube.name):
+                info[meas.name] = _MeasureInfo(kind="star_count", emitted_name=final_name)
             return
 
         translated = translate_cube_refs(meas.sql, mode="sql", cube=cube.name)
@@ -356,13 +361,15 @@ class CubeToSlayerConverter:
         col_name = self._get_or_create_column(
             meas, translated, filter_pred, columns, names, dedup, report, cube)
         formula = f"{col_name}:{agg}" + (f"(window='{window}')" if window else "")
-        self._emit_measure(measures, names, final_name, formula, meas, report, cube.name)
-        info[meas.name] = _MeasureInfo(kind="agg", underlying_col=col_name, agg=agg)
+        if self._emit_measure(measures, names, final_name, formula, meas, report, cube.name):
+            info[meas.name] = _MeasureInfo(
+                kind="agg", underlying_col=col_name, agg=agg, emitted_name=final_name)
 
-    def _convert_calc_measure(self, cube, meas, measures, final_name, report) -> None:
+    def _convert_calc_measure(self, cube, meas, measures, final_name, info, report) -> None:
         formula = translate_cube_refs(meas.sql, mode="dsl", cube=cube.name)
-        self._emit_measure(measures, None, final_name, formula, meas, report, cube.name,
-                           result_type=_DIM_TYPE_MAP.get(meas.type))
+        if self._emit_measure(measures, None, final_name, formula, meas, report, cube.name,
+                              result_type=_DIM_TYPE_MAP.get(meas.type)):
+            info[meas.name] = _MeasureInfo(kind="calc", emitted_name=final_name)
 
     def _measure_filter(self, cube, meas) -> str | None:
         if not meas.filters:
@@ -385,11 +392,12 @@ class CubeToSlayerConverter:
         dedup[key] = col_name
         return col_name
 
-    def _emit_measure(self, measures, names, final_name, formula, meas, report, cube_name, *, result_type=None) -> None:
+    def _emit_measure(self, measures, names, final_name, formula, meas, report, cube_name, *, result_type=None) -> bool:
         try:
             measures.append(ModelMeasure(
                 name=final_name, formula=formula, label=meas.title,
                 description=meas.description, type=result_type, meta=meas.meta))
+            return True
         except Exception as exc:  # noqa: BLE001
             if names is not None:
                 names.used.discard(final_name)
@@ -397,6 +405,7 @@ class CubeToSlayerConverter:
                 category=CubeIssueCategory.COMPLEX_MEASURE, severity="warning",
                 cube=cube_name, member=meas.name,
                 message=f"Measure '{meas.name}' could not be built: {exc}"))
+            return False
 
     # ── segments ───────────────────────────────────────────────────────────
 
@@ -416,6 +425,12 @@ class CubeToSlayerConverter:
     def _convert_joins(self, cube, report) -> list[ModelJoin]:
         joins: list[ModelJoin] = []
         for cj in cube.joins:
+            if cj.name not in self._cubes:
+                report.add(CubeConversionIssue(
+                    category=CubeIssueCategory.UNSUPPORTED_JOIN, severity="warning",
+                    cube=cube.name, member=cj.name,
+                    message=f"Join target cube '{cj.name}' is not available; dropped."))
+                continue
             pairs = parse_join_on(cj.sql, source_cube=cube.name, target_cube=cj.name)
             resolved = self._resolve_join_pairs(cube, cj, pairs) if pairs else None
             if not resolved:
@@ -584,7 +599,7 @@ class CubeToSlayerConverter:
             join_targets.add(cube_name)
 
         prefix = f"{ref.alias or cube_name}_" if ref.prefix else ""
-        dim_names, meas_names = self._selected_members(cube, ref)
+        dim_names, meas_names = self._selected_members(cube, ref, view, report)
 
         for dname in dim_names:
             self._facade_dimension(cube, cube_model, dname, prefix, is_root,
@@ -593,7 +608,7 @@ class CubeToSlayerConverter:
             self._facade_measure(view, cube_name, cube_model, mname, prefix, is_root,
                                  columns, measures, names, report)
 
-    def _selected_members(self, cube, ref) -> tuple[list[str], list[str]]:
+    def _selected_members(self, cube, ref, view, report) -> tuple[list[str], list[str]]:
         dims = [d.name for d in cube.dimensions if d.type not in ("geo", "switch") and not d.sub_query]
         meas = [m.name for m in cube.measures]
         exclude = set(ref.excludes or [])
@@ -603,9 +618,28 @@ class CubeToSlayerConverter:
                 | {m.name for m in cube.measures if not m.public}
             chosen = [n for n in dims + meas if n not in exclude and n not in private]
         else:
-            chosen = [n for n in ref.includes if n not in exclude]
+            chosen = self._include_names(ref.includes, exclude, view, report)
         chosen_set = set(chosen)
         return ([d for d in dims if d in chosen_set], [m for m in meas if m in chosen_set])
+
+    def _include_names(self, includes, exclude, view, report) -> list[str]:
+        """Extract member names from an ``includes`` list. Cube's per-member
+        override object form (``{name, format, meta, …}``) is accepted so it
+        doesn't crash the view; the overrides are reported as unsupported."""
+        names: list[str] = []
+        for entry in includes:
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                if any(k != "name" for k in entry):
+                    report.add(CubeConversionIssue(
+                        category=CubeIssueCategory.UNMAPPED_INFRA, severity="info",
+                        view=view.name, member=name,
+                        message=f"Per-member override on '{name}' is not applied (Stage 1)."))
+            else:
+                name = entry
+            if name and name not in exclude:
+                names.append(name)
+        return names
 
     def _facade_dimension(self, cube, cube_model, dname, prefix, is_root, columns, names) -> None:
         col = cube_model.get_column(dname)
