@@ -175,6 +175,10 @@ def convert_dbt_to_slayer(
     runs :class:`DbtToSlayerConverter`, and saves each model plus a DuckDB
     datasource config into a fresh ``YAMLStorage`` rooted at ``models_dir``.
     """
+    # Quieten the converter's benign "foreign entity '…' has no matching primary
+    # entity" notices so the notebook output stays focused on the demo.
+    logging.getLogger("slayer.dbt").setLevel(logging.ERROR)
+
     if models_dir.exists():
         shutil.rmtree(models_dir)
 
@@ -214,43 +218,46 @@ def fetch_gold(db_path: Path, sql: str) -> List[dict]:
         conn.close()
 
 
-def ensure_metricflow_demo() -> "tuple[SlayerClient, Path, ConversionResult]":
-    """Clone -> load -> convert -> build a ready SLayer client.
+def ensure_dbt_data() -> Path:
+    """Clone the pinned dbt project and load its CSVs into DuckDB; return the
+    dbt checkout path.
 
-    Idempotent: a completed prior run (valid checkout + completeness marker) is
-    reused without touching the network. A partial prior run is rebuilt from
-    scratch. Returns ``(client, db_path, result)``.
+    Idempotent: a completed prior run (valid checkout + completeness marker +
+    DuckDB file) is reused without touching the network. A partial prior run is
+    rebuilt from scratch. The dbt -> SLayer conversion is a **separate**,
+    always-run step (:func:`convert_dbt_to_slayer`) so the notebook can show it
+    as its own explicit cell.
     """
-    # Quieten the converter's benign "foreign entity '…' has no matching primary
-    # entity" notices so the notebook output stays focused on the demo.
-    logging.getLogger("slayer.dbt").setLevel(logging.ERROR)
-
     reuse = (
         _COMPLETE_MARKER.exists()
         and _checkout_is_valid(DBT_CHECKOUT)
         and DB_PATH.exists()
-        and MODELS_DIR.exists()
     )
-    if not reuse:
-        if _COMPLETE_MARKER.exists():
-            _COMPLETE_MARKER.unlink()
-        dbt_path = clone_dbt_project()
-        csv_dir = dbt_path / _CSV_SUBDIR
-        if not csv_dir.exists():
-            raise MetricFlowDemoError(f"CSV data dir not found: {csv_dir}")
-        load_csvs_into_duckdb(csv_dir=csv_dir, db_path=DB_PATH)
-        result = convert_dbt_to_slayer(
-            dbt_project_path=dbt_path, models_dir=MODELS_DIR, db_path=DB_PATH
-        )
-        _COMPLETE_MARKER.touch()
-    else:
-        logger.info("Reusing cached MetricFlow demo under %s", CACHE_DIR)
-        # Re-parse the cached checkout purely to return a summary; cheap and
-        # never touches the network or the DuckDB file.
-        project = parse_dbt_project(str(DBT_CHECKOUT / "models"))
-        result = DbtToSlayerConverter(
-            project=project, data_source=DATASOURCE_NAME
-        ).convert()
+    if reuse:
+        logger.info("Reusing cached dbt checkout + DuckDB under %s", CACHE_DIR)
+        return DBT_CHECKOUT
 
+    if _COMPLETE_MARKER.exists():
+        _COMPLETE_MARKER.unlink()
+    dbt_path = clone_dbt_project()
+    csv_dir = dbt_path / _CSV_SUBDIR
+    if not csv_dir.exists():
+        raise MetricFlowDemoError(f"CSV data dir not found: {csv_dir}")
+    load_csvs_into_duckdb(csv_dir=csv_dir, db_path=DB_PATH)
+    _COMPLETE_MARKER.touch()
+    return dbt_path
+
+
+def ensure_metricflow_demo() -> "tuple[SlayerClient, Path, ConversionResult]":
+    """One-shot convenience: ensure data, convert, and build a ready client.
+
+    Returns ``(client, db_path, result)``. Notebooks that want to show the
+    conversion as an explicit step call :func:`ensure_dbt_data` and
+    :func:`convert_dbt_to_slayer` separately instead.
+    """
+    dbt_path = ensure_dbt_data()
+    result = convert_dbt_to_slayer(
+        dbt_project_path=dbt_path, models_dir=MODELS_DIR, db_path=DB_PATH
+    )
     client = SlayerClient(storage=YAMLStorage(base_dir=str(MODELS_DIR)))
     return client, DB_PATH, result
