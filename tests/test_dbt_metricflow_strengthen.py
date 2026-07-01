@@ -377,6 +377,38 @@ def test_conversion_metric_clean_fails_with_category() -> None:
                for e in _all_report_entries(result))
 
 
+def test_conversion_metric_stashes_funnel_params_in_meta() -> None:
+    """The dropped conversion metric's funnel details (base/conversion measure,
+    entity, calculation) are stashed into the source model's meta so nothing is
+    silently lost — consistent with the other clean-fail branches."""
+    project = DbtProject(
+        semantic_models=[
+            DbtSemanticModel(name="orders", model="orders",
+                             measures=[DbtMeasure(name="visits", agg="sum", expr="v")]),
+        ],
+        metrics=[DbtMetric.model_validate({
+            "name": "visit_to_purchase",
+            "type": "conversion",
+            "type_params": {"conversion_type_params": {
+                "base_measure": {"name": "visits"},
+                "conversion_measure": {"name": "purchases"},
+                "entity": "user",
+                "calculation": "conversion_rate",
+            }},
+        })],
+    )
+    result = _convert(project)
+    orders = _model(result)
+    stash = (orders.meta or {}).get("dbt_unconverted", [])
+    entry = next(e for e in stash if e["name"] == "visit_to_purchase")
+    assert entry["category"] == "conversion_metric"
+    conv = entry["raw"]["conversion_type_params"]
+    assert conv["entity"] == "user"
+    assert conv["calculation"] == "conversion_rate"
+    assert conv["base_measure"]["name"] == "visits"
+    assert conv["conversion_measure"]["name"] == "purchases"
+
+
 def test_windowed_cumulative_clean_fails() -> None:
     metric = DbtMetric.model_validate({
         "name": "rolling_7d_revenue",

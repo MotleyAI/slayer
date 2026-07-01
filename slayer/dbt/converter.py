@@ -761,7 +761,18 @@ class DbtToSlayerConverter:
                 severity="dropped",
                 message=f"Conversion metric '{metric.name}' (funnel) is not supported in SLayer.",
                 suggestion="Express the funnel as a multi-stage query.",
-                raw={"type": metric.type},
+                raw={
+                    "type": metric.type,
+                    # Stash the parsed funnel details (base/conversion measure,
+                    # entity, calculation, window) so nothing is silently lost,
+                    # consistent with the other clean-fail branches.
+                    "conversion_type_params": (
+                        metric.type_params.conversion_type_params.model_dump()
+                        if metric.type_params
+                        and metric.type_params.conversion_type_params
+                        else None
+                    ),
+                },
             )
         else:
             self._fail_metric(
@@ -1679,6 +1690,13 @@ class DbtToSlayerConverter:
             sm = self._find_measure_model(ctp.measure)
             if sm:
                 sources.add(sm.name)
+        conv = type_params.conversion_type_params
+        if conv:
+            for meas in (conv.base_measure, conv.conversion_measure):
+                if meas and meas.name:
+                    sm = self._find_measure_model(meas.name)
+                    if sm:
+                        sources.add(sm.name)
         if type_params.metrics:
             for m_input in type_params.metrics:
                 sources |= self._collect_metric_sources(m_input.name, _seen=seen)
