@@ -1,0 +1,10 @@
+cubes:
+  - name: tenant_scoped
+    sql_table: public.events
+    dimensions:
+      - name: id
+        sql: "{CUBE}.id"
+        type: number
+      - name: tenant
+        sql: "{{ user_attr('tenant') }}"
+        type: string

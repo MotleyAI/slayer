@@ -1,0 +1,5 @@
+cubes:
+  - sql_table: public.orphan
+    measures:
+      - name: count
+        type: count

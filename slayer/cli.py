@@ -330,6 +330,23 @@ examples:
     )
     _add_storage_arg(import_dbt_parser)
 
+    # ── import-cube ───────────────────────────────────────────────────
+    import_cube_parser = subparsers.add_parser(
+        "import-cube",
+        help="Import Cube (Cube.js / Cube.dev) YAML data models into SLayer models",
+        epilog="""\
+examples:
+  slayer import-cube ./cube_project --datasource my_postgres
+  slayer import-cube ./cube_project/model --datasource my_postgres --report ./report.json
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    import_cube_parser.add_argument("cube_project_path", help="Path to the Cube project (or its model directory)")
+    import_cube_parser.add_argument("--datasource", required=True, help="SLayer datasource name to file the imported models under")
+    import_cube_parser.add_argument("--report", default=None, help="Path for the JSON conversion report (default: <storage>/cube_import_report.json)")
+    import_cube_parser.add_argument("--include-hidden", action="store_true", help="Also print hidden (public: false) models in the summary")
+    _add_storage_arg(import_cube_parser)
+
     # ── models ────────────────────────────────────────────────────────
     models_parser = subparsers.add_parser(
         "models",
@@ -766,6 +783,8 @@ examples:
         _run_validate_models(args)
     elif args.command == "import-dbt":
         _run_import_dbt(args)
+    elif args.command == "import-cube":
+        _run_import_cube(args)
     elif args.command == "models":
         _run_models(args)
     elif args.command == "datasources":
@@ -1450,6 +1469,68 @@ def _run_import_dbt(args):
         f"{len(result.unconverted_metrics)} unconverted metrics, "
         f"{len(result.warnings)} warnings"
     )
+
+
+def _run_import_cube(args):
+    from slayer.cube.converter import CubeToSlayerConverter
+    from slayer.cube.parser import parse_cube_project
+
+    storage = _resolve_storage(args)
+    project, parse_issues = parse_cube_project(args.cube_project_path)
+
+    if not project.cubes and not project.views:
+        print(f"No cubes or views found in {args.cube_project_path}")
+        sys.exit(1)
+
+    result = CubeToSlayerConverter(
+        project=project, data_source=args.datasource, parse_issues=parse_issues,
+    ).convert()
+    from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
+    for model in result.models:
+        try:
+            run_sync(storage.save_model(model))
+        except Exception as exc:  # noqa: BLE001 — one bad model shouldn't abort the import
+            result.report.add(CubeConversionIssue(
+                category=CubeIssueCategory.PARSE_ERROR, severity="error",
+                cube=model.name,
+                message=f"Failed to save model '{model.name}': {exc}"))
+
+    _print_cube_import_summary(result, include_hidden=args.include_hidden)
+    report_path = _write_cube_report(result, args)
+    print(
+        f"\nDone: {result.report.model_count} models "
+        f"({result.report.hidden_count} hidden, {result.report.view_count} views), "
+        f"{len(result.report.issues)} report issues. Report: {report_path}"
+    )
+
+
+def _print_cube_import_summary(result, *, include_hidden):
+    for model in result.models:
+        if model.hidden and not include_hidden:
+            continue
+        suffix = " [hidden]" if model.hidden else ""
+        kind = " (view)" if (model.meta or {}).get("cube_kind") == "view" else ""
+        print(
+            f"Imported model: {model.name}{kind}{suffix} "
+            f"({len(model.columns)} columns, {len(model.measures)} measures)"
+        )
+    for severity in ("error", "warning", "info"):
+        for issue in result.report.by_severity(severity):
+            print(f"  {severity.upper()} [{issue.category.value}/{issue.context}]: {issue.message}")
+
+
+def _write_cube_report(result, args) -> str:
+    import os
+
+    storage_base = args.storage or args.models_dir or _STORAGE_DEFAULT
+    if storage_base.endswith(".db"):
+        storage_base = os.path.dirname(storage_base) or "."
+    report_path = args.report or os.path.join(storage_base, "cube_import_report.json")
+    # Report path is an intended, user-specified CLI output location.
+    os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)  # NOSONAR(S8707)
+    with open(report_path, "w", encoding="utf-8") as fh:  # NOSONAR(S8707)
+        fh.write(result.report.model_dump_json(indent=2))
+    return report_path
 
 
 def _run_models(args):

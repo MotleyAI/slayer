@@ -40,6 +40,8 @@ nav:
   - dbt:
       - SLayer vs dbt: dbt/slayer_vs_dbt.md
       - Importing dbt definitions: dbt/dbt_import.md
+  - Cube:
+      - Importing Cube definitions: cube/cube_import.md
   - Tutorials:
       - Make it dynamic: examples/01_dynamic/dynamic.md
       - SQL vs DSL:
