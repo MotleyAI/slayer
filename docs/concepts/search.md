@@ -422,11 +422,19 @@ All three are populated:
   serialise (the storage write is a model-level read-modify-write);
   refreshes across different models run concurrently via
   `asyncio.gather`. When `search()` is constructed without an engine
-  (storage-only contexts), the hook is a silent no-op.
+  (storage-only contexts), the hook is a silent no-op;
+- lazily on the single-entity `inspect` point-lookup (DEV-1615) — an
+  `entity_type="column"` read at `compact=False` back-fills the column's
+  sample before rendering, so `inspect` matches the `inspect_model` /
+  `search` reads it replaced. `compact=True` stays description-only and
+  DB-free (no refresh); engine-guarded (no-op without an engine).
 
 Cache validity for categorical columns requires `sampled_values is not None` —
-v6 (legacy `sampled` only) models re-profile on the next `inspect_model`
-or `search()` column hit so the structured field gets populated.
+v6 (legacy `sampled` only) models re-profile on the next `inspect_model`,
+`search()` column hit, or `inspect` (column, `compact=False`) so the
+structured field gets populated. As of DEV-1615 the shared
+`ensure_column_sample_fresh` helper also back-fills genuinely-unsampled
+numeric / temporal columns (min/max range), not just categorical ones.
 
 sql-mode and query-backed models are silently skipped in v1.
 

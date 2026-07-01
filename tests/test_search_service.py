@@ -737,16 +737,13 @@ async def test_search_stale_text_preserved_when_profile_raises(
 
 
 @pytest.mark.asyncio
-async def test_search_numeric_column_hit_not_refreshed(
+async def test_search_numeric_column_hit_is_refreshed(
     stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
 ) -> None:
-    """The helper is categorical-only. A numeric column hit must NOT
-    trigger profile_column from the search refresh path.
-
-    Codex round-3 finding #5: assert the profile-call recording explicitly
-    rather than relying only on "storage stays untouched". A wrong
-    implementation that calls ``profile_column`` for numeric and then
-    skips persistence would otherwise slip through."""
+    """DEV-1615: the helper's categorical-only early-return was removed, so a
+    genuinely-unsampled NUMERIC column hit IS back-filled by the search refresh
+    path (min/max range), matching ``inspect``'s behavior. This inverts the
+    DEV-1516 assertion that search skipped numeric hits."""
     storage, engine = stale_setup
     svc = SearchService(storage=storage, engine=engine)
 
@@ -765,20 +762,20 @@ async def test_search_numeric_column_hit_not_refreshed(
         entities=["warehouse.orders.amount"],
         max_results=10,
     )
-    # The helper short-circuits for numeric/temporal columns; profile_column
-    # must NEVER be invoked for the ``amount`` column from the search hook.
-    assert "amount" not in profile_call_columns, (
-        f"numeric column must NOT trigger profile_column from search refresh; "
+    # profile_column IS invoked for the uncached numeric ``amount`` column.
+    assert "amount" in profile_call_columns, (
+        f"numeric column must trigger profile_column from search refresh; "
         f"got calls for columns: {profile_call_columns}"
     )
-    # And storage for ``amount`` stays untouched.
+    # And the min/max range is persisted for later reads.
     reloaded = await storage.get_model("orders", data_source="warehouse")
     assert reloaded is not None
     amount_col = reloaded.get_column("amount")
     assert amount_col is not None
-    assert amount_col.sampled is None, (
-        "numeric column must NOT be refreshed by the search hook"
+    assert amount_col.sampled is not None, (
+        "numeric column must be back-filled by the search hook"
     )
+    assert ".." in amount_col.sampled, "expected a min .. max range"
     assert response is not None
 
 

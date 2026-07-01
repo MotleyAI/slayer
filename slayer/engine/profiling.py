@@ -48,10 +48,17 @@ DEV-1480 changes:
 
 DEV-1516 additions:
 - :func:`ensure_column_sample_fresh` — shared cache-aware refresh helper
-  used by both ``inspect_model``'s categorical loop and the search
-  service's post-fusion column-hit hook. Returns the input column on cache
-  hit / non-categorical / failure, and an in-memory refreshed copy on
-  success (after persisting via storage).
+  used by ``inspect_model``'s categorical loop, the search service's
+  post-fusion column-hit hook, and (DEV-1615) the single-entity ``inspect``
+  point-lookup. Returns the input column on cache hit / failure, and an
+  in-memory refreshed copy on success (after persisting via storage).
+
+DEV-1615 change:
+- :func:`ensure_column_sample_fresh` back-fills BOTH categorical (top-50 +
+  distinct_count) AND numeric/temporal (min/max range) uncached columns —
+  the prior categorical-only early-return was removed. Cached columns still
+  short-circuit at :func:`_is_sample_cached` (zero added cost), so the
+  common already-profiled case pays nothing.
 """
 
 from __future__ import annotations
@@ -659,20 +666,23 @@ async def ensure_column_sample_fresh(
     engine: SlayerQueryEngine,
     storage: StorageBackend,
 ) -> Column:
-    """Best-effort refresh of a stale categorical column's persisted sample.
+    """Best-effort refresh of a stale column's persisted sample.
 
-    Used by both :func:`slayer.mcp.server.inspect_model` (categorical cache
-    miss path) and :class:`slayer.search.service.SearchService` (post-fusion
-    column-hit hook) so DEV-1516's "stale columns auto-refresh on the spot"
-    contract has a single source of truth.
+    Used by ``inspect_model`` (categorical cache-miss path),
+    :class:`slayer.search.service.SearchService` (post-fusion column-hit
+    hook), and — DEV-1615 — the single-entity ``inspect`` point-lookup
+    (`slayer.inspect.service.InspectService`), so the "stale columns
+    auto-refresh on the spot" contract has a single source of truth.
+
+    DEV-1615: back-fills BOTH categorical (top-50 + distinct_count) AND
+    numeric/temporal (min/max range) columns — :func:`profile_column`
+    already handles both kinds. The prior numeric/temporal early-return was
+    removed (see the inline note below).
 
     Returns the **input column unchanged** when:
 
     - ``_is_sample_cached(column)`` is True (cache hit; includes hidden /
       primary-key columns by convention),
-    - the column is not categorical (numeric / temporal are handled by
-      ``inspect_model``'s batched min/max path; the search hook never
-      refreshes them since their ``sampled`` text has no 20-vs-50 issue),
     - :func:`profile_column` returns ``None`` (e.g. transient query failure
       or no rows),
     - :func:`profile_column` raises (logged + swallowed),
@@ -690,12 +700,15 @@ async def ensure_column_sample_fresh(
     """
     if _is_sample_cached(column):
         return column
-    if column.type not in _CATEGORICAL_TYPES:
-        # Numeric / temporal: inspect_model handles them via the batched
-        # min/max query. The search refresh hook intentionally skips them
-        # because their ``sampled`` text is a min/max range, not a value
-        # list — the 20-vs-50 distinction does not apply.
-        return column
+    # DEV-1615: no categorical-only gate here. ``profile_column`` handles
+    # BOTH categorical (top-50 + distinct_count) AND numeric/temporal
+    # (min/max range) columns, so an uncached column of either kind is
+    # back-filled. The previous early-return for numeric/temporal existed
+    # only so the search post-fusion hook would skip ranges; that skip was
+    # an assumption (numeric is reliably profiled at ingest), not a
+    # correctness requirement. ``inspect`` and ``search`` both now fill
+    # ranges on read. Already-profiled columns short-circuit above via
+    # ``_is_sample_cached`` so the common case stays free.
     try:
         sample = await profile_column(
             model=model, column=column, engine=engine,

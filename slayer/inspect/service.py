@@ -21,6 +21,8 @@ from slayer.core.errors import (
     EntityResolutionError,
     MemoryNotFoundError,
 )
+from slayer.core.models import SlayerModel
+from slayer.engine.profiling import ensure_column_sample_fresh
 from slayer.inspect.model_render import (
     _TRUNCATION_MARKER,
     _truncate_description,
@@ -663,6 +665,11 @@ class InspectService:
                 f"(reference '{reference}')."
             ))
 
+        # DEV-1615: lazily back-fill the column's sample values before render.
+        model = await self._maybe_refresh_leaf_sample(
+            model=model, entity_type=entity_type, compact=compact, leaf=leaf,
+        )
+
         pairs = collect_model_entity_pairs(model=model, include_hidden=True)
         matches = [
             p for p in pairs
@@ -681,6 +688,51 @@ class InspectService:
             ds_name=ds_name, model_name=model_name, pairs=pairs,
             match_count=len(matches),
         ))
+
+    async def _maybe_refresh_leaf_sample(
+        self,
+        *,
+        model: SlayerModel,
+        entity_type: str,
+        compact: bool,
+        leaf: str,
+    ) -> SlayerModel:
+        """DEV-1615: lazily back-fill a column's missing/stale sample values on
+        read — same shared helper + cache-aware semantics inspect_model /
+        search use — so this point-lookup is no longer a regression vs the
+        tools it replaced.
+
+        Gated to ``entity_type="column"`` (measures / aggregations have no
+        sample concept) and to ``compact=False``: the compact leaf render is
+        description-only and never shows "Sample values:", so refreshing there
+        would add a profiling DB query to a deliberately cheap lookup. Engine-
+        guarded (no-op without an engine, like search's hook). Hidden columns
+        are rendered but never back-filled — the helper's ``_is_sample_cached``
+        treats hidden/PK as cached (system-wide convention, parity with
+        inspect_model).
+
+        Returns the input model unchanged when no refresh applies; otherwise a
+        ``model_copy`` with the refreshed column substituted, so the render
+        (``collect_model_entity_pairs``) reflects the fresh sample with no
+        change to the downstream render logic.
+        """
+        if entity_type != "column" or compact or self._engine is None:
+            return model
+        col = model.get_column(leaf)
+        if col is None:
+            return model
+        refreshed = await ensure_column_sample_fresh(
+            model=model, column=col,
+            engine=self._engine, storage=self._storage,
+        )
+        if refreshed is col:
+            return model
+        return model.model_copy(update={
+            "columns": [
+                refreshed if c.name == col.name else c
+                for c in model.columns
+            ],
+        })
 
     def _render_leaf_entry(
         self,
