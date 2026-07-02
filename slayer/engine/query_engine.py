@@ -89,22 +89,70 @@ def _emit_recommend_path(graph: JoinGraph, root: str, item: "_ResolvedItem") -> 
     return core if item.suffix is None else f"{core}:{item.suffix}"
 
 
+def _resolve_root_hint(
+    raw_hint: str | None, *, data_source: str, all_names: list[str]
+) -> tuple[str, str] | None:
+    """Resolve a caller-supplied ``root_hint`` to a bare model name within
+    ``data_source`` (follow-up to DEV-1626).
+
+    Returns ``(model, display)`` where ``model`` is the validated bare model
+    name used for graph logic and ``display`` is the caller's original string
+    (whitespace-trimmed) reused verbatim in diagnostics — so a
+    ``mydb.customers`` hint surfaces as ``mydb.customers`` in warnings, not the
+    resolved ``customers``. Returns ``None`` when the hint is empty /
+    whitespace-only (treated as "no hint" — a no-op).
+
+    Raises ``ValueError`` for a non-existent / wrong-kind / cross-datasource /
+    otherwise malformed hint (the caller surfaces it loudly).
+    """
+    if raw_hint is None:
+        return None
+    display = raw_hint.strip()
+    if not display:
+        return None
+    if "." in display:
+        segs = display.split(".")
+        if len(segs) == 2 and segs[0] == data_source:
+            model = segs[1]
+        else:
+            raise ValueError(
+                f"root_hint '{display}' must be a bare model name or "
+                f"'{data_source}.<model>' within datasource '{data_source}'."
+            )
+    else:
+        model = display
+    if model not in all_names:
+        raise ValueError(
+            f"root_hint '{display}' is not a model in datasource '{data_source}'."
+        )
+    return model, display
+
+
 def _build_recommend_coverage(
     graph: JoinGraph,
     all_names: list[str],
     mentioned: set[str],
     resolved: list["_ResolvedItem"],
+    *,
+    force_include: set[str] | None = None,
 ) -> list[CandidateCoverage]:
     """Pareto frontier of partial-root candidates for the no-common-root
     diagnostic. Item reachability ≡ owning-model reachability, so dominance
-    is computed on reached owning-model sets + per-model hop counts."""
+    is computed on reached owning-model sets + per-model hop counts.
+
+    ``force_include`` names models whose row must appear even when they reach
+    zero mentioned models or are Pareto-dominated (used to surface a caller's
+    ``root_hint``). Forced rows still sort by the same key, so a hint that is
+    genuinely on the frontier is not duplicated.
+    """
+    forced = force_include or set()
     items_in_order = [r.input_item for r in resolved]
     model_of_item = {r.input_item: r.model for r in resolved}
 
     candidates: list[tuple[str, set[str], dict[str, int]]] = []
     for name in all_names:
         reach = {m for m in mentioned if graph.shortest_path(name, m) is not None}
-        if not reach:
+        if not reach and name not in forced:
             continue
         hops = {m: len(graph.shortest_path(name, m) or []) for m in reach}
         candidates.append((name, reach, hops))
@@ -120,7 +168,8 @@ def _build_recommend_coverage(
 
     frontier = [
         c for c in candidates
-        if not any(dominates(o, c) for o in candidates if o[0] != c[0])
+        if c[0] in forced
+        or not any(dominates(o, c) for o in candidates if o[0] != c[0])
     ]
 
     entries: list[tuple[CandidateCoverage, int]] = []
@@ -1362,7 +1411,11 @@ class SlayerQueryEngine:
         return resolved, deduped_warnings
 
     async def recommend_root_model(
-        self, items: list[str], *, data_source: str | None = None
+        self,
+        items: list[str],
+        *,
+        data_source: str | None = None,
+        root_hint: str | None = None,
     ) -> RootModelRecommendation:
         """Recommend the query ``source_model`` (root) for a set of
         ``model.column`` / ``model.metric`` items, plus each item's
@@ -1375,37 +1428,79 @@ class SlayerQueryEngine:
         When no single model reaches everything, returns a structured
         ``reachable=False`` result with the Pareto frontier of partial
         roots in ``coverage`` (never raises for a valid-but-unroutable set).
+
+        ``root_hint`` (optional) names the intended root — a bare model name
+        or ``<data_source>.<model>`` within the resolved datasource. When the
+        hint is a feasible root (reaches every item), it is honored outright,
+        overriding the min-hops selection so a caller can force a *bridge*
+        model that owns none of the items but matches the intended grain.
+        When it is infeasible, the auto-pick is used and a warning explains
+        why; whether the hint was honored is conveyed via ``message`` /
+        ``warnings`` (no structured field). A non-existent / wrong-kind /
+        cross-datasource hint raises ``ValueError``. Note: ``root_hint`` is
+        resolved *after* the datasource is determined from ``items`` /
+        ``data_source``, so it cannot influence datasource selection.
         """
-        resolved, warnings = await self._recommend_resolve_items(items, data_source)
+        resolved, base_warnings = await self._recommend_resolve_items(items, data_source)
         ds = resolved[0].data_source
         models = await _all_models_in_datasource(self.storage, ds)
         graph = JoinGraph.build_from_models(models)
         all_names = sorted(m.name for m in models)
         mentioned = {r.model for r in resolved}
+        warnings = list(base_warnings)
+
+        hint = _resolve_root_hint(root_hint, data_source=ds, all_names=all_names)
+        hint_model = hint[0] if hint is not None else None
+        hint_display = hint[1] if hint is not None else None
 
         def total_hops(root: str) -> int:
             return sum(len(graph.shortest_path(root, m) or []) for m in mentioned)
 
-        valid_roots = [
-            name for name in all_names
-            if all(graph.shortest_path(name, m) is not None for m in mentioned)
-        ]
+        def reaches_all(root: str) -> bool:
+            return all(graph.shortest_path(root, m) is not None for m in mentioned)
+
+        def missing_models(root: str) -> list[str]:
+            return sorted(m for m in mentioned if graph.shortest_path(root, m) is None)
+
+        valid_roots = [name for name in all_names if reaches_all(name)]
         if valid_roots:
-            root = min(
+            auto = min(
                 valid_roots,
                 key=lambda n: (total_hops(n), 0 if n in mentioned else 1, n),
             )
+            if hint_model is not None and reaches_all(hint_model):
+                root = hint_model
+                message = (
+                    f"All items are reachable from '{root}' (requested via root_hint)."
+                )
+            else:
+                root = auto
+                if hint_model is not None:
+                    missing = ", ".join(missing_models(hint_model))
+                    warnings.append(
+                        f"root_hint '{hint_display}' cannot reach {{{missing}}}; "
+                        f"fell back to '{auto}'."
+                    )
+                message = f"All items are reachable from '{root}'."
             item_paths = [
                 ItemPath(input_item=r.input_item, path=_emit_recommend_path(graph, root, r))
                 for r in resolved
             ]
             return RootModelRecommendation(
                 data_source=ds, root_model=root, reachable=True,
-                item_paths=item_paths, warnings=warnings,
-                message=f"All items are reachable from '{root}'.",
+                item_paths=item_paths, warnings=warnings, message=message,
             )
 
-        coverage = _build_recommend_coverage(graph, all_names, mentioned, resolved)
+        force_include = {hint_model} if hint_model is not None else None
+        coverage = _build_recommend_coverage(
+            graph, all_names, mentioned, resolved, force_include=force_include
+        )
+        if hint_model is not None:
+            missing = ", ".join(missing_models(hint_model))
+            warnings.append(
+                f"root_hint '{hint_display}' cannot reach {{{missing}}}; "
+                f"no single model reaches every item — see coverage."
+            )
         return RootModelRecommendation(
             data_source=ds, root_model=None, reachable=False, item_paths=[],
             coverage=coverage, warnings=warnings,
@@ -1417,14 +1512,20 @@ class SlayerQueryEngine:
         )
 
     def recommend_root_model_sync(
-        self, items: list[str], *, data_source: str | None = None
+        self,
+        items: list[str],
+        *,
+        data_source: str | None = None,
+        root_hint: str | None = None,
     ) -> RootModelRecommendation:
         """Synchronous wrapper for :meth:`recommend_root_model`."""
         from slayer.async_utils import run_sync
 
         async def _run() -> RootModelRecommendation:
             try:
-                return await self.recommend_root_model(items, data_source=data_source)
+                return await self.recommend_root_model(
+                    items, data_source=data_source, root_hint=root_hint
+                )
             finally:
                 await self.aclose()
 

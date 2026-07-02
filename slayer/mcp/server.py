@@ -1628,7 +1628,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
     @mcp.tool()
     async def recommend_root_model(
-        items: list[str], data_source: str | None = None, format: str = "markdown"  # noqa: A002
+        items: list[str], data_source: str | None = None,
+        root_hint: str | None = None, format: str = "markdown"  # noqa: A002
     ) -> str:
         """Recommend the root model (query ``source_model``) for a set of
         ``model.column`` / ``model.metric`` items, and give each item's
@@ -1652,6 +1653,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             data_source: optional datasource scope; when omitted, names
                 resolve via the datasource-priority list. All items must
                 resolve to a single datasource.
+            root_hint: optional intended root — a bare model name or
+                ``<data_source>.<model>`` within the resolved datasource.
+                Honored when it reaches every item (overriding the min-hops
+                pick, so you can force a bridge model that owns none of the
+                items); otherwise the auto-pick is used and a warning
+                explains why. Resolved after the datasource is determined,
+                so it cannot pick the datasource.
             format: ``"markdown"`` (default) or ``"json"``.
         """
         fmt = format.lower().strip()
@@ -1662,7 +1670,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             )
         engine = SlayerQueryEngine(storage=storage)
         try:
-            rec = await engine.recommend_root_model(items, data_source=data_source)
+            rec = await engine.recommend_root_model(
+                items, data_source=data_source, root_hint=root_hint
+            )
         except AmbiguousModelError as exc:
             return _ambiguous_with_mcp_hint(exc)
         except (ValueError, EntityResolutionError) as exc:

@@ -635,32 +635,41 @@ class SlayerClient:
         return resp["result"]
 
     async def recommend_root_model(
-        self, items: list[str], *, data_source: str | None = None
+        self, items: list[str], *, data_source: str | None = None,
+        root_hint: str | None = None,
     ) -> "RootModelRecommendation":
         """Recommend the query ``source_model`` (root) for a set of
         ``model.column`` / ``model.metric`` items, plus each item's
-        join-qualified path from that root (DEV-1626)."""
+        join-qualified path from that root (DEV-1626).
+
+        ``root_hint`` forces the intended root when it reaches every item
+        (else the auto-pick is used with an explanatory warning)."""
         from slayer.core.recommend import RootModelRecommendation
 
         if self._engine is not None:
             return await self._engine.recommend_root_model(
-                items, data_source=data_source
+                items, data_source=data_source, root_hint=root_hint
             )
         body: dict[str, Any] = {"items": items}
         if data_source is not None:
             body["data_source"] = data_source
+        if root_hint is not None:
+            body["root_hint"] = root_hint
         result = await self._request(
             method="POST", path="/recommend-root-model", json=body
         )
         return RootModelRecommendation.model_validate(result)
 
     def recommend_root_model_sync(
-        self, items: list[str], *, data_source: str | None = None
+        self, items: list[str], *, data_source: str | None = None,
+        root_hint: str | None = None,
     ) -> "RootModelRecommendation":
         """Synchronous variant of :meth:`recommend_root_model`."""
         from slayer.async_utils import run_sync
 
-        return run_sync(self.recommend_root_model(items, data_source=data_source))
+        return run_sync(self.recommend_root_model(
+            items, data_source=data_source, root_hint=root_hint
+        ))
 
     def query_df(self, query: QueryInput):
         """Execute a query and return a pandas DataFrame (sync).

@@ -226,6 +226,129 @@ class TestSlayerClient:
         assert rec.root_model == "orders"
 
 
+class TestRootHintSurfaces:
+    """``root_hint`` plumbed through every surface: a feasible bridge hint is
+    honored; a bad hint surfaces per-surface (MCP failed-text / REST 400 /
+    CLI nonzero exit / local client ValueError / remote client body)."""
+
+    # -- MCP ------------------------------------------------------------
+    async def test_mcp_feasible_hint_honored(self, storage) -> None:
+        mcp = create_mcp_server(storage=storage)
+        blocks, _ = await mcp.call_tool(
+            name="recommend_root_model",
+            arguments={"items": ["customers.name"], "root_hint": "orders", "format": "json"},
+        )
+        payload = json.loads(blocks[0].text)
+        assert payload["root_model"] == "orders"
+
+    async def test_mcp_bad_hint_friendly_error(self, storage) -> None:
+        mcp = create_mcp_server(storage=storage)
+        blocks, _ = await mcp.call_tool(
+            name="recommend_root_model",
+            arguments={"items": ["orders.status"], "data_source": "mydb", "root_hint": "nope"},
+        )
+        assert "failed" in blocks[0].text.lower()
+
+    # -- REST -----------------------------------------------------------
+    def test_rest_feasible_hint_honored(self, storage) -> None:
+        client = TestClient(create_app(storage=storage))
+        resp = client.post(
+            "/recommend-root-model",
+            json={"items": ["customers.name"], "root_hint": "orders"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["root_model"] == "orders"
+
+    def test_rest_bad_hint_400(self, storage) -> None:
+        client = TestClient(create_app(storage=storage))
+        resp = client.post(
+            "/recommend-root-model",
+            json={"items": ["orders.status"], "data_source": "mydb", "root_hint": "nope"},
+        )
+        assert resp.status_code == 400
+
+    # -- CLI ------------------------------------------------------------
+    def test_cli_feasible_hint_honored(self, storage, capsys) -> None:
+        from slayer.cli import _run_recommend_root_model
+
+        args = argparse.Namespace(
+            storage=storage.base_dir, models_dir=None,
+            items=["customers.name"], data_source=None,
+            format="json", root_hint="orders",
+        )
+        _run_recommend_root_model(args)
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["root_model"] == "orders"
+
+    def test_cli_bad_hint_nonzero_exit(self, storage, capsys) -> None:
+        import pytest
+
+        from slayer.cli import _run_recommend_root_model
+
+        args = argparse.Namespace(
+            storage=storage.base_dir, models_dir=None,
+            items=["orders.status"], data_source="mydb",
+            format="text", root_hint="nope",
+        )
+        with pytest.raises(SystemExit) as exc:
+            _run_recommend_root_model(args)
+        assert exc.value.code != 0
+        assert "failed" in capsys.readouterr().out.lower()
+
+    def test_cli_parser_accepts_root_hint(self, storage, monkeypatch, capsys) -> None:
+        import sys
+
+        from slayer.cli import main
+
+        monkeypatch.setattr(sys, "argv", [
+            "slayer", "recommend-root-model", "customers.name",
+            "--root-hint", "orders", "--storage", storage.base_dir, "--format", "json",
+        ])
+        main()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["root_model"] == "orders"
+
+    # -- SlayerClient (local engine) ------------------------------------
+    def test_client_local_feasible_hint_honored(self, storage) -> None:
+        from slayer.client.slayer_client import SlayerClient
+
+        client = SlayerClient(storage=storage)
+        rec = client.recommend_root_model_sync(["customers.name"], root_hint="orders")
+        assert rec.root_model == "orders"
+
+    async def test_client_local_bad_hint_raises(self, storage) -> None:
+        import pytest
+
+        from slayer.client.slayer_client import SlayerClient
+
+        client = SlayerClient(storage=storage)
+        with pytest.raises(ValueError):
+            await client.recommend_root_model(["orders.status"], root_hint="nope")
+
+    # -- SlayerClient (remote HTTP) sends root_hint only when set -------
+    async def test_client_remote_sends_root_hint_only_when_set(self) -> None:
+        from slayer.client.slayer_client import SlayerClient
+
+        client = SlayerClient(url="https://testserver")
+        captured: list[dict] = []
+
+        async def fake_request(method, path, json=None, params=None):  # NOSONAR(S7503) — async required: stub is awaited via client._request
+            captured.append(json or {})
+            return {
+                "data_source": "mydb", "root_model": "orders",
+                "reachable": True, "item_paths": [], "coverage": [],
+                "message": "", "warnings": [],
+            }
+
+        client._request = fake_request  # type: ignore[assignment]
+
+        await client.recommend_root_model(["customers.name"], root_hint="orders")
+        await client.recommend_root_model(["customers.name"])
+
+        assert captured[0].get("root_hint") == "orders"
+        assert "root_hint" not in captured[1]
+
+
 class TestExpandJoinGraphRegression:
     async def test_directed_reachability_preserved(self, storage) -> None:
         # The refactor routes _expand_join_graph through JoinGraph.reachable_from;

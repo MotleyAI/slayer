@@ -560,6 +560,161 @@ class TestDistinctOwningModelHopSum:
                 await eng.aclose()
 
 
+class TestRootHint:
+    """``root_hint`` (follow-up): force a caller-chosen root when feasible,
+    else fall back to the auto-pick with an explanatory warning. A
+    non-existent / wrong-kind / cross-datasource hint raises loudly."""
+
+    # -- feasible hint honored ------------------------------------------
+    async def test_feasible_bridge_hint_honored_over_cheaper_autopick(self, engine) -> None:
+        # {customers, regions}: auto-pick is 'customers' (0+1 hops, mentioned).
+        # 'orders' is a feasible bridge that owns NEITHER item but reaches
+        # both — the descriptions-first case. The hint must win outright.
+        rec = await engine.recommend_root_model(
+            ["customers.name", "regions.name"], root_hint="orders"
+        )
+        assert rec.reachable is True
+        assert rec.root_model == "orders"
+        assert rec.warnings == []
+        assert "root_hint" in rec.message
+        assert _paths(rec) == {
+            "customers.name": "customers.name",
+            "regions.name": "customers.regions.name",
+        }
+
+    async def test_feasible_hint_equal_to_autopick_honored(self, engine) -> None:
+        rec = await engine.recommend_root_model(
+            ["customers.name", "regions.name"], root_hint="customers"
+        )
+        assert rec.root_model == "customers"
+        assert rec.warnings == []
+        assert _paths(rec) == {"customers.name": "name", "regions.name": "regions.name"}
+
+    async def test_bare_and_ds_qualified_hint_equivalent(self, engine) -> None:
+        bare = await engine.recommend_root_model(
+            ["customers.name", "regions.name"], root_hint="orders"
+        )
+        qualified = await engine.recommend_root_model(
+            ["customers.name", "regions.name"], root_hint="mydb.orders"
+        )
+        assert bare.root_model == qualified.root_model == "orders"
+
+    def test_sync_wrapper_forwards_root_hint(self, storage) -> None:
+        eng = SlayerQueryEngine(storage=storage)
+        rec = eng.recommend_root_model_sync(
+            ["customers.name", "regions.name"], root_hint="orders"
+        )
+        assert rec.root_model == "orders"
+
+    # -- empty / whitespace hint is a no-op -----------------------------
+    async def test_empty_hint_is_noop(self, engine) -> None:
+        rec = await engine.recommend_root_model(
+            ["customers.name", "regions.name"], root_hint=""
+        )
+        assert rec.root_model == "customers"  # auto-pick, unchanged
+        assert rec.warnings == []
+        assert "root_hint" not in rec.message
+
+    async def test_whitespace_hint_is_noop(self, engine) -> None:
+        rec = await engine.recommend_root_model(
+            ["customers.name", "regions.name"], root_hint="   "
+        )
+        assert rec.root_model == "customers"
+        assert rec.warnings == []
+        assert "root_hint" not in rec.message
+
+    # -- infeasible hint (real model) → fallback + warning --------------
+    async def test_infeasible_hint_falls_back_with_warning(self, engine) -> None:
+        # {customers, products}: only 'orders' reaches both. 'customers'
+        # reaches customers but not products → infeasible.
+        rec = await engine.recommend_root_model(
+            ["customers.name", "products.category"], root_hint="customers"
+        )
+        assert rec.reachable is True
+        assert rec.root_model == "orders"  # fell back to the auto-pick
+        joined = " ".join(rec.warnings)
+        assert "root_hint" in joined
+        assert "cannot reach" in joined
+        assert "customers" in joined  # the rejected hint
+        assert "products" in joined   # the unreachable owning model
+        assert "orders" in joined     # the fallback root
+
+    async def test_infeasible_warning_echoes_original_ds_qualified_hint(self, engine) -> None:
+        # The diagnostic must quote what the caller typed ('mydb.customers'),
+        # not the resolved bare model name ('customers').
+        rec = await engine.recommend_root_model(
+            ["customers.name", "products.category"], root_hint="mydb.customers"
+        )
+        assert rec.root_model == "orders"
+        assert any("mydb.customers" in w for w in rec.warnings)
+
+    # -- bad hint → ValueError ------------------------------------------
+    async def test_nonexistent_hint_raises(self, engine) -> None:
+        with pytest.raises(ValueError, match="not a model in datasource"):
+            await engine.recommend_root_model(["orders.status"], root_hint="ordrs")
+
+    async def test_wrong_kind_bare_hint_raises_not_a_model(self, engine) -> None:
+        # 'status' is a column, not a model → "not a model".
+        with pytest.raises(ValueError, match="not a model in datasource"):
+            await engine.recommend_root_model(["orders.status"], root_hint="status")
+
+    async def test_cross_datasource_hint_raises(self, engine) -> None:
+        # Items resolve to 'mydb'; a hint qualified with a different ds is rejected.
+        with pytest.raises(ValueError):
+            await engine.recommend_root_model(
+                ["customers.name", "products.category"], root_hint="otherdb.widgets"
+            )
+
+    async def test_three_part_hint_raises(self, engine) -> None:
+        with pytest.raises(ValueError):
+            await engine.recommend_root_model(
+                ["orders.status"], data_source="mydb", root_hint="mydb.orders.status"
+            )
+
+    # -- reachable=False: hint coverage row is force-surfaced -----------
+    async def test_no_root_dominated_hint_row_surfaced(self, engine) -> None:
+        # {customers, agents} disconnected → reachable=False. 'orders' reaches
+        # only {customers} and is dominated by 'customers' (0 hops) — normally
+        # dropped from the frontier. With the hint it must appear, exactly once.
+        rec = await engine.recommend_root_model(
+            ["customers.name", "agents.name"], root_hint="orders"
+        )
+        assert rec.reachable is False
+        assert rec.root_model is None
+        orders_rows = [c for c in rec.coverage if c.model_name == "orders"]
+        assert len(orders_rows) == 1
+        assert orders_rows[0].reachable_items == ["customers.name"]
+        assert orders_rows[0].unreachable_items == ["agents.name"]
+        assert any("root_hint" in w and "cannot reach" in w for w in rec.warnings)
+        # Force-inclusion keeps the existing sort key (reachable count desc).
+        lengths = [len(c.reachable_items) for c in rec.coverage]
+        assert lengths == sorted(lengths, reverse=True)
+
+    async def test_no_root_zero_reach_hint_row_surfaced(self, engine) -> None:
+        # 'products' reaches neither {customers, agents}. Force-included row
+        # has an empty reachable list and both items unreachable.
+        rec = await engine.recommend_root_model(
+            ["customers.name", "agents.name"], root_hint="products"
+        )
+        assert rec.reachable is False
+        prod_rows = [c for c in rec.coverage if c.model_name == "products"]
+        assert len(prod_rows) == 1
+        assert prod_rows[0].reachable_items == []
+        assert prod_rows[0].unreachable_items == ["customers.name", "agents.name"]
+        assert any("root_hint" in w and "cannot reach" in w for w in rec.warnings)
+
+    async def test_no_root_frontier_hint_not_duplicated(self, engine) -> None:
+        # 'customers' is already on the frontier; forcing it in must not
+        # produce a duplicate row.
+        rec = await engine.recommend_root_model(
+            ["customers.name", "agents.name"], root_hint="customers"
+        )
+        assert rec.reachable is False
+        cust_rows = [c for c in rec.coverage if c.model_name == "customers"]
+        assert len(cust_rows) == 1
+        assert any("root_hint" in w and "cannot reach" in w for w in rec.warnings)
+
+
 class TestResultModels:
     def test_item_path_fields(self) -> None:
         ip = ItemPath(input_item="orders.revenue:sum", path="customers.revenue:sum")
@@ -583,6 +738,14 @@ class TestResultModels:
         assert rec.coverage == []
         assert rec.message == ""
         assert rec.warnings == []
+
+    def test_no_new_result_fields_for_root_hint(self) -> None:
+        # root_hint status is conveyed via message + warnings only — the
+        # result schema must not grow a structured hint field.
+        assert set(RootModelRecommendation.model_fields) == {
+            "data_source", "root_model", "reachable",
+            "item_paths", "coverage", "message", "warnings",
+        }
 
 
 class TestWarningsSurfaced:

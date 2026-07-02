@@ -28,7 +28,7 @@ Query-backed models support two access patterns: **run by name** (`engine.execut
 ## MCP Tools
 
 Discovery: `list_datasources`, `models_summary`, `inspect` (point lookup by `reference` + required `entity_type`; the model path carries sample data; `reference` accepts a single id or a same-kind **list** for a batched lookup). `inspect_model` is DEPRECATED — use `inspect`.
-Querying: `query`, `recommend_root_model` (given `model.column` / `model.metric` items, introspects the join graph to recommend the query `source_model` + each item's join path from it; returns partial-root `coverage` when no single model reaches all items)
+Querying: `query`, `recommend_root_model` (given `model.column` / `model.metric` items, introspects the join graph to recommend the query `source_model` + each item's join path from it; optional `root_hint` forces an intended root when it reaches every item; returns partial-root `coverage` when no single model reaches all items)
 Model editing: `create_model`, `edit_model`, `delete_model`
 Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (includes table listing by default), `edit_datasource`, `delete_datasource`, `set_datasource_priority`
 Ingestion: `ingest_datasource_models`

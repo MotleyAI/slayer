@@ -315,6 +315,7 @@ examples:
   slayer recommend-root-model orders.revenue customers.name
   slayer recommend-root-model customers.name products.category --data-source my_pg
   slayer recommend-root-model orders.revenue:sum regions.name --format json
+  slayer recommend-root-model customers.name products.category --root-hint orders
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -328,6 +329,16 @@ examples:
         dest="data_source",
         default=None,
         help="Datasource scope. If omitted, names resolve via the priority list.",
+    )
+    recommend_parser.add_argument(
+        "--root-hint",
+        dest="root_hint",
+        default=None,
+        help=(
+            "Intended root model (bare name or '<data_source>.<model>'). "
+            "Honored when it reaches every item; otherwise the auto-pick is "
+            "used and a warning explains why."
+        ),
     )
     recommend_parser.add_argument(
         "--format",
@@ -1430,7 +1441,8 @@ def _run_recommend_root_model(args):
     engine = SlayerQueryEngine(storage=storage)
     try:
         rec = engine.recommend_root_model_sync(
-            args.items, data_source=args.data_source
+            args.items, data_source=args.data_source,
+            root_hint=getattr(args, "root_hint", None),
         )
     except Exception as exc:  # noqa: BLE001 — surface resolution/validation errors cleanly
         print(f"recommend-root-model failed: {exc}")

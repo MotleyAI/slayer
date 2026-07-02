@@ -113,6 +113,7 @@ class RecommendRootModelRequest(BaseModel):
     """Body for ``POST /recommend-root-model``."""
     items: list[str]
     data_source: str | None = None
+    root_hint: str | None = None
 
 
 class DatasourcePriorityRequest(BaseModel):
@@ -579,7 +580,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         engine = SlayerQueryEngine(storage=storage)
         try:
             rec = await engine.recommend_root_model(
-                request.items, data_source=request.data_source
+                request.items, data_source=request.data_source,
+                root_hint=request.root_hint,
             )
         except (ValueError, SlayerError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
