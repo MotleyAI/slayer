@@ -47,7 +47,6 @@ from slayer.engine.enrichment import enrich_query
 from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.memories.resolver import (
     _all_models_in_datasource,
-    _model_has_leaf,
     resolve_entity,
 )
 from slayer.sql.client import SlayerSQLClient
@@ -1241,22 +1240,34 @@ class SlayerQueryEngine:
                 f"is not a column or metric. recommend_root_model needs "
                 f"'model.column' / 'model.metric' items."
             )
-        owners = [m for m in models if _model_has_leaf(m, name)]
-        if not owners:
-            raise ValueError(
-                f"'{raw}' does not name a column or metric in datasource "
-                f"'{data_source}'."
-            )
+        # Ownership is column/metric only — a model whose sole match is a
+        # custom aggregation named the same must NOT make a valid column
+        # ambiguous; it only drives the aggregation-specific error below.
+        owners = [
+            m for m in models
+            if m.get_column(name) is not None or m.get_measure(name) is not None
+        ]
+        if len(owners) == 1:
+            return data_source, owners[0].name, name
         if len(owners) > 1:
             names = sorted(m.name for m in owners)
             raise ValueError(
                 f"'{raw}' is ambiguous in datasource '{data_source}' — matches "
                 f"{names}. Qualify it as '<model>.{name}'."
             )
-        return data_source, owners[0].name, name
+        if any(m.get_aggregation(name) is not None for m in models):
+            raise ValueError(
+                f"'{raw}' names a custom aggregation in datasource "
+                f"'{data_source}'. Aggregations are operators applied to "
+                f"columns, not join-path targets — pass the column."
+            )
+        raise ValueError(
+            f"'{raw}' does not name a column or metric in datasource "
+            f"'{data_source}'."
+        )
 
     async def _resolve_recommend_item(
-        self, *, raw: str, data_source: str | None, known_dses: set[str]
+        self, *, raw: str, data_source: str | None
     ) -> "tuple[_ResolvedItem, list[str]]":
         """Resolve + validate a single recommend_root_model item.
 
@@ -1272,13 +1283,13 @@ class SlayerQueryEngine:
                 raw=raw, name=entity_ref, data_source=data_source,
             )
         else:
-            # Prefix the requested datasource only when the ref is dotted and
-            # doesn't already lead with a known datasource segment.
+            # With an explicit data_source, force every dotted item into that
+            # datasource unless it already leads with it — so a model name
+            # colliding with a *datasource* name (``shared.status`` under
+            # ``data_source='mydb'``) still resolves to the model, and a ref
+            # naming a different datasource fails as a cross-datasource item.
             resolution_input = entity_ref
-            if (
-                data_source
-                and entity_ref.split(".")[0] not in known_dses
-            ):
+            if data_source and entity_ref.split(".")[0] != data_source:
                 resolution_input = f"{data_source}.{entity_ref}"
             res = await resolve_entity(resolution_input, storage=self.storage)
             warnings = res.warnings
@@ -1290,13 +1301,6 @@ class SlayerQueryEngine:
                     f"'model.column' / 'model.metric' items."
                 )
             ds, model_name, leaf = segs[0], segs[1], segs[2]
-            # Enforce the requested datasource scope for EVERY item — including
-            # ones already datasource-qualified with a different ds.
-            if data_source and ds != data_source:
-                raise ValueError(
-                    f"'{raw}' resolves to datasource '{ds}', not the requested "
-                    f"'{data_source}'."
-                )
         owning = await self.storage.get_model(model_name, data_source=ds)
         if owning is None:
             raise ValueError(
@@ -1326,7 +1330,6 @@ class SlayerQueryEngine:
 
         Raises on malformed / wrong-kind items and on a cross-datasource mix.
         """
-        known_dses = set(await self.storage.list_datasources())
         resolved: list[_ResolvedItem] = []
         warnings: list[str] = []
         seen_inputs: set[str] = set()
@@ -1336,7 +1339,7 @@ class SlayerQueryEngine:
                 continue
             seen_inputs.add(raw)
             item, item_warnings = await self._resolve_recommend_item(
-                raw=raw, data_source=data_source, known_dses=known_dses,
+                raw=raw, data_source=data_source,
             )
             resolved.append(item)
             warnings.extend(item_warnings)

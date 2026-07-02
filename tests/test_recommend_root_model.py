@@ -426,11 +426,56 @@ class TestDataSourceAndDedup:
     async def test_qualified_item_wrong_data_source_raises(self, engine) -> None:
         # An already-datasource-qualified item naming a DIFFERENT datasource
         # than the requested scope must be rejected — not silently resolved
-        # to the qualified datasource. (widgets lives in otherdb.)
-        with pytest.raises(ValueError):
+        # to the qualified datasource. (widgets lives in otherdb.) Under the
+        # requested scope it re-roots to 'mydb.otherdb...' which has no such
+        # model → EntityResolutionError.
+        with pytest.raises((ValueError, EntityResolutionError)):
             await engine.recommend_root_model(
                 ["otherdb.widgets.sku"], data_source="mydb"
             )
+
+    async def test_dotted_model_colliding_with_datasource_name_scopes_to_model(self) -> None:
+        # A model whose name equals a *datasource* name must still resolve to
+        # the model (not the datasource) when data_source is explicit.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = YAMLStorage(base_dir=tmpdir)
+            await s.save_datasource(DatasourceConfig(name="shared", type="postgres", host="x"))
+            await s.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="x"))
+            await s.save_model(SlayerModel(
+                name="shared", data_source="mydb", sql_table="shared",
+                columns=[_col("id", DataType.INT, pk=True), _col("status")],
+            ))
+            eng = SlayerQueryEngine(storage=s)
+            try:
+                rec = await eng.recommend_root_model(["shared.status"], data_source="mydb")
+                assert rec.data_source == "mydb"
+                assert rec.root_model == "shared"
+                assert _paths(rec) == {"shared.status": "status"}
+            finally:
+                await eng.aclose()
+
+    async def test_bare_scope_ignores_aggregation_named_leaf(self) -> None:
+        # A custom aggregation sharing a bare column's name must NOT make the
+        # valid column ambiguous when scoping a bare item to the datasource.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = YAMLStorage(base_dir=tmpdir)
+            await s.save_datasource(DatasourceConfig(name="d", type="postgres", host="x"))
+            await s.save_model(SlayerModel(
+                name="sales", data_source="d", sql_table="sales",
+                columns=[_col("id", DataType.INT, pk=True), _col("revenue", DataType.DOUBLE)],
+            ))
+            await s.save_model(SlayerModel(
+                name="calc", data_source="d", sql_table="calc",
+                columns=[_col("id", DataType.INT, pk=True)],
+                aggregations=[Aggregation(name="revenue", formula="SUM({expr})")],
+            ))
+            eng = SlayerQueryEngine(storage=s)
+            try:
+                rec = await eng.recommend_root_model(["revenue"], data_source="d")
+                assert rec.root_model == "sales"
+                assert _paths(rec) == {"revenue": "revenue"}
+            finally:
+                await eng.aclose()
 
     async def test_bare_item_scoped_to_requested_datasource(self, collision_storage) -> None:
         # 'status' is a column on 'orders' in BOTH mydb and otherdb. A bare
