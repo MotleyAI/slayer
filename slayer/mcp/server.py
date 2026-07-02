@@ -1654,12 +1654,18 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 resolve to a single datasource.
             format: ``"markdown"`` (default) or ``"json"``.
         """
+        fmt = format.lower().strip()
+        if fmt not in ("markdown", "json"):
+            return (
+                f"recommend_root_model failed: unknown format '{format}'. "
+                f"Use 'markdown' or 'json'."
+            )
         engine = SlayerQueryEngine(storage=storage)
         try:
             rec = await engine.recommend_root_model(items, data_source=data_source)
-        except (ValueError, EntityResolutionError) as exc:
+        except (ValueError, EntityResolutionError, AmbiguousModelError) as exc:
             return f"recommend_root_model failed: {exc}"
-        if format == "json":
+        if fmt == "json":
             return json.dumps(rec.model_dump(mode="json"), indent=2)
         return render_recommendation_markdown(rec)
 

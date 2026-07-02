@@ -1020,7 +1020,7 @@ class SlayerQueryEngine:
             await self._load_candidate_models(data_source=data_source)
         )
         expanded: set[str] = set()
-        for seed in list(touched):
+        for seed in touched:
             expanded |= graph.reachable_from(seed)
         touched |= expanded
 
@@ -1226,14 +1226,69 @@ class SlayerQueryEngine:
     # ------------------------------------------------------------------
     # recommend_root_model (DEV-1626)
     # ------------------------------------------------------------------
+    async def _resolve_recommend_item(
+        self, *, raw: str, data_source: str | None, known_dses: set[str]
+    ) -> "tuple[_ResolvedItem, list[str]]":
+        """Resolve + validate a single recommend_root_model item.
+
+        Reuses ``resolve_entity`` for normalization; requires the resolved
+        entity to be a column or a named measure (metric). Raises on a
+        malformed / wrong-kind item or a datasource-scope mismatch.
+        """
+        entity_ref, suffix = split_agg_suffix(raw)
+        # Prefix the requested datasource only when the ref is dotted and
+        # doesn't already lead with a known datasource segment.
+        resolution_input = entity_ref
+        if (
+            data_source
+            and "." in entity_ref
+            and entity_ref.split(".")[0] not in known_dses
+        ):
+            resolution_input = f"{data_source}.{entity_ref}"
+        res = await resolve_entity(resolution_input, storage=self.storage)
+        segs = res.canonical_forms[0].split(".")
+        if len(segs) < 3:
+            raise ValueError(
+                f"'{raw}' resolves to '{res.canonical_forms[0]}', which is "
+                f"not a column or metric. recommend_root_model needs "
+                f"'model.column' / 'model.metric' items."
+            )
+        ds, model_name, leaf = segs[0], segs[1], segs[2]
+        # Enforce the requested datasource scope for EVERY item — including
+        # ones that were already datasource-qualified with a different ds.
+        if data_source and ds != data_source:
+            raise ValueError(
+                f"'{raw}' resolves to datasource '{ds}', not the requested "
+                f"'{data_source}'."
+            )
+        owning = await self.storage.get_model(model_name, data_source=ds)
+        if owning is None:
+            raise ValueError(
+                f"'{raw}' resolves to model '{model_name}' in '{ds}', which "
+                f"is not a saved model."
+            )
+        if owning.get_column(leaf) is None and owning.get_measure(leaf) is None:
+            if owning.get_aggregation(leaf) is not None:
+                raise ValueError(
+                    f"'{raw}' names the custom aggregation '{leaf}' on "
+                    f"'{model_name}'. Aggregations are operators applied to "
+                    f"columns, not join-path targets — pass the column."
+                )
+            raise ValueError(
+                f"'{raw}' does not name a column or metric on '{model_name}'."
+            )
+        item = _ResolvedItem(
+            input_item=raw, data_source=ds, model=model_name,
+            leaf=leaf, suffix=suffix,
+        )
+        return item, res.warnings
+
     async def _recommend_resolve_items(
         self, items: list[str], data_source: str | None
     ) -> "tuple[list[_ResolvedItem], list[str]]":
-        """Resolve + validate each input item into a ``_ResolvedItem``.
+        """Resolve every input item, then enforce single-datasource + dedup.
 
-        Reuses ``resolve_entity`` for normalization; requires each resolved
-        entity to be a column or a named measure (metric). Raises on
-        malformed / wrong-kind items and on a cross-datasource mix.
+        Raises on malformed / wrong-kind items and on a cross-datasource mix.
         """
         known_dses = set(await self.storage.list_datasources())
         resolved: list[_ResolvedItem] = []
@@ -1244,52 +1299,11 @@ class SlayerQueryEngine:
             if not raw or raw in seen_inputs:
                 continue
             seen_inputs.add(raw)
-            entity_ref, suffix = split_agg_suffix(raw)
-            dotless = "." not in entity_ref
-            resolution_input = entity_ref
-            if data_source:
-                first_seg = entity_ref.split(".")[0]
-                if first_seg not in known_dses and not dotless:
-                    resolution_input = f"{data_source}.{entity_ref}"
-            res = await resolve_entity(resolution_input, storage=self.storage)
-            warnings.extend(res.warnings)
-            segs = res.canonical_forms[0].split(".")
-            if len(segs) < 3:
-                raise ValueError(
-                    f"'{raw}' resolves to '{res.canonical_forms[0]}', which is "
-                    f"not a column or metric. recommend_root_model needs "
-                    f"'model.column' / 'model.metric' items."
-                )
-            ds, model_name, leaf = segs[0], segs[1], segs[2]
-            if data_source and dotless and ds != data_source:
-                raise ValueError(
-                    f"'{raw}' resolves to datasource '{ds}', not the requested "
-                    f"'{data_source}'."
-                )
-            owning = await self.storage.get_model(model_name, data_source=ds)
-            if owning is None:
-                raise ValueError(
-                    f"'{raw}' resolves to model '{model_name}' in '{ds}', which "
-                    f"is not a saved model."
-                )
-            is_col_or_measure = (
-                owning.get_column(leaf) is not None
-                or owning.get_measure(leaf) is not None
+            item, item_warnings = await self._resolve_recommend_item(
+                raw=raw, data_source=data_source, known_dses=known_dses,
             )
-            if not is_col_or_measure:
-                if owning.get_aggregation(leaf) is not None:
-                    raise ValueError(
-                        f"'{raw}' names the custom aggregation '{leaf}' on "
-                        f"'{model_name}'. Aggregations are operators applied to "
-                        f"columns, not join-path targets — pass the column."
-                    )
-                raise ValueError(
-                    f"'{raw}' does not name a column or metric on '{model_name}'."
-                )
-            resolved.append(_ResolvedItem(
-                input_item=raw, data_source=ds, model=model_name,
-                leaf=leaf, suffix=suffix,
-            ))
+            resolved.append(item)
+            warnings.extend(item_warnings)
 
         if not resolved:
             raise ValueError("recommend_root_model requires at least one item.")

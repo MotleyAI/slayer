@@ -305,24 +305,34 @@ class TestAggSuffix:
 
 
 # --------------------------------------------------------------------------
-# INNER symmetry (reverse-edge routing) + real resolvability
+# INNER symmetry + real resolvability
+#
+# INNER joins are kept symmetric by the storage layer (join_sync materializes
+# BOTH directions), and JoinGraph reads stored *outgoing* joins only — there
+# is deliberately no "reverse-only" traversal (a reverse-only fixture would be
+# unreachable by design). The fixture declares the symmetric pair explicitly
+# (orders<->order_items), so these tests verify routing works in both
+# directions and that the emitted path is walkable by the query engine.
 # --------------------------------------------------------------------------
 class TestInnerJoins:
-    async def test_symmetric_inner_reverse_path(self, engine) -> None:
+    async def test_inner_pair_routes_from_either_side(self, engine) -> None:
         # {orders, order_items, products}: orders reaches all in 2 hops
-        # (order_items via materialized reverse INNER, products via LEFT);
-        # order_items would need 3. So root = orders and the emitted path
-        # to order_items uses the orders->order_items reverse edge.
+        # (order_items via the stored INNER edge, products via LEFT);
+        # order_items would need 3 (order_items->orders->products). So the
+        # chosen root is orders and it reaches order_items via the stored
+        # orders->order_items INNER edge. The other direction
+        # (order_items->orders) is exercised by
+        # TestRootSelection.test_symmetric_tie_broken_lexicographically.
         rec = await engine.recommend_root_model(
             ["orders.status", "order_items.sku", "products.category"]
         )
         assert rec.root_model == "orders"
         assert _paths(rec)["order_items.sku"] == "order_items.sku"
 
-    async def test_reverse_inner_path_resolvable_by_engine_walker(self, engine, storage) -> None:
-        # The emitted reverse-INNER hop must be walkable by the engine's own
-        # _walk_join_chain (the query-time resolver), proving the path is
-        # query-resolvable given the storage symmetry invariant.
+    async def test_inner_path_resolvable_by_engine_walker(self, engine, storage) -> None:
+        # The emitted INNER hop must be walkable by the engine's own
+        # _walk_join_chain (the query-time resolver), proving the recommended
+        # path is query-resolvable given the storage symmetry invariant.
         orders = await storage.get_model("orders", data_source="mydb")
         terminal, _first = await engine._walk_join_chain(
             source_model=orders, hop_names=["order_items"]
@@ -412,6 +422,15 @@ class TestDataSourceAndDedup:
         # "revenue" only exists in mydb; asserting data_source=otherdb must fail.
         with pytest.raises(ValueError):
             await engine.recommend_root_model(["revenue"], data_source="otherdb")
+
+    async def test_qualified_item_wrong_data_source_raises(self, engine) -> None:
+        # An already-datasource-qualified item naming a DIFFERENT datasource
+        # than the requested scope must be rejected — not silently resolved
+        # to the qualified datasource. (widgets lives in otherdb.)
+        with pytest.raises(ValueError):
+            await engine.recommend_root_model(
+                ["otherdb.widgets.sku"], data_source="mydb"
+            )
 
     async def test_exact_duplicate_input_deduped(self, engine) -> None:
         rec = await engine.recommend_root_model(

@@ -90,6 +90,34 @@ class TestMcpTool:
         assert payload["reachable"] is False
         assert payload["coverage"]
 
+    async def test_invalid_format_returns_friendly_error(self, storage) -> None:
+        mcp = create_mcp_server(storage=storage)
+        blocks, _ = await mcp.call_tool(
+            name="recommend_root_model",
+            arguments={"items": ["orders.status"], "data_source": "mydb", "format": "xml"},
+        )
+        assert "failed" in blocks[0].text.lower()
+
+    async def test_ambiguous_model_returns_friendly_error(self) -> None:
+        # 'orders' in two datasources → AmbiguousModelError (a SlayerError,
+        # NOT a ValueError) must be caught and surfaced as a friendly string.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = YAMLStorage(base_dir=tmpdir)
+            for ds in ("a", "b"):
+                await s.save_datasource(DatasourceConfig(name=ds, type="postgres", host="x"))
+                await s.save_model(SlayerModel(
+                    name="orders", data_source=ds, sql_table="orders",
+                    columns=[
+                        Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                        Column(name="status", sql="status", type=DataType.TEXT),
+                    ],
+                ))
+            mcp = create_mcp_server(storage=s)
+            blocks, _ = await mcp.call_tool(
+                name="recommend_root_model", arguments={"items": ["orders.status"]},
+            )
+            assert "failed" in blocks[0].text.lower()
+
 
 class TestRestEndpoint:
     def test_post_ok(self, storage) -> None:
