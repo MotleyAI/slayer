@@ -138,16 +138,16 @@ docs/
 Preview locally:
 
 ```bash
-pip install mkdocs-material mkdocs-jupyter mkdocs-section-index
-python3 -m mkdocs serve -a localhost:8000
+pip install zensical
+zensical serve   # http://localhost:8000, live reload
 ```
 
 **Style rule:** Use JSON/dict syntax in all docs and examples — not Python class constructors. Write `{"name": "status"}` not `ColumnRef(name="status")`. This keeps examples portable across Python, REST API, and MCP. (See `docs/CLAUDE.md` for details.)
 
-**Plugins we use:**
+**Notes:**
 
-- `mkdocs-jupyter` — renders `.ipynb` notebooks as pages
-- `mkdocs-section-index` — makes section headers clickable (links to `index.md` or first untitled entry)
+- Section headers are clickable via the `navigation.indexes` theme feature (attach an `index.md` as the first entry of a section)
+- Notebooks (`.ipynb`) are listed by their `docs/`-relative path; Zensical has no Jupyter plugin, so they don't render inline — the docs sync rewrites them to GitHub links, and local `zensical serve` shows them as plain links.
 
 ## Pull Requests
 
