@@ -128,7 +128,9 @@ rec.root_model  # "orders"
 [ip.path for ip in rec.item_paths]  # ["customers.name", "products.category"]
 ```
 
-MCP: `recommend_root_model(items, data_source=None, format="markdown")`. If no single model reaches every item, `root_model` is `None` and `coverage` lists the best partial roots — a hint to split into a multi-stage `source_queries` query.
+Pass `root_hint` (a bare model name or `<data_source>.<model>`) to force an intended root — useful when the host is a bridge model that owns none of the items but matches your grain. It's honored when it reaches every item; otherwise the auto-pick is used and `warnings` says why.
+
+MCP: `recommend_root_model(items, data_source=None, root_hint=None, format="markdown")`. If no single model reaches every item, `root_model` is `None` and `coverage` lists the best partial roots — a hint to split into a multi-stage `source_queries` query.
 
 ## ModelExtension
 
