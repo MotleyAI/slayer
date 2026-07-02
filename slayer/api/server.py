@@ -109,6 +109,12 @@ class ValidateModelsRequest(BaseModel):
     data_source: str | None = None
 
 
+class RecommendRootModelRequest(BaseModel):
+    """Body for ``POST /recommend-root-model``."""
+    items: list[str]
+    data_source: str | None = None
+
+
 class DatasourcePriorityRequest(BaseModel):
     """Body for ``PUT /datasources/priority``. A request model — rather
     than a raw ``Dict[str, List[str]]`` — so OpenAPI advertises the exact
@@ -559,6 +565,25 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 ),
             )
         return [e.model_dump(mode="json") for e in entries]
+
+    @app.post(
+        "/recommend-root-model",
+        responses={400: {"description": "Unresolvable / wrong-kind / cross-datasource items."}},
+    )
+    async def recommend_root_model_endpoint(
+        request: RecommendRootModelRequest,
+    ) -> dict[str, Any]:
+        """Recommend the query ``source_model`` (root) for a set of
+        ``model.column`` / ``model.metric`` items, plus each item's
+        join-qualified path from that root. Read-only."""
+        engine = SlayerQueryEngine(storage=storage)
+        try:
+            rec = await engine.recommend_root_model(
+                request.items, data_source=request.data_source
+            )
+        except (ValueError, SlayerError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return rec.model_dump(mode="json")
 
     @app.post(
         "/ingest",
