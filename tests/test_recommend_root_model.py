@@ -432,6 +432,21 @@ class TestDataSourceAndDedup:
                 ["otherdb.widgets.sku"], data_source="mydb"
             )
 
+    async def test_bare_item_scoped_to_requested_datasource(self, collision_storage) -> None:
+        # 'status' is a column on 'orders' in BOTH mydb and otherdb. A bare
+        # item with data_source must resolve WITHIN that datasource, not via
+        # the global priority list (which could pick the other one and then
+        # spuriously reject the scoped request).
+        eng = SlayerQueryEngine(storage=collision_storage)
+        try:
+            rec_my = await eng.recommend_root_model(["status"], data_source="mydb")
+            rec_other = await eng.recommend_root_model(["status"], data_source="otherdb")
+            assert rec_my.data_source == "mydb" and rec_my.root_model == "orders"
+            assert rec_other.data_source == "otherdb" and rec_other.root_model == "orders"
+            assert _paths(rec_my) == {"status": "status"}
+        finally:
+            await eng.aclose()
+
     async def test_exact_duplicate_input_deduped(self, engine) -> None:
         rec = await engine.recommend_root_model(
             ["orders.status", "orders.status"], data_source="mydb"

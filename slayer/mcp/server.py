@@ -1663,7 +1663,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         engine = SlayerQueryEngine(storage=storage)
         try:
             rec = await engine.recommend_root_model(items, data_source=data_source)
-        except (ValueError, EntityResolutionError, AmbiguousModelError) as exc:
+        except AmbiguousModelError as exc:
+            return _ambiguous_with_mcp_hint(exc)
+        except (ValueError, EntityResolutionError) as exc:
             return f"recommend_root_model failed: {exc}"
         if fmt == "json":
             return json.dumps(rec.model_dump(mode="json"), indent=2)

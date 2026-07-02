@@ -116,7 +116,10 @@ class TestMcpTool:
             blocks, _ = await mcp.call_tool(
                 name="recommend_root_model", arguments={"items": ["orders.status"]},
             )
-            assert "failed" in blocks[0].text.lower()
+            # Routed through the shared MCP ambiguity hint (mentions data_source /
+            # multiple datasources), not a bare "failed" string.
+            text = blocks[0].text.lower()
+            assert "multiple datasources" in text and "data_source" in text
 
 
 class TestRestEndpoint:

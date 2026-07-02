@@ -47,6 +47,7 @@ from slayer.engine.enrichment import enrich_query
 from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.memories.resolver import (
     _all_models_in_datasource,
+    _model_has_leaf,
     resolve_entity,
 )
 from slayer.sql.client import SlayerSQLClient
@@ -1226,6 +1227,34 @@ class SlayerQueryEngine:
     # ------------------------------------------------------------------
     # recommend_root_model (DEV-1626)
     # ------------------------------------------------------------------
+    async def _scope_bare_name_to_datasource(
+        self, *, raw: str, name: str, data_source: str
+    ) -> "tuple[str, str, str]":
+        """Resolve a bare (dotless) item within a single datasource, so the
+        requested ``data_source`` genuinely scopes it (rather than deferring
+        to the global datasource-priority list). Returns ``(ds, model, leaf)``.
+        """
+        models = await _all_models_in_datasource(self.storage, data_source)
+        if any(m.name == name for m in models):
+            raise ValueError(
+                f"'{raw}' resolves to model '{name}' in '{data_source}', which "
+                f"is not a column or metric. recommend_root_model needs "
+                f"'model.column' / 'model.metric' items."
+            )
+        owners = [m for m in models if _model_has_leaf(m, name)]
+        if not owners:
+            raise ValueError(
+                f"'{raw}' does not name a column or metric in datasource "
+                f"'{data_source}'."
+            )
+        if len(owners) > 1:
+            names = sorted(m.name for m in owners)
+            raise ValueError(
+                f"'{raw}' is ambiguous in datasource '{data_source}' — matches "
+                f"{names}. Qualify it as '<model>.{name}'."
+            )
+        return data_source, owners[0].name, name
+
     async def _resolve_recommend_item(
         self, *, raw: str, data_source: str | None, known_dses: set[str]
     ) -> "tuple[_ResolvedItem, list[str]]":
@@ -1236,31 +1265,38 @@ class SlayerQueryEngine:
         malformed / wrong-kind item or a datasource-scope mismatch.
         """
         entity_ref, suffix = split_agg_suffix(raw)
-        # Prefix the requested datasource only when the ref is dotted and
-        # doesn't already lead with a known datasource segment.
-        resolution_input = entity_ref
-        if (
-            data_source
-            and "." in entity_ref
-            and entity_ref.split(".")[0] not in known_dses
-        ):
-            resolution_input = f"{data_source}.{entity_ref}"
-        res = await resolve_entity(resolution_input, storage=self.storage)
-        segs = res.canonical_forms[0].split(".")
-        if len(segs) < 3:
-            raise ValueError(
-                f"'{raw}' resolves to '{res.canonical_forms[0]}', which is "
-                f"not a column or metric. recommend_root_model needs "
-                f"'model.column' / 'model.metric' items."
+        warnings: list[str] = []
+        if data_source and "." not in entity_ref:
+            # Bare name + explicit scope → resolve within the datasource.
+            ds, model_name, leaf = await self._scope_bare_name_to_datasource(
+                raw=raw, name=entity_ref, data_source=data_source,
             )
-        ds, model_name, leaf = segs[0], segs[1], segs[2]
-        # Enforce the requested datasource scope for EVERY item — including
-        # ones that were already datasource-qualified with a different ds.
-        if data_source and ds != data_source:
-            raise ValueError(
-                f"'{raw}' resolves to datasource '{ds}', not the requested "
-                f"'{data_source}'."
-            )
+        else:
+            # Prefix the requested datasource only when the ref is dotted and
+            # doesn't already lead with a known datasource segment.
+            resolution_input = entity_ref
+            if (
+                data_source
+                and entity_ref.split(".")[0] not in known_dses
+            ):
+                resolution_input = f"{data_source}.{entity_ref}"
+            res = await resolve_entity(resolution_input, storage=self.storage)
+            warnings = res.warnings
+            segs = res.canonical_forms[0].split(".")
+            if len(segs) < 3:
+                raise ValueError(
+                    f"'{raw}' resolves to '{res.canonical_forms[0]}', which is "
+                    f"not a column or metric. recommend_root_model needs "
+                    f"'model.column' / 'model.metric' items."
+                )
+            ds, model_name, leaf = segs[0], segs[1], segs[2]
+            # Enforce the requested datasource scope for EVERY item — including
+            # ones already datasource-qualified with a different ds.
+            if data_source and ds != data_source:
+                raise ValueError(
+                    f"'{raw}' resolves to datasource '{ds}', not the requested "
+                    f"'{data_source}'."
+                )
         owning = await self.storage.get_model(model_name, data_source=ds)
         if owning is None:
             raise ValueError(
@@ -1281,7 +1317,7 @@ class SlayerQueryEngine:
             input_item=raw, data_source=ds, model=model_name,
             leaf=leaf, suffix=suffix,
         )
-        return item, res.warnings
+        return item, warnings
 
     async def _recommend_resolve_items(
         self, items: list[str], data_source: str | None
