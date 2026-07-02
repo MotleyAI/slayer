@@ -107,7 +107,6 @@ features = [
   "navigation.top",
   "navigation.expand",
   "navigation.path",
-  "navigation.tabs",
   "toc.follow",
 ]
 logo = "SLayer.png"
