@@ -22,6 +22,7 @@ from slayer.memories.models import (
 
 if TYPE_CHECKING:
     from slayer.core.policy import SessionPolicy
+    from slayer.core.recommend import RootModelRecommendation
     from slayer.search.service import SearchResponse
 
 logger = logging.getLogger(__name__)
@@ -632,6 +633,34 @@ class SlayerClient:
         )
         resp = self._request_sync(method="POST", path="/inspect", json=body)
         return resp["result"]
+
+    async def recommend_root_model(
+        self, items: list[str], *, data_source: str | None = None
+    ) -> "RootModelRecommendation":
+        """Recommend the query ``source_model`` (root) for a set of
+        ``model.column`` / ``model.metric`` items, plus each item's
+        join-qualified path from that root (DEV-1626)."""
+        from slayer.core.recommend import RootModelRecommendation
+
+        if self._engine is not None:
+            return await self._engine.recommend_root_model(
+                items, data_source=data_source
+            )
+        body: dict[str, Any] = {"items": items}
+        if data_source is not None:
+            body["data_source"] = data_source
+        result = await self._request(
+            method="POST", path="/recommend-root-model", json=body
+        )
+        return RootModelRecommendation.model_validate(result)
+
+    def recommend_root_model_sync(
+        self, items: list[str], *, data_source: str | None = None
+    ) -> "RootModelRecommendation":
+        """Synchronous variant of :meth:`recommend_root_model`."""
+        from slayer.async_utils import run_sync
+
+        return run_sync(self.recommend_root_model(items, data_source=data_source))
 
     def query_df(self, query: QueryInput):
         """Execute a query and return a pandas DataFrame (sync).

@@ -128,6 +128,28 @@ def strip_agg_suffix(raw: str) -> tuple[str, str | None]:
     return raw, None
 
 
+def split_agg_suffix(raw: str) -> tuple[str, str | None]:
+    """Return ``(prefix, suffix)`` splitting off a trailing ``:agg`` /
+    ``:agg(...)``, keeping the *full* suffix text (args included).
+
+    Unlike :func:`strip_agg_suffix` (which discards the arglist and returns
+    only the aggregation name), this preserves the entire suffix so callers
+    that re-root a reference can re-attach it verbatim —
+    ``"orders.revenue:weighted_avg(weight=qty)"`` →
+    ``("orders.revenue", "weighted_avg(weight=qty)")``. Returns
+    ``(raw, None)`` when there is no top-level ``:`` aggregation.
+    """
+    depth = 0
+    for i, ch in enumerate(raw):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == ":" and depth == 0:
+            return raw[:i], raw[i + 1:]
+    return raw, None
+
+
 # ---------------------------------------------------------------------------
 # User-input validation
 # ---------------------------------------------------------------------------

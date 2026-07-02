@@ -118,6 +118,18 @@ Reference measures from joined models with dotted syntax + colon aggregation:
 
 A dotted reference may target a *derived* column on the joined model (a column whose own `sql` is itself an expression). The engine recursively inlines the chain at query time — `"B.foo_normalized:sum"` where `B.foo_normalized.sql = "foo_raw / 100.0"` emits `SUM(B.foo_raw / 100.0)`. The same chaining works inside `Column.sql`, `filters`, and `dimensions`. When a filter names a *bare* local derived column whose SQL crosses a join (e.g. `Column(name="is_eu", sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END")` referenced as `"filters": ["is_eu = 1"]`), the planner walks the column's chain and adds the joins the chain implies — no need to also list the column in `dimensions`.
 
+## Picking the root model
+
+Not sure which model to use as `source_model` for a set of columns/metrics? Call `recommend_root_model` with the `model.column` / `model.metric` items you want; it introspects the join graph and returns the recommended root plus each item's join-qualified path from it (aggregation suffixes preserved), ready to drop into a query.
+
+```python
+rec = client.recommend_root_model_sync(["customers.name", "products.category"])
+rec.root_model  # "orders"
+[ip.path for ip in rec.item_paths]  # ["customers.name", "products.category"]
+```
+
+MCP: `recommend_root_model(items, data_source=None, format="markdown")`. If no single model reaches every item, `root_model` is `None` and `coverage` lists the best partial roots — a hint to split into a multi-stage `source_queries` query.
+
 ## ModelExtension
 
 Extend a model inline with extra columns, named-formula measures, joins, or filters. The stored model is not modified:

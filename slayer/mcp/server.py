@@ -21,6 +21,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.recommend import render_recommendation_markdown
 from slayer.engine.ingestion import _friendly_db_error
 from slayer.engine.profiling import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -1624,6 +1625,51 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         except (sa.exc.OperationalError, sa.exc.DatabaseError) as exc:
             return _friendly_db_error(exc)
         return json.dumps([e.model_dump(mode="json") for e in entries], indent=2)
+
+    @mcp.tool()
+    async def recommend_root_model(
+        items: list[str], data_source: str | None = None, format: str = "markdown"  # noqa: A002
+    ) -> str:
+        """Recommend the root model (query ``source_model``) for a set of
+        ``model.column`` / ``model.metric`` items, and give each item's
+        join-qualified reference path from that root.
+
+        Introspects the join graph and picks the model from which every
+        requested item is reachable (LEFT joins are directional; INNER
+        joins traverse both ways), minimizing total join hops. The returned
+        paths are ready to drop into a query whose ``source_model`` is the
+        recommended root — e.g. a joined column comes back as
+        ``customers.regions.name`` and a root-owned one as ``status``;
+        aggregation suffixes (``:sum``) are preserved.
+
+        When no single model reaches everything, ``root_model`` is null and
+        ``coverage`` lists the best partial roots so you can split the
+        request into a multi-stage query.
+
+        Args:
+            items: entity references (``orders.revenue``, ``customers.name``,
+                ``orders.revenue:sum``, bare ``aov`` for a saved metric...).
+            data_source: optional datasource scope; when omitted, names
+                resolve via the datasource-priority list. All items must
+                resolve to a single datasource.
+            format: ``"markdown"`` (default) or ``"json"``.
+        """
+        fmt = format.lower().strip()
+        if fmt not in ("markdown", "json"):
+            return (
+                f"recommend_root_model failed: unknown format '{format}'. "
+                f"Use 'markdown' or 'json'."
+            )
+        engine = SlayerQueryEngine(storage=storage)
+        try:
+            rec = await engine.recommend_root_model(items, data_source=data_source)
+        except AmbiguousModelError as exc:
+            return _ambiguous_with_mcp_hint(exc)
+        except (ValueError, EntityResolutionError) as exc:
+            return f"recommend_root_model failed: {exc}"
+        if fmt == "json":
+            return json.dumps(rec.model_dump(mode="json"), indent=2)
+        return render_recommendation_markdown(rec)
 
     @mcp.tool()
     async def delete_datasource(name: str) -> str:

@@ -306,6 +306,37 @@ examples:
     )
     _add_storage_arg(validate_parser)
 
+    # ── recommend-root-model ──────────────────────────────────────────
+    recommend_parser = subparsers.add_parser(
+        "recommend-root-model",
+        help="Recommend a query root model + join paths for a set of items",
+        epilog="""\
+examples:
+  slayer recommend-root-model orders.revenue customers.name
+  slayer recommend-root-model customers.name products.category --data-source my_pg
+  slayer recommend-root-model orders.revenue:sum regions.name --format json
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    recommend_parser.add_argument(
+        "items",
+        nargs="+",
+        help="model.column / model.metric items (aggregation suffixes allowed)",
+    )
+    recommend_parser.add_argument(
+        "--data-source",
+        dest="data_source",
+        default=None,
+        help="Datasource scope. If omitted, names resolve via the priority list.",
+    )
+    recommend_parser.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text).",
+    )
+    _add_storage_arg(recommend_parser)
+
     # ── import-dbt ────────────────────────────────────────────────────
     import_dbt_parser = subparsers.add_parser(
         "import-dbt",
@@ -764,6 +795,8 @@ examples:
         _run_ingest(args)
     elif args.command == "validate-models":
         _run_validate_models(args)
+    elif args.command == "recommend-root-model":
+        _run_recommend_root_model(args)
     elif args.command == "import-dbt":
         _run_import_dbt(args)
     elif args.command == "models":
@@ -1385,6 +1418,27 @@ def _run_validate_models(args):
     if result.errors:
         sys.exit(1)
     print("\n✓ no remaining drift")
+
+
+def _run_recommend_root_model(args):
+    import json as _json
+
+    from slayer.core.recommend import render_recommendation_markdown
+    from slayer.engine.query_engine import SlayerQueryEngine
+
+    storage = _resolve_storage(args)
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        rec = engine.recommend_root_model_sync(
+            args.items, data_source=args.data_source
+        )
+    except Exception as exc:  # noqa: BLE001 — surface resolution/validation errors cleanly
+        print(f"recommend-root-model failed: {exc}")
+        sys.exit(1)
+    if args.format == "json":
+        print(_json.dumps(rec.model_dump(mode="json"), indent=2))
+    else:
+        print(render_recommendation_markdown(rec))
 
 
 def _run_import_dbt(args):
