@@ -599,7 +599,7 @@ class TestRootHint:
         )
         assert bare.root_model == qualified.root_model == "orders"
 
-    async def test_sync_wrapper_forwards_root_hint(self, storage) -> None:
+    def test_sync_wrapper_forwards_root_hint(self, storage) -> None:
         eng = SlayerQueryEngine(storage=storage)
         rec = eng.recommend_root_model_sync(
             ["customers.name", "regions.name"], root_hint="orders"

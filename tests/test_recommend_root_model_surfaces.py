@@ -329,10 +329,10 @@ class TestRootHintSurfaces:
     async def test_client_remote_sends_root_hint_only_when_set(self) -> None:
         from slayer.client.slayer_client import SlayerClient
 
-        client = SlayerClient(url="http://testserver")
+        client = SlayerClient(url="https://testserver")
         captured: list[dict] = []
 
-        async def fake_request(method, path, json=None, params=None):
+        async def fake_request(method, path, json=None, params=None):  # NOSONAR(S7503) — async required: stub is awaited via client._request
             captured.append(json or {})
             return {
                 "data_source": "mydb", "root_model": "orders",
