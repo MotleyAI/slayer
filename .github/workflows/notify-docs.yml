@@ -1,0 +1,43 @@
+name: Notify docs site of release
+
+# When a GitHub Release is published, tell the combined product-docs site
+# (MotleyAI/motley-docs) to pull this release's docs + navigation and
+# republish https://docs.motley.ai/slayer.
+#
+
+on:
+  release:
+    types: [published]
+  # Allow re-triggering a sync by hand (e.g. after fixing the docs repo).
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "SLayer git ref to sync (tag/branch)"
+        required: true
+        default: main
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Mint installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.MOTLEY_DOCS_APP_ID }}
+          private-key: ${{ secrets.MOTLEY_DOCS_APP_PRIVATE_KEY }}
+          owner: MotleyAI
+          repositories: motley-docs
+          permission-contents: write
+          permission-metadata: read
+
+      - name: Trigger motley-docs sync
+        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          repository: MotleyAI/motley-docs
+          event-type: slayer-release
+          client-payload: |
+            {"ref": "${{ github.event.release.tag_name || inputs.ref }}"}

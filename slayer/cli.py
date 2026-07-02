@@ -111,7 +111,7 @@ common workflows:
   slayer serve --storage slayer.db
   slayer ingest --datasource my_pg --storage slayer.db
 
-docs: https://motley-slayer.readthedocs.io/
+docs: https://docs.motley.ai/slayer/
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
