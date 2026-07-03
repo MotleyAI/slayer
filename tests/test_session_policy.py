@@ -13,9 +13,15 @@ confirmed -> fail closed regardless of ``on_unapplicable``).
 
 import sqlglot
 import pytest
+from sqlglot import exp
 
 from slayer.core.errors import ForcedFilterError
-from slayer.core.policy import ColumnFilterRule, SessionPolicy
+from slayer.core.policy import (
+    ColumnFilterRule,
+    JoinFilterRule,
+    JoinHop,
+    SessionPolicy,
+)
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 
 
@@ -484,3 +490,505 @@ def test_bigquery_dialect_wraps():
     assert "WHERE org = 'x'" in out
     # round-trips as valid bigquery SQL
     assert sqlglot.parse_one(out, dialect="bigquery") is not None
+
+
+# ===========================================================================
+# JoinFilterRule — correlated-EXISTS rewrite (DEV-1627)
+# ===========================================================================
+
+
+def _hop(**kw):
+    base = dict(
+        from_table="orders",
+        from_column="customer_id",
+        to_table="customers",
+        to_column="id",
+    )
+    base.update(kw)
+    return JoinHop(**base)
+
+
+def _single_hop_rule(**kw):
+    base = dict(
+        target_table="orders",
+        join_path=[_hop()],
+        column="organization_uuid",
+        value="orgA",
+    )
+    base.update(kw)
+    return JoinFilterRule(**base)
+
+
+# Mandatory block backstop (DEV-1627, decision 5): a policy with any join rule
+# must also carry a block column rule. In single-target tests the target table
+# overrides this column rule (never consulted), so behaviour is unchanged.
+_BACKSTOP = ColumnFilterRule(name="backstop", column="organization_uuid", value="orgA")
+
+
+def _jpolicy(*rules):
+    """SessionPolicy carrying the mandatory block backstop plus the join
+    rule(s) under test."""
+    return SessionPolicy(data_filters=[_BACKSTOP, *rules])
+
+
+def _exists_nodes(sql, dialect="sqlite"):
+    return list(sqlglot.parse_one(sql, dialect=dialect).find_all(exp.Exists))
+
+
+# -- basic shape -------------------------------------------------------------
+
+
+def test_single_hop_emits_correlated_exists():
+    policy = _jpolicy(_single_hop_rule())
+    out = apply_session_policy(
+        "SELECT * FROM orders",
+        dialect="sqlite",
+        policy=policy,
+        has_column=ALWAYS,  # never consulted for a join-targeted table
+    )
+    parsed = sqlglot.parse_one(out, dialect="sqlite")
+    exists = parsed.find_all(exp.Exists)
+    exists = list(exists)
+    assert len(exists) == 1
+    body = exists[0].this
+    # EXISTS body selects from the first hop's to_table (customers)
+    assert body.find(exp.Table).name == "customers"
+    # terminal tenant predicate is present
+    assert "organization_uuid = 'orgA'" in out
+    # correlation: the wrapped table's from_column appears in the EXISTS body
+    assert "customer_id" in body.sql()
+    # semi-join, not a cardinality-changing JOIN in the outer query
+    assert parsed.find(exp.Join) is None
+    # outer wrap alias preserved
+    assert out.rstrip().endswith("AS orders")
+
+
+def test_join_rule_does_not_consult_has_column():
+    """Join-targeted tables need no column-presence probe (override)."""
+    called = {"n": 0}
+
+    def has_column(scoped, column):
+        called["n"] += 1
+        return True
+
+    policy = _jpolicy(_single_hop_rule())
+    apply_session_policy(
+        "SELECT * FROM orders",
+        dialect="sqlite",
+        policy=policy,
+        has_column=has_column,
+    )
+    assert called["n"] == 0
+
+
+def test_single_hop_scalar_terminal_is_equality():
+    policy = _jpolicy(_single_hop_rule(value="orgA"))
+    out = apply_session_policy(
+        "SELECT * FROM orders", dialect="sqlite", policy=policy, has_column=ALWAYS
+    )
+    assert "organization_uuid = 'orgA'" in out
+    assert " IN " not in out.upper()
+
+
+def test_single_hop_list_terminal_is_in():
+    policy = _jpolicy(_single_hop_rule(value=["orgA", "orgB"]))
+    out = apply_session_policy(
+        "SELECT * FROM orders", dialect="sqlite", policy=policy, has_column=ALWAYS
+    )
+    body = _exists_nodes(out)[0].this
+    in_node = body.find(exp.In)
+    assert in_node is not None
+    assert {e.this for e in in_node.expressions} == {"orgA", "orgB"}
+
+
+def test_multihop_emits_chained_joins_terminal_on_last():
+    rule = JoinFilterRule(
+        target_table="line_items",
+        join_path=[
+            JoinHop(
+                from_table="line_items",
+                from_column="order_id",
+                to_table="orders",
+                to_column="id",
+            ),
+            JoinHop(
+                from_table="orders",
+                from_column="customer_id",
+                to_table="customers",
+                to_column="id",
+            ),
+        ],
+        column="organization_uuid",
+        value="orgA",
+    )
+    policy = _jpolicy(rule)
+    out = apply_session_policy(
+        "SELECT * FROM line_items",
+        dialect="sqlite",
+        policy=policy,
+        has_column=ALWAYS,
+    )
+    body = _exists_nodes(out)[0].this
+    # body has an inner JOIN for the second hop
+    assert body.find(exp.Join) is not None
+    # body references all three physical tables
+    body_tables = {t.name for t in body.find_all(exp.Table)}
+    assert body_tables == {"orders", "customers"}
+    # first hop table + line_items correlation are present
+    assert "order_id" in body.sql()
+    # terminal predicate lives on the LAST hop's table (customers), structurally
+    customers_tbl = next(t for t in body.find_all(exp.Table) if t.name == "customers")
+    last_alias = customers_tbl.alias_or_name
+    term = next(
+        eq
+        for eq in body.find_all(exp.EQ)
+        if isinstance(eq.expression, exp.Literal) and eq.expression.this == "orgA"
+    )
+    assert isinstance(term.this, exp.Column)
+    assert term.this.name == "organization_uuid"
+    assert term.this.table == last_alias  # NOT the intermediate "orders" hop
+    # still a semi-join on the outer query: the multihop JOIN lives INSIDE the
+    # EXISTS body, never at the outer query level (the chained hop join is a
+    # correlated-subquery detail, not a cardinality-changing outer join).
+    outer = sqlglot.parse_one(out, dialect="sqlite")
+    assert not outer.args.get("joins")
+    assert out.rstrip().endswith("AS line_items")
+
+
+def test_multiple_join_rules_same_table_and_combined():
+    """Two join rules targeting the same table emit two EXISTS predicates,
+    AND-combined in the wrapper WHERE."""
+    rule_a = _single_hop_rule(name="by_customer")
+    rule_b = JoinFilterRule(
+        name="by_region",
+        target_table="orders",
+        join_path=[
+            JoinHop(
+                from_table="orders",
+                from_column="region_id",
+                to_table="regions",
+                to_column="id",
+            )
+        ],
+        column="organization_uuid",
+        value="orgA",
+    )
+    policy = _jpolicy(rule_a, rule_b)
+    out = apply_session_policy(
+        "SELECT * FROM orders", dialect="sqlite", policy=policy, has_column=ALWAYS
+    )
+    parsed = sqlglot.parse_one(out, dialect="sqlite")
+    exists = list(parsed.find_all(exp.Exists))
+    assert len(exists) == 2  # one per rule, AND-combined
+    body_tables = {t.name for e in exists for t in e.this.find_all(exp.Table)}
+    assert body_tables == {"customers", "regions"}
+
+
+# -- override precedence -----------------------------------------------------
+
+
+def test_join_rule_overrides_column_rule_on_target_table():
+    """A table targeted by a join rule is scoped ONLY by the join (no column
+    wrap), even when a column rule would otherwise apply."""
+    policy = SessionPolicy(
+        data_filters=[
+            ColumnFilterRule(column="organization_uuid", value="orgA"),
+            _single_hop_rule(),
+        ]
+    )
+    out = apply_session_policy(
+        "SELECT * FROM orders",
+        dialect="sqlite",
+        policy=policy,
+        has_column=ALWAYS,
+    )
+    # the join EXISTS is emitted
+    assert len(_exists_nodes(out)) == 1
+    # the column rule did NOT also wrap orders with a bare WHERE org = ...
+    # (only the terminal predicate inside EXISTS carries organization_uuid)
+    assert out.count("organization_uuid = 'orgA'") == 1
+
+
+def test_left_join_targeted_table_on_right_side_preserved():
+    """A join-targeted table on the nullable/right side of a LEFT JOIN stays a
+    LEFT JOIN in the outer query (wrapped, not converted to INNER)."""
+    policy = _jpolicy(_single_hop_rule(target_table="orders"))
+    out = apply_session_policy(
+        "SELECT * FROM customers c LEFT JOIN orders o ON o.customer_id = c.id",
+        dialect="sqlite",
+        policy=policy,
+        has_column=lambda scoped, column: True,
+    )
+    parsed = sqlglot.parse_one(out, dialect="sqlite")
+    join = parsed.find(exp.Join)
+    assert (join.args.get("side") or "").upper() == "LEFT"  # not INNER
+    # orders wrapped with EXISTS on the right side
+    assert len(list(parsed.find_all(exp.Exists))) == 1
+
+
+def test_sql_mode_inner_target_wrapped_outer_untouched():
+    """A join-targeted physical table nested inside a query-backed/sql-mode
+    subquery is wrapped with EXISTS; the outer alias is left alone."""
+    policy = _jpolicy(_single_hop_rule(target_table="orders"))
+    out = apply_session_policy(
+        "SELECT * FROM (SELECT * FROM orders) AS m",
+        dialect="sqlite",
+        policy=policy,
+        has_column=ALWAYS,
+    )
+    assert len(_exists_nodes(out)) == 1
+    assert out.rstrip().endswith("AS m")  # outer query-backed alias preserved
+
+
+def test_sibling_table_still_column_filtered():
+    """A non-targeted sibling in the same query still gets the column wrap."""
+    policy = SessionPolicy(
+        data_filters=[
+            ColumnFilterRule(column="organization_uuid", value="orgA"),
+            _single_hop_rule(),  # targets orders only
+        ]
+    )
+    out = apply_session_policy(
+        "SELECT * FROM orders o "
+        "LEFT JOIN customers c ON c.id = o.customer_id",
+        dialect="sqlite",
+        policy=policy,
+        has_column=ALWAYS,
+    )
+    # orders -> EXISTS; customers (the JOINed sibling) -> plain column wrap
+    assert len(_exists_nodes(out)) == 1
+    assert (
+        "(SELECT * FROM customers WHERE organization_uuid = 'orgA') AS c"
+        in out
+    )
+
+
+def test_untargeted_columnless_table_still_blocks():
+    """The column-rule block backstop still fires for a table that is neither
+    targeted by a join rule nor has the column."""
+    policy = SessionPolicy(
+        data_filters=[
+            ColumnFilterRule(name="tenant", column="organization_uuid", value="orgA"),
+            _single_hop_rule(),  # targets orders, not exchange_rates
+        ]
+    )
+    has_column = has_column_factory({"exchange_rates": {"rate", "day"}})
+    with pytest.raises(ForcedFilterError) as exc:
+        apply_session_policy(
+            "SELECT * FROM exchange_rates",
+            dialect="sqlite",
+            policy=policy,
+            has_column=has_column,
+        )
+    assert exc.value.table == "exchange_rates"
+
+
+# -- table-identity matching -------------------------------------------------
+
+
+def test_target_match_is_case_insensitive():
+    policy = _jpolicy(_single_hop_rule(target_table="ORDERS"))
+    out = apply_session_policy(
+        "SELECT * FROM orders", dialect="sqlite", policy=policy, has_column=ALWAYS
+    )
+    assert len(_exists_nodes(out)) == 1
+
+
+def test_qualified_target_matches_only_matching_schema():
+    """A schema-qualified target matches the same-schema table only."""
+    rule = _single_hop_rule(
+        target_table="public.orders",
+        join_path=[_hop(from_table="public.orders")],
+    )
+    policy = _jpolicy(rule)
+    # matching schema -> EXISTS emitted
+    out_match = apply_session_policy(
+        "SELECT * FROM public.orders",
+        dialect="postgres",
+        policy=policy,
+        has_column=ALWAYS,
+    )
+    assert len(_exists_nodes(out_match, dialect="postgres")) == 1
+
+
+def test_qualified_target_does_not_match_other_schema():
+    """A public.orders rule must not fire on archive.orders (Codex #1)."""
+    rule = _single_hop_rule(
+        target_table="public.orders",
+        join_path=[_hop(from_table="public.orders")],
+    )
+    policy = _jpolicy(rule)
+    # different schema: join rule doesn't match; column path applies instead.
+    # has_column confirms the column is absent -> block (proves the join rule
+    # did NOT silently scope archive.orders).
+    has_column = has_column_factory({"orders": {"id", "customer_id"}})
+    with pytest.raises(ForcedFilterError):
+        apply_session_policy(
+            "SELECT * FROM archive.orders",
+            dialect="postgres",
+            policy=policy,
+            has_column=has_column,
+        )
+
+
+def test_bare_target_matches_any_schema():
+    """A bare target name matches the table in any schema."""
+    policy = _jpolicy(_single_hop_rule(target_table="orders"))
+    out = apply_session_policy(
+        "SELECT * FROM public.orders",
+        dialect="postgres",
+        policy=policy,
+        has_column=ALWAYS,
+    )
+    assert len(_exists_nodes(out, dialect="postgres")) == 1
+
+
+# -- repeated physical tables (diamond joins / self-joins) -------------------
+
+
+def test_diamond_repeated_table_each_occurrence_gets_own_exists():
+    """The same physical table reached via two path-aliases is wrapped twice,
+    each with an independently-correlated EXISTS (deterministic aliasing)."""
+    policy = _jpolicy(_single_hop_rule(target_table="orders"))
+    out = apply_session_policy(
+        "SELECT * FROM orders a JOIN orders b ON a.id = b.id",
+        dialect="sqlite",
+        policy=policy,
+        has_column=ALWAYS,
+    )
+    parsed = sqlglot.parse_one(out, dialect="sqlite")
+    # two EXISTS (one per occurrence), both outer aliases preserved
+    assert len(list(parsed.find_all(exp.Exists))) == 2
+    assert out.count("AS a") >= 1
+    assert "AS b" in out
+    # Each wrapped occurrence carries its OWN EXISTS, lexically scoped to its
+    # own inner base table (correlation can't cross into the sibling wrap).
+    subqueries = [
+        s
+        for s in parsed.find_all(exp.Subquery)
+        if s.this.find(exp.Exists) is not None
+    ]
+    assert len(subqueries) == 2
+    for sub in subqueries:
+        # the correlated EXISTS lives inside this subquery's own scope
+        exists = sub.this.find(exp.Exists)
+        assert exists is not None
+        # the subquery wraps a single physical `orders`
+        assert sub.this.find(exp.Table).name == "orders"
+    # SQL re-parses cleanly (no ambiguous correlation)
+    assert parsed is not None
+
+
+# -- CTE coverage ------------------------------------------------------------
+
+
+def test_join_rule_fires_inside_cte():
+    """A physical target table inside a CTE body is wrapped with EXISTS too."""
+    policy = _jpolicy(_single_hop_rule(target_table="orders"))
+    out = apply_session_policy(
+        "WITH _cm_x AS (SELECT * FROM orders) SELECT * FROM _cm_x",
+        dialect="sqlite",
+        policy=policy,
+        has_column=ALWAYS,
+    )
+    assert len(_exists_nodes(out)) == 1
+    # the CTE reference itself is not wrapped
+    assert "organization_uuid = 'orgA'" in out
+
+
+# -- injection safety --------------------------------------------------------
+
+
+def test_join_terminal_value_is_injection_safe():
+    policy = _jpolicy(_single_hop_rule(value="x' OR '1'='1"))
+    out = apply_session_policy(
+        "SELECT * FROM orders", dialect="sqlite", policy=policy, has_column=ALWAYS
+    )
+    reparsed = sqlglot.parse_one(out, dialect="sqlite")
+    # no injected OR leaks into the AST; the value is a single quoted literal
+    body = list(reparsed.find_all(exp.Exists))[0].this
+    assert body.find(exp.Or) is None
+    assert "'x'' OR ''1''=''1'" in out
+
+
+def test_join_identifiers_are_structural_not_raw():
+    """A hop/column identifier containing a dot is quoted as one identifier,
+    never spliced into the SQL as a qualified path."""
+    rule = _single_hop_rule(
+        join_path=[_hop(to_column="weird.id")],
+    )
+    policy = _jpolicy(rule)
+    out = apply_session_policy(
+        "SELECT * FROM orders", dialect="sqlite", policy=policy, has_column=ALWAYS
+    )
+    # emitted as a single quoted identifier, not as table.column
+    assert '"weird.id"' in out
+
+
+# -- ClickHouse correlated-subquery handling ---------------------------------
+
+
+def test_clickhouse_join_appends_settings_and_calls_hook():
+    called = {"n": 0}
+
+    def hook():
+        called["n"] += 1
+
+    policy = _jpolicy(_single_hop_rule())
+    out = apply_session_policy(
+        "SELECT * FROM orders",
+        dialect="clickhouse",
+        policy=policy,
+        has_column=ALWAYS,
+        on_correlated_emitted=hook,
+    )
+    assert "allow_experimental_correlated_subqueries" in out
+    assert called["n"] == 1
+    # structurally valid ClickHouse SQL with the setting attached at the
+    # statement level (not spliced into a comment/wrong clause)
+    parsed = sqlglot.parse_one(out, dialect="clickhouse")
+    settings = parsed.args.get("settings")
+    assert settings
+    assert any(
+        "allow_experimental_correlated_subqueries" in s.sql() for s in settings
+    )
+
+
+def test_non_clickhouse_join_calls_hook_no_settings():
+    """The hook fires on any dialect when an EXISTS is emitted, but the
+    SETTINGS clause is ClickHouse-only."""
+    called = {"n": 0}
+
+    def hook():
+        called["n"] += 1
+
+    policy = _jpolicy(_single_hop_rule())
+    out = apply_session_policy(
+        "SELECT * FROM orders",
+        dialect="sqlite",
+        policy=policy,
+        has_column=ALWAYS,
+        on_correlated_emitted=hook,
+    )
+    assert "allow_experimental_correlated_subqueries" not in out
+    assert called["n"] == 1
+
+
+def test_clickhouse_column_only_does_not_append_settings_or_call_hook():
+    called = {"n": 0}
+
+    def hook():
+        called["n"] += 1
+
+    policy = SessionPolicy(
+        data_filters=[ColumnFilterRule(column="organization_uuid", value="orgA")]
+    )
+    out = apply_session_policy(
+        "SELECT * FROM orders",
+        dialect="clickhouse",
+        policy=policy,
+        has_column=ALWAYS,
+        on_correlated_emitted=hook,
+    )
+    assert "allow_experimental_correlated_subqueries" not in out
+    assert called["n"] == 0

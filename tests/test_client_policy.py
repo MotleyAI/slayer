@@ -9,7 +9,12 @@ rather than silently ignoring the security control.
 import pytest
 
 from slayer.client.slayer_client import SlayerClient
-from slayer.core.policy import ColumnFilterRule, SessionPolicy
+from slayer.core.policy import (
+    ColumnFilterRule,
+    JoinFilterRule,
+    JoinHop,
+    SessionPolicy,
+)
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -46,3 +51,40 @@ def test_no_policy_local_mode_ok(tmp_path):
     client = SlayerClient(storage=storage)
     assert client._engine is not None
     assert client._engine.policy is None
+
+
+def _join_policy():
+    return SessionPolicy(
+        data_filters=[
+            # Mandatory block backstop (DEV-1627): a join-rule policy must
+            # carry at least one block column rule.
+            ColumnFilterRule(column="organization_uuid", value="7ef3"),
+            JoinFilterRule(
+                target_table="orders",
+                join_path=[
+                    JoinHop(
+                        from_table="orders",
+                        from_column="customer_id",
+                        to_table="customers",
+                        to_column="id",
+                    )
+                ],
+                column="organization_uuid",
+                value="7ef3",
+            )
+        ]
+    )
+
+
+def test_join_policy_forwarded_to_local_engine(tmp_path):
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    policy = _join_policy()
+    client = SlayerClient(storage=storage, policy=policy)
+    assert client._engine.policy is policy
+
+
+def test_join_policy_without_storage_fails_fast():
+    with pytest.raises(ValueError):
+        SlayerClient(policy=_join_policy())  # HTTP mode + policy -> not supported

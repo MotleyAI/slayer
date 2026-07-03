@@ -94,6 +94,92 @@ Rules compose with `AND` inside each table's filter. Each rule's
 whose column is missing fails the query even if another rule applied to the
 same table.
 
+## Join-based rules
+
+When the tenant column lives on **only one** table, other tables reach it via
+a join **stated explicitly in the policy**. A `JoinFilterRule` scopes its
+`target_table` by walking an authored `join_path` to the tenant column and
+emitting a correlated `EXISTS` semi-join — cardinality-safe (it never
+multiplies rows) and `LEFT JOIN`-preserving.
+
+The join path is stated in **physical DB table/column names** (not model
+names). The first hop starts at `target_table`; each later hop starts where
+the previous one ended; `column` is the tenant column on the **last** hop's
+`to_table`. The path may be multihop.
+
+```python
+from slayer.core.policy import (
+    SessionPolicy, ColumnFilterRule, JoinFilterRule, JoinHop,
+)
+
+policy = SessionPolicy(data_filters=[
+    # Mandatory block backstop (see below): customers carries the column.
+    ColumnFilterRule(column="organization_uuid", value="7ef3..."),
+    # orders lacks the column -> reach it via orders.customer_id = customers.id
+    JoinFilterRule(
+        target_table="orders",
+        join_path=[JoinHop(
+            from_table="orders", from_column="customer_id",
+            to_table="customers", to_column="id",
+        )],
+        column="organization_uuid", value="7ef3...",
+    ),
+    # line_items reaches it multihop: line_items -> orders -> customers
+    JoinFilterRule(
+        target_table="line_items",
+        join_path=[
+            JoinHop(from_table="line_items", from_column="order_id",
+                    to_table="orders", to_column="id"),
+            JoinHop(from_table="orders", from_column="customer_id",
+                    to_table="customers", to_column="id"),
+        ],
+        column="organization_uuid", value="7ef3...",
+    ),
+])
+```
+
+`orders` is now scoped to:
+
+```sql
+FROM (SELECT * FROM orders AS _rls_src
+      WHERE EXISTS (
+        SELECT 1 FROM customers AS _rls_j0
+        WHERE _rls_j0.id = _rls_src.customer_id
+          AND _rls_j0.organization_uuid = '7ef3...'
+      )) AS orders
+```
+
+Table fields may be schema-qualified (`public.orders`): a qualified target
+matches only the same-schema table, a bare target matches any schema
+(case-insensitive). `value` selects the operator exactly like a column rule
+(scalar → `=`, non-empty list → `IN`).
+
+### Override precedence
+
+If any join rule targets a table, that table is scoped **only** by its join
+rule(s); column rules do not touch it, and its column presence is never
+probed. Everything else falls under the column rules. So a `target_table` that
+lacks the tenant column is rescued by its join rule instead of being blocked.
+
+### Mandatory block backstop
+
+A policy that contains any `JoinFilterRule` **must** also contain at least one
+`ColumnFilterRule` with `on_unapplicable="block"`. Construction raises
+otherwise. Rationale: under the override model a table is emitted unfiltered
+only when no rule produces a predicate for it — including a table the operator
+*forgot* to write a join rule for. The `block` backstop makes every untargeted
+table either filtered (it has the column) or fail-closed (it does not), so
+nothing leaks.
+
+### ClickHouse
+
+Correlated subqueries are experimental on ClickHouse and require **server
+≥ 25.4**. When a join rule fires on ClickHouse, SLayer probes the server
+version once per datasource, attaches
+`SETTINGS allow_experimental_correlated_subqueries = 1`, and logs a warning.
+An older (or undeterminable) server version **fails closed** — the query is
+blocked rather than run unscoped.
+
 ## How it works
 
 The filter is applied at the final-SQL layer: each physical-table reference
@@ -122,8 +208,11 @@ exactly the SQL that would execute, including the wraps.
 - It is enforced in the **local engine** only. Passing `policy=` to a
   `SlayerClient` in HTTP mode raises — server-side policy is not yet
   available.
-- Only the column-filter rule kind exists. Join-path rules (auto-filtering by
-  walking a join to a tenant table) are out of scope for v1.
+- Two rule kinds exist: `ColumnFilterRule` and `JoinFilterRule` (above). Join
+  paths are **explicit** (authored in the policy), never auto-discovered from
+  model joins or BFS-resolved. Alternate-column-per-table overrides,
+  composite-key hops (one column pair per hop), and auto/BFS join resolution
+  are out of scope.
 - The wrapper preserves each table's original alias (or the bare table name if
   no alias was written). SLayer-generated SQL references columns by table
   alias, so this is transparent. A hand-written `sql`-mode model that
