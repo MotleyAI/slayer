@@ -112,6 +112,12 @@ def test_info_schema_returns_info_schema_result(dialect) -> None:
     [
         ("BEGIN", "BEGIN"),
         ("START TRANSACTION", "START TRANSACTION"),
+        # Characteristic forms sqlglot can't parse — BI tools (Metabase) wrap
+        # reads in these; the facade recognises them pre-parse (DEV-1594).
+        ("BEGIN READ ONLY", "BEGIN"),
+        ("BEGIN TRANSACTION READ ONLY", "BEGIN"),
+        ("START TRANSACTION READ ONLY", "START TRANSACTION"),
+        ("START TRANSACTION ISOLATION LEVEL SERIALIZABLE", "START TRANSACTION"),
         ("COMMIT", "COMMIT"),
         ("ROLLBACK", "ROLLBACK"),
         ("SET timezone = 'UTC'", "SET"),
@@ -132,6 +138,15 @@ def test_show_statement_is_noop_with_tag(dialect) -> None:
     result = translate(sql="SHOW search_path", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, NoOpResult)
     assert result.command_tag == "SHOW"
+
+
+def test_transaction_open_shim_does_not_over_match() -> None:
+    from slayer.facade.translator import _classify_transaction_open
+
+    # Not transaction-opens: a word merely starting with "begin", and real SQL.
+    assert _classify_transaction_open("BEGINNER") is None
+    assert _classify_transaction_open("SELECT * FROM begin_events") is None
+    assert _classify_transaction_open("COMMIT") is None
 
 
 def test_command_fallback_warning_suppressed_during_translate(dialect, caplog) -> None:
