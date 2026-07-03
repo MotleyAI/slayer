@@ -260,15 +260,21 @@ _CH_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
 def _settings_holder(ast: exp.Expression) -> exp.Expression:
     """Return the node carrying (or that should carry) this statement's
     ClickHouse ``SETTINGS``. sqlglot parks a trailing ``SETTINGS`` on the last
-    ``SELECT`` of an unparenthesised ``UNION`` rather than on the set-operation
-    root, so honour that placement when it exists; otherwise use the root (so
-    appending never produces two ``SETTINGS`` clauses)."""
+    branch ``SELECT`` of an unparenthesised ``UNION`` rather than on the
+    set-operation root, so honour that placement when it exists; otherwise use
+    the root (so appending never produces two ``SETTINGS`` clauses).
+
+    Only the set-operation's **own right spine** is followed — never a nested
+    subquery in a ``FROM`` clause, whose ``SETTINGS`` is local to that rowset
+    and must not receive the statement-level correlated-subquery flag."""
     if ast.args.get("settings"):
         return ast
     if isinstance(ast, exp.SetOperation):
-        for select in reversed(list(ast.find_all(exp.Select))):
-            if select.args.get("settings"):
-                return select
+        node: exp.Expression = ast
+        while isinstance(node, exp.SetOperation):
+            node = node.expression  # right branch owns the trailing SETTINGS
+        if node.args.get("settings"):
+            return node
     return ast
 
 

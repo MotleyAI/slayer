@@ -1003,6 +1003,29 @@ def test_clickhouse_correlated_setting_single_clause_on_union():
     assert sqlglot.parse_one(out, dialect="clickhouse") is not None  # re-parses
 
 
+def test_clickhouse_correlated_setting_targets_outer_not_nested_subquery():
+    """A SETTINGS clause on a subquery nested in a UNION branch's FROM is NOT
+    where the statement-level flag belongs — it must land on the outer union so
+    the correlated EXISTS actually runs with the setting enabled."""
+    ast = sqlglot.parse_one(
+        "SELECT * FROM orders UNION ALL "
+        "SELECT * FROM (SELECT * FROM x SETTINGS max_threads = 2) s",
+        dialect="clickhouse",
+    )
+    _attach_ch_correlated_setting(ast)
+    # the OUTER union statement (not the nested subquery) carries our setting
+    outer_settings = ast.args.get("settings") or []
+    assert any(
+        "allow_experimental_correlated_subqueries" in s.sql() for s in outer_settings
+    )
+    # the nested subquery's own SETTINGS is untouched (still just max_threads)
+    nested = ast.find(exp.Subquery).this
+    nested_settings = " ".join(s.sql() for s in (nested.args.get("settings") or []))
+    assert "max_threads" in nested_settings
+    assert "allow_experimental_correlated_subqueries" not in nested_settings
+    assert sqlglot.parse_one(ast.sql(dialect="clickhouse"), dialect="clickhouse")
+
+
 def test_non_clickhouse_join_calls_hook_no_settings():
     """The hook fires on any dialect when an EXISTS is emitted, but the
     SETTINGS clause is ClickHouse-only."""
