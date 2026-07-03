@@ -154,6 +154,19 @@ matches only the same-schema table, a bare target matches any schema
 (case-insensitive). `value` selects the operator exactly like a column rule
 (scalar → `=`, non-empty list → `IN`).
 
+!!! warning "Multiple schemas: qualify every table"
+    The join path is emitted verbatim from the physical names you author. A
+    **bare** hop table (`customers`) resolves against the connection's default
+    schema / search path — *not* the schema of the matched target. So if a bare
+    target (`orders`) matches `archive.orders` in a query while the hop says
+    bare `customers`, the semi-join correlates against the default-schema
+    `customers`, which may be the wrong table. When your tenant data spans more
+    than one schema, **schema-qualify both the `target_table` and every hop
+    table** (`archive.orders`, `archive.customers`). The rewrite trusts the
+    authored path and does not introspect it; a mismatched path can only
+    over-filter / mis-scope (the terminal tenant predicate is always emitted) —
+    it cannot mass-leak — but it can silently return the wrong rows.
+
 ### Override precedence
 
 If any join rule targets a table, that table is scoped **only** by its join

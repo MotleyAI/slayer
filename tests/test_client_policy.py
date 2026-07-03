@@ -86,5 +86,6 @@ def test_join_policy_forwarded_to_local_engine(tmp_path):
 
 
 def test_join_policy_without_storage_fails_fast():
+    policy = _join_policy()
     with pytest.raises(ValueError):
-        SlayerClient(policy=_join_policy())  # HTTP mode + policy -> not supported
+        SlayerClient(policy=policy)  # HTTP mode + policy -> not supported

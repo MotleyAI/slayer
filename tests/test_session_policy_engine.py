@@ -245,9 +245,9 @@ def join_engine(tmp_path):
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        ("25.4.1.100", (25, 4)),
+        ("25.4.1.100", (25, 4)),  # NOSONAR(S1313) — ClickHouse version, not an IP
         ("25.4", (25, 4)),
-        ("25.10.2.1", (25, 10)),  # 25.10 > 25.4 (not string/float order)
+        ("25.10.2.1", (25, 10)),  # NOSONAR(S1313) — ClickHouse version, not an IP; 25.10 > 25.4
         ("24.8.14.10459", (24, 8)),
         ("25.4.1-lts", (25, 4)),  # prerelease/build suffix
         ("v25.4.1", (25, 4)),  # leading v tolerated
@@ -312,10 +312,10 @@ def test_guard_is_none_for_non_clickhouse(join_engine, tmp_path):
 async def test_preflight_probes_and_caches_version(join_engine, monkeypatch):
     calls = {"n": 0}
 
-    async def fake_execute(self, sql, timeout_seconds=120):
+    async def fake_execute(self, sql, timeout_seconds=120):  # NOSONAR(S7503) — must stay async: replaces the async SlayerSQLClient.execute
         calls["n"] += 1
         assert "version" in sql.lower()
-        return [{"version()": "25.4.1.100"}]
+        return [{"version()": "25.4.1.100"}]  # NOSONAR(S1313) — ClickHouse version, not an IP
 
     monkeypatch.setattr(SlayerSQLClient, "execute", fake_execute)
     ds = _ch_ds()
@@ -339,7 +339,7 @@ async def test_preflight_probe_failure_caches_none(join_engine, monkeypatch):
 async def test_preflight_noop_for_non_clickhouse(join_engine, tmp_path, monkeypatch):
     calls = {"n": 0}
 
-    async def fake_execute(self, sql, timeout_seconds=120):
+    async def fake_execute(self, sql, timeout_seconds=120):  # NOSONAR(S7503) — must stay async: replaces the async SlayerSQLClient.execute
         calls["n"] += 1
         return [{"version()": "25.4.1"}]
 
@@ -354,7 +354,7 @@ async def test_preflight_noop_when_no_join_rules(tmp_path, monkeypatch):
     """A column-only policy needs no version probe even on ClickHouse."""
     calls = {"n": 0}
 
-    async def fake_execute(self, sql, timeout_seconds=120):
+    async def fake_execute(self, sql, timeout_seconds=120):  # NOSONAR(S7503) — must stay async: replaces the async SlayerSQLClient.execute
         calls["n"] += 1
         return [{"version()": "24.8.1"}]
 
@@ -380,9 +380,10 @@ def test_apply_policy_join_rule_fails_closed_when_version_unknown(
     """_apply_policy must pass the ClickHouse guard to the rewrite: an emitted
     EXISTS with no cached version fails closed."""
     monkeypatch.setattr(join_engine, "_column_present", lambda **k: True)
+    ds = _ch_ds()
     with pytest.raises(ForcedFilterError):
         join_engine._apply_policy(
-            sql="SELECT * FROM orders", dialect="clickhouse", datasource=_ch_ds()
+            sql="SELECT * FROM orders", dialect="clickhouse", datasource=ds
         )
 
 

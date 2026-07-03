@@ -498,23 +498,23 @@ def test_bigquery_dialect_wraps():
 
 
 def _hop(**kw):
-    base = dict(
-        from_table="orders",
-        from_column="customer_id",
-        to_table="customers",
-        to_column="id",
-    )
+    base = {
+        "from_table": "orders",
+        "from_column": "customer_id",
+        "to_table": "customers",
+        "to_column": "id",
+    }
     base.update(kw)
     return JoinHop(**base)
 
 
 def _single_hop_rule(**kw):
-    base = dict(
-        target_table="orders",
-        join_path=[_hop()],
-        column="organization_uuid",
-        value="orgA",
-    )
+    base = {
+        "target_table": "orders",
+        "join_path": [_hop()],
+        "column": "organization_uuid",
+        "value": "orgA",
+    }
     base.update(kw)
     return JoinFilterRule(**base)
 
@@ -906,7 +906,7 @@ def test_join_terminal_value_is_injection_safe():
     )
     reparsed = sqlglot.parse_one(out, dialect="sqlite")
     # no injected OR leaks into the AST; the value is a single quoted literal
-    body = list(reparsed.find_all(exp.Exists))[0].this
+    body = next(iter(reparsed.find_all(exp.Exists))).this
     assert body.find(exp.Or) is None
     assert "'x'' OR ''1''=''1'" in out
 

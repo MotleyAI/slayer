@@ -145,12 +145,12 @@ def test_policy_data_filters_tuple_has_no_append():
 
 
 def _hop(**kw):
-    base = dict(
-        from_table="orders",
-        from_column="customer_id",
-        to_table="customers",
-        to_column="id",
-    )
+    base = {
+        "from_table": "orders",
+        "from_column": "customer_id",
+        "to_table": "customers",
+        "to_column": "id",
+    }
     base.update(kw)
     return JoinHop(**base)
 
@@ -192,12 +192,12 @@ def test_join_hop_blank_field_rejected(field):
 
 
 def _join_rule(**kw):
-    base = dict(
-        target_table="orders",
-        join_path=[_hop()],
-        column="organization_uuid",
-        value="7ef3",
-    )
+    base = {
+        "target_table": "orders",
+        "join_path": [_hop()],
+        "column": "organization_uuid",
+        "value": "7ef3",
+    }
     base.update(kw)
     return JoinFilterRule(**base)
 
@@ -225,11 +225,12 @@ def test_join_rule_extra_forbidden():
 
 
 def test_join_rule_kind_literal_enforced():
+    hop = _hop()
     with pytest.raises(ValidationError):
         JoinFilterRule(
             kind="column",
             target_table="orders",
-            join_path=[_hop()],
+            join_path=[hop],
             column="org",
             value="x",
         )
@@ -247,24 +248,20 @@ def test_join_rule_empty_join_path_rejected():
 
 def test_join_rule_first_hop_must_start_at_target():
     """The first hop's from_table must equal target_table."""
+    hop = _hop(from_table="line_items")
     with pytest.raises(ValidationError):
-        _join_rule(
-            target_table="orders",
-            join_path=[_hop(from_table="line_items")],
-        )
+        _join_rule(target_table="orders", join_path=[hop])
 
 
 def test_join_rule_hops_must_chain():
     """Each hop's from_table must equal the previous hop's to_table."""
+    hops = [
+        _hop(from_table="line_items", to_table="orders"),
+        # broken chain: starts at "customers", not "orders"
+        _hop(from_table="customers", to_table="regions"),
+    ]
     with pytest.raises(ValidationError):
-        _join_rule(
-            target_table="line_items",
-            join_path=[
-                _hop(from_table="line_items", to_table="orders"),
-                # broken chain: starts at "customers", not "orders"
-                _hop(from_table="customers", to_table="regions"),
-            ],
-        )
+        _join_rule(target_table="line_items", join_path=hops)
 
 
 def test_join_rule_multihop_valid_chain():
@@ -407,22 +404,22 @@ def test_policy_column_rule_dict_without_kind_still_inferred():
 def test_join_only_policy_rejected_no_backstop():
     """A policy with a join rule but no block column rule fails closed at
     construction — an untargeted table could otherwise leak unfiltered."""
+    rule = _join_rule()
     with pytest.raises(ValidationError):
-        SessionPolicy(data_filters=[_join_rule()])
+        SessionPolicy(data_filters=[rule])
 
 
 def test_join_plus_pass_only_column_rule_rejected():
     """A pass-only column rule is not a valid backstop: it leaves an absent-
     column table unfiltered, so it does not satisfy the requirement."""
+    filters = [
+        ColumnFilterRule(
+            column="organization_uuid", value="x", on_unapplicable="pass"
+        ),
+        _join_rule(),
+    ]
     with pytest.raises(ValidationError):
-        SessionPolicy(
-            data_filters=[
-                ColumnFilterRule(
-                    column="organization_uuid", value="x", on_unapplicable="pass"
-                ),
-                _join_rule(),
-            ]
-        )
+        SessionPolicy(data_filters=filters)
 
 
 def test_join_plus_block_column_rule_accepted():

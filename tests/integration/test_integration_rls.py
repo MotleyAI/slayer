@@ -553,13 +553,12 @@ async def test_customers_still_column_scoped(rls_join_storage):
 async def test_untargeted_columnless_table_still_blocks(rls_join_storage):
     """exchange_rates has no join rule and no tenant column -> block backstop."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
+    query = SlayerQuery(
+        source_model="exchange_rates",
+        measures=[ModelMeasure(formula="*:count")],
+    )
     with pytest.raises(ForcedFilterError) as exc:
-        await engine.execute(
-            SlayerQuery(
-                source_model="exchange_rates",
-                measures=[ModelMeasure(formula="*:count")],
-            )
-        )
+        await engine.execute(query)
     assert exc.value.table == "exchange_rates"
 
 
