@@ -22,7 +22,11 @@ from slayer.core.policy import (
     JoinHop,
     SessionPolicy,
 )
-from slayer.sql.session_policy import ScopedTable, apply_session_policy
+from slayer.sql.session_policy import (
+    ScopedTable,
+    _attach_ch_correlated_setting,
+    apply_session_policy,
+)
 
 
 def _norm(sql: str, dialect: str = "sqlite") -> str:
@@ -968,6 +972,35 @@ def test_clickhouse_join_preserves_existing_settings():
     joined = " ".join(s.sql() for s in settings)
     assert "max_threads" in joined  # existing setting preserved
     assert "allow_experimental_correlated_subqueries" in joined  # ours appended
+
+
+def test_clickhouse_correlated_setting_forced_on_when_disabled():
+    """An input that explicitly disables the setting (= 0) is overridden to
+    = 1 — a correlated subquery is never emitted with it left off."""
+    ast = sqlglot.parse_one(
+        "SELECT * FROM t SETTINGS allow_experimental_correlated_subqueries = 0",
+        dialect="clickhouse",
+    )
+    _attach_ch_correlated_setting(ast)
+    out = ast.sql(dialect="clickhouse")
+    assert "allow_experimental_correlated_subqueries = 1" in out
+    assert "= 0" not in out
+    assert out.count("SETTINGS") == 1
+
+
+def test_clickhouse_correlated_setting_single_clause_on_union():
+    """A trailing SETTINGS on a UNION's last SELECT stays a single SETTINGS
+    clause (no duplicate) when our setting is appended."""
+    ast = sqlglot.parse_one(
+        "SELECT 1 FROM t UNION ALL SELECT 2 FROM u SETTINGS max_threads = 2",
+        dialect="clickhouse",
+    )
+    _attach_ch_correlated_setting(ast)
+    out = ast.sql(dialect="clickhouse")
+    assert out.count("SETTINGS") == 1
+    assert "max_threads = 2" in out
+    assert "allow_experimental_correlated_subqueries = 1" in out
+    assert sqlglot.parse_one(out, dialect="clickhouse") is not None  # re-parses
 
 
 def test_non_clickhouse_join_calls_hook_no_settings():

@@ -254,6 +254,38 @@ def _wrap_table_exists(table: exp.Table, rules: list) -> None:
     )
 
 
+_CH_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
+
+
+def _settings_holder(ast: exp.Expression) -> exp.Expression:
+    """Return the node carrying (or that should carry) this statement's
+    ClickHouse ``SETTINGS``. sqlglot parks a trailing ``SETTINGS`` on the last
+    ``SELECT`` of an unparenthesised ``UNION`` rather than on the set-operation
+    root, so honour that placement when it exists; otherwise use the root (so
+    appending never produces two ``SETTINGS`` clauses)."""
+    if ast.args.get("settings"):
+        return ast
+    if isinstance(ast, exp.SetOperation):
+        for select in reversed(list(ast.find_all(exp.Select))):
+            if select.args.get("settings"):
+                return select
+    return ast
+
+
+def _attach_ch_correlated_setting(ast: exp.Expression) -> None:
+    """Force ``allow_experimental_correlated_subqueries = 1`` onto the
+    statement's SETTINGS, preserving any other settings. Drops any prior entry
+    for this setting (any value, e.g. ``= 0``) so the correlated subquery is
+    never emitted with the setting left disabled."""
+    holder = _settings_holder(ast)
+    kept = [
+        s
+        for s in (holder.args.get("settings") or [])
+        if getattr(s.this, "name", None) != _CH_CORRELATED_SETTING
+    ]
+    holder.set("settings", [*kept, exp.var(_CH_CORRELATED_SETTING).eq(1)])
+
+
 def apply_session_policy(
     sql: str,
     *,
@@ -305,23 +337,9 @@ def apply_session_policy(
         if on_correlated_emitted is not None:
             on_correlated_emitted()
         if dialect == "clickhouse":
-            # Correlated subqueries are experimental on ClickHouse; attach the
-            # enabling setting structurally (works on Select and Union roots).
-            # Preserve any SETTINGS the statement already carries (e.g. a raw
-            # sql-mode model's own ``SETTINGS max_threads = 2``) rather than
-            # clobbering them — append, and only if not already present.
-            existing = ast.args.get("settings") or []
-            already = any(
-                "allow_experimental_correlated_subqueries" in s.sql()
-                for s in existing
-            )
-            if not already:
-                ast.set(
-                    "settings",
-                    [
-                        *existing,
-                        exp.var("allow_experimental_correlated_subqueries").eq(1),
-                    ],
-                )
+            # Correlated subqueries are experimental on ClickHouse; enable the
+            # setting structurally, preserving any SETTINGS the statement
+            # already carries and forcing our value to 1.
+            _attach_ch_correlated_setting(ast)
 
     return ast.sql(dialect=dialect)
