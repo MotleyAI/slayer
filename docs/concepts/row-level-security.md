@@ -184,6 +184,13 @@ only when no rule produces a predicate for it — including a table the operator
 table either filtered (it has the column) or fail-closed (it does not), so
 nothing leaks.
 
+The backstop guarantees an untargeted table is *filtered-or-fail-closed* — not
+that it is scoped to the *same tenant* as your join rules. **Use the same tenant
+`column` (and `value`) for the block rule as for your join rules.** If the block
+rule filters on an unrelated column (say `region` while the join rules scope by
+`organization_uuid`), an untargeted table that happens to have that column is
+scoped by it alone — which may not isolate tenants the way you intend.
+
 ### ClickHouse
 
 Correlated subqueries are experimental on ClickHouse and require **server

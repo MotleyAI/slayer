@@ -954,6 +954,22 @@ def test_clickhouse_join_appends_settings_and_calls_hook():
     )
 
 
+def test_clickhouse_join_preserves_existing_settings():
+    """A pre-existing SETTINGS clause (e.g. from a raw sql-mode model) is kept;
+    the correlated-subquery setting is appended, not substituted."""
+    policy = _jpolicy(_single_hop_rule())
+    out = apply_session_policy(
+        "SELECT * FROM orders SETTINGS max_threads = 2",
+        dialect="clickhouse",
+        policy=policy,
+        has_column=ALWAYS,
+    )
+    settings = sqlglot.parse_one(out, dialect="clickhouse").args.get("settings")
+    joined = " ".join(s.sql() for s in settings)
+    assert "max_threads" in joined  # existing setting preserved
+    assert "allow_experimental_correlated_subqueries" in joined  # ours appended
+
+
 def test_non_clickhouse_join_calls_hook_no_settings():
     """The hook fires on any dialect when an EXISTS is emitted, but the
     SETTINGS clause is ClickHouse-only."""

@@ -307,9 +307,21 @@ def apply_session_policy(
         if dialect == "clickhouse":
             # Correlated subqueries are experimental on ClickHouse; attach the
             # enabling setting structurally (works on Select and Union roots).
-            ast.set(
-                "settings",
-                [exp.var("allow_experimental_correlated_subqueries").eq(1)],
+            # Preserve any SETTINGS the statement already carries (e.g. a raw
+            # sql-mode model's own ``SETTINGS max_threads = 2``) rather than
+            # clobbering them — append, and only if not already present.
+            existing = ast.args.get("settings") or []
+            already = any(
+                "allow_experimental_correlated_subqueries" in s.sql()
+                for s in existing
             )
+            if not already:
+                ast.set(
+                    "settings",
+                    [
+                        *existing,
+                        exp.var("allow_experimental_correlated_subqueries").eq(1),
+                    ],
+                )
 
     return ast.sql(dialect=dialect)
