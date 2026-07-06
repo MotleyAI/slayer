@@ -8,7 +8,7 @@ query engine's _enrich() step.
 import copy
 import logging
 import re
-from typing import Any
+from typing import Any, NamedTuple
 
 import sqlglot
 from sqlglot import exp
@@ -123,6 +123,18 @@ _HAVING_AGG_ATOMIC_TYPES: tuple = (
 # WHERE/HAVING clause; extracted as a constant so Sonar S1192 doesn't flag it
 # at every join site.
 _SQL_AND_JOINER = " AND "
+
+
+class _OrderColRef(NamedTuple):
+    """DEV-1645: resolved ORDER BY key. ``is_alias`` distinguishes a projected
+    output alias (emit whole-quoted, e.g. ``"orders.revenue_sum"``) from a
+    table.column fallback (emit SPLIT, e.g. ``ranked."time_mark"``), so a sort
+    on an unprojected/renamed column references the underlying FROM-scope column
+    instead of a nonexistent composite identifier."""
+    text: str               # whole resolved string (used for base_cols membership)
+    is_alias: bool          # True => projected output alias; False => table.column fallback
+    qualifier: str | None   # fallback only: FROM-scope alias
+    column: str | None      # fallback only: underlying column short name
 
 # DEV-1444: separator used between pretty-printed SELECT projection columns
 # (",\n    "). Extracted as a constant so Sonar S1192 doesn't flag every
@@ -392,6 +404,60 @@ class SQLGenerator:
         strategy object from the string sqlglot consumes."""
         return self._dialect.sqlglot_name
 
+    @staticmethod
+    def _maybe_quote_ident(ident: exp.Expression | None) -> None:
+        """Set ``quoted=True`` in place on ``ident`` when it is an unquoted
+        ``Identifier`` containing an uppercase letter (DEV-1645). No-op
+        otherwise (None, already-quoted, all-lowercase, non-Identifier)."""
+        if (
+            isinstance(ident, exp.Identifier)
+            and not ident.quoted
+            and any(c.isupper() for c in ident.this)
+        ):
+            ident.set("quoted", True)
+
+    @staticmethod
+    def _quote_mixed_case_identifiers(node: exp.Expression) -> exp.Expression:
+        """DEV-1645: quote mixed-case DB identifiers so case-folding dialects
+        (Postgres/Redshift fold to lower; Snowflake/Oracle fold to upper) reach
+        the right physical object instead of silently folding to a non-existent
+        name.
+
+        Context-aware: quotes only the **column-name leaf** of a ``Column``
+        (``Column.this``) and the **physical-table name parts** of a ``Table``
+        (``this``/``db``/``catalog``). It deliberately does NOT quote table
+        aliases or the qualifier side of a column reference — those are
+        SLayer-internal aliases that fold consistently within a query and never
+        need quoting; quoting them would only churn output and (for uppercase
+        model names) diverge from string-built references. Function names parse
+        to ``Anonymous``/``Func`` and string literals to ``Literal``, so neither
+        is touched. Idempotent. Applied at every parse / AST-construction site
+        (``_parse``, ``_parse_predicate``, ``_to_ident``, ``_to_table``)."""
+        if isinstance(node, exp.Column):
+            SQLGenerator._maybe_quote_ident(node.this)
+        elif isinstance(node, exp.Table):
+            SQLGenerator._maybe_quote_ident(node.this)
+            SQLGenerator._maybe_quote_ident(node.args.get("db"))
+            SQLGenerator._maybe_quote_ident(node.args.get("catalog"))
+        return node
+
+    def _to_ident(self, name: str) -> exp.Identifier:
+        """Build a column/table-name identifier, quoting it when mixed-case
+        (DEV-1645). Use for real DB column/table names — NOT for aliases or
+        qualifiers (those stay unquoted via plain ``exp.to_identifier``)."""
+        ident = exp.to_identifier(name)
+        self._maybe_quote_ident(ident)
+        return ident
+
+    def _to_table(self, name: str, alias: str | None = None) -> exp.Expression:
+        """Build a (possibly schema-qualified) table reference with mixed-case
+        physical-name parts quoted (DEV-1645). The ``alias`` is SLayer-internal
+        and stays unquoted."""
+        table = exp.to_table(name).transform(self._quote_mixed_case_identifiers)
+        if alias is not None:
+            table.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
+        return table
+
     def _q(self, name: str) -> str:
         """Dialect-aware identifier quoting (DEV-1571 Bug 3 generalised).
 
@@ -434,6 +500,9 @@ class SQLGenerator:
         # lives inside ``_rewrite_log_aliases`` so unsupported dialects
         # (oracle; tsql for log2) keep the canonical 2-arg LOG form.
         tree = tree.transform(self._rewrite_log_aliases)
+        # DEV-1645: quote mixed-case identifiers so case-folding dialects reach
+        # the right physical column/table.
+        tree = tree.transform(self._quote_mixed_case_identifiers)
         # DEV-1576: target-keyed AST rewrite. Keyed to the generator's TARGET
         # dialect (``self._dialect``), NOT the parse dialect — expressions are
         # canonically parsed as Postgres regardless of target, so this is the
@@ -468,6 +537,10 @@ class SQLGenerator:
             )
         tree = active.rewrite_parsed_ast(where.this)
         tree = tree.transform(self._rewrite_log_aliases)
+        # DEV-1645: quote mixed-case identifiers (same policy as ``_parse``) —
+        # this is the separate WHERE/HAVING/``filter_sql`` parser, so it needs
+        # the transform too or predicate-side mixed-case idents stay unquoted.
+        tree = tree.transform(self._quote_mixed_case_identifiers)
         # DEV-1576: same target-keyed rewrite as ``_parse`` — a 2-arg ROUND
         # over a DOUBLE in a Mode-A SQL filter needs the Postgres numeric cast.
         return self._dialect.rewrite_target_ast(tree)
@@ -703,7 +776,7 @@ class SQLGenerator:
                         alias=exp.to_identifier(cm.source_model_name),
                     )
                 else:
-                    source_from = exp.to_table(cm.source_sql_table, alias=cm.source_model_name)
+                    source_from = self._to_table(cm.source_sql_table, alias=cm.source_model_name)
                 select = select.from_(source_from)
 
                 # JOIN target model
@@ -713,11 +786,11 @@ class SQLGenerator:
                         alias=exp.to_identifier(cm.target_model_name),
                     )
                 else:
-                    target_join = exp.to_table(cm.target_model_sql_table, alias=cm.target_model_name)
+                    target_join = self._to_table(cm.target_model_sql_table, alias=cm.target_model_name)
                 join_on = exp.and_(*(
                     exp.EQ(
-                        this=exp.Column(this=exp.to_identifier(src), table=exp.to_identifier(cm.source_model_name)),
-                        expression=exp.Column(this=exp.to_identifier(tgt), table=exp.to_identifier(cm.target_model_name)),
+                        this=exp.Column(this=self._to_ident(src), table=exp.to_identifier(cm.source_model_name)),
+                        expression=exp.Column(this=self._to_ident(tgt), table=exp.to_identifier(cm.target_model_name)),
                     )
                     for src, tgt in cm.join_pairs
                 ))
@@ -837,7 +910,7 @@ class SQLGenerator:
                                 alias=exp.to_identifier(target_alias),
                             )
                         else:
-                            join_target = exp.to_table(target_table, alias=target_alias)
+                            join_target = self._to_table(target_table, alias=target_alias)
                         join_on = self._parse(join_cond)
                         select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
@@ -915,12 +988,14 @@ class SQLGenerator:
             }
             for order_item in enriched.order:
                 col = order_item.column
-                col_name = self._resolve_order_column(col=col, enriched=enriched)
+                ref = self._resolve_order_column(col=col, enriched=enriched)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
-                if col_name in base_cols:
-                    order_parts.append(f'_base.{self._q(col_name)} {direction}')
+                if ref.is_alias and ref.text in base_cols:
+                    order_parts.append(f'_base.{self._q(ref.text)} {direction}')
+                elif ref.is_alias:
+                    order_parts.append(f'{self._q(ref.text)} {direction}')
                 else:
-                    order_parts.append(f'{self._q(col_name)} {direction}')
+                    order_parts.append(f'{self._order_split_sql(ref)} {direction}')
             sql += "\nORDER BY " + ", ".join(order_parts)
         if enriched.limit is not None:
             sql += f"\nLIMIT {enriched.limit}"
@@ -935,9 +1010,12 @@ class SQLGenerator:
             order_parts = []
             for order_item in enriched.order:
                 col = order_item.column
-                col_name = SQLGenerator._resolve_order_column(col=col, enriched=enriched)
+                ref = SQLGenerator._resolve_order_column(col=col, enriched=enriched)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
-                order_parts.append(f'{self._q(col_name)} {direction}')
+                if ref.is_alias:
+                    order_parts.append(f'{self._q(ref.text)} {direction}')
+                else:
+                    order_parts.append(f'{self._order_split_sql(ref)} {direction}')
             sql += "\nORDER BY " + ", ".join(order_parts)
         if enriched.limit is not None:
             sql += f"\nLIMIT {enriched.limit}"
@@ -1191,7 +1269,7 @@ class SQLGenerator:
                     alias=exp.to_identifier(target_alias),
                 )
             else:
-                join_target = exp.to_table(target_table, alias=target_alias)
+                join_target = self._to_table(target_table, alias=target_alias)
             join_on = self._parse(join_cond)
             select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
@@ -1416,7 +1494,7 @@ class SQLGenerator:
                         this=parsed_target, alias=exp.to_identifier(target_alias),
                     )
                 else:
-                    join_target = exp.to_table(target_table, alias=target_alias)
+                    join_target = self._to_table(target_table, alias=target_alias)
                 join_on = self._parse(join_cond)
                 select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
@@ -1853,8 +1931,13 @@ class SQLGenerator:
         if enriched.order:
             for order_item in enriched.order:
                 col = order_item.column
-                col_name = self._resolve_order_column(col=col, enriched=enriched)
-                order_col = exp.Column(this=exp.to_identifier(col_name, quoted=True))
+                ref = self._resolve_order_column(col=col, enriched=enriched)
+                if ref.is_alias:
+                    order_col = exp.Column(this=exp.to_identifier(ref.text, quoted=True))
+                else:
+                    order_col = exp.Column(
+                        this=self._to_ident(ref.column), table=exp.to_identifier(ref.qualifier)
+                    )
                 ascending = order_item.direction == "asc"
                 ordered_kwargs: dict[str, Any] = {"this": order_col, "desc": not ascending}
                 if suppress_nulls_emulation:
@@ -1870,16 +1953,32 @@ class SQLGenerator:
 
         return select
 
+    def _order_split_sql(self, ref: _OrderColRef) -> str:
+        """DEV-1645: emit a non-projected ORDER BY key as a SPLIT
+        ``qualifier.column`` reference (mixed-case-quoted), not one
+        composite-quoted token."""
+        col = exp.Column(this=self._to_ident(ref.column), table=exp.to_identifier(ref.qualifier))
+        return col.sql(dialect=self.dialect)
+
     @staticmethod
-    def _resolve_order_column(col, enriched: EnrichedQuery) -> str:
-        """Resolve an order column reference to the correct enriched alias.
+    def _resolve_order_column(col, enriched: EnrichedQuery) -> _OrderColRef:
+        """Resolve an order column reference to a discriminated result.
 
         Users refer to columns by their short name (e.g., ``count``,
         ``revenue_sum``).  The enriched query stores fully qualified aliases
         (e.g., ``orders._count``, ``orders.revenue_sum``).  This method
-        matches the user-provided name against all enriched columns and
-        returns the matching alias.  If no match is found, the name is
-        qualified with the model name as a fallback.
+        matches the user-provided name against all enriched columns.
+
+        When it matches a projected alias, the result carries ``is_alias=True``
+        and the caller emits it whole-quoted (``"orders.revenue_sum"`` — that IS
+        the real output column name via ``AS "orders.revenue_sum"``).
+
+        When no projected alias matches (DEV-1645: renamed via ``columns:``, or
+        an inner-stage dim the outer stage dropped), the result carries
+        ``is_alias=False`` with ``qualifier``/``column`` set, and the caller
+        emits a SPLIT ``qualifier.column`` reference (two identifiers) that
+        resolves against the FROM-scope table — instead of the old composite
+        ``"<model>.<col>"`` token that Postgres rejects as UndefinedColumn.
 
         For ``*:count`` results, the internal name is ``_count`` but users
         refer to it as ``count``.  A fallback check for ``_name`` handles
@@ -1907,22 +2006,22 @@ class SQLGenerator:
 
         # Direct match on the user-provided name
         if user_name in alias_lookup:
-            return alias_lookup[user_name]
+            return _OrderColRef(alias_lookup[user_name], True, None, None)
 
         # Qualified match for cross-model measures:
         # col.model="customers", col.name="revenue_sum" → "customers.revenue_sum"
         if col.model:
             qualified = f"{col.model}.{col.name}"
             if qualified in alias_lookup:
-                return alias_lookup[qualified]
+                return _OrderColRef(alias_lookup[qualified], True, None, None)
 
         # Fallback for *:count → _count: user says "count", internal is "_count"
         prefixed = f"_{user_name}"
         if prefixed in alias_lookup:
-            return alias_lookup[prefixed]
+            return _OrderColRef(alias_lookup[prefixed], True, None, None)
 
-        # Fallback: qualify with model prefix
-        return f"{model_prefix}.{user_name}"
+        # Fallback: split table.column reference against the FROM-scope alias.
+        return _OrderColRef(f"{model_prefix}.{user_name}", False, model_prefix, user_name)
 
     # ------------------------------------------------------------------
     # FROM / JOIN building
@@ -1930,7 +2029,7 @@ class SQLGenerator:
 
     def _build_from_clause(self, enriched: EnrichedQuery) -> exp.Expression:
         if enriched.sql_table:
-            return exp.to_table(enriched.sql_table, alias=enriched.model_name)
+            return self._to_table(enriched.sql_table, alias=enriched.model_name)
         elif enriched.sql:
             parsed = self._parse(enriched.sql)
             return exp.Subquery(this=parsed, alias=exp.to_identifier(enriched.model_name))
@@ -2125,11 +2224,11 @@ class SQLGenerator:
         ``type``.
         """
         if sql is None:
-            return exp.Column(this=exp.to_identifier(name), table=exp.to_identifier(model_name))
+            return exp.Column(this=self._to_ident(name), table=exp.to_identifier(model_name))
         # Bare column name → qualify with model name
         # Use isidentifier() to distinguish column names from literals (e.g. "1")
         if sql.isidentifier():
-            return exp.Column(this=exp.to_identifier(sql), table=exp.to_identifier(model_name))
+            return exp.Column(this=self._to_ident(sql), table=exp.to_identifier(model_name))
         return _wrap_cast_for_type(self._parse(sql), type)
 
     def _resolve_value_sql(self, measure: "EnrichedMeasure") -> str:
@@ -2201,7 +2300,7 @@ class SQLGenerator:
                     type=measure.column_type,
                 ), False
             return exp.Column(
-                this=exp.to_identifier(measure.name),
+                this=self._to_ident(measure.name),
                 table=exp.to_identifier(measure.model_name),
             ), False
 
@@ -2284,7 +2383,7 @@ class SQLGenerator:
             )
         else:
             inner = exp.Column(
-                this=exp.to_identifier(measure.name),
+                this=self._to_ident(measure.name),
                 table=exp.to_identifier(measure.model_name),
             )
 
