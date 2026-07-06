@@ -144,6 +144,10 @@ class _Converter:
 
         if type(node) in _SIMPLE_AGG:
             agg = _SIMPLE_AGG[type(node)]
+            # SLayer supports DISTINCT only for COUNT (handled below); SUM/AVG/
+            # MIN/MAX over DISTINCT have no colon-syntax representation.
+            if isinstance(node.this, exp.Distinct):
+                raise _Unconvertible(f"{agg.upper()}(DISTINCT ...) is not supported")
             return f"{self._operand_ref(node.this)}:{agg}"
 
         if isinstance(node, exp.Count):
