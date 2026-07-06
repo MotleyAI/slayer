@@ -748,6 +748,20 @@ def test_cross_model_derived_field_unknown_column_dropped(shop_engine):
     assert _reported(result)
 
 
+def test_dropped_time_default_dimension_is_reset(shop_engine):
+    # If the model's default_time_dimension is a cross-model time field that gets
+    # dropped, the default must not keep pointing at the removed column.
+    doc = _mini_doc(datasets=[OSIDataset(
+        name="orders", source="orders",
+        fields=[OSIField(name="ts", expression=_expr("customers.no_such_ts"),
+                         dimension={"is_time": True})],
+    )])
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "ts" not in {c.name for c in orders.columns}
+    assert orders.default_time_dimension != "ts"
+
+
 def test_cross_model_derived_field_no_join_path_dropped(shop_engine):
     # products.category referenced from orders with NO relationship -> dropped.
     doc = _mini_doc(

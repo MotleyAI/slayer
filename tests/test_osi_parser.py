@@ -102,6 +102,13 @@ def test_unknown_version_warns_but_parses(caplog: pytest.LogCaptureFixture) -> N
     assert any("version" in r.message.lower() for r in caplog.records)
 
 
+def test_single_non_osi_file_is_skipped(tmp_path: Path) -> None:
+    # A single file with an unsupported suffix is skipped, same as in a directory.
+    f = tmp_path / "notes.txt"
+    f.write_text("hello: world")
+    assert parse_osi_path(f) == []
+
+
 def test_malformed_file_warns_and_returns_empty(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
         docs = parse_osi_path(FIXTURES / "malformed.yaml")

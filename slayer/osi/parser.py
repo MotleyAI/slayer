@@ -27,7 +27,8 @@ _SUFFIXES = (".yaml", ".yml", ".json")
 
 def _collect_files(path: Path) -> list[Path]:
     if path.is_file():
-        return [path]
+        # Apply the same suffix policy as directory scanning.
+        return [path] if path.name.endswith(_SUFFIXES) else []
     files: list[Path] = []
     for root, dirs, names in os.walk(path):
         dirs[:] = [d for d in dirs if not d.startswith(".")]

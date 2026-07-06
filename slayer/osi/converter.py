@@ -191,7 +191,7 @@ class OsiToSlayerConverter:
 
         for sm in semantic_models:
             for ds in sm.datasets:
-                self._build_model(ds, sm, inspector)
+                self._build_model(ds=ds, sm=sm, inspector=inspector)
         for sm in semantic_models:
             for rel in sm.relationships or []:
                 self._build_join(rel)
@@ -212,7 +212,7 @@ class OsiToSlayerConverter:
     def _build_measures_for(self, sm: OSISemanticModel, graph: JoinGraph) -> None:
         sm_model_names = [d.name for d in sm.datasets if d.name in self._models]
         for metric in sm.metrics or []:
-            self._build_measure(metric, sm_model_names, graph)
+            self._build_measure(metric=metric, sm_model_names=sm_model_names, graph=graph)
 
     def _check_duplicate_dataset_names(self, sms: list[OSISemanticModel]) -> None:
         seen: set[str] = set()
@@ -271,7 +271,7 @@ class OsiToSlayerConverter:
         # ``target_dialect`` is the datasource type, used for the dialect-correct
         # probe (LIMIT 0 vs SELECT TOP vs SQLite's LIMIT-1 fallback).
         types = get_column_types_sync(
-            query, engine=self.sa_engine, db_type=self.target_dialect,
+            sql=query, engine=self.sa_engine, db_type=self.target_dialect,
         )
         columns = [Column(name=name, type=category) for name, category in types.items()]
         return SlayerModel(name=ds.name, sql=query, data_source=self.data_source,
@@ -283,7 +283,7 @@ class OsiToSlayerConverter:
         first_time_dim: str | None = None
 
         for field in ds.fields or []:
-            time_col = self._overlay_one_field(field, model, by_name, introspected, ds)
+            time_col = self._overlay_one_field(field=field, model=model, by_name=by_name, introspected=introspected, ds=ds)
             if time_col and first_time_dim is None:
                 first_time_dim = time_col
 
@@ -331,14 +331,14 @@ class OsiToSlayerConverter:
             )
             return None
 
-        col = self._resolve_field_column(field, sql, by_name, introspected, ds, model)
+        col = self._resolve_field_column(field=field, sql=sql, by_name=by_name, introspected=introspected, ds=ds, model=model)
         if col is None:
             return None
 
         col.label = field.label or col.label
-        col.description = _render_description(field.description, field.ai_context) \
+        col.description = _render_description(explicit=field.description, ctx=field.ai_context) \
             or col.description
-        meta = _build_meta(field.ai_context, field.custom_extensions)
+        meta = _build_meta(ctx=field.ai_context, custom_extensions=field.custom_extensions)
         if meta:
             col.meta = {**(col.meta or {}), **meta}
 
@@ -389,7 +389,7 @@ class OsiToSlayerConverter:
         # (consistent with the bare-field / metric / relationship checks); a
         # collision with an existing column is handled by the replace-or-append
         # logic in _overlay_one_field.
-        missing = _missing_expr_columns(sql, introspected, ds.name)
+        missing = _missing_expr_columns(sql=sql, available=introspected, self_name=ds.name)
         if missing is None:
             self._warn(
                 f"Field {field.name!r} on {ds.name!r} has an unparseable "
@@ -416,7 +416,7 @@ class OsiToSlayerConverter:
             # type so a non-numeric expression (UPPER(x), concat, ...) isn't
             # mis-cast as DOUBLE by the SQL generator. Fall back to DOUBLE if the
             # probe is unavailable.
-            dtype = self._probe_expression_type(model, sql) or DataType.DOUBLE
+            dtype = self._probe_expression_type(model=model, expr=sql) or DataType.DOUBLE
         return Column(name=field.name, sql=sql, type=dtype)
 
     def _probe_expression_type(self, model: SlayerModel, expr: str) -> DataType | None:
@@ -432,7 +432,7 @@ class OsiToSlayerConverter:
         probe = f"SELECT ({expr}) AS _osi_probe FROM {from_clause}"
         try:
             types = get_column_types_sync(
-                probe, engine=self.sa_engine, db_type=self.target_dialect,
+                sql=probe, engine=self.sa_engine, db_type=self.target_dialect,
             )
         except Exception:  # noqa: BLE001 — probe is best-effort; fall back
             return None
@@ -444,7 +444,7 @@ class OsiToSlayerConverter:
 
     def _apply_dataset_metadata(self, model: SlayerModel, ds: OSIDataset,
                                 sm: OSISemanticModel) -> None:
-        model.description = _render_description(ds.description, ds.ai_context) \
+        model.description = _render_description(explicit=ds.description, ctx=ds.ai_context) \
             or model.description
         extra: dict[str, Any] = {}
         if ds.unique_keys:
@@ -456,7 +456,7 @@ class OsiToSlayerConverter:
                 "description": sm.description,
                 "ai_context": sm_ctx,
             }
-        meta = _build_meta(ds.ai_context, ds.custom_extensions, extra=extra)
+        meta = _build_meta(ctx=ds.ai_context, custom_extensions=ds.custom_extensions, extra=extra)
         if meta:
             model.meta = {**(model.meta or {}), **meta}
 
@@ -512,8 +512,8 @@ class OsiToSlayerConverter:
         self._models[src].joins.append(ModelJoin(
             target_model=rel.to,
             join_pairs=pairs,
-            description=_render_description(None, rel.ai_context),
-            meta=_build_meta(rel.ai_context, rel.custom_extensions),
+            description=_render_description(explicit=None, ctx=rel.ai_context),
+            meta=_build_meta(ctx=rel.ai_context, custom_extensions=rel.custom_extensions),
         ))
 
     def _validate_cross_model_field_refs(self) -> None:
@@ -536,7 +536,7 @@ class OsiToSlayerConverter:
         dropped = False
         for model in self._models.values():
             for col, bad in self._invalid_cross_model_columns(model):
-                self._revert_or_drop_column(model, col, bad)
+                self._revert_or_drop_column(model=model, col=col, bad=bad)
                 dropped = True
         return dropped
 
@@ -546,7 +546,7 @@ class OsiToSlayerConverter:
         result = []
         for col in model.columns:
             if col.sql:
-                bad = self._unresolvable_cross_model_refs(model, col.sql)
+                bad = self._unresolvable_cross_model_refs(model=model, sql=col.sql)
                 if bad:
                     result.append((col, bad))
         return result
@@ -567,6 +567,13 @@ class OsiToSlayerConverter:
             )
         else:
             model.columns.remove(col)
+            if model.default_time_dimension == col.name:
+                # Don't leave the default pointing at a dropped column.
+                model.default_time_dimension = next(
+                    (c.name for c in model.columns
+                     if c.type in (DataType.DATE, DataType.TIMESTAMP)),
+                    None,
+                )
             self._warn(
                 f"Column {col.name!r} on {model.name!r} references unresolvable "
                 f"cross-model column(s) {bad}; dropping.",
@@ -578,7 +585,7 @@ class OsiToSlayerConverter:
         join never references a column that no longer exists."""
         dropped = False
         for model in self._models.values():
-            stale = [j for j in model.joins if self._join_columns_missing(model, j)]
+            stale = [j for j in model.joins if self._join_columns_missing(model=model, join=j)]
             for join in stale:
                 model.joins.remove(join)
                 dropped = True
@@ -597,7 +604,7 @@ class OsiToSlayerConverter:
         for model in self._models.values():
             for col in model.columns:
                 if col.sql:
-                    target_type = self._single_cross_model_ref_type(model, col.sql)
+                    target_type = self._single_cross_model_ref_type(model=model, sql=col.sql)
                     if target_type is not None:
                         col.type = target_type
 
@@ -610,7 +617,7 @@ class OsiToSlayerConverter:
             return None
         if not isinstance(tree, exp.Column) or not tree.table or tree.table == model.name:
             return None
-        target = self._walk_join_alias(model, tree.table)
+        target = self._walk_join_alias(host=model, alias=tree.table)
         if target is None:
             return None
         tcol = next((c for c in target.columns if c.name == tree.name), None)
@@ -619,7 +626,7 @@ class OsiToSlayerConverter:
     def _join_columns_missing(self, model: SlayerModel, join: ModelJoin) -> bool:
         target = self._models.get(join.target_model)
         for src_col, tgt_col in join.join_pairs:
-            if not self._model_has_column(model.name, src_col):
+            if not self._model_has_column(model_name=model.name, column=src_col):
                 return True
             if target is None or not any(c.name == tgt_col for c in target.columns):
                 return True
@@ -644,7 +651,7 @@ class OsiToSlayerConverter:
                 continue  # catalog/db-qualified physical ref — outside SLayer's contract
             if not col.table or col.table == model.name:
                 continue
-            target = self._walk_join_alias(model, col.table)
+            target = self._walk_join_alias(host=model, alias=col.table)
             if target is None or not any(c.name == col.name for c in target.columns):
                 bad.append(f"{col.table}.{col.name}")
         return bad
@@ -681,9 +688,9 @@ class OsiToSlayerConverter:
         """Qualified names of relationship join columns absent from their
         model, so a typo clean-fails instead of emitting a broken join."""
         missing = [f"{rel.from_dataset}.{c}" for c in rel.from_columns
-                   if not self._model_has_column(rel.from_dataset, c)]
+                   if not self._model_has_column(model_name=rel.from_dataset, column=c)]
         missing += [f"{rel.to}.{c}" for c in rel.to_columns
-                    if not self._model_has_column(rel.to, c)]
+                    if not self._model_has_column(model_name=rel.to, column=c)]
         return missing
 
     # ---- metrics -> measures ----
@@ -706,7 +713,7 @@ class OsiToSlayerConverter:
             return
 
         owner_of = self._make_owner_of(sm_model_names)
-        anchor = self._select_anchor(metric.name, expr, sm_model_names, owner_of, graph)
+        anchor = self._select_anchor(metric_name=metric.name, expr=expr, sm_model_names=sm_model_names, owner_of=owner_of, graph=graph)
         if anchor is None:
             return  # already reported
 
@@ -721,7 +728,7 @@ class OsiToSlayerConverter:
                 metric_name=metric.name, category="duplicate_measure",
             )
             return
-        if self._model_has_column(anchor, metric.name):
+        if self._model_has_column(model_name=anchor, column=metric.name):
             self._unconv(
                 f"Metric {metric.name!r} collides with a column name on model "
                 f"{anchor!r}.",
@@ -729,7 +736,7 @@ class OsiToSlayerConverter:
             )
             return
 
-        ref_of = self._make_ref_of(graph, anchor)
+        ref_of = self._make_ref_of(graph=graph, anchor=anchor)
         percentile_unsupported = (
             self.target_dialect is not None
             and self.target_dialect.lower() in _NO_PERCENTILE_DIALECTS
@@ -764,8 +771,8 @@ class OsiToSlayerConverter:
             measure = ModelMeasure(
                 formula=result.formula,
                 name=metric.name,
-                description=_render_description(metric.description, metric.ai_context),
-                meta=_build_meta(metric.ai_context, metric.custom_extensions),
+                description=_render_description(explicit=metric.description, ctx=metric.ai_context),
+                meta=_build_meta(ctx=metric.ai_context, custom_extensions=metric.custom_extensions),
             )
         except Exception as exc:  # noqa: BLE001 — any validation error -> report
             self._unconv(
@@ -785,7 +792,7 @@ class OsiToSlayerConverter:
                        owner_of, graph: JoinGraph) -> str | None:
         owners = self._referenced_owners(expr, owner_of)
         if owners:
-            anchor = min_hops_root(graph, sm_model_names, owners)
+            anchor = min_hops_root(graph=graph, candidates=sm_model_names, mentioned=owners)
             if anchor is None:
                 self._unconv(
                     f"Metric {metric_name!r} references models {sorted(owners)} "
