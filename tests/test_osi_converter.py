@@ -499,6 +499,32 @@ def test_derived_field_expression_unknown_column_clean_fails(shop_engine):
     assert _reported(result)
 
 
+def test_derived_field_unparseable_expression_clean_fails(shop_engine):
+    doc = _mini_doc(
+        datasets=[OSIDataset(
+            name="orders", source="orders",
+            fields=[OSIField(name="gross", expression=_expr("amount +"))],
+        )]
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "gross" not in {c.name for c in orders.columns}
+    assert _reported(result)
+
+
+def test_derived_field_self_qualified_unknown_column_clean_fails(shop_engine):
+    doc = _mini_doc(
+        datasets=[OSIDataset(
+            name="orders", source="orders",
+            fields=[OSIField(name="gross", expression=_expr("orders.amount + orders.no_such_col"))],
+        )]
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "gross" not in {c.name for c in orders.columns}
+    assert _reported(result)
+
+
 def test_metric_operand_unknown_column_clean_fails(shop_engine):
     # A materialized aggregate operand where one column is unknown must clean-
     # fail, not materialize SQL that still references the missing column.

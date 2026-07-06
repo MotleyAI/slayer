@@ -68,20 +68,27 @@ def _is_bare_identifier(sql: str) -> bool:
     return bool(_IDENTIFIER_RE.match(sql.strip()))
 
 
-def _missing_expr_columns(sql: str, available: set[str]) -> list[str]:
-    """Bare (unqualified) column names in ``sql`` that are not in ``available``.
+def _missing_expr_columns(
+    sql: str, available: set[str], self_name: str
+) -> list[str] | None:
+    """Unqualified and self-qualified column names in ``sql`` absent from
+    ``available``. Returns ``None`` when ``sql`` cannot be parsed.
 
-    Qualified references (``table.col``) are left alone — they may point at a
-    joined model and are not validated against the local column set here.
+    Self-qualified references (``<self_name>.col``) are validated too; genuinely
+    cross-model references (a different qualifier) are left to query-time join
+    resolution, matching how ``Column.sql`` expansion treats join aliases.
     """
     try:
         tree = sqlglot.parse_one(sql)
     except sqlglot.errors.ParseError:
-        return []
+        return None
     missing = []
     for col in tree.find_all(exp.Column):
-        if not col.table and col.name not in available:
-            missing.append(col.name)
+        if not col.table:
+            if col.name not in available:
+                missing.append(col.name)
+        elif col.table == self_name and col.name not in available:
+            missing.append(f"{col.table}.{col.name}")
     return missing
 
 
@@ -335,7 +342,14 @@ class OsiToSlayerConverter:
         # (consistent with the bare-field / metric / relationship checks); a
         # collision with an existing column is handled by the replace-or-append
         # logic in _overlay_one_field.
-        missing = _missing_expr_columns(sql, introspected)
+        missing = _missing_expr_columns(sql, introspected, ds.name)
+        if missing is None:
+            self._warn(
+                f"Field {field.name!r} on {ds.name!r} has an unparseable "
+                f"expression {sql!r}; skipping.",
+                model_name=ds.name, category="expression",
+            )
+            return None
         if missing:
             self._warn(
                 f"Field {field.name!r} on {ds.name!r} references unknown "
