@@ -840,6 +840,22 @@ def test_dialect_fallback_among_sql_dialects(shop_engine):
     assert {"tot"} <= {meas.name for meas in orders.measures}
 
 
+def test_requested_non_sql_dialect_falls_back_to_sql(shop_engine):
+    # --dialect MDX must NOT feed the MDX expression into the SQL path; it falls
+    # back to the available SQL (ANSI_SQL) expression.
+    doc = _mini_doc(
+        datasets=[OSIDataset(name="orders", source="orders",
+                             fields=[OSIField(name="amount", expression=_expr("amount"))])],
+        metrics=[OSIMetric(name="tot", expression=OSIExpression(dialects=[
+            OSIDialectExpression(dialect="MDX", expression="[Measures].[x]"),
+            OSIDialectExpression(dialect="ANSI_SQL", expression="SUM(amount)"),
+        ]))],
+    )
+    result = _convert(shop_engine, doc, dialect="MDX")
+    orders = {m.name: m for m in result.models}["orders"]
+    assert {m.name: m for m in orders.measures}["tot"].formula == "amount:sum"
+
+
 def test_target_dialect_percentile_caveat(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",

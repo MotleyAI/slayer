@@ -717,9 +717,14 @@ class OsiToSlayerConverter:
 
     def _resolve_expression(self, osi_expr: OSIExpression) -> str | None:
         """Pick the expression for the requested dialect, else fall back among
-        SQL-compatible dialects. Non-SQL-only expressions return None."""
+        SQL-compatible dialects. Non-SQL-only expressions return None.
+
+        The requested dialect is honored only when it is itself SQL-compatible —
+        a non-SQL request (e.g. ``--dialect MDX``) must not feed non-SQL syntax
+        into the SQL conversion path; it falls back to an available SQL dialect.
+        """
         by_dialect = {de.dialect.value: de.expression for de in osi_expr.dialects}
-        if self.dialect in by_dialect:
+        if self.dialect in by_dialect and self.dialect in SQL_DIALECTS:
             return by_dialect[self.dialect]
         for name, expression in by_dialect.items():
             if name in SQL_DIALECTS:
