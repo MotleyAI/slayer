@@ -1468,10 +1468,18 @@ class SlayerQueryEngine:
         (the fresh entry stamps ``created_at`` from the same injectable clock).
         """
         del now  # created_at is stamped inside _build_fresh_entry via the clock
+        # Pin the replay to the datasource this entry was ORIGINALLY resolved
+        # against (falling back to it when the caller passed no explicit
+        # data_source). A cache entry is bound to a resolved datasource
+        # identity (it's in the key), and refresh() already scanned this
+        # entry's refresh keys against that datasource — so re-executing must
+        # stay on it, not silently migrate to a different datasource if the
+        # priority list changed after the entry was cached.
+        replay_data_source = entry.data_source or entry.resolved_data_source
         query_obj, named_queries, runtime_kwarg, prefer = await self._normalize_input(
             entry.original_input,
             variables=entry.variables,
-            data_source=entry.data_source,
+            data_source=replay_data_source,
         )
         prepared = await self._prepare_pipeline(
             query=query_obj,

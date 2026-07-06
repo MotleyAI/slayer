@@ -96,6 +96,20 @@ def _seed_db(db_path) -> None:
     conn.close()
 
 
+def _seed_orders_single(db_path, *, amount: float) -> None:
+    """A second datasource's ``orders`` table with a single distinguishable row."""
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT NOT NULL, "
+        "amount REAL NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO orders VALUES (1, 'completed', ?, '2025-01-01')", (amount,)
+    )
+    conn.commit()
+    conn.close()
+
+
 def _orders_model(ds: str = "ds") -> SlayerModel:
     return SlayerModel(
         name="orders",
@@ -806,3 +820,45 @@ class TestPolicyInteraction:
         # policy column), so their notions of "current state" agree.
         assert all("status" in s for s in scans)
         assert all("status" in s for s in _data_queries(calls))
+
+
+class TestDatasourceResolution:
+    async def test_refresh_pins_to_original_resolved_datasource(self, tmp_path):
+        # An entry cached via implicit (priority-resolved) datasource must stay
+        # bound to the datasource it originally resolved to. If the priority
+        # list changes after caching, refresh() must NOT migrate the entry to a
+        # different datasource — it scanned the old one's refresh keys.
+        db_a = tmp_path / "db_a.db"
+        db_b = tmp_path / "db_b.db"
+        _seed_db(db_a)  # amounts sum to 350
+        _seed_orders_single(db_b, amount=999.0)  # sum 999
+
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await storage.save_datasource(
+            DatasourceConfig(name="db_a", type="sqlite", database=str(db_a))
+        )
+        await storage.save_datasource(
+            DatasourceConfig(name="db_b", type="sqlite", database=str(db_b))
+        )
+        await storage.save_model(_orders_model("db_a"))
+        await storage.save_model(_orders_model("db_b"))
+        await storage.set_datasource_priority(["db_a", "db_b"])
+
+        clk = FakeClock()
+        engine = SlayerQueryEngine(storage=storage)
+        engine._cache = QueryCache(config=CacheConfig(ttl_seconds=100), clock=clk)
+
+        r = await engine.execute(_sum_query(), cache=True)  # implicit → db_a
+        assert r.data[0]["orders.amount_sum"] == pytest.approx(350.0)
+        (entry,) = engine._cache._entries.values()
+        assert entry.resolved_data_source == "db_a"
+
+        # Flip the priority, then TTL-expire and refresh.
+        await storage.set_datasource_priority(["db_b", "db_a"])
+        clk.advance(200)
+        await engine.refresh()
+
+        entries = list(engine._cache._entries.values())
+        assert len(entries) == 1
+        assert entries[0].resolved_data_source == "db_a"  # not migrated to db_b
+        assert entries[0].response.data[0]["orders.amount_sum"] == pytest.approx(350.0)
