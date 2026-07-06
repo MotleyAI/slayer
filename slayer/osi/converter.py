@@ -350,6 +350,10 @@ class OsiToSlayerConverter:
             model.columns.append(col)
             by_name[col.name] = col
         elif existing is not col:
+            # Preserve the shadowed column's primary-key flag across the
+            # redefinition — an introspected PK must survive a derived overlay
+            # unless OSI's primary_key explicitly overrides it later.
+            col.primary_key = existing.primary_key
             model.columns[model.columns.index(existing)] = col
             by_name[col.name] = col
         return col.name if is_time else None

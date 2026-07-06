@@ -359,6 +359,19 @@ def test_invalid_osi_primary_key_keeps_introspected(shop_engine):
     assert _reported(result)
 
 
+def test_derived_overlay_preserves_primary_key(shop_engine):
+    # A derived overlay on the PK column (OSI not restating primary_key) keeps
+    # the introspected PK flag.
+    doc = _mini_doc(
+        datasets=[OSIDataset(name="orders", source="orders",
+                             fields=[OSIField(name="order_id", expression=_expr("order_id + 0"))])]
+    )
+    result = _convert(shop_engine, doc)
+    order_id = {c.name: c for c in {m.name: m for m in result.models}["orders"].columns}["order_id"]
+    assert order_id.primary_key is True
+    assert order_id.sql == "order_id + 0"
+
+
 def test_osi_primary_key_overrides_introspected(shop_engine):
     # OSI primary_key is authoritative: it replaces the physical PK (order_id).
     doc = _mini_doc(
