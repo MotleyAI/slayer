@@ -989,7 +989,7 @@ class SQLGenerator:
             }
             for order_item in enriched.order:
                 col = order_item.column
-                ref = self._resolve_order_column(col=col, enriched=enriched)
+                ref = self._resolve_order_column(col=col, enriched=enriched, joins_in_scope=False)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
                 if ref.is_alias and ref.text in base_cols:
                     order_parts.append(f'_base.{self._q(ref.text)} {direction}')
@@ -1011,7 +1011,7 @@ class SQLGenerator:
             order_parts = []
             for order_item in enriched.order:
                 col = order_item.column
-                ref = SQLGenerator._resolve_order_column(col=col, enriched=enriched)
+                ref = SQLGenerator._resolve_order_column(col=col, enriched=enriched, joins_in_scope=False)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
                 if ref.is_alias:
                     order_parts.append(f'{self._q(ref.text)} {direction}')
@@ -1934,7 +1934,7 @@ class SQLGenerator:
         if enriched.order:
             for order_item in enriched.order:
                 col = order_item.column
-                ref = self._resolve_order_column(col=col, enriched=enriched)
+                ref = self._resolve_order_column(col=col, enriched=enriched, joins_in_scope=True)
                 if ref.is_alias:
                     order_col = exp.Column(this=exp.to_identifier(ref.text, quoted=True))
                 else:
@@ -1964,7 +1964,7 @@ class SQLGenerator:
         return col.sql(dialect=self.dialect)
 
     @staticmethod
-    def _resolve_order_column(col, enriched: EnrichedQuery) -> _OrderColRef:
+    def _resolve_order_column(col, enriched: EnrichedQuery, *, joins_in_scope: bool) -> _OrderColRef:
         """Resolve an order column reference to a discriminated result.
 
         Users refer to columns by their short name (e.g., ``count``,
@@ -2030,7 +2030,20 @@ class SQLGenerator:
         # (``customers__regions``). If neither is in scope (ordering by an
         # unprojected joined column whose join was never resolved), reject
         # rather than emit SQL that fails at the database.
-        in_scope = {enriched.model_name} | {a for _, a, _, _ in enriched.resolved_joins}
+        #
+        # ``joins_in_scope`` is set by the caller per emission site: True only
+        # for the base SELECT (``_apply_order_limit``), where the resolved
+        # LEFT JOINs are physically in the FROM. The CTE-wrapped sites
+        # (``_assemble_combined_sql`` / ``_apply_pagination_to_sql``) order from
+        # ``_base`` / ``_filtered`` / measure CTEs, so a filter-pulled join
+        # alias is NOT bound there — treating it as in-scope would emit an
+        # unbound reference, so those sites exclude joins and reject a joined
+        # order column. The base-model qualifier stays in-scope either way (the
+        # documented ``_base`` base-column limitation is intentionally not
+        # rejected).
+        in_scope = {enriched.model_name}
+        if joins_in_scope:
+            in_scope |= {a for _, a, _, _ in enriched.resolved_joins}
         join_alias = model_prefix.replace(".", "__")
         if model_prefix in in_scope:
             qualifier = model_prefix

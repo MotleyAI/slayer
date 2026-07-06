@@ -27,10 +27,10 @@ import pytest
 
 import sqlglot
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import UnresolvableOrderColumnError
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
+from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator
@@ -273,6 +273,52 @@ class TestFlavorAOrderByUnprojected:
         sql = _norm(await _generate_via_engine(query, orders, storage))
         assert "ORDER BY customers__regions.name" in sql
         assert '"customers.regions"' not in sql
+
+    async def test_orderby_joined_column_rejected_in_cte_wrapped_scope(self, tmp_path) -> None:
+        """A joined column can be resolved in the base SELECT (joins in FROM),
+        but NOT in a CTE-wrapped scope (measure CTEs / windowed measures order
+        from `_base`, where the join alias is unbound). Even when a filter pulls
+        the join in, ordering by that joined column in the combined-CTE path must
+        reject rather than emit an unbound reference (Codex review of PR #224)."""
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        regions = SlayerModel(
+            name="regions", sql_table="regions", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+            ],
+        )
+        await storage.save_model(regions)
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        )
+        await storage.save_model(customers)
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            default_time_dimension="created_at",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        await storage.save_model(orders)
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],  # windowed -> combined CTE path
+            filters=["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
+            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        )
+        with pytest.raises(UnresolvableOrderColumnError):
+            await _generate_via_engine(query, orders, storage)
 
 
 # ============================================================================
