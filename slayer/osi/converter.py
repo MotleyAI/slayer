@@ -285,8 +285,15 @@ class OsiToSlayerConverter:
         if is_time and col.type not in (DataType.DATE, DataType.TIMESTAMP):
             col.type = DataType.TIMESTAMP
 
-        if col.name not in by_name:
+        # Bare overlays return the existing column object (no-op here); an
+        # aliased/derived field that shadows an existing column REPLACES it so
+        # its expression isn't silently dropped by an append-only path.
+        existing = by_name.get(col.name)
+        if existing is None:
             model.columns.append(col)
+            by_name[col.name] = col
+        elif existing is not col:
+            model.columns[model.columns.index(existing)] = col
             by_name[col.name] = col
         return col.name if is_time else None
 
@@ -307,14 +314,9 @@ class OsiToSlayerConverter:
                 model_name=ds.name, category="missing_column",
             )
             return None
-        # derived expression. When it redefines an existing (introspected)
-        # column, overlay the expression onto that column so it isn't silently
-        # dropped by the append-only path; otherwise create a new derived column.
+        # derived expression (collision with an existing column is handled by
+        # the replace-or-append logic in _overlay_one_field).
         is_time = bool(field.dimension and field.dimension.is_time)
-        existing = by_name.get(field.name)
-        if existing is not None:
-            existing.sql = sql
-            return existing
         return Column(
             name=field.name, sql=sql,
             type=DataType.TIMESTAMP if is_time else DataType.DOUBLE,
@@ -385,6 +387,16 @@ class OsiToSlayerConverter:
         model = self._models.get(model_name)
         return model is not None and any(c.name == column for c in model.columns)
 
+    def _model_has_name(self, model_name: str, name: str) -> bool:
+        """Whether ``name`` is taken by a column OR measure on the model —
+        SLayer requires the two to share one namespace, so a materialized
+        hidden-column name must avoid both."""
+        model = self._models.get(model_name)
+        if model is None:
+            return False
+        return (any(c.name == name for c in model.columns)
+                or any(m.name == name for m in model.measures))
+
     def _missing_join_columns(self, rel: OSIRelationship) -> list[str]:
         """Qualified names of relationship join columns absent from their
         model, so a typo clean-fails instead of emitting a broken join."""
@@ -445,7 +457,7 @@ class OsiToSlayerConverter:
         result = convert_expression(
             expr, entity_name=metric.name, owner_of=owner_of, ref_of=ref_of,
             percentile_unsupported=percentile_unsupported,
-            name_taken=self._model_has_column,
+            name_taken=self._model_has_name,
         )
         if not result.ok:
             self._unconv(
@@ -464,13 +476,27 @@ class OsiToSlayerConverter:
             )
             return
 
+        # Build the measure first so a construction failure (e.g. a metric named
+        # after a reserved transform like ``cumsum``) clean-fails instead of
+        # crashing the import — and before materializing columns, so a rejected
+        # metric leaves no orphan hidden columns.
+        try:
+            measure = ModelMeasure(
+                formula=result.formula,
+                name=metric.name,
+                description=_render_description(metric.description, metric.ai_context),
+                meta=_build_meta(metric.ai_context, metric.custom_extensions),
+            )
+        except Exception as exc:  # noqa: BLE001 — any validation error -> report
+            self._unconv(
+                f"Metric {metric.name!r} cannot be expressed as a SLayer measure "
+                f"({exc}).",
+                metric_name=metric.name,
+            )
+            return
+
         self._materialize_columns(result.materialized)
-        self._models[anchor].measures.append(ModelMeasure(
-            formula=result.formula,
-            name=metric.name,
-            description=_render_description(metric.description, metric.ai_context),
-            meta=_build_meta(metric.ai_context, metric.custom_extensions),
-        ))
+        self._models[anchor].measures.append(measure)
         for w in result.warnings:
             self._warn(f"Metric {metric.name!r}: {w}", metric_name=metric.name,
                        category="dialect", severity="info")
@@ -540,10 +566,11 @@ class OsiToSlayerConverter:
                 # otherwise a metric like SUM(orders.no_such_col) would import
                 # as a measure that fails at query time.
                 return qualifier if has_column(qualifier, column) else None
-            for name in sm_model_names:
-                if has_column(name, column):
-                    return name
-            return None
+            # Unqualified: resolve only when exactly one dataset owns the column.
+            # Ambiguity (the same column name on multiple datasets) returns None
+            # so the metric clean-fails instead of binding by dataset order.
+            matches = [name for name in sm_model_names if has_column(name, column)]
+            return matches[0] if len(matches) == 1 else None
         return owner_of
 
     def _make_ref_of(self, graph: JoinGraph, anchor: str):

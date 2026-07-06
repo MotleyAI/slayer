@@ -484,6 +484,74 @@ def test_derived_field_shadowing_physical_column_overlays(shop_engine):
     assert status_cols[0].sql == "LOWER(status)"
 
 
+def test_bare_alias_field_shadowing_physical_column_replaces(shop_engine):
+    # A bare-identifier field aliasing one physical column onto the name of
+    # another must replace the shadowed column, not be silently dropped.
+    doc = _mini_doc(
+        datasets=[OSIDataset(
+            name="orders", source="orders",
+            fields=[OSIField(name="status", expression=_expr("order_id"))],
+        )]
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    status_cols = [c for c in orders.columns if c.name == "status"]
+    assert len(status_cols) == 1 and status_cols[0].sql == "order_id"
+
+
+def test_materialized_name_avoids_existing_measure(shop_engine):
+    # A materialized operand name must avoid an existing MEASURE name too
+    # (SLayer columns and measures share one namespace).
+    doc = _mini_doc(
+        datasets=[OSIDataset(
+            name="orders", source="orders",
+            fields=[OSIField(name="amount", expression=_expr("amount")),
+                    OSIField(name="quantity", expression=_expr("quantity"))],
+        )],
+        metrics=[
+            OSIMetric(name="_rev_0", expression=_expr("SUM(amount)")),
+            OSIMetric(name="rev", expression=_expr("SUM(quantity * amount)")),
+        ],
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "_rev_0" in {m.name for m in orders.measures}
+    derived = {m.name: m for m in orders.measures}["rev"].formula.split(":")[0]
+    assert derived != "_rev_0"
+
+
+def test_metric_named_after_transform_clean_fails(shop_engine):
+    # A metric named after a reserved transform (cumsum) must clean-fail, not
+    # crash the whole import at ModelMeasure construction.
+    doc = _mini_doc(
+        datasets=[OSIDataset(name="orders", source="orders",
+                             fields=[OSIField(name="amount", expression=_expr("amount"))])],
+        metrics=[OSIMetric(name="cumsum", expression=_expr("SUM(amount)"))],
+    )
+    result = _convert(shop_engine, doc)  # must not raise
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "cumsum" not in {m.name for m in orders.measures}
+    assert _reported(result)
+
+
+def test_ambiguous_unqualified_column_clean_fails(shop_engine):
+    # customer_id exists on both orders and customers; an unqualified reference
+    # is ambiguous and must clean-fail rather than bind by dataset order.
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders",
+                       fields=[OSIField(name="amount", expression=_expr("amount"))]),
+            OSIDataset(name="customers", source="customers",
+                       fields=[OSIField(name="segment", expression=_expr("segment"))]),
+        ],
+        metrics=[OSIMetric(name="cid", expression=_expr("COUNT(customer_id)"))],
+    )
+    result = _convert(shop_engine, doc)
+    all_measures = {meas.name for m in result.models for meas in m.measures}
+    assert "cid" not in all_measures
+    assert _reported(result)
+
+
 def test_materialized_name_avoids_existing_column(shop_engine):
     # A materialized operand name must not collide with an existing column,
     # else the metric would aggregate the wrong column.
