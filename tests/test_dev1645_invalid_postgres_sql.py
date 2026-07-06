@@ -338,6 +338,33 @@ class TestFlavorBMixedCaseQuoting:
         sql = _norm(await _generate(query, model))
         assert '"StateFlag"' in sql
 
+    async def test_first_last_ranked_mixed_case_dimension_quoted(self) -> None:
+        """The first/last ranked-subquery path references group-by dimensions by
+        bare name against the model.* subquery output; a mixed-case dimension
+        must be quoted there (DEV-1645, Codex review of PR #224)."""
+        model = SlayerModel(
+            name="events",
+            sql_table="public.events",
+            data_source="test",
+            default_time_dimension="ts",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="RegionCode", sql="RegionCode", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="ts", sql="ts", type=DataType.TIMESTAMP),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="events",
+            dimensions=[ColumnRef(name="RegionCode")],
+            measures=[{"formula": "amount:last(ts)", "name": "latest"}],
+        )
+        sql = _norm(await _generate(query, model))
+        # The OUTER group-by / projection reference (line 1376 path) must be
+        # quoted so it matches the ranked subquery's model.* output column.
+        assert 'GROUP BY "RegionCode"' in sql
+        assert 'GROUP BY RegionCode' not in sql
+
     async def test_standard_agg_inner_mixed_case_column_quoted(self) -> None:
         """A standard aggregation over a bare mixed-case column quotes the inner
         column (the ``_resolve_sql`` / standard-agg inner construction path):

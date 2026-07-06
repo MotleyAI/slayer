@@ -864,7 +864,7 @@ class SQLGenerator:
                 group_exprs: list[exp.Expression] = []
                 # Dimensions are already resolved inside the ranked subquery
                 for dim in enriched.dimensions:
-                    col_expr = exp.Column(this=exp.to_identifier(dim.name))
+                    col_expr = exp.Column(this=self._to_ident(dim.name))
                     select = select.select(col_expr.as_(dim.alias))
                     group_exprs.append(col_expr)
                 for td in enriched.time_dimensions:
@@ -1372,8 +1372,10 @@ class SQLGenerator:
         for dim in enriched.dimensions:
             col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name, type=dim.type)
             if has_first_or_last:
-                # In ranked subquery, dimensions are already columns — reference directly
-                col_expr = exp.Column(this=exp.to_identifier(dim.name))
+                # In ranked subquery, dimensions are already columns — reference
+                # directly (DEV-1645: quote mixed-case names so they match the
+                # ranked subquery's model.* output column on case-folding dialects)
+                col_expr = exp.Column(this=self._to_ident(dim.name))
             select_columns.append(col_expr.as_(dim.alias))
             group_by_columns.append(col_expr)
 
