@@ -19,7 +19,6 @@ from slayer.core.errors import ForcedFilterError
 from slayer.core.policy import (
     ColumnFilterRule,
     JoinFilterRule,
-    JoinHop,
     SessionPolicy,
 )
 from slayer.sql.session_policy import (
@@ -502,6 +501,7 @@ def test_bigquery_dialect_wraps():
 
 
 def _hop(**kw):
+    """Assemble a hop STRING from parts (default: orders -> customers)."""
     base = {
         "from_table": "orders",
         "from_column": "customer_id",
@@ -509,7 +509,10 @@ def _hop(**kw):
         "to_column": "id",
     }
     base.update(kw)
-    return JoinHop(**base)
+    return (
+        f"{base['from_table']}.{base['from_column']} = "
+        f"{base['to_table']}.{base['to_column']}"
+    )
 
 
 def _single_hop_rule(**kw):
@@ -609,18 +612,8 @@ def test_multihop_emits_chained_joins_terminal_on_last():
     rule = JoinFilterRule(
         target_table="line_items",
         join_path=[
-            JoinHop(
-                from_table="line_items",
-                from_column="order_id",
-                to_table="orders",
-                to_column="id",
-            ),
-            JoinHop(
-                from_table="orders",
-                from_column="customer_id",
-                to_table="customers",
-                to_column="id",
-            ),
+            "line_items.order_id = orders.id",
+            "orders.customer_id = customers.id",
         ],
         column="organization_uuid",
         value="orgA",
@@ -666,14 +659,7 @@ def test_multiple_join_rules_same_table_and_combined():
     rule_b = JoinFilterRule(
         name="by_region",
         target_table="orders",
-        join_path=[
-            JoinHop(
-                from_table="orders",
-                from_column="region_id",
-                to_table="regions",
-                to_column="id",
-            )
-        ],
+        join_path=["orders.region_id = regions.id"],
         column="organization_uuid",
         value="orgA",
     )
@@ -915,18 +901,27 @@ def test_join_terminal_value_is_injection_safe():
     assert "'x'' OR ''1''=''1'" in out
 
 
-def test_join_identifiers_are_structural_not_raw():
-    """A hop/column identifier containing a dot is quoted as one identifier,
-    never spliced into the SQL as a qualified path."""
+def test_join_hop_identifiers_emitted_structurally():
+    """Hop table/column identifiers are built structurally (exp.to_table /
+    exp.column), so an identifier that requires quoting is emitted quoted, not
+    spliced as raw SQL (a raw splice would be invalid SQL). Uses a non-dotted
+    adversarial name — a column containing a space (dotted column names are out
+    of scope)."""
     rule = _single_hop_rule(
-        join_path=[_hop(to_column="weird.id")],
+        target_table="orders",
+        join_path=["orders.customer_id = customers.tenant col"],
     )
     policy = _jpolicy(rule)
     out = apply_session_policy(
         "SELECT * FROM orders", dialect="sqlite", policy=policy, has_column=ALWAYS
     )
-    # emitted as a single quoted identifier, not as table.column
-    assert '"weird.id"' in out
+    # emitted as one quoted identifier (raw-spliced `_rls_j0.tenant col` would
+    # be a syntax error), and it re-parses cleanly as a single Column.
+    assert '"tenant col"' in out
+    reparsed = sqlglot.parse_one(out, dialect="sqlite")
+    body = next(iter(reparsed.find_all(exp.Exists))).this
+    cols = {c.name for c in body.find_all(exp.Column)}
+    assert "tenant col" in cols
 
 
 # -- ClickHouse correlated-subquery handling ---------------------------------

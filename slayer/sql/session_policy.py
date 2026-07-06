@@ -210,7 +210,7 @@ def _build_exists(rule: JoinFilterRule) -> exp.Exists:
     hop becomes an inner ``JOIN``; the first hop correlates to the wrapper's
     inner base alias (``_rls_src``); the terminal predicate lives on the last
     hop's alias. All identifiers are structural (dotted/quoted-safe)."""
-    hops = rule.join_path
+    hops = rule.parsed_hops
 
     first_to = exp.to_table(hops[0].to_table)
     first_to.set("alias", exp.TableAlias(this=exp.to_identifier(_hop_alias(0))))

@@ -12,7 +12,6 @@ from slayer.client.slayer_client import SlayerClient
 from slayer.core.policy import (
     ColumnFilterRule,
     JoinFilterRule,
-    JoinHop,
     SessionPolicy,
 )
 from slayer.storage.yaml_storage import YAMLStorage
@@ -61,14 +60,7 @@ def _join_policy():
             ColumnFilterRule(column="organization_uuid", value="7ef3"),
             JoinFilterRule(
                 target_table="orders",
-                join_path=[
-                    JoinHop(
-                        from_table="orders",
-                        from_column="customer_id",
-                        to_table="customers",
-                        to_column="id",
-                    )
-                ],
+                join_path=["orders.customer_id = customers.id"],
                 column="organization_uuid",
                 value="7ef3",
             )

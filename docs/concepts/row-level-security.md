@@ -103,13 +103,15 @@ emitting a correlated `EXISTS` semi-join — cardinality-safe (it never
 multiplies rows) and `LEFT JOIN`-preserving.
 
 The join path is stated in **physical DB table/column names** (not model
-names). The first hop starts at `target_table`; each later hop starts where
-the previous one ended; `column` is the tenant column on the **last** hop's
-`to_table`. The path may be multihop.
+names). Each hop is a string `"from_table.from_column = to_table.to_column"`
+(tables optionally schema/catalog-qualified). The first hop starts at
+`target_table`; each later hop starts where the previous one ended; `column`
+is the tenant column on the **last** hop's `to_table`. The path may be
+multihop.
 
 ```python
 from slayer.core.policy import (
-    SessionPolicy, ColumnFilterRule, JoinFilterRule, JoinHop,
+    SessionPolicy, ColumnFilterRule, JoinFilterRule,
 )
 
 policy = SessionPolicy(data_filters=[
@@ -118,20 +120,15 @@ policy = SessionPolicy(data_filters=[
     # orders lacks the column -> reach it via orders.customer_id = customers.id
     JoinFilterRule(
         target_table="orders",
-        join_path=[JoinHop(
-            from_table="orders", from_column="customer_id",
-            to_table="customers", to_column="id",
-        )],
+        join_path=["orders.customer_id = customers.id"],
         column="organization_uuid", value="7ef3...",
     ),
     # line_items reaches it multihop: line_items -> orders -> customers
     JoinFilterRule(
         target_table="line_items",
         join_path=[
-            JoinHop(from_table="line_items", from_column="order_id",
-                    to_table="orders", to_column="id"),
-            JoinHop(from_table="orders", from_column="customer_id",
-                    to_table="customers", to_column="id"),
+            "line_items.order_id = orders.id",
+            "orders.customer_id = customers.id",
         ],
         column="organization_uuid", value="7ef3...",
     ),

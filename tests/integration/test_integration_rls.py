@@ -25,7 +25,6 @@ from slayer.core.models import (
 from slayer.core.policy import (
     ColumnFilterRule,
     JoinFilterRule,
-    JoinHop,
     SessionPolicy,
 )
 from slayer.core.query import ColumnRef, SlayerQuery
@@ -465,13 +464,7 @@ async def rls_join_storage(tmp_path):
     return storage
 
 
-def _orders_hop():
-    return JoinHop(
-        from_table="orders",
-        from_column="customer_id",
-        to_table="customers",
-        to_column="id",
-    )
+_ORDERS_HOP = "orders.customer_id = customers.id"
 
 
 def _join_policy(org=ORG_A):
@@ -483,7 +476,7 @@ def _join_policy(org=ORG_A):
             JoinFilterRule(
                 name="orders_tenant",
                 target_table="orders",
-                join_path=[_orders_hop()],
+                join_path=[_ORDERS_HOP],
                 column="organization_uuid",
                 value=org,
             ),
@@ -491,13 +484,8 @@ def _join_policy(org=ORG_A):
                 name="line_items_tenant",
                 target_table="line_items",
                 join_path=[
-                    JoinHop(
-                        from_table="line_items",
-                        from_column="order_id",
-                        to_table="orders",
-                        to_column="id",
-                    ),
-                    _orders_hop(),
+                    "line_items.order_id = orders.id",
+                    _ORDERS_HOP,
                 ],
                 column="organization_uuid",
                 value=org,

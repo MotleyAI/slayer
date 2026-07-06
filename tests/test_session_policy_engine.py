@@ -19,7 +19,6 @@ from slayer.core.models import DatasourceConfig
 from slayer.core.policy import (
     ColumnFilterRule,
     JoinFilterRule,
-    JoinHop,
     SessionPolicy,
 )
 from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
@@ -206,14 +205,7 @@ def _join_policy():
             ColumnFilterRule(column="organization_uuid", value="orgA"),
             JoinFilterRule(
                 target_table="orders",
-                join_path=[
-                    JoinHop(
-                        from_table="orders",
-                        from_column="customer_id",
-                        to_table="customers",
-                        to_column="id",
-                    )
-                ],
+                join_path=["orders.customer_id = customers.id"],
                 column="organization_uuid",
                 value="orgA",
             )

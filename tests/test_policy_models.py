@@ -10,10 +10,11 @@ scalar-vs-list value shape that drives ``=`` vs ``IN`` at the SQL layer.
 import pytest
 from pydantic import ValidationError
 
+import slayer.core.policy as policy_mod
 from slayer.core.policy import (
     ColumnFilterRule,
     JoinFilterRule,
-    JoinHop,
+    JoinHop,  # internal parse product — imported only to pin strings-only input
     SessionPolicy,
 )
 
@@ -141,10 +142,22 @@ def test_policy_data_filters_tuple_has_no_append():
     assert not hasattr(policy.data_filters, "append")
 
 
-# -- JoinHop (DEV-1627) ------------------------------------------------------
+# -- JoinFilterRule hop parsing (DEV-1627) -----------------------------------
+#
+# Hops are authored as strings "from_table.from_column = to_table.to_column".
+# Each is parsed into an internal (never-serialized) representation, derived
+# fresh from ``join_path`` on every access to ``parsed_hops`` (no cache); the
+# public ``join_path`` stays a tuple of the original strings and round-trips
+# symmetrically.
+
+
+def test_join_hop_removed_from_public_api():
+    """JoinHop is an internal parse product only (locked plan item)."""
+    assert "JoinHop" not in policy_mod.__all__
 
 
 def _hop(**kw):
+    """Assemble a hop STRING from parts (default: orders -> customers)."""
     base = {
         "from_table": "orders",
         "from_column": "customer_id",
@@ -152,43 +165,10 @@ def _hop(**kw):
         "to_column": "id",
     }
     base.update(kw)
-    return JoinHop(**base)
-
-
-def test_join_hop_construction():
-    hop = _hop()
-    assert hop.from_table == "orders"
-    assert hop.from_column == "customer_id"
-    assert hop.to_table == "customers"
-    assert hop.to_column == "id"
-
-
-def test_join_hop_is_frozen():
-    hop = _hop()
-    with pytest.raises(ValidationError):
-        hop.from_table = "other"
-
-
-def test_join_hop_extra_forbidden():
-    with pytest.raises(ValidationError):
-        JoinHop(
-            from_table="orders",
-            from_column="customer_id",
-            to_table="customers",
-            to_column="id",
-            join_type="inner",
-        )
-
-
-@pytest.mark.parametrize(
-    "field", ["from_table", "from_column", "to_table", "to_column"]
-)
-def test_join_hop_blank_field_rejected(field):
-    with pytest.raises(ValidationError):
-        _hop(**{field: "   "})
-
-
-# -- JoinFilterRule (DEV-1627) -----------------------------------------------
+    return (
+        f"{base['from_table']}.{base['from_column']} = "
+        f"{base['to_table']}.{base['to_column']}"
+    )
 
 
 def _join_rule(**kw):
@@ -209,8 +189,34 @@ def test_join_rule_construction():
     assert rule.column == "organization_uuid"
     assert rule.value == "7ef3"
     assert rule.name is None
-    assert len(rule.join_path) == 1
+    assert rule.join_path == ("orders.customer_id = customers.id",)
     assert isinstance(rule.join_path, tuple)
+
+
+def test_join_path_elements_are_strings():
+    rule = _join_rule()
+    assert all(isinstance(h, str) for h in rule.join_path)
+
+
+def test_join_rule_parses_hops_into_internal_representation():
+    hops = _join_rule().parsed_hops
+    assert len(hops) == 1
+    assert hops[0].from_table == "orders"
+    assert hops[0].from_column == "customer_id"
+    assert hops[0].to_table == "customers"
+    assert hops[0].to_column == "id"
+
+
+def test_parsed_hops_absent_from_serialization():
+    rule = _join_rule()
+    dumped = rule.model_dump()
+    assert "parsed_hops" not in dumped
+    assert "_parsed_hops" not in dumped
+    # symmetric serialization: JSON carries only the hop strings, no hop object
+    json_dumped = rule.model_dump_json()
+    assert "parsed_hops" not in json_dumped
+    assert "from_table" not in json_dumped
+    assert "orders.customer_id = customers.id" in json_dumped
 
 
 def test_join_rule_is_frozen():
@@ -225,12 +231,11 @@ def test_join_rule_extra_forbidden():
 
 
 def test_join_rule_kind_literal_enforced():
-    hop = _hop()
     with pytest.raises(ValidationError):
         JoinFilterRule(
             kind="column",
             target_table="orders",
-            join_path=[hop],
+            join_path=[_hop()],
             column="org",
             value="x",
         )
@@ -246,46 +251,170 @@ def test_join_rule_empty_join_path_rejected():
         _join_rule(join_path=[])
 
 
+# -- hop string parsing: success ---------------------------------------------
+
+
+def test_hop_whitespace_tolerant():
+    rule = _join_rule(join_path=["   orders.customer_id   =   customers.id   "])
+    assert rule.parsed_hops[0].from_table == "orders"
+    assert rule.parsed_hops[0].from_column == "customer_id"
+    assert rule.parsed_hops[0].to_table == "customers"
+    assert rule.parsed_hops[0].to_column == "id"
+    # the public field preserves the original string verbatim
+    assert rule.join_path == ("   orders.customer_id   =   customers.id   ",)
+
+
+def test_hop_schema_qualified_tables():
+    rule = _join_rule(
+        target_table="public.orders",
+        join_path=["public.orders.customer_id = public.customers.id"],
+    )
+    assert rule.target_table == "public.orders"
+    assert rule.parsed_hops[0].from_table == "public.orders"
+    assert rule.parsed_hops[0].to_table == "public.customers"
+    assert rule.parsed_hops[0].to_column == "id"
+
+
+def test_hop_catalog_qualified_tables():
+    rule = _join_rule(
+        target_table="proj.dataset.orders",
+        join_path=[
+            "proj.dataset.orders.customer_id = proj.dataset.customers.id"
+        ],
+    )
+    assert rule.parsed_hops[0].from_table == "proj.dataset.orders"
+    assert rule.parsed_hops[0].to_table == "proj.dataset.customers"
+
+
+def test_hop_dotted_column_name_not_expressible():
+    """Documented out-of-scope narrowing: a column literally named with a dot
+    can't be expressed — the last dot always splits table/column, so
+    ``customers.weird.id`` parses as table ``customers.weird`` col ``id``."""
+    rule = _join_rule(join_path=["orders.customer_id = customers.weird.id"])
+    assert rule.parsed_hops[0].to_table == "customers.weird"
+    assert rule.parsed_hops[0].to_column == "id"
+
+
+# -- hop string parsing: failure ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "orders.customer_id customers.id",  # no '='
+        "a.b = c.d = e.f",  # more than one '='
+        "orders = customers.id",  # left side has no dot
+        "orders.customer_id = customers",  # right side has no dot
+        ".customer_id = customers.id",  # blank left table (leading dot)
+        "orders. = customers.id",  # blank left column
+        "orders.customer_id = .id",  # blank right table
+        "orders.customer_id = customers.",  # blank right column
+        "",  # empty
+        "   ",  # whitespace only
+    ],
+)
+def test_malformed_hop_string_rejected(bad):
+    with pytest.raises(ValidationError):
+        _join_rule(join_path=[bad])
+
+
+def test_bare_string_join_path_rejected():
+    """A single hop string (not wrapped in a list) is rejected, never silently
+    iterated into a tuple of characters."""
+    with pytest.raises(ValidationError):
+        _join_rule(join_path="orders.customer_id = customers.id")
+
+
+@pytest.mark.parametrize(
+    "bad_element",
+    [
+        123,
+        {
+            "from_table": "orders",
+            "from_column": "customer_id",
+            "to_table": "customers",
+            "to_column": "id",
+        },
+        ["orders.customer_id = customers.id"],  # nested list
+    ],
+)
+def test_non_string_hop_element_rejected(bad_element):
+    """Strings-only input: a JoinHop dict / non-string hop is rejected."""
+    with pytest.raises(ValidationError):
+        _join_rule(join_path=[bad_element])
+
+
+def test_joinhop_instance_hop_element_rejected():
+    """Strings-only input: even the internal JoinHop instance is rejected as a
+    hop element (callers must pass strings)."""
+    hop = JoinHop(
+        from_table="orders",
+        from_column="customer_id",
+        to_table="customers",
+        to_column="id",
+    )
+    with pytest.raises(ValidationError):
+        _join_rule(join_path=[hop])
+
+
+# -- chain validators (operate on the parsed hops) ---------------------------
+
+
 def test_join_rule_first_hop_must_start_at_target():
     """The first hop's from_table must equal target_table."""
-    hop = _hop(from_table="line_items")
     with pytest.raises(ValidationError):
-        _join_rule(target_table="orders", join_path=[hop])
+        _join_rule(
+            target_table="orders",
+            join_path=["line_items.order_id = customers.id"],
+        )
 
 
 def test_join_rule_hops_must_chain():
     """Each hop's from_table must equal the previous hop's to_table."""
-    hops = [
-        _hop(from_table="line_items", to_table="orders"),
-        # broken chain: starts at "customers", not "orders"
-        _hop(from_table="customers", to_table="regions"),
-    ]
     with pytest.raises(ValidationError):
-        _join_rule(target_table="line_items", join_path=hops)
+        _join_rule(
+            target_table="line_items",
+            join_path=[
+                "line_items.order_id = orders.id",
+                # broken chain: starts at "customers", not "orders"
+                "customers.region_id = regions.id",
+            ],
+        )
 
 
 def test_join_rule_multihop_valid_chain():
     rule = _join_rule(
         target_table="line_items",
         join_path=[
-            _hop(
-                from_table="line_items",
-                from_column="order_id",
-                to_table="orders",
-                to_column="id",
-            ),
-            _hop(
-                from_table="orders",
-                from_column="customer_id",
-                to_table="customers",
-                to_column="id",
-            ),
+            "line_items.order_id = orders.id",
+            "orders.customer_id = customers.id",
         ],
         column="organization_uuid",
         value="7ef3",
     )
     assert len(rule.join_path) == 2
-    assert rule.join_path[1].to_table == "customers"
+    assert rule.parsed_hops[1].to_table == "customers"
+
+
+def test_chain_check_is_case_insensitive():
+    rule = _join_rule(
+        target_table="ORDERS",
+        join_path=["orders.customer_id = customers.id"],
+    )
+    assert rule.parsed_hops[0].to_table == "customers"
+
+
+def test_inter_hop_chain_check_is_case_insensitive():
+    """Consecutive hops chain case-insensitively (prev.to_table vs
+    next.from_table differ only by case)."""
+    rule = _join_rule(
+        target_table="line_items",
+        join_path=[
+            "line_items.order_id = Orders.id",
+            "ORDERS.customer_id = customers.id",
+        ],
+    )
+    assert rule.parsed_hops[1].to_table == "customers"
 
 
 def test_join_rule_list_value_coerced_to_tuple():
@@ -309,16 +438,44 @@ def test_join_rule_blank_field_rejected(field):
         _join_rule(**{field: "  "})
 
 
-def test_join_rule_schema_qualified_tables_allowed():
-    """Optional schema/catalog qualification (Codex finding #1)."""
+# -- serialization round-trip ------------------------------------------------
+
+
+def test_join_rule_serializes_join_path_as_strings():
     rule = _join_rule(
-        target_table="public.orders",
+        target_table="line_items",
         join_path=[
-            _hop(from_table="public.orders", to_table="public.customers")
+            "line_items.order_id = orders.id",
+            "orders.customer_id = customers.id",
         ],
     )
-    assert rule.target_table == "public.orders"
-    assert rule.join_path[0].to_table == "public.customers"
+    dumped = rule.model_dump()
+    assert list(dumped["join_path"]) == [
+        "line_items.order_id = orders.id",
+        "orders.customer_id = customers.id",
+    ]
+    assert all(isinstance(h, str) for h in dumped["join_path"])
+
+
+def test_join_rule_json_round_trip_rebuilds_parsed_hops():
+    rule = _join_rule()
+    reloaded = JoinFilterRule.model_validate_json(rule.model_dump_json())
+    assert reloaded.join_path == rule.join_path
+    assert reloaded.parsed_hops[0].to_table == "customers"
+
+
+def test_join_rule_model_copy_update_rederives_parsed_hops():
+    """Bulletproof: parsed_hops derives from join_path on access, so a
+    model_copy swapping join_path re-derives (no stale cache)."""
+    rule = _join_rule()
+    copied = rule.model_copy(
+        update={
+            "target_table": "line_items",
+            "join_path": ("line_items.order_id = orders.id",),
+        }
+    )
+    assert copied.parsed_hops[0].from_table == "line_items"
+    assert copied.parsed_hops[0].to_table == "orders"
 
 
 # -- SessionPolicy discriminated union (DEV-1627) ----------------------------
@@ -350,14 +507,7 @@ def test_policy_join_rule_dict_with_kind():
             {
                 "kind": "join",
                 "target_table": "orders",
-                "join_path": [
-                    {
-                        "from_table": "orders",
-                        "from_column": "customer_id",
-                        "to_table": "customers",
-                        "to_column": "id",
-                    }
-                ],
+                "join_path": ["orders.customer_id = customers.id"],
                 "column": "organization_uuid",
                 "value": "7ef3",
             },
@@ -375,20 +525,63 @@ def test_policy_join_rule_dict_without_kind_inferred():
             _BLOCK_BACKSTOP,
             {
                 "target_table": "orders",
-                "join_path": [
-                    {
-                        "from_table": "orders",
-                        "from_column": "customer_id",
-                        "to_table": "customers",
-                        "to_column": "id",
-                    }
-                ],
+                "join_path": ["orders.customer_id = customers.id"],
                 "column": "organization_uuid",
                 "value": "7ef3",
             },
         ]
     )
     assert any(isinstance(r, JoinFilterRule) for r in policy.data_filters)
+
+
+def test_policy_join_rule_dict_hop_object_rejected():
+    """Strings-only: a structured hop dict inside a policy dict is rejected."""
+    with pytest.raises(ValidationError):
+        SessionPolicy(
+            data_filters=[
+                _BLOCK_BACKSTOP,
+                {
+                    "target_table": "orders",
+                    "join_path": [
+                        {
+                            "from_table": "orders",
+                            "from_column": "customer_id",
+                            "to_table": "customers",
+                            "to_column": "id",
+                        }
+                    ],
+                    "column": "organization_uuid",
+                    "value": "7ef3",
+                },
+            ]
+        )
+
+
+def test_policy_join_rule_full_round_trip():
+    """Kind-less dict with string hops -> dump -> reconstruct -> parsed_hops
+    rebuilt (Codex: exercise discriminator inference + re-derivation)."""
+    original = SessionPolicy(
+        data_filters=[
+            _BLOCK_BACKSTOP,
+            {
+                "target_table": "line_items",
+                "join_path": [
+                    "line_items.order_id = orders.id",
+                    "orders.customer_id = customers.id",
+                ],
+                "column": "organization_uuid",
+                "value": "7ef3",
+            },
+        ]
+    )
+    dumped = original.model_dump()
+    rebuilt = SessionPolicy(**dumped)
+    join = next(r for r in rebuilt.data_filters if isinstance(r, JoinFilterRule))
+    assert join.join_path == (
+        "line_items.order_id = orders.id",
+        "orders.customer_id = customers.id",
+    )
+    assert join.parsed_hops[1].to_table == "customers"
 
 
 def test_policy_column_rule_dict_without_kind_still_inferred():

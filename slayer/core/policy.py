@@ -88,7 +88,12 @@ class ColumnFilterRule(BaseModel):
 class JoinHop(BaseModel):
     """One physical-name join hop: ``from_table.from_column`` ->
     ``to_table.to_column``. Table fields may be schema/catalog-qualified
-    (``public.orders``). All four fields must be non-blank."""
+    (``public.orders``). All four fields must be non-blank.
+
+    Internal only: callers author hops as strings (see
+    :func:`_parse_hop`); this is the parsed runtime representation and is not
+    part of the public API (excluded from ``__all__``, never serialized).
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -103,17 +108,65 @@ class JoinHop(BaseModel):
         return _require_non_blank(v, info)
 
 
+def _parse_hop(spec: str) -> JoinHop:
+    """Parse a hop string ``"from_table.from_column = to_table.to_column"`` into
+    an internal :class:`JoinHop`.
+
+    Naive split: exactly one ``=``; each side is split on its **last** dot, so
+    the prefix is the (optionally schema/catalog-qualified) table kept verbatim
+    and the suffix is the column. Whitespace-tolerant. A column literally
+    containing a dot is not expressible (out of scope). Blank parts are rejected
+    by :class:`JoinHop`'s own validators. Raises ``ValueError`` on a malformed
+    spec (surfaces as a Pydantic ``ValidationError`` from the ``after``
+    validator that calls it).
+    """
+    if not isinstance(spec, str):
+        raise ValueError(
+            f"join_path hop must be a string, got {type(spec).__name__}"
+        )
+    sides = spec.split("=")
+    if len(sides) != 2:
+        raise ValueError(
+            f"join_path hop {spec!r} must be "
+            "'from_table.from_column = to_table.to_column' (exactly one '=')"
+        )
+
+    def _split(side: str) -> tuple[str, str]:
+        table, dot, column = side.strip().rpartition(".")
+        if not dot:
+            raise ValueError(
+                f"join_path hop side {side.strip()!r} must be 'table.column' "
+                f"(in hop {spec!r})"
+            )
+        return table.strip(), column.strip()
+
+    from_table, from_column = _split(sides[0])
+    to_table, to_column = _split(sides[1])
+    return JoinHop(
+        from_table=from_table,
+        from_column=from_column,
+        to_table=to_table,
+        to_column=to_column,
+    )
+
+
 class JoinFilterRule(BaseModel):
     """Scope ``target_table`` via an explicit join path to the tenant column.
 
-    The ``join_path`` is a non-empty chain of :class:`JoinHop`s stated in
-    physical DB names: the first hop starts at ``target_table`` and each
-    subsequent hop starts where the previous one ended. ``column`` is the
-    tenant column on the **last** hop's ``to_table``; ``value`` selects ``=``
-    (scalar) vs ``IN`` (non-empty list/tuple). The rewrite emits a correlated
-    ``EXISTS`` semi-join (cardinality-safe). There is no ``on_unapplicable``:
-    under the override model the rule always applies to its named table, and a
-    bad path fails closed at SQL execution.
+    ``join_path`` is a non-empty tuple of hop **strings** of the form
+    ``"from_table.from_column = to_table.to_column"`` (physical DB names,
+    tables optionally schema/catalog-qualified). The first hop starts at
+    ``target_table`` and each subsequent hop starts where the previous one
+    ended. ``column`` is the tenant column on the **last** hop's ``to_table``;
+    ``value`` selects ``=`` (scalar) vs ``IN`` (non-empty list/tuple). The
+    rewrite emits a correlated ``EXISTS`` semi-join (cardinality-safe).
+
+    Hops are parsed into internal :class:`JoinHop`s via :attr:`parsed_hops`
+    (derived fresh from ``join_path`` on each access — no cache); the public
+    ``join_path`` stays a tuple of the original strings and serializes
+    symmetrically. There is no ``on_unapplicable``: under the override model the
+    rule always applies to its named table, and a bad path fails closed at SQL
+    execution.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -121,9 +174,16 @@ class JoinFilterRule(BaseModel):
     kind: Literal["join"] = "join"
     name: Optional[str] = None  # diagnostics / error text only
     target_table: str
-    join_path: Tuple[JoinHop, ...]
+    join_path: Tuple[str, ...]
     column: str
     value: Union[PolicyScalar, Tuple[PolicyScalar, ...]]
+
+    @property
+    def parsed_hops(self) -> Tuple[JoinHop, ...]:
+        """The ``join_path`` strings parsed into internal :class:`JoinHop`s,
+        derived fresh on each access (never stored/serialized, so a
+        ``model_copy`` that swaps ``join_path`` can never go stale)."""
+        return tuple(_parse_hop(spec) for spec in self.join_path)
 
     @field_validator("target_table", "column")
     @classmethod
@@ -133,6 +193,13 @@ class JoinFilterRule(BaseModel):
     @field_validator("join_path", mode="before")
     @classmethod
     def _coerce_path(cls, v):
+        if isinstance(v, str):
+            # A bare string would otherwise be iterated into a tuple of single
+            # characters — reject it; join_path is a list of hop strings.
+            raise ValueError(
+                "JoinFilterRule.join_path must be a list of hop strings, not a "
+                "single string"
+            )
         if isinstance(v, list):
             return tuple(v)
         return v
@@ -144,18 +211,21 @@ class JoinFilterRule(BaseModel):
 
     @model_validator(mode="after")
     def _validate_chain(self):
-        # Physical table names compare case-insensitively — unquoted SQL
-        # identifiers are case-insensitive on every supported backend, and the
-        # SQL-layer target match is case-insensitive too.
-        if not self.join_path:
+        # Parse the hop strings once at construction (fail fast on malformed
+        # input) and validate the chain on the parsed hops. Physical table
+        # names compare case-insensitively — unquoted SQL identifiers are
+        # case-insensitive on every supported backend, and the SQL-layer target
+        # match is case-insensitive too.
+        hops = self.parsed_hops
+        if not hops:
             raise ValueError("JoinFilterRule.join_path must be non-empty")
-        if self.join_path[0].from_table.casefold() != self.target_table.casefold():
+        if hops[0].from_table.casefold() != self.target_table.casefold():
             raise ValueError(
                 "JoinFilterRule.join_path[0].from_table "
-                f"({self.join_path[0].from_table!r}) must equal target_table "
+                f"({hops[0].from_table!r}) must equal target_table "
                 f"({self.target_table!r})"
             )
-        for prev, cur in zip(self.join_path, self.join_path[1:]):
+        for prev, cur in zip(hops, hops[1:]):
             if cur.from_table.casefold() != prev.to_table.casefold():
                 raise ValueError(
                     "JoinFilterRule.join_path hops must chain: hop from_table "
@@ -234,7 +304,6 @@ __all__ = [
     "PolicyScalar",
     "OnUnapplicable",
     "ColumnFilterRule",
-    "JoinHop",
     "JoinFilterRule",
     "DataFilterRule",
     "SessionPolicy",
