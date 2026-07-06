@@ -229,13 +229,13 @@ def test_dataset_name_with_path_separator_clean_fails(shop_engine):
         datasets=[
             OSIDataset(name="orders", source="orders",
                        fields=[OSIField(name="amount", expression=_expr("amount"))]),
-            OSIDataset(name="/tmp/owned", source="orders",
+            OSIDataset(name="evil/name", source="orders",
                        fields=[OSIField(name="amount", expression=_expr("amount"))]),
         ]
     )
     result = _convert(shop_engine, doc)
     names = {m.name for m in result.models}
-    assert "orders" in names and "/tmp/owned" not in names
+    assert "orders" in names and "evil/name" not in names
     assert _reported(result)
 
 
