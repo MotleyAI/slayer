@@ -484,6 +484,35 @@ def test_derived_field_shadowing_physical_column_overlays(shop_engine):
     assert status_cols[0].sql == "LOWER(status)"
 
 
+def test_derived_field_expression_unknown_column_clean_fails(shop_engine):
+    # A derived field expression referencing a nonexistent column must clean-fail
+    # rather than import a column that fails at query time.
+    doc = _mini_doc(
+        datasets=[OSIDataset(
+            name="orders", source="orders",
+            fields=[OSIField(name="gross", expression=_expr("amount + no_such_col"))],
+        )]
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "gross" not in {c.name for c in orders.columns}
+    assert _reported(result)
+
+
+def test_metric_operand_unknown_column_clean_fails(shop_engine):
+    # A materialized aggregate operand where one column is unknown must clean-
+    # fail, not materialize SQL that still references the missing column.
+    doc = _mini_doc(
+        datasets=[OSIDataset(name="orders", source="orders",
+                             fields=[OSIField(name="amount", expression=_expr("amount"))])],
+        metrics=[OSIMetric(name="bad", expression=_expr("SUM(amount + no_such_col)"))],
+    )
+    result = _convert(shop_engine, doc)
+    all_measures = {meas.name for m in result.models for meas in m.measures}
+    assert "bad" not in all_measures
+    assert _reported(result)
+
+
 def test_bare_alias_field_shadowing_physical_column_replaces(shop_engine):
     # A bare-identifier field aliasing one physical column onto the name of
     # another must replace the shadowed column, not be silently dropped.

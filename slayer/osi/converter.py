@@ -68,6 +68,23 @@ def _is_bare_identifier(sql: str) -> bool:
     return bool(_IDENTIFIER_RE.match(sql.strip()))
 
 
+def _missing_expr_columns(sql: str, available: set[str]) -> list[str]:
+    """Bare (unqualified) column names in ``sql`` that are not in ``available``.
+
+    Qualified references (``table.col``) are left alone — they may point at a
+    joined model and are not validated against the local column set here.
+    """
+    try:
+        tree = sqlglot.parse_one(sql)
+    except sqlglot.errors.ParseError:
+        return []
+    missing = []
+    for col in tree.find_all(exp.Column):
+        if not col.table and col.name not in available:
+            missing.append(col.name)
+    return missing
+
+
 def _render_description(explicit: Optional[str], ctx: Optional[OSIAIContext]) -> Optional[str]:
     """Description = explicit OSI description (lead) + ai_context instructions +
     synonyms."""
@@ -314,8 +331,18 @@ class OsiToSlayerConverter:
                 model_name=ds.name, category="missing_column",
             )
             return None
-        # derived expression (collision with an existing column is handled by
-        # the replace-or-append logic in _overlay_one_field).
+        # derived expression. Validate its column references exist on the table
+        # (consistent with the bare-field / metric / relationship checks); a
+        # collision with an existing column is handled by the replace-or-append
+        # logic in _overlay_one_field.
+        missing = _missing_expr_columns(sql, introspected)
+        if missing:
+            self._warn(
+                f"Field {field.name!r} on {ds.name!r} references unknown "
+                f"column(s) {missing}; skipping.",
+                model_name=ds.name, category="missing_column",
+            )
+            return None
         is_time = bool(field.dimension and field.dimension.is_time)
         return Column(
             name=field.name, sql=sql,

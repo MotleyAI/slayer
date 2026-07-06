@@ -95,12 +95,17 @@ class _Converter:
         if operand.find(exp.AggFunc, exp.Window, exp.WithinGroup):
             raise _Unconvertible("nested aggregate in aggregate operand")
         columns = list(operand.find_all(exp.Column))
-        owners = {self.owner_of(c.table or None, c.name) for c in columns}
-        owners.discard(None)
-        if len(owners) != 1:
+        resolved = [self.owner_of(c.table or None, c.name) for c in columns]
+        # An unresolved column (unknown, or ambiguous) must fail the whole
+        # operand — discarding it would materialize SQL referencing a column
+        # that does not exist.
+        if not columns or any(owner is None for owner in resolved):
             raise _Unconvertible(
-                "aggregate operand spans multiple datasets (or resolves to none)"
+                "aggregate operand references a column that cannot be resolved"
             )
+        owners = set(resolved)
+        if len(owners) != 1:
+            raise _Unconvertible("aggregate operand spans multiple datasets")
         owner = owners.pop()
         operand_sql = operand.sql()
         key = (owner, operand_sql)
