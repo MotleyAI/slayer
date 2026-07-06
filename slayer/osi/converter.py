@@ -285,11 +285,22 @@ class OsiToSlayerConverter:
 
         # OSI primary_key is authoritative: when set, it fully REPLACES the
         # introspected primary key (clearing physical PK flags that OSI omits);
-        # when unset, the introspected PK is kept.
+        # when unset, the introspected PK is kept. If any listed key column is
+        # missing (typo), the override is unsafe (it would leave the model with
+        # no PK) — report and keep the introspected PK instead.
         if ds.primary_key:
-            osi_pk = set(ds.primary_key)
-            for col in model.columns:
-                col.primary_key = col.name in osi_pk
+            present = {c.name for c in model.columns}
+            missing_pk = [k for k in ds.primary_key if k not in present]
+            if missing_pk:
+                self._warn(
+                    f"Dataset {ds.name!r} primary_key references unknown "
+                    f"column(s) {missing_pk}; keeping the introspected primary key.",
+                    model_name=ds.name, category="primary_key",
+                )
+            else:
+                osi_pk = set(ds.primary_key)
+                for col in model.columns:
+                    col.primary_key = col.name in osi_pk
 
         if first_time_dim and not model.default_time_dimension:
             model.default_time_dimension = first_time_dim
@@ -353,8 +364,10 @@ class OsiToSlayerConverter:
             if bare == field.name and field.name in by_name:
                 return by_name[field.name]          # overlay existing column
             if bare in introspected:
-                # aliased/renamed reference to a real column
-                return Column(name=field.name, sql=bare, type=by_name[bare].type)
+                # aliased/renamed reference to a real column. Keep the ORIGINAL
+                # expression (preserving any identifier quoting, which matters on
+                # case-folding dialects); use the unquoted name only for lookup.
+                return Column(name=field.name, sql=sql, type=by_name[bare].type)
             self._warn(
                 f"Field {field.name!r} on {ds.name!r} references column {bare!r} "
                 f"which is not present in the table; skipping.",

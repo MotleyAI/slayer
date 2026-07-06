@@ -336,6 +336,29 @@ def test_per_dataset_failure_isolation(shop_engine):
     assert _reported(result)
 
 
+def test_quoted_alias_field_preserves_quoting(shop_engine):
+    # An aliased quoted column keeps its quoting in Column.sql (matters on
+    # case-folding dialects); the unquoted name is used only for lookup.
+    doc = _mini_doc(
+        datasets=[OSIDataset(name="orders", source="orders",
+                             fields=[OSIField(name="legal_type", expression=_expr('"status"'))])]
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert {c.name: c for c in orders.columns}["legal_type"].sql == '"status"'
+
+
+def test_invalid_osi_primary_key_keeps_introspected(shop_engine):
+    doc = _mini_doc(
+        datasets=[OSIDataset(name="orders", source="orders", primary_key=["no_such_pk"],
+                             fields=[OSIField(name="amount", expression=_expr("amount"))])]
+    )
+    result = _convert(shop_engine, doc)
+    cols = {c.name: c for c in {m.name: m for m in result.models}["orders"].columns}
+    assert cols["order_id"].primary_key is True  # introspected PK preserved
+    assert _reported(result)
+
+
 def test_osi_primary_key_overrides_introspected(shop_engine):
     # OSI primary_key is authoritative: it replaces the physical PK (order_id).
     doc = _mini_doc(
