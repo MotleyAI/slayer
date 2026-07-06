@@ -39,6 +39,16 @@ def test_quoted_identifiers_unwrapped():
     assert p.table == "My Table" and p.schema_name == "My Schema"
 
 
+def test_quoted_identifier_containing_select_is_not_a_query():
+    # 'select' inside a quoted segment must not be treated as a SQL query.
+    p = parse_source('"My Select"."Orders"')
+    assert p.is_query is False
+    assert p.table == "Orders" and p.schema_name == "My Select"
+    p2 = parse_source('"select"."orders"')
+    assert p2.is_query is False
+    assert p2.table == "orders" and p2.schema_name == "select"
+
+
 def test_query_source_detected():
     p = parse_source("SELECT id, amount FROM orders WHERE amount > 0")
     assert p.is_query is True

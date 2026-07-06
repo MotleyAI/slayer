@@ -42,10 +42,13 @@ def _has_top_level_space(s: str) -> bool:
 
 def _looks_like_query(s: str) -> bool:
     stripped = s.strip()
+    # Run the SELECT check on the text OUTSIDE double-quoted spans so a valid
+    # quoted identifier segment like "My Select" isn't mistaken for a query.
+    unquoted = re.sub(r'"[^"]*"', "", stripped)
     return (
         stripped.startswith("(")
         or _has_top_level_space(stripped)
-        or bool(_SELECT_RE.search(stripped))
+        or bool(_SELECT_RE.search(unquoted))
     )
 
 
