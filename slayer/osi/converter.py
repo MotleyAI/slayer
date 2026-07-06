@@ -394,10 +394,16 @@ class OsiToSlayerConverter:
             )
             return None
         is_time = bool(field.dimension and field.dimension.is_time)
-        return Column(
-            name=field.name, sql=sql,
-            type=DataType.TIMESTAMP if is_time else DataType.DOUBLE,
-        )
+        if is_time:
+            dtype = DataType.TIMESTAMP
+        elif field.name in by_name:
+            # A derived field that redefines an existing column inherits that
+            # column's known type (e.g. LOWER(status) stays TEXT) rather than
+            # defaulting a genuinely new derived column to DOUBLE.
+            dtype = by_name[field.name].type
+        else:
+            dtype = DataType.DOUBLE
+        return Column(name=field.name, sql=sql, type=dtype)
 
     def _apply_dataset_metadata(self, model: SlayerModel, ds: OSIDataset,
                                 sm: OSISemanticModel) -> None:

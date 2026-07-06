@@ -557,6 +557,8 @@ def test_derived_field_shadowing_physical_column_overlays(shop_engine):
     status_cols = [c for c in orders.columns if c.name == "status"]
     assert len(status_cols) == 1
     assert status_cols[0].sql == "LOWER(status)"
+    # the derived field inherits the shadowed column's known TEXT type, not DOUBLE
+    assert status_cols[0].type == DataType.TEXT
 
 
 def test_derived_field_expression_unknown_column_clean_fails(shop_engine):
