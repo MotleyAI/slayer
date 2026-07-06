@@ -26,7 +26,7 @@ from slayer.engine.column_expansion import _root_scope_column_ids
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.engine.join_graph import JoinGraph, min_hops_root
 from slayer.ingest_report import ConversionResult, ConversionWarning
-from slayer.sql.client import _get_column_types_sync
+from slayer.sql.client import get_column_types_sync
 from slayer.osi.expression import SQL_DIALECTS, convert_expression
 from slayer.osi.models import (
     OSIAIContext,
@@ -269,9 +269,8 @@ class OsiToSlayerConverter:
         # cursor-metadata probe), exactly as table sources are introspected.
         # ``target_dialect`` is the datasource type, used for the dialect-correct
         # probe (LIMIT 0 vs SELECT TOP vs SQLite's LIMIT-1 fallback).
-        types = _get_column_types_sync(
-            query, connection_string="", db_type=self.target_dialect,
-            engine=self.sa_engine,
+        types = get_column_types_sync(
+            query, engine=self.sa_engine, db_type=self.target_dialect,
         )
         columns = [Column(name=name, type=category) for name, category in types.items()]
         return SlayerModel(name=ds.name, sql=query, data_source=self.data_source,
@@ -509,33 +508,43 @@ class OsiToSlayerConverter:
     def _drop_invalid_cross_model_columns(self) -> bool:
         dropped = False
         for model in self._models.values():
-            bad_cols = []
-            for col in model.columns:
-                if col.sql:
-                    bad = self._unresolvable_cross_model_refs(model, col.sql)
-                    if bad:
-                        bad_cols.append((col, bad))
-            for col, bad in bad_cols:
+            for col, bad in self._invalid_cross_model_columns(model):
+                self._revert_or_drop_column(model, col, bad)
                 dropped = True
-                original = self._shadowed.pop((model.name, col.name), None)
-                if original is not None:
-                    # The invalid column was a derived overlay of a physical
-                    # column — revert to the physical column, don't delete it.
-                    model.columns[model.columns.index(col)] = original
-                    self._warn(
-                        f"Derived overlay for {col.name!r} on {model.name!r} "
-                        f"references unresolvable cross-model column(s) {bad}; "
-                        f"reverting to the physical column.",
-                        model_name=model.name, category="missing_column",
-                    )
-                else:
-                    model.columns.remove(col)
-                    self._warn(
-                        f"Column {col.name!r} on {model.name!r} references "
-                        f"unresolvable cross-model column(s) {bad}; dropping.",
-                        model_name=model.name, category="missing_column",
-                    )
         return dropped
+
+    def _invalid_cross_model_columns(
+        self, model: SlayerModel
+    ) -> list[tuple[Column, list[str]]]:
+        result = []
+        for col in model.columns:
+            if col.sql:
+                bad = self._unresolvable_cross_model_refs(model, col.sql)
+                if bad:
+                    result.append((col, bad))
+        return result
+
+    def _revert_or_drop_column(
+        self, model: SlayerModel, col: Column, bad: list[str]
+    ) -> None:
+        original = self._shadowed.pop((model.name, col.name), None)
+        if original is not None:
+            # The invalid column was a derived overlay of a physical column —
+            # revert to the physical column, don't delete it.
+            model.columns[model.columns.index(col)] = original
+            self._warn(
+                f"Derived overlay for {col.name!r} on {model.name!r} references "
+                f"unresolvable cross-model column(s) {bad}; reverting to the "
+                f"physical column.",
+                model_name=model.name, category="missing_column",
+            )
+        else:
+            model.columns.remove(col)
+            self._warn(
+                f"Column {col.name!r} on {model.name!r} references unresolvable "
+                f"cross-model column(s) {bad}; dropping.",
+                model_name=model.name, category="missing_column",
+            )
 
     def _drop_stale_joins(self) -> bool:
         """Drop joins whose key columns were removed by column validation, so a

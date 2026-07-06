@@ -435,6 +435,17 @@ def _get_column_types_sync(
         return _extract_types_from_cursor(result, db_type=db_type)
 
 
+def get_column_types_sync(
+    sql: str, *, engine: sa.Engine, db_type: str | None = None
+) -> dict[str, str]:
+    """Public sync column-type inference for a query over an existing engine.
+
+    Stable entry point (e.g. for the OSI importer) around
+    ``_get_column_types_sync``; returns ``{column_name: type_category}``.
+    """
+    return _get_column_types_sync(sql, connection_string="", db_type=db_type, engine=engine)
+
+
 async def _get_column_types_async(
     sql: str,
     engine,
