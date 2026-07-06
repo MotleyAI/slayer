@@ -8,12 +8,11 @@ from __future__ import annotations
 import asyncio
 import struct
 import types
-from typing import List, Optional, Tuple
 
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.connection import PgConnection
 from slayer.pg_facade.probes import SESSION_SETTING_SEED
@@ -42,13 +41,15 @@ class _FakeWriter:
 
 
 class _FakeStorage:
-    def __init__(self, models_by_ds) -> None:
+    def __init__(self, models_by_ds, *, schema_by_ds=None, priority=None) -> None:
         self._models_by_ds = models_by_ds
+        self._schema_by_ds = schema_by_ds or {}
+        self._priority = priority or []
 
-    async def list_datasources(self) -> List[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
+    async def list_datasources(self) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
         return list(self._models_by_ds)
 
-    async def list_models(self, *, data_source: str) -> List[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
+    async def list_models(self, *, data_source: str) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
         return [m.name for m in self._models_by_ds.get(data_source, [])]
 
     async def get_model(self, *, name: str, data_source: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
@@ -56,6 +57,15 @@ class _FakeStorage:
             if m.name == name:
                 return m
         return None
+
+    async def get_datasource(self, datasource: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
+        schema = self._schema_by_ds.get(datasource)
+        if schema is None:
+            return None
+        return DatasourceConfig(name=datasource, postgres_schema=schema)
+
+    async def get_datasource_priority(self) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
+        return list(self._priority)
 
 
 class _FakeEngine:
@@ -91,9 +101,11 @@ class _CapturingEngine:
     def __init__(self, data) -> None:
         self.data = data
         self.last_query = None
+        self.last_data_source = None
 
     async def execute(self, *, query=None, data_source=None):  # NOSONAR(S7503) — async to satisfy the awaited interface
         self.last_query = query
+        self.last_data_source = data_source
         return types.SimpleNamespace(data=self.data)
 
 
@@ -141,7 +153,7 @@ def _terminate() -> bytes:
     return _frame(b"X", b"")
 
 
-def _parse(name: str, sql: str, oids: Tuple[int, ...] = ()) -> bytes:
+def _parse(name: str, sql: str, oids: tuple[int, ...] = ()) -> bytes:
     body = name.encode() + b"\x00" + sql.encode() + b"\x00" + struct.pack(">h", len(oids))
     for o in oids:
         body += struct.pack(">i", o)
@@ -150,9 +162,9 @@ def _parse(name: str, sql: str, oids: Tuple[int, ...] = ()) -> bytes:
 
 def _bind(
     portal: str, stmt: str, *,
-    values: Tuple[Optional[bytes], ...] = (),
-    param_formats: Tuple[int, ...] = (),
-    result_formats: Tuple[int, ...] = (),
+    values: tuple[bytes | None, ...] = (),
+    param_formats: tuple[int, ...] = (),
+    result_formats: tuple[int, ...] = (),
 ) -> bytes:
     body = portal.encode() + b"\x00" + stmt.encode() + b"\x00"
     body += struct.pack(">h", len(param_formats))
@@ -190,7 +202,7 @@ def _close(kind: str, name: str) -> bytes:
 
 
 async def _run(
-    input_bytes: bytes, *, token: Optional[str] = None, storage=None, engine=None,
+    input_bytes: bytes, *, token: str | None = None, storage=None, engine=None,
     tls_ctx=None,
 ) -> _FakeWriter:
     reader = asyncio.StreamReader()
@@ -208,19 +220,19 @@ async def _run(
     return writer
 
 
-def _messages(buf: bytes, *, leading_raw: int = 0) -> List[Tuple[str, bytes]]:
+def _messages(buf: bytes, *, leading_raw: int = 0) -> list[tuple[str, bytes]]:
     return proto.split_messages(bytes(buf[leading_raw:]))
 
 
-def _types(msgs: List[Tuple[str, bytes]]) -> List[str]:
+def _types(msgs: list[tuple[str, bytes]]) -> list[str]:
     return [t for t, _ in msgs]
 
 
-def _ready_statuses(msgs: List[Tuple[str, bytes]]) -> List[bytes]:
+def _ready_statuses(msgs: list[tuple[str, bytes]]) -> list[bytes]:
     return [body for t, body in msgs if t == "Z"]
 
 
-def _error_sqlstate(body: bytes) -> Optional[str]:
+def _error_sqlstate(body: bytes) -> str | None:
     i = 0
     while i < len(body) and body[i:i + 1] != b"\x00":
         ftype = body[i:i + 1]
@@ -308,18 +320,29 @@ async def test_token_empty_password_errors() -> None:
     assert _error_sqlstate(err) == proto.SQLSTATE_INVALID_PASSWORD
 
 
-async def test_unknown_database_errors_3d000() -> None:
-    writer = await _run(_startup(user="u", database="nope") + _terminate())
+async def test_any_database_name_accepted_as_logical_db() -> None:
+    # DEV-1594: the database parameter is a logical DB name, not a datasource
+    # selector — an arbitrary name connects successfully (no 3D000).
+    writer = await _run(_startup(user="u", database="nope") + _query("SELECT 1") + _terminate())
     msgs = _messages(writer.buffer)
-    err = next(body for t, body in msgs if t == "E")
-    assert _error_sqlstate(err) == proto.SQLSTATE_UNDEFINED_DATABASE
+    assert not any(t == "E" for t, _ in msgs)
+    assert any(t == "Z" for t, _ in msgs)  # ReadyForQuery — startup completed
 
 
-async def test_missing_database_errors_3d000() -> None:
-    writer = await _run(_startup(user="u") + _terminate())
+async def test_missing_database_defaults_and_connects() -> None:
+    writer = await _run(_startup(user="u") + _query("SELECT 1") + _terminate())
     msgs = _messages(writer.buffer)
-    err = next(body for t, body in msgs if t == "E")
-    assert _error_sqlstate(err) == proto.SQLSTATE_UNDEFINED_DATABASE
+    assert not any(t == "E" for t, _ in msgs)
+    assert any(t == "Z" for t, _ in msgs)
+
+
+async def test_current_database_reflects_logical_name() -> None:
+    writer = await _run(
+        _startup(user="u", database="acme") + _query("SELECT current_database()") + _terminate()
+    )
+    body = next(b for t, b in _messages(writer.buffer) if t == "D")
+    length = struct.unpack_from(">i", body, 2)[0]
+    assert body[6:6 + length] == b"acme"
 
 
 # --- simple query ------------------------------------------------------------
@@ -1003,7 +1026,7 @@ async def test_simple_query_catalog_union_routes_to_executor() -> None:
 # --- DEV-1569: per-connection SET state ---
 
 
-def _show_value(msgs: List[Tuple[str, bytes]]) -> str:
+def _show_value(msgs: list[tuple[str, bytes]]) -> str:
     """Pull the single-text-column value out of the last DataRow in `msgs`.
 
     The format is: ``count(i16) | length(i32) | bytes``. SHOW always returns
@@ -1014,11 +1037,11 @@ def _show_value(msgs: List[Tuple[str, bytes]]) -> str:
     return body[6:6 + length].decode()
 
 
-def _parameter_status(msgs: List[Tuple[str, bytes]]) -> List[Tuple[str, str]]:
+def _parameter_status(msgs: list[tuple[str, bytes]]) -> list[tuple[str, str]]:
     """Decode every ParameterStatus message (``S``) in the stream into
     ``[(name, value), …]``. Note that startup ParameterStatus burst messages
     are included too — callers filter by name."""
-    out: List[Tuple[str, str]] = []
+    out: list[tuple[str, str]] = []
     for t, body in msgs:
         if t != "S":
             continue
@@ -1029,8 +1052,8 @@ def _parameter_status(msgs: List[Tuple[str, bytes]]) -> List[Tuple[str, str]]:
     return out
 
 
-def _command_complete_tags(msgs: List[Tuple[str, bytes]]) -> List[str]:
-    out: List[str] = []
+def _command_complete_tags(msgs: list[tuple[str, bytes]]) -> list[str]:
+    out: list[str] = []
     for t, body in msgs:
         if t != "C":
             continue
@@ -1501,7 +1524,7 @@ async def test_two_connections_isolated_under_set_config() -> None:
 # --- DEV-1569 Codex round 2 follow-ups ---
 
 
-def _index_of_first(msgs: List[Tuple[str, bytes]], pred) -> int:
+def _index_of_first(msgs: list[tuple[str, bytes]], pred) -> int:
     for i, (t, body) in enumerate(msgs):
         if pred(t, body):
             return i
@@ -1781,8 +1804,8 @@ async def test_set_pushes_parameter_status_for_all_reportable_names(
 
 
 async def _run_capturing(
-    input_bytes: bytes, *, token: Optional[str] = None, storage=None, engine=None,
-) -> Tuple[_FakeWriter, PgConnection]:
+    input_bytes: bytes, *, token: str | None = None, storage=None, engine=None,
+) -> tuple[_FakeWriter, PgConnection]:
     """Variant of ``_run`` that returns both the writer and the connection
     so tests can introspect ``conn._portals`` post-Bind."""
     reader = asyncio.StreamReader()
@@ -2116,3 +2139,176 @@ async def test_bind_empty_string_user_model_int_column() -> None:
     portal_sql = conn._portals[""].sql
     assert "NULL" in portal_sql, f"user-model INT column must rewrite: {portal_sql!r}"
     assert "''" not in portal_sql
+
+
+# --- DEV-1594: multi-datasource catalog + per-connection scoping -------------
+
+
+def _employees_model():
+    return SlayerModel(
+        name="employees", data_source="hr", sql_table="employees",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="name", type=DataType.TEXT),
+        ],
+    )
+
+
+async def _run_conn(input_bytes, *, storage, engine, storage_provider=None,
+                    engine_factory=None):
+    reader = asyncio.StreamReader()
+    reader.feed_data(input_bytes)
+    reader.feed_eof()
+    writer = _FakeWriter()
+    conn = PgConnection(
+        reader, writer, engine=engine, storage=storage,
+        storage_provider=storage_provider, engine_factory=engine_factory,
+    )
+    await conn.run()
+    return writer, conn
+
+
+async def test_multi_datasource_query_routes_to_owning_datasource() -> None:
+    storage = _FakeStorage({"jaffle": [_orders_model()], "hr": [_employees_model()]})
+    engine = _CapturingEngine([])
+    inp = _startup(user="u", database="acme") + _query("SELECT id FROM employees") + _terminate()
+    writer, _ = await _run_conn(inp, storage=storage, engine=engine)
+    assert not any(t == "E" for t, _ in _messages(writer.buffer))
+    assert engine.last_data_source == "hr"
+
+
+async def test_custom_postgres_schema_separates_and_routes() -> None:
+    storage = _FakeStorage(
+        {"jaffle": [_orders_model()], "hr": [_employees_model()]},
+        schema_by_ds={"hr": "people"},
+    )
+    engine = _CapturingEngine([])
+    inp = (
+        _startup(user="u", database="acme")
+        + _query("SELECT id FROM people.employees")
+        + _terminate()
+    )
+    writer, _ = await _run_conn(inp, storage=storage, engine=engine)
+    assert not any(t == "E" for t, _ in _messages(writer.buffer))
+    assert engine.last_data_source == "hr"
+
+
+async def test_storage_provider_scopes_connection_after_auth() -> None:
+    # Static storage has only jaffle; the provider swaps in an hr-only store
+    # post-auth. Querying employees succeeds only if the provider's store won.
+    static_storage = _FakeStorage({"jaffle": [_orders_model()]})
+    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    engine = _CapturingEngine([])
+
+    async def provider(principal):
+        return scoped_storage
+
+    inp = _startup(user="u", database="acme") + _query("SELECT id FROM employees") + _terminate()
+    writer, conn = await _run_conn(
+        inp, storage=static_storage, engine=engine,
+        storage_provider=provider, engine_factory=lambda storage: engine,
+    )
+    assert not any(t == "E" for t, _ in _messages(writer.buffer))
+    assert engine.last_data_source == "hr"
+    assert conn._storage is scoped_storage
+
+
+async def test_storage_provider_storage_closed_on_connection_end() -> None:
+    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    closed = {"called": False}
+
+    async def _aclose():
+        closed["called"] = True
+
+    scoped_storage.aclose = _aclose  # type: ignore[attr-defined]
+    engine = _CapturingEngine([])
+
+    async def provider(principal):
+        return scoped_storage
+
+    inp = _startup(user="u", database="acme") + _query("SELECT 1") + _terminate()
+    await _run_conn(
+        inp, storage=_storage(), engine=engine,
+        storage_provider=provider, engine_factory=lambda storage: engine,
+    )
+    assert closed["called"] is True
+
+
+async def test_static_storage_not_closed() -> None:
+    # No storage_provider → the static storage's aclose (if any) is never called.
+    storage = _storage()
+    closed = {"called": False}
+
+    async def _aclose():
+        closed["called"] = True
+
+    storage.aclose = _aclose  # type: ignore[attr-defined]
+    inp = _startup(user="u", database="acme") + _query("SELECT 1") + _terminate()
+    await _run_conn(inp, storage=storage, engine=_CapturingEngine([]))
+    assert closed["called"] is False
+
+
+# --- Review #1: scoped engine is also disposed on connection end ------------
+
+
+async def test_storage_provider_engine_disposed_on_connection_end() -> None:
+    """``_close_scoped_storage`` must dispose the engine ``_resolve_scope``
+    built — without this, a long-lived facade with ``storage_provider``
+    leaks one engine's worth of async SQL-client pools per session."""
+    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    aclosed = {"engine": False, "storage": False}
+
+    async def _storage_aclose():
+        aclosed["storage"] = True
+
+    async def _engine_aclose():
+        aclosed["engine"] = True
+
+    scoped_storage.aclose = _storage_aclose  # type: ignore[attr-defined]
+    engine = _CapturingEngine([])
+    engine.aclose = _engine_aclose  # type: ignore[attr-defined]
+
+    async def provider(principal):
+        return scoped_storage
+
+    inp = _startup(user="u", database="acme") + _query("SELECT 1") + _terminate()
+    await _run_conn(
+        inp, storage=_storage(), engine=_CapturingEngine([]),
+        storage_provider=provider, engine_factory=lambda storage: engine,
+    )
+    assert aclosed["engine"] is True, "engine.aclose must run on connection end"
+    assert aclosed["storage"] is True, "storage.aclose must run on connection end"
+
+
+# --- Review #2: static aclose-able storage not touched on early auth failure
+
+
+async def test_static_storage_aclose_not_called_when_scope_swap_did_not_run() -> None:
+    """When ``storage_provider`` is configured but ``_resolve_scope`` never
+    runs, the originally-passed static storage's ``aclose`` must NOT be
+    called — the host owns its lifecycle. Asserts the ``_owns_scoped_resources``
+    gate by constructing the connection directly and checking the flag
+    stays False until the swap actually happens."""
+    static_storage = _storage()
+    static_aclosed = {"called": False}
+
+    async def _storage_aclose():
+        static_aclosed["called"] = True
+
+    static_storage.aclose = _storage_aclose  # type: ignore[attr-defined]
+
+    async def provider(principal):
+        raise AssertionError("provider must not run before scope-resolve")
+
+    reader = asyncio.StreamReader()
+    writer = _FakeWriter()
+    conn = PgConnection(
+        reader, writer, engine=_CapturingEngine([]), storage=static_storage,
+        storage_provider=provider, engine_factory=lambda storage: None,
+    )
+    # Flag starts False; teardown is a no-op until the swap.
+    assert conn._owns_scoped_resources is False
+    await conn._close_scoped_storage()
+    assert static_aclosed["called"] is False, (
+        "static storage's aclose must not be called when scope-swap never ran"
+    )

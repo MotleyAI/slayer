@@ -48,16 +48,23 @@ DEV-1480 changes:
 
 DEV-1516 additions:
 - :func:`ensure_column_sample_fresh` — shared cache-aware refresh helper
-  used by both ``inspect_model``'s categorical loop and the search
-  service's post-fusion column-hit hook. Returns the input column on cache
-  hit / non-categorical / failure, and an in-memory refreshed copy on
-  success (after persisting via storage).
+  used by ``inspect_model``'s categorical loop, the search service's
+  post-fusion column-hit hook, and (DEV-1615) the single-entity ``inspect``
+  point-lookup. Returns the input column on cache hit / failure, and an
+  in-memory refreshed copy on success (after persisting via storage).
+
+DEV-1615 change:
+- :func:`ensure_column_sample_fresh` back-fills BOTH categorical (top-50 +
+  distinct_count) AND numeric/temporal (min/max range) uncached columns —
+  the prior categorical-only early-return was removed. Cached columns still
+  short-circuit at :func:`_is_sample_cached` (zero added cost), so the
+  common already-profiled case pays nothing.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
+from typing import Any, NamedTuple
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
@@ -90,9 +97,9 @@ class ColumnSample(NamedTuple):
       ``None`` for numeric/temporal columns.
     """
 
-    sampled: Optional[str]
-    sampled_values: Optional[List[str]]
-    distinct_count: Optional[int]
+    sampled: str | None
+    sampled_values: list[str] | None
+    distinct_count: int | None
 
 
 # ---------------------------------------------------------------------------
@@ -111,10 +118,10 @@ class _DimProfileEntry(NamedTuple):
 
     name: str
     type_str: str
-    distinct_count: Optional[int]
-    values: Optional[List[Any]]
-    min_value: Optional[Any]
-    max_value: Optional[Any]
+    distinct_count: int | None
+    values: list[Any] | None
+    min_value: Any | None
+    max_value: Any | None
 
 
 def _format_dim_profile_value(entry: _DimProfileEntry) -> str:
@@ -151,7 +158,7 @@ async def _profile_categorical_column(
     column: Column,
     engine: SlayerQueryEngine,
     max_values: int,
-) -> Optional[_DimProfileEntry]:
+) -> _DimProfileEntry | None:
     """Profile one string/boolean column.
 
     DEV-1480: orders by per-value count desc with alphabetical tie-break in
@@ -181,7 +188,7 @@ async def _profile_categorical_column(
     value_key = f"{model.name}.{column.name}"
     # Filter NULL values out — they map to ``col IS NULL`` predicates, not
     # to literal-equality use cases the validator cares about.
-    raw_pairs: List[Tuple[Any, Any]] = []
+    raw_pairs: list[tuple[Any, Any]] = []
     count_key = f"{model.name}._count"
     for row in r.data:
         v = row.get(value_key)
@@ -193,7 +200,7 @@ async def _profile_categorical_column(
     # equally-ranked rows in arbitrary order. NB: this only re-orders what
     # we received — the LIMIT cutoff is the SQL's responsibility.
     raw_pairs.sort(key=lambda p: (-(p[1] or 0), str(p[0])))
-    values: List[str] = [str(v) for v, _ in raw_pairs]
+    values: list[str] = [str(v) for v, _ in raw_pairs]
     overflow = len(values) > max_values
     return _DimProfileEntry(
         name=column.name,
@@ -208,9 +215,9 @@ async def _profile_categorical_column(
 async def _profile_numeric_temporal_columns(
     *,
     model: SlayerModel,
-    columns: List[Column],
+    columns: list[Column],
     engine: SlayerQueryEngine,
-) -> Dict[str, _DimProfileEntry]:
+) -> dict[str, _DimProfileEntry]:
     """Profile every numeric/temporal column in a single batched min/max query."""
     if not columns:
         return {}
@@ -219,11 +226,11 @@ async def _profile_numeric_temporal_columns(
          "type": str(c.type)}
         for c in columns
     ]
-    measures_payload: List[Dict[str, str]] = []
+    measures_payload: list[dict[str, str]] = []
     for c in columns:
         measures_payload.append({"formula": f"_slayer_range_{c.name}:min"})
         measures_payload.append({"formula": f"_slayer_range_{c.name}:max"})
-    row: Dict[str, Any] = {}
+    row: dict[str, Any] = {}
     try:
         q = SlayerQuery.model_validate({
             "source_model": {"source_name": model.name, "columns": ext_columns},
@@ -234,7 +241,7 @@ async def _profile_numeric_temporal_columns(
             row = r.data[0]
     except Exception:
         row = {}
-    out: Dict[str, _DimProfileEntry] = {}
+    out: dict[str, _DimProfileEntry] = {}
     for c in columns:
         mn = row.get(f"{model.name}._slayer_range_{c.name}_min")
         mx = row.get(f"{model.name}._slayer_range_{c.name}_max")
@@ -257,8 +264,8 @@ async def _collect_dim_profile(
     engine: SlayerQueryEngine,
     max_values: int = _MAX_CATEGORICAL_VALUES,
     max_dims: int = 10,
-    only_columns: Optional[Set[str]] = None,
-) -> List[_DimProfileEntry]:
+    only_columns: set[str] | None = None,
+) -> list[_DimProfileEntry]:
     """Produce one profile entry per eligible column (non-hidden, non-pk).
 
     - string/boolean columns: distinct values (or overflow marker) via one
@@ -288,7 +295,7 @@ async def _collect_dim_profile(
         if c.type in (DataType.INT, DataType.DOUBLE, DataType.DATE, DataType.TIMESTAMP)
     ]
 
-    entries: Dict[str, _DimProfileEntry] = {}
+    entries: dict[str, _DimProfileEntry] = {}
     for c in categorical:
         entry = await _profile_categorical_column(
             model=model, column=c, engine=engine, max_values=max_values,
@@ -353,7 +360,7 @@ async def _count_distinct_via_model_extension(
     model: SlayerModel,
     column: Column,
     engine: SlayerQueryEngine,
-) -> Optional[int]:
+) -> int | None:
     """Fire a secondary ``count_distinct`` query via a transient
     ``ModelExtension`` column.
 
@@ -399,7 +406,7 @@ async def _profile_categorical_with_total(
     model: SlayerModel,
     column: Column,
     engine: SlayerQueryEngine,
-) -> Optional[ColumnSample]:
+) -> ColumnSample | None:
     """DEV-1480 categorical profile: top-50 by frequency + true total on
     overflow.
 
@@ -426,14 +433,14 @@ async def _profile_categorical_with_total(
         return None
     value_key = f"{model.name}.{column.name}"
     count_key = f"{model.name}._count"
-    raw_pairs: List[Tuple[Any, Any]] = []
+    raw_pairs: list[tuple[Any, Any]] = []
     for row in r.data:
         v = row.get(value_key)
         if v is None:
             continue
         raw_pairs.append((v, row.get(count_key)))
     raw_pairs.sort(key=lambda p: (-(p[1] or 0), str(p[0])))
-    values: List[str] = [str(v) for v, _ in raw_pairs]
+    values: list[str] = [str(v) for v, _ in raw_pairs]
     overflow = len(values) > _MAX_CATEGORICAL_VALUES
     if not overflow:
         text = ", ".join(values[:_TEXT_SAMPLE_CAP])
@@ -473,7 +480,7 @@ async def profile_column(
     model: SlayerModel,
     column: Column,
     engine: SlayerQueryEngine,
-) -> Optional[ColumnSample]:
+) -> ColumnSample | None:
     """Return the :class:`ColumnSample` for ``column`` on ``model``.
 
     Returns ``None`` for primary-key / hidden columns and when the
@@ -513,14 +520,14 @@ async def _refresh_one_column(
     column: Column,
     engine: SlayerQueryEngine,
     storage: StorageBackend,
-) -> List[str]:
+) -> list[str]:
     """Profile + persist a single column. Best-effort — returns the list of
     error strings produced (empty on full success). Extracted from
     ``refresh_table_backed_model_sampled`` to keep that function's cognitive
     complexity low.
     """
-    errors: List[str] = []
-    sample: Optional[ColumnSample] = None
+    errors: list[str] = []
+    sample: ColumnSample | None = None
     try:
         sample = await profile_column(model=model, column=column, engine=engine)
     except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
@@ -550,8 +557,8 @@ async def refresh_table_backed_model_sampled(
     model: SlayerModel,
     engine: SlayerQueryEngine,
     storage: StorageBackend,
-    only_columns: Optional[Set[str]] = None,
-) -> List[str]:
+    only_columns: set[str] | None = None,
+) -> list[str]:
     """Refresh ``Column.sampled``, ``Column.sampled_values``, and
     ``Column.distinct_count`` for each eligible column on ``model``.
 
@@ -562,7 +569,7 @@ async def refresh_table_backed_model_sampled(
     """
     if not _is_table_backed(model):
         return []
-    errors: List[str] = []
+    errors: list[str] = []
     for column in model.columns:
         if column.hidden or column.primary_key:
             continue
@@ -579,10 +586,10 @@ async def refresh_all_table_backed_sampled(
     engine: SlayerQueryEngine,
     storage: StorageBackend,
     data_source: str,
-) -> List[str]:
+) -> list[str]:
     """Refresh ``Column.sampled`` for every table-backed model in
     ``data_source``. Best-effort across all models."""
-    errors: List[str] = []
+    errors: list[str] = []
     identities = await storage._list_all_model_identities()
     for ds, name in identities:
         if ds != data_source:
@@ -604,9 +611,9 @@ async def handle_edit_refresh(
     storage: StorageBackend,
     data_source: str,
     model_name: str,
-    changed_columns: Set[str],
+    changed_columns: set[str],
     model_level_change: bool,
-) -> List[str]:
+) -> list[str]:
     """Refresh entry point for ``edit_model``.
 
     * ``model_level_change=True`` → refresh every non-hidden column on
@@ -659,20 +666,23 @@ async def ensure_column_sample_fresh(
     engine: SlayerQueryEngine,
     storage: StorageBackend,
 ) -> Column:
-    """Best-effort refresh of a stale categorical column's persisted sample.
+    """Best-effort refresh of a stale column's persisted sample.
 
-    Used by both :func:`slayer.mcp.server.inspect_model` (categorical cache
-    miss path) and :class:`slayer.search.service.SearchService` (post-fusion
-    column-hit hook) so DEV-1516's "stale columns auto-refresh on the spot"
-    contract has a single source of truth.
+    Used by ``inspect_model`` (categorical cache-miss path),
+    :class:`slayer.search.service.SearchService` (post-fusion column-hit
+    hook), and — DEV-1615 — the single-entity ``inspect`` point-lookup
+    (`slayer.inspect.service.InspectService`), so the "stale columns
+    auto-refresh on the spot" contract has a single source of truth.
+
+    DEV-1615: back-fills BOTH categorical (top-50 + distinct_count) AND
+    numeric/temporal (min/max range) columns — :func:`profile_column`
+    already handles both kinds. The prior numeric/temporal early-return was
+    removed (see the inline note below).
 
     Returns the **input column unchanged** when:
 
     - ``_is_sample_cached(column)`` is True (cache hit; includes hidden /
       primary-key columns by convention),
-    - the column is not categorical (numeric / temporal are handled by
-      ``inspect_model``'s batched min/max path; the search hook never
-      refreshes them since their ``sampled`` text has no 20-vs-50 issue),
     - :func:`profile_column` returns ``None`` (e.g. transient query failure
       or no rows),
     - :func:`profile_column` raises (logged + swallowed),
@@ -690,12 +700,15 @@ async def ensure_column_sample_fresh(
     """
     if _is_sample_cached(column):
         return column
-    if column.type not in _CATEGORICAL_TYPES:
-        # Numeric / temporal: inspect_model handles them via the batched
-        # min/max query. The search refresh hook intentionally skips them
-        # because their ``sampled`` text is a min/max range, not a value
-        # list — the 20-vs-50 distinction does not apply.
-        return column
+    # DEV-1615: no categorical-only gate here. ``profile_column`` handles
+    # BOTH categorical (top-50 + distinct_count) AND numeric/temporal
+    # (min/max range) columns, so an uncached column of either kind is
+    # back-filled. The previous early-return for numeric/temporal existed
+    # only so the search post-fusion hook would skip ranges; that skip was
+    # an assumption (numeric is reliably profiled at ingest), not a
+    # correctness requirement. ``inspect`` and ``search`` both now fill
+    # ranges on read. Already-profiled columns short-circuit above via
+    # ``_is_sample_cached`` so the common case stays free.
     try:
         sample = await profile_column(
             model=model, column=column, engine=engine,

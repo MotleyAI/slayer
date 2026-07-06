@@ -3418,8 +3418,8 @@ async def test_model_filter_with_json_extract_runs(tmp_path):
 
 
 async def test_query_filter_with_lower_function_runs(integration_env):
-    """DEV-1378: ``SlayerQuery.filters`` accepts ``lower(...)`` from the
-    string-hygiene allowlist and matches case-insensitively at runtime."""
+    """``SlayerQuery.filters`` accepts ``lower(...)`` via SCALAR_PASSTHROUGH
+    and matches case-insensitively at runtime."""
     engine = integration_env
 
     # The integration_env's ``orders`` table has statuses

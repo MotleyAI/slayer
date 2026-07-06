@@ -24,7 +24,6 @@ keep using the raw views so hand-written cross-model SQL still resolves.
 
 from __future__ import annotations
 
-from typing import List
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
@@ -46,10 +45,10 @@ from slayer.facade.catalog import (
 def _model(
     *,
     name: str,
-    columns: List[Column],
-    joins: List[ModelJoin] | None = None,
-    measures: List[ModelMeasure] | None = None,
-    aggregations: List[Aggregation] | None = None,
+    columns: list[Column],
+    joins: list[ModelJoin] | None = None,
+    measures: list[ModelMeasure] | None = None,
+    aggregations: list[Aggregation] | None = None,
 ) -> SlayerModel:
     return SlayerModel(
         name=name,

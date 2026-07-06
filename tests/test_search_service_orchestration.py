@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
-from typing import AsyncIterator, List, Optional, Set
+from collections.abc import AsyncIterator
 from unittest.mock import patch
 
 import pytest_asyncio
@@ -73,10 +73,10 @@ class _CapturingRetriever(Retriever):
     def __init__(
         self, *,
         name: str,
-        memory_ranking: Optional[List[str]] = None,
-        entity_ranking: Optional[List[str]] = None,
-        text_by_id: Optional[dict] = None,
-        warning: Optional[str] = None,
+        memory_ranking: list[str] | None = None,
+        entity_ranking: list[str] | None = None,
+        text_by_id: dict | None = None,
+        warning: str | None = None,
         delay_s: float = 0.0,
     ) -> None:
         self.name = name
@@ -87,22 +87,22 @@ class _CapturingRetriever(Retriever):
         self._delay_s = delay_s
         # Capture by identity (id()) so we can prove the SAME object
         # was passed to every retriever, not merely equal copies.
-        self.captured_valid_canonicals_ids: List[int] = []
-        self.captured_valid_canonicals: List[Set[str]] = []
-        self.captured_corpus_ids: List[int] = []
-        self.captured_all_memories_ids: List[int] = []
-        self.captured_all_memories_lens: List[int] = []
-        self.captured_datasources: List[Optional[str]] = []
+        self.captured_valid_canonicals_ids: list[int] = []
+        self.captured_valid_canonicals: list[set[str]] = []
+        self.captured_corpus_ids: list[int] = []
+        self.captured_all_memories_ids: list[int] = []
+        self.captured_all_memories_lens: list[int] = []
+        self.captured_datasources: list[str | None] = []
         self.retrieve_call_count = 0
 
     async def retrieve(
         self, *,
-        query_entities: List[str],
-        question: Optional[str],
-        all_memories: List[Memory],
+        query_entities: list[str],
+        question: str | None,
+        all_memories: list[Memory],
         valid_canonicals: set,
-        corpus: Optional[Corpus],
-        datasource: Optional[str],
+        corpus: Corpus | None,
+        datasource: str | None,
     ) -> RetrievalResult:
         self.retrieve_call_count += 1
         self.captured_valid_canonicals_ids.append(id(valid_canonicals))

@@ -10,7 +10,7 @@ so cosine similarity is predictable.
 from __future__ import annotations
 
 import tempfile
-from typing import Iterator, List, Optional
+from collections.abc import Iterator
 
 import pytest
 
@@ -114,9 +114,9 @@ async def test_question_with_embeddings_returns_entity(
     text_to_vec: dict = {}
 
     async def stub_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch async signature
-        texts: List[str], *, model: Optional[str] = None,
-    ) -> List[Optional[List[float]]]:
-        out: List[Optional[List[float]]] = []
+        texts: list[str], *, model: str | None = None,
+    ) -> list[list[float] | None]:
+        out: list[list[float] | None] = []
         for idx, t in enumerate(texts):
             # Distinguish "amount" column doc by a marker vector — every
             # other doc gets a flatter base vector.
@@ -147,8 +147,8 @@ async def test_question_with_embeddings_returns_entity(
     # Stub the query-side embedding: align with the "amount" column
     # vector so cosine ranks it #1.
     async def stub_embed_query(  # NOSONAR(S7503) — stub matches embed_query async signature
-        text: str, *, model: Optional[str] = None,
-    ) -> List[float]:
+        text: str, *, model: str | None = None,
+    ) -> list[float]:
         # Align with amount column.
         return [1.0, 0.0, 0.0, 0.0]
 
@@ -179,11 +179,11 @@ async def test_entity_hits_now_carry_rrf_fused_score(
     await _seed_basic_corpus(storage)
 
     async def stub_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch async signature
-        texts: List[str], *, model: Optional[str] = None,
-    ) -> List[Optional[List[float]]]:
+        texts: list[str], *, model: str | None = None,
+    ) -> list[list[float] | None]:
         return [[0.0, 0.0, 0.0, 0.0] for _ in texts]
 
-    async def stub_embed_query(*_a, **_kw) -> List[float]:  # NOSONAR(S7503) — stub matches embed_query async signature
+    async def stub_embed_query(*_a, **_kw) -> list[float]:  # NOSONAR(S7503) — stub matches embed_query async signature
         return [0.0, 0.0, 0.0, 0.0]
 
     monkeypatch.setattr(
@@ -225,8 +225,8 @@ async def test_query_embed_failure_warns_and_continues(
     await _seed_basic_corpus(storage)
 
     async def stub_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch async signature
-        texts: List[str], *, model: Optional[str] = None,
-    ) -> List[Optional[List[float]]]:
+        texts: list[str], *, model: str | None = None,
+    ) -> list[list[float] | None]:
         return [[0.1, 0.1, 0.1, 0.1] for _ in texts]
 
     monkeypatch.setattr(
@@ -267,9 +267,9 @@ async def test_entity_only_does_not_trigger_channel_3(
         learning="learning", entities=["dsx.orders"], query=None,
     )
 
-    embed_called: List[str] = []
+    embed_called: list[str] = []
 
-    async def stub_embed_query(text: str, *, model: Optional[str] = None):  # NOSONAR(S7503) — stub matches embed_query async signature
+    async def stub_embed_query(text: str, *, model: str | None = None):  # NOSONAR(S7503) — stub matches embed_query async signature
         embed_called.append(text)
         return [0.1, 0.1, 0.1, 0.1]
 

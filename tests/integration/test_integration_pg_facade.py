@@ -9,7 +9,7 @@ the extended/binary protocol, transactions, and concurrency end-to-end.
 from __future__ import annotations
 
 import asyncio
-from typing import Iterator, Tuple
+from collections.abc import Iterator
 
 import pytest
 
@@ -21,7 +21,7 @@ asyncpg = pytest.importorskip("asyncpg")
 
 
 @pytest.fixture(scope="module")
-def pg_demo_server() -> Iterator[Tuple[str, int]]:
+def pg_demo_server() -> Iterator[tuple[str, int]]:
     loop, thread, host, port = start_pg_demo_server(token=None)
     try:
         yield host, port
@@ -31,7 +31,7 @@ def pg_demo_server() -> Iterator[Tuple[str, int]]:
 
 
 @pytest.fixture(scope="module")
-def pg_demo_server_with_token() -> Iterator[Tuple[str, int, str]]:
+def pg_demo_server_with_token() -> Iterator[tuple[str, int, str]]:
     token = "s3cret"
     loop, thread, host, port = start_pg_demo_server(token=token)
     try:
@@ -60,10 +60,15 @@ async def test_connect_and_current_database(pg_demo_server) -> None:
         await conn.close()
 
 
-async def test_unknown_database_rejected(pg_demo_server) -> None:
+async def test_arbitrary_database_name_accepted(pg_demo_server) -> None:
+    # DEV-1594: the database parameter is a logical DB name, not a datasource
+    # selector — any name connects and current_database() echoes it back.
     host, port = pg_demo_server
-    with pytest.raises(asyncpg.InvalidCatalogNameError):
-        await _connect(host, port, database="nope")
+    conn = await _connect(host, port, database="nope")
+    try:
+        assert await conn.fetchval("SELECT current_database()") == "nope"
+    finally:
+        await conn.close()
 
 
 async def test_select_one(pg_demo_server) -> None:
@@ -352,12 +357,31 @@ async def test_cross_model_dimension(pg_demo_server) -> None:
         await conn.close()
 
 
-async def test_select_star_rejected(pg_demo_server) -> None:
+async def test_select_star_browse_mode_expands(pg_demo_server) -> None:
+    """Browse-mode ``SELECT *`` (no GROUP BY / HAVING / aggregate) expands
+    to every non-hidden column — pg-facade convenience for interactive
+    psql sessions. Replaced the previous always-rejected assertion."""
+    host, port = pg_demo_server
+    conn = await _connect(host, port)
+    try:
+        rows = await conn.fetch("SELECT * FROM orders LIMIT 1")
+        assert len(rows) >= 1
+        # At least the standard demo columns are projected.
+        keys = set(rows[0].keys())
+        assert "id" in keys and "ordered_at" in keys
+    finally:
+        await conn.close()
+
+
+async def test_select_star_with_aggregate_still_rejected(pg_demo_server) -> None:
+    """Mixing ``*`` with an aggregate (or GROUP BY) still rejects — the
+    explicit "project specific names" hint is the more useful guidance
+    when the user has clearly mixed row-level and aggregate intent."""
     host, port = pg_demo_server
     conn = await _connect(host, port)
     try:
         with pytest.raises(asyncpg.PostgresError) as exc_info:
-            await conn.fetch("SELECT * FROM orders")
+            await conn.fetch("SELECT *, COUNT(*) FROM orders")
         assert "SELECT *" in str(exc_info.value)
     finally:
         await conn.close()

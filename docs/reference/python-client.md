@@ -96,6 +96,32 @@ datasources = client.list_datasources()
 client.create_datasource({"name": "mydb", "type": "postgres", ...})
 ```
 
+### Inspect
+
+`inspect` / `inspect_sync` is a point lookup (DEV-1588): the rendered detail for **exactly one** entity by `reference` + required `entity_type`. No fusion / ranking / bundled memories — use `search` for an entity *in context*. Same arguments as the MCP `inspect` tool and `POST /inspect`; returns the rendered string. **DEV-1612:** `reference` also accepts a **list** — a homogeneous-kind batch (one `entity_type` for every id), returning one block per id in input order with per-id error isolation.
+
+```python
+# Compact default: schema skeleton for a model (column / measure / aggregation
+# names + joins, zero DB calls); description-only for the other kinds.
+print(client.inspect_sync(reference="mydb.orders", entity_type="model"))
+
+# Full render of one column (compact=False); join paths resolve to the owner.
+print(client.inspect_sync(
+    reference="mydb.orders.customers.region", entity_type="column",
+    compact=False,
+))
+
+# Batch: several same-kind columns in one round-trip (DEV-1612).
+print(client.inspect_sync(
+    reference=["mydb.orders.amount", "mydb.orders.customer_id"],
+    entity_type="column", compact=False,
+))
+
+# async form:  await client.inspect(reference="mydb.orders", entity_type="model")
+```
+
+`entity_type` is required (`datasource` / `model` / `column` / `measure` / `aggregation` / `memory`) and asserts the resolved kind. The model-only `num_rows` / `show_sql` / `sections` apply for `entity_type="model"`; `descriptions_max_chars` applies to every kind. `format="json"` returns a JSON string instead of Markdown.
+
 ### Memories + Semantic Search
 
 `SlayerClient` exposes the same single retrieval surface as MCP / REST. All three are async (`run_sync` wraps them for synchronous use); local mode (`storage=`) goes through `SearchService` / `MemoryService` directly, remote mode (`url=`) POSTs to `/search` and `/memories`. See [Search](../concepts/search.md) and [Memories](../concepts/memories.md).

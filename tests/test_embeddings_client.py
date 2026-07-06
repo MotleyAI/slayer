@@ -8,7 +8,7 @@ mocked at the import boundary — no live API calls are made.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 import pytest
 
@@ -68,10 +68,10 @@ async def test_embed_batch_calls_litellm_with_resolved_model(
     captured: dict = {}
 
     class _FakeResponse:
-        def __init__(self, data: List[dict]) -> None:
+        def __init__(self, data: list[dict]) -> None:
             self.data = data
 
-    async def fake_aembedding(*, model: str, input: List[str]) -> _FakeResponse:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
+    async def fake_aembedding(*, model: str, input: list[str]) -> _FakeResponse:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
         captured["model"] = model
         captured["input"] = list(input)
         return _FakeResponse(
@@ -129,8 +129,8 @@ async def test_embed_query_caches_repeated_calls(
     call_count = {"n": 0}
 
     async def fake_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch async signature
-        texts: List[str], *, model: Optional[str] = None,
-    ) -> List[Optional[List[float]]]:
+        texts: list[str], *, model: str | None = None,
+    ) -> list[list[float] | None]:
         call_count["n"] += 1
         return [[float(call_count["n"])] * 3 for _ in texts]
 
@@ -311,9 +311,9 @@ def test_truncate_text_for_model_get_max_tokens_prefixed_then_bare(
     falling back to 8192."""
     pytest.importorskip("litellm")
     import litellm
-    calls: List[str] = []
+    calls: list[str] = []
 
-    def fake_get_max(model: str) -> Optional[int]:
+    def fake_get_max(model: str) -> int | None:
         calls.append(model)
         if model == "openai/text-embedding-3-small":
             return None
@@ -470,7 +470,7 @@ async def test_embed_batch_survives_special_token_literal_input(
         def __init__(self, n: int) -> None:
             self.data = [{"embedding": [float(i)] * 3} for i in range(n)]
 
-    async def fake_aembedding(*, model: str, input: List[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
+    async def fake_aembedding(*, model: str, input: list[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
         return _Resp(len(input))
 
     monkeypatch.setattr(litellm, "aembedding", fake_aembedding)
@@ -490,9 +490,9 @@ def test_truncate_text_for_model_get_max_tokens_raises_then_bare_used(
     pytest.importorskip("litellm")
     tiktoken = pytest.importorskip("tiktoken")
     import litellm
-    calls: List[str] = []
+    calls: list[str] = []
 
-    def fake_get_max(model: str) -> Optional[int]:
+    def fake_get_max(model: str) -> int | None:
         calls.append(model)
         if model == "openai/text-embedding-3-small":
             raise RuntimeError("transient")
@@ -545,7 +545,7 @@ def test_truncate_text_for_model_failure_not_cached(
     import litellm
     call = {"n": 0}
 
-    def fake_get_max(_m: str) -> Optional[int]:
+    def fake_get_max(_m: str) -> int | None:
         call["n"] += 1
         if call["n"] == 1:
             raise RuntimeError("transient")
@@ -605,7 +605,7 @@ def _install_per_input_aembedding_stub(
     monkeypatch: pytest.MonkeyPatch,
     *,
     on_single: Any,
-) -> Tuple[List[List[str]], List[str]]:
+) -> tuple[list[list[str]], list[str]]:
     """Wire up a fake ``litellm.aembedding`` for per-input-retry tests.
 
     The fake records every (input, model) the implementation calls it
@@ -618,10 +618,10 @@ def _install_per_input_aembedding_stub(
     """
     litellm = pytest.importorskip("litellm")
     bad = _make_bad_request_error()
-    seen_inputs: List[List[str]] = []
-    seen_models: List[str] = []
+    seen_inputs: list[list[str]] = []
+    seen_models: list[str] = []
 
-    async def fake_aembedding(*, model: str, input: List[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
+    async def fake_aembedding(*, model: str, input: list[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
         seen_inputs.append(list(input))
         seen_models.append(model)
         if len(input) > 1:
@@ -645,13 +645,13 @@ async def test_embed_batch_truncates_over_cap_inputs_happy_path(
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 300)
 
     long_text = "word " * 2000  # over the 44-token budget
-    captured_inputs: List[List[str]] = []
+    captured_inputs: list[list[str]] = []
 
     class _Resp:
         def __init__(self, n: int) -> None:
             self.data = [{"embedding": [float(i)] * 3} for i in range(n)]
 
-    async def fake_aembedding(*, model: str, input: List[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
+    async def fake_aembedding(*, model: str, input: list[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
         captured_inputs.append(list(input))
         return _Resp(len(input))
 
@@ -754,10 +754,10 @@ async def test_embed_batch_batch_non_bad_request_returns_all_none(
     monkeypatch.setattr(litellm.utils, "get_max_tokens", lambda _m: 300)
 
     call_count = {"n": 0}
-    captured_inputs: List[List[str]] = []
-    captured_models: List[str] = []
+    captured_inputs: list[list[str]] = []
+    captured_models: list[str] = []
 
-    async def fake_aembedding(*, model: str, input: List[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
+    async def fake_aembedding(*, model: str, input: list[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
         call_count["n"] += 1
         captured_inputs.append(list(input))
         captured_models.append(model)
@@ -817,11 +817,11 @@ async def test_embed_batch_no_truncation_when_unavailable(
 
     real_truncate = embedding_client.truncate_text_for_model
 
-    def spy_truncate(text: str, *, model: Optional[str] = None) -> str:
+    def spy_truncate(text: str, *, model: str | None = None) -> str:
         truncate_calls["n"] += 1
         return real_truncate(text, model=model)
 
-    async def fake_aembedding(*, model: str, input: List[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
+    async def fake_aembedding(*, model: str, input: list[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
         aembedding_calls["n"] += 1
         return None
 
@@ -858,7 +858,7 @@ async def test_embed_query_truncates_long_input_and_returns_vector(
         def __init__(self) -> None:
             self.data = [{"embedding": [1.0, 2.0, 3.0]}]
 
-    async def fake_aembedding(*, model: str, input: List[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
+    async def fake_aembedding(*, model: str, input: list[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
         captured["input"] = list(input)
         return _Resp()
 
@@ -890,7 +890,7 @@ async def test_embed_query_returns_none_when_per_input_retry_fails(
     bad = _make_bad_request_error()
     call_count = {"n": 0}
 
-    async def fake_aembedding(*, model: str, input: List[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
+    async def fake_aembedding(*, model: str, input: list[str]) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
         call_count["n"] += 1
         raise bad
 

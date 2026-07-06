@@ -17,7 +17,7 @@ import datetime as dt
 import logging
 import math
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import pytest
 
@@ -62,11 +62,11 @@ async def _scalar(host: str, port: int, password: str, sql: str) -> Any:
         await conn.close()
 
 
-def _dataset_rows(payload: Dict[str, Any]) -> List[List[Any]]:
+def _dataset_rows(payload: dict[str, Any]) -> list[list[Any]]:
     return payload.get("data", {}).get("rows", []) or []
 
 
-def _dataset_cols(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _dataset_cols(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return payload.get("data", {}).get("cols", []) or []
 
 
@@ -213,7 +213,7 @@ def _wait_until(predicate, *, timeout_s: float = 20, interval_s: float = 0.5) ->
 
 def _wait_until_stable(
     getter, *, timeout_s: float = 20, settle_s: float = 2.0, interval_s: float = 0.5,
-) -> Tuple[bool, Any]:
+) -> tuple[bool, Any]:
     """Poll ``getter()`` until its value stops changing for ``settle_s``
     seconds. Returns ``(stabilized, last_value)`` so callers can
     distinguish a real settle from a timeout — silently returning the
@@ -1231,16 +1231,19 @@ async def test_bad_password_returns_28P01(metabase_e2e_env: MetabaseE2EEnv) -> N
     assert "28P01" in str(sqlstate) or isinstance(err, asyncpg.InvalidPasswordError)
 
 
-async def test_nonexistent_database_returns_3D000(metabase_e2e_env: MetabaseE2EEnv) -> None:  # NOSONAR(S1542) — SQLSTATE codes are conventionally uppercase
+async def test_arbitrary_database_name_is_a_logical_db(metabase_e2e_env: MetabaseE2EEnv) -> None:
+    # DEV-1594: the database parameter is a logical DB name, not a datasource
+    # selector, so an arbitrary name connects successfully (no 3D000) and
+    # current_database() echoes it back.
     host, port, token = metabase_e2e_env.pg_auth
-    with pytest.raises(Exception) as exc:
-        await asyncpg.connect(
-            host=host, port=port, user="tester", password=token,
-            database="bogus-not-a-datasource", timeout=10,
-        )
-    err = exc.value
-    sqlstate = getattr(err, "sqlstate", None) or str(err)
-    assert "3D000" in str(sqlstate) or isinstance(err, asyncpg.InvalidCatalogNameError)
+    conn = await asyncpg.connect(
+        host=host, port=port, user="tester", password=token,
+        database="some-logical-db", timeout=10,
+    )
+    try:
+        assert await conn.fetchval("SELECT current_database()") == "some-logical-db"
+    finally:
+        await conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1273,7 +1276,7 @@ def test_concurrent_dataset_requests(metabase_e2e_env: MetabaseE2EEnv) -> None:
 async def test_asyncpg_concurrent_connections(metabase_e2e_env: MetabaseE2EEnv) -> None:
     host, port = metabase_e2e_env.pg_primary
 
-    async def one(idx: int) -> Tuple[int, str]:
+    async def one(idx: int) -> tuple[int, str]:
         conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
         try:
             # Each connection sets its own application_name marker so we can

@@ -63,6 +63,7 @@ These are always available — no definition needed:
 | `min` / `max` | MIN/MAX(expr) |
 | `count` | COUNT(expr), or COUNT(\*) with `*` |
 | `count_distinct` | COUNT(DISTINCT expr) |
+| `count_distinct_approx` | Database-native approximate distinct count; exact `COUNT(DISTINCT expr)` fallback — see database support below |
 | `first` / `last` | Value from the earliest/latest record per group (by time) |
 | `weighted_avg` | SUM(expr \* weight) / SUM(weight) |
 | `median` | PERCENTILE_CONT(0.5) — see database support below |
@@ -81,6 +82,19 @@ These are always available — no definition needed:
 | SQLite | yes | Python aggregate UDFs registered on every connection by SLayer. |
 | ClickHouse | yes | Native `median(x)` and parametric `quantile(p)(x)`. |
 | MySQL | **no** | No native function and no Python-UDF mechanism — SLayer raises `NotImplementedError`. Use MariaDB or compute client-side. |
+
+### Database support for `count_distinct_approx`
+
+`count_distinct_approx` emits each database's native approximate-distinct function where one exists, and falls back to an **exact** `COUNT(DISTINCT expr)` where it does not. The fallback is exact (more accurate, never approximate), so results are always at least as precise as requested.
+
+| Engine | Emitted SQL |
+|---|---|
+| DuckDB / Spark / Databricks | `approx_count_distinct(x)` |
+| ClickHouse | `uniq(x)` |
+| BigQuery / Snowflake / T-SQL / Oracle | `APPROX_COUNT_DISTINCT(x)` |
+| Trino / Presto | `approx_distinct(x)` |
+| Redshift | `APPROXIMATE COUNT(DISTINCT x)` |
+| Postgres / SQLite / MySQL | `COUNT(DISTINCT x)` (exact fallback) |
 
 `sum` and `avg` can take a trailing time `window` when the query has a time
 dimension:

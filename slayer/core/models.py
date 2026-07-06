@@ -3,7 +3,7 @@
 import logging
 import os
 import re
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Optional
 
 from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
 from sqlalchemy.engine import URL as _SA_URL
@@ -161,19 +161,19 @@ class Column(BaseModel):
     Replaces v1 ``Dimension`` and ``Measure`` (which were merged in v2).
     """
     name: str
-    sql: Optional[str] = None
+    sql: str | None = None
     type: DataType = DataType.TEXT
     primary_key: bool = False
-    description: Optional[str] = None
-    label: Optional[str] = None
+    description: str | None = None
+    label: str | None = None
     hidden: bool = False
-    format: Optional[NumberFormat] = None
-    allowed_aggregations: Optional[List[str]] = None
-    filter: Optional[str] = None  # Applied inside CASE WHEN at aggregation time only
-    meta: Optional[Dict[str, Any]] = None
-    sampled: Optional[str] = None  # DEV-1375: cached sample-value snapshot
-    sampled_values: Optional[List[str]] = None  # DEV-1480: structured top-N
-    distinct_count: Optional[int] = None  # DEV-1480: true cardinality at profile time
+    format: NumberFormat | None = None
+    allowed_aggregations: list[str] | None = None
+    filter: str | None = None  # Applied inside CASE WHEN at aggregation time only
+    meta: dict[str, Any] | None = None
+    sampled: str | None = None  # DEV-1375: cached sample-value snapshot
+    sampled_values: list[str] | None = None  # DEV-1480: structured top-N
+    distinct_count: int | None = None  # DEV-1480: true cardinality at profile time
 
     @model_validator(mode="before")
     @classmethod
@@ -196,14 +196,14 @@ class Column(BaseModel):
 
     @field_validator("sql")
     @classmethod
-    def _fix_multidot_sql(cls, v: Optional[str]) -> Optional[str]:
+    def _fix_multidot_sql(cls, v: str | None) -> str | None:
         if v is not None:
             v = _fix_multidot_sql(v, context="Column sql")
         return v
 
     @field_validator("filter")
     @classmethod
-    def _fix_multidot_filter(cls, v: Optional[str]) -> Optional[str]:
+    def _fix_multidot_filter(cls, v: str | None) -> str | None:
         if v is not None:
             v = _fix_multidot_sql(v, context="Column filter")
             # DEV-1369: Column.filter is SQL-mode — validate at construction
@@ -228,11 +228,11 @@ class ModelMeasure(BaseModel):
     contexts; the difference is scope.
     """
     formula: str
-    name: Optional[str] = None
-    label: Optional[str] = None
-    description: Optional[str] = None
-    type: Optional[DataType] = None
-    meta: Optional[Dict[str, Any]] = None
+    name: str | None = None
+    label: str | None = None
+    description: str | None = None
+    type: DataType | None = None
+    meta: dict[str, Any] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -250,7 +250,7 @@ class ModelMeasure(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def _validate_name(cls, v: Optional[str]) -> Optional[str]:
+    def _validate_name(cls, v: str | None) -> str | None:
         if v is not None and not _NAME_PATTERN.match(v):
             raise ValueError(
                 f"Invalid name '{v}': must contain only letters, digits, "
@@ -260,7 +260,7 @@ class ModelMeasure(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def _reject_transform_shadowing(cls, v: Optional[str]) -> Optional[str]:
+    def _reject_transform_shadowing(cls, v: str | None) -> str | None:
         """A saved measure named after a built-in transform (``cumsum`` etc.)
         would shadow the transform when written as ``cumsum(...)`` in another
         formula. Reject these names at construction time.
@@ -308,10 +308,10 @@ class Aggregation(BaseModel):
     For fully custom aggregations, ``formula`` is required.
     """
     name: str
-    formula: Optional[str] = None  # SQL template; None = use built-in formula
-    params: List[AggregationParam] = Field(default_factory=list)
-    description: Optional[str] = None
-    meta: Optional[Dict[str, Any]] = None
+    formula: str | None = None  # SQL template; None = use built-in formula
+    params: list[AggregationParam] = Field(default_factory=list)
+    description: str | None = None
+    meta: dict[str, Any] | None = None
 
     @field_validator("name")
     @classmethod
@@ -408,7 +408,7 @@ class SourceModelOrigin(BaseModel):
     ``exclude=True`` so accidental save paths drop it cleanly.
     """
     name: str
-    data_source: Optional[str] = None
+    data_source: str | None = None
     parent: Optional["SourceModelOrigin"] = None
     agg_column_names: frozenset[str] = Field(default_factory=frozenset)
 
@@ -416,12 +416,12 @@ class SourceModelOrigin(BaseModel):
 class ModelJoin(BaseModel):
     """A join relationship to another model."""
     target_model: str                               # Name of the joined model
-    join_pairs: List[List[str]] = Field(...)        # [["source_dim", "target_dim"], ...]
+    join_pairs: list[list[str]] = Field(...)        # [["source_dim", "target_dim"], ...]
     join_type: JoinType = JoinType.LEFT             # LEFT (default) or INNER
 
     @field_validator("join_pairs")
     @classmethod
-    def _validate_join_pairs(cls, v: List[List[str]]) -> List[List[str]]:
+    def _validate_join_pairs(cls, v: list[list[str]]) -> list[list[str]]:
         if not v:
             raise ValueError("join_pairs must be non-empty")
         for i, pair in enumerate(v):
@@ -435,17 +435,17 @@ class ModelJoin(BaseModel):
 class SlayerModel(BaseModel):
     version: int = 7
     name: str
-    sql_table: Optional[str] = None
-    sql: Optional[str] = None
+    sql_table: str | None = None
+    sql: str | None = None
     source_queries: Annotated[
-        Optional[List], BeforeValidator(_coerce_source_queries)
+        list | None, BeforeValidator(_coerce_source_queries)
     ] = None  # List of SlayerQuery — query-backed source mode
-    query_variables: Dict[str, Any] = Field(default_factory=dict)
-    backing_query_sql: Optional[str] = None
+    query_variables: dict[str, Any] = Field(default_factory=dict)
+    backing_query_sql: str | None = None
     data_source: str = ""
-    columns: List[Column] = Field(default_factory=list)
-    measures: List[ModelMeasure] = Field(default_factory=list)
-    aggregations: List[Aggregation] = Field(default_factory=list)
+    columns: list[Column] = Field(default_factory=list)
+    measures: list[ModelMeasure] = Field(default_factory=list)
+    aggregations: list[Aggregation] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -497,20 +497,20 @@ class SlayerModel(BaseModel):
                 f"model belongs to."
             )
         return self
-    joins: List[ModelJoin] = Field(default_factory=list)
-    filters: List[str] = Field(default_factory=list)  # Model-level filters (always applied)
-    default_time_dimension: Optional[str] = None
-    description: Optional[str] = None
+    joins: list[ModelJoin] = Field(default_factory=list)
+    filters: list[str] = Field(default_factory=list)  # Model-level filters (always applied)
+    default_time_dimension: str | None = None
+    description: str | None = None
     hidden: bool = False
-    meta: Optional[Dict[str, Any]] = None
+    meta: dict[str, Any] | None = None
     # DEV-1449: in-memory breadcrumb for virtual stage models produced by
     # ``_query_as_model``. ``exclude=True`` keeps it out of YAML/SQLite
     # roundtrips; virtual stage models are not persisted in the first place.
-    source_model_origin: Optional[SourceModelOrigin] = Field(default=None, exclude=True)
+    source_model_origin: SourceModelOrigin | None = Field(default=None, exclude=True)
 
     @field_validator("filters")
     @classmethod
-    def _fix_multidot_filters(cls, v: List[str]) -> List[str]:
+    def _fix_multidot_filters(cls, v: list[str]) -> list[str]:
         """Auto-convert multi-dot column references in model filters and
         validate each entry as a SQL-mode predicate (DEV-1369).
 
@@ -685,7 +685,7 @@ class SlayerModel(BaseModel):
                         f"in source_queries must have a 'name'."
                     )
         seen: set = set()
-        dupes: List[str] = []
+        dupes: list[str] = []
         for stage in stages:
             n = getattr(stage, "name", None)
             if not n:
@@ -700,19 +700,19 @@ class SlayerModel(BaseModel):
             )
         return self
 
-    def get_column(self, name: str) -> Optional[Column]:
+    def get_column(self, name: str) -> Column | None:
         for c in self.columns:
             if c.name == name:
                 return c
         return None
 
-    def get_measure(self, name: str) -> Optional[ModelMeasure]:
+    def get_measure(self, name: str) -> ModelMeasure | None:
         for m in self.measures:
             if m.name == name:
                 return m
         return None
 
-    def get_aggregation(self, name: str) -> Optional[Aggregation]:
+    def get_aggregation(self, name: str) -> Aggregation | None:
         for a in self.aggregations:
             if a.name == name:
                 return a
@@ -722,15 +722,21 @@ class SlayerModel(BaseModel):
 class DatasourceConfig(BaseModel):
     version: int = 2
     name: str
-    type: Optional[str] = None
-    host: Optional[str] = None
-    port: Optional[int] = None
-    database: Optional[str] = None
-    username: Optional[str] = None
-    password: Optional[str] = None
-    connection_string: Optional[str] = None
-    schema_name: Optional[str] = None
-    description: Optional[str] = None
+    type: str | None = None
+    host: str | None = None
+    port: int | None = None
+    database: str | None = None
+    username: str | None = None
+    password: str | None = None
+    connection_string: str | None = None
+    schema_name: str | None = None
+    # ``schema_name`` (above) is the UPSTREAM physical schema this datasource
+    # reads from (e.g. a Snowflake/Postgres source schema). ``postgres_schema``
+    # is unrelated: it's the schema name the Postgres *facade* advertises this
+    # datasource's models under. Default ``None`` => "public", so by default
+    # every datasource's models share one schema; set it to separate them.
+    postgres_schema: str | None = None
+    description: str | None = None
     # Snowflake-specific (v2, DEV-1551). Other dialects ignore them.
     # ``connection_name`` is the primary auth path — when set, all credentials
     # come from ``~/.snowflake/connections.toml`` via
@@ -738,9 +744,16 @@ class DatasourceConfig(BaseModel):
     # (host as account, username, password, database, schema_name) is the
     # secondary path; ``warehouse`` and ``role`` populate the URL's query
     # string for that path. See docs/configuration/datasources.md#snowflake.
-    connection_name: Optional[str] = None
-    warehouse: Optional[str] = None
-    role: Optional[str] = None
+    connection_name: str | None = None
+    warehouse: str | None = None
+    role: str | None = None
+    # BigQuery-specific. Other dialects ignore it. The contents of a Google
+    # service-account key file as a JSON string. When set, the BigQuery dialect
+    # constructs the SQLAlchemy engine with ``credentials_info=json.loads(...)``
+    # so the connection authenticates against that service account directly.
+    # When unset, BigQuery falls back to Application Default Credentials
+    # (``GOOGLE_APPLICATION_CREDENTIALS`` env var or attached compute identity).
+    credentials_json: str | None = Field(default=None, repr=False)
 
     @model_validator(mode="before")
     @classmethod
@@ -770,6 +783,23 @@ class DatasourceConfig(BaseModel):
         _NO_BACK_SLASH.check(name=v, context=label)
         _NO_DOT.check(name=v, context=label)
         _NO_COLON.check(name=v, context=label)
+        return v
+
+    @field_validator("postgres_schema")
+    @classmethod
+    def _validate_postgres_schema(cls, v: str | None) -> str | None:
+        # The facade advertises models under this schema, so it must be a
+        # plain unquoted Postgres identifier. Postgres folds unquoted
+        # identifiers to lowercase, so we require lowercase to avoid the
+        # quoting ambiguity that would otherwise surprise BI tools.
+        if v is None:
+            return v
+        _require_non_empty_trimmed(v=v, context="Datasource 'postgres_schema'")
+        if not re.fullmatch(r"[a-z_][a-z0-9_]*", v):
+            raise ValueError(
+                f"Datasource 'postgres_schema' must be a lowercase Postgres "
+                f"identifier matching [a-z_][a-z0-9_]*, got {v!r}"
+            )
         return v
 
     def _get_tsql_connection_string(self) -> str:

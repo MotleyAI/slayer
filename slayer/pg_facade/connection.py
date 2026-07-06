@@ -18,7 +18,7 @@ import asyncio
 import logging
 import re
 import struct
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from collections.abc import Awaitable, Callable, Iterable
 
 import sqlglot
 import sqlglot.errors
@@ -28,7 +28,10 @@ from sqlglot.optimizer.scope import traverse_scope
 
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
-from slayer.facade.catalog import FacadeCatalog, build_catalog
+from slayer.facade.catalog import (
+    FacadeCatalog,
+    build_catalog_grouped_by_schema,
+)
 from slayer.facade.probe_queries import match_probe as facade_match_probe
 from slayer.facade.rows import RowBatch
 from slayer.facade.translator import (
@@ -45,7 +48,7 @@ from slayer.facade.translator import (
 )
 from slayer.facade.catalog_sql import build_catalog_relations, executor_for
 from slayer.pg_facade import protocol as proto
-from slayer.pg_facade.auth import verify_password
+from slayer.pg_facade.auth import Authenticator, StaticTokenAuthenticator
 from slayer.pg_facade.identity import parameter_status_defaults, version_string
 from slayer.pg_facade.probes import (
     SESSION_SETTING_SEED,
@@ -66,8 +69,24 @@ logger = logging.getLogger(__name__)
 _BACKEND_PID = 1
 _BACKEND_SECRET = 0
 _PARAM_PLACEHOLDER = re.compile(r"\$(\d+)")
-# The single schema the facade advertises (matches pg_namespace / current_schema).
+# The default schema the facade advertises (matches pg_namespace /
+# current_schema). Datasources without an explicit ``postgres_schema`` land here.
 PUBLIC_SCHEMA = "public"
+
+# Fallback logical-database name (``current_database()`` / ``table_catalog``)
+# when the client sends no ``database`` startup parameter.
+DEFAULT_DATABASE = "slayer"
+
+# Per-connection scoping seams: resolve a storage from the authenticated
+# principal, and an engine from that storage.
+StorageProvider = Callable[[object], Awaitable[object]]
+EngineFactory = Callable[[object], object]
+
+
+def _default_engine_factory(storage: object) -> object:
+    from slayer.engine.query_engine import SlayerQueryEngine
+
+    return SlayerQueryEngine(storage=storage)
 
 # DEV-1569: GUC_REPORT-class settings. After a successful SET / set_config /
 # RESET of one of these, the server pushes a ``ParameterStatus`` message so
@@ -78,7 +97,7 @@ PUBLIC_SCHEMA = "public"
 # ``integer_datetimes``, ``is_superuser``, ``in_hot_standby``,
 # ``default_transaction_read_only`` are GUC_REPORT in real Postgres too but
 # the facade doesn't expose them as settable, so we don't list them here.
-_GUC_REPORT_NAMES: Dict[str, str] = {
+_GUC_REPORT_NAMES: dict[str, str] = {
     "application_name": "application_name",
     "client_encoding": "client_encoding",
     "datestyle": "DateStyle",
@@ -93,18 +112,18 @@ _GUC_REPORT_NAMES: Dict[str, str] = {
 # DEV-1570 type aliases — populated by ``_build_column_type_index`` below and
 # cached per-connection. Declared here so the ``__init__`` annotation can
 # reference them without a forward-ref dance.
-ColumnTypeKey = Tuple[str, str, str]  # (schema_lower, table_lower, column_lower)
-ColumnTypeIndex = Dict[ColumnTypeKey, DataType]
+ColumnTypeKey = tuple[str, str, str]  # (schema_lower, table_lower, column_lower)
+ColumnTypeIndex = dict[ColumnTypeKey, DataType]
 
 
 class _PreparedStatement(BaseModel):
     sql: str
-    parameter_oids: List[int]
+    parameter_oids: list[int]
 
 
 class _Portal(BaseModel):
     sql: str
-    result_format_codes: List[int]
+    result_format_codes: list[int]
 
 
 class _Done(Exception):
@@ -119,27 +138,57 @@ class PgConnection:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         *,
-        engine,
-        storage,
-        token: Optional[str],
+        engine=None,
+        storage=None,
+        token: str | None = None,
+        authenticator: Authenticator | None = None,
+        storage_provider: "StorageProvider | None" = None,
+        engine_factory: "EngineFactory | None" = None,
         tls_ctx=None,
+        catalog_extra_relations=None,
     ) -> None:
         self._reader = reader
         self._writer = writer
         self._engine = engine
         self._storage = storage
-        self._token = token
+        # Optional per-connection scoping: when ``storage_provider`` is given the
+        # storage (and engine, via ``engine_factory``) is resolved from the
+        # authenticated principal after auth — e.g. a tenant-scoped store.
+        self._storage_provider = storage_provider
+        self._engine_factory = engine_factory
+        # Tracks whether ``_resolve_scope`` actually built per-connection
+        # storage + engine objects (so teardown disposes only what this
+        # connection owns; an auth failure before the swap mustn't touch
+        # statically-provided storage / engine the host wants to keep alive).
+        self._owns_scoped_resources: bool = False
+        # ``authenticator`` wins; ``token`` is kept for back-compat and wraps
+        # into the default static-token authenticator.
+        # Explicit ``is None`` check — a custom authenticator whose
+        # ``__bool__``/``__len__`` is falsey must not silently fall back
+        # to the static-token path.
+        self._authenticator: Authenticator = (
+            authenticator if authenticator is not None
+            else StaticTokenAuthenticator(token)
+        )
+        # Opaque host-defined principal set on successful auth (tenant/user).
+        self._principal: object | None = None
         self._tls_ctx = tls_ctx
+        # Extensibility hook for embedders to override / extend the pg_catalog
+        # tables — see ``build_catalog_relations(..., extra_relations=...)``.
+        self._catalog_extras = catalog_extra_relations
         self._tx_state: bytes = proto.TX_IDLE
-        self._datasource: Optional[str] = None
-        self._catalog: Optional[FacadeCatalog] = None
-        self._statements: Dict[str, _PreparedStatement] = {}
-        self._portals: Dict[str, _Portal] = {}
+        # Logical database name (``current_database()`` / ``table_catalog``),
+        # taken from the ``database`` startup parameter. NOT a model-resolution
+        # datasource — execution routes per query (see ``QueryResult.data_source``).
+        self._database: str = DEFAULT_DATABASE
+        self._catalog: FacadeCatalog | None = None
+        self._statements: dict[str, _PreparedStatement] = {}
+        self._portals: dict[str, _Portal] = {}
         # Lazily-built (schema, table, column) -> DataType lookup, used by the
         # DEV-1570 empty-string-vs-non-text Bind rewrite. Built once per
         # connection on first need; ``None`` until then so connections that
         # never bind candidates pay zero cost.
-        self._column_type_index: Optional[ColumnTypeIndex] = None
+        self._column_type_index: ColumnTypeIndex | None = None
         # Extended protocol: after an error the backend discards every message
         # until the next Sync, then resumes with ReadyForQuery.
         self._skip_until_sync = False
@@ -147,7 +196,7 @@ class PgConnection:
         # set_config writes; consulted by SHOW / current_setting reads. Seeded
         # from the module-level SESSION_SETTING_SEED via dict(...) so each
         # connection owns its own copy (never aliasing the seed).
-        self._session_settings: Dict[str, str] = dict(SESSION_SETTING_SEED)
+        self._session_settings: dict[str, str] = dict(SESSION_SETTING_SEED)
         # DEV-1569: when True, ``_describe_sql`` is in flight — translator
         # calls must remain pure. Suppresses application of any session-
         # setting mutation hints surfaced by the probe matcher during a
@@ -161,10 +210,9 @@ class PgConnection:
             startup = await self._handle_startup()
             if startup is None:
                 return
-            if not await self._authenticate():
+            if not await self._authenticate(startup):
                 return
-            if not await self._resolve_datasource(startup.parameters.get("database")):
-                return
+            await self._resolve_scope(startup.parameters.get("database"))
             self._catalog = await self._build_catalog()
             await self._send_startup_complete()
             await self._main_loop()
@@ -172,10 +220,37 @@ class PgConnection:
             return
         except (asyncio.IncompleteReadError, ConnectionResetError):
             return
+        finally:
+            await self._close_scoped_storage()
+
+    async def _close_scoped_storage(self) -> None:
+        """Release the per-connection storage + engine that ``_resolve_scope``
+        built from ``storage_provider`` / ``engine_factory``.
+
+        Gated on ``_owns_scoped_resources`` so an auth failure before the
+        swap leaves any static storage/engine the host wants to keep alive
+        untouched. Disposes the engine too (``SlayerQueryEngine.aclose``
+        releases the async SQL-client pools — without this a long-lived
+        facade with ``storage_provider`` leaks one engine per session).
+        """
+        if not self._owns_scoped_resources:
+            return
+        engine_aclose = getattr(self._engine, "aclose", None)
+        if engine_aclose is not None:
+            try:
+                await engine_aclose()
+            except Exception:  # noqa: BLE001 — teardown best-effort
+                logger.exception("pg facade: scoped engine close failed")
+        storage_aclose = getattr(self._storage, "aclose", None)
+        if storage_aclose is not None:
+            try:
+                await storage_aclose()
+            except Exception:  # noqa: BLE001 — teardown best-effort
+                logger.exception("pg facade: scoped storage close failed")
 
     # ----- startup ----------------------------------------------------------
 
-    async def _read_startup_frame(self) -> Optional[bytes]:
+    async def _read_startup_frame(self) -> bytes | None:
         """Read a startup-style frame (no type byte). Returns the body (starting
         with the 4-byte code) or ``None`` on EOF / malformed length."""
         try:
@@ -191,7 +266,7 @@ class PgConnection:
         except asyncio.IncompleteReadError:
             return None
 
-    async def _handle_startup(self) -> Optional[proto.StartupMessage]:
+    async def _handle_startup(self) -> proto.StartupMessage | None:
         while True:
             body = await self._read_startup_frame()
             if body is None:
@@ -235,65 +310,98 @@ class PgConnection:
 
     # ----- auth -------------------------------------------------------------
 
-    async def _authenticate(self) -> bool:
-        if self._token is None:
-            self._writer.write(proto.encode_authentication_ok())
+    async def _authenticate(self, startup: proto.StartupMessage) -> bool:
+        username = startup.parameters.get("user")
+        database = startup.parameters.get("database")
+
+        password: str | None = None
+        if self._authenticator.requires_password:
+            self._writer.write(proto.encode_authentication_cleartext_password())
             await self._flush()
-            return True
-        self._writer.write(proto.encode_authentication_cleartext_password())
-        await self._flush()
-        msg = await self._read_message()
-        if msg is None:
-            return False
-        type_char, body = msg
-        if type_char != "p":
-            await self._send_error(
-                code=proto.SQLSTATE_INVALID_AUTHORIZATION,
-                message="expected password message",
-                severity="FATAL",
-            )
-            return False
-        password = proto.decode_password(body)
-        if not verify_password(password, self._token):
+            msg = await self._read_message()
+            if msg is None:
+                return False
+            type_char, body = msg
+            if type_char != "p":
+                await self._send_error(
+                    code=proto.SQLSTATE_INVALID_AUTHORIZATION,
+                    message="expected password message",
+                    severity="FATAL",
+                )
+                return False
+            try:
+                password = proto.decode_password(body)
+            except (ValueError, struct.error):
+                # Keep auth-phase malformed input on the wire-protocol
+                # path; without this, the client gets a silent disconnect
+                # instead of a Postgres error response.
+                await self._send_error(
+                    code=proto.SQLSTATE_PROTOCOL_VIOLATION,
+                    message="malformed password message",
+                    severity="FATAL",
+                )
+                return False
+
+        outcome = await self._authenticator.authenticate(
+            username=username, password=password, database=database
+        )
+        if not outcome.ok:
             await self._send_error(
                 code=proto.SQLSTATE_INVALID_PASSWORD,
-                message="password authentication failed",
+                message=outcome.message,
                 severity="FATAL",
             )
             return False
+
+        self._principal = outcome.principal
         self._writer.write(proto.encode_authentication_ok())
         await self._flush()
         return True
 
-    # ----- datasource resolution -------------------------------------------
+    # ----- scope resolution ------------------------------------------------
 
-    async def _resolve_datasource(self, database: Optional[str]) -> bool:
-        datasources = await self._storage.list_datasources()
-        if database and database in datasources:
-            self._datasource = database
-            return True
-        name = database if database else "(none)"
-        await self._send_error(
-            code=proto.SQLSTATE_UNDEFINED_DATABASE,
-            message=f'database "{name}" does not exist',
-            severity="FATAL",
-        )
-        return False
+    async def _resolve_scope(self, database: str | None) -> None:
+        """Resolve per-connection scope after auth.
+
+        The ``database`` startup parameter is the logical database name (one
+        emulated DB per instance/tenant), not a datasource selector — every
+        datasource the storage exposes appears as a schema. When a
+        ``storage_provider`` is configured, the storage (and engine) is
+        re-resolved from the authenticated principal so a host can scope the
+        connection to one tenant.
+        """
+        self._database = database or DEFAULT_DATABASE
+        if self._storage_provider is not None:
+            self._storage = await self._storage_provider(self._principal)
+            factory = self._engine_factory or _default_engine_factory
+            self._engine = factory(self._storage)
+            # Mark only after BOTH constructions succeed — partial state
+            # would leave teardown unsure which side to dispose.
+            self._owns_scoped_resources = True
 
     async def _build_catalog(self) -> FacadeCatalog:
-        assert self._datasource is not None
-        models: List[SlayerModel] = []
-        names = await self._storage.list_models(data_source=self._datasource)
-        for name in names:
-            model = await self._storage.get_model(name=name, data_source=self._datasource)
-            if model is not None:
-                models.append(model)
-        # The Postgres facade advertises a single schema `public` (matching
-        # pg_namespace / current_schema()), so the catalog's schema is named
-        # `public` — this keeps qualified `public.<table>` resolution working.
-        # The real datasource is carried separately (self._datasource) and
-        # passed to the engine as the execution hint.
-        return build_catalog(models_by_datasource={PUBLIC_SCHEMA: models})
+        models_by_datasource: dict[str, list[SlayerModel]] = {}
+        schema_by_datasource: dict[str, str] = {}
+        for datasource in await self._storage.list_datasources():
+            names = await self._storage.list_models(data_source=datasource)
+            models = [
+                model
+                for name in names
+                if (model := await self._storage.get_model(
+                    name=name, data_source=datasource,
+                )) is not None
+            ]
+            models_by_datasource[datasource] = models
+            config = await self._storage.get_datasource(datasource)
+            if config is not None and config.postgres_schema:
+                schema_by_datasource[datasource] = config.postgres_schema
+        priority = await self._storage.get_datasource_priority()
+        return build_catalog_grouped_by_schema(
+            models_by_datasource=models_by_datasource,
+            schema_by_datasource=schema_by_datasource,
+            datasource_priority=priority,
+            default_schema=PUBLIC_SCHEMA,
+        )
 
     async def _send_startup_complete(self) -> None:
         for name, value in parameter_status_defaults():
@@ -455,7 +563,7 @@ class PgConnection:
         empty_string_null_params = self._empty_string_null_params_for_bind(
             sql=stmt.sql, raw_values=bind.parameter_values, oids=oids,
         )
-        literals: List[str] = []
+        literals: list[str] = []
         for i, (raw, fmt, oid) in enumerate(
             zip(bind.parameter_values, formats, oids), start=1,
         ):
@@ -480,8 +588,8 @@ class PgConnection:
         return _PARAM_PLACEHOLDER.sub(repl, stmt.sql)
 
     def _empty_string_null_params_for_bind(
-        self, *, sql: str, raw_values, oids: List[int],
-    ) -> Set[int]:
+        self, *, sql: str, raw_values, oids: list[int],
+    ) -> set[int]:
         # DEV-1570: pre-classify $N indices whose bound value is an empty
         # text-OID payload AND whose AST occurrence targets a non-TEXT catalog
         # column. Those positions emit ``NULL`` rather than ``''`` so DuckDB
@@ -491,11 +599,12 @@ class PgConnection:
             i + 1 for i, (raw, oid) in enumerate(zip(raw_values, oids))
             if oid == proto.OID_TEXT and raw == b""
         ]
-        if not candidates or self._catalog is None or self._datasource is None:
+        if not candidates or self._catalog is None:
             return set()
         if self._column_type_index is None:
             self._column_type_index = _build_column_type_index(
-                catalog=self._catalog, datasource=self._datasource,
+                catalog=self._catalog, datasource=self._database,
+                extra_relations=self._catalog_extras,
             )
         return _classify_empty_string_param_targets(
             sql=sql,
@@ -533,8 +642,8 @@ class PgConnection:
             )
 
     def _describe_sql(
-        self, sql: str, *, result_formats: Optional[List[int]],
-        param_oids: Optional[List[int]] = None,
+        self, sql: str, *, result_formats: list[int] | None,
+        param_oids: list[int] | None = None,
     ) -> None:
         # DEV-1558 fix: the catalog executor's Describe path runs the SQL
         # against DuckDB to obtain the cursor's column description. When the
@@ -632,7 +741,15 @@ class PgConnection:
             # materialised when ``is_catalog_only(parsed)`` is True
             # (Codex round 16). Non-catalog model queries skip the
             # construction cost entirely.
-            catalog_sql_executor=lambda: executor_for(self._catalog, self._datasource),
+            catalog_sql_executor=lambda: executor_for(
+                self._catalog, self._database,
+                extra_relations=self._catalog_extras,
+            ),
+            # Convenience for interactive psql sessions: ``SELECT * FROM t``
+            # in browse mode (no GROUP BY / HAVING / aggregate) expands to
+            # every non-hidden column. Flight stays strict (its clients
+            # always project explicit names).
+            expand_star_in_browse_mode=True,
         )
 
     def _probe_matcher(self, parsed: exp.Expression):
@@ -643,9 +760,8 @@ class PgConnection:
         ``ProbeMatcherOutcome`` carries a mutation hint that
         ``_run_statement`` applies on Execute (Describe leaves it pending).
         """
-        assert self._datasource is not None
         pg = match_pg_probe_with_mutation(
-            parsed, datasource=self._datasource, version_str=version_string(),
+            parsed, datasource=self._database, version_str=version_string(),
             session_settings=self._session_settings,
         )
         if pg is not None:
@@ -653,7 +769,7 @@ class PgConnection:
         return facade_match_probe(parsed)
 
     async def _run_statement(
-        self, sql: str, *, result_formats: Optional[List[int]], send_row_description: bool,
+        self, sql: str, *, result_formats: list[int] | None, send_row_description: bool,
     ) -> bool:
         """Translate + respond. Returns False if an error was sent."""
         try:
@@ -696,7 +812,7 @@ class PgConnection:
         return False
 
     def _emit_row_batch(
-        self, batch: RowBatch, result_formats: Optional[List[int]], send_row_description: bool,
+        self, batch: RowBatch, result_formats: list[int] | None, send_row_description: bool,
     ) -> None:
         formats = proto.parse_result_format_codes(result_formats or [], len(batch.columns))
         if send_row_description:
@@ -724,11 +840,17 @@ class PgConnection:
         self._writer.write(proto.encode_command_complete(f"SELECT {len(batch.rows)}"))
 
     async def _run_query(
-        self, result: QueryResult, result_formats: Optional[List[int]], send_row_description: bool,
+        self, result: QueryResult, result_formats: list[int] | None, send_row_description: bool,
     ) -> bool:
         try:
+            # The translator resolves the per-query datasource from the
+            # referenced model(s) and rejects cross-datasource joins. A model
+            # query always carries one; guard the impossible None rather than
+            # passing it to the engine.
+            if result.data_source is None:
+                raise ValueError("could not resolve a datasource for the query")
             response = await self._engine.execute(
-                query=result.query, data_source=self._datasource,
+                query=result.query, data_source=result.data_source,
             )
         except Exception as exc:  # noqa: BLE001 — surface any engine error to the client
             await self._send_error(code=proto.SQLSTATE_INTERNAL_ERROR, message=str(exc))
@@ -757,8 +879,8 @@ class PgConnection:
         return True
 
     def _fields_for_result(
-        self, result, result_formats: Optional[List[int]],
-    ) -> Optional[List[proto.FieldDescription]]:
+        self, result, result_formats: list[int] | None,
+    ) -> list[proto.FieldDescription] | None:
         if isinstance(result, (ProbeResult, InfoSchemaResult, PgCatalogResult)):
             cols = result.batch.columns
             formats = proto.parse_result_format_codes(result_formats or [], len(cols))
@@ -782,7 +904,7 @@ class PgConnection:
 
     # ----- transaction state -------------------------------------------------
 
-    def _apply_tx_command(self, command_tag: Optional[str]) -> None:
+    def _apply_tx_command(self, command_tag: str | None) -> None:
         if command_tag in ("BEGIN", "START TRANSACTION"):
             self._tx_state = proto.TX_IN_TRANSACTION
         elif command_tag in ("COMMIT", "ROLLBACK", "END"):
@@ -882,7 +1004,7 @@ class PgConnection:
 # declaring text OIDs for parameters that compared against int columns
 # (``objsubid = $N``), which the literal ``''`` sentinel turned into
 # an unanswerable text-vs-int comparison.
-_TYPED_SENTINEL_BY_OID: Dict[int, str] = {
+_TYPED_SENTINEL_BY_OID: dict[int, str] = {
     proto.OID_TEXT: "CAST(NULL AS VARCHAR)",
     proto.OID_INT8: "CAST(NULL AS BIGINT)",
     proto.OID_FLOAT8: "CAST(NULL AS DOUBLE)",
@@ -892,7 +1014,7 @@ _TYPED_SENTINEL_BY_OID: Dict[int, str] = {
 }
 
 
-def _substitute_typed_sentinels(sql: str, param_oids: List[int]) -> str:
+def _substitute_typed_sentinels(sql: str, param_oids: list[int]) -> str:
     """Replace each ``$N`` placeholder with a typed sentinel literal
     derived from ``param_oids[N-1]``. Falls back to bare ``NULL`` when
     the OID is unknown (e.g. extra placeholders past the declared list)
@@ -939,6 +1061,7 @@ _COMPARISON_NODE_TYPES: tuple = (
 
 def _build_column_type_index(
     *, catalog: FacadeCatalog, datasource: str,
+    extra_relations=None,
 ) -> ColumnTypeIndex:
     """Build the (schema_lower, table_lower, column_lower) -> DataType lookup
     used by the Bind-time empty-string-to-NULL rewrite (DEV-1570).
@@ -947,18 +1070,25 @@ def _build_column_type_index(
     builder-name remap), and user-model tables under ``PUBLIC_SCHEMA``.
     """
     out: ColumnTypeIndex = {}
-    _index_catalog_relations(out=out, catalog=catalog, datasource=datasource)
+    _index_catalog_relations(
+        out=out, catalog=catalog, datasource=datasource,
+        extra_relations=extra_relations,
+    )
     _index_user_tables(out=out, catalog=catalog)
     return out
 
 
 def _index_catalog_relations(
     *, out: ColumnTypeIndex, catalog: FacadeCatalog, datasource: str,
+    extra_relations=None,
 ) -> None:
     """Populate ``out`` with pg_catalog / information_schema column types
     materialised by ``build_catalog_relations``. The ``_is_<name>`` builder
     convention is remapped to the SQL-visible ``information_schema.<name>``."""
-    for rel in build_catalog_relations(catalog=catalog, datasource=datasource):
+    for rel in build_catalog_relations(
+        catalog=catalog, datasource=datasource,
+        extra_relations=extra_relations,
+    ):
         if rel.name.startswith("_is_"):
             schema = "information_schema"
             table = rel.name[len("_is_"):]
@@ -1019,7 +1149,7 @@ def _classify_empty_string_param_targets(
     *, sql: str,
     column_type_index: ColumnTypeIndex,
     candidate_param_indices: Iterable[int],
-) -> Set[int]:
+) -> set[int]:
     """Return the subset of ``candidate_param_indices`` whose AST occurrences
     appear in a comparison / IN / BETWEEN predicate against a column that
     resolves via ``column_type_index`` to a non-TEXT ``DataType``.
@@ -1063,9 +1193,9 @@ def _classify_empty_string_param_targets(
 
 def _map_column_tables(
     *, parsed: exp.Expression, column_type_index: ColumnTypeIndex,
-) -> Dict[int, Optional[Tuple[str, str]]]:
+) -> dict[int, tuple[str, str] | None]:
     """Resolve every Column node to its owning scope's (schema, table)."""
-    column_to_table: Dict[int, Optional[Tuple[str, str]]] = {}
+    column_to_table: dict[int, tuple[str, str] | None] = {}
     for scope in traverse_scope(parsed):
         sources = _resolved_table_sources(scope.sources)
         for col in scope.find_all(exp.Column):
@@ -1078,13 +1208,13 @@ def _map_column_tables(
 
 def _collect_non_text_params(
     *, parsed: exp.Expression,
-    candidates: Set[int],
-    column_to_table: Dict[int, Optional[Tuple[str, str]]],
+    candidates: set[int],
+    column_to_table: dict[int, tuple[str, str] | None],
     column_type_index: ColumnTypeIndex,
-) -> Set[int]:
+) -> set[int]:
     """Walk comparison / IN / BETWEEN nodes; collect $N indices whose paired
     Column resolves to a non-TEXT ``DataType``."""
-    result: Set[int] = set()
+    result: set[int] = set()
     for node in parsed.walk():
         for col, param_idx in _column_param_pairs_from_node(node):
             if param_idx not in candidates:
@@ -1099,7 +1229,7 @@ def _collect_non_text_params(
     return result
 
 
-def _column_param_pairs_from_node(node) -> Iterable[Tuple[exp.Column, int]]:
+def _column_param_pairs_from_node(node) -> Iterable[tuple[exp.Column, int]]:
     """Yield (Column, param_index) pairs for each comparison-shape node."""
     if isinstance(node, _COMPARISON_NODE_TYPES):
         yield from _pair_column_and_param(node.this, node.expression)
@@ -1117,7 +1247,7 @@ def _column_param_pairs_from_node(node) -> Iterable[Tuple[exp.Column, int]]:
             yield from _pair_column_and_param(value, el)
 
 
-def _try_extract_column(node) -> Optional[exp.Column]:
+def _try_extract_column(node) -> exp.Column | None:
     """Return the underlying ``exp.Column`` if ``node`` is one (optionally
     wrapped in semantically-transparent ``exp.Paren`` layers). CAST / function
     / arithmetic wrappers around a column are documented out of scope —
@@ -1129,7 +1259,7 @@ def _try_extract_column(node) -> Optional[exp.Column]:
     return node if isinstance(node, exp.Column) else None
 
 
-def _try_extract_param_index(node) -> Optional[int]:
+def _try_extract_param_index(node) -> int | None:
     """Return the 1-based ``$N`` index if ``node`` is an ``exp.Parameter``
     (optionally wrapped in ``exp.Paren`` and/or ``exp.Cast`` layers).
 
@@ -1151,7 +1281,7 @@ def _try_extract_param_index(node) -> Optional[int]:
         return None
 
 
-def _pair_column_and_param(left, right) -> Iterable[Tuple[exp.Column, int]]:
+def _pair_column_and_param(left, right) -> Iterable[tuple[exp.Column, int]]:
     """Two operands where one is a bare Column and the other is a $N
     Parameter -> yield (Column, $N). Returns nothing if both sides are
     the same kind or if neither is a Column / Parameter."""
@@ -1169,7 +1299,7 @@ def _pair_column_and_param(left, right) -> Iterable[Tuple[exp.Column, int]]:
         yield col, param_idx
 
 
-def _resolved_table_sources(sources) -> Dict[str, Tuple[str, str]]:
+def _resolved_table_sources(sources) -> dict[str, tuple[str, str]]:
     """Given ``Scope.sources``, return ``{alias_lower: (schema_lower, table_lower)}``.
 
     Sources whose value is another ``Scope`` (CTE / derived subquery)
@@ -1181,13 +1311,13 @@ def _resolved_table_sources(sources) -> Dict[str, Tuple[str, str]]:
     information_schema requires an explicit qualifier — bare names like
     ``columns`` never resolve there (Codex round 1, finding #4).
     """
-    result: Dict[str, Tuple[str, str]] = {}
+    result: dict[str, tuple[str, str]] = {}
     for alias, src in sources.items():
         if not isinstance(src, exp.Table):
             continue
         tbl_name = src.name.lower()
         db_part = src.args.get("db")
-        schema: Optional[str] = None
+        schema: str | None = None
         if db_part is not None:
             schema_raw = db_part.name if hasattr(db_part, "name") else str(db_part)
             schema = schema_raw.lower()
@@ -1201,9 +1331,9 @@ def _resolved_table_sources(sources) -> Dict[str, Tuple[str, str]]:
 
 def _resolve_column_table(
     *, col: exp.Column,
-    scope_sources: Dict[str, Tuple[str, str]],
+    scope_sources: dict[str, tuple[str, str]],
     column_type_index: ColumnTypeIndex,
-) -> Optional[Tuple[str, str]]:
+) -> tuple[str, str] | None:
     """Resolve a Column node to ``(schema, table_name)`` via its owning
     scope's sources. Returns ``None`` if unresolvable (no scope match,
     ambiguous bare name, or table not in scope)."""
@@ -1216,7 +1346,7 @@ def _resolve_column_table(
             return scope_sources[table_q]
         return None
     name_lower = col.name.lower()
-    matches: List[Tuple[str, str]] = []
+    matches: list[tuple[str, str]] = []
     for _alias, (schema, tbl) in scope_sources.items():
         if (schema, tbl, name_lower) in column_type_index:
             matches.append((schema, tbl))
@@ -1225,7 +1355,7 @@ def _resolve_column_table(
     return None
 
 
-def _resolve_param_oids(stmt: _PreparedStatement) -> List[int]:
+def _resolve_param_oids(stmt: _PreparedStatement) -> list[int]:
     """The parameter OIDs to report in ParameterDescription.
 
     asyncpg leaves ``Parse`` parameter OIDs empty and relies on the server to
@@ -1253,7 +1383,7 @@ def _is_tx_end(stmt: exp.Expression) -> bool:
     return False
 
 
-def _command_tag(command_tag: Optional[str]) -> str:
+def _command_tag(command_tag: str | None) -> str:
     if command_tag in ("BEGIN", "START TRANSACTION"):
         return "BEGIN"
     if command_tag is None:
@@ -1272,7 +1402,7 @@ def _sqlstate_for(exc: TranslationError) -> str:
     return proto.SQLSTATE_FEATURE_NOT_SUPPORTED
 
 
-def _encode_value(value, oid: int, fmt: int) -> Optional[bytes]:
+def _encode_value(value, oid: int, fmt: int) -> bytes | None:
     if fmt == proto.FORMAT_BINARY:
         return value_to_binary(value, oid)
     return value_to_text(value, oid)

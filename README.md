@@ -4,12 +4,20 @@
 
 [![PyPI](https://img.shields.io/pypi/v/motley-slayer?label=PyPI)](https://pypi.org/project/motley-slayer/)
 [![Python](https://img.shields.io/pypi/pyversions/motley-slayer)](https://pypi.org/project/motley-slayer/)
-[![Docs](https://img.shields.io/badge/docs-readthedocs-blue)](https://motley-slayer.readthedocs.io/)
+[![Docs](https://img.shields.io/badge/docs-docs.motley.ai-blue)](https://docs.motley.ai/slayer/)
 [![License](https://img.shields.io/github/license/MotleyAI/slayer)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/egWxMctHCA)
 
-**SLayer** is a semantic layer that lets AI agents query your database, manage data models, and learn from the data.
+**SLayer** is a lightweight semantic layer and query engine.
+
+Describe queries as measures, dimensions, and filters; SLayer generates and runs the SQL across any database, for any surface: AI agents, dashboards, notebooks. Python-embeddable or standalone (CLI, MCP, API server).
+
+### What you can do with SLayer
+
+- **If you're building a Python app that queries databases you don't control** — point SLayer at them and query semantically. It generates and translates SQL across Postgres, MySQL, Snowflake, BigQuery, and more. Import the library and use it in-process.
+- **If you want your internal users to self-serve analytics** — model your metrics once and let anyone (or their AI agents, over MCP) ask questions, with answers grounded in your definitions and business context instead of the LLM's guesses.
+- **If you ship analytics inside your product** — turn agent-generated query specs into safe, executed SQL, with row-level security so each user sees only what they're allowed to.
 
 > If you find SLayer useful, a ⭐ helps others discover it!
 > Questions, ideas, or feedback? [Join our Discord](https://discord.gg/egWxMctHCA).
@@ -18,20 +26,20 @@
 
 ## How it works
 
-SLayer sits between your database and AI agents (or internal tools, dashboards, scripts). It allows to:
+SLayer sits between your databases and whatever consumes the data — AI agents, internal tools, dashboards, scripts. It lets you:
 
-- Auto-create data models from the database schema (warm start)
-- Query using a [structured API](https://motley-slayer.readthedocs.io/en/latest/concepts/queries/) of measures, dimensions, and filters
-- Edit models at runtime or create new ones and use them immediately
-- Specify the desired aggregations [at query time, not in the models](https://motley-slayer.readthedocs.io/en/latest/examples/07_aggregations/aggregations/)
-- Save and retrieve natural-language memories about the data and queries
-- Run itself in-process, as a Python module or serverless via CLI
+- Auto-generate data models from your database schema (warm start)
+- Query through a [structured API](https://docs.motley.ai/slayer/concepts/queries/) of measures, dimensions, and filters
+- Choose aggregations [at query time, not in the models](https://docs.motley.ai/slayer/examples/07_aggregations/aggregations/)
+- Create or edit models at runtime and use them immediately — by hand, from your app, or by an agent
+- Save and retrieve natural-language memories about your data and queries
+- Run in-process as a Python library, or standalone via CLI, MCP, or API server
 
-SLayer naturally evolves when the agent uses it. For example, if a query requires a new measure, the agent will update the models and will use it in other contexts.
+Because models are editable at runtime, your semantic layer can grow with use: when a query needs a new measure, you (or an agent) add it once and reuse it everywhere.
 
-SLayer compiles queries into the correct SQL for your database, handling joins, aggregations, time-based calculations, and dialect differences. Its DSL is very expressive, [supporting](https://motley-slayer.readthedocs.io/en/latest/examples/04_time/time/) queries like _"month-on-month % increase in total revenue, compared to the previous year"_, [queries-as-models](https://motley-slayer.readthedocs.io/en/latest/examples/06_multistage_queries/multistage_queries/) and much more.
+SLayer compiles queries into the correct SQL for your database, handling joins, aggregations, time-based calculations, and dialect differences. Its DSL is very expressive, [supporting](https://docs.motley.ai/slayer/examples/04_time/time/) queries like _"month-on-month % increase in total revenue, compared to the previous year"_, [queries-as-models](https://docs.motley.ai/slayer/examples/06_multistage_queries/multistage_queries/) and much more.
 
-SLayer exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli), [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client), [Flight SQL](https://motley-slayer.readthedocs.io/en/latest/interfaces/flight-sql/) (JDBC, BI-tool compatible), and a [Postgres facade](https://motley-slayer.readthedocs.io/en/latest/interfaces/pg-facade/) (point any BI dashboard's Postgres connector at SLayer) interfaces and [supports](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/#supported-database-types) most popular databases.
+SLayer exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli), [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client), [Flight SQL](https://docs.motley.ai/slayer/interfaces/flight-sql/) (JDBC, BI-tool compatible), and a [Postgres facade](https://docs.motley.ai/slayer/interfaces/pg-facade/) (point any BI dashboard's Postgres connector at SLayer) interfaces and [supports](https://docs.motley.ai/slayer/configuration/datasources/#supported-database-types) most popular databases.
 
 ### Example
 
@@ -58,7 +66,7 @@ claude mcp add slayer_demo -- slayer mcp --demo
 ```
 
 ### Using your own data
-Set up your datasource, substituting the correct database, username, hostname, and db_name. 
+Set up your datasource, substituting the correct database, username, hostname, and db_name.
 
 ```bash
 slayer datasources create 'postgresql://user:${DB_PASSWORD}@hostname/db_name'
@@ -74,7 +82,7 @@ claude mcp add slayer -- slayer mcp --ingest-on-startup
 
 Now SLayer MCP will be visible in Claude Code next time you start it. Make sure to launch Claude Code from a shell where `DB_PASSWORD` is exported — the MCP subprocess inherits its environment from the launching process.
 
-Read more on how to get started with [MCP](https://motley-slayer.readthedocs.io/en/latest/getting-started/mcp/), [CLI](https://motley-slayer.readthedocs.io/en/latest/getting-started/cli/), [REST API](https://motley-slayer.readthedocs.io/en/latest/getting-started/rest-api/), [Python](https://motley-slayer.readthedocs.io/en/latest/getting-started/python/) in the docs.
+Read more on how to get started with [MCP](https://docs.motley.ai/slayer/getting-started/mcp/), [CLI](https://docs.motley.ai/slayer/getting-started/cli/), [REST API](https://docs.motley.ai/slayer/getting-started/rest-api/), [Python](https://docs.motley.ai/slayer/getting-started/python/) in the docs.
 
 
 ### Known limitations
@@ -105,7 +113,7 @@ claude mcp add slayer-remote --transport sse --url http://localhost:5143/mcp/sse
 
 SLayer **does not expose credentials** to consumers once created.
 
-Both transports expose the same tools, allowing to inspect, create and update datasources and models and run queries. More info in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/mcp/).
+Both transports expose the same tools, allowing to inspect, create and update datasources and models and run queries. More info in the [docs](https://docs.motley.ai/slayer/reference/mcp/).
 
 
 ### CLI
@@ -123,7 +131,7 @@ slayer query '{"source_model": "orders", "measures": ["*:count"], "dimensions": 
 slayer query @query.json --format json
 ```
 
-These commands do not depend on a running server. See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/cli/).
+These commands do not depend on a running server. See more in the [docs](https://docs.motley.ai/slayer/reference/cli/).
 
 ### Python Client
 
@@ -151,7 +159,7 @@ df = client.query_df(query)
 print(df)
 ```
 
-See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/python-client/).
+See more in the [docs](https://docs.motley.ai/slayer/reference/python-client/).
 
 ### REST API
 
@@ -168,7 +176,7 @@ curl http://localhost:5143/models
 curl http://localhost:5143/datasources/my_postgres
 ```
 
-See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/rest-api/).
+See more in the [docs](https://docs.motley.ai/slayer/reference/rest-api/).
 
 ### BI Dashboards
 
@@ -194,7 +202,7 @@ docker run -d -p 3000:3000 --name metabase \
 #   user=anything  password=pick-a-secret  SSL=off
 ```
 
-The connection's `database` selects the SLayer datasource; its models appear as tables under schema `public`. There's also an [Arrow Flight SQL](https://motley-slayer.readthedocs.io/en/latest/interfaces/flight-sql/) facade for JDBC clients. See the [Postgres facade docs](https://motley-slayer.readthedocs.io/en/latest/interfaces/pg-facade/) for auth, TLS, and the supported SQL surface.
+The connection's `database` selects the SLayer datasource; its models appear as tables under schema `public`. There's also an [Arrow Flight SQL](https://docs.motley.ai/slayer/interfaces/flight-sql/) facade for JDBC clients. See the [Postgres facade docs](https://docs.motley.ai/slayer/interfaces/pg-facade/) for auth, TLS, and the supported SQL surface.
 
 
 
@@ -260,7 +268,7 @@ The `measures` parameter on a query specifies what data columns to return. Aggre
 }
 ```
 
-Available functions: `cumsum`, `time_shift`, `change`, `lag`, and more – see [docs](https://motley-slayer.readthedocs.io/en/latest/concepts/formulas/). Formulas support arbitrary nesting — e.g., `change(cumsum(revenue:sum))` or `cumsum(revenue:sum) / *:count`.
+Available functions: `cumsum`, `time_shift`, `change`, `lag`, and more – see [docs](https://docs.motley.ai/slayer/concepts/formulas/). Formulas support arbitrary nesting — e.g., `change(cumsum(revenue:sum))` or `cumsum(revenue:sum) / *:count`.
 
 ## Filters
 
@@ -277,7 +285,7 @@ Filters use simple formula strings — no verbose JSON objects:
 }
 ```
 
-Filters support a variety of operators, composition, pattern matching. Transforms & computed columns can also be used for filtering. See [docs](https://motley-slayer.readthedocs.io/en/latest/concepts/queries/#filters) for more.
+Filters support a variety of operators, composition, pattern matching. Transforms & computed columns can also be used for filtering. See [docs](https://docs.motley.ai/slayer/concepts/queries/#filters) for more.
 
 ## Auto-Ingestion
 
@@ -332,7 +340,7 @@ password: ${DB_PASSWORD}
 
 Environment variable references (`${VAR}`) are resolved at read time.
 
-See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/).
+See more in the [docs](https://docs.motley.ai/slayer/configuration/datasources/).
 
 ## Storage Backends
 
@@ -343,7 +351,7 @@ SLayer ships with two storage backends:
 
 SLayer allows easily implementing your own storage backends, which is useful for features such as tenant isolation.
 
-See the [documentation page for storage backends](https://motley-slayer.readthedocs.io/en/latest/configuration/storage/) for more.
+See the [documentation page for storage backends](https://docs.motley.ai/slayer/configuration/storage/) for more.
 
 ## Roadmap
 

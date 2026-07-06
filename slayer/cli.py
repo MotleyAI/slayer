@@ -5,7 +5,7 @@ import copy
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +26,7 @@ from slayer.engine.profiling import (
     refresh_table_backed_model_sampled,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.inspect.service import InspectService
 from slayer.search.service import SearchService
 from slayer.storage import migrations as _mig
 from slayer.storage.base import default_storage_path
@@ -68,8 +69,8 @@ class RefreshSamplesResult(BaseModel):
     that didn't resolve in the requested scope — those are reported as
     a hard error so typos fail fast."""
 
-    errors: List[str] = Field(default_factory=list)
-    unresolved_models: List[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    unresolved_models: list[str] = Field(default_factory=list)
 
 
 def _add_storage_arg(parser):
@@ -90,7 +91,7 @@ def _resolve_storage(args):
     return resolve_storage(path)
 
 
-def main():
+def main():  # NOSONAR(S3776) — linear top-level CLI command dispatch (one elif per subcommand); splitting the dispatch chain would not improve readability
     parser = argparse.ArgumentParser(
         prog="slayer",
         description="SLayer — a lightweight semantic layer for AI agents",
@@ -110,7 +111,7 @@ common workflows:
   slayer serve --storage slayer.db
   slayer ingest --datasource my_pg --storage slayer.db
 
-docs: https://motley-slayer.readthedocs.io/
+docs: https://docs.motley.ai/slayer/
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -304,6 +305,48 @@ examples:
         help="With --force-clean, skip the confirmation prompt.",
     )
     _add_storage_arg(validate_parser)
+
+    # ── recommend-root-model ──────────────────────────────────────────
+    recommend_parser = subparsers.add_parser(
+        "recommend-root-model",
+        help="Recommend a query root model + join paths for a set of items",
+        epilog="""\
+examples:
+  slayer recommend-root-model orders.revenue customers.name
+  slayer recommend-root-model customers.name products.category --data-source my_pg
+  slayer recommend-root-model orders.revenue:sum regions.name --format json
+  slayer recommend-root-model customers.name products.category --root-hint orders
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    recommend_parser.add_argument(
+        "items",
+        nargs="+",
+        help="model.column / model.metric items (aggregation suffixes allowed)",
+    )
+    recommend_parser.add_argument(
+        "--data-source",
+        dest="data_source",
+        default=None,
+        help="Datasource scope. If omitted, names resolve via the priority list.",
+    )
+    recommend_parser.add_argument(
+        "--root-hint",
+        dest="root_hint",
+        default=None,
+        help=(
+            "Intended root model (bare name or '<data_source>.<model>'). "
+            "Honored when it reaches every item; otherwise the auto-pick is "
+            "used and a warning explains why."
+        ),
+    )
+    recommend_parser.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text).",
+    )
+    _add_storage_arg(recommend_parser)
 
     # ── import-dbt ────────────────────────────────────────────────────
     import_dbt_parser = subparsers.add_parser(
@@ -551,6 +594,76 @@ examples:
     )
     _add_storage_arg(migrate_types_parser)
 
+    # ── inspect (DEV-1588) ───────────────────────────────────────────
+    inspect_parser = subparsers.add_parser(
+        "inspect",
+        help=(
+            "Inspect one entity by reference and kind, or several of the same "
+            "kind at once (pass multiple references) (DEV-1588, DEV-1612)"
+        ),
+    )
+    inspect_parser.add_argument(
+        "reference",
+        nargs="+",
+        help=(
+            "Entity reference(s): canonical id (mydb.orders.amount), bare "
+            "name, join path, or memory:<id>. Pass two or more for a "
+            "homogeneous-kind batch (one --type for all)."
+        ),
+    )
+    inspect_parser.add_argument(
+        "--type",
+        required=True,
+        dest="entity_type",
+        choices=[
+            "datasource", "model", "column", "measure", "aggregation",
+            "memory",
+        ],
+        help="Required. The entity kind to inspect.",
+    )
+    inspect_parser.add_argument(
+        "--no-compact",
+        action="store_false",
+        dest="compact",
+        default=True,
+        help="Return the full render instead of the compact description.",
+    )
+    inspect_parser.add_argument(
+        "--format",
+        choices=["markdown", "json"],
+        default="markdown",
+        help="Output format (default: markdown).",
+    )
+    inspect_parser.add_argument(
+        "--num-rows",
+        type=int,
+        default=3,
+        dest="num_rows",
+        help="Sample-data rows (model entity_type only; default 3).",
+    )
+    inspect_parser.add_argument(
+        "--show-sql",
+        action="store_true",
+        default=False,
+        dest="show_sql",
+        help="Include generated SQL (model entity_type only).",
+    )
+    inspect_parser.add_argument(
+        "--section",
+        action="append",
+        default=None,
+        dest="sections",
+        help="Section subset (model entity_type only; repeatable).",
+    )
+    inspect_parser.add_argument(
+        "--descriptions-max-chars",
+        type=int,
+        default=None,
+        dest="descriptions_max_chars",
+        help="Truncate description fields to this many characters.",
+    )
+    _add_storage_arg(inspect_parser)
+
     # ── search (DEV-1375) ────────────────────────────────────────────
     search_parser = subparsers.add_parser(
         "search",
@@ -693,6 +806,8 @@ examples:
         _run_ingest(args)
     elif args.command == "validate-models":
         _run_validate_models(args)
+    elif args.command == "recommend-root-model":
+        _run_recommend_root_model(args)
     elif args.command == "import-dbt":
         _run_import_dbt(args)
     elif args.command == "models":
@@ -701,6 +816,8 @@ examples:
         _run_datasources(args)
     elif args.command == "memory":
         _run_memory(args)
+    elif args.command == "inspect":
+        _run_inspect(args=args, storage=_resolve_storage(args))
     elif args.command == "search":
         _run_search(args)
     elif args.command == "storage":
@@ -710,6 +827,34 @@ examples:
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def _run_inspect(*, args, storage) -> None:
+    """Run ``slayer inspect`` — a single-entity point-lookup (DEV-1588)."""
+    service = InspectService(
+        storage=storage, engine=SlayerQueryEngine(storage=storage),
+    )
+    # argparse ``nargs="+"`` always yields a list; map a single positional back
+    # to a bare str so single-id output stays byte-for-byte (DEV-1612). A direct
+    # str (older callers / tests) is passed through unchanged.
+    reference = args.reference
+    if isinstance(reference, list) and len(reference) == 1:
+        reference = reference[0]
+    try:
+        out = run_sync(service.inspect(
+            reference=reference,
+            entity_type=args.entity_type,
+            compact=args.compact,
+            format=args.format,
+            num_rows=args.num_rows,
+            show_sql=args.show_sql,
+            sections=args.sections,
+            descriptions_max_chars=args.descriptions_max_chars,
+        ))
+    except (SlayerError, ValueError) as exc:
+        _exit_with_error(exc)
+        return  # for type checkers; _exit_with_error never returns
+    print(out)
 
 
 def _run_search(args) -> None:
@@ -727,8 +872,8 @@ async def _refresh_samples_async(*, args, storage) -> "RefreshSamplesResult":
     and (optional) model filters, accumulate per-column errors and the
     names of any user-specified models that didn't resolve."""
     engine = SlayerQueryEngine(storage=storage)
-    errors: List[str] = []
-    unresolved_models: List[str] = []
+    errors: list[str] = []
+    unresolved_models: list[str] = []
     data_source = args.data_source
     models = args.models
     if data_source is None:
@@ -891,7 +1036,7 @@ def _run_storage_migrate_types(args) -> None:
 
 def _resolve_datasource_for_cli_refinement(
     *, inner, ds_name: str, model_name: str, needs_double: bool,
-) -> Optional[Any]:
+) -> Any | None:
     """Resolve the datasource for ``slayer storage migrate-types``.
 
     Returns the ``DatasourceConfig`` when present, ``None`` when missing
@@ -918,7 +1063,7 @@ def _resolve_datasource_for_cli_refinement(
 
 
 def _print_refinement_diff(
-    *, ds_name: str, model_name: str, upgraded: dict, types_before: Dict[str, str],
+    *, ds_name: str, model_name: str, upgraded: dict, types_before: dict[str, str],
 ) -> None:
     """Print before→after diffs for columns whose type changed during
     refinement. Migration-only aliases are excluded because ``types_before``
@@ -986,7 +1131,7 @@ def _refine_one_model_for_cli(
     return True
 
 
-async def _load_raw_model_dict(storage, data_source: str, name: str) -> Optional[dict]:
+async def _load_raw_model_dict(storage, data_source: str, name: str) -> dict | None:
     """Read a model's raw on-disk dict bypassing Pydantic's validator chain."""
     import json as _json
     import os as _os
@@ -1208,7 +1353,7 @@ _REMOVE_SECTIONS = (
 )
 
 
-def _format_edit_entry_lines(entry) -> List[str]:
+def _format_edit_entry_lines(entry) -> list[str]:
     lines = [f"EDIT MODEL: {entry.model_name} (datasource: {entry.data_source})"]
     for attr, label in _REMOVE_SECTIONS:
         values = getattr(entry.remove, attr)
@@ -1223,7 +1368,7 @@ def _format_validate_models_output(entries) -> str:
     """Render a List[ToDeleteEntry] as human-readable text for CLI output."""
     if not entries:
         return "No drift detected."
-    lines: List[str] = []
+    lines: list[str] = []
     for entry in entries:
         if entry.tool == "delete_model":
             lines.append(
@@ -1286,6 +1431,28 @@ def _run_validate_models(args):
     print("\n✓ no remaining drift")
 
 
+def _run_recommend_root_model(args):
+    import json as _json
+
+    from slayer.core.recommend import render_recommendation_markdown
+    from slayer.engine.query_engine import SlayerQueryEngine
+
+    storage = _resolve_storage(args)
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        rec = engine.recommend_root_model_sync(
+            args.items, data_source=args.data_source,
+            root_hint=getattr(args, "root_hint", None),
+        )
+    except Exception as exc:  # noqa: BLE001 — surface resolution/validation errors cleanly
+        print(f"recommend-root-model failed: {exc}")
+        sys.exit(1)
+    if args.format == "json":
+        print(_json.dumps(rec.model_dump(mode="json"), indent=2))
+    else:
+        print(render_recommendation_markdown(rec))
+
+
 def _run_import_dbt(args):
 
     from slayer.dbt.converter import DbtToSlayerConverter
@@ -1303,8 +1470,8 @@ def _run_import_dbt(args):
         sys.exit(1)
 
     sa_engine = None
+    ds = run_sync(storage.get_datasource(args.datasource))
     if include_hidden:
-        ds = run_sync(storage.get_datasource(args.datasource))
         if ds is None:
             storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
             print(
@@ -1315,11 +1482,16 @@ def _run_import_dbt(args):
         from slayer.sql import engine_factory
         sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
 
+    # DEV-1595: pass the datasource dialect (best-effort) so the converter can
+    # emit percentile/median caveats for dialects that lack them (MySQL/T-SQL).
+    target_dialect = ds.type if ds is not None else None
+
     converter = DbtToSlayerConverter(
         project=project,
         data_source=args.datasource,
         sa_engine=sa_engine,
         include_hidden_models=include_hidden,
+        target_dialect=target_dialect,
     )
     result = converter.convert()
     # Cached engine — engine_factory owns its lifecycle; don't dispose.
@@ -1335,19 +1507,16 @@ def _run_import_dbt(args):
             f"({len(model.columns)} columns, {len(model.measures)} measures)"
         )
 
-    for u in result.unconverted_metrics:
-        context = u.model_name or u.metric_name or "general"
-        print(f"  UNCONVERTED [{context}]: {u.message}")
-
-    for w in result.warnings:
-        context = w.model_name or w.metric_name or "general"
-        print(f"  WARNING [{context}]: {w.message}")
+    # DEV-1595: grouped, category-keyed conversion report + a severity tally.
+    if result.unconverted_metrics or result.warnings:
+        print("\nConversion report:")
+        print(result.render_report())
 
     visible_count = len(result.models) - hidden_count
+    unconverted, dropped = result.tally()
     print(
         f"\nDone: {visible_count} models, {hidden_count} hidden, "
-        f"{len(result.unconverted_metrics)} unconverted metrics, "
-        f"{len(result.warnings)} warnings"
+        f"{unconverted} unconverted, {dropped} dropped"
     )
 
 

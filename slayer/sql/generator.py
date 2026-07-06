@@ -8,7 +8,7 @@ query engine's _enrich() step.
 import copy
 import logging
 import re
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import sqlglot
 from sqlglot import exp
@@ -23,7 +23,7 @@ from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projec
 from slayer.sql.dialects import SqlDialect, get_dialect
 
 
-def _wrap_cast_for_type(expr: exp.Expression, dt: Optional[DataType]) -> exp.Expression:
+def _wrap_cast_for_type(expr: exp.Expression, dt: DataType | None) -> exp.Expression:
     """DEV-1361: wrap ``expr`` in ``CAST(expr AS <dialect-rendered dt>)`` so the
     declared SLayer ``DataType`` is enforced in emitted SQL.
 
@@ -139,7 +139,7 @@ _SAFE_AGG_PARAM_RE = re.compile(
 )
 
 
-def _wrap_filter(sql_str: str, filter_sql: Optional[str]) -> str:
+def _wrap_filter(sql_str: str, filter_sql: str | None) -> str:
     """Wrap ``sql_str`` in ``CASE WHEN filter_sql THEN ... END`` if a row-level
     filter is set; otherwise pass through unchanged. Used by the dialect-aware
     aggregate builders (``_build_percentile``, ``_build_stat_agg``,
@@ -379,7 +379,7 @@ def _strip_trailing_pagination(sql: str) -> str:
 class SQLGenerator:
     """Generates SQL from an EnrichedQuery."""
 
-    def __init__(self, dialect: Union[str, SqlDialect] = "postgres"):
+    def __init__(self, dialect: str | SqlDialect = "postgres"):
         if isinstance(dialect, SqlDialect):
             self._dialect: SqlDialect = dialect
         else:
@@ -408,7 +408,7 @@ class SQLGenerator:
         """
         return exp.Identifier(this=name, quoted=True).sql(dialect=self.dialect)
 
-    def _parse(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
+    def _parse(self, sql: str, *, dialect: str | None = None) -> exp.Expression:
         """Parse ``sql`` via sqlglot, applying SLayer-specific AST rewrites.
 
         On SQLite, rewrites ``exp.JSONExtract`` to the function-call form so
@@ -441,7 +441,7 @@ class SQLGenerator:
         # SQLite / DuckDB output.
         return self._dialect.rewrite_target_ast(tree)
 
-    def _parse_predicate(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
+    def _parse_predicate(self, sql: str, *, dialect: str | None = None) -> exp.Expression:
         """Parse a bare WHERE/HAVING predicate expression (DEV-1378).
 
         ``sqlglot.parse_one(sql, dialect=...)`` falls back to a ``Command``
@@ -603,7 +603,7 @@ class SQLGenerator:
         self,
         *,
         inner_sql: str,
-        public: List[str],
+        public: list[str],
         order,
         limit,
         offset_arg,
@@ -1856,7 +1856,7 @@ class SQLGenerator:
                 col_name = self._resolve_order_column(col=col, enriched=enriched)
                 order_col = exp.Column(this=exp.to_identifier(col_name, quoted=True))
                 ascending = order_item.direction == "asc"
-                ordered_kwargs: Dict[str, Any] = {"this": order_col, "desc": not ascending}
+                ordered_kwargs: dict[str, Any] = {"this": order_col, "desc": not ascending}
                 if suppress_nulls_emulation:
                     # T-SQL native: NULLS FIRST on ASC, NULLS LAST on DESC.
                     ordered_kwargs["nulls_first"] = ascending
@@ -2110,10 +2110,10 @@ class SQLGenerator:
 
     def _resolve_sql(
         self,
-        sql: Optional[str],
+        sql: str | None,
         name: str,
         model_name: str,
-        type: Optional[DataType] = None,
+        type: DataType | None = None,
     ) -> exp.Expression:
         """Resolve an enriched SQL expression to a sqlglot AST node.
 
@@ -2162,7 +2162,7 @@ class SQLGenerator:
         ``_build_stat_agg`` (``other=``); mirrors ``weighted_avg``'s
         ``weight=`` flow.
         """
-        raw: Optional[str] = None
+        raw: str | None = None
         if name in measure.agg_kwargs:
             raw = measure.agg_kwargs[name]
             _validate_agg_param_value(raw, name, agg_name)
@@ -2184,10 +2184,10 @@ class SQLGenerator:
     def _build_agg(
         self,
         measure: EnrichedMeasure,
-        rn_suffix_map: Optional[dict[str, str]] = None,
-        default_time_col: Optional[str] = None,
-        filtered_rn_map: Optional[dict[str, str]] = None,
-        filtered_match_map: Optional[dict[str, str]] = None,
+        rn_suffix_map: dict[str, str] | None = None,
+        default_time_col: str | None = None,
+        filtered_rn_map: dict[str, str] | None = None,
+        filtered_match_map: dict[str, str] | None = None,
     ) -> tuple[exp.Expression, bool]:
         """Build an aggregation expression from an enriched measure."""
         agg_name = measure.aggregation
@@ -2255,6 +2255,11 @@ class SQLGenerator:
             # going through the BUILTIN_AGGREGATION_FORMULAS path.
             if agg_name == "percentile":
                 return self._build_percentile(measure), True
+            # DEV-1595: approximate-distinct is dialect-aware (native function
+            # where the backend has one, exact COUNT(DISTINCT) fallback where
+            # it does not), so it routes to its own dialect-dispatching builder.
+            if agg_name == "count_distinct_approx":
+                return self._build_approx_count_distinct(measure), True
             # Statistical aggregates also dispatch to a dedicated builder so
             # the SQLite-UDF / native-function / NotImplementedError split
             # mirrors _build_median.
@@ -2369,6 +2374,20 @@ class SQLGenerator:
         """Build a median aggregation expression. Dispatches to the dialect."""
         return self._dialect.build_median(inner=inner, parse=self._parse)
 
+    def _build_approx_count_distinct(self, measure: "EnrichedMeasure") -> exp.Expression:
+        """Build a dialect-aware approximate-distinct aggregation (DEV-1595).
+
+        Resolves the value column (qualified under ``measure.model_name``) and,
+        when the measure carries a row-level filter, wraps it in
+        ``CASE WHEN filter THEN col END`` — composing with the metric-filter
+        push-down (Part 3.4) exactly as ``count_distinct`` does. Dispatches to
+        the dialect's ``build_approx_count_distinct``: the native function
+        (DuckDB / ClickHouse / BigQuery / …) or the exact ``COUNT(DISTINCT)``
+        fallback (Postgres / SQLite / MySQL).
+        """
+        col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
+        return self._dialect.build_approx_count_distinct(col_expr, parse=self._parse)
+
     def _build_percentile(self, measure: "EnrichedMeasure") -> exp.Expression:
         """Build a PERCENTILE_CONT(p) aggregation expression (dialect-dependent).
 
@@ -2444,7 +2463,7 @@ class SQLGenerator:
         # missing-required-param error takes priority over any dialect-specific
         # error when both conditions hold — the missing-param message points at
         # the actual user mistake. Closes Codex #5 on PR #82.
-        other_expr: Optional[str] = None
+        other_expr: str | None = None
         if agg_name in _TWO_ARG_STAT_AGGS:
             other_expr = _wrap_filter(
                 self._resolve_agg_param(measure, name="other", agg_name=agg_name),
@@ -2472,9 +2491,9 @@ class SQLGenerator:
     def _build_where_and_having(
         self,
         enriched: EnrichedQuery,
-        rn_suffix_map: Optional[dict[str, str]] = None,
-        filtered_rn_map: Optional[dict[str, str]] = None,
-    ) -> tuple[Optional[exp.Expression], Optional[exp.Expression]]:
+        rn_suffix_map: dict[str, str] | None = None,
+        filtered_rn_map: dict[str, str] | None = None,
+    ) -> tuple[exp.Expression | None, exp.Expression | None]:
         """Build WHERE and HAVING clauses from parsed filters.
 
         ParsedFilter objects have pre-built SQL strings. Column names are

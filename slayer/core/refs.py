@@ -13,7 +13,6 @@ those modules' validators without circular import risk.
 from __future__ import annotations
 
 import re
-from typing import List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Identifier shapes
@@ -54,8 +53,8 @@ _NON_IDENT_RE = re.compile(r"\W+")
 
 
 def agg_signature_suffix(
-    agg_args: Optional[List[str]],
-    agg_kwargs: Optional[dict],
+    agg_args: list[str] | None,
+    agg_kwargs: dict | None,
 ) -> str:
     """Build a deterministic identifier suffix from aggregation args/kwargs.
 
@@ -70,7 +69,7 @@ def agg_signature_suffix(
     kwargs = agg_kwargs or {}
     if not args and not kwargs:
         return ""
-    parts: List[str] = []
+    parts: list[str] = []
     for a in args:
         sanitized = _NON_IDENT_RE.sub("_", str(a)).strip("_")
         if sanitized:
@@ -88,8 +87,8 @@ def agg_signature_suffix(
 def canonical_agg_name(
     measure_name: str,
     aggregation_name: str,
-    agg_args: Optional[List[str]] = None,
-    agg_kwargs: Optional[dict] = None,
+    agg_args: list[str] | None = None,
+    agg_kwargs: dict | None = None,
 ) -> str:
     """Canonical hidden-column name for an aggregated measure ref.
 
@@ -103,7 +102,7 @@ def canonical_agg_name(
     return f"{measure_name}_{aggregation_name}{suffix}"
 
 
-def strip_agg_suffix(raw: str) -> Tuple[str, Optional[str]]:
+def strip_agg_suffix(raw: str) -> tuple[str, str | None]:
     """Return ``(prefix, agg_name)`` after stripping a trailing ``:agg``
     or ``:agg(...)``.
 
@@ -126,6 +125,28 @@ def strip_agg_suffix(raw: str) -> Tuple[str, Optional[str]]:
             tail = raw[i + 1:]
             agg = tail.split("(", 1)[0]
             return prefix, agg
+    return raw, None
+
+
+def split_agg_suffix(raw: str) -> tuple[str, str | None]:
+    """Return ``(prefix, suffix)`` splitting off a trailing ``:agg`` /
+    ``:agg(...)``, keeping the *full* suffix text (args included).
+
+    Unlike :func:`strip_agg_suffix` (which discards the arglist and returns
+    only the aggregation name), this preserves the entire suffix so callers
+    that re-root a reference can re-attach it verbatim —
+    ``"orders.revenue:weighted_avg(weight=qty)"`` →
+    ``("orders.revenue", "weighted_avg(weight=qty)")``. Returns
+    ``(raw, None)`` when there is no top-level ``:`` aggregation.
+    """
+    depth = 0
+    for i, ch in enumerate(raw):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == ":" and depth == 0:
+            return raw[:i], raw[i + 1:]
     return raw, None
 
 

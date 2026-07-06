@@ -17,7 +17,6 @@ See ``.spec/DEV-1449.md`` for the full design.
 
 import sqlite3
 import tempfile
-from typing import List, Tuple
 
 import pytest
 import sqlglot
@@ -105,7 +104,7 @@ def _orders_model() -> SlayerModel:
     )
 
 
-async def _engine_with_join_chain() -> Tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
+async def _engine_with_join_chain() -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     """Build a YAMLStorage with orders → customers → regions → countries."""
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
@@ -181,7 +180,7 @@ def _outermost_select(sql: str, dialect: str = "sqlite") -> exp.Select:
     return tree
 
 
-def _outer_column_refs(sql: str, dialect: str = "sqlite") -> List[exp.Column]:
+def _outer_column_refs(sql: str, dialect: str = "sqlite") -> list[exp.Column]:
     """All `exp.Column` nodes whose nearest ancestor SELECT is the
     OUTERMOST SELECT of `sql` — i.e. columns directly in the outer
     projection / GROUP BY / ORDER BY / HAVING / WHERE.
@@ -189,7 +188,7 @@ def _outer_column_refs(sql: str, dialect: str = "sqlite") -> List[exp.Column]:
     Does NOT include columns inside subqueries / CTEs / inner SELECTs.
     """
     outer = _outermost_select(sql, dialect=dialect)
-    nodes: List[exp.Column] = []
+    nodes: list[exp.Column] = []
     for col in outer.find_all(exp.Column):
         if col.parent_select is outer:
             nodes.append(col)

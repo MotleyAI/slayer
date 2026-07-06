@@ -13,7 +13,6 @@ cannot be stripped even if ``valid_canonicals`` ever drifted.
 
 from __future__ import annotations
 
-from typing import List, Optional
 
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.memories.models import Memory
@@ -23,12 +22,12 @@ from slayer.search.retriever import RetrievalResult, Retriever
 
 
 def _filter_memories_entities(
-    memories: List[Memory], *, valid_canonicals: set,
-) -> List[Memory]:
+    memories: list[Memory], *, valid_canonicals: set,
+) -> list[Memory]:
     """Return shallow copies of ``memories`` whose ``entities`` lists
     are filtered down to ``valid_canonicals`` only (DEV-1428). Used to
     feed BM25 a stale-free corpus without writing back to storage."""
-    out: List[Memory] = []
+    out: list[Memory] = []
     for m in memories:
         live = [e for e in m.entities if e in valid_canonicals]
         if live == m.entities:
@@ -38,11 +37,11 @@ def _filter_memories_entities(
     return out
 
 
-def _augment_with_self_refs(memories: List[Memory]) -> List[Memory]:
+def _augment_with_self_refs(memories: list[Memory]) -> list[Memory]:
     """DEV-1513: augment each memory's ``entities`` with
     ``memory:<self_id>`` so a user-supplied ``memory:<id>`` ref surfaces
     the named memory at the top of the BM25 ranking. Idempotent."""
-    out: List[Memory] = []
+    out: list[Memory] = []
     for m in memories:
         self_ref = f"{_MEMORY_PREFIX}{m.id}"
         if self_ref in m.entities:
@@ -63,12 +62,12 @@ class BM25Retriever(Retriever):
     async def retrieve(
         self,
         *,
-        query_entities: List[str],
-        question: Optional[str],
-        all_memories: List[Memory],
+        query_entities: list[str],
+        question: str | None,
+        all_memories: list[Memory],
         valid_canonicals: set,
-        corpus: Optional[Corpus],
-        datasource: Optional[str],
+        corpus: Corpus | None,
+        datasource: str | None,
     ) -> RetrievalResult:
         if not query_entities:
             return RetrievalResult()

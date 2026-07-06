@@ -4,7 +4,8 @@ import json
 import os
 import shutil
 import tempfile
-from typing import Any, Generator, Optional
+from typing import Any
+from collections.abc import Generator
 
 import pytest
 
@@ -83,7 +84,7 @@ def mcp_server(_shared_mcp_server, storage: YAMLStorage):
     return _shared_mcp_server
 
 
-async def _call(mcp_server, *, name: str, arguments: Optional[dict[str, Any]] = None) -> str:
+async def _call(mcp_server, *, name: str, arguments: dict[str, Any] | None = None) -> str:
     """Call an MCP tool and return the text result."""
     content_blocks, result_dict = await mcp_server.call_tool(name=name, arguments=arguments or {})
     return content_blocks[0].text

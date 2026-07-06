@@ -19,7 +19,7 @@ suppress all entity output. Per-bucket invariance (DEV-1414) preserved.
 from __future__ import annotations
 
 import tempfile
-from typing import AsyncIterator, List
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -41,7 +41,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 # ---------------------------------------------------------------------------
 
 
-def _make_corpus_models() -> List[SlayerModel]:
+def _make_corpus_models() -> list[SlayerModel]:
     return [
         SlayerModel(
             name="orders",

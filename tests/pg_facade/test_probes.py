@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Dict
 
 import sqlglot
 
@@ -220,7 +219,7 @@ def test_set_config_returns_value_and_signals_no_mutation_when_no_dict() -> None
     """When session_settings is None, set_config still returns the requested
     value via the existing match_pg_probe path AND does NOT mutate the
     module-level seed. Pin the no-shared-state invariant."""
-    seed_snapshot: Dict[str, str] = dict(SESSION_SETTING_SEED)
+    seed_snapshot: dict[str, str] = dict(SESSION_SETTING_SEED)
     batch = _probe("SELECT set_config('application_name', 'foo', false)")
     assert batch is not None
     assert batch.rows == [{"set_config": "foo"}]
@@ -232,7 +231,7 @@ def test_match_pg_probe_does_not_mutate_session_settings_for_set_config() -> Non
     for set_config — that's reserved for the connection's Execute path via
     `match_pg_probe_with_mutation`. This pins the Describe-phase purity
     contract."""
-    s: Dict[str, str] = {"application_name": "before"}
+    s: dict[str, str] = {"application_name": "before"}
     batch = _probe(
         "SELECT set_config('application_name', 'after', false)",
         session_settings=s,
@@ -278,7 +277,7 @@ def test_match_pg_probe_with_mutation_does_not_mutate_dict() -> None:
     mutation is conveyed via the returned SetSettingOp and applied later by
     the connection. This keeps the Describe-phase pure even if it
     incidentally calls match_pg_probe_with_mutation."""
-    s: Dict[str, str] = {"application_name": "before"}
+    s: dict[str, str] = {"application_name": "before"}
     outcome = match_pg_probe_with_mutation(
         _parse("SELECT set_config('application_name', 'after', false)"),
         datasource="jaffle", version_str="x",
@@ -415,7 +414,7 @@ def test_match_pg_probe_with_mutation_no_dict_returns_outcome_for_set_config() -
     set_config. The mutation hint is what callers want; whether they
     have a dict to apply it to is up to them (and SESSION_SETTING_SEED
     must stay untouched)."""
-    seed_snapshot: Dict[str, str] = dict(SESSION_SETTING_SEED)
+    seed_snapshot: dict[str, str] = dict(SESSION_SETTING_SEED)
     outcome = match_pg_probe_with_mutation(
         _parse("SELECT set_config('application_name', 'val', false)"),
         datasource="jaffle", version_str="x", session_settings=None,

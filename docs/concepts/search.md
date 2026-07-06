@@ -6,6 +6,14 @@ aggregations) using up to three parallel retrieval channels merged by
 Reciprocal Rank Fusion. It is the **only** retrieval surface — there is
 no separate recall tool.
 
+!!! tip "`search` vs `inspect`"
+    `search` is the *fusion / ranking* surface — use it to discover entities
+    or to pull an entity back **in context** with its tagged memories. When
+    you already know the exact entity and just want its definition, use the
+    [`inspect`](../reference/mcp.md) tool instead: `inspect(reference,
+    entity_type)` returns the rendered detail for **exactly one** entity —
+    no ranking, no `cypher_filter`, and no bundled memories.
+
 A third channel (dense embeddings via litellm) is gated behind the
 optional `advanced_search` extra. When the extra is not installed or
 no provider API key is configured, the embedding channel emits a
@@ -414,11 +422,19 @@ All three are populated:
   serialise (the storage write is a model-level read-modify-write);
   refreshes across different models run concurrently via
   `asyncio.gather`. When `search()` is constructed without an engine
-  (storage-only contexts), the hook is a silent no-op.
+  (storage-only contexts), the hook is a silent no-op;
+- lazily on the single-entity `inspect` point-lookup (DEV-1615) — an
+  `entity_type="column"` read at `compact=False` back-fills the column's
+  sample before rendering, so `inspect` matches the `inspect_model` /
+  `search` reads it replaced. `compact=True` stays description-only and
+  DB-free (no refresh); engine-guarded (no-op without an engine).
 
 Cache validity for categorical columns requires `sampled_values is not None` —
-v6 (legacy `sampled` only) models re-profile on the next `inspect_model`
-or `search()` column hit so the structured field gets populated.
+v6 (legacy `sampled` only) models re-profile on the next `inspect_model`,
+`search()` column hit, or `inspect` (column, `compact=False`) so the
+structured field gets populated. As of DEV-1615 the shared
+`ensure_column_sample_fresh` helper also back-fills genuinely-unsampled
+numeric / temporal columns (min/max range), not just categorical ones.
 
 sql-mode and query-backed models are silently skipped in v1.
 

@@ -7,7 +7,7 @@ import copy
 import decimal
 import logging
 from contextvars import ContextVar
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from pydantic import (
     BaseModel,
@@ -15,10 +15,12 @@ from pydantic import (
     Field as PydanticField,
     model_validator,
 )
+import sqlalchemy as sa
 from sqlglot import exp
 
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
 from slayer.core.errors import AmbiguousModelError
+from slayer.core.policy import SessionPolicy
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import (
     Column,
@@ -34,6 +36,12 @@ from slayer.core.query import (
     TimeDimension,
     extract_placeholder_names,
 )
+from slayer.core.recommend import (
+    CandidateCoverage,
+    ItemPath,
+    RootModelRecommendation,
+)
+from slayer.core.refs import split_agg_suffix
 from slayer.engine.cache import (
     CacheConfig,
     QueryCache,
@@ -42,6 +50,7 @@ from slayer.engine.cache import (
     RefreshResult,
     _CacheEntry,
 )
+from slayer.engine.join_graph import JoinGraph
 from slayer.engine.enriched import (
     CrossModelMeasure,
     EnrichedMeasure,
@@ -49,16 +58,23 @@ from slayer.engine.enriched import (
     public_projection_aliases,
 )
 from slayer.engine.enrichment import enrich_query
+from slayer.engine.introspect_utils import _safe_get_columns
+from slayer.memories.resolver import (
+    _all_models_in_datasource,
+    resolve_entity,
+)
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.dialects import dialect_for_ds_type, get_dialect
+from slayer.sql import engine_factory
 from slayer.sql.engine_factory import _runtime_fingerprint
 from slayer.sql.generator import SQLGenerator
+from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
 
-def _sql_client_cache_key(datasource: DatasourceConfig) -> Tuple[str, str]:
+def _sql_client_cache_key(datasource: DatasourceConfig) -> tuple[str, str]:
     """Cache key for ``SlayerQueryEngine._sql_clients``.
 
     Mirrors ``engine_factory``'s cache key so two datasources differing
@@ -69,13 +85,130 @@ def _sql_client_cache_key(datasource: DatasourceConfig) -> Tuple[str, str]:
     return (datasource.get_connection_string(), _runtime_fingerprint(datasource))
 
 
+class _ResolvedItem(BaseModel):
+    """A recommend_root_model input item after resolution/validation."""
+
+    input_item: str
+    data_source: str
+    model: str
+    leaf: str
+    suffix: str | None = None
+
+
+def _emit_recommend_path(graph: JoinGraph, root: str, item: "_ResolvedItem") -> str:
+    """Join-qualified path to ``item`` from ``root`` (root name excluded),
+    with the original aggregation suffix re-attached verbatim."""
+    hops = graph.shortest_path(root, item.model) or []
+    core = item.leaf if not hops else ".".join(hops) + "." + item.leaf
+    return core if item.suffix is None else f"{core}:{item.suffix}"
+
+
+def _resolve_root_hint(
+    raw_hint: str | None, *, data_source: str, all_names: list[str]
+) -> tuple[str, str] | None:
+    """Resolve a caller-supplied ``root_hint`` to a bare model name within
+    ``data_source`` (follow-up to DEV-1626).
+
+    Returns ``(model, display)`` where ``model`` is the validated bare model
+    name used for graph logic and ``display`` is the caller's original string
+    (whitespace-trimmed) reused verbatim in diagnostics — so a
+    ``mydb.customers`` hint surfaces as ``mydb.customers`` in warnings, not the
+    resolved ``customers``. Returns ``None`` when the hint is empty /
+    whitespace-only (treated as "no hint" — a no-op).
+
+    Raises ``ValueError`` for a non-existent / wrong-kind / cross-datasource /
+    otherwise malformed hint (the caller surfaces it loudly).
+    """
+    if raw_hint is None:
+        return None
+    display = raw_hint.strip()
+    if not display:
+        return None
+    if "." in display:
+        segs = display.split(".")
+        if len(segs) == 2 and segs[0] == data_source:
+            model = segs[1]
+        else:
+            raise ValueError(
+                f"root_hint '{display}' must be a bare model name or "
+                f"'{data_source}.<model>' within datasource '{data_source}'."
+            )
+    else:
+        model = display
+    if model not in all_names:
+        raise ValueError(
+            f"root_hint '{display}' is not a model in datasource '{data_source}'."
+        )
+    return model, display
+
+
+def _build_recommend_coverage(
+    graph: JoinGraph,
+    all_names: list[str],
+    mentioned: set[str],
+    resolved: list["_ResolvedItem"],
+    *,
+    force_include: set[str] | None = None,
+) -> list[CandidateCoverage]:
+    """Pareto frontier of partial-root candidates for the no-common-root
+    diagnostic. Item reachability ≡ owning-model reachability, so dominance
+    is computed on reached owning-model sets + per-model hop counts.
+
+    ``force_include`` names models whose row must appear even when they reach
+    zero mentioned models or are Pareto-dominated (used to surface a caller's
+    ``root_hint``). Forced rows still sort by the same key, so a hint that is
+    genuinely on the frontier is not duplicated.
+    """
+    forced = force_include or set()
+    items_in_order = [r.input_item for r in resolved]
+    model_of_item = {r.input_item: r.model for r in resolved}
+
+    candidates: list[tuple[str, set[str], dict[str, int]]] = []
+    for name in all_names:
+        reach = {m for m in mentioned if graph.shortest_path(name, m) is not None}
+        if not reach and name not in forced:
+            continue
+        hops = {m: len(graph.shortest_path(name, m) or []) for m in reach}
+        candidates.append((name, reach, hops))
+
+    def dominates(a: tuple, b: tuple) -> bool:
+        _an, ar, ah = a
+        _bn, br, bh = b
+        if ar > br:  # strict superset → covers strictly more
+            return True
+        if ar == br:  # same coverage, no path longer, at least one shorter
+            return all(ah[m] <= bh[m] for m in ar) and any(ah[m] < bh[m] for m in ar)
+        return False
+
+    frontier = [
+        c for c in candidates
+        if c[0] in forced
+        or not any(dominates(o, c) for o in candidates if o[0] != c[0])
+    ]
+
+    entries: list[tuple[CandidateCoverage, int]] = []
+    for name, reach, hops in frontier:
+        reachable_items = [it for it in items_in_order if model_of_item[it] in reach]
+        unreachable_items = [it for it in items_in_order if model_of_item[it] not in reach]
+        entries.append((
+            CandidateCoverage(
+                model_name=name,
+                reachable_items=reachable_items,
+                unreachable_items=unreachable_items,
+            ),
+            sum(hops.values()),
+        ))
+    entries.sort(key=lambda e: (-len(e[0].reachable_items), e[1], e[0].model_name))
+    return [e[0] for e in entries]
+
+
 # Per-task in-flight join-target names. Used by _resolve_join_target to break
 # loops when a query-backed target's own join graph references it back. Lives
 # in a ContextVar (not on the engine) so concurrent requests through the same
 # engine don't see each other's in-flight state — each asyncio task gets its
 # own copy of the context. The default=None + lazy-init pattern below means
 # only tasks that actually hit a query-backed join target allocate a set.
-_join_target_resolving_var: ContextVar[Optional[set]] = ContextVar(
+_join_target_resolving_var: ContextVar[set | None] = ContextVar(
     "_join_target_resolving", default=None
 )
 
@@ -86,7 +219,7 @@ _join_target_resolving_var: ContextVar[Optional[set]] = ContextVar(
 # _resolve_model_inner to differentiate forward/self refs from genuine
 # misspellings, so the user gets a clear error instead of "Model 'X' not found".
 # Each entry maps a forbidden target name to the stage that tried to reach it.
-_forbidden_sibling_refs_var: ContextVar[Optional[Dict[str, str]]] = ContextVar(
+_forbidden_sibling_refs_var: ContextVar[dict[str, str] | None] = ContextVar(
     "_forbidden_sibling_refs", default=None
 )
 
@@ -111,10 +244,10 @@ _PLACEHOLDER_FILL_VALUE = "0"
 
 def _merge_query_variables(
     *,
-    outer: Optional[Dict[str, Any]],
-    stage: Optional[Dict[str, Any]],
-    runtime: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
+    outer: dict[str, Any] | None,
+    stage: dict[str, Any] | None,
+    runtime: dict[str, Any] | None,
+) -> dict[str, Any]:
     """Merge variable layers per spec precedence: ``runtime > stage > outer``.
 
     Model-level defaults are folded into ``outer`` by the caller before
@@ -124,8 +257,8 @@ def _merge_query_variables(
 
 
 def _apply_placeholder_fill(
-    query: SlayerQuery, effective: Dict[str, Any]
-) -> Dict[str, Any]:
+    query: SlayerQuery, effective: dict[str, Any]
+) -> dict[str, Any]:
     """Add ``{var: '0'}`` for any unresolved ``{var}`` placeholder in
     ``query.filters`` so save-time dry-run SQL generation can proceed even
     when a runtime variable has no default.
@@ -162,17 +295,17 @@ def _build_explain_sql(dialect: str, sql: str) -> str:
 class FieldMetadata(BaseModel):
     """Metadata for a single field in the query response."""
 
-    label: Optional[str] = None
-    format: Optional[NumberFormat] = None
+    label: str | None = None
+    format: NumberFormat | None = None
 
 
 class ResponseAttributes(BaseModel):
     """Field metadata for a query response, split by type."""
 
-    dimensions: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
-    measures: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
+    dimensions: dict[str, FieldMetadata] = PydanticField(default_factory=dict)
+    measures: dict[str, FieldMetadata] = PydanticField(default_factory=dict)
 
-    def get(self, column: str) -> Optional[FieldMetadata]:
+    def get(self, column: str) -> FieldMetadata | None:
         """Look up metadata for a column across both dicts."""
         return self.dimensions.get(column) or self.measures.get(column)
 
@@ -180,9 +313,9 @@ class ResponseAttributes(BaseModel):
 class SlayerResponse(BaseModel):
     """Response from a SLayer query."""
 
-    data: List[Dict[str, Any]]
-    columns: List[str] = PydanticField(default_factory=list)
-    sql: Optional[str] = None
+    data: list[dict[str, Any]]
+    columns: list[str] = PydanticField(default_factory=list)
+    sql: str | None = None
     attributes: ResponseAttributes = PydanticField(default_factory=ResponseAttributes)
 
     @model_validator(mode="after")
@@ -235,8 +368,8 @@ class _Prepared(BaseModel):
     dialect: str
     sql: str
     attributes: "ResponseAttributes"
-    expected_columns: List[str]
-    ds_key: Tuple[str, str]
+    expected_columns: list[str]
+    ds_key: tuple[str, str]
     ds_fingerprint: str
 
 
@@ -244,7 +377,7 @@ def _infer_aggregated_format(
     model: SlayerModel,
     measure_name: str,
     aggregation: str,
-) -> Optional[NumberFormat]:
+) -> NumberFormat | None:
     """Infer NumberFormat for an aggregated measure based on aggregation type and source measure format.
 
     Rules:
@@ -282,14 +415,24 @@ class SlayerQueryEngine:
         self,
         storage: StorageBackend,
         *,
-        cache_config: Optional[CacheConfig] = None,
+        cache_config: CacheConfig | None = None,
+        policy: SessionPolicy | None = None,
     ):
         self.storage = storage
         # Cache key: (connection_string, runtime_fingerprint) — matches
         # ``engine_factory``'s cache so Snowflake datasources sharing a
         # connection_name but differing in warehouse/role/database/schema
         # get distinct clients (DEV-1551).
-        self._sql_clients: Dict[Tuple[str, str], SlayerSQLClient] = {}
+        self._sql_clients: dict[tuple[str, str], SlayerSQLClient] = {}
+        # DEV-1578: immutable, engine-global forced-filter policy. When set,
+        # every generated SQL is rewritten to scope each physical table to the
+        # configured tenant before execution / dry-run / explain / profiling.
+        self.policy = policy
+        # Cache of confirmed column-presence facts keyed by
+        # (ds_key, schema, table, column). Only ``True``/``False`` are cached;
+        # an unconfirmable ``None`` is re-probed so a transient introspection
+        # failure self-heals once the datasource recovers.
+        self._column_presence_cache: dict[tuple, bool] = {}
         # DEV-1587: per-engine, in-memory, opt-in query result cache. The
         # cache is local to this engine instance so two engines with
         # different RLS / connection settings keep separate caches.
@@ -316,6 +459,86 @@ class SlayerQueryEngine:
         """Drop all cached entries."""
         self._cache.clear()
 
+    def _apply_policy(
+        self, *, sql: str, dialect: str, datasource: DatasourceConfig
+    ) -> str:
+        """Rewrite ``sql`` to enforce the forced-filter policy, or return it
+        unchanged when no policy is configured (zero overhead)."""
+        if not (self.policy and self.policy.data_filters):
+            return sql
+        return apply_session_policy(
+            sql,
+            dialect=dialect,
+            policy=self.policy,
+            has_column=lambda scoped, column: self._column_present(
+                datasource=datasource, scoped_table=scoped, column=column
+            ),
+        )
+
+    def _column_present(
+        self,
+        *,
+        datasource: DatasourceConfig,
+        scoped_table: ScopedTable,
+        column: str,
+    ) -> bool | None:
+        """Return whether ``column`` exists on ``scoped_table`` in
+        ``datasource``: ``True`` / ``False`` / ``None`` (cannot confirm).
+
+        Introspects via the shared ``_safe_get_columns`` helper (Inspector
+        with INFORMATION_SCHEMA fallback). The schema is the table's parsed
+        qualifier, else the datasource default. Only confirmed ``True`` /
+        ``False`` results are cached; a ``None`` (any introspection error or
+        empty result) is returned uncached so a transient failure is
+        re-probed on the next query.
+        """
+        schema = scoped_table.schema_name or datasource.schema_name
+        # Cross-catalog refs can't be confirmed: SQLAlchemy's column
+        # introspection takes no catalog argument, so a three-part
+        # ``catalog.schema.table`` naming a catalog other than the
+        # connection's own would probe the wrong relation. Fail closed
+        # (consistent with the unconfirmable-presence rule) rather than risk
+        # an under-filter under ``on_unapplicable="pass"``. Single-catalog
+        # refs (catalog matches the connection, or no catalog) probe normally.
+        if scoped_table.catalog and (
+            not datasource.database
+            or scoped_table.catalog.casefold() != datasource.database.casefold()
+        ):
+            return None
+        # Include catalog in the key so two tables differing only by catalog
+        # (e.g. BigQuery project) never share a cached presence fact.
+        key = (
+            _sql_client_cache_key(datasource),
+            scoped_table.catalog,
+            schema,
+            scoped_table.name,
+            column,
+        )
+        if key in self._column_presence_cache:
+            return self._column_presence_cache[key]
+        try:
+            sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
+            inspector = sa.inspect(sa_engine)
+            cols = _safe_get_columns(
+                inspector, sa_engine, scoped_table.name, schema
+            )
+        except Exception as exc:  # introspection failed -> cannot confirm
+            logger.warning(
+                "Forced filter: column-presence probe failed for %s.%s "
+                "(column %r): %s",
+                schema or "<default>",
+                scoped_table.name,
+                column,
+                exc,
+            )
+            return None
+        if not cols:
+            return None  # no columns resolved -> cannot confirm
+        names = {str(c.get("name", "")).lower() for c in cols}
+        present = column.lower() in names
+        self._column_presence_cache[key] = present
+        return present
+
     def _get_join_target_resolving(self) -> set:
         """Return the per-task in-flight join-target name set, allocating one
         on first access in this asyncio context. See ``_join_target_resolving_var``.
@@ -328,8 +551,8 @@ class SlayerQueryEngine:
 
     @staticmethod
     def _scope_named_queries_to_prior(
-        named_queries: Dict[str, "SlayerQuery"], stage_name: Optional[str]
-    ) -> Dict[str, "SlayerQuery"]:
+        named_queries: dict[str, "SlayerQuery"], stage_name: str | None
+    ) -> dict[str, "SlayerQuery"]:
         """Slice an insertion-ordered named-queries dict to entries that
         come strictly before ``stage_name``.
 
@@ -348,7 +571,7 @@ class SlayerQueryEngine:
         """
         if not stage_name or stage_name not in named_queries:
             return named_queries
-        out: Dict[str, "SlayerQuery"] = {}
+        out: dict[str, "SlayerQuery"] = {}
         for k, v in named_queries.items():
             if k == stage_name:
                 return out
@@ -396,13 +619,13 @@ class SlayerQueryEngine:
 
     @staticmethod
     def _index_query_list_by_name(
-        rest: List["SlayerQuery"], root: "SlayerQuery",
-    ) -> Dict[str, "SlayerQuery"]:
+        rest: list["SlayerQuery"], root: "SlayerQuery",
+    ) -> dict[str, "SlayerQuery"]:
         """Build ``{name: query}`` for non-final entries, validating that
         every non-final entry has a unique name and that the root's
         name (if any) doesn't collide.
         """
-        rest_by_name: Dict[str, "SlayerQuery"] = {}
+        rest_by_name: dict[str, "SlayerQuery"] = {}
         for q in rest:
             if not q.name:
                 raise ValueError(
@@ -422,8 +645,8 @@ class SlayerQueryEngine:
     @classmethod
     def _validate_query_list_invariants(
         cls,
-        queries: List["SlayerQuery"],
-        rest: List["SlayerQuery"],
+        queries: list["SlayerQuery"],
+        rest: list["SlayerQuery"],
         root: "SlayerQuery",
         sibling_names: set,
     ) -> None:
@@ -452,7 +675,7 @@ class SlayerQueryEngine:
     @classmethod
     def _build_dependency_graph(
         cls,
-        rest_by_name: Dict[str, "SlayerQuery"],
+        rest_by_name: dict[str, "SlayerQuery"],
         sibling_names: set,
     ) -> tuple:
         """Build the (in_degree, dependents) adjacency for Kahn's.
@@ -461,8 +684,8 @@ class SlayerQueryEngine:
         the count of siblings ``X`` depends on; ``dependents[X]`` is the
         list of siblings that depend on ``X``.
         """
-        in_degree: Dict[str, int] = dict.fromkeys(rest_by_name, 0)
-        dependents: Dict[str, List[str]] = {name: [] for name in rest_by_name}
+        in_degree: dict[str, int] = dict.fromkeys(rest_by_name, 0)
+        dependents: dict[str, list[str]] = {name: [] for name in rest_by_name}
         for name, q in rest_by_name.items():
             for prereq in cls._extract_sibling_refs(q, sibling_names):
                 dependents[prereq].append(name)
@@ -471,21 +694,21 @@ class SlayerQueryEngine:
 
     @staticmethod
     def _kahn_sort(
-        in_degree: Dict[str, int],
-        dependents: Dict[str, List[str]],
-    ) -> List[str]:
+        in_degree: dict[str, int],
+        dependents: dict[str, list[str]],
+    ) -> list[str]:
         """Topologically sort by Kahn's algorithm. Cycle → ValueError.
 
         Mutates ``in_degree`` in place; callers shouldn't reuse it.
         The frontier is kept sorted for deterministic output order across
         runs.
         """
-        frontier: List[str] = sorted(n for n, d in in_degree.items() if d == 0)
-        sorted_names: List[str] = []
+        frontier: list[str] = sorted(n for n, d in in_degree.items() if d == 0)
+        sorted_names: list[str] = []
         while frontier:
             n = frontier.pop(0)
             sorted_names.append(n)
-            unlocked: List[str] = []
+            unlocked: list[str] = []
             for dep in dependents[n]:
                 in_degree[dep] -= 1
                 if in_degree[dep] == 0:
@@ -502,8 +725,8 @@ class SlayerQueryEngine:
     @classmethod
     def _topologically_order_queries(
         cls,
-        queries: List["SlayerQuery"],
-    ) -> List["SlayerQuery"]:
+        queries: list["SlayerQuery"],
+    ) -> list["SlayerQuery"]:
         """Re-order a runtime query list so every stage appears after the
         siblings it references via ``source_model`` or
         ``joins.target_model``. Lets callers submit a DAG in any order —
@@ -544,11 +767,11 @@ class SlayerQueryEngine:
     async def execute(
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
-        variables: Optional[Dict[str, Any]] = None,
+        variables: dict[str, Any] | None = None,
         *,
         dry_run: bool = False,
         explain: bool = False,
-        data_source: Optional[str] = None,
+        data_source: str | None = None,
         cache: bool = False,
     ) -> SlayerResponse:
         """Resolve, enrich, generate SQL, and execute ``query``.
@@ -578,9 +801,9 @@ class SlayerQueryEngine:
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
         *,
-        variables: Optional[Dict[str, Any]] = None,
-        data_source: Optional[str] = None,
-    ) -> "Tuple[SlayerQuery, Dict[str, SlayerQuery], Dict[str, Any], Optional[str]]":
+        variables: dict[str, Any] | None = None,
+        data_source: str | None = None,
+    ) -> "tuple[SlayerQuery, dict[str, SlayerQuery], dict[str, Any], str | None]":
         """Normalize the ``execute`` / ``evict`` input union into
         ``(query, named_queries, runtime_kwarg, prefer_data_source)``.
 
@@ -630,9 +853,9 @@ class SlayerQueryEngine:
         self,
         *,
         name: str,
-        runtime_kwarg: Dict[str, Any],
-        data_source: Optional[str],
-    ) -> "Tuple[SlayerQuery, Dict[str, SlayerQuery], Dict[str, Any], Optional[str]]":
+        runtime_kwarg: dict[str, Any],
+        data_source: str | None,
+    ) -> "tuple[SlayerQuery, dict[str, SlayerQuery], dict[str, Any], str | None]":
         """Resolve a run-by-name input into the normalized tuple."""
         model = await self.storage.get_model(name, data_source=data_source)
         if model is None:
@@ -645,7 +868,7 @@ class SlayerQueryEngine:
 
         stages = list(model.source_queries)
         main_query = stages[-1]
-        named_queries: Dict[str, SlayerQuery] = {}
+        named_queries: dict[str, SlayerQuery] = {}
         for q in stages[:-1]:
             if q.name:
                 if q.name in named_queries:
@@ -672,10 +895,10 @@ class SlayerQueryEngine:
     async def _prepare_pipeline(
         self,
         query: SlayerQuery,
-        named_queries: Dict[str, SlayerQuery],
-        runtime_kwarg: Dict[str, Any],
+        named_queries: dict[str, SlayerQuery],
+        runtime_kwarg: dict[str, Any],
         *,
-        prefer_data_source: Optional[str] = None,
+        prefer_data_source: str | None = None,
     ) -> _Prepared:
         """Resolve → enrich → generate SQL → build response metadata → compute
         the datasource cache identity, all DB-free (no SQL client is
@@ -717,6 +940,10 @@ class SlayerQueryEngine:
         dialect = self._dialect_for_type(datasource.type)
         generator = SQLGenerator(dialect=dialect)
         sql = generator.generate(enriched=enriched, render_mode="outer")
+        # DEV-1578: forced-filter rewrite. Applied here — before the dry_run
+        # return and before execution — so dry_run, explain, real execution,
+        # and profiling all see the same tenant-scoped SQL.
+        sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
         logger.debug("Generated SQL:\n%s", sql)
 
         attributes, expected_columns = self._build_response_metadata(
@@ -743,15 +970,15 @@ class SlayerQueryEngine:
 
     def _build_response_metadata(
         self, *, enriched: "EnrichedQuery", model: SlayerModel,
-    ) -> "Tuple[ResponseAttributes, List[str]]":
+    ) -> "tuple[ResponseAttributes, list[str]]":
         """Build the response ``attributes`` (label/format per public alias)
         and ``expected_columns`` from an enriched query — mirroring the
         trimmed outer projection (DEV-1444). Hidden transforms / ORDER-BY
         aggregates / window-arg hoists are dropped."""
         public_aliases = set(public_projection_aliases(enriched))
 
-        dim_meta: Dict[str, FieldMetadata] = {}
-        measure_meta: Dict[str, FieldMetadata] = {}
+        dim_meta: dict[str, FieldMetadata] = {}
+        measure_meta: dict[str, FieldMetadata] = {}
         for d in enriched.dimensions:
             if d.alias in public_aliases and (d.label or d.format):
                 dim_meta[d.alias] = FieldMetadata(label=d.label, format=d.format)
@@ -800,16 +1027,16 @@ class SlayerQueryEngine:
     async def _execute_pipeline(
         self,
         query: SlayerQuery,
-        named_queries: Dict[str, SlayerQuery],
-        runtime_kwarg: Dict[str, Any],
+        named_queries: dict[str, SlayerQuery],
+        runtime_kwarg: dict[str, Any],
         *,
         dry_run: bool = False,
         explain: bool = False,
-        prefer_data_source: Optional[str] = None,
+        prefer_data_source: str | None = None,
         cache: bool = False,
         original_input: Any = None,
-        original_variables: Optional[Dict[str, Any]] = None,
-        original_data_source: Optional[str] = None,
+        original_variables: dict[str, Any] | None = None,
+        original_data_source: str | None = None,
     ) -> SlayerResponse:
         """Prepare (DB-free) then run: dry_run / explain / cached / plain."""
         prepared = await self._prepare_pipeline(
@@ -857,7 +1084,7 @@ class SlayerQueryEngine:
         return await self._run_and_build(prepared=prepared, client=client)
 
     def _get_client(
-        self, datasource: DatasourceConfig, ds_key: Tuple[str, str]
+        self, datasource: DatasourceConfig, ds_key: tuple[str, str]
     ) -> SlayerSQLClient:
         """Reuse (or open) the SQL client + connection pool for a datasource.
 
@@ -901,8 +1128,8 @@ class SlayerQueryEngine:
         prepared: _Prepared,
         client: SlayerSQLClient,
         original_input: Any,
-        original_variables: Optional[Dict[str, Any]],
-        original_data_source: Optional[str],
+        original_variables: dict[str, Any] | None,
+        original_data_source: str | None,
     ) -> SlayerResponse:
         """Serve from cache or run-and-store. On both hit and miss the caller
         receives a deep copy so it can't mutate the cached response."""
@@ -926,9 +1153,9 @@ class SlayerQueryEngine:
         prepared: _Prepared,
         client: SlayerSQLClient,
         original_input: Any,
-        original_variables: Optional[Dict[str, Any]],
-        original_data_source: Optional[str],
-    ) -> "Tuple[SlayerResponse, _CacheEntry]":
+        original_variables: dict[str, Any] | None,
+        original_data_source: str | None,
+    ) -> "tuple[SlayerResponse, _CacheEntry]":
         """Run a cache miss: scan refresh-key baselines BEFORE the data query
         (so cached data reflects a state >= the baseline — Codex finding #1),
         execute, and build an entry holding a deep copy of the response.
@@ -965,17 +1192,17 @@ class SlayerQueryEngine:
     async def _scan_refresh_keys(
         self,
         *,
-        applicable: List[Tuple[str, str]],
+        applicable: list[tuple[str, str]],
         client: SlayerSQLClient,
         dialect: str,
-    ) -> List[RefreshKeyValue]:
+    ) -> list[RefreshKeyValue]:
         """Evaluate every applicable refresh key, batched one scan per table.
         Raises on a malformed / multi-row scan (the caller decides propagate
         vs continue-on-error)."""
-        by_table: Dict[str, List[str]] = {}
+        by_table: dict[str, list[str]] = {}
         for table, expr in applicable:
             by_table.setdefault(table, []).append(expr)
-        out: List[RefreshKeyValue] = []
+        out: list[RefreshKeyValue] = []
         for table, exprs in by_table.items():
             row = await self._scan_one_table(
                 table=table, exprs=exprs, client=client, dialect=dialect,
@@ -994,10 +1221,10 @@ class SlayerQueryEngine:
         self,
         *,
         table: str,
-        exprs: List[str],
+        exprs: list[str],
         client: SlayerSQLClient,
         dialect: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         scan_sql = self._cache.build_refresh_key_sql(table, exprs, dialect)
         rows = await client.execute(sql=scan_sql)
         if len(rows) != 1:
@@ -1011,8 +1238,8 @@ class SlayerQueryEngine:
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
         *,
-        variables: Optional[Dict[str, Any]] = None,
-        data_source: Optional[str] = None,
+        variables: dict[str, Any] | None = None,
+        data_source: str | None = None,
     ) -> bool:
         """Remove the cache entry for ``query`` (same input union as
         ``execute``). Recomputes the SQL + datasource key via the DB-free
@@ -1034,8 +1261,8 @@ class SlayerQueryEngine:
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
         *,
-        variables: Optional[Dict[str, Any]] = None,
-        data_source: Optional[str] = None,
+        variables: dict[str, Any] | None = None,
+        data_source: str | None = None,
     ) -> bool:
         """Synchronous wrapper for :meth:`evict`."""
         from slayer.async_utils import run_sync
@@ -1069,28 +1296,39 @@ class SlayerQueryEngine:
         return result
 
     def refresh_sync(self) -> RefreshResult:
-        """Synchronous wrapper for :meth:`refresh`."""
+        """Synchronous wrapper for :meth:`refresh`.
+
+        Like ``execute_sync``, disposes per-call async engines in ``finally``
+        (refresh runs refresh-key scans + re-executions) so they don't outlive
+        their owning loop.
+        """
         from slayer.async_utils import run_sync
 
-        return run_sync(self.refresh())
+        async def _run_and_cleanup() -> RefreshResult:
+            try:
+                return await self.refresh()
+            finally:
+                await self.aclose()
+
+        return run_sync(_run_and_cleanup())
 
     async def _refresh_scan_all(
-        self, snapshot: "Dict[str, _CacheEntry]", result: RefreshResult,
-    ) -> "Tuple[Dict[Tuple[Tuple[str, str], str, str], Any], set]":
+        self, snapshot: "dict[str, _CacheEntry]", result: RefreshResult,
+    ) -> "tuple[dict[tuple[tuple[str, str], str, str], Any], set]":
         """Collate applicable ``(ds_key, table)`` scan targets across all
         entries and run ONE batched scan per pair. Scan failures are recorded
         as continue-on-error ``RefreshError(phase="refresh_key_scan")`` and the
         table is marked failed so its dependent entries are left unchanged."""
-        targets: Dict[Tuple[Tuple[str, str], str], set] = {}
-        dialects: Dict[Tuple[str, str], str] = {}
-        clients: Dict[Tuple[str, str], SlayerSQLClient] = {}
+        targets: dict[tuple[tuple[str, str], str], set] = {}
+        dialects: dict[tuple[str, str], str] = {}
+        clients: dict[tuple[str, str], SlayerSQLClient] = {}
         for entry in snapshot.values():
             ds_key = tuple(entry.ds_key)
             dialects[ds_key] = entry.dialect
             for table, expr in entry.applicable:
                 targets.setdefault((ds_key, table), set()).add(expr)
 
-        fresh: Dict[Tuple[Tuple[str, str], str, str], Any] = {}
+        fresh: dict[tuple[tuple[str, str], str, str], Any] = {}
         failed: set = set()
         for (ds_key, table), exprs in targets.items():
             expr_list = sorted(exprs)
@@ -1110,9 +1348,9 @@ class SlayerQueryEngine:
 
     async def _client_for_refresh(
         self,
-        ds_key: Tuple[str, str],
-        snapshot: "Dict[str, _CacheEntry]",
-        clients: Dict[Tuple[str, str], SlayerSQLClient],
+        ds_key: tuple[str, str],
+        snapshot: "dict[str, _CacheEntry]",
+        clients: dict[tuple[str, str], SlayerSQLClient],
     ) -> SlayerSQLClient:
         """Get the cached client for ``ds_key``, reopening it from an entry's
         recorded resolved datasource name if it isn't cached."""
@@ -1142,7 +1380,7 @@ class SlayerQueryEngine:
         *,
         key: str,
         entry: _CacheEntry,
-        fresh_values: "Dict[Tuple[Tuple[str, str], str, str], Any]",
+        fresh_values: "dict[tuple[tuple[str, str], str, str], Any]",
         failed_tables: set,
         result: RefreshResult,
     ) -> None:
@@ -1196,7 +1434,7 @@ class SlayerQueryEngine:
 
     async def _reexecute_entry(
         self, entry: _CacheEntry, now: float
-    ) -> "Tuple[str, _CacheEntry]":
+    ) -> "tuple[str, _CacheEntry]":
         """Replay a stale entry from its ORIGINAL input through the full
         ``execute`` normalization (so run-by-name picks up ``source_queries``
         edits and lists re-topo-sort), re-scanning baselines before the data
@@ -1293,30 +1531,43 @@ class SlayerQueryEngine:
         )
         return touched
 
-    async def _expand_join_graph(
-        self, *, touched: "set[str]", data_source: Optional[str]
-    ) -> None:
-        """Follow each touched model's joins transitively, adding reachable
-        target_model names to ``touched``. Visited-set guarded to avoid
-        infinite loops on diamond / cyclic join graphs.
-        """
-        frontier = list(touched)
-        visited: set[str] = set()
-        while frontier:
-            name = frontier.pop()
-            if name in visited:
-                continue
-            visited.add(name)
+    async def _load_candidate_models(
+        self, *, data_source: str | None
+    ) -> list[SlayerModel]:
+        """Load the candidate model set for join-graph routing. Scoped to
+        one datasource when given; otherwise best-effort over every stored
+        model (the ``data_source is None`` path is rare — only models with
+        an empty ``data_source`` reach it)."""
+        if data_source:
+            return await _all_models_in_datasource(self.storage, data_source)
+        out: list[SlayerModel] = []
+        for ds, name in await self.storage._list_all_model_identities():
             try:
-                m = await self.storage.get_model(name, data_source=data_source)
+                m = await self.storage.get_model(name, data_source=ds)
             except Exception:
                 m = None
-            if m is None:
-                continue
-            for j in m.joins:
-                if j.target_model not in touched:
-                    touched.add(j.target_model)
-                    frontier.append(j.target_model)
+            if m is not None:
+                out.append(m)
+        return out
+
+    async def _expand_join_graph(
+        self, *, touched: "set[str]", data_source: str | None
+    ) -> None:
+        """Follow each touched model's joins transitively, adding reachable
+        target_model names to ``touched``.
+
+        Directed reachability is delegated to :class:`JoinGraph` so the
+        engine has a single reachability implementation shared with
+        ``recommend_root_model`` (DEV-1626). Diamond / cyclic graphs are
+        visited-guarded by ``JoinGraph.reachable_from``.
+        """
+        graph = JoinGraph.build_from_models(
+            await self._load_candidate_models(data_source=data_source)
+        )
+        expanded: set[str] = set()
+        for seed in touched:
+            expanded |= graph.reachable_from(seed)
+        touched |= expanded
 
     async def _maybe_raise_schema_drift(
         self,
@@ -1342,7 +1593,7 @@ class SlayerQueryEngine:
             # time), so attribution only needs the parent's data_source.
             data_sources: set[str] = {model.data_source} if model.data_source else set()
 
-            collected: List[Any] = []
+            collected: list[Any] = []
             for ds_name in data_sources or {None}:
                 try:
                     entries = await self.validate_models(data_source=ds_name)
@@ -1380,7 +1631,7 @@ class SlayerQueryEngine:
         types) and falls back to the first allowed aggregation otherwise.
         Skips primary-key columns (they're identifiers, not values to probe).
         """
-        measures: List[ModelMeasure] = []
+        measures: list[ModelMeasure] = []
         for c in model.columns:
             if c.hidden or c.primary_key:
                 continue
@@ -1397,8 +1648,8 @@ class SlayerQueryEngine:
     async def get_column_types(
         self,
         model_name: str,
-        data_source: Optional[str] = None,
-    ) -> Dict[str, str]:
+        data_source: str | None = None,
+    ) -> dict[str, str]:
         """Infer column types for a model's columns via a type-probe query.
 
         Builds a real query through the engine's enrich+generate pipeline
@@ -1459,6 +1710,11 @@ class SlayerQueryEngine:
             # ``outer`` mode explicitly so a future default-change cannot
             # silently shift type-probe behaviour.
             sql = generator.generate(enriched=enriched, render_mode="outer")
+            # DEV-1578: type probing is a user-visible execution path, so it
+            # must honour the forced-filter policy too. A policy failure
+            # (block / fail-closed) degrades to {} via this try/except rather
+            # than leaking an unscoped probe.
+            sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
         except Exception:
             logger.warning("get_column_types enrich/generate failed for model '%s'", model_name)
             return {}
@@ -1470,51 +1726,328 @@ class SlayerQueryEngine:
             return {}
 
         # Map qualified aliases (e.g., "orders.revenue_max") back to bare measure names
-        result: Dict[str, str] = {}
+        result: dict[str, str] = {}
         for em in enriched.measures:
             if em.alias in raw_types:
                 result[em.source_measure_name or em.name] = raw_types[em.alias]
         return result
 
+    async def aclose(self) -> None:
+        """Dispose every cached client's async engine; keep the clients themselves.
+
+        Per-instance async engines bind their asyncpg/aiomysql pool to the loop
+        that first opened a connection; closing that loop without disposing
+        leaks the server-side connections (asyncpg.Connection.close needs a
+        live loop). Clients are kept so ``_sync_engine`` survives — important
+        for ``:memory:`` SQLite, whose StaticPool pins the connection holding
+        all data.
+        """
+        for client in self._sql_clients.values():
+            await client.aclose()
+
     def execute_sync(
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
-        variables: Optional[Dict[str, Any]] = None,
+        variables: dict[str, Any] | None = None,
         *,
         dry_run: bool = False,
         explain: bool = False,
-        data_source: Optional[str] = None,
+        data_source: str | None = None,
         cache: bool = False,
     ) -> SlayerResponse:
         """Synchronous wrapper for execute(). For CLI, notebooks, and scripts.
 
-        DEV-1587: forwards ``cache`` and ``data_source`` (the latter closes
-        the pre-existing sync ``data_source`` gap so sync cache / evict reach
-        the datasource-override paths).
+        DEV-1587: forwards ``cache`` and ``data_source`` (the latter closes the
+        pre-existing sync ``data_source`` gap so sync cache / evict reach the
+        datasource-override paths). Disposes per-call async engines in
+        ``finally`` so they don't outlive their owning loop — see ``aclose``.
         """
         from slayer.async_utils import run_sync
 
-        return run_sync(
-            self.execute(
-                query,
-                variables=variables,
-                dry_run=dry_run,
-                explain=explain,
-                data_source=data_source,
-                cache=cache,
+        async def _run_and_cleanup() -> SlayerResponse:
+            try:
+                return await self.execute(
+                    query,
+                    variables=variables,
+                    dry_run=dry_run,
+                    explain=explain,
+                    data_source=data_source,
+                    cache=cache,
+                )
+            finally:
+                await self.aclose()
+
+        return run_sync(_run_and_cleanup())
+
+    # ------------------------------------------------------------------
+    # recommend_root_model (DEV-1626)
+    # ------------------------------------------------------------------
+    async def _scope_bare_name_to_datasource(
+        self, *, raw: str, name: str, data_source: str
+    ) -> "tuple[str, str, str]":
+        """Resolve a bare (dotless) item within a single datasource, so the
+        requested ``data_source`` genuinely scopes it (rather than deferring
+        to the global datasource-priority list). Returns ``(ds, model, leaf)``.
+        """
+        models = await _all_models_in_datasource(self.storage, data_source)
+        if any(m.name == name for m in models):
+            raise ValueError(
+                f"'{raw}' resolves to model '{name}' in '{data_source}', which "
+                f"is not a column or metric. recommend_root_model needs "
+                f"'model.column' / 'model.metric' items."
             )
+        # Ownership is column/metric only — a model whose sole match is a
+        # custom aggregation named the same must NOT make a valid column
+        # ambiguous; it only drives the aggregation-specific error below.
+        owners = [
+            m for m in models
+            if m.get_column(name) is not None or m.get_measure(name) is not None
+        ]
+        if len(owners) == 1:
+            return data_source, owners[0].name, name
+        if len(owners) > 1:
+            names = sorted(m.name for m in owners)
+            raise ValueError(
+                f"'{raw}' is ambiguous in datasource '{data_source}' — matches "
+                f"{names}. Qualify it as '<model>.{name}'."
+            )
+        if any(m.get_aggregation(name) is not None for m in models):
+            raise ValueError(
+                f"'{raw}' names a custom aggregation in datasource "
+                f"'{data_source}'. Aggregations are operators applied to "
+                f"columns, not join-path targets — pass the column."
+            )
+        raise ValueError(
+            f"'{raw}' does not name a column or metric in datasource "
+            f"'{data_source}'."
         )
+
+    async def _resolve_recommend_item(
+        self, *, raw: str, data_source: str | None
+    ) -> "tuple[_ResolvedItem, list[str]]":
+        """Resolve + validate a single recommend_root_model item.
+
+        Reuses ``resolve_entity`` for normalization; requires the resolved
+        entity to be a column or a named measure (metric). Raises on a
+        malformed / wrong-kind item or a datasource-scope mismatch.
+        """
+        entity_ref, suffix = split_agg_suffix(raw)
+        warnings: list[str] = []
+        if data_source and "." not in entity_ref:
+            # Bare name + explicit scope → resolve within the datasource.
+            ds, model_name, leaf = await self._scope_bare_name_to_datasource(
+                raw=raw, name=entity_ref, data_source=data_source,
+            )
+        else:
+            # With an explicit data_source, force every dotted item into that
+            # datasource unless it already leads with it — so a model name
+            # colliding with a *datasource* name (``shared.status`` under
+            # ``data_source='mydb'``) still resolves to the model, and a ref
+            # naming a different datasource fails as a cross-datasource item.
+            resolution_input = entity_ref
+            if data_source and entity_ref.split(".")[0] != data_source:
+                resolution_input = f"{data_source}.{entity_ref}"
+            res = await resolve_entity(resolution_input, storage=self.storage)
+            warnings = res.warnings
+            segs = res.canonical_forms[0].split(".")
+            if len(segs) < 3:
+                raise ValueError(
+                    f"'{raw}' resolves to '{res.canonical_forms[0]}', which is "
+                    f"not a column or metric. recommend_root_model needs "
+                    f"'model.column' / 'model.metric' items."
+                )
+            ds, model_name, leaf = segs[0], segs[1], segs[2]
+        owning = await self.storage.get_model(model_name, data_source=ds)
+        if owning is None:
+            raise ValueError(
+                f"'{raw}' resolves to model '{model_name}' in '{ds}', which "
+                f"is not a saved model."
+            )
+        if owning.get_column(leaf) is None and owning.get_measure(leaf) is None:
+            if owning.get_aggregation(leaf) is not None:
+                raise ValueError(
+                    f"'{raw}' names the custom aggregation '{leaf}' on "
+                    f"'{model_name}'. Aggregations are operators applied to "
+                    f"columns, not join-path targets — pass the column."
+                )
+            raise ValueError(
+                f"'{raw}' does not name a column or metric on '{model_name}'."
+            )
+        item = _ResolvedItem(
+            input_item=raw, data_source=ds, model=model_name,
+            leaf=leaf, suffix=suffix,
+        )
+        return item, warnings
+
+    async def _recommend_resolve_items(
+        self, items: list[str], data_source: str | None
+    ) -> "tuple[list[_ResolvedItem], list[str]]":
+        """Resolve every input item, then enforce single-datasource + dedup.
+
+        Raises on malformed / wrong-kind items and on a cross-datasource mix.
+        """
+        resolved: list[_ResolvedItem] = []
+        warnings: list[str] = []
+        seen_inputs: set[str] = set()
+        for original in items:
+            raw = original.strip()
+            if not raw or raw in seen_inputs:
+                continue
+            seen_inputs.add(raw)
+            item, item_warnings = await self._resolve_recommend_item(
+                raw=raw, data_source=data_source,
+            )
+            resolved.append(item)
+            warnings.extend(item_warnings)
+
+        if not resolved:
+            raise ValueError("recommend_root_model requires at least one item.")
+        datasources = {r.data_source for r in resolved}
+        if len(datasources) > 1:
+            raise ValueError(
+                f"items span multiple datasources {sorted(datasources)}; "
+                f"cross-datasource queries are not supported. Pass items from "
+                f"a single datasource (optionally set data_source=...)."
+            )
+        deduped_warnings: list[str] = []
+        seen_w: set[str] = set()
+        for w in warnings:
+            if w not in seen_w:
+                seen_w.add(w)
+                deduped_warnings.append(w)
+        return resolved, deduped_warnings
+
+    async def recommend_root_model(
+        self,
+        items: list[str],
+        *,
+        data_source: str | None = None,
+        root_hint: str | None = None,
+    ) -> RootModelRecommendation:
+        """Recommend the query ``source_model`` (root) for a set of
+        ``model.column`` / ``model.metric`` items, plus each item's
+        join-qualified path from that root (DEV-1626).
+
+        A valid root reaches every mentioned owning model over the join
+        graph (LEFT = directed, INNER = symmetric via storage). Selection
+        minimizes total hops summed over distinct owning models, prefers a
+        mentioned model on ties, then the lexicographically smallest name.
+        When no single model reaches everything, returns a structured
+        ``reachable=False`` result with the Pareto frontier of partial
+        roots in ``coverage`` (never raises for a valid-but-unroutable set).
+
+        ``root_hint`` (optional) names the intended root — a bare model name
+        or ``<data_source>.<model>`` within the resolved datasource. When the
+        hint is a feasible root (reaches every item), it is honored outright,
+        overriding the min-hops selection so a caller can force a *bridge*
+        model that owns none of the items but matches the intended grain.
+        When it is infeasible, the auto-pick is used and a warning explains
+        why; whether the hint was honored is conveyed via ``message`` /
+        ``warnings`` (no structured field). A non-existent / wrong-kind /
+        cross-datasource hint raises ``ValueError``. Note: ``root_hint`` is
+        resolved *after* the datasource is determined from ``items`` /
+        ``data_source``, so it cannot influence datasource selection.
+        """
+        resolved, base_warnings = await self._recommend_resolve_items(items, data_source)
+        ds = resolved[0].data_source
+        models = await _all_models_in_datasource(self.storage, ds)
+        graph = JoinGraph.build_from_models(models)
+        all_names = sorted(m.name for m in models)
+        mentioned = {r.model for r in resolved}
+        warnings = list(base_warnings)
+
+        hint = _resolve_root_hint(root_hint, data_source=ds, all_names=all_names)
+        hint_model = hint[0] if hint is not None else None
+        hint_display = hint[1] if hint is not None else None
+
+        def total_hops(root: str) -> int:
+            return sum(len(graph.shortest_path(root, m) or []) for m in mentioned)
+
+        def reaches_all(root: str) -> bool:
+            return all(graph.shortest_path(root, m) is not None for m in mentioned)
+
+        def missing_models(root: str) -> list[str]:
+            return sorted(m for m in mentioned if graph.shortest_path(root, m) is None)
+
+        valid_roots = [name for name in all_names if reaches_all(name)]
+        if valid_roots:
+            auto = min(
+                valid_roots,
+                key=lambda n: (total_hops(n), 0 if n in mentioned else 1, n),
+            )
+            if hint_model is not None and reaches_all(hint_model):
+                root = hint_model
+                message = (
+                    f"All items are reachable from '{root}' (requested via root_hint)."
+                )
+            else:
+                root = auto
+                if hint_model is not None:
+                    missing = ", ".join(missing_models(hint_model))
+                    warnings.append(
+                        f"root_hint '{hint_display}' cannot reach {{{missing}}}; "
+                        f"fell back to '{auto}'."
+                    )
+                message = f"All items are reachable from '{root}'."
+            item_paths = [
+                ItemPath(input_item=r.input_item, path=_emit_recommend_path(graph, root, r))
+                for r in resolved
+            ]
+            return RootModelRecommendation(
+                data_source=ds, root_model=root, reachable=True,
+                item_paths=item_paths, warnings=warnings, message=message,
+            )
+
+        force_include = {hint_model} if hint_model is not None else None
+        coverage = _build_recommend_coverage(
+            graph, all_names, mentioned, resolved, force_include=force_include
+        )
+        if hint_model is not None:
+            missing = ", ".join(missing_models(hint_model))
+            warnings.append(
+                f"root_hint '{hint_display}' cannot reach {{{missing}}}; "
+                f"no single model reaches every item — see coverage."
+            )
+        return RootModelRecommendation(
+            data_source=ds, root_model=None, reachable=False, item_paths=[],
+            coverage=coverage, warnings=warnings,
+            message=(
+                "No single model reaches every requested item. See 'coverage' "
+                "for the best partial roots — split the request into a "
+                "multi-stage query rooted at those models."
+            ),
+        )
+
+    def recommend_root_model_sync(
+        self,
+        items: list[str],
+        *,
+        data_source: str | None = None,
+        root_hint: str | None = None,
+    ) -> RootModelRecommendation:
+        """Synchronous wrapper for :meth:`recommend_root_model`."""
+        from slayer.async_utils import run_sync
+
+        async def _run() -> RootModelRecommendation:
+            try:
+                return await self.recommend_root_model(
+                    items, data_source=data_source, root_hint=root_hint
+                )
+            finally:
+                await self.aclose()
+
+        return run_sync(_run())
 
     async def edit_model_remove(
         self,
         *,
         model_name: str,
-        data_source: Optional[str],
-        remove_columns: Optional[List[str]] = None,
-        remove_measures: Optional[List[str]] = None,
-        remove_aggregations: Optional[List[str]] = None,
-        remove_joins: Optional[List[str]] = None,
-        remove_filters: Optional[List[str]] = None,
+        data_source: str | None,
+        remove_columns: list[str] | None = None,
+        remove_measures: list[str] | None = None,
+        remove_aggregations: list[str] | None = None,
+        remove_joins: list[str] | None = None,
+        remove_filters: list[str] | None = None,
     ) -> SlayerModel:
         """Apply surgical removals to a persisted model.
 
@@ -1581,13 +2114,13 @@ class SlayerQueryEngine:
         return updated
 
     async def delete_model_by_name(
-        self, *, model_name: str, data_source: Optional[str]
+        self, *, model_name: str, data_source: str | None
     ) -> bool:
         """Delete a persisted model by name. Returns True if the model existed."""
         return await self.storage.delete_model(model_name, data_source=data_source)
 
     async def apply_drift_deletes(
-        self, deletes: "List[Any]"
+        self, deletes: "list[Any]"
     ) -> "Any":
         """Apply each ``ToDeleteEntry`` via the engine helpers and return
         the combined ``ApplyDriftResult`` (applied, errors, residual).
@@ -1604,8 +2137,8 @@ class SlayerQueryEngine:
             ApplyError,
         )
 
-        applied: List[AppliedEntry] = []
-        errors: List[ApplyError] = []
+        applied: list[AppliedEntry] = []
+        errors: list[ApplyError] = []
         touched_ds: set[str] = set()
 
         for entry in deletes:
@@ -1648,7 +2181,7 @@ class SlayerQueryEngine:
                 )
 
         # Re-validate the touched datasources to compute residual drift.
-        residual: List[Any] = []
+        residual: list[Any] = []
         for ds_name in touched_ds:
             try:
                 residual.extend(await self.validate_models(data_source=ds_name))
@@ -1665,8 +2198,8 @@ class SlayerQueryEngine:
         )
 
     async def validate_models(
-        self, data_source: Optional[str] = None
-    ) -> "List[Any]":
+        self, data_source: str | None = None
+    ) -> "list[Any]":
         """Diff persisted models against live database schemas.
 
         Returns the minimal list of deletes needed for SQL generation to
@@ -1687,7 +2220,7 @@ class SlayerQueryEngine:
                 return []
             identities = await self.storage._list_all_model_identities()
             ds_model_names = [n for d, n in identities if d == data_source]
-            models: List[SlayerModel] = []
+            models: list[SlayerModel] = []
             for name in ds_model_names:
                 m = await self.storage.get_model(name, data_source=data_source)
                 if m is not None:
@@ -1702,13 +2235,13 @@ class SlayerQueryEngine:
         if not ds_names:
             return []
 
-        async def _validate_one(name: str) -> "List[ToDeleteEntry]":
+        async def _validate_one(name: str) -> "list[ToDeleteEntry]":
             return await self.validate_models(data_source=name)
 
         results = await _asyncio.gather(
             *(_validate_one(n) for n in ds_names), return_exceptions=True
         )
-        out: List = []
+        out: list = []
         for r in results:
             if isinstance(r, BaseException):
                 logger.warning("validate_models: per-DS validation failed: %s", r)
@@ -1720,8 +2253,8 @@ class SlayerQueryEngine:
         self,
         query: "SlayerQuery | list[SlayerQuery] | dict | list[dict]",
         name: str,
-        description: Optional[str] = None,
-        variables: Optional[Dict[str, Any]] = None,
+        description: str | None = None,
+        variables: dict[str, Any] | None = None,
         save: bool = True,
     ) -> SlayerModel:
         """Synchronous wrapper for create_model_from_query()."""
@@ -1740,10 +2273,10 @@ class SlayerQueryEngine:
     async def _expand_query_backed_model(
         self,
         model: SlayerModel,
-        outer_vars: Optional[Dict[str, Any]],
-        runtime_kwarg: Optional[Dict[str, Any]],
+        outer_vars: dict[str, Any] | None,
+        runtime_kwarg: dict[str, Any] | None,
         dry_run_placeholders: bool,
-        _resolving: Optional[set],
+        _resolving: set | None,
     ) -> SlayerModel:
         """If ``model`` is query-backed, expand its ``source_queries`` into a
         virtual model (with rendered SQL). Otherwise return ``model`` unchanged.
@@ -1772,10 +2305,10 @@ class SlayerQueryEngine:
         query_model,
         named_queries: dict = None,
         _resolving: set = None,
-        outer_vars: Optional[Dict[str, Any]] = None,
-        runtime_kwarg: Optional[Dict[str, Any]] = None,
+        outer_vars: dict[str, Any] | None = None,
+        runtime_kwarg: dict[str, Any] | None = None,
         dry_run_placeholders: bool = False,
-        prefer_data_source: Optional[str] = None,
+        prefer_data_source: str | None = None,
     ) -> SlayerModel:
         """Resolve query.source_model — handles str, SlayerModel, and ModelExtension."""
         from slayer.core.query import ModelExtension
@@ -1859,10 +2392,10 @@ class SlayerQueryEngine:
         model_name: str,
         named_queries: dict[str, SlayerQuery] = None,
         _resolving: set = None,
-        outer_vars: Optional[Dict[str, Any]] = None,
-        runtime_kwarg: Optional[Dict[str, Any]] = None,
+        outer_vars: dict[str, Any] | None = None,
+        runtime_kwarg: dict[str, Any] | None = None,
         dry_run_placeholders: bool = False,
-        prefer_data_source: Optional[str] = None,
+        prefer_data_source: str | None = None,
     ) -> SlayerModel:
         """Resolve a model by name — checks named queries first, then storage."""
         named_queries = named_queries or {}
@@ -1893,10 +2426,10 @@ class SlayerQueryEngine:
         model_name: str,
         named_queries: dict[str, SlayerQuery],
         _resolving: set = None,
-        outer_vars: Optional[Dict[str, Any]] = None,
-        runtime_kwarg: Optional[Dict[str, Any]] = None,
+        outer_vars: dict[str, Any] | None = None,
+        runtime_kwarg: dict[str, Any] | None = None,
         dry_run_placeholders: bool = False,
-        prefer_data_source: Optional[str] = None,
+        prefer_data_source: str | None = None,
     ) -> SlayerModel:
         # Named query overrides stored model
         if model_name in named_queries:
@@ -1959,8 +2492,8 @@ class SlayerQueryEngine:
         self,
         query: "SlayerQuery | list[SlayerQuery] | dict | list[dict]",
         name: str,
-        description: Optional[str] = None,
-        variables: Optional[Dict[str, Any]] = None,
+        description: str | None = None,
+        variables: dict[str, Any] | None = None,
         save: bool = True,
     ) -> SlayerModel:
         """Create a query-backed model from a query (or list of stages).
@@ -2009,7 +2542,7 @@ class SlayerQueryEngine:
         # up the old storage entry when a query-backed model's resolved
         # data_source changes (e.g. its backing query now points at a
         # different upstream datasource).
-        prior_data_source: Optional[str] = None
+        prior_data_source: str | None = None
         if model.source_queries:
             try:
                 identity = await self.storage.resolve_model_identity(model.name)
@@ -2078,7 +2611,7 @@ class SlayerQueryEngine:
         query: SlayerQuery,
         model: SlayerModel,
         named_queries: dict[str, SlayerQuery] = None,
-        dialect: Optional[str] = None,
+        dialect: str | None = None,
         *,
         drop_unreachable_filters: bool = False,
     ) -> EnrichedQuery:
@@ -2207,7 +2740,7 @@ class SlayerQueryEngine:
     async def _render_query_backed_join_target(
         self,
         target: SlayerModel,
-        outer_query_variables: Optional[Dict[str, Any]],
+        outer_query_variables: dict[str, Any] | None,
     ) -> SlayerModel:
         """Resolve a query-backed model used as a JOIN target.
 
@@ -2256,8 +2789,8 @@ class SlayerQueryEngine:
         named_queries: dict[str, SlayerQuery] = None,
         override_name: str = None,
         _resolving: set = None,
-        outer_vars: Optional[Dict[str, Any]] = None,
-        runtime_kwarg: Optional[Dict[str, Any]] = None,
+        outer_vars: dict[str, Any] | None = None,
+        runtime_kwarg: dict[str, Any] | None = None,
         dry_run_placeholders: bool = False,
     ) -> SlayerModel:
         """Build a virtual SlayerModel from a nested query's result.
@@ -2296,7 +2829,7 @@ class SlayerQueryEngine:
         scoped = self._scope_named_queries_to_prior(
             named_queries, inner_query.name
         )
-        forbidden_now: Dict[str, str] = {}
+        forbidden_now: dict[str, str] = {}
         if scoped is not named_queries and inner_query.name:
             for k in named_queries:
                 if k not in scoped:
@@ -2451,7 +2984,7 @@ class SlayerQueryEngine:
 
         # One Column per result column — each is potentially both a dimension
         # (group-by) or measure (with colon-aggregation) at query time.
-        cols: List[Column] = []
+        cols: list[Column] = []
         for _, short, dtype, label, desc, fmt in column_map:
             cols.append(Column(name=short, sql=short, type=dtype, label=label, description=desc, format=fmt))
 
@@ -2610,7 +3143,7 @@ class SlayerQueryEngine:
         if not query.measures:
             return query
 
-        kept: List = []
+        kept: list = []
         extra_dims = list(query.dimensions or [])
         moved = False
 
@@ -2999,7 +3532,7 @@ class SlayerQueryEngine:
         return ds
 
     @staticmethod
-    def _dialect_for_type(ds_type: Optional[str]) -> str:
+    def _dialect_for_type(ds_type: str | None) -> str:
         """Map a datasource-config ``type`` string to a sqlglot dialect name.
 
         Delegates to ``dialect_for_ds_type`` in ``slayer.sql.dialects``

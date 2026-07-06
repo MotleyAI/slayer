@@ -20,7 +20,6 @@ wrappers catch and format them per their convention.
 
 from __future__ import annotations
 
-from typing import List, Optional, Union
 
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import (
@@ -35,8 +34,8 @@ from slayer.memories.resolver import (
 from slayer.storage.base import StorageBackend
 
 
-QueryInput = Union[SlayerQuery, dict]
-LinkedEntities = Union[List[str], SlayerQuery, dict]
+QueryInput = SlayerQuery | dict
+LinkedEntities = list[str] | SlayerQuery | dict
 
 
 def _coerce_query(query: QueryInput) -> SlayerQuery:
@@ -57,7 +56,7 @@ def _coerce_query(query: QueryInput) -> SlayerQuery:
     )
 
 
-def _coerce_memory_id(identifier: Union[int, str]) -> str:
+def _coerce_memory_id(identifier: int | str) -> str:
     """DEV-1428: accept native ``str`` (canonical form) or legacy
     ``int`` (back-compat: stringify decimally). Validates the result
     through :func:`_validate_memory_id_charset` so the surface layer
@@ -79,9 +78,9 @@ def _coerce_memory_id(identifier: Union[int, str]) -> str:
     return value
 
 
-def _dedup(items: List[str]) -> List[str]:
+def _dedup(items: list[str]) -> list[str]:
     seen: set[str] = set()
-    out: List[str] = []
+    out: list[str] = []
     for x in items:
         if x not in seen:
             seen.add(x)
@@ -104,17 +103,17 @@ class MemoryService:
         *,
         learning: str,
         linked_entities: LinkedEntities,
-        id: Optional[str] = None,  # noqa: A002 — public kwarg
-        description: Optional[str] = None,
+        id: str | None = None,  # noqa: A002 — public kwarg
+        description: str | None = None,
     ) -> SaveMemoryResponse:
         if not learning or not learning.strip():
             raise ValueError("learning text must be a non-empty string.")
         if id is not None:
             _validate_memory_id_charset(id)
 
-        canonical: List[str] = []
-        warnings: List[str] = []
-        attached_query: Optional[SlayerQuery] = None
+        canonical: list[str] = []
+        warnings: list[str] = []
+        attached_query: SlayerQuery | None = None
 
         if isinstance(linked_entities, list):
             if not linked_entities:
@@ -169,7 +168,7 @@ class MemoryService:
     # ---- forget_memory -------------------------------------------------
 
     async def forget_memory(
-        self, *, identifier: Union[int, str]
+        self, *, identifier: int | str
     ) -> ForgetMemoryResponse:
         memory_id = _coerce_memory_id(identifier)
         await self._storage.delete_memory(memory_id)

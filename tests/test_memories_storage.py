@@ -18,7 +18,7 @@ CRUD + a one-line ``_next_memory_seq`` derived from the existing
 import asyncio
 import os
 import tempfile
-from typing import Iterator
+from collections.abc import Iterator
 
 import pytest
 

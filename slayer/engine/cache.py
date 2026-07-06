@@ -19,7 +19,8 @@ one.
 import asyncio
 import hashlib
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp, parse_one
@@ -31,7 +32,7 @@ _RK_ALIAS_PREFIX = "slayer_rk_"
 
 # Normalized physical-table identity: (catalog, db, name). Parts absent
 # from the source expression are ``None``.
-NormalizedTable = Tuple[Optional[str], Optional[str], str]
+NormalizedTable = tuple[str | None, str | None, str]
 
 
 class CacheConfig(BaseModel):
@@ -45,8 +46,8 @@ class CacheConfig(BaseModel):
     user supplies it in full (SLayer does NOT wrap it in ``MAX(...)``).
     """
 
-    ttl_seconds: Optional[float] = None
-    refresh_keys: List[Tuple[str, str]] = Field(default_factory=list)
+    ttl_seconds: float | None = None
+    refresh_keys: list[tuple[str, str]] = Field(default_factory=list)
 
 
 class RefreshKeyValue(BaseModel):
@@ -82,10 +83,10 @@ class RefreshResult(BaseModel):
     diagnostics.
     """
 
-    refreshed: List[str] = Field(default_factory=list)
-    expired_refreshed: List[str] = Field(default_factory=list)
-    unchanged: List[str] = Field(default_factory=list)
-    errors: List[RefreshError] = Field(default_factory=list)
+    refreshed: list[str] = Field(default_factory=list)
+    expired_refreshed: list[str] = Field(default_factory=list)
+    unchanged: list[str] = Field(default_factory=list)
+    errors: list[RefreshError] = Field(default_factory=list)
 
 
 class _CacheEntry(BaseModel):
@@ -104,18 +105,18 @@ class _CacheEntry(BaseModel):
     sql: str
     ds_fingerprint: str
     dialect: str
-    ds_key: Tuple[str, str]
-    resolved_data_source: Optional[str] = None
+    ds_key: tuple[str, str]
+    resolved_data_source: str | None = None
     original_input: Any = None
-    variables: Optional[Dict[str, Any]] = None
-    data_source: Optional[str] = None
+    variables: dict[str, Any] | None = None
+    data_source: str | None = None
     created_at: float = 0.0
-    applicable: List[Tuple[str, str]] = Field(default_factory=list)
-    refresh_key_values: List[RefreshKeyValue] = Field(default_factory=list)
+    applicable: list[tuple[str, str]] = Field(default_factory=list)
+    refresh_key_values: list[RefreshKeyValue] = Field(default_factory=list)
 
 
 class QueryCache:
-    """In-memory ``Dict[str, _CacheEntry]`` with TTL-aware reads.
+    """In-memory ``dict[str, _CacheEntry]`` with TTL-aware reads.
 
     The :class:`asyncio.Lock` guards only in-memory dict operations
     (get / put / delete / snapshot / commit) — the engine performs every DB
@@ -130,7 +131,7 @@ class QueryCache:
     ) -> None:
         self.config = config
         self._clock = clock
-        self._entries: Dict[str, _CacheEntry] = {}
+        self._entries: dict[str, _CacheEntry] = {}
         self._lock = asyncio.Lock()
 
     # ---- key / clock / size ------------------------------------------------
@@ -157,7 +158,7 @@ class QueryCache:
 
     # ---- lock-guarded dict ops --------------------------------------------
 
-    async def get(self, key: str) -> Optional[_CacheEntry]:
+    async def get(self, key: str) -> _CacheEntry | None:
         """Return the live entry, or ``None``. TTL-expired entries are
         deleted and reported as a miss (re-execution re-populates them)."""
         async with self._lock:
@@ -181,7 +182,7 @@ class QueryCache:
                 return True
             return False
 
-    async def snapshot(self) -> Dict[str, _CacheEntry]:
+    async def snapshot(self) -> dict[str, _CacheEntry]:
         """A shallow copy of the ``{key: entry}`` map so ``refresh()`` can
         iterate without racing concurrent ``execute()`` writes."""
         async with self._lock:
@@ -217,7 +218,7 @@ class QueryCache:
 
     def parse_referenced_tables(
         self, sql: str, dialect: str
-    ) -> List[NormalizedTable]:
+    ) -> list[NormalizedTable]:
         """Normalized physical tables referenced by ``sql``.
 
         Parses with sqlglot, then subtracts CTE names (SLayer wraps queries
@@ -232,7 +233,7 @@ class QueryCache:
         for sub in tree.find_all(exp.Subquery):
             if sub.alias:
                 excluded.add(sub.alias)
-        out: List[NormalizedTable] = []
+        out: list[NormalizedTable] = []
         for t in tree.find_all(exp.Table):
             if t.name in excluded:
                 continue
@@ -265,12 +266,12 @@ class QueryCache:
             return False
         return True
 
-    def applicable_keys(self, sql: str, dialect: str) -> List[Tuple[str, str]]:
+    def applicable_keys(self, sql: str, dialect: str) -> list[tuple[str, str]]:
         """The configured ``(table, expression)`` refresh keys whose table is
         referenced by ``sql``. The original config table string is preserved
         (duplicate expressions per table are kept)."""
         sql_tables = self.parse_referenced_tables(sql, dialect)
-        out: List[Tuple[str, str]] = []
+        out: list[tuple[str, str]] = []
         for table, expr in self.config.refresh_keys:
             config_norm = self._normalize_config_table(table, dialect)
             if any(self._table_matches(config_norm, s) for s in sql_tables):
@@ -278,7 +279,7 @@ class QueryCache:
         return out
 
     def build_refresh_key_sql(
-        self, table: str, expressions: List[str], dialect: str
+        self, table: str, expressions: list[str], dialect: str
     ) -> str:
         """``SELECT (<expr0>) AS "slayer_rk_0", ... FROM <table>``.
 

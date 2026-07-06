@@ -5,7 +5,8 @@ import concurrent.futures
 import functools
 import logging
 import time
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any
+from collections.abc import Awaitable, Callable
 
 import sqlalchemy as sa
 import sqlalchemy.engine.url
@@ -41,7 +42,7 @@ _ASYNC_DRIVERS = {
 # value or the path component of `sqlite:///:memory:` connection strings.
 _MEMORY_DB_NAME = ":memory:"
 
-_sync_engines: Dict[str, sa.Engine] = {}
+_sync_engines: dict[str, sa.Engine] = {}
 
 
 def _get_sync_engine(connection_string: str) -> sa.Engine:
@@ -85,7 +86,7 @@ def _is_in_memory_sqlite(connection_string: str) -> bool:
     database = url.database
     if not database or database == _MEMORY_DB_NAME:
         return True
-    query: Dict[str, Any] = dict(url.query) if url.query else {}
+    query: dict[str, Any] = dict(url.query) if url.query else {}
     # SQLite honors `mode=memory` and the `file::memory:` URI form ONLY when
     # the connection is opened with URI handling enabled (`uri=true`).
     # Without `uri=true`, SQLite treats the database part as a literal
@@ -132,7 +133,7 @@ def _create_in_memory_sqlite_engine(connection_string: str) -> sa.Engine:
 
 def _resolve_sync_engine(
     connection_string: str,
-    override_engine: Optional[sa.Engine] = None,
+    override_engine: sa.Engine | None = None,
 ) -> sa.Engine:
     """Choose the engine for a sync DB call.
 
@@ -159,7 +160,7 @@ def _get_async_engine(connection_string: str):
     return create_async_engine(connection_string, pool_pre_ping=True)
 
 
-def _async_connection_string(connection_string: str, db_type: Optional[str]) -> Optional[str]:
+def _async_connection_string(connection_string: str, db_type: str | None) -> str | None:
     """Convert a sync connection string to its async equivalent, or None if no async driver."""
     async_scheme = _ASYNC_DRIVERS.get(db_type)
     if async_scheme is None:
@@ -175,7 +176,7 @@ def _async_connection_string(connection_string: str, db_type: Optional[str]) -> 
 # ---------------------------------------------------------------------------
 
 
-def _map_type_code(type_code, db_type: Optional[str] = None) -> str:
+def _map_type_code(type_code, db_type: str | None = None) -> str:
     """Map a DB-API type_code to a SLayer type category.
 
     Handles DuckDB (string type names), SQLite (Python types),
@@ -234,7 +235,7 @@ def _map_type_code(type_code, db_type: Optional[str] = None) -> str:
 
 
 # Postgres OIDs (from pg_type)
-_PG_OID_MAP: Dict[int, str] = {
+_PG_OID_MAP: dict[int, str] = {
     16: "boolean",   # bool
     20: "number",    # int8 (bigint)
     21: "number",    # int2 (smallint)
@@ -256,7 +257,7 @@ _PG_OID_MAP: Dict[int, str] = {
 }
 
 # MySQL field-type codes (aiomysql wire protocol)
-_MYSQL_TYPE_MAP: Dict[int, str] = {
+_MYSQL_TYPE_MAP: dict[int, str] = {
     0: "number",     # MYSQL_TYPE_DECIMAL
     1: "boolean",    # MYSQL_TYPE_TINY (TINYINT/BOOL)
     2: "number",     # MYSQL_TYPE_SHORT
@@ -281,7 +282,7 @@ _MYSQL_TYPE_MAP: Dict[int, str] = {
 # ODBC SQL type codes (pyodbc with SQL Server / mssql+pyodbc driver).
 # Positive codes are the standard ODBC C-level SQL_* constants; negative codes
 # are SQL Server extensions (SQL_SS_*) defined in msodbcsql.h.
-_ODBC_SQL_TYPE_MAP: Dict[int, str] = {
+_ODBC_SQL_TYPE_MAP: dict[int, str] = {
     # Integer / numeric family
     4: "number",      # SQL_INTEGER
     5: "number",      # SQL_SMALLINT
@@ -316,7 +317,7 @@ _ODBC_SQL_TYPE_MAP: Dict[int, str] = {
 }
 
 
-def _extract_types_from_cursor(result, db_type: Optional[str] = None) -> Dict[str, str]:
+def _extract_types_from_cursor(result, db_type: str | None = None) -> dict[str, str]:
     """Extract {column_name: type_category} from a SQLAlchemy CursorResult.
 
     Uses cursor.description type_code when available (DuckDB, Postgres).
@@ -377,7 +378,7 @@ async def _run_sync_in_thread(func, *args, **kwargs):
         return await loop.run_in_executor(executor, call)
 
 
-def _build_type_probe_sql(sql: str, db_type: Optional[str]) -> str:
+def _build_type_probe_sql(sql: str, db_type: str | None) -> str:
     """Build a row-limiting probe query appropriate for the target dialect."""
     limit = 1 if db_type in _NEEDS_ROW_FOR_TYPES else 0
     if db_type in _TSQL_DB_TYPES:
@@ -385,7 +386,7 @@ def _build_type_probe_sql(sql: str, db_type: Optional[str]) -> str:
     return f"SELECT * FROM ({sql}) AS _types LIMIT {limit}"
 
 
-def _apply_type_probe_timeout(conn, db_type: Optional[str], timeout_seconds: int) -> None:
+def _apply_type_probe_timeout(conn, db_type: str | None, timeout_seconds: int) -> None:
     """DEV-1551: apply the dialect's statement-timeout SQL ahead of a
     type-probe execution. Snowflake's ``LIMIT 0`` still compiles and
     consumes warehouse compute, so an unbounded probe can stall on a
@@ -403,7 +404,7 @@ def _apply_type_probe_timeout(conn, db_type: Optional[str], timeout_seconds: int
         conn.execute(sa.text(timeout_sql))
 
 
-async def _apply_type_probe_timeout_async(conn, db_type: Optional[str], timeout_seconds: int) -> None:
+async def _apply_type_probe_timeout_async(conn, db_type: str | None, timeout_seconds: int) -> None:
     """Async sibling of ``_apply_type_probe_timeout``."""
     if not db_type:
         return
@@ -421,9 +422,9 @@ _TYPE_PROBE_TIMEOUT_SECONDS = 60
 def _get_column_types_sync(
     sql: str,
     connection_string: str,
-    db_type: Optional[str],
-    engine: Optional[sa.Engine] = None,
-) -> Dict[str, str]:
+    db_type: str | None,
+    engine: sa.Engine | None = None,
+) -> dict[str, str]:
     """Infer column types. Uses LIMIT 0 for cursor metadata, LIMIT 1 for SQLite.
     T-SQL uses SELECT TOP N instead of LIMIT."""
     engine = _resolve_sync_engine(connection_string, override_engine=engine)
@@ -437,8 +438,8 @@ def _get_column_types_sync(
 async def _get_column_types_async(
     sql: str,
     engine,
-    db_type: Optional[str],
-) -> Dict[str, str]:
+    db_type: str | None,
+) -> dict[str, str]:
     """Async version of column type inference. Uses LIMIT 0; LIMIT 1 for SQLite.
     T-SQL uses SELECT TOP N instead of LIMIT."""
     limit_sql = _build_type_probe_sql(sql, db_type)
@@ -462,7 +463,23 @@ class SlayerSQLClient:
     def __init__(self, datasource: DatasourceConfig):
         self.datasource = datasource
         self._async_engine = None
-        self._sync_engine: Optional[sa.Engine] = None
+        self._sync_engine: sa.Engine | None = None
+
+    async def aclose(self) -> None:
+        """Dispose the cached async engine inside the current event loop."""
+        engine = self._async_engine
+        if engine is None:
+            return
+        # Null first so a failed dispose can't leave a half-torn engine cached.
+        self._async_engine = None
+        try:
+            await engine.dispose()
+        except Exception as exc:  # pragma: no cover
+            import logging
+            logging.getLogger(__name__).warning(
+                "Async engine dispose failed for datasource %r: %s",
+                self.datasource.name, exc,
+            )
 
     def _get_async_engine(self):
         """Get or create the async engine for this client (cached per instance)."""
@@ -475,7 +492,7 @@ class SlayerSQLClient:
                 self._async_engine = _get_async_engine(async_conn_str)
         return self._async_engine
 
-    def _get_sync_engine_for_client(self) -> Optional[sa.Engine]:
+    def _get_sync_engine_for_client(self) -> sa.Engine | None:
         """Return a per-client sync engine.
 
         For ``sqlite:///:memory:`` (and equivalent URI-form variants) every
@@ -503,7 +520,7 @@ class SlayerSQLClient:
         self,
         sql: str,
         timeout_seconds: int = 120,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Execute SQL asynchronously."""
         async_engine = self._get_async_engine()
         db_type = self.datasource.type
@@ -530,7 +547,7 @@ class SlayerSQLClient:
             engine=self._get_sync_engine_for_client(),
         )
 
-    async def get_column_types(self, sql: str) -> Dict[str, str]:
+    async def get_column_types(self, sql: str) -> dict[str, str]:
         """Infer column types by executing SQL with LIMIT 0.
 
         Returns {column_name: type_category} where type_category is
@@ -559,7 +576,7 @@ class SlayerSQLClient:
         self,
         sql: str,
         timeout_seconds: int = 120,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Execute SQL synchronously (for CLI, notebooks, tests)."""
         return _execute_with_retry_sync(
             sql=sql,
@@ -621,11 +638,11 @@ def _is_transient_db_error(exc: BaseException) -> bool:
 async def _retry_with_backoff(
     *,
     sql: str,
-    do_call: Callable[[], Awaitable[List[Dict[str, Any]]]],
+    do_call: Callable[[], Awaitable[list[dict[str, Any]]]],
     max_attempts: int,
     initial_delay: float,
     max_delay: float,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Retry an async DB call with exponential backoff on transient errors.
 
     `sql` is used only for the warning's excerpt so users can correlate
@@ -655,12 +672,12 @@ async def _retry_with_backoff(
 async def _execute_with_retry_async(
     sql: str,
     engine,
-    db_type: Optional[str],
+    db_type: str | None,
     timeout_seconds: int = 120,
     max_attempts: int = 3,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     return await _retry_with_backoff(
         sql=sql,
         do_call=lambda: _execute_sql_async(
@@ -675,9 +692,9 @@ async def _execute_with_retry_async(
 async def _execute_sql_async(
     sql: str,
     engine,
-    db_type: Optional[str],
+    db_type: str | None,
     timeout_seconds: int = 120,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     async with engine.connect() as conn:
         timeout_ms = timeout_seconds * 1000
         if db_type in ("mysql", "mariadb"):
@@ -709,13 +726,13 @@ async def _execute_sql_async(
 async def _execute_with_retry_threaded(
     sql: str,
     connection_string: str,
-    db_type: Optional[str],
+    db_type: str | None,
     timeout_seconds: int = 120,
     max_attempts: int = 3,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
-    engine: Optional[sa.Engine] = None,
-) -> List[Dict[str, Any]]:
+    engine: sa.Engine | None = None,
+) -> list[dict[str, Any]]:
     return await _retry_with_backoff(
         sql=sql,
         do_call=lambda: _run_sync_in_thread(
@@ -740,13 +757,13 @@ async def _execute_with_retry_threaded(
 def _execute_with_retry_sync(
     sql: str,
     connection_string: str,
-    db_type: Optional[str],
+    db_type: str | None,
     timeout_seconds: int = 120,
     max_attempts: int = 3,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
-    engine: Optional[sa.Engine] = None,
-) -> List[Dict[str, Any]]:
+    engine: sa.Engine | None = None,
+) -> list[dict[str, Any]]:
     delay = initial_delay
     for attempt in range(max_attempts):
         try:
@@ -773,10 +790,10 @@ def _execute_with_retry_sync(
 def _execute_sql_sync(
     sql: str,
     connection_string: str,
-    db_type: Optional[str],
+    db_type: str | None,
     timeout_seconds: int = 120,
-    engine: Optional[sa.Engine] = None,
-) -> List[Dict[str, Any]]:
+    engine: sa.Engine | None = None,
+) -> list[dict[str, Any]]:
     engine = _resolve_sync_engine(connection_string, override_engine=engine)
     with engine.connect() as conn:
         timeout_ms = timeout_seconds * 1000

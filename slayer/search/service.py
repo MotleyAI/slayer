@@ -68,7 +68,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Union
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -140,9 +140,9 @@ class SearchHit(BaseModel):
     id: str
     score: float
     text: str
-    description: Optional[str] = None
-    matched_entities: List[str] = Field(default_factory=list)
-    query: Optional[SlayerQuery] = None
+    description: str | None = None
+    matched_entities: list[str] = Field(default_factory=list)
+    query: SlayerQuery | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +158,7 @@ class LookupFound(BaseModel):
 
     kind: str
     text: str
-    description: Optional[str] = None
+    description: str | None = None
 
 
 class LookupHidden(BaseModel):
@@ -177,7 +177,7 @@ class LookupMissing(BaseModel):
     pass
 
 
-LookupResult = Union[LookupFound, LookupHidden, LookupMissing]
+LookupResult = LookupFound | LookupHidden | LookupMissing
 
 
 class SearchResponse(BaseModel):
@@ -185,9 +185,9 @@ class SearchResponse(BaseModel):
     list ranked by RRF score; consumers partition by ``kind`` (or by
     ``query is None`` for the memory subset) at the call site."""
 
-    results: List[SearchHit] = Field(default_factory=list)
-    resolved_input_entities: List[str] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
+    results: list[SearchHit] = Field(default_factory=list)
+    resolved_input_entities: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +195,7 @@ class SearchResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _coerce_query(query: Union[SlayerQuery, dict]) -> SlayerQuery:
+def _coerce_query(query: SlayerQuery | dict) -> SlayerQuery:
     if isinstance(query, SlayerQuery):
         return query
     if isinstance(query, dict):
@@ -205,9 +205,9 @@ def _coerce_query(query: Union[SlayerQuery, dict]) -> SlayerQuery:
     )
 
 
-def _dedup(items: List[str]) -> List[str]:
-    seen: Set[str] = set()
-    out: List[str] = []
+def _dedup(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
     for x in items:
         if x not in seen:
             seen.add(x)
@@ -216,8 +216,8 @@ def _dedup(items: List[str]) -> List[str]:
 
 
 def _filter_memories_by_datasource(
-    *, memories: List[Memory], datasource: Optional[str],
-) -> List[Memory]:
+    *, memories: list[Memory], datasource: str | None,
+) -> list[Memory]:
     """DEV-1409: keep memories with at least one entity rooted at
     ``datasource``. ``datasource=None`` is a no-op identity filter so
     callers can call this unconditionally."""
@@ -232,7 +232,7 @@ def _filter_memories_by_datasource(
     ]
 
 
-def _collect_memory_canonicals(memories: List[Memory]) -> set:
+def _collect_memory_canonicals(memories: list[Memory]) -> set:
     return {f"{_MEMORY_PREFIX}{m.id}" for m in memories}
 
 
@@ -260,9 +260,9 @@ def _build_memory_hit(
     mem: Memory,
     memory_id: str,
     score: float,
-    text_by_id: Dict[str, str],
-    canonical_input_entities: List[str],
-    valid_canonicals: Optional[set] = None,
+    text_by_id: dict[str, str],
+    canonical_input_entities: list[str],
+    valid_canonicals: set | None = None,
     compact: bool = True,
 ) -> SearchHit:
     """Build a SearchHit for a memory (DEV-1532 unified shape).
@@ -318,9 +318,9 @@ def _build_memory_hit(
 def _resolve_entity_hit_kind_text(
     *,
     canonical: str,
-    corpus: Optional[Corpus],
-    named_kind_text: Optional[Dict[str, Tuple[str, str, Optional[str]]]],
-) -> Optional[Tuple[str, str, Optional[str]]]:
+    corpus: Corpus | None,
+    named_kind_text: dict[str, tuple[str, str, str | None]] | None,
+) -> tuple[str, str, str | None] | None:
     """DEV-1513 / DEV-1549: resolve one canonical's
     ``(kind, text, description)`` triple for an entity hit. Prefers the
     corpus (channels 2/3 already built it); falls back to the channel-1
@@ -345,15 +345,15 @@ def _build_hit_from_fused_key(
     key: str,
     score: float,
     memory_by_id: dict,
-    text_by_id: Dict[str, str],
-    canonical_input_entities: List[str],
-    corpus: Optional[Corpus],
-    named_kind_text: Optional[Dict[str, Tuple[str, str, Optional[str]]]],
-    valid_canonicals: Optional[set],
-    candidate_ids: Optional[FrozenSet[str]],
-    kind_filter: Optional[Set[str]],
+    text_by_id: dict[str, str],
+    canonical_input_entities: list[str],
+    corpus: Corpus | None,
+    named_kind_text: dict[str, tuple[str, str, str | None]] | None,
+    valid_canonicals: set | None,
+    candidate_ids: frozenset[str] | None,
+    kind_filter: set[str] | None,
     compact: bool = True,
-) -> Optional[SearchHit]:
+) -> SearchHit | None:
     """Build one SearchHit from a fused (key, score) pair, or return None
     to skip. Applies the DEV-1464 cypher_filter (candidate_ids allowlist
     for the full graph path; kind_filter for the naive fallback) BEFORE
@@ -405,19 +405,19 @@ def _build_hit_from_fused_key(
 
 def _fuse_all_hits(
     *,
-    memory_rankings: List[List[str]],
-    entity_rankings: List[List[str]],
+    memory_rankings: list[list[str]],
+    entity_rankings: list[list[str]],
     memory_by_id: dict,
-    text_by_id: Dict[str, str],
-    canonical_input_entities: List[str],
-    corpus: Optional[Corpus],
-    named_kind_text: Optional[Dict[str, Tuple[str, str, Optional[str]]]],
+    text_by_id: dict[str, str],
+    canonical_input_entities: list[str],
+    corpus: Corpus | None,
+    named_kind_text: dict[str, tuple[str, str, str | None]] | None,
     max_results: int,
-    valid_canonicals: Optional[set] = None,
-    candidate_ids: Optional[FrozenSet[str]] = None,
-    kind_filter: Optional[Set[str]] = None,
+    valid_canonicals: set | None = None,
+    candidate_ids: frozenset[str] | None = None,
+    kind_filter: set[str] | None = None,
     compact: bool = True,
-) -> List[SearchHit]:
+) -> list[SearchHit]:
     """RRF-fuse memory and entity rankings into a single flat list
     (DEV-1532). Memory IDs are prefixed with the canonical memory prefix
     so the unified pool contains no key collisions.
@@ -437,7 +437,7 @@ def _fuse_all_hits(
     fused = rrf_fuse(rankings=non_empty, k=_RRF_K) if non_empty else {}
     fused_sorted = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
 
-    results: List[SearchHit] = []
+    results: list[SearchHit] = []
     for key, score in fused_sorted:
         hit = _build_hit_from_fused_key(
             key=key,
@@ -460,11 +460,11 @@ def _fuse_all_hits(
 
 
 def _merge_text_by_id_in_declaration_order(
-    results: List[RetrievalResult],
-) -> Dict[str, str]:
+    results: list[RetrievalResult],
+) -> dict[str, str]:
     """Merge ``text_by_id`` across retriever results. First-non-empty
     in retriever declaration order wins per memory id."""
-    merged: Dict[str, str] = {}
+    merged: dict[str, str] = {}
     for result in results:
         for mem_id, text in result.text_by_id.items():
             if mem_id not in merged and text:
@@ -479,10 +479,10 @@ def _merge_text_by_id_in_declaration_order(
 
 def _memory_id_off_datasource_warnings(
     *,
-    canonical_input_entities: List[str],
-    live_memory_ids: Set[str],
-    datasource: Optional[str],
-) -> List[str]:
+    canonical_input_entities: list[str],
+    live_memory_ids: set[str],
+    datasource: str | None,
+) -> list[str]:
     """DEV-1513: emit one warning per user-supplied ``memory:<id>`` ref
     whose memory was dropped by the datasource pre-filter (the memory
     has no entities rooted at ``datasource``). Mirrors the entity-side
@@ -491,7 +491,7 @@ def _memory_id_off_datasource_warnings(
     No-op when ``datasource`` is None (nothing was filtered out)."""
     if datasource is None:
         return []
-    out: List[str] = []
+    out: list[str] = []
     for canonical in canonical_input_entities:
         if not canonical.startswith(_MEMORY_PREFIX):
             continue
@@ -506,9 +506,9 @@ def _memory_id_off_datasource_warnings(
 
 def _memory_id_cypher_filter_warnings(
     *,
-    canonical_input_entities: List[str],
-    candidate_ids: FrozenSet[str],
-) -> List[str]:
+    canonical_input_entities: list[str],
+    candidate_ids: frozenset[str],
+) -> list[str]:
     """DEV-1464: emit one warning per user-supplied ``memory:<id>`` ref
     that was excluded by the cypher_filter allowlist (the graph query
     did not return that memory's canonical id)."""
@@ -529,7 +529,7 @@ async def _lookup_bare_datasource_canonical(
     if ds not in known:
         return LookupMissing()
     identities = await storage._list_all_model_identities()
-    models: List[SlayerModel] = []
+    models: list[SlayerModel] = []
     for ident_ds, name in identities:
         if ident_ds != ds:
             continue
@@ -551,7 +551,7 @@ async def _lookup_model_or_leaf_canonical(
     canonical: str,
     ds: str,
     model_name: str,
-    leaf: Optional[str],
+    leaf: str | None,
     storage: StorageBackend,
 ) -> LookupResult:
     """DEV-1513: ``<ds>.<model>`` and ``<ds>.<model>.<leaf>`` branches of
@@ -579,7 +579,7 @@ async def _lookup_named_entity(
     *,
     canonical: str,
     storage: StorageBackend,
-    corpus: Optional[Corpus],
+    corpus: Corpus | None,
 ) -> LookupResult:
     """Resolve a canonical id to its ``(kind, text, description)`` triple
     for channel-1 named-entity surfacing (DEV-1513 / DEV-1549)."""
@@ -611,8 +611,8 @@ async def _lookup_named_entity(
 
 
 def _group_column_hits(
-    results: List[SearchHit],
-) -> Dict[Tuple[str, str], List[Tuple[int, SearchHit, str]]]:
+    results: list[SearchHit],
+) -> dict[tuple[str, str], list[tuple[int, SearchHit, str]]]:
     """DEV-1516 helper: split a fused result list into per-model buckets
     for the search-side sample-refresh hook.
 
@@ -623,7 +623,7 @@ def _group_column_hits(
     models. Each member tuple is ``(original_hit_index, hit,
     column_name)`` — the index is preserved so caller can splice
     refreshed text back into the original list in place."""
-    groups: Dict[Tuple[str, str], List[Tuple[int, SearchHit, str]]] = {}
+    groups: dict[tuple[str, str], list[tuple[int, SearchHit, str]]] = {}
     for idx, hit in enumerate(results):
         if hit.kind != "column":
             continue
@@ -649,8 +649,8 @@ class SearchService:
         self,
         *,
         storage: StorageBackend,
-        engine: Optional[SlayerQueryEngine] = None,
-        retrievers: Optional[List[Retriever]] = None,
+        engine: SlayerQueryEngine | None = None,
+        retrievers: list[Retriever] | None = None,
     ) -> None:
         """DEV-1516: ``engine`` is optional so storage-only test contexts
         keep working unchanged. When supplied, the post-fusion column-hit
@@ -659,13 +659,13 @@ class SearchService:
         Without an engine the hook is a silent no-op."""
         self._storage = storage
         self._engine = engine
-        self._retrievers: List[Retriever] = (
+        self._retrievers: list[Retriever] = (
             list(retrievers) if retrievers is not None
             else self._default_retrievers(storage)
         )
 
     @staticmethod
-    def _default_retrievers(storage: StorageBackend) -> List[Retriever]:
+    def _default_retrievers(storage: StorageBackend) -> list[Retriever]:
         return [
             BM25Retriever(),
             TantivyRetriever(),
@@ -673,15 +673,15 @@ class SearchService:
         ]
 
     @property
-    def retrievers(self) -> List[Retriever]:
+    def retrievers(self) -> list[Retriever]:
         return self._retrievers
 
     async def _refresh_stale_column_hits(
         self,
         *,
-        results: List[SearchHit],
+        results: list[SearchHit],
         compact: bool = True,
-    ) -> List[SearchHit]:
+    ) -> list[SearchHit]:
         """DEV-1516 post-fusion column-hit refresh.
 
         Groups column hits by ``(data_source, model_name)`` and dispatches
@@ -700,7 +700,7 @@ class SearchService:
         groups = _group_column_hits(results)
         if not groups:
             return results
-        refreshed_by_idx: Dict[int, SearchHit] = {}
+        refreshed_by_idx: dict[int, SearchHit] = {}
         await asyncio.gather(*[
             self._refresh_group_worker(
                 ds_name=ds, model_name=model_name,
@@ -720,8 +720,8 @@ class SearchService:
         *,
         ds_name: str,
         model_name: str,
-        members: List[Tuple[int, SearchHit, str]],
-        refreshed_by_idx: Dict[int, SearchHit],
+        members: list[tuple[int, SearchHit, str]],
+        refreshed_by_idx: dict[int, SearchHit],
         compact: bool = True,
     ) -> None:
         """Refresh every column hit on one ``(data_source, model_name)``
@@ -758,7 +758,7 @@ class SearchService:
                 # Helper returned the input — cache hit, ineligible, or
                 # any failure. Leave the hit text as-is.
                 continue
-            update: Dict[str, Any] = {
+            update: dict[str, Any] = {
                 "description": refreshed_col.description,
             }
             if not compact:
@@ -774,11 +774,11 @@ class SearchService:
     async def search(  # NOSONAR(S3776) — single orchestrator entry point; stages are linear and named
         self,
         *,
-        entities: Optional[List[str]] = None,
-        query: Optional[Union[SlayerQuery, dict]] = None,
-        question: Optional[str] = None,
-        datasource: Optional[str] = None,
-        cypher_filter: Optional[str] = None,
+        entities: list[str] | None = None,
+        query: SlayerQuery | dict | None = None,
+        question: str | None = None,
+        datasource: str | None = None,
+        cypher_filter: str | None = None,
         max_results: int = 10,
         compact: bool = True,
     ) -> SearchResponse:
@@ -831,7 +831,7 @@ class SearchService:
         # Datasource filter runs first so the off-datasource warning
         # reflects "memory dropped because of datasource", not
         # "memory dropped because of cypher_filter".
-        datasource_filtered_memories: List[Memory] = (
+        datasource_filtered_memories: list[Memory] = (
             _filter_memories_by_datasource(
                 memories=await self._storage.list_memories(entities=None),
                 datasource=datasource,
@@ -854,7 +854,7 @@ class SearchService:
         # retrieval path — BM25 / tantivy / embeddings rank only the
         # surviving memories.
         if candidate_ids is not None:
-            all_memories: List[Memory] = [
+            all_memories: list[Memory] = [
                 m for m in datasource_filtered_memories
                 if f"{_MEMORY_PREFIX}{m.id}" in candidate_ids
             ]
@@ -865,7 +865,7 @@ class SearchService:
             all_memories=all_memories, datasource=datasource,
         )
 
-        corpus: Optional[Corpus] = None
+        corpus: Corpus | None = None
         if question_active:
             all_models, datasources, datasource_descriptions = (
                 await self._collect_index_corpus(datasource=datasource)
@@ -917,7 +917,7 @@ class SearchService:
             ),
             return_exceptions=True,
         )
-        results: List[RetrievalResult] = []
+        results: list[RetrievalResult] = []
         for r, raw in zip(self._retrievers, raw_results):
             if isinstance(raw, BaseException):
                 warnings.append(
@@ -994,13 +994,13 @@ class SearchService:
     async def _apply_cypher_filter(
         self,
         *,
-        cypher_filter: Optional[str],
-        canonical_input_entities: List[str],
-        warnings: List[str],
-    ) -> Tuple[
-        Optional[FrozenSet[str]],
-        Optional[Set[str]],
-        Optional[SearchResponse],
+        cypher_filter: str | None,
+        canonical_input_entities: list[str],
+        warnings: list[str],
+    ) -> tuple[
+        frozenset[str] | None,
+        set[str] | None,
+        SearchResponse | None,
     ]:
         """DEV-1464: resolve the optional ``cypher_filter`` into
         ``(candidate_ids, kind_filter, early)``.
@@ -1038,11 +1038,11 @@ class SearchService:
     async def _build_channel_1_entity_ranking(
         self,
         *,
-        canonical_input_entities: List[str],
-        datasource: Optional[str],
-        corpus: Optional[Corpus],
-        candidate_ids: Optional[FrozenSet[str]] = None,
-    ) -> Tuple[List[str], Dict[str, Tuple[str, str, Optional[str]]], List[str]]:
+        canonical_input_entities: list[str],
+        datasource: str | None,
+        corpus: Corpus | None,
+        candidate_ids: frozenset[str] | None = None,
+    ) -> tuple[list[str], dict[str, tuple[str, str, str | None]], list[str]]:
         """DEV-1513: produce channel-1's contribution to the entity
         ranking by surfacing each user-named canonical ref as itself.
 
@@ -1062,9 +1062,9 @@ class SearchService:
         the allowlist are dropped (with a warning) BEFORE the
         rendering / lookup work so we don't waste a storage round-trip.
         """
-        entity_ranking: List[str] = []
-        named_kind_text: Dict[str, Tuple[str, str, Optional[str]]] = {}
-        warnings: List[str] = []
+        entity_ranking: list[str] = []
+        named_kind_text: dict[str, tuple[str, str, str | None]] = {}
+        warnings: list[str] = []
         for canonical in canonical_input_entities:
             if canonical.startswith(_MEMORY_PREFIX):
                 # memory:<id> refs participate in the memory ranking only.
@@ -1108,7 +1108,7 @@ class SearchService:
     # Write side — fan-out to retrievers
     # ------------------------------------------------------------------
 
-    async def upsert_memory(self, memory: Memory) -> List[str]:
+    async def upsert_memory(self, memory: Memory) -> list[str]:
         return await self._fan_out_with_isolation(
             hook_name="upsert_memory",
             invoke=lambda r: r.upsert_memory(memory),
@@ -1116,7 +1116,7 @@ class SearchService:
 
     async def refresh_model_subtree(
         self, model: SlayerModel,
-    ) -> List[str]:
+    ) -> list[str]:
         return await self._fan_out_with_isolation(
             hook_name="refresh_model_subtree",
             invoke=lambda r: r.refresh_model_subtree(model),
@@ -1126,9 +1126,9 @@ class SearchService:
         self,
         *,
         name: str,
-        models: List[SlayerModel],
-        description: Optional[str] = None,
-    ) -> List[str]:
+        models: list[SlayerModel],
+        description: str | None = None,
+    ) -> list[str]:
         return await self._fan_out_with_isolation(
             hook_name="refresh_datasource",
             invoke=lambda r: r.refresh_datasource(
@@ -1138,12 +1138,12 @@ class SearchService:
 
     async def _fan_out_with_isolation(
         self, *, hook_name: str, invoke,
-    ) -> List[str]:
+    ) -> list[str]:
         """Call ``invoke(retriever)`` on every registered retriever in
         declaration order, isolating per-retriever exceptions as
         prefixed warnings so subsequent retrievers still run. Returns
         the deduped warning list."""
-        warnings: List[str] = []
+        warnings: list[str] = []
         for r in self._retrievers:
             try:
                 warnings.extend(await invoke(r))
@@ -1158,7 +1158,7 @@ class SearchService:
     # ------------------------------------------------------------------
 
     async def _validate_datasource_known(
-        self, datasource: Optional[str],
+        self, datasource: str | None,
     ) -> None:
         """DEV-1409: reject typos in ``datasource`` before any corpus
         walk."""
@@ -1173,14 +1173,14 @@ class SearchService:
     async def _resolve_inputs(
         self,
         *,
-        entities: Optional[List[str]],
-        query: Optional[Union[SlayerQuery, dict]],
-    ) -> Tuple[List[str], List[str]]:
+        entities: list[str] | None,
+        query: SlayerQuery | dict | None,
+    ) -> tuple[list[str], list[str]]:
         """Walk ``entities`` + ``query`` into a deduped canonical-entity
         list plus a deduped warning list. DEV-1428: lenient —
         per-token failures become warnings."""
-        canonical: List[str] = []
-        warnings: List[str] = []
+        canonical: list[str] = []
+        warnings: list[str] = []
         if entities:
             for raw in entities:
                 if not isinstance(raw, str):
@@ -1213,10 +1213,10 @@ class SearchService:
         self,
         *,
         max_results: int,
-        warnings: List[str],
-        datasource: Optional[str] = None,
-        candidate_ids: Optional[FrozenSet[str]] = None,
-        kind_filter: Optional[Set[str]] = None,
+        warnings: list[str],
+        datasource: str | None = None,
+        candidate_ids: frozenset[str] | None = None,
+        kind_filter: set[str] | None = None,
         compact: bool = True,
     ) -> SearchResponse:
         """Empty-input branch: return the newest memories (both
@@ -1266,7 +1266,7 @@ class SearchService:
         valid_canonicals = await self._valid_canonical_set(
             all_memories=recency_memories, datasource=datasource,
         )
-        hits: List[SearchHit] = []
+        hits: list[SearchHit] = []
         for m in recency_memories:
             if len(hits) >= max_results:
                 break
@@ -1297,8 +1297,8 @@ class SearchService:
     async def _valid_canonical_set(
         self,
         *,
-        all_memories: List[Memory],
-        datasource: Optional[str],
+        all_memories: list[Memory],
+        datasource: str | None,
     ) -> set:
         canonicals: set = set()
         canonicals.update(
@@ -1313,7 +1313,7 @@ class SearchService:
         return canonicals
 
     async def _collect_datasource_canonicals(
-        self, *, datasource: Optional[str],
+        self, *, datasource: str | None,
     ) -> set:
         names = await self._storage.list_datasources()
         if datasource is not None:
@@ -1321,7 +1321,7 @@ class SearchService:
         return set(names)
 
     async def _collect_model_subtree_canonicals(
-        self, *, datasource: Optional[str],
+        self, *, datasource: str | None,
     ) -> set:
         out: set = set()
         identities = await self._storage._list_all_model_identities()
@@ -1345,13 +1345,13 @@ class SearchService:
     async def _stale_query_warnings(
         self,
         *,
-        query_bearing_hits: List[SearchHit],
-        memory_by_id: Dict[str, Memory],
-    ) -> List[str]:
+        query_bearing_hits: list[SearchHit],
+        memory_by_id: dict[str, Memory],
+    ) -> list[str]:
         """Emit one warning per surfaced query-bearing hit whose
         attached ``SlayerQuery`` no longer resolves (entities pointing
         at deleted/renamed models or columns). DEV-1428."""
-        out: List[str] = []
+        out: list[str] = []
         for hit in query_bearing_hits:
             mem = memory_by_id.get(hit.id)
             if mem is None or mem.query is None:
@@ -1370,17 +1370,17 @@ class SearchService:
     async def _stale_query_warnings_for_named_memory_refs(
         self,
         *,
-        canonical_input_entities: List[str],
-        all_memories: List[Memory],
-        already_warned_ids: Set[str],
-    ) -> List[str]:
+        canonical_input_entities: list[str],
+        all_memories: list[Memory],
+        already_warned_ids: set[str],
+    ) -> list[str]:
         """DEV-1513: emit the stale-query warning for any explicitly-named
         ``memory:<id>`` ref pointing at a query-bearing memory with
         stale refs, regardless of whether the ``max_results`` cap
         suppressed the hit. The user explicitly named the memory; they
         deserve to know the attached query is broken."""
         memories_by_id = {m.id: m for m in all_memories}
-        out: List[str] = []
+        out: list[str] = []
         for canonical in canonical_input_entities:
             if not canonical.startswith(_MEMORY_PREFIX):
                 continue
@@ -1404,15 +1404,15 @@ class SearchService:
     async def _collect_index_corpus(
         self,
         *,
-        datasource: Optional[str] = None,
-    ) -> Tuple[List[SlayerModel], List[str], Dict[str, Optional[str]]]:
+        datasource: str | None = None,
+    ) -> tuple[list[SlayerModel], list[str], dict[str, str | None]]:
         """DEV-1549: also returns ``{ds_name → description}`` so the
         corpus builder can populate ``canonical_to_description`` for
         datasource hits without re-loading the configs."""
         datasources = await self._storage.list_datasources()
         if datasource is not None:
             datasources = [d for d in datasources if d == datasource]
-        models: List[SlayerModel] = []
+        models: list[SlayerModel] = []
         identities = await self._storage._list_all_model_identities()
         for ds, name in identities:
             if datasource is not None and ds != datasource:
@@ -1420,7 +1420,7 @@ class SearchService:
             m = await self._storage.get_model(name, data_source=ds)
             if m is not None:
                 models.append(m)
-        descriptions: Dict[str, Optional[str]] = {}
+        descriptions: dict[str, str | None] = {}
         for ds_name in datasources:
             cfg = await self._storage.get_datasource(ds_name)
             descriptions[ds_name] = cfg.description if cfg is not None else None
