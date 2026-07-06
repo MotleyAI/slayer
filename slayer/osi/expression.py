@@ -20,6 +20,7 @@ in isolation:
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Callable, Optional
 
@@ -170,7 +171,7 @@ class _Converter:
                 "percentile/median has no GROUP BY aggregate on the target dialect; "
                 "the measure imports but fails at query time there."
             )
-        if isinstance(inner, exp.PercentileCont) and p_val == 0.5:
+        if isinstance(inner, exp.PercentileCont) and math.isclose(p_val, 0.5):
             return f"{ref}:median"
         return f"{ref}:percentile(p={p_node.name})"
 
@@ -182,20 +183,24 @@ class _Converter:
 
     def _validate_residual(self, root: exp.Expression) -> None:
         for node in root.walk():
-            if isinstance(node, (exp.AggFunc, exp.Window, exp.WithinGroup)):
-                raise _Unconvertible("window/aggregate function not expressible")
-            if isinstance(node, exp.Case):
-                raise _Unconvertible("CASE outside an aggregate is not expressible")
-            if isinstance(node, exp.Column) and not self._is_sentinel(node):
-                raise _Unconvertible(
-                    f"bare column {node.name!r} must appear inside an aggregation"
-                )
-            if isinstance(node, exp.Literal) and node.is_string:
-                raise _Unconvertible("string literal is not expressible in a measure")
-            if isinstance(node, exp.Func) and not isinstance(node, exp.Count):
-                name = node.sql_name().lower()
-                if name not in SCALAR_PASSTHROUGH:
-                    raise _Unconvertible(f"function {node.sql_name()!r} is not allowed")
+            reason = self._residual_violation(node)
+            if reason:
+                raise _Unconvertible(reason)
+
+    def _residual_violation(self, node: exp.Expression) -> str | None:
+        """Return the clean-fail reason for a single residual node, or None."""
+        if isinstance(node, (exp.AggFunc, exp.Window, exp.WithinGroup)):
+            return "window/aggregate function not expressible"
+        if isinstance(node, exp.Case):
+            return "CASE outside an aggregate is not expressible"
+        if isinstance(node, exp.Column) and not self._is_sentinel(node):
+            return f"bare column {node.name!r} must appear inside an aggregation"
+        if isinstance(node, exp.Literal) and node.is_string:
+            return "string literal is not expressible in a measure"
+        if isinstance(node, exp.Func) and not isinstance(node, exp.Count):
+            if node.sql_name().lower() not in SCALAR_PASSTHROUGH:
+                return f"function {node.sql_name()!r} is not allowed"
+        return None
 
     # ---- top-level ----
 
@@ -258,12 +263,17 @@ class _Converter:
     def _strip_redundant_parens(root: exp.Expression) -> exp.Expression:
         """Drop parentheses that wrap a single atom (a sentinel ref or literal),
         so ``(SUM(a)) / (COUNT(*))`` renders as ``a:sum / *:count``."""
-        for paren in list(root.find_all(exp.Paren)):
-            if isinstance(paren.this, (exp.Column, exp.Literal)):
-                if paren is root:
-                    root = paren.this
-                else:
-                    paren.replace(paren.this)
+        # Materialize the matches first (a list comprehension, not list(gen)) —
+        # the tree is mutated in place below, so we can't iterate it lazily.
+        atom_parens = [
+            p for p in root.find_all(exp.Paren)
+            if isinstance(p.this, (exp.Column, exp.Literal))
+        ]
+        for paren in atom_parens:
+            if paren is root:
+                root = paren.this
+            else:
+                paren.replace(paren.this)
         return root
 
     @staticmethod

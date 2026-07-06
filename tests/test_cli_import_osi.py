@@ -78,5 +78,6 @@ def test_import_osi_saves_models_and_prints_report(shop_setup, capsys) -> None:
 def test_import_osi_missing_datasource_exits(tmp_path: Path) -> None:
     store = tmp_path / "empty_store"
     YAMLStorage(base_dir=str(store))  # no datasource registered
+    args = _args(store, FIXTURES / "shop.yaml")
     with pytest.raises(SystemExit):
-        _run_import_osi(_args(store, FIXTURES / "shop.yaml"))
+        _run_import_osi(args)

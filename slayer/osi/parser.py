@@ -77,7 +77,9 @@ def parse_osi_file(path: Path) -> OSIDocument | None:
 
 def parse_osi_path(path: str | Path) -> list[OSIDocument]:
     """Parse an OSI file or directory into a list of ``OSIDocument`` objects."""
-    root = Path(path)
+    # Canonicalize the caller-supplied path before touching the filesystem so
+    # every downstream read works off a resolved, symlink-free base.
+    root = Path(path).resolve()
     if not root.exists():
         raise FileNotFoundError(f"OSI path does not exist: {root}")
 

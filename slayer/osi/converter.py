@@ -12,7 +12,6 @@ exactly are clean-failed to a ``ConversionResult`` report, never silently lost.
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any, Optional
 
 import sqlalchemy as sa
@@ -22,6 +21,7 @@ import sqlglot.expressions as exp
 from slayer.core.enums import DataType
 from slayer.core.formula import parse_formula
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.engine.join_graph import JoinGraph, min_hops_root
 from slayer.ingest_report import ConversionResult, ConversionWarning
@@ -43,7 +43,6 @@ from slayer.osi.source import parse_source, resolve_datasource
 
 logger = logging.getLogger(__name__)
 
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Dialects lacking a GROUP BY percentile/median aggregate (mirrors the dbt
 # converter's caveat set).
 _NO_PERCENTILE_DIALECTS = frozenset({"mysql", "tsql", "mssql", "sqlserver"})
@@ -142,36 +141,30 @@ class OsiToSlayerConverter:
 
     def convert(self) -> ConversionResult:
         inspector = sa.inspect(self.sa_engine)
-
         semantic_models = [sm for doc in self.documents for sm in doc.semantic_model]
         self._check_duplicate_dataset_names(semantic_models)
-
-        # dataset name -> its semantic model (for relationships/metrics scope)
-        sm_of_dataset: dict[str, OSISemanticModel] = {}
-        for sm in semantic_models:
-            for ds in sm.datasets:
-                if _legal_model_name(ds.name):
-                    sm_of_dataset[ds.name] = sm
 
         for sm in semantic_models:
             for ds in sm.datasets:
                 self._build_model(ds, sm, inspector)
-
         for sm in semantic_models:
             for rel in sm.relationships or []:
                 self._build_join(rel)
 
         graph = JoinGraph.build_from_models(list(self._models.values()))
         for sm in semantic_models:
-            sm_model_names = [d.name for d in sm.datasets if d.name in self._models]
-            for metric in sm.metrics or []:
-                self._build_measure(metric, sm_model_names, graph)
+            self._build_measures_for(sm, graph)
 
         return ConversionResult(
             models=list(self._models.values()),
             unconverted_metrics=self._unconverted,
             warnings=self._warnings,
         )
+
+    def _build_measures_for(self, sm: OSISemanticModel, graph: JoinGraph) -> None:
+        sm_model_names = [d.name for d in sm.datasets if d.name in self._models]
+        for metric in sm.metrics or []:
+            self._build_measure(metric, sm_model_names, graph)
 
     def _check_duplicate_dataset_names(self, sms: list[OSISemanticModel]) -> None:
         seen: set[str] = set()
@@ -243,43 +236,9 @@ class OsiToSlayerConverter:
         first_time_dim: str | None = None
 
         for field in ds.fields or []:
-            if not _legal_column_name(field.name):
-                self._warn(
-                    f"Field name {field.name!r} on dataset {ds.name!r} contains "
-                    f"'.'/':'; skipping the field.",
-                    model_name=ds.name, category="illegal_name",
-                )
-                continue
-
-            sql = self._resolve_expression(field.expression)
-            if sql is None:
-                self._warn(
-                    f"Field {field.name!r} on {ds.name!r} has no SQL-dialect "
-                    f"expression; skipping.",
-                    model_name=ds.name, category="dialect",
-                )
-                continue
-
-            is_time = bool(field.dimension and field.dimension.is_time)
-            col = self._resolve_field_column(field, sql, by_name, introspected, ds)
-            if col is None:
-                continue
-
-            col.label = field.label or col.label
-            col.description = _render_description(field.description, field.ai_context) \
-                or col.description
-            meta = _build_meta(field.ai_context, field.custom_extensions)
-            if meta:
-                col.meta = {**(col.meta or {}), **meta}
-            if is_time:
-                if col.type not in (DataType.DATE, DataType.TIMESTAMP):
-                    col.type = DataType.TIMESTAMP
-                if first_time_dim is None:
-                    first_time_dim = col.name
-
-            if col.name not in by_name:
-                model.columns.append(col)
-                by_name[col.name] = col
+            time_col = self._overlay_one_field(field, model, by_name, introspected, ds)
+            if time_col and first_time_dim is None:
+                first_time_dim = time_col
 
         # OSI primary_key is authoritative.
         for pk in ds.primary_key or []:
@@ -288,6 +247,48 @@ class OsiToSlayerConverter:
 
         if first_time_dim and not model.default_time_dimension:
             model.default_time_dimension = first_time_dim
+
+    def _overlay_one_field(self, field: OSIField, model: SlayerModel,
+                           by_name: dict[str, Column], introspected: set[str],
+                           ds: OSIDataset) -> str | None:
+        """Overlay one OSI field onto the model. Returns the column name if the
+        field is a time dimension, else None (clean-fails are reported)."""
+        if not _legal_column_name(field.name):
+            self._warn(
+                f"Field name {field.name!r} on dataset {ds.name!r} contains "
+                f"'.'/':'; skipping the field.",
+                model_name=ds.name, category="illegal_name",
+            )
+            return None
+
+        sql = self._resolve_expression(field.expression)
+        if sql is None:
+            self._warn(
+                f"Field {field.name!r} on {ds.name!r} has no SQL-dialect "
+                f"expression; skipping.",
+                model_name=ds.name, category="dialect",
+            )
+            return None
+
+        col = self._resolve_field_column(field, sql, by_name, introspected, ds)
+        if col is None:
+            return None
+
+        col.label = field.label or col.label
+        col.description = _render_description(field.description, field.ai_context) \
+            or col.description
+        meta = _build_meta(field.ai_context, field.custom_extensions)
+        if meta:
+            col.meta = {**(col.meta or {}), **meta}
+
+        is_time = bool(field.dimension and field.dimension.is_time)
+        if is_time and col.type not in (DataType.DATE, DataType.TIMESTAMP):
+            col.type = DataType.TIMESTAMP
+
+        if col.name not in by_name:
+            model.columns.append(col)
+            by_name[col.name] = col
+        return col.name if is_time else None
 
     def _resolve_field_column(self, field: OSIField, sql: str,
                               by_name: dict[str, Column], introspected: set[str],
@@ -481,11 +482,18 @@ class OsiToSlayerConverter:
         return non_targets[0] if len(non_targets) == 1 else None
 
     def _make_owner_of(self, sm_model_names: list[str]):
+        def has_column(model_name: str, column: str) -> bool:
+            model = self._models.get(model_name)
+            return model is not None and any(c.name == column for c in model.columns)
+
         def owner_of(qualifier: Optional[str], column: str) -> Optional[str]:
             if qualifier is not None:
-                return qualifier if qualifier in self._models else None
+                # Verify the column actually exists on the qualified model —
+                # otherwise a metric like SUM(orders.no_such_col) would import
+                # as a measure that fails at query time.
+                return qualifier if has_column(qualifier, column) else None
             for name in sm_model_names:
-                if any(c.name == column for c in self._models[name].columns):
+                if has_column(name, column):
                     return name
             return None
         return owner_of

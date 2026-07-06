@@ -468,6 +468,20 @@ def test_relationship_unknown_target_clean_fails(shop_engine):
     assert _reported(result)
 
 
+def test_qualified_metric_ref_to_nonexistent_column_clean_fails(shop_engine):
+    # A qualified ref whose column does not exist on the qualified model must
+    # clean-fail, not import a measure that fails at query time.
+    doc = _mini_doc(
+        datasets=[OSIDataset(name="orders", source="orders",
+                             fields=[OSIField(name="amount", expression=_expr("amount"))])],
+        metrics=[OSIMetric(name="bad", expression=_expr("SUM(orders.no_such_col)"))],
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "bad" not in {meas.name for meas in orders.measures}
+    assert _reported(result)
+
+
 def test_metric_no_join_path_clean_fails(shop_engine):
     # orders + products with NO relationship; a metric spanning both cannot be
     # anchored anywhere -> clean-fail.
