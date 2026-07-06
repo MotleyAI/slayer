@@ -491,35 +491,37 @@ class OsiToSlayerConverter:
 
     def _drop_invalid_cross_model_columns(self) -> bool:
         dropped = False
-        for model in list(self._models.values()):
-            for col in list(model.columns):
-                if not col.sql:
-                    continue
-                bad = self._unresolvable_cross_model_refs(model, col.sql)
-                if bad:
-                    model.columns.remove(col)
-                    dropped = True
-                    self._warn(
-                        f"Column {col.name!r} on {model.name!r} references "
-                        f"unresolvable cross-model column(s) {bad}; dropping.",
-                        model_name=model.name, category="missing_column",
-                    )
+        for model in self._models.values():
+            bad_cols = []
+            for col in model.columns:
+                if col.sql:
+                    bad = self._unresolvable_cross_model_refs(model, col.sql)
+                    if bad:
+                        bad_cols.append((col, bad))
+            for col, bad in bad_cols:
+                model.columns.remove(col)
+                dropped = True
+                self._warn(
+                    f"Column {col.name!r} on {model.name!r} references "
+                    f"unresolvable cross-model column(s) {bad}; dropping.",
+                    model_name=model.name, category="missing_column",
+                )
         return dropped
 
     def _drop_stale_joins(self) -> bool:
         """Drop joins whose key columns were removed by column validation, so a
         join never references a column that no longer exists."""
         dropped = False
-        for model in list(self._models.values()):
-            for join in list(model.joins):
-                if self._join_columns_missing(model, join):
-                    model.joins.remove(join)
-                    dropped = True
-                    self._warn(
-                        f"Join from {model.name!r} to {join.target_model!r} "
-                        f"references a column removed during validation; dropping.",
-                        model_name=model.name, category="relationship",
-                    )
+        for model in self._models.values():
+            stale = [j for j in model.joins if self._join_columns_missing(model, j)]
+            for join in stale:
+                model.joins.remove(join)
+                dropped = True
+                self._warn(
+                    f"Join from {model.name!r} to {join.target_model!r} "
+                    f"references a column removed during validation; dropping.",
+                    model_name=model.name, category="relationship",
+                )
         return dropped
 
     def _join_columns_missing(self, model: SlayerModel, join: ModelJoin) -> bool:

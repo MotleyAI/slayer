@@ -1548,7 +1548,11 @@ def _run_import_osi(args):
     from slayer.sql import engine_factory
 
     storage = _resolve_storage(args)
-    documents = parse_osi_path(args.osi_path)
+    try:
+        documents = parse_osi_path(args.osi_path)
+    except FileNotFoundError as exc:
+        print(str(exc))
+        sys.exit(1)
     if not documents:
         print(f"No OSI documents found in {args.osi_path}")
         sys.exit(1)

@@ -75,6 +75,14 @@ def test_import_osi_saves_models_and_prints_report(shop_setup, capsys) -> None:
     assert any(j.target_model == "customers" for j in orders.joins)
 
 
+def test_import_osi_nonexistent_path_exits(tmp_path: Path) -> None:
+    store = tmp_path / "store"
+    YAMLStorage(base_dir=str(store))
+    args = _args(store, tmp_path / "does_not_exist.yaml")
+    with pytest.raises(SystemExit):
+        _run_import_osi(args)
+
+
 def test_import_osi_missing_datasource_exits(tmp_path: Path) -> None:
     store = tmp_path / "empty_store"
     YAMLStorage(base_dir=str(store))  # no datasource registered
