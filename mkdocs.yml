@@ -25,6 +25,7 @@ nav:
       - References (SQL vs DSL): concepts/references.md
       - Auto-Ingestion: concepts/ingestion.md
       - Schema Drift: concepts/schema-drift.md
+      - Query Cache: concepts/query-cache.md
       - Memories: concepts/memories.md
       - Search: concepts/search.md
   - Reference:
