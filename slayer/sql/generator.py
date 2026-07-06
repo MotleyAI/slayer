@@ -1357,7 +1357,11 @@ class SQLGenerator:
         rn_suffix_map: dict[str, str] = {}
         filtered_rn_map: dict[str, str] = {}
         filtered_match_map: dict[str, str] = {}
-        if has_first_or_last and enriched.last_agg_time_column:
+        # DEV-1645: when the FROM is wrapped in a first/last ranked subquery, the
+        # joins live INSIDE that subquery (the outer SELECT only sees model.*),
+        # so joined columns are NOT in the outer ORDER BY scope.
+        from_wrapped_in_ranked = bool(has_first_or_last and enriched.last_agg_time_column)
+        if from_wrapped_in_ranked:
             (
                 from_clause,
                 rn_suffix_map,
@@ -1467,7 +1471,10 @@ class SQLGenerator:
             and not skip_isolated
             and not has_post_filters
         ):
-            select = self._apply_order_limit(select=select, enriched=enriched)
+            select = self._apply_order_limit(
+                select=select, enriched=enriched,
+                joins_in_scope=not from_wrapped_in_ranked,
+            )
 
         # Append LEFT JOINs from resolved joins via sqlglot AST (works for both
         # sql_table and inline-SQL models).
@@ -1914,7 +1921,9 @@ class SQLGenerator:
             return prev
         raise ValueError(f"Unknown self-join transform: {transform}")
 
-    def _apply_order_limit(self, select: exp.Select, enriched: EnrichedQuery) -> exp.Select:
+    def _apply_order_limit(
+        self, select: exp.Select, enriched: EnrichedQuery, *, joins_in_scope: bool = True
+    ) -> exp.Select:
         """Apply ORDER BY, LIMIT, OFFSET to a select expression.
 
         DEV-1571 Bug 2 follow-up: on MySQL / T-SQL, sqlglot emits a
@@ -1934,7 +1943,9 @@ class SQLGenerator:
         if enriched.order:
             for order_item in enriched.order:
                 col = order_item.column
-                ref = self._resolve_order_column(col=col, enriched=enriched, joins_in_scope=True)
+                ref = self._resolve_order_column(
+                    col=col, enriched=enriched, joins_in_scope=joins_in_scope
+                )
                 if ref.is_alias:
                     order_col = exp.Column(this=exp.to_identifier(ref.text, quoted=True))
                 else:

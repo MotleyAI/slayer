@@ -320,6 +320,26 @@ class TestFlavorAOrderByUnprojected:
         with pytest.raises(UnresolvableOrderColumnError):
             await _generate_via_engine(query, orders, storage)
 
+    async def test_orderby_joined_column_rejected_in_first_last_ranked_scope(self, tmp_path) -> None:
+        """first/last measures wrap the FROM (with its joins) in a ranked
+        subquery that only re-exposes model.* — so the outer ORDER BY can't see
+        a joined column even when a filter pulled the join in. Must reject, not
+        emit an unbound reference (Codex review of PR #224)."""
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        orders = await self._save_orders_customers_regions(storage)
+        # add a time column so first/last has a time context
+        orders.columns.append(Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP))
+        orders.default_time_dimension = "created_at"
+        await storage.save_model(orders)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "amount:last(created_at)", "name": "latest"}],  # ranked-subquery wrap
+            filters=["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
+            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        )
+        with pytest.raises(UnresolvableOrderColumnError):
+            await _generate_via_engine(query, orders, storage)
+
 
 # ============================================================================
 # Flavor B — mixed-case identifier quoting
