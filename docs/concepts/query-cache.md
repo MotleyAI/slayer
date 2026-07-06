@@ -9,6 +9,9 @@ surface, and no `SlayerClient` plumbing.
 Two engines with different connection settings keep separate caches, so a cached
 result is never served across datasource identities.
 
+> **See it run:** the [Query Cache notebook](../examples/12_query_cache/query_cache_nb.ipynb)
+> walks through miss → hit, staleness, `refresh()`, TTL, and eviction on a tiny live database.
+
 ## Enabling the cache
 
 Construct the engine with a `CacheConfig`, then pass `cache=True` per call:

@@ -93,6 +93,9 @@ nav = [
       "examples/11_dbt_metricflow/dbt_metricflow.md",
       { "Notebook" = "examples/11_dbt_metricflow/dbt_metricflow_nb.ipynb" },
     ]},
+    { "Query Cache" = [
+      { "Notebook" = "examples/12_query_cache/query_cache_nb.ipynb" },
+    ]},
     { "Schema Drift (worked example)" = "examples/schema-drift.md" },
   ]},
   { "Configuration" = [
