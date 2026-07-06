@@ -19,6 +19,7 @@ from slayer.core.enums import (
     DataType,
     TimeGranularity,
 )
+from slayer.core.errors import UnresolvableOrderColumnError
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
 from slayer.sql.dialects import SqlDialect, get_dialect
 
@@ -2023,7 +2024,21 @@ class SQLGenerator:
             return _OrderColRef(alias_lookup[prefixed], True, None, None)
 
         # Fallback: split table.column reference against the FROM-scope alias.
-        return _OrderColRef(f"{model_prefix}.{user_name}", False, model_prefix, user_name)
+        # DEV-1645: resolve the qualifier to an in-scope table — the base model
+        # or a join already pulled into scope. A multi-hop dotted qualifier
+        # (``customers.regions``) maps to its ``__`` join alias
+        # (``customers__regions``). If neither is in scope (ordering by an
+        # unprojected joined column whose join was never resolved), reject
+        # rather than emit SQL that fails at the database.
+        in_scope = {enriched.model_name} | {a for _, a, _, _ in enriched.resolved_joins}
+        join_alias = model_prefix.replace(".", "__")
+        if model_prefix in in_scope:
+            qualifier = model_prefix
+        elif join_alias in in_scope:
+            qualifier = join_alias
+        else:
+            raise UnresolvableOrderColumnError(column=user_name, qualifier=model_prefix)
+        return _OrderColRef(f"{qualifier}.{user_name}", False, qualifier, user_name)
 
     # ------------------------------------------------------------------
     # FROM / JOIN building

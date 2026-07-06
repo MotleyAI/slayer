@@ -163,3 +163,31 @@ class DistinctDimensionValuesError(SlayerError, ValueError):
     Multi-inherits ``ValueError`` so existing ``except ValueError``
     call sites continue to work unchanged.
     """
+
+
+class UnresolvableOrderColumnError(SlayerError, ValueError):
+    """Raised when an ``order`` item references a column that cannot be bound
+    to the query's FROM scope (DEV-1645).
+
+    Fires when the sort key is neither a projected output alias, a base-model
+    column, nor a column on a join that the query already pulled into scope
+    (via a dimension, measure, or filter). The common case is ordering by an
+    *unprojected joined column* — e.g. ``order=[{"column":
+    "customers.regions.name"}]`` — whose join was never resolved, so there is
+    no in-scope table to qualify against. Emitting a reference anyway would
+    produce SQL that fails at the database with UndefinedTable/UndefinedColumn;
+    rejecting at compile time surfaces an actionable error instead.
+
+    Multi-inherits ``ValueError`` so existing ``except ValueError`` call sites
+    continue to work unchanged.
+    """
+
+    def __init__(self, *, column: str, qualifier: str) -> None:
+        self.column = column
+        self.qualifier = qualifier
+        super().__init__(
+            f"ORDER BY column '{qualifier}.{column}' cannot be resolved: it is not a "
+            f"projected field, a base column, or a column on a join that is in scope. "
+            f"Project it (add to dimensions/measures), reference it in a filter, or "
+            f"order by a projected field instead."
+        )
