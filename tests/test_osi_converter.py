@@ -1035,6 +1035,20 @@ def test_requested_non_sql_dialect_falls_back_to_sql(shop_engine):
     assert {m.name: m for m in orders.measures}["tot"].formula == "amount:sum"
 
 
+def test_databricks_dialect_expression_normalized(shop_engine):
+    # A Databricks expression with backtick identifiers must be normalized to
+    # default SQL so it parses and converts, not clean-fail.
+    doc = _mini_doc(
+        datasets=[OSIDataset(name="orders", source="orders",
+                             fields=[OSIField(name="amount", expression=_expr("amount"))])],
+        metrics=[OSIMetric(name="tot", expression=OSIExpression(dialects=[
+            OSIDialectExpression(dialect="DATABRICKS", expression="SUM(`amount`)")]))],
+    )
+    result = _convert(shop_engine, doc, dialect="DATABRICKS")
+    orders = {m.name: m for m in result.models}["orders"]
+    assert {m.name: m for m in orders.measures}["tot"].formula == "amount:sum"
+
+
 def test_target_dialect_percentile_caveat(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(name="orders", source="orders",

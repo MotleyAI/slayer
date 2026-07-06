@@ -48,6 +48,10 @@ logger = logging.getLogger(__name__)
 # converter's caveat set).
 _NO_PERCENTILE_DIALECTS = frozenset({"mysql", "tsql", "mssql", "sqlserver"})
 
+# OSI SQL dialect -> sqlglot read dialect for normalizing an expression to
+# default SQL. ANSI_SQL maps to None (already default-compatible).
+_SQLGLOT_DIALECT = {"SNOWFLAKE": "snowflake", "DATABRICKS": "databricks"}
+
 
 class OsiConversionError(Exception):
     """Raised when an OSI import set cannot be converted (e.g. duplicate names)."""
@@ -899,9 +903,27 @@ class OsiToSlayerConverter:
         into the SQL conversion path; it falls back to an available SQL dialect.
         """
         by_dialect = {de.dialect.value: de.expression for de in osi_expr.dialects}
+        resolved = None
         if self.dialect in by_dialect and self.dialect in SQL_DIALECTS:
-            return by_dialect[self.dialect]
-        for name, expression in by_dialect.items():
-            if name in SQL_DIALECTS:
-                return expression
-        return None
+            resolved = self.dialect
+        else:
+            resolved = next((n for n in by_dialect if n in SQL_DIALECTS), None)
+        if resolved is None:
+            return None
+        return self._normalize_sql(raw=by_dialect[resolved], dialect_name=resolved)
+
+    @staticmethod
+    def _normalize_sql(raw: str, dialect_name: str) -> str:
+        """Normalize a dialect-specific expression to default-dialect SQL so all
+        downstream sqlglot parsing (which uses the default dialect) succeeds — a
+        Databricks/Snowflake expression like ``SUM(`amount`)`` would otherwise
+        fail to parse as default SQL. ANSI_SQL is already default-compatible and
+        is returned verbatim; an unparseable expression is returned as-is so the
+        downstream parse clean-fails with a clear reason."""
+        source = _SQLGLOT_DIALECT.get(dialect_name)
+        if source is None:
+            return raw
+        try:
+            return sqlglot.parse_one(raw, read=source).sql()
+        except sqlglot.errors.ParseError:
+            return raw
