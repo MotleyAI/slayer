@@ -709,6 +709,26 @@ def test_valid_cross_model_derived_field_kept(shop_engine):
     assert "cust_seg" in {c.name for c in orders.columns}
 
 
+def test_cross_model_derived_field_inherits_target_type(shop_engine):
+    # A derived field that is a single cross-model ref (customers.segment) takes
+    # the resolved target column's TEXT type, not the DOUBLE local-probe fallback.
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders",
+                       fields=[OSIField(name="customer_id", expression=_expr("customer_id")),
+                               OSIField(name="seg", expression=_expr("customers.segment"))]),
+            OSIDataset(name="customers", source="customers",
+                       fields=[OSIField(name="customer_id", expression=_expr("customer_id"))]),
+        ],
+        relationships=[OSIRelationship(
+            name="o2c", **{"from": "orders"}, to="customers",
+            from_columns=["customer_id"], to_columns=["customer_id"])],
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert {c.name: c for c in orders.columns}["seg"].type == DataType.TEXT
+
+
 def test_cross_model_derived_field_unknown_column_dropped(shop_engine):
     doc = _mini_doc(
         datasets=[

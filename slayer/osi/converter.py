@@ -197,6 +197,7 @@ class OsiToSlayerConverter:
                 self._build_join(rel)
 
         self._validate_cross_model_field_refs()
+        self._type_cross_model_columns()
 
         graph = JoinGraph.build_from_models(list(self._models.values()))
         for sm in semantic_models:
@@ -587,6 +588,33 @@ class OsiToSlayerConverter:
                     model_name=model.name, category="relationship",
                 )
         return dropped
+
+    def _type_cross_model_columns(self) -> None:
+        """After joins exist, fix the type of a derived column that is exactly a
+        single cross-model column ref (e.g. ``customers.segment``) — the local
+        probe couldn't resolve it, so it was left as the DOUBLE fallback and
+        would mis-cast a joined text/temporal column at query time."""
+        for model in self._models.values():
+            for col in model.columns:
+                if col.sql:
+                    target_type = self._single_cross_model_ref_type(model, col.sql)
+                    if target_type is not None:
+                        col.type = target_type
+
+    def _single_cross_model_ref_type(
+        self, model: SlayerModel, sql: str
+    ) -> DataType | None:
+        try:
+            tree = sqlglot.parse_one(sql)
+        except sqlglot.errors.ParseError:
+            return None
+        if not isinstance(tree, exp.Column) or not tree.table or tree.table == model.name:
+            return None
+        target = self._walk_join_alias(model, tree.table)
+        if target is None:
+            return None
+        tcol = next((c for c in target.columns if c.name == tree.name), None)
+        return tcol.type if tcol is not None else None
 
     def _join_columns_missing(self, model: SlayerModel, join: ModelJoin) -> bool:
         target = self._models.get(join.target_model)
