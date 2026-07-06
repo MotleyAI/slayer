@@ -283,10 +283,13 @@ class OsiToSlayerConverter:
             if time_col and first_time_dim is None:
                 first_time_dim = time_col
 
-        # OSI primary_key is authoritative.
-        for pk in ds.primary_key or []:
-            if pk in by_name:
-                by_name[pk].primary_key = True
+        # OSI primary_key is authoritative: when set, it fully REPLACES the
+        # introspected primary key (clearing physical PK flags that OSI omits);
+        # when unset, the introspected PK is kept.
+        if ds.primary_key:
+            osi_pk = set(ds.primary_key)
+            for col in model.columns:
+                col.primary_key = col.name in osi_pk
 
         if first_time_dim and not model.default_time_dimension:
             model.default_time_dimension = first_time_dim
@@ -465,23 +468,55 @@ class OsiToSlayerConverter:
         typo clean-fails at import instead of erroring at query time.
         """
         # Fixed-point: dropping a column can invalidate another column that
-        # referenced it, so re-run until a pass drops nothing.
-        changed = True
-        while changed:
-            changed = False
-            for model in list(self._models.values()):
-                for col in list(model.columns):
-                    if not col.sql:
-                        continue
-                    bad = self._unresolvable_cross_model_refs(model, col.sql)
-                    if bad:
-                        model.columns.remove(col)
-                        changed = True
-                        self._warn(
-                            f"Column {col.name!r} on {model.name!r} references "
-                            f"unresolvable cross-model column(s) {bad}; dropping.",
-                            model_name=model.name, category="missing_column",
-                        )
+        # referenced it, and dropping a column used as a join key invalidates
+        # that join (which can in turn invalidate more columns). Re-run column
+        # and join pruning until a pass changes nothing.
+        while True:
+            if not (self._drop_invalid_cross_model_columns()
+                    or self._drop_stale_joins()):
+                break
+
+    def _drop_invalid_cross_model_columns(self) -> bool:
+        dropped = False
+        for model in list(self._models.values()):
+            for col in list(model.columns):
+                if not col.sql:
+                    continue
+                bad = self._unresolvable_cross_model_refs(model, col.sql)
+                if bad:
+                    model.columns.remove(col)
+                    dropped = True
+                    self._warn(
+                        f"Column {col.name!r} on {model.name!r} references "
+                        f"unresolvable cross-model column(s) {bad}; dropping.",
+                        model_name=model.name, category="missing_column",
+                    )
+        return dropped
+
+    def _drop_stale_joins(self) -> bool:
+        """Drop joins whose key columns were removed by column validation, so a
+        join never references a column that no longer exists."""
+        dropped = False
+        for model in list(self._models.values()):
+            for join in list(model.joins):
+                if self._join_columns_missing(model, join):
+                    model.joins.remove(join)
+                    dropped = True
+                    self._warn(
+                        f"Join from {model.name!r} to {join.target_model!r} "
+                        f"references a column removed during validation; dropping.",
+                        model_name=model.name, category="relationship",
+                    )
+        return dropped
+
+    def _join_columns_missing(self, model: SlayerModel, join: ModelJoin) -> bool:
+        target = self._models.get(join.target_model)
+        for src_col, tgt_col in join.join_pairs:
+            if not self._model_has_column(model.name, src_col):
+                return True
+            if target is None or not any(c.name == tgt_col for c in target.columns):
+                return True
+        return False
 
     def _unresolvable_cross_model_refs(self, model: SlayerModel, sql: str) -> list[str]:
         """Cross-model (non-self, qualified) column refs in ``sql`` that don't

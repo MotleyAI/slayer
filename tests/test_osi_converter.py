@@ -336,6 +336,42 @@ def test_per_dataset_failure_isolation(shop_engine):
     assert _reported(result)
 
 
+def test_osi_primary_key_overrides_introspected(shop_engine):
+    # OSI primary_key is authoritative: it replaces the physical PK (order_id).
+    doc = _mini_doc(
+        datasets=[OSIDataset(
+            name="orders", source="orders", primary_key=["customer_id"],
+            fields=[OSIField(name="customer_id", expression=_expr("customer_id"))],
+        )]
+    )
+    result = _convert(shop_engine, doc)
+    cols = {c.name: c for c in {m.name: m for m in result.models}["orders"].columns}
+    assert cols["customer_id"].primary_key is True
+    assert cols["order_id"].primary_key is False
+
+
+def test_join_using_dropped_derived_column_is_pruned(shop_engine):
+    # A join key that is a derived field dropped by cross-model validation must
+    # not leave a stale join referencing the removed column.
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders",
+                       fields=[OSIField(name="product_id", expression=_expr("product_id")),
+                               OSIField(name="bad_key", expression=_expr("customers.no_such_col"))]),
+            OSIDataset(name="products", source="products",
+                       fields=[OSIField(name="product_id", expression=_expr("product_id"))]),
+        ],
+        relationships=[OSIRelationship(
+            name="o2p", **{"from": "orders"}, to="products",
+            from_columns=["bad_key"], to_columns=["product_id"])],
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "bad_key" not in {c.name for c in orders.columns}
+    assert orders.joins == []
+    assert _reported(result)
+
+
 def test_unique_keys_into_meta(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(
