@@ -65,8 +65,24 @@ def _legal_measure_name(name: str) -> bool:
     return bool(_IDENTIFIER_RE.match(name))
 
 
-def _is_bare_identifier(sql: str) -> bool:
-    return bool(_IDENTIFIER_RE.match(sql.strip()))
+def _as_bare_column(sql: str) -> str | None:
+    """The unquoted column name if ``sql`` is a single unqualified column
+    reference (bare or double-quoted), else ``None``.
+
+    Lets a case-sensitive quoted identifier (e.g. ``"legalEntityType"``) be
+    treated as a base-column reference rather than a derived expression.
+    """
+    stripped = sql.strip()
+    if _IDENTIFIER_RE.match(stripped):
+        return stripped
+    try:
+        tree = sqlglot.parse_one(stripped)
+    except sqlglot.errors.ParseError:
+        return None
+    if (isinstance(tree, exp.Column) and not tree.table
+            and not tree.args.get("db") and not tree.args.get("catalog")):
+        return tree.name
+    return None
 
 
 def _missing_expr_columns(
@@ -329,14 +345,15 @@ class OsiToSlayerConverter:
                               ds: OSIDataset) -> Column | None:
         """Return the Column (existing or new) this field maps to, or None on a
         clean-fail (already reported)."""
-        if _is_bare_identifier(sql):
-            if sql == field.name and field.name in by_name:
+        bare = _as_bare_column(sql)
+        if bare is not None:
+            if bare == field.name and field.name in by_name:
                 return by_name[field.name]          # overlay existing column
-            if sql in introspected:
-                # aliased/renamed reference to a real column -> derived column
-                return Column(name=field.name, sql=sql, type=by_name[sql].type)
+            if bare in introspected:
+                # aliased/renamed reference to a real column
+                return Column(name=field.name, sql=bare, type=by_name[bare].type)
             self._warn(
-                f"Field {field.name!r} on {ds.name!r} references column {sql!r} "
+                f"Field {field.name!r} on {ds.name!r} references column {bare!r} "
                 f"which is not present in the table; skipping.",
                 model_name=ds.name, category="missing_column",
             )

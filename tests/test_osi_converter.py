@@ -468,6 +468,22 @@ def test_relationship_unknown_target_clean_fails(shop_engine):
     assert _reported(result)
 
 
+def test_quoted_bare_field_expression_overlays_not_derived(shop_engine):
+    # A double-quoted identifier expression is a base-column reference, not a
+    # derived expression — it must overlay the introspected column (keep its
+    # TEXT type), not rebuild it as DOUBLE.
+    doc = _mini_doc(
+        datasets=[OSIDataset(
+            name="orders", source="orders",
+            fields=[OSIField(name="status", expression=_expr('"status"'))],
+        )]
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    status = {c.name: c for c in orders.columns}["status"]
+    assert status.type == DataType.TEXT
+
+
 def test_derived_field_shadowing_physical_column_overlays(shop_engine):
     # A derived OSI field whose name matches a physical column must overlay its
     # expression onto that column, not be silently dropped.
