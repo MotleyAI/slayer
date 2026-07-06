@@ -38,6 +38,7 @@ _SIMPLE_AGG = {exp.Sum: "sum", exp.Avg: "avg", exp.Min: "min", exp.Max: "max"}
 
 OwnerOf = Callable[[Optional[str], str], Optional[str]]
 RefOf = Callable[[str, str], Optional[str]]
+NameTaken = Callable[[str, str], bool]  # (owning_model, name) -> already exists?
 
 
 class MaterializedColumn(BaseModel):
@@ -64,11 +65,12 @@ class _Unconvertible(Exception):
 
 class _Converter:
     def __init__(self, entity_name: str, owner_of: OwnerOf, ref_of: RefOf,
-                 percentile_unsupported: bool) -> None:
+                 percentile_unsupported: bool, name_taken: NameTaken) -> None:
         self.entity_name = entity_name
         self.owner_of = owner_of
         self.ref_of = ref_of
         self.percentile_unsupported = percentile_unsupported
+        self.name_taken = name_taken
         self.materialized: list[MaterializedColumn] = []
         self.warnings: list[str] = []
         self._dedup: dict[tuple[str, str], str] = {}
@@ -104,8 +106,7 @@ class _Converter:
         key = (owner, operand_sql)
         name = self._dedup.get(key)
         if name is None:
-            name = f"_{self.entity_name}_{self._counter}"
-            self._counter += 1
+            name = self._fresh_column_name(owner)
             self._dedup[key] = name
             self.materialized.append(
                 MaterializedColumn(owning_model=owner, name=name, sql=operand_sql)
@@ -114,6 +115,16 @@ class _Converter:
         if ref is None:
             raise _Unconvertible("materialized operand is not reachable from the anchor")
         return ref
+
+    def _fresh_column_name(self, owner: str) -> str:
+        """A hidden-column name that collides with no existing column on
+        ``owner`` (the formula references this name verbatim, so a collision
+        would silently aggregate the wrong column)."""
+        while True:
+            name = f"_{self.entity_name}_{self._counter}"
+            self._counter += 1
+            if not self.name_taken(owner, name):
+                return name
 
     def _operand_ref(self, operand: exp.Expression) -> str:
         if isinstance(operand, exp.Column):
@@ -295,9 +306,15 @@ def convert_expression(
     owner_of: OwnerOf,
     ref_of: RefOf,
     percentile_unsupported: bool = False,
+    name_taken: NameTaken = lambda model, name: False,
 ) -> ExprResult:
-    """Convert an OSI SQL aggregation expression into a SLayer formula."""
+    """Convert an OSI SQL aggregation expression into a SLayer formula.
+
+    ``name_taken(owning_model, name)`` lets the caller reserve hidden
+    derived-column names against existing columns so a materialized operand
+    never collides with a real column.
+    """
     return _Converter(
         entity_name=entity_name, owner_of=owner_of, ref_of=ref_of,
-        percentile_unsupported=percentile_unsupported,
+        percentile_unsupported=percentile_unsupported, name_taken=name_taken,
     ).convert(expr)

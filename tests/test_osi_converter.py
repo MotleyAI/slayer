@@ -468,6 +468,89 @@ def test_relationship_unknown_target_clean_fails(shop_engine):
     assert _reported(result)
 
 
+def test_derived_field_shadowing_physical_column_overlays(shop_engine):
+    # A derived OSI field whose name matches a physical column must overlay its
+    # expression onto that column, not be silently dropped.
+    doc = _mini_doc(
+        datasets=[OSIDataset(
+            name="orders", source="orders",
+            fields=[OSIField(name="status", expression=_expr("LOWER(status)"))],
+        )]
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    status_cols = [c for c in orders.columns if c.name == "status"]
+    assert len(status_cols) == 1
+    assert status_cols[0].sql == "LOWER(status)"
+
+
+def test_materialized_name_avoids_existing_column(shop_engine):
+    # A materialized operand name must not collide with an existing column,
+    # else the metric would aggregate the wrong column.
+    doc = _mini_doc(
+        datasets=[OSIDataset(
+            name="orders", source="orders",
+            fields=[
+                OSIField(name="amount", expression=_expr("amount")),
+                OSIField(name="quantity", expression=_expr("quantity")),
+                OSIField(name="_rev_0", expression=_expr("amount")),  # occupies name
+            ],
+        )],
+        metrics=[OSIMetric(name="rev", expression=_expr("SUM(quantity * amount)"))],
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    derived = {meas.name: meas for meas in orders.measures}["rev"].formula.split(":")[0]
+    assert derived != "_rev_0"
+    assert any(c.name == derived and c.hidden for c in orders.columns)
+
+
+def test_duplicate_metric_name_clean_fails(shop_engine):
+    doc = _mini_doc(
+        datasets=[OSIDataset(name="orders", source="orders",
+                             fields=[OSIField(name="amount", expression=_expr("amount"))])],
+        metrics=[
+            OSIMetric(name="tot", expression=_expr("SUM(amount)")),
+            OSIMetric(name="tot", expression=_expr("MAX(amount)")),
+        ],
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert len([m for m in orders.measures if m.name == "tot"]) == 1
+    assert _reported(result)
+
+
+def test_metric_named_as_column_clean_fails(shop_engine):
+    doc = _mini_doc(
+        datasets=[OSIDataset(name="orders", source="orders",
+                             fields=[OSIField(name="amount", expression=_expr("amount"))])],
+        metrics=[OSIMetric(name="amount", expression=_expr("SUM(amount)"))],
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "amount" not in {m.name for m in orders.measures}
+    assert _reported(result)
+
+
+def test_relationship_nonexistent_join_column_clean_fails(shop_engine):
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders",
+                       fields=[OSIField(name="customer_id", expression=_expr("customer_id"))]),
+            OSIDataset(name="customers", source="customers",
+                       fields=[OSIField(name="customer_id", expression=_expr("customer_id"))]),
+        ],
+        relationships=[OSIRelationship(
+            name="bad", **{"from": "orders"}, to="customers",
+            from_columns=["no_such_fk"], to_columns=["customer_id"],
+        )],
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert orders.joins == []
+    assert _reported(result)
+
+
 def test_qualified_metric_ref_to_nonexistent_column_clean_fails(shop_engine):
     # A qualified ref whose column does not exist on the qualified model must
     # clean-fail, not import a measure that fails at query time.

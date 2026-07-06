@@ -307,8 +307,14 @@ class OsiToSlayerConverter:
                 model_name=ds.name, category="missing_column",
             )
             return None
-        # derived expression
+        # derived expression. When it redefines an existing (introspected)
+        # column, overlay the expression onto that column so it isn't silently
+        # dropped by the append-only path; otherwise create a new derived column.
         is_time = bool(field.dimension and field.dimension.is_time)
+        existing = by_name.get(field.name)
+        if existing is not None:
+            existing.sql = sql
+            return existing
         return Column(
             name=field.name, sql=sql,
             type=DataType.TIMESTAMP if is_time else DataType.DOUBLE,
@@ -358,6 +364,15 @@ class OsiToSlayerConverter:
             )
             return
 
+        missing = self._missing_join_columns(rel)
+        if missing:
+            self._warn(
+                f"Relationship {rel.name!r} references join columns not present "
+                f"on their models: {missing}; skipping.",
+                model_name=src, category="relationship",
+            )
+            return
+
         pairs = [[f, t] for f, t in zip(rel.from_columns, rel.to_columns)]
         self._models[src].joins.append(ModelJoin(
             target_model=rel.to,
@@ -365,6 +380,19 @@ class OsiToSlayerConverter:
             description=_render_description(None, rel.ai_context),
             meta=_build_meta(rel.ai_context, rel.custom_extensions),
         ))
+
+    def _model_has_column(self, model_name: str, column: str) -> bool:
+        model = self._models.get(model_name)
+        return model is not None and any(c.name == column for c in model.columns)
+
+    def _missing_join_columns(self, rel: OSIRelationship) -> list[str]:
+        """Qualified names of relationship join columns absent from their
+        model, so a typo clean-fails instead of emitting a broken join."""
+        missing = [f"{rel.from_dataset}.{c}" for c in rel.from_columns
+                   if not self._model_has_column(rel.from_dataset, c)]
+        missing += [f"{rel.to}.{c}" for c in rel.to_columns
+                    if not self._model_has_column(rel.to, c)]
+        return missing
 
     # ---- metrics -> measures ----
 
@@ -390,6 +418,25 @@ class OsiToSlayerConverter:
         if anchor is None:
             return  # already reported
 
+        # Enforce SLayer's namespace invariants before the post-construction
+        # append (which bypasses SlayerModel's validators): a measure name must
+        # be unique and must not collide with a column on the same model.
+        anchor_model = self._models[anchor]
+        if any(m.name == metric.name for m in anchor_model.measures):
+            self._unconv(
+                f"Metric {metric.name!r} duplicates an existing measure on "
+                f"model {anchor!r}.",
+                metric_name=metric.name, category="duplicate_measure",
+            )
+            return
+        if self._model_has_column(anchor, metric.name):
+            self._unconv(
+                f"Metric {metric.name!r} collides with a column name on model "
+                f"{anchor!r}.",
+                metric_name=metric.name, category="name_collision",
+            )
+            return
+
         ref_of = self._make_ref_of(graph, anchor)
         percentile_unsupported = (
             self.target_dialect is not None
@@ -398,6 +445,7 @@ class OsiToSlayerConverter:
         result = convert_expression(
             expr, entity_name=metric.name, owner_of=owner_of, ref_of=ref_of,
             percentile_unsupported=percentile_unsupported,
+            name_taken=self._model_has_column,
         )
         if not result.ok:
             self._unconv(
