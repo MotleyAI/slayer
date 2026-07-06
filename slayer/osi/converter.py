@@ -330,7 +330,7 @@ class OsiToSlayerConverter:
             )
             return None
 
-        col = self._resolve_field_column(field, sql, by_name, introspected, ds)
+        col = self._resolve_field_column(field, sql, by_name, introspected, ds, model)
         if col is None:
             return None
 
@@ -366,7 +366,7 @@ class OsiToSlayerConverter:
 
     def _resolve_field_column(self, field: OSIField, sql: str,
                               by_name: dict[str, Column], introspected: set[str],
-                              ds: OSIDataset) -> Column | None:
+                              ds: OSIDataset, model: SlayerModel) -> Column | None:
         """Return the Column (existing or new) this field maps to, or None on a
         clean-fail (already reported)."""
         bare = _as_bare_column(sql)
@@ -408,12 +408,38 @@ class OsiToSlayerConverter:
             dtype = DataType.TIMESTAMP
         elif field.name in by_name:
             # A derived field that redefines an existing column inherits that
-            # column's known type (e.g. LOWER(status) stays TEXT) rather than
-            # defaulting a genuinely new derived column to DOUBLE.
+            # column's known type (e.g. LOWER(status) stays TEXT).
             dtype = by_name[field.name].type
         else:
-            dtype = DataType.DOUBLE
+            # A genuinely new derived column: live-probe the expression's real
+            # type so a non-numeric expression (UPPER(x), concat, ...) isn't
+            # mis-cast as DOUBLE by the SQL generator. Fall back to DOUBLE if the
+            # probe is unavailable.
+            dtype = self._probe_expression_type(model, sql) or DataType.DOUBLE
         return Column(name=field.name, sql=sql, type=dtype)
+
+    def _probe_expression_type(self, model: SlayerModel, expr: str) -> DataType | None:
+        """Infer a derived expression's SLayer type by probing it against the
+        model's physical source (LIMIT-0 cursor metadata). Returns None if the
+        model has no probeable source or the probe fails."""
+        if model.sql_table:
+            from_clause = model.sql_table
+        elif model.sql:
+            from_clause = f"({model.sql}) AS _osi_sub"
+        else:
+            return None
+        probe = f"SELECT ({expr}) AS _osi_probe FROM {from_clause}"
+        try:
+            types = get_column_types_sync(
+                probe, engine=self.sa_engine, db_type=self.target_dialect,
+            )
+        except Exception:  # noqa: BLE001 — probe is best-effort; fall back
+            return None
+        category = next(iter(types.values()), None)
+        if category is None:
+            return None
+        # Reuse Column's category->DataType coercion (as _build_sql_mode_model does).
+        return Column(name="_osi_probe", type=category).type
 
     def _apply_dataset_metadata(self, model: SlayerModel, ds: OSIDataset,
                                 sm: OSISemanticModel) -> None:

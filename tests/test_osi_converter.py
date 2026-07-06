@@ -556,6 +556,28 @@ def test_relationship_unknown_target_clean_fails(shop_engine):
     assert _reported(result)
 
 
+def test_brand_new_derived_field_type_is_probed(shop_engine):
+    # A brand-new derived field (no matching physical column) gets its type from
+    # a live probe, so a text expression stays TEXT instead of being cast DOUBLE.
+    with shop_engine.connect() as conn:
+        conn.execute(sa.text(
+            "INSERT INTO orders (order_id, amount, quantity, status) "
+            "VALUES (1, 9.5, 3, 'paid')"
+        ))
+        conn.commit()
+    doc = _mini_doc(
+        datasets=[OSIDataset(
+            name="orders", source="orders",
+            fields=[OSIField(name="status_up", expression=_expr("UPPER(status)")),
+                    OSIField(name="line", expression=_expr("quantity * amount"))],
+        )]
+    )
+    result = _convert(shop_engine, doc, target_dialect="sqlite")
+    cols = {c.name: c for c in {m.name: m for m in result.models}["orders"].columns}
+    assert cols["status_up"].type == DataType.TEXT
+    assert cols["line"].type in (DataType.DOUBLE, DataType.INT)
+
+
 def test_quoted_bare_field_expression_overlays_not_derived(shop_engine):
     # A double-quoted identifier expression is a base-column reference, not a
     # derived expression — it must overlay the introspected column (keep its
