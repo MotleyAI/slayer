@@ -254,8 +254,13 @@ class QueryCache:
         out: list[NormalizedTable] = []
         for scope in traverse_scope(tree):
             for table in scope.tables:
-                if isinstance(scope.sources.get(table.alias_or_name), Scope):
-                    continue  # resolves to a CTE / derived table — not physical
+                # A qualified reference (has a db/catalog part) can never be a
+                # CTE — CTE names are always unqualified — so it is always
+                # physical. Only an unqualified name can shadow a CTE / derived
+                # source in its scope; skip those (they aren't physical tables).
+                if not table.db and not table.catalog:
+                    if isinstance(scope.sources.get(table.alias_or_name), Scope):
+                        continue
                 out.append(self._normalize_table_expr(table, dialect))
         return out
 

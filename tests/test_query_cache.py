@@ -248,6 +248,22 @@ class TestTableParsing:
         )]
         assert "v" not in names
 
+    def test_qualified_table_sharing_cte_name_is_still_physical(self):
+        # A schema-qualified physical table (`public.cte`) sharing a CTE's bare
+        # name must still be detected — a qualified ref can never be a CTE.
+        c = QueryCache(CacheConfig())
+        tables = c.parse_referenced_tables(
+            "WITH cte AS (SELECT 1 AS x) SELECT * FROM cte JOIN public.cte ON TRUE",
+            "postgres",
+        )
+        assert (None, "public", "cte") in tables  # the physical public.cte
+        # And a refresh key configured on that physical table applies.
+        c2 = QueryCache(CacheConfig(refresh_keys=[("public.cte", "COUNT(*)")]))
+        assert c2.applicable_keys(
+            "WITH cte AS (SELECT 1 AS x) SELECT * FROM cte JOIN public.cte ON TRUE",
+            "postgres",
+        ) == [("public.cte", "COUNT(*)")]
+
 
 class TestWildcardMatching:
     def test_unqualified_config_matches_any_qualifier_pg(self):
