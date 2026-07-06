@@ -22,9 +22,10 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlglot import exp, parse_one
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
+from sqlglot.optimizer.scope import Scope, traverse_scope
 
 # Marker alias prefix for refresh-key scan projections. Also lets tests
 # distinguish a refresh-key scan query from a data query.
@@ -39,15 +40,32 @@ class CacheConfig(BaseModel):
     """Per-engine cache configuration.
 
     ``ttl_seconds`` bounds wall-clock entry age (``None`` => no time-based
-    expiry). ``refresh_keys`` is a list of ``(physical_table,
+    expiry). ``refresh_keys`` is a sequence of ``(physical_table,
     select_expression)`` pairs; the same table may repeat with different
     expressions. Each ``select_expression`` is a scalar SQL expression
     evaluated verbatim as ``SELECT <select_expression> FROM <table>`` — the
     user supplies it in full (SLayer does NOT wrap it in ``MAX(...)``).
+
+    The model is **frozen** and ``refresh_keys`` is a tuple, so the config is
+    genuinely immutable (mirrors ``SessionPolicy``). To change an engine's
+    policy, reassign ``engine.cache_config`` — the setter clears the cache so
+    stale entries can't survive under a new TTL / refresh-key set. In-place
+    mutation (``engine.cache_config.refresh_keys += ...``) is rejected rather
+    than silently leaving already-cached entries on the old policy.
     """
 
+    model_config = ConfigDict(frozen=True)
+
     ttl_seconds: float | None = None
-    refresh_keys: list[tuple[str, str]] = Field(default_factory=list)
+    refresh_keys: tuple[tuple[str, str], ...] = ()
+
+    @field_validator("refresh_keys", mode="before")
+    @classmethod
+    def _coerce_refresh_keys(cls, v: Any) -> Any:
+        """Accept a list of lists/tuples and freeze it into a tuple of tuples."""
+        if v is None:
+            return ()
+        return tuple(tuple(pair) for pair in v)
 
 
 class RefreshKeyValue(BaseModel):
@@ -221,23 +239,24 @@ class QueryCache:
     ) -> list[NormalizedTable]:
         """Normalized physical tables referenced by ``sql``.
 
-        Parses with sqlglot, then subtracts CTE names (SLayer wraps queries
-        in CTEs, so a ``FROM cte`` reference otherwise looks like a table)
-        and derived-table / subquery aliases. Each remaining
-        :class:`exp.Table` is normalized to ``(catalog, db, name)`` with the
-        dialect's identifier folding (quoted identifiers preserved exactly,
-        unquoted folded per dialect).
+        Parses with sqlglot and uses **scope analysis** (``traverse_scope``,
+        the same mechanism the forced-filter policy uses) to keep only
+        genuinely physical tables: a table reference whose name resolves to a
+        CTE / derived table in its scope is skipped. This is name-collision
+        safe — a physical table that happens to share a name with a CTE alias
+        (SLayer wraps queries in CTEs) is still detected, because scope
+        resolution distinguishes them structurally rather than by bare name.
+        Each physical :class:`exp.Table` is normalized to ``(catalog, db,
+        name)`` with the dialect's identifier folding (quoted identifiers
+        preserved exactly, unquoted folded per dialect).
         """
         tree = parse_one(sql, dialect=dialect)
-        excluded = {c.alias for c in tree.find_all(exp.CTE)}
-        for sub in tree.find_all(exp.Subquery):
-            if sub.alias:
-                excluded.add(sub.alias)
         out: list[NormalizedTable] = []
-        for t in tree.find_all(exp.Table):
-            if t.name in excluded:
-                continue
-            out.append(self._normalize_table_expr(t, dialect))
+        for scope in traverse_scope(tree):
+            for table in scope.tables:
+                if isinstance(scope.sources.get(table.alias_or_name), Scope):
+                    continue  # resolves to a CTE / derived table — not physical
+                out.append(self._normalize_table_expr(table, dialect))
         return out
 
     @staticmethod

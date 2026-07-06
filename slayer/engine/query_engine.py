@@ -900,9 +900,16 @@ class SlayerQueryEngine:
         *,
         prefer_data_source: str | None = None,
     ) -> _Prepared:
-        """Resolve → enrich → generate SQL → build response metadata → compute
-        the datasource cache identity, all DB-free (no SQL client is
-        instantiated, so ``evict`` never connects — Codex finding #8).
+        """Resolve → enrich → generate SQL (+ forced-filter policy rewrite) →
+        build response metadata → compute the datasource cache identity.
+
+        No ``SlayerSQLClient`` is instantiated and no data query runs, so with
+        no forced-filter policy configured this is fully DB-free — the basis
+        for ``evict`` recomputing a cache key without executing. When a policy
+        IS set, ``_apply_policy`` probes column presence via a SQLAlchemy
+        ``Inspector`` (a lightweight, cached metadata connection), so under RLS
+        the key computation touches the database that far — and must, since the
+        cached SQL is itself policy-rewritten and the key has to match.
 
         Shared by ``_execute_pipeline`` (execute + cache miss), ``evict`` (key
         only), and ``refresh`` re-execution.
@@ -968,7 +975,7 @@ class SlayerQueryEngine:
             ds_fingerprint=ds_fingerprint,
         )
 
-    def _build_response_metadata(
+    def _build_response_metadata(  # NOSONAR S3776 — linear per-bucket alias/format collection (dims/tds/measures/exprs/transforms/cross-model); splitting the flat loops adds indirection without reducing the branch count
         self, *, enriched: "EnrichedQuery", model: SlayerModel,
     ) -> "tuple[ResponseAttributes, list[str]]":
         """Build the response ``attributes`` (label/format per public alias)
@@ -1166,7 +1173,10 @@ class SlayerQueryEngine:
         """
         applicable = self._cache.applicable_keys(prepared.sql, prepared.dialect)
         refresh_key_values = await self._scan_refresh_keys(
-            applicable=applicable, client=client, dialect=prepared.dialect,
+            applicable=applicable,
+            client=client,
+            dialect=prepared.dialect,
+            datasource=prepared.datasource,
         )
         response = await self._run_and_build(prepared=prepared, client=client)
         # Deep-copy the replay inputs (as we do the response): ``refresh()``
@@ -1195,6 +1205,7 @@ class SlayerQueryEngine:
         applicable: list[tuple[str, str]],
         client: SlayerSQLClient,
         dialect: str,
+        datasource: DatasourceConfig,
     ) -> list[RefreshKeyValue]:
         """Evaluate every applicable refresh key, batched one scan per table.
         Raises on a malformed / multi-row scan (the caller decides propagate
@@ -1205,7 +1216,8 @@ class SlayerQueryEngine:
         out: list[RefreshKeyValue] = []
         for table, exprs in by_table.items():
             row = await self._scan_one_table(
-                table=table, exprs=exprs, client=client, dialect=dialect,
+                table=table, exprs=exprs, client=client,
+                dialect=dialect, datasource=datasource,
             )
             for i, expr in enumerate(exprs):
                 out.append(
@@ -1224,8 +1236,17 @@ class SlayerQueryEngine:
         exprs: list[str],
         client: SlayerSQLClient,
         dialect: str,
+        datasource: DatasourceConfig,
     ) -> dict[str, Any]:
         scan_sql = self._cache.build_refresh_key_sql(table, exprs, dialect)
+        # DEV-1587 × DEV-1578: apply the forced-filter policy to the scan too,
+        # so the refresh-key baseline is computed over the SAME tenant-scoped
+        # rows as the cached data query. Without this, a global MAX/COUNT could
+        # mask a tenant-local change (or over-refresh on another tenant's).
+        # No-op (zero overhead) when no policy is configured.
+        scan_sql = self._apply_policy(
+            sql=scan_sql, dialect=dialect, datasource=datasource
+        )
         rows = await client.execute(sql=scan_sql)
         if len(rows) != 1:
             raise ValueError(
@@ -1242,9 +1263,10 @@ class SlayerQueryEngine:
         data_source: str | None = None,
     ) -> bool:
         """Remove the cache entry for ``query`` (same input union as
-        ``execute``). Recomputes the SQL + datasource key via the DB-free
-        prepare pipeline — no DB execution, no client. Returns ``True`` if an
-        entry was present."""
+        ``execute``). Recomputes the SQL + datasource key via the prepare
+        pipeline — no data query and no ``SlayerSQLClient`` (a forced-filter
+        policy may still introspect column presence; see ``_prepare_pipeline``).
+        Returns ``True`` if an entry was present."""
         query_obj, named_queries, runtime_kwarg, prefer = await self._normalize_input(
             query, variables=variables, data_source=data_source,
         )
@@ -1335,7 +1357,8 @@ class SlayerQueryEngine:
             try:
                 client = await self._client_for_refresh(ds_key, snapshot, clients)
                 row = await self._scan_one_table(
-                    table=table, exprs=expr_list, client=client, dialect=dialects[ds_key],
+                    table=table, exprs=expr_list, client=client,
+                    dialect=dialects[ds_key], datasource=client.datasource,
                 )
                 for i, expr in enumerate(expr_list):
                     fresh[(ds_key, table, expr)] = row[self._cache.rk_alias(i)]

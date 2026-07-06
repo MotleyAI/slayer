@@ -20,10 +20,13 @@ Two layers of coverage:
 import asyncio
 import sqlite3
 
+import pydantic
 import pytest
+import sqlalchemy
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.policy import ColumnFilterRule, SessionPolicy
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.cache import (
     CacheConfig,
@@ -348,7 +351,7 @@ class TestBasicCaching:
         q = _sum_query()
 
         r1 = await engine.execute(q, cache=True)
-        assert r1.data[0]["orders.amount_sum"] == 350.0
+        assert r1.data[0]["orders.amount_sum"] == pytest.approx(350.0)
         assert engine.cache_size == 1
         assert len(_data_queries(calls)) == 1  # the miss ran one data query
 
@@ -356,11 +359,11 @@ class TestBasicCaching:
         _mutate(tmp_path / "orders.db", "INSERT INTO orders VALUES (4, 'pending', 1000.0, '2025-02-01')")
 
         r2 = await engine.execute(q, cache=True)
-        assert r2.data[0]["orders.amount_sum"] == 350.0  # stale
+        assert r2.data[0]["orders.amount_sum"] == pytest.approx(350.0)  # stale
         assert _data_queries(calls) == []  # hit → no DB execution
 
         r3 = await engine.execute(q, cache=False)
-        assert r3.data[0]["orders.amount_sum"] == 1350.0  # bypass → fresh
+        assert r3.data[0]["orders.amount_sum"] == pytest.approx(1350.0)  # bypass → fresh
         assert len(_data_queries(calls)) == 1
 
     async def test_dry_run_and_explain_never_cached(self, tmp_path):
@@ -381,7 +384,7 @@ class TestBasicCaching:
         r1.data[0]["orders.amount_sum"] = 999999.0
         r1.data.append({"orders.amount_sum": 0.0})
         r2 = await engine.execute(q, cache=True)  # hit
-        assert r2.data[0]["orders.amount_sum"] == 350.0
+        assert r2.data[0]["orders.amount_sum"] == pytest.approx(350.0)
         assert len(r2.data) == 1
 
     async def test_per_engine_isolation(self, tmp_path):
@@ -418,7 +421,7 @@ class TestTtlLazyReexec:
         _mutate(tmp_path / "orders.db", "INSERT INTO orders VALUES (4, 'pending', 1000.0, '2025-02-01')")
         r = await engine.execute(q, cache=True)
         assert len(_data_queries(calls)) == 1
-        assert r.data[0]["orders.amount_sum"] == 1350.0
+        assert r.data[0]["orders.amount_sum"] == pytest.approx(1350.0)
 
 
 class TestRefresh:
@@ -455,7 +458,7 @@ class TestRefresh:
         assert result.errors == []
 
         hit = await engine.execute(q, cache=True)
-        assert hit.data[0]["orders.amount_sum"] == 1350.0
+        assert hit.data[0]["orders.amount_sum"] == pytest.approx(1350.0)
 
     async def test_refresh_unchanged_when_key_static(self, tmp_path):
         engine = await _build_engine(
@@ -484,7 +487,7 @@ class TestRefresh:
         result = await engine.refresh()
         assert len(result.refreshed) == 1  # COUNT(*) moved even though MAX didn't
         hit = await engine.execute(q, cache=True)
-        assert hit.data[0]["orders.amount_sum"] == 300.0
+        assert hit.data[0]["orders.amount_sum"] == pytest.approx(300.0)
 
     async def test_unreferenced_table_change_no_refresh(self, tmp_path):
         engine = await _build_engine(
@@ -545,7 +548,7 @@ class TestRefresh:
         assert engine.cache_size == 1
         # The stale value is still served from cache (no DB touched).
         hit = await engine.execute(q, cache=True)
-        assert hit.data[0]["orders.amount_sum"] == 350.0
+        assert hit.data[0]["orders.amount_sum"] == pytest.approx(350.0)
 
     async def test_ttl_expired_with_scan_failure_keeps_entry(self, tmp_path):
         # TTL expiry takes precedence over the refresh-key scan, so the entry
@@ -597,8 +600,9 @@ class TestRefresh:
             tmp_path,
             cache_config=CacheConfig(refresh_keys=[("orders", "MAX(nonexistent_col)")]),
         )
-        with pytest.raises(Exception):
-            await engine.execute(_sum_query(), cache=True)
+        q = _sum_query()
+        with pytest.raises(sqlalchemy.exc.SQLAlchemyError):
+            await engine.execute(q, cache=True)
         assert engine.cache_size == 0  # nothing stored on a failed baseline scan
 
     async def test_identity_guarded_commit_not_resurrected(self, tmp_path):
@@ -639,7 +643,7 @@ class TestMultiStageAndByName:
         r1 = await engine.execute([inner, outer], cache=True)
         assert engine.cache_size == 1
         total = r1.data[0]["raw.amount_sum"]
-        assert total == 350.0
+        assert total == pytest.approx(350.0)
 
         calls = _install_spy(monkeypatch)
         r2 = await engine.execute([inner, outer], cache=True)  # hit
@@ -744,10 +748,45 @@ class TestSyncWrappers:
         )
         q = _sum_query()
         r = engine.execute_sync(q, cache=True, data_source="ds")
-        assert r.data[0]["orders.amount_sum"] == 350.0
+        assert r.data[0]["orders.amount_sum"] == pytest.approx(350.0)
         assert engine.cache_size == 1
         result = engine.refresh_sync()
         assert isinstance(result, RefreshResult)
         assert len(result.unchanged) == 1
         assert engine.evict_sync(q, data_source="ds") is True
         assert engine.cache_size == 0
+
+
+class TestCacheConfigFrozen:
+    def test_frozen_and_refresh_keys_coerced_to_tuple(self):
+        cfg = CacheConfig(ttl_seconds=5, refresh_keys=[("orders", "COUNT(*)")])
+        assert isinstance(cfg.refresh_keys, tuple)
+        assert cfg.refresh_keys == (("orders", "COUNT(*)"),)
+        assert CacheConfig().refresh_keys == ()
+        # Frozen: in-place mutation is rejected (must reassign cache_config,
+        # which clears the cache) rather than silently bypassing the setter.
+        with pytest.raises(pydantic.ValidationError):
+            cfg.ttl_seconds = 10
+
+
+class TestPolicyInteraction:
+    async def test_refresh_key_scan_is_policy_scoped(self, tmp_path, monkeypatch):
+        # DEV-1587 × DEV-1578: with a forced-filter policy the refresh-key
+        # baseline scan must be rewritten to the same tenant scope as the data
+        # query, so a global MAX/COUNT can't mask a tenant-local change.
+        engine = await _build_engine(
+            tmp_path,
+            cache_config=CacheConfig(refresh_keys=[("orders", "MAX(updated_at)")]),
+        )
+        engine.policy = SessionPolicy(
+            data_filters=[ColumnFilterRule(column="status", value="completed")]
+        )
+        calls = _install_spy(monkeypatch)
+        await engine.execute(_sum_query(), cache=True)
+
+        scans = _scan_queries(calls)
+        assert scans, "expected a refresh-key scan on the cache miss"
+        # Both the scan AND the data query are tenant-scoped (reference the
+        # policy column), so their notions of "current state" agree.
+        assert all("status" in s for s in scans)
+        assert all("status" in s for s in _data_queries(calls))
