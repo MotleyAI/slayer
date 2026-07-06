@@ -222,6 +222,23 @@ def test_illegal_dataset_name_clean_fails(shop_engine):
     assert _reported(result)  # a report entry exists
 
 
+def test_dataset_name_with_path_separator_clean_fails(shop_engine):
+    # A model name becomes a filename in YAML storage; path separators must be
+    # rejected so an OSI config can't write files outside the storage tree.
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders",
+                       fields=[OSIField(name="amount", expression=_expr("amount"))]),
+            OSIDataset(name="/tmp/owned", source="orders",
+                       fields=[OSIField(name="amount", expression=_expr("amount"))]),
+        ]
+    )
+    result = _convert(shop_engine, doc)
+    names = {m.name for m in result.models}
+    assert "orders" in names and "/tmp/owned" not in names
+    assert _reported(result)
+
+
 def test_illegal_field_name_clean_fails_field_not_model(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(

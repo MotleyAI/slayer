@@ -53,8 +53,16 @@ class OsiConversionError(Exception):
     """Raised when an OSI import set cannot be converted (e.g. duplicate names)."""
 
 
+# Characters/shapes that are unsafe in a SLayer model name — notably path
+# separators and NUL, since a model name becomes a filename in YAML storage
+# (``<dir>/<name>.yaml``); an absolute/traversal name would escape the tree.
+_UNSAFE_MODEL_NAME_CHARS = ("__", ".", ":", "/", "\\", "\x00")
+
+
 def _legal_model_name(name: str) -> bool:
-    return "__" not in name and "." not in name and ":" not in name
+    if not name or name.strip() != name or not name.strip():
+        return False
+    return not any(ch in name for ch in _UNSAFE_MODEL_NAME_CHARS)
 
 
 def _legal_column_name(name: str) -> bool:
@@ -235,8 +243,9 @@ class OsiToSlayerConverter:
                      inspector: sa.engine.Inspector) -> None:
         if not _legal_model_name(ds.name):
             self._warn(
-                f"Dataset name {ds.name!r} contains characters SLayer forbids in "
-                f"model names ('__', '.', ':'); skipping.",
+                f"Dataset name {ds.name!r} is not a safe SLayer model name "
+                f"(empty, surrounding whitespace, or a forbidden character such "
+                f"as '__', '.', ':', '/', '\\\\', NUL); skipping.",
                 model_name=ds.name, category="illegal_name",
             )
             return
