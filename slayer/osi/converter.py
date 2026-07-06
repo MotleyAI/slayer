@@ -175,6 +175,8 @@ class OsiToSlayerConverter:
             for rel in sm.relationships or []:
                 self._build_join(rel)
 
+        self._validate_cross_model_field_refs()
+
         graph = JoinGraph.build_from_models(list(self._models.values()))
         for sm in semantic_models:
             self._build_measures_for(sm, graph)
@@ -423,6 +425,57 @@ class OsiToSlayerConverter:
             description=_render_description(None, rel.ai_context),
             meta=_build_meta(rel.ai_context, rel.custom_extensions),
         ))
+
+    def _validate_cross_model_field_refs(self) -> None:
+        """Post-join pass: derived columns may reference joined models via
+        ``<alias>.<col>`` / ``<a>__<b>.<col>``. Resolve each such ref through the
+        join graph and drop (with a report) any column whose cross-model ref
+        names a model with no join path or a nonexistent target column — so a
+        typo clean-fails at import instead of erroring at query time.
+        """
+        for model in list(self._models.values()):
+            for col in list(model.columns):
+                if not col.sql:
+                    continue
+                bad = self._unresolvable_cross_model_refs(model, col.sql)
+                if bad:
+                    model.columns.remove(col)
+                    self._warn(
+                        f"Column {col.name!r} on {model.name!r} references "
+                        f"unresolvable cross-model column(s) {bad}; dropping.",
+                        model_name=model.name, category="missing_column",
+                    )
+
+    def _unresolvable_cross_model_refs(self, model: SlayerModel, sql: str) -> list[str]:
+        """Cross-model (non-self, qualified) column refs in ``sql`` that don't
+        resolve to a joined model + existing column. Self / unqualified refs were
+        validated at field-overlay time."""
+        try:
+            tree = sqlglot.parse_one(sql)
+        except sqlglot.errors.ParseError:
+            return []
+        bad = []
+        for col in tree.find_all(exp.Column):
+            if not col.table or col.table == model.name:
+                continue
+            target = self._walk_join_alias(model, col.table)
+            if target is None or not any(c.name == col.name for c in target.columns):
+                bad.append(f"{col.table}.{col.name}")
+        return bad
+
+    def _walk_join_alias(self, host: SlayerModel, alias: str) -> SlayerModel | None:
+        """Resolve a ``__``-delimited join alias (e.g. ``customers__regions``)
+        to the terminal joined model by walking ``host``'s join chain, or None
+        if any hop is not a declared join."""
+        current = host
+        for hop in (alias.split("__") if "__" in alias else [alias]):
+            join = next((j for j in current.joins if j.target_model == hop), None)
+            if join is None:
+                return None
+            current = self._models.get(hop)
+            if current is None:
+                return None
+        return current
 
     def _model_has_column(self, model_name: str, column: str) -> bool:
         model = self._models.get(model_name)

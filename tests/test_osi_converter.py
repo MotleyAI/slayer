@@ -499,6 +499,61 @@ def test_derived_field_expression_unknown_column_clean_fails(shop_engine):
     assert _reported(result)
 
 
+def test_valid_cross_model_derived_field_kept(shop_engine):
+    # A derived field with a valid cross-model ref (join exists, column exists)
+    # survives the post-join validation pass.
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders",
+                       fields=[OSIField(name="customer_id", expression=_expr("customer_id")),
+                               OSIField(name="cust_seg", expression=_expr("customers.segment"))]),
+            OSIDataset(name="customers", source="customers",
+                       fields=[OSIField(name="customer_id", expression=_expr("customer_id"))]),
+        ],
+        relationships=[OSIRelationship(
+            name="o2c", **{"from": "orders"}, to="customers",
+            from_columns=["customer_id"], to_columns=["customer_id"])],
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "cust_seg" in {c.name for c in orders.columns}
+
+
+def test_cross_model_derived_field_unknown_column_dropped(shop_engine):
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders",
+                       fields=[OSIField(name="customer_id", expression=_expr("customer_id")),
+                               OSIField(name="bad", expression=_expr("customers.no_such_col"))]),
+            OSIDataset(name="customers", source="customers",
+                       fields=[OSIField(name="customer_id", expression=_expr("customer_id"))]),
+        ],
+        relationships=[OSIRelationship(
+            name="o2c", **{"from": "orders"}, to="customers",
+            from_columns=["customer_id"], to_columns=["customer_id"])],
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "bad" not in {c.name for c in orders.columns}
+    assert _reported(result)
+
+
+def test_cross_model_derived_field_no_join_path_dropped(shop_engine):
+    # products.category referenced from orders with NO relationship -> dropped.
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders",
+                       fields=[OSIField(name="cat", expression=_expr("products.category"))]),
+            OSIDataset(name="products", source="products",
+                       fields=[OSIField(name="category", expression=_expr("category"))]),
+        ],
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "cat" not in {c.name for c in orders.columns}
+    assert _reported(result)
+
+
 def test_derived_field_unparseable_expression_clean_fails(shop_engine):
     doc = _mini_doc(
         datasets=[OSIDataset(
