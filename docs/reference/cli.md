@@ -109,6 +109,21 @@ slayer import-dbt ./my_dbt_project --datasource my_postgres --include-hidden-mod
 | `dbt_project_path` | Yes | Path to the dbt project root (or a models directory) |
 | `--datasource` | Yes | SLayer datasource name for the imported models |
 | `--include-hidden-models` | No | Also import regular dbt models (those not wrapped by a `semantic_model`) as hidden SLayer models via SQL introspection. Requires the `dbt` extra (`pip install 'motley-slayer[dbt]'`). See [dbt Import](../dbt/dbt_import.md#regular-dbt-models-hidden-import). |
+
+### `slayer import-osi`
+
+Import OSI (Open Semantic Interchange) configs into SLayer. See [Importing OSI configs](../osi/osi_import.md).
+
+```bash
+slayer import-osi ./osi_configs --datasource my_postgres
+slayer import-osi ./model.yaml --datasource my_postgres --dialect SNOWFLAKE
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `osi_path` | Yes | Path to an OSI file or directory (`.yaml`/`.yml`/`.json`) |
+| `--datasource` | Yes | SLayer datasource name (must be reachable — column types come from live introspection) |
+| `--dialect` | No | OSI expression dialect to read (default `ANSI_SQL`); falls back to another SQL dialect when the requested one is absent |
 | `--storage` | No | Storage path |
 
 ### `slayer models`

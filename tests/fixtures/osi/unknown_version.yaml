@@ -1,0 +1,9 @@
+version: "9.9.9"
+semantic_model:
+  - name: v
+    datasets:
+      - name: t
+        source: t
+        fields:
+          - name: c
+            expression: {dialects: [{dialect: ANSI_SQL, expression: c}]}

@@ -103,3 +103,27 @@ class JoinGraph:
                 ]
                 best[v] = min(best[u] for u in preds) + [v]
         return best[target]
+
+
+def min_hops_root(
+    graph: "JoinGraph", candidates: list[str], mentioned: set[str]
+) -> str | None:
+    """Pick the root that reaches every ``mentioned`` model over ``graph``.
+
+    Shared selection core (DEV-1626 / DEV-1643): among ``candidates`` that reach
+    all mentioned models, minimize total hops summed over the mentioned set,
+    prefer a mentioned candidate on ties, then the lexicographically smallest
+    name. Returns ``None`` when no candidate reaches every mentioned model. An
+    empty ``mentioned`` set makes every candidate trivially valid (0 hops), so
+    the lexicographically smallest candidate is returned.
+    """
+    def total_hops(root: str) -> int:
+        return sum(len(graph.shortest_path(root, m) or []) for m in mentioned)
+
+    def reaches_all(root: str) -> bool:
+        return all(graph.shortest_path(root, m) is not None for m in mentioned)
+
+    valid = [c for c in candidates if reaches_all(c)]
+    if not valid:
+        return None
+    return min(valid, key=lambda n: (total_hops(n), 0 if n in mentioned else 1, n))
