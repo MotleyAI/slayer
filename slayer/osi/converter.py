@@ -160,6 +160,10 @@ class OsiToSlayerConverter:
         self._models: dict[str, SlayerModel] = {}
         self._warnings: list[ConversionWarning] = []
         self._unconverted: list[ConversionWarning] = []
+        # (model, column) -> the introspected Column a derived overlay replaced,
+        # so an invalidated overlay can be reverted to the physical column
+        # instead of deleting a real column.
+        self._shadowed: dict[tuple[str, str], Column] = {}
 
     # ---- report helpers ----
 
@@ -352,8 +356,11 @@ class OsiToSlayerConverter:
         elif existing is not col:
             # Preserve the shadowed column's primary-key flag across the
             # redefinition — an introspected PK must survive a derived overlay
-            # unless OSI's primary_key explicitly overrides it later.
+            # unless OSI's primary_key explicitly overrides it later. Remember
+            # the original so an overlay later invalidated by cross-model
+            # validation can revert to the physical column (not delete it).
             col.primary_key = existing.primary_key
+            self._shadowed.setdefault((model.name, col.name), existing)
             model.columns[model.columns.index(existing)] = col
             by_name[col.name] = col
         return col.name if is_time else None
@@ -509,13 +516,25 @@ class OsiToSlayerConverter:
                     if bad:
                         bad_cols.append((col, bad))
             for col, bad in bad_cols:
-                model.columns.remove(col)
                 dropped = True
-                self._warn(
-                    f"Column {col.name!r} on {model.name!r} references "
-                    f"unresolvable cross-model column(s) {bad}; dropping.",
-                    model_name=model.name, category="missing_column",
-                )
+                original = self._shadowed.pop((model.name, col.name), None)
+                if original is not None:
+                    # The invalid column was a derived overlay of a physical
+                    # column — revert to the physical column, don't delete it.
+                    model.columns[model.columns.index(col)] = original
+                    self._warn(
+                        f"Derived overlay for {col.name!r} on {model.name!r} "
+                        f"references unresolvable cross-model column(s) {bad}; "
+                        f"reverting to the physical column.",
+                        model_name=model.name, category="missing_column",
+                    )
+                else:
+                    model.columns.remove(col)
+                    self._warn(
+                        f"Column {col.name!r} on {model.name!r} references "
+                        f"unresolvable cross-model column(s) {bad}; dropping.",
+                        model_name=model.name, category="missing_column",
+                    )
         return dropped
 
     def _drop_stale_joins(self) -> bool:

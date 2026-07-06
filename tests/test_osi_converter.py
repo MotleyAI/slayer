@@ -359,6 +359,22 @@ def test_invalid_osi_primary_key_keeps_introspected(shop_engine):
     assert _reported(result)
 
 
+def test_invalid_derived_overlay_reverts_to_physical_column(shop_engine):
+    # An overlay on a physical column (order_id) with an unresolvable cross-model
+    # ref must revert to the physical column (keep it + PK), not delete it.
+    doc = _mini_doc(
+        datasets=[OSIDataset(name="orders", source="orders",
+                             fields=[OSIField(name="order_id",
+                                              expression=_expr("customers.no_such_col"))])]
+    )
+    result = _convert(shop_engine, doc)
+    cols = {c.name: c for c in {m.name: m for m in result.models}["orders"].columns}
+    assert "order_id" in cols
+    assert cols["order_id"].primary_key is True
+    assert cols["order_id"].sql != "customers.no_such_col"
+    assert _reported(result)
+
+
 def test_derived_overlay_preserves_primary_key(shop_engine):
     # A derived overlay on the PK column (OSI not restating primary_key) keeps
     # the introspected PK flag.
