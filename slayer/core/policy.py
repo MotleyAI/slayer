@@ -150,6 +150,35 @@ def _parse_hop(spec: str) -> JoinHop:
     )
 
 
+def _validate_hop_chain(*, target_table: str, hops: Tuple["JoinHop", ...]) -> None:
+    """Assert the parsed ``hops`` form a valid chain: non-empty, the first hop
+    starts at ``target_table``, and each hop starts where the previous ended.
+
+    Physical table names compare case-insensitively — unquoted SQL identifiers
+    are case-insensitive on every supported backend, and the SQL-layer target
+    match is case-insensitive too. Raises ``ValueError`` on any violation.
+    Runs both at construction and on every ``parsed_hops`` access, so a rule
+    reconstructed via ``model_copy(update=...)`` (which bypasses Pydantic
+    validation) can never feed a non-chaining path to SQL generation — it fails
+    closed instead.
+    """
+    if not hops:
+        raise ValueError("JoinFilterRule.join_path must be non-empty")
+    if hops[0].from_table.casefold() != target_table.casefold():
+        raise ValueError(
+            "JoinFilterRule.join_path[0].from_table "
+            f"({hops[0].from_table!r}) must equal target_table "
+            f"({target_table!r})"
+        )
+    for prev, cur in zip(hops, hops[1:]):
+        if cur.from_table.casefold() != prev.to_table.casefold():
+            raise ValueError(
+                "JoinFilterRule.join_path hops must chain: hop from_table "
+                f"{cur.from_table!r} must equal the previous hop's to_table "
+                f"{prev.to_table!r}"
+            )
+
+
 class JoinFilterRule(BaseModel):
     """Scope ``target_table`` via an explicit join path to the tenant column.
 
@@ -180,10 +209,14 @@ class JoinFilterRule(BaseModel):
 
     @property
     def parsed_hops(self) -> Tuple[JoinHop, ...]:
-        """The ``join_path`` strings parsed into internal :class:`JoinHop`s,
-        derived fresh on each access (never stored/serialized, so a
-        ``model_copy`` that swaps ``join_path`` can never go stale)."""
-        return tuple(_parse_hop(spec) for spec in self.join_path)
+        """The ``join_path`` strings parsed into internal :class:`JoinHop`s and
+        chain-validated, derived fresh on each access (never stored/serialized,
+        so a ``model_copy`` that swaps ``join_path``/``target_table`` can never
+        go stale and can never feed a non-chaining path to SQL generation — it
+        re-parses and re-validates, failing closed on a broken copy)."""
+        hops = tuple(_parse_hop(spec) for spec in self.join_path)
+        _validate_hop_chain(target_table=self.target_table, hops=hops)
+        return hops
 
     @field_validator("target_table", "column")
     @classmethod
@@ -211,27 +244,10 @@ class JoinFilterRule(BaseModel):
 
     @model_validator(mode="after")
     def _validate_chain(self):
-        # Parse the hop strings once at construction (fail fast on malformed
-        # input) and validate the chain on the parsed hops. Physical table
-        # names compare case-insensitively — unquoted SQL identifiers are
-        # case-insensitive on every supported backend, and the SQL-layer target
-        # match is case-insensitive too.
-        hops = self.parsed_hops
-        if not hops:
-            raise ValueError("JoinFilterRule.join_path must be non-empty")
-        if hops[0].from_table.casefold() != self.target_table.casefold():
-            raise ValueError(
-                "JoinFilterRule.join_path[0].from_table "
-                f"({hops[0].from_table!r}) must equal target_table "
-                f"({self.target_table!r})"
-            )
-        for prev, cur in zip(hops, hops[1:]):
-            if cur.from_table.casefold() != prev.to_table.casefold():
-                raise ValueError(
-                    "JoinFilterRule.join_path hops must chain: hop from_table "
-                    f"{cur.from_table!r} must equal the previous hop's to_table "
-                    f"{prev.to_table!r}"
-                )
+        # Parse the hop strings and validate the chain once at construction
+        # (fail fast on malformed / non-chaining input). ``parsed_hops`` does
+        # both, so the same guard also protects the SQL-generation path.
+        _ = self.parsed_hops
         return self
 
 

@@ -231,11 +231,12 @@ def test_join_rule_extra_forbidden():
 
 
 def test_join_rule_kind_literal_enforced():
+    hop = _hop()
     with pytest.raises(ValidationError):
         JoinFilterRule(
             kind="column",
             target_table="orders",
-            join_path=[_hop()],
+            join_path=[hop],
             column="org",
             value="x",
         )
@@ -476,6 +477,19 @@ def test_join_rule_model_copy_update_rederives_parsed_hops():
     )
     assert copied.parsed_hops[0].from_table == "line_items"
     assert copied.parsed_hops[0].to_table == "orders"
+
+
+def test_join_rule_model_copy_breaking_chain_fails_closed():
+    """model_copy(update=) bypasses Pydantic validation, but parsed_hops
+    re-validates the chain on access, so a copy that swaps join_path to a
+    non-chaining path fails closed (raises) rather than feeding SQL generation
+    a bad correlation."""
+    rule = _join_rule()  # target_table="orders"
+    broken = rule.model_copy(
+        update={"join_path": ("line_items.order_id = customers.id",)}
+    )
+    with pytest.raises(ValueError):
+        _ = broken.parsed_hops
 
 
 # -- SessionPolicy discriminated union (DEV-1627) ----------------------------
