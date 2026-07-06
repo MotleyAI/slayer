@@ -499,6 +499,68 @@ def test_derived_field_expression_unknown_column_clean_fails(shop_engine):
     assert _reported(result)
 
 
+def test_cross_model_validation_fixed_point_transitive_drop(shop_engine):
+    # orders.cust_bad -> customers.bad_region -> regions.no_such_col.
+    # bad_region drops (regions.no_such_col missing); cust_bad must drop too.
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders",
+                       fields=[OSIField(name="customer_id", expression=_expr("customer_id")),
+                               OSIField(name="cust_bad", expression=_expr("customers.bad_region"))]),
+            OSIDataset(name="customers", source="customers",
+                       fields=[OSIField(name="customer_id", expression=_expr("customer_id")),
+                               OSIField(name="region_id", expression=_expr("region_id")),
+                               OSIField(name="bad_region", expression=_expr("regions.no_such_col"))]),
+            OSIDataset(name="regions", source="regions",
+                       fields=[OSIField(name="region_id", expression=_expr("region_id"))]),
+        ],
+        relationships=[
+            OSIRelationship(name="o2c", **{"from": "orders"}, to="customers",
+                            from_columns=["customer_id"], to_columns=["customer_id"]),
+            OSIRelationship(name="c2r", **{"from": "customers"}, to="regions",
+                            from_columns=["region_id"], to_columns=["region_id"]),
+        ],
+    )
+    result = _convert(shop_engine, doc)
+    models = {m.name: m for m in result.models}
+    assert "bad_region" not in {c.name for c in models["customers"].columns}
+    assert "cust_bad" not in {c.name for c in models["orders"].columns}
+
+
+def test_nested_scope_alias_in_derived_field_not_flagged(shop_engine):
+    # x is a subquery alias, not a join; scope-aware validation must keep it.
+    doc = _mini_doc(datasets=[OSIDataset(
+        name="orders", source="orders",
+        fields=[OSIField(name="sub",
+                         expression=_expr("(SELECT x.amount FROM orders AS x LIMIT 1)"))],
+    )])
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert "sub" in {c.name for c in orders.columns}
+
+
+def test_duplicate_relationship_to_same_target_skipped(shop_engine):
+    doc = _mini_doc(
+        datasets=[
+            OSIDataset(name="orders", source="orders",
+                       fields=[OSIField(name="customer_id", expression=_expr("customer_id")),
+                               OSIField(name="product_id", expression=_expr("product_id"))]),
+            OSIDataset(name="customers", source="customers",
+                       fields=[OSIField(name="customer_id", expression=_expr("customer_id"))]),
+        ],
+        relationships=[
+            OSIRelationship(name="o2c_bill", **{"from": "orders"}, to="customers",
+                            from_columns=["customer_id"], to_columns=["customer_id"]),
+            OSIRelationship(name="o2c_ship", **{"from": "orders"}, to="customers",
+                            from_columns=["product_id"], to_columns=["customer_id"]),
+        ],
+    )
+    result = _convert(shop_engine, doc)
+    orders = {m.name: m for m in result.models}["orders"]
+    assert len([j for j in orders.joins if j.target_model == "customers"]) == 1
+    assert _reported(result)
+
+
 def test_valid_cross_model_derived_field_kept(shop_engine):
     # A derived field with a valid cross-model ref (join exists, column exists)
     # survives the post-join validation pass.

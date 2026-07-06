@@ -22,6 +22,7 @@ from slayer.core.enums import DataType
 from slayer.core.formula import parse_formula
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
+from slayer.engine.column_expansion import _root_scope_column_ids
 from slayer.engine.ingestion import introspect_table_to_model
 from slayer.engine.join_graph import JoinGraph, min_hops_root
 from slayer.ingest_report import ConversionResult, ConversionWarning
@@ -418,6 +419,19 @@ class OsiToSlayerConverter:
             )
             return
 
+        # SLayer's ModelJoin keys only on target_model and runtime join-walking
+        # picks the first match, so a second relationship to the same target
+        # (e.g. a distinct role) would be unreachable and could bind refs to the
+        # wrong join. Keep the first; report and skip duplicates.
+        if any(j.target_model == rel.to for j in self._models[src].joins):
+            self._warn(
+                f"Relationship {rel.name!r} is a second join from {src!r} to "
+                f"{rel.to!r}; SLayer cannot disambiguate multiple joins to one "
+                f"model (no join aliases). Keeping the first; skipping this one.",
+                model_name=src, category="relationship",
+            )
+            return
+
         pairs = [[f, t] for f, t in zip(rel.from_columns, rel.to_columns)]
         self._models[src].joins.append(ModelJoin(
             target_model=rel.to,
@@ -433,29 +447,42 @@ class OsiToSlayerConverter:
         names a model with no join path or a nonexistent target column — so a
         typo clean-fails at import instead of erroring at query time.
         """
-        for model in list(self._models.values()):
-            for col in list(model.columns):
-                if not col.sql:
-                    continue
-                bad = self._unresolvable_cross_model_refs(model, col.sql)
-                if bad:
-                    model.columns.remove(col)
-                    self._warn(
-                        f"Column {col.name!r} on {model.name!r} references "
-                        f"unresolvable cross-model column(s) {bad}; dropping.",
-                        model_name=model.name, category="missing_column",
-                    )
+        # Fixed-point: dropping a column can invalidate another column that
+        # referenced it, so re-run until a pass drops nothing.
+        changed = True
+        while changed:
+            changed = False
+            for model in list(self._models.values()):
+                for col in list(model.columns):
+                    if not col.sql:
+                        continue
+                    bad = self._unresolvable_cross_model_refs(model, col.sql)
+                    if bad:
+                        model.columns.remove(col)
+                        changed = True
+                        self._warn(
+                            f"Column {col.name!r} on {model.name!r} references "
+                            f"unresolvable cross-model column(s) {bad}; dropping.",
+                            model_name=model.name, category="missing_column",
+                        )
 
     def _unresolvable_cross_model_refs(self, model: SlayerModel, sql: str) -> list[str]:
         """Cross-model (non-self, qualified) column refs in ``sql`` that don't
-        resolve to a joined model + existing column. Self / unqualified refs were
-        validated at field-overlay time."""
+        resolve to a joined model + existing column. Mirrors runtime scope rules:
+        only root-scope refs are checked (nested subquery/CTE aliases are left
+        alone), and catalog/db-qualified physical refs are skipped. Self /
+        unqualified refs were validated at field-overlay time."""
         try:
             tree = sqlglot.parse_one(sql)
         except sqlglot.errors.ParseError:
             return []
+        root_ids = _root_scope_column_ids(parsed=tree)
         bad = []
         for col in tree.find_all(exp.Column):
+            if id(col) not in root_ids:
+                continue  # nested-scope alias (CTE / sub-query) — not a join ref
+            if col.args.get("db") or col.args.get("catalog"):
+                continue  # catalog/db-qualified physical ref — outside SLayer's contract
             if not col.table or col.table == model.name:
                 continue
             target = self._walk_join_alias(model, col.table)
