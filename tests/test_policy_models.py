@@ -484,7 +484,7 @@ def test_join_rule_model_copy_breaking_chain_fails_closed():
     re-validates the chain on access, so a copy that swaps join_path to a
     non-chaining path fails closed (raises) rather than feeding SQL generation
     a bad correlation."""
-    rule = _join_rule()  # target_table="orders"
+    rule = _join_rule()  # _join_rule targets the orders table
     broken = rule.model_copy(
         update={"join_path": ("line_items.order_id = customers.id",)}
     )
