@@ -87,10 +87,12 @@ async def _save_orders_customers_regions(storage: YAMLStorage) -> SlayerModel:
     await storage.save_model(customers)
     orders = SlayerModel(
         name="orders", sql_table="orders", data_source="test",
+        default_time_dimension="created_at",  # lets first/last + cumsum tests reuse this graph
         columns=[
             Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
             Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
             Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     )
@@ -286,35 +288,7 @@ class TestFlavorAOrderByUnprojected:
         the join in, ordering by that joined column in the combined-CTE path must
         reject rather than emit an unbound reference (Codex review of PR #224)."""
         storage = YAMLStorage(base_dir=str(tmp_path))
-        regions = SlayerModel(
-            name="regions", sql_table="regions", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="name", sql="name", type=DataType.TEXT),
-            ],
-        )
-        await storage.save_model(regions)
-        customers = SlayerModel(
-            name="customers", sql_table="customers", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
-            ],
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
-        )
-        await storage.save_model(customers)
-        orders = SlayerModel(
-            name="orders", sql_table="orders", data_source="test",
-            default_time_dimension="created_at",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-        )
-        await storage.save_model(orders)
+        orders = await _save_orders_customers_regions(storage)
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
@@ -331,11 +305,7 @@ class TestFlavorAOrderByUnprojected:
         a joined column even when a filter pulled the join in. Must reject, not
         emit an unbound reference (Codex review of PR #224)."""
         storage = YAMLStorage(base_dir=str(tmp_path))
-        orders = await self._save_orders_customers_regions(storage)
-        # add a time column so first/last has a time context
-        orders.columns.append(Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP))
-        orders.default_time_dimension = "created_at"
-        await storage.save_model(orders)
+        orders = await _save_orders_customers_regions(storage)
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "amount:last(created_at)", "name": "latest"}],  # ranked-subquery wrap
@@ -406,35 +376,7 @@ class TestFlavorAJoinedOrderByDeferred:
         """A windowed-measure (combined-CTE) query that filters on and orders by
         a joined column should eventually resolve it in the outer scope."""
         storage = YAMLStorage(base_dir=str(tmp_path))
-        regions = SlayerModel(
-            name="regions", sql_table="regions", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="name", sql="name", type=DataType.TEXT),
-            ],
-        )
-        await storage.save_model(regions)
-        customers = SlayerModel(
-            name="customers", sql_table="customers", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
-            ],
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
-        )
-        await storage.save_model(customers)
-        orders = SlayerModel(
-            name="orders", sql_table="orders", data_source="test",
-            default_time_dimension="created_at",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-        )
-        await storage.save_model(orders)
+        orders = await _save_orders_customers_regions(storage)
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
