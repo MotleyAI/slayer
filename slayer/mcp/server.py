@@ -278,6 +278,17 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         ),
     )
     engine = SlayerQueryEngine(storage=storage)
+    # DEV-1656: expose the closure engine so callers (bird-interact-agents on
+    # the cloud Ray runner, where one actor process is reused across many
+    # tasks) can dispose its per-task asyncpg pools at task teardown:
+    #   engine = getattr(mcp, "_slayer_engine", None)
+    #   if engine is not None:
+    #       await engine.aclose()   # loop-bound; run before the task loop closes
+    # aclose() is idempotent and leaves the engine reusable (a later execute
+    # lazily recreates the async engine). The read-only introspection tools
+    # (validate_models / recommend_root_model) reuse this same engine so a
+    # single engine holds every cached SQL client for the server's lifetime.
+    mcp._slayer_engine = engine
 
     _help_description = (
         "Return conceptual help on SLayer. "
@@ -1619,7 +1630,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             ds = await storage.get_datasource(data_source)
             if ds is None:
                 return f"Datasource '{data_source}' not found."
-        engine = SlayerQueryEngine(storage=storage)
+        # DEV-1656: reuse the closure engine (not a fresh per-call engine) so
+        # the schema-drift SQL client it opens is cached on the server's
+        # engine and disposed by ``mcp._slayer_engine.aclose()`` at teardown.
         try:
             entries = await engine.validate_models(data_source=data_source)
         except (sa.exc.OperationalError, sa.exc.DatabaseError) as exc:
@@ -1668,7 +1681,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 f"recommend_root_model failed: unknown format '{format}'. "
                 f"Use 'markdown' or 'json'."
             )
-        engine = SlayerQueryEngine(storage=storage)
+        # DEV-1656: reuse the closure engine (see validate_models above).
         try:
             rec = await engine.recommend_root_model(
                 items, data_source=data_source, root_hint=root_hint
