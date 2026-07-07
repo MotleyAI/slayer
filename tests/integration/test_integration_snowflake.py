@@ -733,3 +733,64 @@ def test_query_result_keys_use_lowercase(sf_storage_with_models) -> None:
     keys = set(first_row.keys())
     # Lowercase form is the canonical key.
     assert "orders.status" in keys, f"Expected lowercase 'orders.status' in row keys, got: {keys}"
+
+
+# ---------------------------------------------------------------------------
+# DEV-1645: mixed-case identifiers must be double-quoted for Snowflake.
+#
+# Snowflake folds UNQUOTED identifiers to UPPERCASE. A column created via
+# QUOTED DDL (``"StateFlag"``) is stored with genuinely mixed case, so an
+# UNQUOTED reference (which folds to ``STATEFLAG``) fails to resolve — exactly
+# the upper-folding mirror of the Postgres bug. The fix quotes it, so the
+# model (which writes ``StateFlag`` unquoted, as an OTF agent would) executes.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sf_dev1645_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig, tmp_path):
+    conn = snowflake.connector.connect(connection_name=_CONNECTION_NAME)
+    cur = conn.cursor()
+    try:
+        cur.execute(f"USE SCHEMA {sf_transient_schema}")
+        # QUOTED mixed-case column => genuinely stored as "StateFlag".
+        cur.execute('CREATE TABLE dev1645_accounts (id INT, "StateFlag" TEXT)')
+        cur.executemany(
+            'INSERT INTO dev1645_accounts (id, "StateFlag") VALUES (%s, %s)',
+            [(1, "Dormant"), (2, "Active"), (3, "Dormant")],
+        )
+        conn.commit()
+
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        run_sync(storage.save_datasource(sf_datasource))
+        model = SlayerModel(
+            name="dev1645_accounts",
+            sql_table="dev1645_accounts",
+            data_source="sf_test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                # Written UNQUOTED — the fix must emit "StateFlag".
+                Column(name="is_inactive", type=DataType.BOOLEAN,
+                       sql="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END"),
+            ],
+        )
+        run_sync(storage.save_model(model))
+        yield storage
+    finally:
+        try:
+            cur.execute("DROP TABLE IF EXISTS dev1645_accounts")
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+
+
+def test_dev1645_mixed_case_column_executes(sf_dev1645_storage) -> None:
+    """Filter on a derived column referencing UNQUOTED mixed-case StateFlag —
+    must execute on Snowflake (upper-folding), proving universal quoting is
+    correct there too."""
+    engine = SlayerQueryEngine(storage=sf_dev1645_storage)
+    result = run_sync(engine.execute(SlayerQuery(
+        source_model="dev1645_accounts",
+        measures=[ModelMeasure(formula="*:count", name="cnt")],
+        filters=["is_inactive == True"],
+    )))
+    assert result.data[0]["dev1645_accounts.cnt"] == 2
