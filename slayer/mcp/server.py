@@ -272,8 +272,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         instructions=(
             "SLayer is a semantic layer for querying databases. "
             "Instead of writing SQL, describe what data you want using models, measures, dimensions, and filters. "
-            "Call help() for an overview of SLayer concepts, and help(topic='...') for deep dives on specific topics. "
-            "Typical workflow: list_datasources → models_summary → inspect → query. "
+            "Before calling any other SLayer tool, call help() first for an overview of SLayer concepts, then help(topic='...') for deep dives on specific topics. "
+            "Typical workflow: help → search → inspect → query. "
             "To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."
         ),
     )
