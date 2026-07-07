@@ -989,7 +989,7 @@ class SQLGenerator:
             }
             for order_item in enriched.order:
                 col = order_item.column
-                ref = self._resolve_order_column(col=col, enriched=enriched, joins_in_scope=False)
+                ref = self._resolve_order_column(col=col, enriched=enriched)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
                 if ref.is_alias and ref.text in base_cols:
                     order_parts.append(f'_base.{self._q(ref.text)} {direction}')
@@ -1011,7 +1011,7 @@ class SQLGenerator:
             order_parts = []
             for order_item in enriched.order:
                 col = order_item.column
-                ref = SQLGenerator._resolve_order_column(col=col, enriched=enriched, joins_in_scope=False)
+                ref = SQLGenerator._resolve_order_column(col=col, enriched=enriched)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
                 if ref.is_alias:
                     order_parts.append(f'{self._q(ref.text)} {direction}')
@@ -1357,11 +1357,7 @@ class SQLGenerator:
         rn_suffix_map: dict[str, str] = {}
         filtered_rn_map: dict[str, str] = {}
         filtered_match_map: dict[str, str] = {}
-        # DEV-1645: when the FROM is wrapped in a first/last ranked subquery, the
-        # joins live INSIDE that subquery (the outer SELECT only sees model.*),
-        # so joined columns are NOT in the outer ORDER BY scope.
-        from_wrapped_in_ranked = bool(has_first_or_last and enriched.last_agg_time_column)
-        if from_wrapped_in_ranked:
+        if has_first_or_last and enriched.last_agg_time_column:
             (
                 from_clause,
                 rn_suffix_map,
@@ -1471,10 +1467,7 @@ class SQLGenerator:
             and not skip_isolated
             and not has_post_filters
         ):
-            select = self._apply_order_limit(
-                select=select, enriched=enriched,
-                joins_in_scope=not from_wrapped_in_ranked,
-            )
+            select = self._apply_order_limit(select=select, enriched=enriched)
 
         # Append LEFT JOINs from resolved joins via sqlglot AST (works for both
         # sql_table and inline-SQL models).
@@ -1921,9 +1914,7 @@ class SQLGenerator:
             return prev
         raise ValueError(f"Unknown self-join transform: {transform}")
 
-    def _apply_order_limit(
-        self, select: exp.Select, enriched: EnrichedQuery, *, joins_in_scope: bool = True
-    ) -> exp.Select:
+    def _apply_order_limit(self, select: exp.Select, enriched: EnrichedQuery) -> exp.Select:
         """Apply ORDER BY, LIMIT, OFFSET to a select expression.
 
         DEV-1571 Bug 2 follow-up: on MySQL / T-SQL, sqlglot emits a
@@ -1943,9 +1934,7 @@ class SQLGenerator:
         if enriched.order:
             for order_item in enriched.order:
                 col = order_item.column
-                ref = self._resolve_order_column(
-                    col=col, enriched=enriched, joins_in_scope=joins_in_scope
-                )
+                ref = self._resolve_order_column(col=col, enriched=enriched)
                 if ref.is_alias:
                     order_col = exp.Column(this=exp.to_identifier(ref.text, quoted=True))
                 else:
@@ -1975,7 +1964,7 @@ class SQLGenerator:
         return col.sql(dialect=self.dialect)
 
     @staticmethod
-    def _resolve_order_column(col, enriched: EnrichedQuery, *, joins_in_scope: bool) -> _OrderColRef:
+    def _resolve_order_column(col, enriched: EnrichedQuery) -> _OrderColRef:
         """Resolve an order column reference to a discriminated result.
 
         Users refer to columns by their short name (e.g., ``count``,
@@ -2034,35 +2023,21 @@ class SQLGenerator:
         if prefixed in alias_lookup:
             return _OrderColRef(alias_lookup[prefixed], True, None, None)
 
-        # Fallback: split table.column reference against the FROM-scope alias.
-        # DEV-1645: resolve the qualifier to an in-scope table — the base model
-        # or a join already pulled into scope. A multi-hop dotted qualifier
-        # (``customers.regions``) maps to its ``__`` join alias
-        # (``customers__regions``). If neither is in scope (ordering by an
-        # unprojected joined column whose join was never resolved), reject
-        # rather than emit SQL that fails at the database.
-        #
-        # ``joins_in_scope`` is set by the caller per emission site: True only
-        # for the base SELECT (``_apply_order_limit``), where the resolved
-        # LEFT JOINs are physically in the FROM. The CTE-wrapped sites
-        # (``_assemble_combined_sql`` / ``_apply_pagination_to_sql``) order from
-        # ``_base`` / ``_filtered`` / measure CTEs, so a filter-pulled join
-        # alias is NOT bound there — treating it as in-scope would emit an
-        # unbound reference, so those sites exclude joins and reject a joined
-        # order column. The base-model qualifier stays in-scope either way (the
-        # documented ``_base`` base-column limitation is intentionally not
+        # Fallback: a non-projected order key is only safe to emit as a split
+        # reference against the BASE-model alias. DEV-1645: a joined qualifier
+        # (anything other than the base model) is rejected. Even when a filter
+        # pulls the join into the base FROM, the compiler's outer-wrapping
+        # layers (measure CTEs, pagination, the first/last ranked subquery, and
+        # projection trimming) relocate the ORDER BY into a scope where the
+        # joined table is unbound — emitting the reference there would produce
+        # invalid SQL. Ordering by a joined column therefore requires projecting
+        # it (add it to dimensions) or ordering by a projected field. The
+        # base-model qualifier is still emitted as a split reference (the
+        # documented measure-CTE ``_base`` base-column case is intentionally not
         # rejected).
-        in_scope = {enriched.model_name}
-        if joins_in_scope:
-            in_scope |= {a for _, a, _, _ in enriched.resolved_joins}
-        join_alias = model_prefix.replace(".", "__")
-        if model_prefix in in_scope:
-            qualifier = model_prefix
-        elif join_alias in in_scope:
-            qualifier = join_alias
-        else:
+        if model_prefix != enriched.model_name:
             raise UnresolvableOrderColumnError(column=user_name, qualifier=model_prefix)
-        return _OrderColRef(f"{qualifier}.{user_name}", False, qualifier, user_name)
+        return _OrderColRef(f"{model_prefix}.{user_name}", False, model_prefix, user_name)
 
     # ------------------------------------------------------------------
     # FROM / JOIN building

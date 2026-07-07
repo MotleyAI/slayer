@@ -65,6 +65,39 @@ async def _generate_via_engine(
     return SQLGenerator(dialect=dialect).generate(enriched=enriched)
 
 
+async def _save_orders_customers_regions(storage: YAMLStorage) -> SlayerModel:
+    """orders → customers → regions two-hop join graph. Returns the orders
+    (root) model. Shared by the joined-ORDER-BY reject + deferred xfail tests."""
+    regions = SlayerModel(
+        name="regions", sql_table="regions", data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
+        ],
+    )
+    await storage.save_model(regions)
+    customers = SlayerModel(
+        name="customers", sql_table="customers", data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+    )
+    await storage.save_model(customers)
+    orders = SlayerModel(
+        name="orders", sql_table="orders", data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )
+    await storage.save_model(orders)
+    return orders
+
+
 # ----------------------------------------------------------------------------
 # Fixtures
 # ----------------------------------------------------------------------------
@@ -212,36 +245,7 @@ class TestFlavorAOrderByUnprojected:
         sql = _norm(await _generate_via_engine(query, accts, storage))
         assert 'ORDER BY "accts.clusters.sc" DESC' in sql
 
-    @staticmethod
-    async def _save_orders_customers_regions(storage: YAMLStorage) -> SlayerModel:
-        regions = SlayerModel(
-            name="regions", sql_table="regions", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="name", sql="name", type=DataType.TEXT),
-            ],
-        )
-        await storage.save_model(regions)
-        customers = SlayerModel(
-            name="customers", sql_table="customers", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
-            ],
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
-        )
-        await storage.save_model(customers)
-        orders = SlayerModel(
-            name="orders", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-        )
-        await storage.save_model(orders)
-        return orders
+    _save_orders_customers_regions = staticmethod(_save_orders_customers_regions)
 
     async def test_orderby_unresolvable_joined_column_rejected(self, tmp_path) -> None:
         """Ordering by an unprojected multi-hop joined column whose join was
@@ -258,10 +262,12 @@ class TestFlavorAOrderByUnprojected:
         with pytest.raises(UnresolvableOrderColumnError):
             await _generate_via_engine(query, orders, storage)
 
-    async def test_orderby_joined_column_in_scope_uses_join_alias(self, tmp_path) -> None:
-        """When the join IS in scope (pulled in by a filter), ordering by the
-        joined column resolves to the canonical ``__`` join alias, not a bogus
-        dotted composite."""
+    async def test_orderby_joined_column_rejected_even_when_filter_pulls_join_in(self, tmp_path) -> None:
+        """An unprojected joined ORDER BY is rejected even when a filter pulls
+        the join into the base FROM: the compiler's outer-wrapping layers
+        (measure CTEs, pagination, first/last ranked, projection trim) relocate
+        the ORDER BY into a scope where the joined table is unbound, so resolving
+        it is unsafe. Project the column or order by a projected field instead."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         orders = await self._save_orders_customers_regions(storage)
         query = SlayerQuery(
@@ -270,9 +276,8 @@ class TestFlavorAOrderByUnprojected:
             filters=["customers.regions.name == 'US'"],
             order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
         )
-        sql = _norm(await _generate_via_engine(query, orders, storage))
-        assert "ORDER BY customers__regions.name" in sql
-        assert '"customers.regions"' not in sql
+        with pytest.raises(UnresolvableOrderColumnError):
+            await _generate_via_engine(query, orders, storage)
 
     async def test_orderby_joined_column_rejected_in_cte_wrapped_scope(self, tmp_path) -> None:
         """A joined column can be resolved in the base SELECT (joins in FROM),
@@ -339,6 +344,106 @@ class TestFlavorAOrderByUnprojected:
         )
         with pytest.raises(UnresolvableOrderColumnError):
             await _generate_via_engine(query, orders, storage)
+
+
+# ============================================================================
+# Flavor A — DEFERRED capability: joined / cross-model ORDER BY resolution
+# ============================================================================
+
+class TestFlavorAJoinedOrderByDeferred:
+    """DEV-1645 chose to REJECT any unprojected joined/cross-model ORDER BY
+    (raising ``UnresolvableOrderColumnError``) rather than resolve it, because
+    the compiler's several outer-wrapping layers (measure CTEs, pagination, the
+    first/last ranked subquery, projection trim) relocate the ORDER BY into a
+    scope where the joined table is unbound — so resolving it in the base SELECT
+    is not reliably safe.
+
+    These xfail tests document the DEFERRED aspiration: ordering by an (in-scope)
+    joined column should eventually produce valid SQL the way filters already
+    resolve joined columns. They currently xfail because the code rejects.
+    ``strict=True`` flips them to XPASS — failing the suite — if joined ORDER BY
+    resolution is ever implemented, prompting removal of this xfail and the
+    reject. The companion reject tests in ``TestFlavorAOrderByUnprojected`` pin
+    the current contract (reject cleanly, never emit invalid SQL)."""
+
+    _REASON = (
+        "DEV-1645: joined/cross-model ORDER BY resolution is deferred — currently "
+        "rejected with UnresolvableOrderColumnError (project the column or order by "
+        "a projected field). Remove this xfail when joined ORDER BY resolves."
+    )
+
+    @pytest.mark.xfail(strict=True, reason=_REASON)
+    async def test_joined_orderby_with_filter_in_scope_should_resolve(self, tmp_path) -> None:
+        """A filter pulls the join into the base FROM; ordering by that joined
+        column should resolve to the canonical ``__`` alias."""
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        orders = await _save_orders_customers_regions(storage)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "amount:sum", "name": "rev"}],
+            filters=["customers.regions.name == 'US'"],
+            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        )
+        sql = _norm(await _generate_via_engine(query, orders, storage))
+        assert "ORDER BY customers__regions.name" in sql
+
+    @pytest.mark.xfail(strict=True, reason=_REASON)
+    async def test_joined_orderby_without_filter_should_pull_join_and_resolve(self, tmp_path) -> None:
+        """Ordering by a joined column with no other reference should pull the
+        join in (like filters do) and resolve, rather than reject."""
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        orders = await _save_orders_customers_regions(storage)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "amount:sum", "name": "rev"}],
+            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        )
+        sql = _norm(await _generate_via_engine(query, orders, storage))
+        assert "ORDER BY customers__regions.name" in sql
+
+    @pytest.mark.xfail(strict=True, reason=_REASON)
+    async def test_joined_orderby_in_cte_wrapped_scope_should_resolve(self, tmp_path) -> None:
+        """A windowed-measure (combined-CTE) query that filters on and orders by
+        a joined column should eventually resolve it in the outer scope."""
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        regions = SlayerModel(
+            name="regions", sql_table="regions", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+            ],
+        )
+        await storage.save_model(regions)
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        )
+        await storage.save_model(customers)
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            default_time_dimension="created_at",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        await storage.save_model(orders)
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
+            filters=["customers.regions.name == 'US'"],
+            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        )
+        sql = _norm(await _generate_via_engine(query, orders, storage))
+        assert "customers__regions.name" in sql
 
 
 # ============================================================================
