@@ -958,9 +958,47 @@ def test_where_aggregate_alias_match_is_case_sensitive(dialect) -> None:
     filters = result.query.filters or []
     # Did NOT route through the colon-form path…
     assert "*:count > 1" not in filters
-    # …and DID fall through to the verbatim branch, preserving "Count".
+    # …and DID fall through to the verbatim branch. The column is emitted
+    # UN-quoted (``Count``, not ``"Count"``) so the Mode B DSL reads it as a
+    # column reference rather than a string literal — case still preserved.
     assert len(filters) == 1
-    assert '"Count"' in filters[0]
+    assert "Count > 1" in filters[0]
+    assert '"Count"' not in filters[0]
+
+
+def test_double_quoted_column_in_where_becomes_column_not_string_literal(dialect) -> None:
+    """Regression: a double-quoted column identifier in a WHERE filter must
+    emit UN-quoted into ``SlayerQuery.filters``. ``filters`` is Mode B
+    (Python-AST DSL) where ``"status"`` is a STRING LITERAL identical to
+    ``'status'`` — not a column ref. The quoted form silently rewrote
+    ``WHERE "status" = 'x'`` into the constant-vs-constant comparison
+    ``'status' = 'x'``, matching NO rows (silent data loss)."""
+    result = translate(
+        sql='SELECT status, COUNT(*) FROM orders WHERE "status" = \'paid\' GROUP BY status',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    filters = result.query.filters or []
+    assert len(filters) == 1
+    # Emitted as a bare column, NOT a double-quoted string-literal lookalike.
+    assert filters[0] == "status = 'paid'"
+    # The Mode B DSL must read ``status`` as a column, not a literal.
+    from slayer.core.formula import parse_filter
+    assert parse_filter(filters[0]).columns == ["status"]
+
+
+def test_double_quoted_qualified_column_in_where_unquotes(dialect) -> None:
+    """Schema/table-qualified double-quoted columns also un-quote:
+    ``"public"."orders"."status"`` → ``status``."""
+    result = translate(
+        sql='SELECT status, COUNT(*) FROM "public"."orders" '
+            'WHERE "public"."orders"."status" = \'paid\' GROUP BY status',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    filters = result.query.filters or []
+    assert len(filters) == 1
+    assert filters[0] == "status = 'paid'"
 
 
 def test_having_aggregate_alias_against_non_literal_raises(dialect) -> None:
