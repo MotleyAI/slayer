@@ -28,6 +28,7 @@ from sqlglot.optimizer.scope import traverse_scope
 
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
+from slayer.engine import timing
 from slayer.facade.catalog import (
     FacadeCatalog,
     build_catalog_grouped_by_schema,
@@ -849,9 +850,10 @@ class PgConnection:
             # passing it to the engine.
             if result.data_source is None:
                 raise ValueError("could not resolve a datasource for the query")
-            response = await self._engine.execute(
-                query=result.query, data_source=result.data_source,
-            )
+            with timing.open_query_profile():
+                response = await self._engine.execute(
+                    query=result.query, data_source=result.data_source,
+                )
         except Exception as exc:  # noqa: BLE001 — surface any engine error to the client
             code, message = _engine_error_fields(exc)
             await self._send_error(code=code, message=message)
