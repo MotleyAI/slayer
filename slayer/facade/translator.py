@@ -2273,12 +2273,19 @@ def _unwrap_probe(
 # (``BEGIN READ ONLY``, ``START TRANSACTION ISOLATION LEVEL …``). The facade is
 # read-only, so every variant is a no-op that just opens a transaction; we
 # recognise them BEFORE the parse to avoid the parse error entirely.
+#
+# The characteristic run uses a POSSESSIVE quantifier (``[^;]*+``) so the
+# engine can't backtrack into it when the trailing ``;?\s*$`` fails to match.
+# The prior ``(?:\s+[^;]*?)?\s*;?\s*$`` form had ``\s`` matched by both the
+# lazy inner class and the trailing ``\s*``, so a crafted long whitespace run
+# before a mid-string ``;`` drove O(n²) backtracking on the asyncio loop —
+# stalling every connection (SonarCloud ReDoS finding, PR #221).
 _TX_START_RE = re.compile(
-    r"^\s*START\s+TRANSACTION\b(?:\s+[^;]*?)?\s*;?\s*$",
+    r"^\s*START\s+TRANSACTION\b[^;]*+;?\s*$",
     re.IGNORECASE | re.DOTALL,
 )
 _TX_BEGIN_RE = re.compile(
-    r"^\s*BEGIN\b(?:\s+(?:WORK|TRANSACTION))?(?:\s+[^;]*?)?\s*;?\s*$",
+    r"^\s*BEGIN\b(?:\s+(?:WORK|TRANSACTION))?[^;]*+;?\s*$",
     re.IGNORECASE | re.DOTALL,
 )
 

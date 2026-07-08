@@ -147,6 +147,29 @@ def test_transaction_open_shim_does_not_over_match() -> None:
     assert _classify_transaction_open("BEGINNER") is None
     assert _classify_transaction_open("SELECT * FROM begin_events") is None
     assert _classify_transaction_open("COMMIT") is None
+    # A ``BEGIN`` followed by a second statement is NOT a transaction-open.
+    assert _classify_transaction_open("BEGIN; SELECT 1") is None
+    assert _classify_transaction_open("START TRANSACTION READ ONLY; SELECT 1") is None
+
+
+def test_transaction_open_regex_is_linear_on_pathological_input() -> None:
+    """ReDoS guard (PR #221): the tx-open regexes previously backtracked
+    O(n²) on a long whitespace run before a mid-string ``;`` — a crafted
+    client string could stall the asyncio loop. The possessive quantifier
+    makes matching linear; assert a large pathological input classifies
+    fast (well under a timeout the old regex would have blown)."""
+    import time
+
+    from slayer.facade.translator import _classify_transaction_open
+
+    evil = "BEGIN" + " " * 200_000 + ";" + "x" * 5
+    start = time.perf_counter()
+    result = _classify_transaction_open(evil)
+    elapsed = time.perf_counter() - start
+    assert result is None  # not a valid single tx-open (junk after ;)
+    # Linear matching finishes in milliseconds; the old O(n²) form took
+    # tens of seconds at this size. Generous bound to avoid CI flakiness.
+    assert elapsed < 1.0, f"tx-open regex too slow ({elapsed:.2f}s) — ReDoS regression"
 
 
 def test_command_fallback_warning_suppressed_during_translate(dialect, caplog) -> None:
