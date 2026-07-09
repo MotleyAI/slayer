@@ -52,7 +52,7 @@ class TestPerFileLayout:
         )
         path = _md_path(storage, "note.1")
         assert os.path.exists(path)
-        text = open(path).read()
+        text = open(path).read()  # NOSONAR(S7493) — test reads the persisted file; sync I/O in an async test is fine
         assert text.startswith("---\n")
         # Split the FIRST frontmatter block exactly (planned reader shape):
         # <---\n{yaml}\n---\n{body}>. Assert the body is byte-exact and the
@@ -83,7 +83,7 @@ class TestPerFileLayout:
         assert got.created_at == saved.created_at
         assert got.version == saved.version
 
-    async def test_serialization_helpers_round_trip(
+    def test_serialization_helpers_round_trip(
         self, storage: YAMLStorage
     ) -> None:
         # Codex(tests) #6: direct helper invariant
@@ -113,13 +113,13 @@ class TestPerFileLayout:
         await storage.save_memory(id="stable.1", learning="ends with nl\n",
                                   entities=[])
         path = _md_path(storage, "stable.1")
-        first = open(path).read()
+        first = open(path).read()  # NOSONAR(S7493) — test reads the persisted file; sync I/O in an async test is fine
         mem = await storage.get_memory("stable.1")
         await storage.save_memory(
             id=mem.id, learning=mem.learning, entities=mem.entities,
             description=mem.description, query=mem.query,
         )
-        assert open(path).read() == first
+        assert open(path).read() == first  # NOSONAR(S7493) — test reads the persisted file; sync I/O in an async test is fine
         assert (await storage.get_memory("stable.1")).learning == "ends with nl\n"
 
     async def test_learning_with_internal_hr_round_trips(
@@ -226,6 +226,18 @@ class TestBackslashIdRejected:
         with pytest.raises(ValueError):
             await storage.save_memory(id="a\\b", learning="x", entities=[])
 
+    @pytest.mark.parametrize("evil", ["../secret", "..\\secret", "a/b", "a\\b"])
+    async def test_get_delete_reject_traversal_ids(
+        self, storage: YAMLStorage, evil: str
+    ) -> None:
+        # Codex/CodeRabbit review: get_memory / delete_memory feed a raw id into
+        # the .md path — a "/" or "\\" id must be rejected before it can escape
+        # the memories/ dir (CWE-22), not silently opened.
+        with pytest.raises(ValueError):
+            await storage.get_memory(evil)
+        with pytest.raises(ValueError):
+            await storage.delete_memory(evil)
+
 
 # ---------------------------------------------------------------------------
 # graph fingerprint includes .md memories (Codex #4)
@@ -306,6 +318,25 @@ class TestMigration:
             f.write("---\nversion: 2\n---\nSTALE partial content")
         storage = YAMLStorage(base_dir=base_dir)
         assert open(_md_path(storage, "q1")).read().endswith("FRESH from yaml")
+
+    @pytest.mark.parametrize("rows", [
+        [{"learning": "no id"}],                       # missing id
+        [{"id": None, "learning": "x"}],               # null id
+        [{"id": True, "learning": "x"}],               # bool id
+        [{"id": "", "learning": "x"}],                 # empty-string id
+        [{"id": [1, 2], "learning": "x"}],             # non-scalar id
+    ])
+    def test_unmigratable_id_fails_loud_and_is_not_deleted(
+        self, base_dir: str, rows: list
+    ) -> None:
+        # Codex(review) #1: a dict row whose id can't become a filename must
+        # fail loud (preserving the legacy file), not be silently dropped and
+        # then have memories.yaml deleted (data loss).
+        self._write_legacy(base_dir, rows)
+        legacy = os.path.join(base_dir, "memories.yaml")
+        with pytest.raises(ValueError):
+            YAMLStorage(base_dir=base_dir)
+        assert os.path.exists(legacy)
 
     @pytest.mark.parametrize("bad", [
         "this: is: not: a: list\n- broken\n",  # unparseable YAML

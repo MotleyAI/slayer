@@ -206,7 +206,7 @@ async def test_legacy_v2_row_without_description_loads_with_none() -> None:
             "query": None,
             "created_at": "2026-01-01T00:00:00+00:00",
         }]
-        with open(os.path.join(tmpdir, "memories.yaml"), "w") as f:
+        with open(os.path.join(tmpdir, "memories.yaml"), "w") as f:  # NOSONAR(S7493) — test seeds the legacy file directly; sync I/O in an async test is fine
             yaml.safe_dump(legacy, f)
 
         storage = YAMLStorage(base_dir=tmpdir)  # __init__ migrates

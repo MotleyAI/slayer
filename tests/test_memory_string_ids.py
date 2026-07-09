@@ -317,7 +317,7 @@ class TestMemoryV1ToV2Migration:
                 f"expected dedupe to {'42'!r}; got {ids!r}"
             )
 
-    async def test_yaml_legacy_int_and_string_rows_conflict_raises(self) -> None:
+    def test_yaml_legacy_int_and_string_rows_conflict_raises(self) -> None:
         """Same-id under int and str forms with DIFFERENT learning content
         is a data-loss risk; the migrator must fail loud rather than
         silently picking one."""

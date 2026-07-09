@@ -23,6 +23,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 
 import pytest
@@ -55,7 +56,7 @@ EXPECTED_HELP_IDS = (
 
 
 @pytest.fixture
-async def storage() -> YAMLStorage:
+async def storage() -> AsyncIterator[YAMLStorage]:
     with tempfile.TemporaryDirectory() as tmpdir:
         s = YAMLStorage(base_dir=os.path.join(tmpdir, "store"))
         await s.save_datasource(
@@ -151,7 +152,7 @@ class TestSeeding:
         # SearchService.upsert_memory — but only for rows it actually writes.
         calls: list[str] = []
 
-        async def _fake_upsert(self, memory):  # noqa: ANN001
+        async def _fake_upsert(self, memory):  # noqa: ANN001 # NOSONAR(S7503) — async signature required; replaces the awaited SearchService.upsert_memory
             calls.append(memory.id)
             return []
 
@@ -323,7 +324,7 @@ class TestCliSeeding:
                 os.path.join(path, "memories", "help.intro.md")
             )
 
-    async def test_refresh_samples_does_not_seed(
+    def test_refresh_samples_does_not_seed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Codex #7: seeding lives in _run_search_query, NOT _run_search, so
@@ -332,7 +333,7 @@ class TestCliSeeding:
 
         calls: list[int] = []
 
-        async def _counting_seed(storage):  # noqa: ANN001
+        async def _counting_seed(storage):  # noqa: ANN001 # NOSONAR(S7503) — async signature required; replaces the awaited seed_help_memories
             calls.append(1)
             return 0
 
@@ -410,6 +411,8 @@ class TestRestWiring:
         # Exactly one seed pass — the embedded MCP server must NOT re-seed
         # (would be 22). Fresh store ⇒ 11 writes.
         assert sorted(seen) == sorted(EXPECTED_HELP_IDS)
+        # And the seeded memory is actually retrievable afterwards.
+        assert (await base_dir_storage.get_memory("help.intro")).learning
 
     async def test_create_app_warm_store_writes_nothing(
         self, base_dir_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch
@@ -435,7 +438,7 @@ class TestRestWiring:
 
 
 @pytest.fixture
-async def base_dir_storage() -> YAMLStorage:
+async def base_dir_storage() -> AsyncIterator[YAMLStorage]:
     with tempfile.TemporaryDirectory() as tmpdir:
         yield YAMLStorage(base_dir=os.path.join(tmpdir, "store"))
 

@@ -657,7 +657,7 @@ class TestProgrammaticKwarg:
         # startup. These tests pass a MagicMock stub storage (no async memory
         # API), and are about ingest orchestration, not seeding — so no-op the
         # seed in both server modules.
-        async def _noop(*, storage):  # noqa: ANN001, ANN002
+        async def _noop(*, storage):  # noqa: ANN001, ANN002 # NOSONAR(S7503) — async signature required; replaces the awaited seed_help_memories
             return 0
 
         import slayer.api.server as api_server

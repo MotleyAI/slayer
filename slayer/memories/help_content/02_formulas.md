@@ -96,8 +96,8 @@ dimension, a measure with `:agg`, or a transform expression. See
 
 ## Gotchas
 
-- Bare measure renames (`{"formula": "*:count", "name": "n"}`) cannot be
-  referenced by `n` in `filters` — reference the original `*:count` instead.
+- Bare measure renames (`{"formula": "*:count", "name": "n"}`) can be
+  referenced by either `n` or `*:count` in `filters` (DEV-1443).
 - Formulas validate measure names against the source model at query time.
   If you get "measure not found", call `inspect(reference="<model>", entity_type="model")`
   and check the actual measure list.

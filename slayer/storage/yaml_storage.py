@@ -35,7 +35,7 @@ except ImportError:  # pragma: no cover — Windows
     _fcntl = None  # type: ignore[assignment]
 
 from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.memories.models import Memory
+from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.base import (
     StorageBackend,
     _validate_path_component,
@@ -168,6 +168,20 @@ def migrate_memories_layout(base_dir: str) -> None:
                 f"{legacy}: every memory row must be a mapping; got "
                 f"{type(r).__name__}. Refusing to migrate."
             )
+        # Fail loud on a row whose id can't be migrated (bool / None / list /
+        # empty string). Without this, ``_normalize_legacy_memory_rows`` would
+        # silently drop the row and the legacy file would then be deleted —
+        # data loss. Preserve the file for manual repair instead.
+        rid = r.get("id")
+        if (
+            isinstance(rid, bool)
+            or not isinstance(rid, (int, str))
+            or (isinstance(rid, str) and not rid)
+        ):
+            raise ValueError(
+                f"{legacy}: memory row has a missing or invalid id ({rid!r}). "
+                f"Refusing to migrate; fix the row by hand."
+            )
     normalized = _normalize_legacy_memory_rows(rows)
     mem_dir = os.path.join(base_dir, "memories")
     os.makedirs(mem_dir, exist_ok=True)
@@ -176,7 +190,14 @@ def migrate_memories_layout(base_dir: str) -> None:
         _atomic_write_text(
             os.path.join(mem_dir, f"{mem.id}.md"), _memory_to_md(mem),
         )
-    os.remove(legacy)
+    # Guard the removal against a concurrent migrator (two workers opening the
+    # same fresh base_dir both run this once): the .md writes are atomic and
+    # idempotent, so only the double os.remove would crash. FileNotFoundError
+    # here means another process already finished the migration.
+    try:
+        os.remove(legacy)
+    except FileNotFoundError:
+        pass
 
 
 class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
@@ -426,6 +447,12 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         return True
 
     def _memory_md_path(self, memory_id: str) -> str:
+        # Validate the id charset before it becomes a path component. save_memory
+        # already validates, but get_memory / delete_memory feed a raw id here —
+        # without this an id like "../secret" would escape the memories/ dir
+        # (CWE-22). The forbidden set includes "/" and "\\", so a valid id is
+        # always a single safe path segment.
+        _validate_memory_id_charset(memory_id)
         return os.path.join(self._memories_dir, f"{memory_id}.md")
 
     def _memory_ids_on_disk(self) -> list[str]:
@@ -500,12 +527,15 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     async def _get_memory_row(self, memory_id: str) -> Memory | None:
         # Lock-free read: writes are atomic (temp + os.replace), so a reader
-        # always sees a complete old-or-new file.
+        # always sees a complete old-or-new file. A concurrent delete between
+        # the check and the open surfaces as FileNotFoundError → treat as
+        # "missing" (return None) rather than crash.
         path = self._memory_md_path(memory_id)
-        if not os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
+                return _md_to_memory(memory_id, f.read())
+        except FileNotFoundError:
             return None
-        with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
-            return _md_to_memory(memory_id, f.read())
 
     async def _list_memories_rows(
         self, *, entities: list[str] | None
@@ -513,8 +543,12 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         memories: list[Memory] = []
         for mid in self._memory_ids_on_disk():
             path = self._memory_md_path(mid)
-            with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
-                memories.append(_md_to_memory(mid, f.read()))
+            try:
+                with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
+                    memories.append(_md_to_memory(mid, f.read()))
+            except FileNotFoundError:
+                # Deleted between listdir and open (lock-free read) — skip.
+                continue
         # Deterministic order for the tantivy num_threads=1 doc-id tiebreak
         # and the search "newest" fallback (which re-sorts by recency anyway).
         memories.sort(key=lambda m: (m.created_at, m.id))
