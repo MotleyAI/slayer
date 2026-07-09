@@ -104,6 +104,11 @@ async def seed_help_memories(storage: StorageBackend) -> int:
             existing is not None
             and existing.learning == topic.learning
             and existing.description == topic.description
+            # Also require the invariant metadata to already hold — otherwise a
+            # help.* id someone tagged with entities / a query (but with matching
+            # text) would skip the rewrite and keep polluting Learnings / recall.
+            and existing.entities == []
+            and existing.query is None
         ):
             continue
         memory = await storage.save_memory(

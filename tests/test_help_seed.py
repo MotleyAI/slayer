@@ -145,6 +145,23 @@ class TestSeeding:
         assert mem.learning != "STALE user edit"
         assert mem.created_at == old_created
 
+    async def test_reseed_repairs_invariant_metadata(
+        self, storage: YAMLStorage
+    ) -> None:
+        # A help.* id manually tagged with entities / a query (but with matching
+        # text) must be rewritten back to entities=[] / query=None on re-seed,
+        # not skipped — else it would pollute Learnings / recall.
+        intro = next(t for t in HELP_TOPICS if t.id == "help.intro")
+        await storage.save_memory(
+            id="help.intro", learning=intro.learning,
+            description=intro.description, entities=["mydb.orders.amount"],
+        )
+        written = await seed_help_memories(storage)
+        assert written >= 1
+        mem = await storage.get_memory("help.intro")
+        assert mem.entities == []
+        assert mem.query is None
+
     async def test_embedding_fan_out_only_on_change(
         self, storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch
     ) -> None:
