@@ -122,6 +122,6 @@ These are WHERE-only. They do not reference measures or transforms.
 
 ## See also
 
-- `help(topic='formulas')` — parsing rules shared with `measures`.
-- `help(topic='transforms')` — the transforms you can wrap in a filter.
-- `help(topic='queries')` — where filters sit in the evaluation order.
+- `memory:help.formulas` — parsing rules shared with `measures`.
+- `memory:help.transforms` — the transforms you can wrap in a filter.
+- `memory:help.queries` — where filters sit in the evaluation order.
