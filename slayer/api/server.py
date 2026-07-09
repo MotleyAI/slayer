@@ -20,6 +20,7 @@ from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.service import InspectService
+from slayer.memories.help_seed import seed_help_memories
 from slayer.memories.service import MemoryService
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
@@ -207,10 +208,16 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     *,
     ingest_on_startup: bool = False,
 ) -> FastAPI:
+    from slayer.async_utils import run_sync
+
+    # DEV-1658: seed conceptual-help memories once here; the embedded MCP
+    # server below is created with _seed_help=False so the pass never fires
+    # twice (mirrors the ingest_on_startup single-orchestration rule).
+    run_sync(seed_help_memories(storage=storage))
+
     if ingest_on_startup:
         import sys
 
-        from slayer.async_utils import run_sync
         from slayer.engine.ingestion import ingest_all_datasources_idempotent
 
         run_sync(
@@ -223,7 +230,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     # does NOT receive `ingest_on_startup` — orchestration happens once,
     # above, so calling `create_app(ingest_on_startup=True)` doesn't fire
     # the orchestrator twice.
-    mcp = create_mcp_server(storage=storage)
+    mcp = create_mcp_server(storage=storage, _seed_help=False)
     mcp_app = mcp.sse_app()
     app.mount("/mcp", mcp_app)
 

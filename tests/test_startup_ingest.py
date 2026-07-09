@@ -651,6 +651,21 @@ class TestDemoIngestOrdering:
 
 
 class TestProgrammaticKwarg:
+    @pytest.fixture(autouse=True)
+    def _no_seed_help(self, monkeypatch):
+        # DEV-1658: create_app / create_mcp_server now seed help.* memories on
+        # startup. These tests pass a MagicMock stub storage (no async memory
+        # API), and are about ingest orchestration, not seeding — so no-op the
+        # seed in both server modules.
+        async def _noop(*, storage):  # noqa: ANN001, ANN002
+            return 0
+
+        import slayer.api.server as api_server
+        import slayer.mcp.server as mcp_server_mod
+
+        monkeypatch.setattr(api_server, "seed_help_memories", _noop)
+        monkeypatch.setattr(mcp_server_mod, "seed_help_memories", _noop)
+
     def test_create_app_with_kwarg_triggers_orchestrator(self, monkeypatch):
         calls: list = []
 

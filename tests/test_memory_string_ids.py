@@ -339,6 +339,7 @@ class TestMemoryV1ToV2Migration:
                     ],
                     f,
                 )
-            store = YAMLStorage(base_dir=tmpdir)
+            # DEV-1658: the conflict is caught at construction time, when the
+            # one-time memories.yaml -> per-file migration runs.
             with pytest.raises(ValueError):
-                await store.list_memories()
+                YAMLStorage(base_dir=tmpdir)

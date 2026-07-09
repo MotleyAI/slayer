@@ -56,7 +56,9 @@ slayer_data/
     my_postgres.yaml
     other_db.yaml
   priority.yaml            # datasource priority list (optional)
-  memories.yaml            # agent memories (optional)
+  memories/                # agent memories, one <id>.md file each (optional)
+    1.md
+    help.intro.md
   embeddings.db            # SQLite sidecar for embedding rows (DEV-1405)
 ```
 
