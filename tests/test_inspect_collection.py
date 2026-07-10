@@ -524,8 +524,12 @@ class TestMcpCollection:
 
         server = create_mcp_server(storage=two_ds)
         tool = {t.name: t for t in await server.list_tools()}["inspect"]
-        # reference must be optional (omittable) now.
-        assert "reference" not in (tool.inputSchema.get("required") or [])
+        required = tool.inputSchema.get("required") or []
+        # reference must be optional (omittable) now...
+        assert "reference" not in required
+        # ...but entity_type stays REQUIRED — omitting it must not silently
+        # default to a model collection (Codex, cross-surface consistency).
+        assert "entity_type" in required
 
     async def test_inspect_datasource_collection(
         self, two_ds: YAMLStorage

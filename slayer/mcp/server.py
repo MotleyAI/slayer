@@ -684,8 +684,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
     @mcp.tool()
     async def inspect(
+        entity_type: str,
         reference: str | list[str] | None = None,
-        entity_type: str = "model",
         compact: bool = True,
         format: str = "markdown",
         num_rows: int = 3,
