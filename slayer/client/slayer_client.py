@@ -478,7 +478,7 @@ class SlayerClient:
     async def inspect(
         self,
         *,
-        reference: str | list[str],
+        reference: str | list[str] | None = None,
         entity_type: str,
         compact: bool = True,
         format: str = "markdown",
@@ -487,8 +487,10 @@ class SlayerClient:
         sections: list[str] | None = None,
         descriptions_max_chars: int | None = None,
     ) -> str:
-        """Inspect EXACTLY one entity by reference and kind (DEV-1588), or a
-        homogeneous-kind BATCH when ``reference`` is a list (DEV-1612).
+        """Inspect EXACTLY one entity by reference and kind (DEV-1588), a
+        homogeneous-kind BATCH when ``reference`` is a list (DEV-1612), or the
+        whole COLLECTION at a kind when ``reference`` is ``None`` / ``[]``
+        (DEV-1667).
 
         A point-lookup (no fusion / ranking / bundled memories).
         ``entity_type`` is required, one of
@@ -496,7 +498,8 @@ class SlayerClient:
         ``memory``, and applies to every id in a list. A single ``str`` keeps
         its byte-for-byte single output; a list returns, in input order, one
         ``## <canonical>`` block per id under ``format="markdown"`` or a JSON
-        array under ``format="json"``, with per-id error isolation.
+        array under ``format="json"``, with per-id error isolation. ``None`` /
+        ``[]`` lists the whole collection (``model`` / ``datasource`` only).
         """
         if self._storage is not None:
             # Local import: slayer.inspect.service transitively imports the
@@ -533,7 +536,7 @@ class SlayerClient:
     @staticmethod
     def _build_inspect_body(
         *,
-        reference: str | list[str],
+        reference: str | list[str] | None,
         entity_type: str,
         compact: bool,
         format: str,
@@ -598,7 +601,7 @@ class SlayerClient:
     def inspect_sync(
         self,
         *,
-        reference: str | list[str],
+        reference: str | list[str] | None = None,
         entity_type: str,
         compact: bool = True,
         format: str = "markdown",
@@ -607,7 +610,8 @@ class SlayerClient:
         sections: list[str] | None = None,
         descriptions_max_chars: int | None = None,
     ) -> str:
-        """Synchronous variant of :meth:`inspect` (DEV-1588; batch DEV-1612)."""
+        """Synchronous variant of :meth:`inspect` (DEV-1588; batch DEV-1612;
+        collection DEV-1667)."""
         if self._storage is not None:
             from slayer.async_utils import run_sync
 

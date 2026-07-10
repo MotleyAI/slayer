@@ -186,7 +186,9 @@ class InspectRequest(BaseModel):
 
     # DEV-1612: a list is a homogeneous-kind batch (one ``entity_type`` for
     # every id). A single str keeps single-id behaviour byte-for-byte.
-    reference: str | list[str]
+    # DEV-1667: ``None`` / omitted (or ``[]``) renders the whole collection at
+    # ``entity_type`` (model / datasource only).
+    reference: str | list[str] | None = None
     entity_type: str
     compact: bool = True
     format: str = "markdown"
