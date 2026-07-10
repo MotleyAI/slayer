@@ -41,6 +41,10 @@ from slayer.inspect.model_render import (  # noqa: F401 — re-exported for back
     _truncate_description,
     render_model_inspection,
 )
+from slayer.inspect.collection_render import (
+    render_datasource_list,
+    render_models_summary,
+)
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
 from slayer.search.service import SearchService
@@ -583,112 +587,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 matched.append(m)
         matched.sort(key=lambda m: m.name)
 
-        if not matched:
-            return f"Datasource '{datasource_name}' has no models."
-
-        if fmt == "json":
-            if compact:
-                return json.dumps(
-                    {
-                        "datasource_name": datasource_name,
-                        "model_count": len(matched),
-                        "models": [
-                            {
-                                "name": m.name,
-                                "description": m.description,
-                                "column_count": sum(
-                                    1 for c in m.columns if not c.hidden
-                                ),
-                                "measure_names": [mm.name for mm in m.measures],
-                                "joins_to": sorted(
-                                    {j.target_model for j in m.joins}
-                                ),
-                            }
-                            for m in matched
-                        ],
-                    },
-                    indent=2,
-                )
-            return json.dumps(
-                {
-                    "datasource_name": datasource_name,
-                    "model_count": len(matched),
-                    "models": [
-                        {
-                            "name": m.name,
-                            "description": m.description,
-                            "columns": [
-                                {"name": c.name, "type": str(c.type), "description": c.description}
-                                for c in m.columns if not c.hidden
-                            ],
-                            "measures": [
-                                {"name": mm.name, "formula": mm.formula, "description": mm.description}
-                                for mm in m.measures
-                            ],
-                            "joins_to": sorted({j.target_model for j in m.joins}),
-                        }
-                        for m in matched
-                    ],
-                },
-                indent=2,
-            )
-
-        sections: list[str] = [
-            f"# Datasource: `{datasource_name}` — {len(matched)} model(s)"
-        ]
-        for m in matched:
-            model_lines: list[str] = [f"## `{m.name}`"]
-            if m.description:
-                model_lines.append(m.description)
-
-            if compact:
-                visible_col_count = sum(1 for c in m.columns if not c.hidden)
-                model_lines.append(f"Columns: {visible_col_count}")
-                measure_names = ", ".join(
-                    mm.name for mm in m.measures if mm.name is not None
-                )
-                model_lines.append(f"Measures: {measure_names}")
-                if m.joins:
-                    targets = sorted({j.target_model for j in m.joins})
-                    rendered = ", ".join(f"`{t}`" for t in targets)
-                    model_lines.append(f"Joins to: {rendered}")
-                else:
-                    model_lines.append("Joins to: _(none)_")
-                sections.append("\n".join(model_lines))
-                continue
-
-            col_rows = [
-                {"name": c.name, "type": str(c.type), "description": c.description}
-                for c in m.columns if not c.hidden
-            ]
-            model_lines.append(f"**Columns ({len(col_rows)}):**")
-            model_lines.append("")
-            model_lines.append(
-                _markdown_table(rows=col_rows, columns=["name", "type", "description"])
-            )
-            model_lines.append("")
-
-            measure_rows = [
-                {"name": mm.name, "formula": mm.formula, "description": mm.description}
-                for mm in m.measures
-            ]
-            model_lines.append(f"**Measures ({len(measure_rows)}):**")
-            model_lines.append("")
-            model_lines.append(
-                _markdown_table(rows=measure_rows, columns=["name", "formula", "description"])
-            )
-            model_lines.append("")
-
-            if m.joins:
-                targets = sorted({j.target_model for j in m.joins})
-                rendered = ", ".join(f"`{t}`" for t in targets)
-                model_lines.append(f"**Joins to:** {rendered}")
-            else:
-                model_lines.append("**Joins to:** _(none)_")
-
-            sections.append("\n".join(model_lines))
-
-        return "\n\n".join(sections)
+        # DEV-1667: rendering delegates to the shared renderer (also used by
+        # the ``inspect`` model collection view) — one code path, no drift.
+        return render_models_summary(
+            datasource_name=datasource_name,
+            models=matched,
+            fmt=fmt,
+            compact=compact,
+        )
 
     @mcp.tool()
     async def inspect_model(
@@ -778,8 +684,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
     @mcp.tool()
     async def inspect(
-        reference: str | list[str],
-        entity_type: str,
+        reference: str | list[str] | None = None,
+        entity_type: str = "model",
         compact: bool = True,
         format: str = "markdown",
         num_rows: int = 3,
@@ -787,12 +693,21 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         sections: list[str] | None = None,
         descriptions_max_chars: int | None = None,
     ) -> str:
-        """Inspect EXACTLY one entity by reference and kind — or a homogeneous
-        BATCH when ``reference`` is a list.
+        """Inspect EXACTLY one entity by reference and kind, a homogeneous
+        BATCH when ``reference`` is a list — or the whole COLLECTION at a kind
+        when ``reference`` is omitted / ``None``.
 
         A clean point-lookup: no fusion / ranking / cypher, and no bundled
         memories. Use ``search`` instead when you want an entity surfaced *in
         context* (with related memories and ranked neighbours).
+
+        Collection (DEV-1667): omit ``reference`` (or pass ``None`` / ``[]``)
+        to list a whole kind. ``entity_type="model"`` lists all models grouped
+        by datasource (compact=True: one terse line per model; compact=False:
+        the full per-model tables). ``entity_type="datasource"`` lists all
+        datasources. Only ``model`` / ``datasource`` support the collection
+        view; other kinds raise. This subsumes ``models_summary`` /
+        ``list_datasources``.
 
         Batch (DEV-1612): pass a ``list`` of references that all share the one
         ``entity_type``. Returns one rendered block per id, in input order,
@@ -1450,18 +1365,17 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     async def list_datasources() -> str:
         """List all configured database connections (names and types only, credentials are not shown). Use describe_datasource for connection details and status."""
         names = await storage.list_datasources()
-        if not names:
-            return "No datasources configured. Use create_datasource to add a database connection."
-        lines = []
+        # DEV-1667: rendering delegates to the shared renderer (also used by
+        # the ``inspect`` datasource collection view) — one code path.
+        pairs: list[tuple[str, str | None]] = []
         for name in names:
             try:
                 ds = await storage.get_datasource(name)
-                ds_type = ds.type if ds else "unknown"
-                lines.append(f"- {name} ({ds_type})")
+                pairs.append((name, ds.type if ds else "unknown"))
             except Exception as exc:
                 logger.warning("Failed to load datasource '%s': %s", name, exc)
-                lines.append(f"- {name} (ERROR: invalid datasource config)")
-        return "\n".join(lines)
+                pairs.append((name, None))
+        return render_datasource_list(pairs=pairs, fmt="markdown")
 
     @mcp.tool()
     async def describe_datasource(
