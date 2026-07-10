@@ -59,6 +59,13 @@ def render_models_summary(
     ``descriptions_max_chars=None`` the output is byte-identical to the tool.
     """
     if not models:
+        # An empty datasource must still emit valid JSON under fmt="json"
+        # (a plain-text sentinel would break json.loads for the caller).
+        if fmt == "json":
+            return json.dumps(
+                {"datasource_name": datasource_name, "model_count": 0, "models": []},
+                indent=2,
+            )
         return f"Datasource '{datasource_name}' has no models."
     desc = _desc_fn(descriptions_max_chars)
     if fmt == "json":
@@ -138,14 +145,14 @@ def _models_summary_markdown(
         if m.description:
             model_lines.append(desc(m.description) or "")
         if compact:
-            _append_compact_model_lines(model_lines, m)
+            _append_compact_model_lines(model_lines=model_lines, m=m)
         else:
-            _append_verbose_model_lines(model_lines, m, desc)
+            _append_verbose_model_lines(model_lines=model_lines, m=m, desc=desc)
         sections.append("\n".join(model_lines))
     return "\n\n".join(sections)
 
 
-def _append_compact_model_lines(model_lines: list[str], m: SlayerModel) -> None:
+def _append_compact_model_lines(*, model_lines: list[str], m: SlayerModel) -> None:
     model_lines.append(f"Columns: {_visible_column_count(m)}")
     measure_names = ", ".join(mm.name for mm in m.measures if mm.name is not None)
     model_lines.append(f"Measures: {measure_names}")
@@ -157,7 +164,7 @@ def _append_compact_model_lines(model_lines: list[str], m: SlayerModel) -> None:
 
 
 def _append_verbose_model_lines(
-    model_lines: list[str], m: SlayerModel, desc,
+    *, model_lines: list[str], m: SlayerModel, desc,
 ) -> None:
     col_rows = [
         {"name": c.name, "type": str(c.type), "description": desc(c.description)}

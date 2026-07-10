@@ -343,6 +343,24 @@ class TestModelCollectionEdges:
             out = await _svc(st).inspect(reference=None, entity_type="model")
             assert "# Datasource: `emptyds` — 0 model(s)" in out
 
+    async def test_compact_false_empty_ds_json_is_valid(self) -> None:
+        # CodeRabbit: an empty datasource must be a valid JSON object (not a
+        # plain-text "has no models" sentinel) under format="json", with the
+        # same ``datasource_name`` shape as populated datasources.
+        with tempfile.TemporaryDirectory() as tmp:
+            st = YAMLStorage(base_dir=tmp)
+            await st.save_datasource(
+                DatasourceConfig(name="emptyds", type="postgres", host="h")
+            )
+            out = await _svc(st).inspect(
+                reference=None, entity_type="model", compact=False,
+                format="json",
+            )
+            entry = json.loads(out)["datasources"][0]
+            assert entry["datasource_name"] == "emptyds"
+            assert entry["model_count"] == 0
+            assert entry["models"] == []
+
 
 # ===========================================================================
 # Datasource collection

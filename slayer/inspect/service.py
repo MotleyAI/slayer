@@ -425,9 +425,10 @@ class InspectService:
                 entries.append(
                     {"data_source": ds, "error": "invalid config", "models": []}
                 )
-            elif not models:
-                entries.append({"data_source": ds, "model_count": 0, "models": []})
             else:
+                # render_models_summary now returns valid JSON for empty
+                # datasources too (model_count 0, models []) — one consistent
+                # ``datasource_name`` shape for every non-error entry.
                 entries.append(json.loads(render_models_summary(
                     datasource_name=ds, models=models, fmt="json",
                     compact=False, descriptions_max_chars=descriptions_max_chars,
