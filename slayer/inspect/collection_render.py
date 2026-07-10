@@ -58,118 +58,134 @@ def render_models_summary(
     ``inspect`` model collection (compact=False) render through one path. With
     ``descriptions_max_chars=None`` the output is byte-identical to the tool.
     """
-    def _desc(text: str | None) -> str | None:
-        return _truncate_description(text, descriptions_max_chars)
-
     if not models:
         return f"Datasource '{datasource_name}' has no models."
-
+    desc = _desc_fn(descriptions_max_chars)
     if fmt == "json":
-        if compact:
-            return json.dumps(
-                {
-                    "datasource_name": datasource_name,
-                    "model_count": len(models),
-                    "models": [
-                        {
-                            "name": m.name,
-                            "description": _desc(m.description),
-                            "column_count": _visible_column_count(m),
-                            "measure_names": [mm.name for mm in m.measures],
-                            "joins_to": _join_targets(m),
-                        }
-                        for m in models
-                    ],
-                },
-                indent=2,
-            )
-        return json.dumps(
-            {
-                "datasource_name": datasource_name,
-                "model_count": len(models),
-                "models": [
-                    {
-                        "name": m.name,
-                        "description": _desc(m.description),
-                        "columns": [
-                            {
-                                "name": c.name,
-                                "type": str(c.type),
-                                "description": _desc(c.description),
-                            }
-                            for c in m.columns if not c.hidden
-                        ],
-                        "measures": [
-                            {
-                                "name": mm.name,
-                                "formula": mm.formula,
-                                "description": _desc(mm.description),
-                            }
-                            for mm in m.measures
-                        ],
-                        "joins_to": _join_targets(m),
-                    }
-                    for m in models
-                ],
-            },
-            indent=2,
+        return _models_summary_json(
+            datasource_name=datasource_name, models=models, compact=compact,
+            desc=desc,
         )
+    return _models_summary_markdown(
+        datasource_name=datasource_name, models=models, compact=compact,
+        desc=desc,
+    )
 
+
+def _desc_fn(descriptions_max_chars: int | None):
+    def _desc(text: str | None) -> str | None:
+        return _truncate_description(text, descriptions_max_chars)
+    return _desc
+
+
+def _models_summary_json(
+    *, datasource_name: str, models: list[SlayerModel], compact: bool, desc,
+) -> str:
+    if compact:
+        model_payload = [
+            {
+                "name": m.name,
+                "description": desc(m.description),
+                "column_count": _visible_column_count(m),
+                "measure_names": [mm.name for mm in m.measures],
+                "joins_to": _join_targets(m),
+            }
+            for m in models
+        ]
+    else:
+        model_payload = [
+            {
+                "name": m.name,
+                "description": desc(m.description),
+                "columns": [
+                    {
+                        "name": c.name,
+                        "type": str(c.type),
+                        "description": desc(c.description),
+                    }
+                    for c in m.columns if not c.hidden
+                ],
+                "measures": [
+                    {
+                        "name": mm.name,
+                        "formula": mm.formula,
+                        "description": desc(mm.description),
+                    }
+                    for mm in m.measures
+                ],
+                "joins_to": _join_targets(m),
+            }
+            for m in models
+        ]
+    return json.dumps(
+        {
+            "datasource_name": datasource_name,
+            "model_count": len(models),
+            "models": model_payload,
+        },
+        indent=2,
+    )
+
+
+def _models_summary_markdown(
+    *, datasource_name: str, models: list[SlayerModel], compact: bool, desc,
+) -> str:
     sections: list[str] = [
         f"# Datasource: `{datasource_name}` — {len(models)} model(s)"
     ]
     for m in models:
         model_lines: list[str] = [f"## `{m.name}`"]
         if m.description:
-            model_lines.append(_desc(m.description) or "")
-
+            model_lines.append(desc(m.description) or "")
         if compact:
-            model_lines.append(f"Columns: {_visible_column_count(m)}")
-            measure_names = ", ".join(
-                mm.name for mm in m.measures if mm.name is not None
-            )
-            model_lines.append(f"Measures: {measure_names}")
-            if m.joins:
-                rendered = ", ".join(f"`{t}`" for t in _join_targets(m))
-                model_lines.append(f"Joins to: {rendered}")
-            else:
-                model_lines.append("Joins to: _(none)_")
-            sections.append("\n".join(model_lines))
-            continue
-
-        col_rows = [
-            {"name": c.name, "type": str(c.type), "description": _desc(c.description)}
-            for c in m.columns if not c.hidden
-        ]
-        model_lines.append(f"**Columns ({len(col_rows)}):**")
-        model_lines.append("")
-        model_lines.append(
-            _markdown_table(rows=col_rows, columns=["name", "type", "description"])
-        )
-        model_lines.append("")
-
-        measure_rows = [
-            {"name": mm.name, "formula": mm.formula, "description": _desc(mm.description)}
-            for mm in m.measures
-        ]
-        model_lines.append(f"**Measures ({len(measure_rows)}):**")
-        model_lines.append("")
-        model_lines.append(
-            _markdown_table(
-                rows=measure_rows, columns=["name", "formula", "description"]
-            )
-        )
-        model_lines.append("")
-
-        if m.joins:
-            rendered = ", ".join(f"`{t}`" for t in _join_targets(m))
-            model_lines.append(f"**Joins to:** {rendered}")
+            _append_compact_model_lines(model_lines, m)
         else:
-            model_lines.append("**Joins to:** _(none)_")
-
+            _append_verbose_model_lines(model_lines, m, desc)
         sections.append("\n".join(model_lines))
-
     return "\n\n".join(sections)
+
+
+def _append_compact_model_lines(model_lines: list[str], m: SlayerModel) -> None:
+    model_lines.append(f"Columns: {_visible_column_count(m)}")
+    measure_names = ", ".join(mm.name for mm in m.measures if mm.name is not None)
+    model_lines.append(f"Measures: {measure_names}")
+    if m.joins:
+        rendered = ", ".join(f"`{t}`" for t in _join_targets(m))
+        model_lines.append(f"Joins to: {rendered}")
+    else:
+        model_lines.append("Joins to: _(none)_")
+
+
+def _append_verbose_model_lines(
+    model_lines: list[str], m: SlayerModel, desc,
+) -> None:
+    col_rows = [
+        {"name": c.name, "type": str(c.type), "description": desc(c.description)}
+        for c in m.columns if not c.hidden
+    ]
+    model_lines.append(f"**Columns ({len(col_rows)}):**")
+    model_lines.append("")
+    model_lines.append(
+        _markdown_table(rows=col_rows, columns=["name", "type", "description"])
+    )
+    model_lines.append("")
+
+    measure_rows = [
+        {"name": mm.name, "formula": mm.formula, "description": desc(mm.description)}
+        for mm in m.measures
+    ]
+    model_lines.append(f"**Measures ({len(measure_rows)}):**")
+    model_lines.append("")
+    model_lines.append(
+        _markdown_table(rows=measure_rows, columns=["name", "formula", "description"])
+    )
+    model_lines.append("")
+
+    if m.joins:
+        rendered = ", ".join(f"`{t}`" for t in _join_targets(m))
+        model_lines.append(f"**Joins to:** {rendered}")
+    else:
+        model_lines.append("**Joins to:** _(none)_")
 
 
 # ---------------------------------------------------------------------------
@@ -191,32 +207,43 @@ def render_model_oneliner_index(
     datasource. Deliberately terser than ``models_summary`` (scales to large
     catalogs)."""
     if fmt == "json":
-        entries: list[dict[str, Any]] = []
-        for ds, models in groups:
-            if models is None:
-                entries.append(
-                    {"data_source": ds, "error": "invalid config", "models": []}
-                )
-                continue
-            entries.append({
-                "data_source": ds,
-                "model_count": len(models),
-                "models": [
-                    {
-                        "name": m.name,
-                        "column_count": _visible_column_count(m),
-                        "joins_to": _join_targets(m),
-                    }
-                    for m in models
-                ],
-            })
-        return json.dumps({
-            "entity_type": "model",
-            "collection": True,
-            "datasources": entries,
-            "warnings": warnings,
-        }, indent=2, default=str)
+        return _oneliner_index_json(groups=groups, warnings=warnings)
+    return _oneliner_index_markdown(groups=groups, warnings=warnings)
 
+
+def _oneliner_index_json(
+    *, groups: list[ModelGroup], warnings: list[str],
+) -> str:
+    entries: list[dict[str, Any]] = []
+    for ds, models in groups:
+        if models is None:
+            entries.append(
+                {"data_source": ds, "error": "invalid config", "models": []}
+            )
+            continue
+        entries.append({
+            "data_source": ds,
+            "model_count": len(models),
+            "models": [
+                {
+                    "name": m.name,
+                    "column_count": _visible_column_count(m),
+                    "joins_to": _join_targets(m),
+                }
+                for m in models
+            ],
+        })
+    return json.dumps({
+        "entity_type": "model",
+        "collection": True,
+        "datasources": entries,
+        "warnings": warnings,
+    }, indent=2, default=str)
+
+
+def _oneliner_index_markdown(
+    *, groups: list[ModelGroup], warnings: list[str],
+) -> str:
     blocks: list[str] = []
     for ds, models in groups:
         if models is None:

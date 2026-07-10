@@ -419,6 +419,22 @@ class TestDatasourceCollection:
         assert out == empty_msg
         assert "No datasources configured" in out
 
+    async def test_empty_storage_compact_false_not_blank(
+        self, empty_store: YAMLStorage
+    ) -> None:
+        # Codex #2: the verbose datasource collection must not return "" for an
+        # empty store — it emits the same empty-state message / envelope.
+        md = await _svc(empty_store).inspect(
+            reference=None, entity_type="datasource", compact=False,
+        )
+        assert "No datasources configured" in md
+        js = json.loads(await _svc(empty_store).inspect(
+            reference=None, entity_type="datasource", compact=False,
+            format="json",
+        ))
+        assert js["collection"] is True
+        assert js["datasources"] == []
+
 
 # ===========================================================================
 # Kind guard — collection unsupported for leaf / memory kinds
@@ -430,8 +446,9 @@ class TestKindGuard:
         "kind", ["column", "measure", "aggregation", "memory"],
     )
     async def test_none_raises(self, two_ds: YAMLStorage, kind: str) -> None:
+        svc = _svc(two_ds)
         with pytest.raises(ValueError, match="[Cc]ollection view"):
-            await _svc(two_ds).inspect(reference=None, entity_type=kind)
+            await svc.inspect(reference=None, entity_type=kind)
 
     @pytest.mark.parametrize(
         "kind", ["column", "measure", "aggregation", "memory"],
@@ -441,8 +458,9 @@ class TestKindGuard:
     ) -> None:
         # [] must produce the SAME collection-unsupported error as None — NOT
         # the old DEV-1612 "reference list must not be empty" message.
+        svc = _svc(two_ds)
         with pytest.raises(ValueError, match="[Cc]ollection view") as exc:
-            await _svc(two_ds).inspect(reference=[], entity_type=kind)
+            await svc.inspect(reference=[], entity_type=kind)
         assert "must not be empty" not in str(exc.value)
 
 
@@ -621,12 +639,10 @@ class TestCliCollection:
     ) -> None:
         from slayer.cli import _run_inspect
 
+        args = _inspect_args(reference=[], entity_type="column")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf), pytest.raises(SystemExit) as exc:
-            _run_inspect(
-                args=_inspect_args(reference=[], entity_type="column"),
-                storage=cli_storage,
-            )
+            _run_inspect(args=args, storage=cli_storage)
         assert exc.value.code == 1
         # Must fail with the collection-unsupported message, NOT the old
         # DEV-1612 empty-list rejection (so it can't pass for the wrong reason).
@@ -897,17 +913,19 @@ class TestExactUnsupportedMessage:
     """Codex #9: the exact unsupported-kind message, identical for None and []."""
 
     async def test_exact_message(self, two_ds: YAMLStorage) -> None:
+        svc = _svc(two_ds)
         with pytest.raises(ValueError) as exc:
-            await _svc(two_ds).inspect(reference=None, entity_type="column")
+            await svc.inspect(reference=None, entity_type="column")
         assert str(exc.value) == _UNSUPPORTED_MSG
 
     async def test_none_and_empty_list_identical_message(
         self, two_ds: YAMLStorage
     ) -> None:
+        svc = _svc(two_ds)
         with pytest.raises(ValueError) as e_none:
-            await _svc(two_ds).inspect(reference=None, entity_type="measure")
+            await svc.inspect(reference=None, entity_type="measure")
         with pytest.raises(ValueError) as e_empty:
-            await _svc(two_ds).inspect(reference=[], entity_type="measure")
+            await svc.inspect(reference=[], entity_type="measure")
         assert str(e_none.value) == str(e_empty.value)
 
 

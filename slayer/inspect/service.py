@@ -404,32 +404,47 @@ class InspectService:
             return render_model_oneliner_index(
                 groups=groups, fmt=fmt, warnings=[],
             )
-
         # compact=False: full models_summary block per DS.
         if fmt == "json":
-            entries: list[dict[str, Any]] = []
-            for ds, models in groups:
-                if models is None:
-                    entries.append(
-                        {"data_source": ds, "error": "invalid config", "models": []}
-                    )
-                elif not models:
-                    entries.append(
-                        {"data_source": ds, "model_count": 0, "models": []}
-                    )
-                else:
-                    entries.append(json.loads(render_models_summary(
-                        datasource_name=ds, models=models, fmt="json",
-                        compact=False,
-                        descriptions_max_chars=descriptions_max_chars,
-                    )))
-            return json.dumps({
-                "entity_type": "model",
-                "collection": True,
-                "datasources": entries,
-                "warnings": [],
-            }, indent=2, default=str)
+            return self._collection_model_verbose_json(
+                groups=groups, descriptions_max_chars=descriptions_max_chars,
+            )
+        return self._collection_model_verbose_markdown(
+            groups=groups, descriptions_max_chars=descriptions_max_chars,
+        )
 
+    @staticmethod
+    def _collection_model_verbose_json(
+        *,
+        groups: list[tuple[str, list[SlayerModel] | None]],
+        descriptions_max_chars: int | None,
+    ) -> str:
+        entries: list[dict[str, Any]] = []
+        for ds, models in groups:
+            if models is None:
+                entries.append(
+                    {"data_source": ds, "error": "invalid config", "models": []}
+                )
+            elif not models:
+                entries.append({"data_source": ds, "model_count": 0, "models": []})
+            else:
+                entries.append(json.loads(render_models_summary(
+                    datasource_name=ds, models=models, fmt="json",
+                    compact=False, descriptions_max_chars=descriptions_max_chars,
+                )))
+        return json.dumps({
+            "entity_type": "model",
+            "collection": True,
+            "datasources": entries,
+            "warnings": [],
+        }, indent=2, default=str)
+
+    @staticmethod
+    def _collection_model_verbose_markdown(
+        *,
+        groups: list[tuple[str, list[SlayerModel] | None]],
+        descriptions_max_chars: int | None,
+    ) -> str:
         blocks: list[str] = []
         for ds, models in groups:
             if models is None:
@@ -449,6 +464,11 @@ class InspectService:
         descriptions_max_chars: int | None,
     ) -> str:
         ds_names = await self._storage.list_datasources()
+        if not ds_names:
+            # Empty-state parity with the model collection: the list renderer
+            # emits the "No datasources configured" message (markdown) / the
+            # empty envelope (json) for both compact modes.
+            return render_datasource_list(pairs=[], fmt=fmt, warnings=[])
 
         if compact:
             pairs: list[tuple[str, str | None]] = []
@@ -462,26 +482,45 @@ class InspectService:
 
         # compact=False: per-DS name + description + model skeleton.
         if fmt == "json":
-            entries: list[dict[str, Any]] = []
-            for ds in ds_names:
-                try:
-                    cfg = await self._storage.get_datasource(ds)
-                except Exception:  # noqa: BLE001 — invalid config: error entry
-                    entries.append({"name": ds, "error": "invalid config"})
-                    continue
-                entries.append(datasource_skeleton_fields(
-                    name=ds,
-                    description=cfg.description if cfg is not None else None,
-                    models=await self._load_visible_models(ds),
-                    descriptions_max_chars=descriptions_max_chars,
-                ))
-            return json.dumps({
-                "entity_type": "datasource",
-                "collection": True,
-                "datasources": entries,
-                "warnings": [],
-            }, indent=2, default=str)
+            return await self._collection_datasource_verbose_json(
+                ds_names=ds_names, descriptions_max_chars=descriptions_max_chars,
+            )
+        return await self._collection_datasource_verbose_markdown(
+            ds_names=ds_names, descriptions_max_chars=descriptions_max_chars,
+        )
 
+    async def _collection_datasource_verbose_json(
+        self,
+        *,
+        ds_names: list[str],
+        descriptions_max_chars: int | None,
+    ) -> str:
+        entries: list[dict[str, Any]] = []
+        for ds in ds_names:
+            try:
+                cfg = await self._storage.get_datasource(ds)
+            except Exception:  # noqa: BLE001 — invalid config: error entry
+                entries.append({"name": ds, "error": "invalid config"})
+                continue
+            entries.append(datasource_skeleton_fields(
+                name=ds,
+                description=cfg.description if cfg is not None else None,
+                models=await self._load_visible_models(ds),
+                descriptions_max_chars=descriptions_max_chars,
+            ))
+        return json.dumps({
+            "entity_type": "datasource",
+            "collection": True,
+            "datasources": entries,
+            "warnings": [],
+        }, indent=2, default=str)
+
+    async def _collection_datasource_verbose_markdown(
+        self,
+        *,
+        ds_names: list[str],
+        descriptions_max_chars: int | None,
+    ) -> str:
         blocks: list[str] = []
         for ds in ds_names:
             try:
@@ -655,13 +694,10 @@ class InspectService:
             return self._markdown_with_warnings(trunc_desc or "", warnings)
 
         # compact=False: a per-model schema skeleton for each VISIBLE model,
-        # sorted by name (matches models_summary), still DB-free.
-        models = []
-        for name in await self._storage.list_models(data_source=ds_name):
-            m = await self._storage.get_model(name, data_source=ds_name)
-            if m is not None and not m.hidden:
-                models.append(m)
-        models.sort(key=lambda m: m.name)
+        # sorted by name (matches models_summary), still DB-free. Uses the
+        # shared resilient loader so one malformed model file is skipped rather
+        # than sinking the whole render (parity with the collection JSON path).
+        models = await self._load_visible_models(ds_name)
 
         if fmt == "json":
             return json.dumps({
