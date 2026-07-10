@@ -56,7 +56,9 @@ slayer_data/
     my_postgres.yaml
     other_db.yaml
   priority.yaml            # datasource priority list (optional)
-  memories.yaml            # agent memories (optional)
+  memories/                # agent memories, one <id>.md file each (optional)
+    1.md
+    help.intro.md
   embeddings.db            # SQLite sidecar for embedding rows (DEV-1405)
 ```
 
@@ -64,7 +66,7 @@ slayer_data/
 
 **Embeddings sidecar (DEV-1405):** Embedding rows used by the optional dense-search channel live in a SQLite file at `<base_dir>/embeddings.db`, **not** in `embeddings.yaml`. Embeddings are derived artifacts (regeneratable by `slayer ingest` / `--ingest-on-startup`), not user-authored config, so the diffable-in-git property that drives the YAML choice for models doesn't apply. A pre-DEV-1405 `embeddings.yaml` or `counters.yaml` is silently renamed to `<name>.yaml.legacy` on first open and ignored thereafter; re-run `slayer ingest` to repopulate `embeddings.db`. The schema is identical to the `SQLiteStorage` embedding table — both backends delegate to a shared `SidecarEmbeddingStore` helper.
 
-**Memory id allocation (DEV-1405):** The next memory id is derived from `memories.yaml` itself — `last_row.id + 1` — rather than a separate counter file. Ids of deleted memories may be reused by future saves; cascade-on-delete in `delete_memory` already removes the matching embedding row.
+**Memory id allocation (DEV-1658):** The next int-shaped memory id is derived by scanning the `memories/` directory of per-id `.md` files — `max(int-shaped id) + 1` — rather than a separate counter file. Non-int ids (e.g. `help.intro`, `kb.policy.42`) are ignored by the allocator. Ids of deleted memories may be reused by future saves; cascade-on-delete in `delete_memory` already removes the matching embedding row.
 
 ### SQLiteStorage
 

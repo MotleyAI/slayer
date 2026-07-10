@@ -43,7 +43,7 @@ Inside a field, use a dict to name the result:
 
 ## Nesting
 
-Transforms (see `help(topic='transforms')`) can wrap measures, arithmetic, or
+Transforms (see `memory:help.transforms`) can wrap measures, arithmetic, or
 each other. Arbitrary nesting is allowed:
 
 ```json
@@ -92,18 +92,18 @@ transforms (`cumsum`, `change`, `time_shift`, …) are rejected at model save.
 
 The same parser powers `filters`. Left and right of an operator can be a
 dimension, a measure with `:agg`, or a transform expression. See
-`help(topic='filters')` for operators and routing.
+`memory:help.filters` for operators and routing.
 
 ## Gotchas
 
-- Bare measure renames (`{"formula": "*:count", "name": "n"}`) cannot be
-  referenced by `n` in `filters` — reference the original `*:count` instead.
+- Bare measure renames (`{"formula": "*:count", "name": "n"}`) can be
+  referenced by either `n` or `*:count` in `filters` (DEV-1443).
 - Formulas validate measure names against the source model at query time.
-  If you get "measure not found", call `inspect_model` and check the actual
-  measure list.
+  If you get "measure not found", call `inspect(reference="<model>", entity_type="model")`
+  and check the actual measure list.
 
 ## See also
 
-- `help(topic='aggregations')` — the full list of `:agg` options.
-- `help(topic='transforms')` — `cumsum`, `change`, `time_shift`, etc.
-- `help(topic='joins')` — dotted paths like `customers.score`.
+- `memory:help.aggregations` — the full list of `:agg` options.
+- `memory:help.transforms` — `cumsum`, `change`, `time_shift`, etc.
+- `memory:help.joins` — dotted paths like `customers.score`.

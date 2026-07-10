@@ -232,24 +232,25 @@ slayer memory forget kb.returns.null-handling
 | `save` | `--id ID` | User-pinned canonical memory id. Forbidden charset: `:`, `/`, `?`, `#`, whitespace, ASCII control. Omit to auto-allocate (`max(int-shaped id) + 1`). Duplicate id → unconditional upsert; `created_at` preserved. |
 | `forget` | `<id>` (positional) | Memory id. Cascade-strips every `memory:<id>` reference to it from every other memory's `entities` list. |
 
-### `slayer help`
+### Conceptual help
 
-Show SLayer's conceptual help — the same content the MCP `help()` tool returns.
-Intended to complement the schema/reference pages: it covers how concepts
-compose (query evaluation order, transform trade-offs, cross-model measures,
-the three meanings of "last") rather than restating field-by-field schemas.
+SLayer's conceptual help ships as a predefined set of **help memories**
+(`memory:help.intro` … `memory:help.workflow`) — read them with `inspect`, or
+find the relevant one with `search`:
 
 ```bash
-slayer help                  # intro (core entities, query shape, key invariants)
-slayer help queries          # deep dive on query anatomy
-slayer help transforms       # cumsum, time_shift, lag/lead trade-offs
-slayer help --help           # argparse-level help lists every topic
+slayer inspect memory:help.intro --type memory        # overview + the query shape
+slayer inspect memory:help.transforms --type memory   # cumsum, time_shift, lag/lead trade-offs
+slayer search --question "how do transforms work"     # surface the relevant topic
 ```
 
-Topics: `queries`, `formulas`, `aggregations`, `transforms`, `time`, `filters`,
-`joins`, `models`, `extending`, `workflow`. Content lives in
-`slayer/help/topics/*.md` and is discovered dynamically — dropping a new `.md`
-in that directory adds a topic with no Python changes. See the corresponding
-concept docs for full treatments: [queries](../concepts/queries.md),
-[formulas](../concepts/formulas.md), [models](../concepts/models.md),
-[ingestion](../concepts/ingestion.md).
+`memory:help.intro` lists the deep-dive topics (`memory:help.queries`,
+`memory:help.formulas`, `memory:help.aggregations`, `memory:help.transforms`,
+`memory:help.time`, `memory:help.filters`, `memory:help.joins`,
+`memory:help.models`, `memory:help.extending`, `memory:help.workflow`). The
+topics complement the schema/reference pages: they cover how concepts compose
+(query evaluation order, transform trade-offs, cross-model measures, the three
+meanings of "last") rather than restating field-by-field schemas. See the
+corresponding concept docs for full treatments:
+[queries](../concepts/queries.md), [formulas](../concepts/formulas.md),
+[models](../concepts/models.md), [ingestion](../concepts/ingestion.md).

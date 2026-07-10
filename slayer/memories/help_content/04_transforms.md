@@ -165,6 +165,6 @@ Useful for filtering on trend: `"filters": ["last(change(revenue:sum)) < 0"]`.
 
 ## See also
 
-- `help(topic='time')` — granularity, whole_periods_only, main_time_dimension.
-- `help(topic='filters')` — filtering on transform outputs.
-- `help(topic='aggregations')` — `:first`/`:last` aggregation vs `first()`/`last()` transform.
+- `memory:help.time` — granularity, whole_periods_only, main_time_dimension.
+- `memory:help.filters` — filtering on transform outputs.
+- `memory:help.aggregations` — `:first`/`:last` aggregation vs `first()`/`last()` transform.

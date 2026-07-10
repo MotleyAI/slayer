@@ -44,7 +44,7 @@ Don't confuse:
 
 - `:first`/`:last` aggregation — per-group record's earliest/latest value.
 - `first(x)`/`last(x)` transform — broadcasts the earliest/most recent bucket's
-  aggregated value to every row. See `help(topic='transforms')`.
+  aggregated value to every row. See `memory:help.transforms`.
 
 ## Windowed sum and average
 
@@ -117,6 +117,6 @@ arg, and `price:weighted_avg(weight=revenue)` overrides.
 
 ## See also
 
-- `help(topic='formulas')` — where `:agg` fits in the broader formula language.
-- `help(topic='transforms')` — `first()`/`last()` transforms vs `:first`/`:last` aggregations.
-- `help(topic='models')` — declaring measures and their `allowed_aggregations`.
+- `memory:help.formulas` — where `:agg` fits in the broader formula language.
+- `memory:help.transforms` — `first()`/`last()` transforms vs `:first`/`:last` aggregations.
+- `memory:help.models` — declaring measures and their `allowed_aggregations`.

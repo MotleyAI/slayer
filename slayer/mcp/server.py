@@ -25,7 +25,7 @@ from slayer.core.recommend import render_recommendation_markdown
 from slayer.engine.ingestion import _friendly_db_error
 from slayer.engine.profiling import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
-from slayer.help import TOPIC_SUMMARY_LINE, render_help
+from slayer.memories.help_seed import seed_help_memories
 from slayer.inspect.model_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
     _build_sample_query_args,
     _collect_measure_profile,
@@ -252,11 +252,20 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     storage: StorageBackend,
     *,
     ingest_on_startup: bool = False,
+    _seed_help: bool = True,
 ):
+    from slayer.async_utils import run_sync
+
+    # DEV-1658: seed the conceptual-help memories (help.intro …). ``_seed_help``
+    # is False when embedded in create_app (which seeds once itself), so the
+    # pass never fires twice. Idempotent / skip-if-unchanged, so a warm store
+    # is a cheap no-op.
+    if _seed_help:
+        run_sync(seed_help_memories(storage=storage))
+
     if ingest_on_startup:
         import sys
 
-        from slayer.async_utils import run_sync
         from slayer.engine.ingestion import ingest_all_datasources_idempotent
 
         run_sync(
@@ -272,8 +281,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         instructions=(
             "SLayer is a semantic layer for querying databases. "
             "Instead of writing SQL, describe what data you want using models, measures, dimensions, and filters. "
-            "Before calling any other SLayer tool, call help() first for an overview of SLayer concepts, then help(topic='...') for deep dives on specific topics. "
-            "Typical workflow: help → search → inspect → query. "
+            "New to SLayer? Start with inspect(reference='memory:help.intro', entity_type='memory') for an overview of core concepts and the query shape — it lists the deep-dive topics you can inspect the same way. "
+            "Use search(question='...') to find relevant concepts, models, and saved learnings. "
+            "Typical workflow: inspect(memory:help.intro) → search → inspect → query. "
             "To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."
         ),
     )
@@ -289,18 +299,6 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     # (validate_models / recommend_root_model) reuse this same engine so a
     # single engine holds every cached SQL client for the server's lifetime.
     mcp._slayer_engine = engine
-
-    _help_description = (
-        "Return conceptual help on SLayer. "
-        "Call without a topic for the intro (what SLayer is, core entities, the query shape). "
-        "Pass a topic name for a deep dive. "
-        f"{TOPIC_SUMMARY_LINE} "
-        "Args: topic (optional) — the topic name. Unknown topics return a friendly error listing the valid ones."
-    )
-
-    @mcp.tool(description=_help_description)
-    async def help(topic: str | None = None) -> str:  # noqa: A001 — intentional shadow of builtin inside factory
-        return render_help(topic=topic)
 
     @mcp.tool()
     async def query(  # NOSONAR S107 — FastMCP introspects this signature to expose each query option as a typed MCP tool argument; collapsing into a dict would degrade the agent-facing schema
