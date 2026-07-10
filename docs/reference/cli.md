@@ -186,7 +186,7 @@ slayer inspect --type datasource    # collection: all datasources
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `reference` | Yes | One or more entity references: canonical id, bare name, join path (resolved to the owning model), or `memory:<id>`. Two or more → a same-kind batch. |
+| `reference` | No | Zero or more entity references: canonical id, bare name, join path (resolved to the owning model), or `memory:<id>`. Two or more → a same-kind batch. **Omit entirely** to list the whole collection at `--type` (`model` or `datasource` only). |
 | `--type` | Yes | Entity kind: `datasource`, `model`, `column`, `measure`, `aggregation`, or `memory`. Disambiguates same-named entities and asserts the kind. |
 | `--no-compact` | No | Return the full render. The compact default is description-only for column/measure/aggregation/datasource/memory, and a cheap **schema skeleton** (column/measure/aggregation names + join targets, zero DB calls) for `--type model`; `--no-compact` on a datasource renders a per-model skeleton for each visible model. |
 | `--format` | No | `markdown` (default) or `json`. |
