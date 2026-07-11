@@ -508,13 +508,13 @@ class TestSeedGuard:
 
         calls: list[int] = []
 
-        async def _spy_seed(storage):  # noqa: ANN001, ANN202
+        async def _spy_seed(storage):  # noqa: ANN001, ANN202 # NOSONAR(S7503) — async signature required; replaces the awaited seed_help_memories
             calls.append(1)
             return 0
 
         monkeypatch.setattr(mcp_server, "seed_help_memories", _spy_seed)
 
-        server = mcp_server.create_mcp_server(None)
+        server = mcp_server.create_mcp_server(None)  # NOSONAR(S5655) — intentionally passes None to exercise the storage guard
         tools = await server.list_tools()
         assert tools  # non-empty tool surface
         assert calls == []  # seeding never attempted for None storage
@@ -531,14 +531,14 @@ class TestSeedGuard:
 
         calls: list[int] = []
 
-        async def _spy_seed(storage):  # noqa: ANN001, ANN202
+        async def _spy_seed(storage):  # noqa: ANN001, ANN202 # NOSONAR(S7503) — async signature required; replaces the awaited seed_help_memories
             calls.append(1)
             return 0
 
         monkeypatch.setattr(mcp_server, "seed_help_memories", _spy_seed)
 
         with caplog.at_level(logging.WARNING, logger="slayer.mcp.server"):
-            server = mcp_server.create_mcp_server(object())
+            server = mcp_server.create_mcp_server(object())  # NOSONAR(S5655) — intentionally passes a non-StorageBackend stub to exercise the storage guard
         tools = await server.list_tools()
         assert tools
         assert calls == []
@@ -552,7 +552,7 @@ class TestSeedGuard:
         from slayer.mcp.server import create_mcp_server
 
         with caplog.at_level(logging.WARNING, logger="slayer.mcp.server"):
-            create_mcp_server(None)
+            create_mcp_server(None)  # NOSONAR(S5655) — intentionally passes None to exercise the storage guard
         assert [r for r in caplog.records if "seeding skipped" in r.message] == []
 
     async def test_real_storage_still_seeds(
@@ -634,7 +634,7 @@ class TestSeedGuard:
 
         calls: list[int] = []
 
-        async def _spy_seed(storage):  # noqa: ANN001, ANN202
+        async def _spy_seed(storage):  # noqa: ANN001, ANN202 # NOSONAR(S7503) — async signature required; replaces the awaited seed_help_memories
             calls.append(1)
             return 0
 
@@ -643,3 +643,6 @@ class TestSeedGuard:
         server = mcp_server.create_mcp_server(storage=storage, _seed_help=False)
         assert server is not None
         assert calls == []
+        # Opt-out really produced no seeding on the real store — not merely an
+        # un-called spy.
+        assert await storage.get_memory_row("help.intro") is None
