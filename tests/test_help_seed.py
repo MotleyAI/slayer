@@ -19,6 +19,7 @@ These tests pin:
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
@@ -482,3 +483,163 @@ class TestDocsUpdated:
         # now routes through inspect/search.
         assert "Conceptual Help" not in doc
         assert "memory:help.intro" in doc
+
+
+# ---------------------------------------------------------------------------
+# DEV-1669: help-seeding must never crash server construction
+#
+# ``create_mcp_server`` used to run ``run_sync(seed_help_memories(storage))``
+# unconditionally at construction, crashing any metadata-only build over a
+# ``None`` / non-backend storage, and surfacing ``RuntimeError: no running
+# event loop`` from ``run_sync`` in nested async contexts. Seeding is now
+# guarded (skipped for ``None`` / non-``StorageBackend`` storage) and
+# best-effort (a genuine seed failure over a real backend logs a warning and
+# lets construction proceed).
+# ---------------------------------------------------------------------------
+
+
+class TestSeedGuard:
+    async def test_none_storage_builds_without_seeding(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # (A) A storage-less server (pure tool-schema introspection) builds,
+        # exposes its tools, and never touches the seed path.
+        import slayer.mcp.server as mcp_server
+
+        calls: list[int] = []
+
+        async def _spy_seed(storage):  # noqa: ANN001, ANN202
+            calls.append(1)
+            return 0
+
+        monkeypatch.setattr(mcp_server, "seed_help_memories", _spy_seed)
+
+        server = mcp_server.create_mcp_server(None)
+        tools = await server.list_tools()
+        assert tools  # non-empty tool surface
+        assert calls == []  # seeding never attempted for None storage
+
+    async def test_stub_storage_builds_without_seeding(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # (B) A non-StorageBackend stub (e.g. ``object()`` in a lightweight
+        # test) builds without crashing, without seeding, and — like the None
+        # case — without logging a warning (silent, intended skip).
+        import slayer.mcp.server as mcp_server
+
+        calls: list[int] = []
+
+        async def _spy_seed(storage):  # noqa: ANN001, ANN202
+            calls.append(1)
+            return 0
+
+        monkeypatch.setattr(mcp_server, "seed_help_memories", _spy_seed)
+
+        with caplog.at_level(logging.WARNING, logger="slayer.mcp.server"):
+            server = mcp_server.create_mcp_server(object())
+        tools = await server.list_tools()
+        assert tools
+        assert calls == []
+        assert [r for r in caplog.records if "seeding skipped" in r.message] == []
+
+    def test_none_storage_skip_is_silent(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # (C) Skipping the seed for a None storage is the intended
+        # metadata-build case — it must NOT log a warning.
+        from slayer.mcp.server import create_mcp_server
+
+        with caplog.at_level(logging.WARNING, logger="slayer.mcp.server"):
+            create_mcp_server(None)
+        assert [r for r in caplog.records if "seeding skipped" in r.message] == []
+
+    async def test_real_storage_still_seeds(
+        self, storage: YAMLStorage
+    ) -> None:
+        # (D) Regression: a real backend still seeds at construction.
+        from slayer.mcp.server import create_mcp_server
+
+        # Precondition: nothing else seeded it — the seed we assert below is
+        # the one create_mcp_server performs.
+        assert await storage.get_memory_row("help.intro") is None
+        create_mcp_server(storage=storage)
+        assert (await storage.get_memory("help.intro")).learning
+
+    def test_seed_failure_is_non_fatal_and_warns(
+        self,
+        storage: YAMLStorage,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # (E) Scenario C: ``run_sync`` raising (the nested-loop failure site)
+        # must not abort construction — it is caught and logged as a warning.
+        import slayer.async_utils
+
+        from slayer.mcp.server import create_mcp_server
+
+        def _boom(coro):  # noqa: ANN001, ANN202
+            coro.close()  # avoid an un-awaited-coroutine warning
+            raise RuntimeError("no running event loop")
+
+        # ``create_mcp_server`` does ``from slayer.async_utils import run_sync``
+        # at call time, so patching the source module takes effect.
+        monkeypatch.setattr(slayer.async_utils, "run_sync", _boom)
+        caplog.set_level(logging.WARNING, logger="slayer.mcp.server")
+        server = create_mcp_server(storage=storage)  # must not raise
+
+        assert server is not None
+        matching = [
+            r for r in caplog.records
+            if "help-memory seeding skipped" in r.message
+        ]
+        assert matching
+        # exc_info=True is part of the contract — the traceback must be attached
+        # so operators can diagnose why help search is missing.
+        assert matching[0].exc_info is not None
+
+    def test_seeder_coroutine_failure_is_non_fatal_and_warns(
+        self,
+        storage: YAMLStorage,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # (G) A realistic internal seed failure (embedding/DB error surfacing
+        # from the awaited coroutine, not from run_sync itself) is likewise
+        # caught: warning + construction continues.
+        import slayer.mcp.server as mcp_server
+
+        async def _raising_seed(storage):  # noqa: ANN001, ANN202
+            raise RuntimeError("embedding backend unavailable")
+
+        monkeypatch.setattr(mcp_server, "seed_help_memories", _raising_seed)
+        caplog.set_level(logging.WARNING, logger="slayer.mcp.server")
+        server = mcp_server.create_mcp_server(storage=storage)  # must not raise
+
+        assert server is not None
+        matching = [
+            r for r in caplog.records
+            if "help-memory seeding skipped" in r.message
+        ]
+        assert matching
+        assert matching[0].exc_info is not None
+
+    async def test_seed_help_false_skips_seeder(
+        self, storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # (F) The explicit opt-out (used by ``create_app``) must not call the
+        # seeder even over a real backend — the guard doesn't disturb it.
+        import slayer.mcp.server as mcp_server
+
+        calls: list[int] = []
+
+        async def _spy_seed(storage):  # noqa: ANN001, ANN202
+            calls.append(1)
+            return 0
+
+        monkeypatch.setattr(mcp_server, "seed_help_memories", _spy_seed)
+
+        server = mcp_server.create_mcp_server(storage=storage, _seed_help=False)
+        assert server is not None
+        assert calls == []
