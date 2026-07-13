@@ -264,8 +264,20 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     # is False when embedded in create_app (which seeds once itself), so the
     # pass never fires twice. Idempotent / skip-if-unchanged, so a warm store
     # is a cheap no-op.
-    if _seed_help:
-        run_sync(seed_help_memories(storage=storage))
+    #
+    # DEV-1669: seeding is a convenience side-effect and must never crash server
+    # construction. Skip silently for a ``None`` / non-``StorageBackend`` arg —
+    # metadata-only builds (reading advertised tool names / a tool's JSON
+    # schema) need no storage at all. When a real backend is given, treat a
+    # genuine seed failure (nested-loop ``run_sync``, embedding/DB error) as
+    # best-effort: warn and continue rather than abort the build.
+    if _seed_help and isinstance(storage, StorageBackend):
+        try:
+            run_sync(seed_help_memories(storage=storage))
+        except Exception as exc:  # noqa: BLE001 — seeding must not abort the build
+            logger.warning(
+                "SLayer help-memory seeding skipped: %s", exc, exc_info=True
+            )
 
     if ingest_on_startup:
         import sys
