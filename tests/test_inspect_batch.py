@@ -318,8 +318,12 @@ class TestJsonBatch:
 
 class TestGlobalArgErrorsOnList:
     async def test_empty_list_raises(self, svc: InspectService) -> None:
-        with pytest.raises(ValueError, match="empty"):
+        # DEV-1667: ``[]`` is normalized to ``None`` (the collection sentinel).
+        # With a non-collection kind it now raises the collection-unsupported
+        # error, not the old "reference list must not be empty" message.
+        with pytest.raises(ValueError, match="[Cc]ollection view") as exc:
             await svc.inspect(reference=[], entity_type="column")
+        assert "must not be empty" not in str(exc.value)
 
     async def test_non_string_list_member_raises(
         self, svc: InspectService

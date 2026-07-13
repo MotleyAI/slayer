@@ -74,7 +74,8 @@ in `measures`:
 5. It's critically important to choose the right source_model for a query. Put EXTRA THOUGHT into that.
 
 6. When picking a measure for a query, MAKE SURE to consider the underlying values range 
-   shown under "values" in inspect_model. If that's all NULL, maybe that's not the measure you want.
+   shown under "values" in `inspect(reference="<model>", entity_type="model")`. If that's all
+   NULL, maybe that's not the measure you want.
 
 7. **`time_shift`, `change`, `change_pct` can only wrap aggregated measures** —
    e.g. `time_shift(revenue:sum, -1)`, `change(amount:avg)`. They cannot wrap
@@ -84,9 +85,13 @@ in `measures`:
 
 ## Deep dives
 
-Call `help(topic='...')` for detail pages on specific subjects.
-Available topics: `queries`, `formulas`, `aggregations`, `transforms`,
-`time`, `filters`, `joins`, `models`, `extending`, `workflow`.
+Each subject below is its own help memory. Read one with
+`inspect(reference="memory:help.<topic>", entity_type="memory")`, e.g.
+`inspect(reference="memory:help.queries", entity_type="memory")`. Available topics:
+`memory:help.queries`, `memory:help.formulas`, `memory:help.aggregations`,
+`memory:help.transforms`, `memory:help.time`, `memory:help.filters`,
+`memory:help.joins`, `memory:help.models`, `memory:help.extending`,
+`memory:help.workflow`.
 
-Recommended starting order for an unfamiliar agent: `help(topic='workflow')` for
-tool-chaining, then `help(topic='queries')` for the query model.
+Recommended starting order for an unfamiliar agent: `memory:help.workflow` for
+tool-chaining, then `memory:help.queries` for the query model.

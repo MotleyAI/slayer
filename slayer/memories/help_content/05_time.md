@@ -70,13 +70,13 @@ Without any `time_dimensions` entry, transforms will error. Set
 SLayer has **three** distinct things named `last`:
 
 1. `:last(time_col)` — the **aggregation**. Per group, returns the value from
-   the record with the latest `time_col`. See `help(topic='aggregations')`.
+   the record with the latest `time_col`. See `memory:help.aggregations`.
 
 2. `last(x)` — the **transform**. Broadcasts the aggregated value from the
-   most recent time bucket to every row. See `help(topic='transforms')`.
+   most recent time bucket to every row. See `memory:help.transforms`.
 
 3. `last(…)` inside a `filters` string (e.g. `"last(change(revenue:sum)) < 0"`)
-   — a post-filter on the transform output. See `help(topic='filters')`.
+   — a post-filter on the transform output. See `memory:help.filters`.
 
 They all concern "latest something" but operate on different levels: record /
 bucket / filter. Pick the one that matches your question.
@@ -101,6 +101,6 @@ bucket / filter. Pick the one that matches your question.
 
 ## See also
 
-- `help(topic='transforms')` — the transform family.
-- `help(topic='aggregations')` — `:first` and `:last` aggregations.
-- `help(topic='queries')` — where `time_dimensions` and `main_time_dimension` sit.
+- `memory:help.transforms` — the transform family.
+- `memory:help.aggregations` — `:first` and `:last` aggregations.
+- `memory:help.queries` — where `time_dimensions` and `main_time_dimension` sit.

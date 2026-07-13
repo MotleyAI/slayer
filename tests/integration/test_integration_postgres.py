@@ -11,7 +11,7 @@ import psycopg
 from pytest_postgresql import factories
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -1245,3 +1245,136 @@ class TestPostgresDev1576Heals:
         assert float(result.data[0]["orders.total_stddev_samp"]) == pytest.approx(
             92.76, abs=0.1
         )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1645: compiler must emit valid Postgres SQL.
+#   Flavor A — ORDER BY on an unprojected/renamed column.
+#   Flavor B — mixed-case identifiers (Column.sql, filters, JOIN ON) must be
+#              double-quoted so Postgres does not fold them to lowercase.
+# The models below deliberately write identifiers UNQUOTED (as an OTF agent
+# naturally would); the fix is what makes these queries execute.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _pg_dev1645_storage(postgresql_proc, tmp_path_factory):
+    conn, db_name = _create_module_db(postgresql_proc)
+    try:
+        cur = conn.cursor()
+        # Mixed-case column + mixed-case PK created via QUOTED DDL so their true
+        # stored case is genuinely mixed (Postgres would otherwise fold to lower).
+        cur.execute("""
+            CREATE TABLE clusters (
+                "CLSTR_PIN" INTEGER PRIMARY KEY,
+                score NUMERIC(10,2) NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE accounts (
+                id INTEGER PRIMARY KEY,
+                "StateFlag" TEXT NOT NULL,
+                acct_form TEXT NOT NULL,
+                clu_ref INTEGER REFERENCES clusters("CLSTR_PIN"),
+                created_at TIMESTAMP NOT NULL
+            )
+        """)
+        cur.executemany(
+            'INSERT INTO clusters ("CLSTR_PIN", score) VALUES (%s, %s)',
+            [(10, 1.5), (20, 2.5)],
+        )
+        cur.executemany(
+            "INSERT INTO accounts VALUES (%s, %s, %s, %s, %s)",
+            [
+                (1, "Dormant", "Bot", 10, "2024-01-15 10:00:00"),
+                (2, "Active", "Human", 20, "2024-02-20 11:00:00"),
+                (3, "Dormant", "Human", 10, "2024-03-01 09:00:00"),
+            ],
+        )
+        conn.commit()
+
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("pg_dev1645")))
+        info = postgresql_proc
+        run_sync(storage.save_datasource(DatasourceConfig(
+            name="testpg", type="postgres", host=info.host, port=info.port,
+            database=db_name, username=info.user, password="",
+        )))
+
+        clusters_model = SlayerModel(
+            name="clusters", sql_table="clusters", data_source="testpg",
+            columns=[
+                # PK column name is mixed-case and written UNQUOTED in the model.
+                Column(name="CLSTR_PIN", sql="CLSTR_PIN", type=DataType.INT, primary_key=True),
+                Column(name="score", sql="score", type=DataType.DOUBLE),
+            ],
+        )
+        accounts_model = SlayerModel(
+            name="accounts", sql_table="accounts", data_source="testpg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                # Derived boolean referencing mixed-case StateFlag UNQUOTED (the
+                # fake_account_23 repro). Fix must emit "StateFlag".
+                Column(name="is_inactive", type=DataType.BOOLEAN,
+                       sql="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END"),
+                Column(name="acct_form", sql="acct_form", type=DataType.TEXT),
+                Column(name="clu_ref", sql="clu_ref", type=DataType.INT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+            # Join key CLSTR_PIN written UNQUOTED (the fake_account_15 repro).
+            joins=[ModelJoin(target_model="clusters", join_pairs=[["clu_ref", "CLSTR_PIN"]])],
+        )
+        run_sync(storage.save_model(clusters_model))
+        run_sync(storage.save_model(accounts_model))
+        yield storage
+    finally:
+        conn.close()
+        _drop_module_db(postgresql_proc, db_name)
+
+
+@pytest.fixture
+def pg_dev1645(_pg_dev1645_storage):
+    return SlayerQueryEngine(storage=_pg_dev1645_storage)
+
+
+@pytest.mark.integration
+class TestDev1645ValidPostgres:
+    async def test_flavor_b_mixed_case_column_sql_executes(
+        self, pg_dev1645: SlayerQueryEngine,
+    ) -> None:
+        """Filter on a derived column whose SQL references mixed-case StateFlag
+        (the fake_account_23 repro) — must execute, not raise UndefinedColumn."""
+        query = SlayerQuery(
+            source_model="accounts",
+            measures=[{"formula": "*:count", "name": "cnt"}],
+            filters=["is_inactive == True"],
+        )
+        result = await pg_dev1645.execute(query=query)
+        assert result.data[0]["accounts.cnt"] == 2  # two Dormant rows
+
+    async def test_flavor_b_mixed_case_join_key_executes(
+        self, pg_dev1645: SlayerQueryEngine,
+    ) -> None:
+        """Cross-model dimension across a join whose key is mixed-case CLSTR_PIN
+        (the fake_account_15 repro) — must execute."""
+        query = SlayerQuery(
+            source_model="accounts",
+            dimensions=[ColumnRef(name="score", model="clusters")],
+            measures=[{"formula": "*:count", "name": "cnt"}],
+        )
+        result = await pg_dev1645.execute(query=query)
+        by_score = {float(r["accounts.clusters.score"]): r["accounts.cnt"] for r in result.data}
+        assert by_score[1.5] == 2
+        assert by_score[2.5] == 1
+
+    async def test_flavor_a_orderby_nonprojected_column_executes(
+        self, pg_dev1645: SlayerQueryEngine,
+    ) -> None:
+        """Raw-row query ordering by a base column that is not in the projection
+        (the mental_healths_1 / organ_transplant_13 repro) — must execute."""
+        query = SlayerQuery(
+            source_model="accounts",
+            dimensions=[ColumnRef(name="acct_form")],
+            distinct_dimension_values=False,
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="desc")],
+        )
+        result = await pg_dev1645.execute(query=query)
+        assert result.row_count == 3
