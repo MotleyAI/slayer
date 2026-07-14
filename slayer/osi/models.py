@@ -16,7 +16,7 @@ Deviations from the reference package:
 from enum import Enum
 from typing import Any, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class OSIDialect(str, Enum):
@@ -154,6 +154,16 @@ class OSIDocument(BaseModel):
 
     version: str = "0.2.0.dev0"
     semantic_model: list[OSISemanticModel]
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _coerce_version_to_str(cls, v: Any) -> Any:
+        # YAML parses an unquoted ``version: 1.0`` as a float and ``version: 1``
+        # as an int; OSI spec versions are strings. Coerce numeric scalars so a
+        # valid-but-unquoted version doesn't fail validation (and get skipped).
+        if isinstance(v, (int, float)):
+            return str(v)
+        return v
 
 
 def ai_context_to_dict(ctx: Optional[OSIAIContext]) -> Optional[dict[str, Any]]:

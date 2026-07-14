@@ -62,7 +62,9 @@ def parse_osi_file(path: Path) -> OSIDocument | None:
         return None
 
     version = data.get("version")
-    if version is not None and version not in KNOWN_OSI_VERSIONS:
+    # Coerce for the known-version check: YAML parses an unquoted ``1.0`` as a
+    # float, which would never match the string set (OSIDocument coerces it too).
+    if version is not None and str(version) not in KNOWN_OSI_VERSIONS:
         logger.warning(
             "OSI file %s declares unknown spec version %r (known: %s); "
             "attempting to parse anyway.",

@@ -95,6 +95,22 @@ def test_known_version_no_warning(tmp_path: Path, caplog: pytest.LogCaptureFixtu
     assert not any("version" in r.message.lower() for r in caplog.records)
 
 
+def test_unquoted_numeric_version_parses_without_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # YAML parses an unquoted `version: 1.0` as a float. It must still be
+    # recognised as the known "1.0" version — coerced, not skipped or warned.
+    src = (FIXTURES / "shop.yaml").read_text().replace(
+        'version: "0.2.0.dev0"', "version: 1.0"
+    )
+    f = tmp_path / "unquoted.yaml"
+    f.write_text(src)
+    with caplog.at_level(logging.WARNING):
+        docs = parse_osi_path(f)
+    assert len(docs) == 1 and docs[0].version == "1.0"
+    assert not any("version" in r.message.lower() for r in caplog.records)
+
+
 def test_unknown_version_warns_but_parses(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
         docs = parse_osi_path(FIXTURES / "unknown_version.yaml")

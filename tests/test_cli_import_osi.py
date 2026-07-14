@@ -89,3 +89,32 @@ def test_import_osi_missing_datasource_exits(tmp_path: Path) -> None:
     args = _args(store, FIXTURES / "shop.yaml")
     with pytest.raises(SystemExit):
         _run_import_osi(args)
+
+
+def test_import_osi_duplicate_datasets_exits_cleanly(
+    shop_setup, tmp_path: Path, capsys
+) -> None:
+    # Duplicate dataset names raise OsiConversionError in the converter; the CLI
+    # must catch it and exit non-zero with the message, not dump a traceback.
+    store, _ = shop_setup
+    osi = tmp_path / "dupe.yaml"
+    osi.write_text(
+        "version: '0.2.0.dev0'\n"
+        "semantic_model:\n"
+        "  - name: shop\n"
+        "    datasets:\n"
+        "      - name: orders\n"
+        "        source: orders\n"
+        "        fields:\n"
+        "          - name: order_id\n"
+        "            expression: {dialects: [{dialect: ANSI_SQL, expression: order_id}]}\n"
+        "      - name: orders\n"
+        "        source: customers\n"
+        "        fields:\n"
+        "          - name: customer_id\n"
+        "            expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}\n"
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        _run_import_osi(_args(store, osi))
+    assert exc_info.value.code == 1
+    assert "Duplicate dataset names" in capsys.readouterr().out

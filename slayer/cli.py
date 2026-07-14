@@ -1534,7 +1534,7 @@ def _run_import_dbt(args):
 
 
 def _run_import_osi(args):
-    from slayer.osi.converter import OsiToSlayerConverter
+    from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
     from slayer.osi.parser import parse_osi_path
     from slayer.sql import engine_factory
 
@@ -1565,7 +1565,11 @@ def _run_import_osi(args):
         dialect=args.dialect,
         target_dialect=ds.type,
     )
-    result = converter.convert()
+    try:
+        result = converter.convert()
+    except OsiConversionError as exc:
+        print(str(exc))
+        sys.exit(1)
 
     for model in result.models:
         run_sync(storage.save_model(model))
