@@ -45,6 +45,6 @@ OSI expressions are multi-dialect. `--dialect` (default `ANSI_SQL`) picks which 
 
 ## Clean-Fail Report
 
-Anything that cannot be expressed exactly is reported (never silently dropped) and the raw construct is preserved in `meta`. Examples: a metric with a `CASE`/window expression, a relationship with mismatched key lengths or an unknown target, a dataset whose table cannot be introspected, an illegal name (containing `.`/`:`), a metric whose referenced datasets are not connected by any join path, or an orphan `COUNT(*)` (a column-less metric in a semantic model with no unique fact table, so its grain is ambiguous). The CLI prints a grouped report and a `models / unconverted / dropped` tally at the end.
+Anything that cannot be expressed exactly is reported (never silently dropped) — the raw construct and a reason appear in the conversion report. Examples: a metric with a `CASE`/window expression, a relationship with mismatched key lengths or an unknown target, a dataset whose table cannot be introspected, an illegal name (containing `.`/`:`), a metric whose referenced datasets are not connected by any join path, or an orphan `COUNT(*)` (a column-less metric in a semantic model with no unique fact table, so its grain is ambiguous). The CLI prints a grouped report and a `models / unconverted / dropped` tally at the end.
 
 A query source is introspected live (a `LIMIT 0` / cursor-metadata probe) for real column types, the same way table sources are — no connection-less heuristics.
