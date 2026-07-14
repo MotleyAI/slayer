@@ -35,6 +35,7 @@ async def serve(
     engine_factory: EngineFactory | None = None,
     tls_ctx: ssl.SSLContext | None = None,
     catalog_extra_relations=None,
+    catalog_ttl_seconds: float | None = None,
 ) -> None:
     """Bind and serve forever. Validates the bind/token combination first.
 
@@ -65,6 +66,7 @@ async def serve(
             storage_provider=storage_provider, engine_factory=engine_factory,
             tls_ctx=tls_ctx,
             catalog_extra_relations=catalog_extra_relations,
+            catalog_ttl_seconds=catalog_ttl_seconds,
         )
         try:
             await conn.run()

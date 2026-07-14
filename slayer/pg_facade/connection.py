@@ -18,6 +18,7 @@ import asyncio
 import logging
 import re
 import struct
+import time
 from collections.abc import Awaitable, Callable, Iterable
 
 import sqlglot
@@ -165,6 +166,7 @@ class PgConnection:
         engine_factory: "EngineFactory | None" = None,
         tls_ctx=None,
         catalog_extra_relations=None,
+        catalog_ttl_seconds: float | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -201,6 +203,14 @@ class PgConnection:
         # datasource — execution routes per query (see ``QueryResult.data_source``).
         self._database: str = DEFAULT_DATABASE
         self._catalog: FacadeCatalog | None = None
+        # On-demand catalog refresh: when a TTL is set, an idle connection
+        # re-checks storage at most once per window and rebuilds the catalog
+        # only if the cheap ``graph_fingerprint`` actually moved (see
+        # ``_maybe_refresh_catalog``). ``None`` keeps the catalog static for
+        # the connection's lifetime (the historical behavior).
+        self._catalog_ttl_seconds: float | None = catalog_ttl_seconds
+        self._catalog_checked_at: float = 0.0
+        self._catalog_fingerprint: str | None = None
         self._statements: dict[str, _PreparedStatement] = {}
         self._portals: dict[str, _Portal] = {}
         # Lazily-built (schema, table, column) -> DataType lookup, used by the
@@ -233,6 +243,8 @@ class PgConnection:
                 return
             await self._resolve_scope(startup.parameters.get("database"))
             self._catalog = await self._build_catalog()
+            self._catalog_checked_at = time.monotonic()
+            self._catalog_fingerprint = await self._read_fingerprint()
             await self._send_startup_complete()
             await self._main_loop()
         except _Done:
@@ -421,6 +433,48 @@ class PgConnection:
             datasource_priority=priority,
             default_schema=PUBLIC_SCHEMA,
         )
+
+    async def _read_fingerprint(self) -> str | None:
+        """Cheap storage staleness token, or ``None`` when unavailable.
+
+        Only consulted when a catalog TTL is configured. ``OSError`` (e.g. a
+        file backend caught mid-write) is treated as "unknown" so the next
+        check forces a rebuild, matching the search-graph convention.
+        """
+        if self._catalog_ttl_seconds is None:
+            return None
+        try:
+            return await self._storage.graph_fingerprint()
+        except OSError:
+            return None
+
+    async def _maybe_refresh_catalog(self) -> None:
+        """On-demand, TTL-throttled, change-gated catalog rebuild.
+
+        Called at statement entry. Rebuilds the per-connection catalog only
+        when (a) a TTL is configured, (b) the connection is idle — never
+        mid-transaction, to avoid a catalog shift inside a txn, (c) the TTL
+        window has elapsed since the last check, and (d) the storage
+        fingerprint has actually changed. When nothing changed the cost is a
+        single ``graph_fingerprint`` read per window. Backends that don't
+        implement a real fingerprint report a constant, so they never rebuild
+        and behave exactly as before.
+        """
+        if self._catalog_ttl_seconds is None or self._catalog is None:
+            return
+        if self._tx_state != proto.TX_IDLE:
+            return
+        now = time.monotonic()
+        if now - self._catalog_checked_at < self._catalog_ttl_seconds:
+            return
+        self._catalog_checked_at = now
+        fingerprint = await self._read_fingerprint()
+        if fingerprint is not None and fingerprint == self._catalog_fingerprint:
+            return
+        self._catalog = await self._build_catalog()
+        self._catalog_fingerprint = fingerprint
+        # Derived from the catalog; drop it so it rebuilds against the new one.
+        self._column_type_index = None
 
     async def _send_startup_complete(self) -> None:
         for name, value in parameter_status_defaults():
@@ -805,6 +859,10 @@ class PgConnection:
         self, sql: str, *, result_formats: list[int] | None, send_row_description: bool,
     ) -> bool:
         """Translate + respond. Returns False if an error was sent."""
+        # Refresh the catalog before translating so an idle connection picks
+        # up model/schema edits within the TTL window (no-op when disabled or
+        # mid-transaction).
+        await self._maybe_refresh_catalog()
         try:
             result = self._translate(sql)
         except TranslationError as exc:
