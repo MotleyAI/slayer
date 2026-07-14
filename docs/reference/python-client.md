@@ -98,12 +98,15 @@ client.create_datasource({"name": "mydb", "type": "postgres", ...})
 
 ### Inspect
 
-`inspect` / `inspect_sync` is a point lookup (DEV-1588): the rendered detail for **exactly one** entity by `reference` + required `entity_type`. No fusion / ranking / bundled memories — use `search` for an entity *in context*. Same arguments as the MCP `inspect` tool and `POST /inspect`; returns the rendered string. **DEV-1612:** `reference` also accepts a **list** — a homogeneous-kind batch (one `entity_type` for every id), returning one block per id in input order with per-id error isolation.
+`inspect` / `inspect_sync` is a point lookup (DEV-1588): the rendered detail for **exactly one** entity by `reference` + required `entity_type`. No fusion / ranking / bundled memories — use `search` for an entity *in context*. Same arguments as the MCP `inspect` tool and `POST /inspect`; returns the rendered string. **DEV-1612:** `reference` also accepts a **list** — a homogeneous-kind batch (one `entity_type` for every id), returning one block per id in input order with per-id error isolation. **DEV-1667:** `reference=None` (or `[]`) is the **collection** view — lists the whole kind (`model` grouped by datasource, or `datasource`); other kinds raise. Subsumes `models_summary` / `list_datasources`.
 
 ```python
 # Compact default: schema skeleton for a model (column / measure / aggregation
 # names + joins, zero DB calls); description-only for the other kinds.
 print(client.inspect_sync(reference="mydb.orders", entity_type="model"))
+
+# Collection: all models grouped by datasource (one terse line per model).
+print(client.inspect_sync(reference=None, entity_type="model"))
 
 # Full render of one column (compact=False); join paths resolve to the owner.
 print(client.inspect_sync(

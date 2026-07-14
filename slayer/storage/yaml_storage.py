@@ -35,7 +35,7 @@ except ImportError:  # pragma: no cover — Windows
     _fcntl = None  # type: ignore[assignment]
 
 from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.memories.models import Memory
+from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.base import (
     StorageBackend,
     _validate_path_component,
@@ -51,6 +51,154 @@ from slayer.storage.v4_migration import migrate_yaml_layout
 _LEGACY_RENAMES = ("embeddings.yaml", "counters.yaml")
 _YAML_EXTS = (".yaml", ".yml")  # NOSONAR(S1192) — full filenames in _LEGACY_RENAMES are semantically distinct from this extension tuple
 
+_MD_FENCE = "---\n"
+
+
+# ---- memory <-> .md (DEV-1658) --------------------------------------------
+
+
+def _memory_to_md(memory: Memory) -> str:
+    """Serialise a :class:`Memory` to ``---\\n{frontmatter}---\\n{learning}``.
+
+    ``id`` and ``learning`` are excluded from the frontmatter (``id`` is the
+    filename; ``learning`` is the body). None/empty ``description`` /
+    ``entities`` / ``query`` are omitted. The learning body is written
+    verbatim — no appended/normalized trailing newline — so a read → write
+    round-trip is byte-stable (seed skip-if-unchanged depends on this).
+    """
+    data = memory.model_dump(mode="json")
+    learning = data.pop("learning")
+    data.pop("id", None)
+    if not data.get("description"):
+        data.pop("description", None)
+    if not data.get("entities"):
+        data.pop("entities", None)
+    if data.get("query") is None:
+        data.pop("query", None)
+    fm = yaml.safe_dump(
+        data, sort_keys=True, default_flow_style=False, allow_unicode=True,
+    )
+    return f"{_MD_FENCE}{fm}{_MD_FENCE}{learning}"
+
+
+def _md_to_memory(memory_id: str, text: str) -> Memory:
+    """Inverse of :func:`_memory_to_md`. Splits only the FIRST frontmatter
+    block, so a learning body that itself contains a ``---`` line survives.
+    ``id`` is injected from the filename (single source of truth)."""
+    if text.startswith(_MD_FENCE):
+        head, sep, body = text.partition("\n" + _MD_FENCE)
+        if sep:
+            fm = yaml.safe_load(head[len(_MD_FENCE):])
+            data = dict(fm) if isinstance(fm, dict) else {}
+            data["id"] = memory_id
+            data["learning"] = body
+            return Memory.model_validate(data)
+    # No frontmatter fence: whole text is the learning body.
+    return Memory.model_validate({"id": memory_id, "learning": text})
+
+
+def _atomic_write_text(path: str, text: str) -> None:
+    """Crash-safe write: temp file + ``os.replace`` (atomic on POSIX)."""
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def _normalize_legacy_memory_rows(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """DEV-1428 legacy dedupe (int/str id duplicates); fails loud on
+    divergent content. Used by the one-time ``memories.yaml`` migration."""
+    seen: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        raw = row.get("id")
+        if isinstance(raw, bool):
+            continue
+        if isinstance(raw, int):
+            key = str(raw)
+        elif isinstance(raw, str):
+            key = raw
+        else:
+            continue
+        if key not in seen:
+            seen[key] = row
+            continue
+        prior = seen[key]
+        if YAMLStorage._rows_content_equal(prior, row):
+            if isinstance(prior.get("id"), int):
+                continue
+            seen[key] = row
+            continue
+        raise ValueError(
+            f"Cannot migrate Memory rows: id {key!r} exists in both int and "
+            f"str forms with different content "
+            f"(learning={prior.get('learning')!r} vs "
+            f"{row.get('learning')!r}). Resolve manually."
+        )
+    return list(seen.values())
+
+
+def migrate_memories_layout(base_dir: str) -> None:
+    """DEV-1658: one-time migration of a legacy flat ``memories.yaml`` into
+    per-id ``memories/<id>.md`` files, then delete the legacy file.
+
+    Fails loud (raises, legacy file preserved) on invalid YAML, a non-list
+    root, or a non-dict row — a corrupt file must never be treated as empty
+    and deleted. Crash-safe: every ``.md`` is written before the legacy file
+    is removed, so a crash mid-run re-migrates cleanly on the next open.
+    """
+    legacy = os.path.join(base_dir, "memories.yaml")
+    if not os.path.exists(legacy):
+        return
+    with open(legacy, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
+        raw = yaml.safe_load(f)  # YAMLError propagates → fail loud
+    if raw is None:
+        rows: list[Any] = []
+    elif not isinstance(raw, list):
+        raise ValueError(
+            f"{legacy}: expected a top-level YAML list of memory rows, got "
+            f"{type(raw).__name__}. Refusing to migrate."
+        )
+    else:
+        rows = raw
+    for r in rows:
+        if not isinstance(r, dict):
+            raise ValueError(
+                f"{legacy}: every memory row must be a mapping; got "
+                f"{type(r).__name__}. Refusing to migrate."
+            )
+        # Fail loud on a row whose id can't be migrated (bool / None / list /
+        # empty string). Without this, ``_normalize_legacy_memory_rows`` would
+        # silently drop the row and the legacy file would then be deleted —
+        # data loss. Preserve the file for manual repair instead.
+        rid = r.get("id")
+        if (
+            isinstance(rid, bool)
+            or not isinstance(rid, (int, str))
+            or (isinstance(rid, str) and not rid)
+        ):
+            raise ValueError(
+                f"{legacy}: memory row has a missing or invalid id ({rid!r}). "
+                f"Refusing to migrate; fix the row by hand."
+            )
+    normalized = _normalize_legacy_memory_rows(rows)
+    mem_dir = os.path.join(base_dir, "memories")
+    os.makedirs(mem_dir, exist_ok=True)
+    for r in normalized:
+        mem = Memory.model_validate(r)
+        _atomic_write_text(
+            os.path.join(mem_dir, f"{mem.id}.md"), _memory_to_md(mem),
+        )
+    # Guard the removal against a concurrent migrator (two workers opening the
+    # same fresh base_dir both run this once): the .md writes are atomic and
+    # idempotent, so only the double os.remove would crash. FileNotFoundError
+    # here means another process already finished the migration.
+    try:
+        os.remove(legacy)
+    except FileNotFoundError:
+        pass
+
 
 class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     def __init__(self, base_dir: str):
@@ -58,11 +206,25 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         self.models_dir = os.path.join(base_dir, "models")
         self.datasources_dir = os.path.join(base_dir, "datasources")
         self._priority_path = os.path.join(base_dir, "priority.yaml")
+        # DEV-1658: memories are one ``.md`` file per id under ``memories/``.
+        # ``_memories_path`` still names the legacy flat file (used only by the
+        # one-time migration below to find it).
         self._memories_path = os.path.join(base_dir, "memories.yaml")
+        self._memories_dir = os.path.join(base_dir, "memories")
+        # Lock file is a SIBLING of memories/ (not inside it, or the ``*.md``
+        # glob would trip over it). Reentrant within the process.
+        self._memories_lock_path = os.path.join(base_dir, "memories.lock")
+        self._mem_lock_fh: Any = None
+        self._mem_lock_depth = 0
         os.makedirs(self.models_dir, exist_ok=True)
         os.makedirs(self.datasources_dir, exist_ok=True)
+        os.makedirs(self._memories_dir, exist_ok=True)
         # Idempotent — moves any pre-v4 flat files into <data_source>/ subdirs.
         migrate_yaml_layout(base_dir)
+        # DEV-1658: one-time migration of a legacy flat ``memories.yaml`` into
+        # per-id ``.md`` files. Fails loud on a corrupt/non-list legacy file
+        # (never deletes it); a crash mid-migration re-runs cleanly.
+        migrate_memories_layout(base_dir)
         # Idempotent — rename pre-DEV-1405 sidecar files out of the way.
         # If a ``.legacy`` companion already exists (user upgraded twice or
         # manually restored), leave both files in place so we never clobber
@@ -90,7 +252,9 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         max_mtime = 0.0
         for root, _dirs, files in os.walk(self.base_dir):
             for fname in files:
-                if fname.endswith(_YAML_EXTS):
+                # DEV-1658: memories are ``.md`` files now — count them too so
+                # a memory create/update/delete invalidates the graph cache.
+                if fname.endswith(_YAML_EXTS) or fname.endswith(".md"):
                     max_mtime = max(
                         max_mtime,
                         os.path.getmtime(os.path.join(root, fname)),
@@ -282,60 +446,44 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             return False
         return True
 
+    def _memory_md_path(self, memory_id: str) -> str:
+        # Validate the id charset before it becomes a path component. save_memory
+        # already validates, but get_memory / delete_memory feed a raw id here —
+        # without this an id like "../secret" would escape the memories/ dir
+        # (CWE-22). The forbidden set includes "/" and "\\", so a valid id is
+        # always a single safe path segment.
+        _validate_memory_id_charset(memory_id)
+        return os.path.join(self._memories_dir, f"{memory_id}.md")
+
+    def _memory_ids_on_disk(self) -> list[str]:
+        """Every id with a ``memories/<id>.md`` file (stems, ``.md`` stripped)."""
+        if not os.path.isdir(self._memories_dir):
+            return []
+        return [
+            fname[: -len(".md")]
+            for fname in os.listdir(self._memories_dir)
+            if fname.endswith(".md")
+        ]
+
     async def _next_memory_seq(self) -> str:
-        """DEV-1428: derive the next int-shaped id from ``memories.yaml``.
-        Returns ``str(max(int_shaped_ids) + 1)`` (or ``"1"`` for an
-        empty corpus). Non-int-shaped ids (``"001"``, ``"42abc"``,
-        user-supplied strings like ``"kb.policy"``) are ignored.
+        """DEV-1658: next int-shaped id from the ``memories/`` dir stems.
+        Non-int stems (``help.intro``, ``kb.policy.42``, ``001``) are ignored.
+        Called under the memories lock via the ``save_memory`` override, so
+        allocation + write is atomic.
         """
-        rows = self._read_yaml_list(self._memories_path)
         max_id = 0
-        for r in rows:
-            raw = r.get("id")
-            # Legacy int rows in pre-DEV-1428 files migrate at validation
-            # time; the allocator walk accepts both shapes pre-load.
-            if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
-                max_id = max(max_id, raw)
-            elif isinstance(raw, str) and self._is_int_shaped_id(raw):
-                max_id = max(max_id, int(raw))
+        for mid in self._memory_ids_on_disk():
+            if self._is_int_shaped_id(mid):
+                max_id = max(max_id, int(mid))
         return str(max_id + 1)
 
     def _normalize_legacy_rows(
         self, rows: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """DEV-1428: dedupe legacy duplicate rows where the same logical
-        id exists in both int and str form. Fails loud when their content
-        differs."""
-        seen: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            raw = row.get("id")
-            if isinstance(raw, bool):
-                continue
-            if isinstance(raw, int):
-                key = str(raw)
-            elif isinstance(raw, str):
-                key = raw
-            else:
-                continue
-            if key not in seen:
-                seen[key] = row
-                continue
-            prior = seen[key]
-            if self._rows_content_equal(prior, row):
-                # Prefer the legacy int form (per plan) when both shapes
-                # carry the same content — the v1→v2 migration normalises
-                # it through ``Memory.model_validate`` anyway.
-                if isinstance(prior.get("id"), int):
-                    continue
-                seen[key] = row
-                continue
-            raise ValueError(
-                f"Cannot migrate Memory rows: id {key!r} exists in both "
-                f"int and str forms with different content "
-                f"(learning={prior.get('learning')!r} vs "
-                f"{row.get('learning')!r}). Resolve manually."
-            )
-        return list(seen.values())
+        """DEV-1428 legacy dedupe — now used only by the one-time
+        ``memories.yaml`` → per-file migration. Delegates to the module-level
+        implementation."""
+        return _normalize_legacy_memory_rows(rows)
 
     @staticmethod
     def _rows_content_equal(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -344,80 +492,114 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         # written on int-id v1, then re-saved as str on v2). The plan's
         # "fail loud if content differs" rule covers the actually-lossy
         # case (different learning / entities / attached query).
-        # DEV-1549: ``description`` is part of the persisted content too —
-        # without comparing it, a v1 / v2 dedupe could silently pick the
-        # row that's missing the preview field.
+        # DEV-1549: ``description`` is part of the persisted content too.
         keys = ("learning", "description", "entities", "query")
         return all(a.get(k) == b.get(k) for k in keys)
 
+    async def save_memory(  # noqa: A002 — mirrors the base signature
+        self,
+        *,
+        learning: str,
+        entities: list[str],
+        query: Any = None,
+        id: str | None = None,  # noqa: A002
+        description: str | None = None,
+    ) -> Memory:
+        # DEV-1658: hold the reentrant memories lock across the whole
+        # allocate-and-write transaction. base.save_memory does
+        # ``_next_memory_seq()`` then ``_save_memory_row()`` as two steps;
+        # locking only the seq call would let two concurrent id=None saves
+        # pick the same int id and clobber. base.save_memory never awaits a
+        # yielding coroutine, so the lock is not held across an event-loop
+        # yield (the reentrant depth counter stays consistent).
+        with self._memories_file_lock():
+            return await super().save_memory(
+                learning=learning, entities=entities, query=query,
+                id=id, description=description,
+            )
+
     async def _save_memory_row(self, memory: Memory) -> None:
-        rows = self._read_yaml_list(self._memories_path)
-        rows = [r for r in rows if str(r.get("id")) != memory.id]
-        rows.append(memory.model_dump(mode="json"))
-        self._write_yaml_list(self._memories_path, rows)
+        with self._memories_file_lock():
+            os.makedirs(self._memories_dir, exist_ok=True)
+            _atomic_write_text(
+                self._memory_md_path(memory.id), _memory_to_md(memory),
+            )
 
     async def _get_memory_row(self, memory_id: str) -> Memory | None:
-        rows = self._normalize_legacy_rows(
-            self._read_yaml_list(self._memories_path),
-        )
-        for row in rows:
-            if str(row.get("id")) == memory_id:
-                return Memory.model_validate(row)
-        return None
+        # Lock-free read: writes are atomic (temp + os.replace), so a reader
+        # always sees a complete old-or-new file. A concurrent delete between
+        # the check and the open surfaces as FileNotFoundError → treat as
+        # "missing" (return None) rather than crash.
+        path = self._memory_md_path(memory_id)
+        try:
+            with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
+                return _md_to_memory(memory_id, f.read())
+        except FileNotFoundError:
+            return None
 
     async def _list_memories_rows(
         self, *, entities: list[str] | None
     ) -> list[Memory]:
-        rows = self._normalize_legacy_rows(
-            self._read_yaml_list(self._memories_path),
-        )
-        memories = [Memory.model_validate(r) for r in rows]
+        memories: list[Memory] = []
+        for mid in self._memory_ids_on_disk():
+            path = self._memory_md_path(mid)
+            try:
+                with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
+                    memories.append(_md_to_memory(mid, f.read()))
+            except FileNotFoundError:
+                # Deleted between listdir and open (lock-free read) — skip.
+                continue
+        # Deterministic order for the tantivy num_threads=1 doc-id tiebreak
+        # and the search "newest" fallback (which re-sorts by recency anyway).
+        memories.sort(key=lambda m: (m.created_at, m.id))
         if entities is None:
             return memories
         wanted = set(entities)
         return [m for m in memories if wanted & set(m.entities)]
 
     async def _delete_memory_row(self, memory_id: str) -> bool:
-        rows = self._read_yaml_list(self._memories_path)
-        kept = [r for r in rows if str(r.get("id")) != memory_id]
-        if len(kept) == len(rows):
-            return False
-        self._write_yaml_list(self._memories_path, kept)
-        return True
+        with self._memories_file_lock():
+            path = self._memory_md_path(memory_id)
+            if not os.path.exists(path):
+                return False
+            os.remove(path)
+            return True
 
     @contextlib.contextmanager
     def _memories_file_lock(self) -> Iterator[None]:
-        """DEV-1428: serialise whole-file memories rewrites for the
-        cascade-strip path. Without the lock, two concurrent cascades
-        (or a cascade + a user save) can both read the same row list,
-        write back partially-overlapping mutations, and lose the
-        difference.
-
-        Implementation: an advisory ``flock`` on a sibling
-        ``memories.lock`` file (so a race with the YAML reader on the
-        live file is impossible). No-op on platforms without ``fcntl``
-        — for now that's only Windows, which isn't a supported
-        deployment target for the file-based store anyway.
+        """DEV-1658: reentrant advisory lock over ALL memory mutations
+        (allocate+save, save, delete, cascade-strip). A single ``flock`` on
+        ``<base_dir>/memories.lock`` is held on one persistent fd; nested
+        acquisitions (e.g. delete → cascade → per-row save) bump a depth
+        counter and only the outermost release unlocks. No-op without
+        ``fcntl`` (Windows, unsupported for the file store). Safe against the
+        depth counter because no mutation holds the lock across an event-loop
+        yield.
         """
         if _fcntl is None:
             yield
             return
-        lock_path = self._memories_path + ".lock"
-        # Open in append-binary so the file is created if missing and
-        # no truncation happens on subsequent locks.
-        with open(lock_path, "ab") as lock_file:
-            _fcntl.flock(lock_file.fileno(), _fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                _fcntl.flock(lock_file.fileno(), _fcntl.LOCK_UN)
+        if self._mem_lock_depth == 0:
+            fh = open(self._memories_lock_path, "ab")
+            _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+            self._mem_lock_fh = fh
+        self._mem_lock_depth += 1
+        try:
+            yield
+        finally:
+            self._mem_lock_depth -= 1
+            if self._mem_lock_depth == 0:
+                _fcntl.flock(self._mem_lock_fh.fileno(), _fcntl.LOCK_UN)
+                self._mem_lock_fh.close()
+                self._mem_lock_fh = None
 
     async def strip_dangling_entities_from_memories(
         self, *, canonical_id: str,
     ) -> int:
-        # YAML override: take the file-level lock around the entire
-        # cascade walk so concurrent cascades / saves can't interleave
-        # whole-file rewrites and lose unrelated edits (DEV-1428).
+        # YAML override: hold the reentrant lock across the whole cascade walk
+        # so concurrent cascades / saves can't interleave. base.strip only
+        # reads + writes memory files (no embedding calls), so the lock is not
+        # held across an event-loop yield.
         with self._memories_file_lock():
             return await super().strip_dangling_entities_from_memories(
                 canonical_id=canonical_id,

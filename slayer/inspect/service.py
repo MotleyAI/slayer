@@ -23,6 +23,13 @@ from slayer.core.errors import (
 )
 from slayer.core.models import SlayerModel
 from slayer.engine.profiling import ensure_column_sample_fresh
+from slayer.inspect.collection_render import (
+    BLOCK_SEP,
+    datasource_skeleton_fields,
+    render_datasource_list,
+    render_model_oneliner_index,
+    render_models_summary,
+)
 from slayer.inspect.model_render import (
     _TRUNCATION_MARKER,
     _truncate_description,
@@ -50,6 +57,13 @@ _VALID_FORMATS = {"markdown", "json"}
 
 # Kinds for which the leaf-lookup canonical form is the 3-part id.
 _LEAF_KINDS = {"column", "measure", "aggregation"}
+
+# DEV-1667: kinds for which a null/empty reference renders the collection.
+_COLLECTION_KINDS = {"model", "datasource"}
+_COLLECTION_UNSUPPORTED = (
+    "Collection view (null reference) is only supported for entity_type "
+    "'model' or 'datasource'."
+)
 
 _DESCRIPTION_PREFIX = "Description: "
 
@@ -102,7 +116,7 @@ class InspectService:
     async def inspect(
         self,
         *,
-        reference: str | list[str],
+        reference: str | list[str] | None,
         entity_type: str,
         compact: bool = True,
         format: str = "markdown",
@@ -111,17 +125,18 @@ class InspectService:
         sections: list[str] | None = None,
         descriptions_max_chars: int | None = None,
     ) -> str:
-        """Inspect EXACTLY one entity, or — DEV-1612 — a homogeneous-kind
-        BATCH of entities when ``reference`` is a list.
+        """Inspect EXACTLY one entity, a homogeneous-kind BATCH when
+        ``reference`` is a list (DEV-1612), or — DEV-1667 — the whole COLLECTION
+        at a kind when ``reference`` is ``None`` / ``[]``.
 
         A ``str`` keeps its single-id behaviour and output byte-for-byte. A
-        ``list`` returns one rendered block per id, in input order, each
-        echoing its resolved canonical id; per-id resolution errors are
-        isolated (one bad id does not sink the batch). The framing is
-        input-type-driven: a one-element list is still batch-framed.
+        non-empty ``list`` returns one rendered block per id, in input order,
+        each echoing its resolved canonical id; per-id resolution errors are
+        isolated. ``None`` or ``[]`` (identical) renders the collection at
+        ``entity_type`` — supported only for ``model`` / ``datasource``.
         """
         # 1. Global argument validation (raise ValueError). Applies once to
-        #    the whole call for both the str and list shapes.
+        #    the whole call for the str, list, and collection shapes.
         if entity_type not in VALID_ENTITY_TYPES:
             raise ValueError(
                 f"Invalid entity_type '{entity_type}'. Must be one of: "
@@ -137,15 +152,31 @@ class InspectService:
                 f"descriptions_max_chars must be >= 0, got "
                 f"{descriptions_max_chars}."
             )
+
+        # 2. Collection detection (DEV-1667): ``None`` OR ``[]`` → collection.
+        #    ``[]`` is normalized to ``None`` here, so it produces the SAME
+        #    behaviour as ``None`` (the old empty-list raise is removed).
+        if reference is None or reference == []:
+            if entity_type not in _COLLECTION_KINDS:
+                raise ValueError(_COLLECTION_UNSUPPORTED)
+            if entity_type == "model":
+                return await self._inspect_collection_model(
+                    compact=compact, fmt=fmt,
+                    descriptions_max_chars=descriptions_max_chars,
+                )
+            return await self._inspect_collection_datasource(
+                compact=compact, fmt=fmt,
+                descriptions_max_chars=descriptions_max_chars,
+            )
+
+        # Non-collection: str single / non-empty list batch.
         if isinstance(reference, list):
-            if not reference:
-                raise ValueError("reference list must not be empty.")
             if any(not isinstance(ref, str) for ref in reference):
                 raise ValueError("reference list must contain only strings.")
         elif not isinstance(reference, str):
             raise ValueError("reference must be a string or a list of strings.")
 
-        # 2. Model-only-arg warnings (skip entirely for model entity_type).
+        # 4. Model-only-arg warnings (skip entirely for model entity_type).
         #    These are global-arg warnings, so the SAME base list seeds every
         #    id in a batch; each id appends its own resolver warnings to a copy.
         warnings: list[str] = self._model_only_arg_warnings(
@@ -155,7 +186,7 @@ class InspectService:
             sections=sections,
         )
 
-        # 3. Single id → byte-for-byte single output. List → batch framing.
+        # 5. Single id → byte-for-byte single output. List → batch framing.
         if isinstance(reference, str):
             result = await self._inspect_one(
                 reference=reference, entity_type=entity_type, compact=compact,
@@ -324,6 +355,187 @@ class InspectService:
         return warn_block
 
     # ------------------------------------------------------------------
+    # Collection views (DEV-1667) — null / [] reference
+    # ------------------------------------------------------------------
+
+    async def _load_visible_models(self, ds_name: str) -> list[SlayerModel]:
+        """Hidden-filtered, name-sorted models for one datasource (matches
+        ``models_summary``). Individual load failures skip that model."""
+        models: list[SlayerModel] = []
+        for name in await self._storage.list_models(data_source=ds_name):
+            try:
+                m = await self._storage.get_model(name, data_source=ds_name)
+            except Exception:  # noqa: BLE001 — one bad model must not sink the DS
+                continue
+            if m is not None and not m.hidden:
+                models.append(m)
+        models.sort(key=lambda m: m.name)
+        return models
+
+    async def _inspect_collection_model(
+        self,
+        *,
+        compact: bool,
+        fmt: str,
+        descriptions_max_chars: int | None,
+    ) -> str:
+        ds_names = await self._storage.list_datasources()
+        if not ds_names:
+            if fmt == "json":
+                return json.dumps({
+                    "entity_type": "model",
+                    "collection": True,
+                    "datasources": [],
+                    "warnings": [],
+                }, indent=2)
+            return "No models found."
+
+        # Build per-DS groups; ``models is None`` marks an invalid-config DS.
+        groups: list[tuple[str, list[SlayerModel] | None]] = []
+        for ds in ds_names:
+            try:
+                await self._storage.get_datasource(ds)
+            except Exception:  # noqa: BLE001 — invalid config: mark + continue
+                groups.append((ds, None))
+                continue
+            groups.append((ds, await self._load_visible_models(ds)))
+
+        if compact:
+            return render_model_oneliner_index(
+                groups=groups, fmt=fmt, warnings=[],
+            )
+        # compact=False: full models_summary block per DS.
+        if fmt == "json":
+            return self._collection_model_verbose_json(
+                groups=groups, descriptions_max_chars=descriptions_max_chars,
+            )
+        return self._collection_model_verbose_markdown(
+            groups=groups, descriptions_max_chars=descriptions_max_chars,
+        )
+
+    @staticmethod
+    def _collection_model_verbose_json(
+        *,
+        groups: list[tuple[str, list[SlayerModel] | None]],
+        descriptions_max_chars: int | None,
+    ) -> str:
+        entries: list[dict[str, Any]] = []
+        for ds, models in groups:
+            if models is None:
+                entries.append(
+                    {"data_source": ds, "error": "invalid config", "models": []}
+                )
+            else:
+                # render_models_summary now returns valid JSON for empty
+                # datasources too (model_count 0, models []) — one consistent
+                # ``datasource_name`` shape for every non-error entry.
+                entries.append(json.loads(render_models_summary(
+                    datasource_name=ds, models=models, fmt="json",
+                    compact=False, descriptions_max_chars=descriptions_max_chars,
+                )))
+        return json.dumps({
+            "entity_type": "model",
+            "collection": True,
+            "datasources": entries,
+            "warnings": [],
+        }, indent=2, default=str)
+
+    @staticmethod
+    def _collection_model_verbose_markdown(
+        *,
+        groups: list[tuple[str, list[SlayerModel] | None]],
+        descriptions_max_chars: int | None,
+    ) -> str:
+        blocks: list[str] = []
+        for ds, models in groups:
+            if models is None:
+                blocks.append(f"Datasource '{ds}' has an invalid config.")
+                continue
+            blocks.append(render_models_summary(
+                datasource_name=ds, models=models, fmt="markdown",
+                compact=False, descriptions_max_chars=descriptions_max_chars,
+            ))
+        return BLOCK_SEP.join(blocks)
+
+    async def _inspect_collection_datasource(
+        self,
+        *,
+        compact: bool,
+        fmt: str,
+        descriptions_max_chars: int | None,
+    ) -> str:
+        ds_names = await self._storage.list_datasources()
+        if not ds_names:
+            # Empty-state parity with the model collection: the list renderer
+            # emits the "No datasources configured" message (markdown) / the
+            # empty envelope (json) for both compact modes.
+            return render_datasource_list(pairs=[], fmt=fmt, warnings=[])
+
+        if compact:
+            pairs: list[tuple[str, str | None]] = []
+            for name in ds_names:
+                try:
+                    cfg = await self._storage.get_datasource(name)
+                    pairs.append((name, cfg.type if cfg is not None else "unknown"))
+                except Exception:  # noqa: BLE001 — invalid config sentinel
+                    pairs.append((name, None))
+            return render_datasource_list(pairs=pairs, fmt=fmt, warnings=[])
+
+        # compact=False: per-DS name + description + model skeleton.
+        if fmt == "json":
+            return await self._collection_datasource_verbose_json(
+                ds_names=ds_names, descriptions_max_chars=descriptions_max_chars,
+            )
+        return await self._collection_datasource_verbose_markdown(
+            ds_names=ds_names, descriptions_max_chars=descriptions_max_chars,
+        )
+
+    async def _collection_datasource_verbose_json(
+        self,
+        *,
+        ds_names: list[str],
+        descriptions_max_chars: int | None,
+    ) -> str:
+        entries: list[dict[str, Any]] = []
+        for ds in ds_names:
+            try:
+                cfg = await self._storage.get_datasource(ds)
+            except Exception:  # noqa: BLE001 — invalid config: error entry
+                entries.append({"name": ds, "error": "invalid config"})
+                continue
+            entries.append(datasource_skeleton_fields(
+                name=ds,
+                description=cfg.description if cfg is not None else None,
+                models=await self._load_visible_models(ds),
+                descriptions_max_chars=descriptions_max_chars,
+            ))
+        return json.dumps({
+            "entity_type": "datasource",
+            "collection": True,
+            "datasources": entries,
+            "warnings": [],
+        }, indent=2, default=str)
+
+    async def _collection_datasource_verbose_markdown(
+        self,
+        *,
+        ds_names: list[str],
+        descriptions_max_chars: int | None,
+    ) -> str:
+        blocks: list[str] = []
+        for ds in ds_names:
+            try:
+                await self._storage.get_datasource(ds)
+            except Exception:  # noqa: BLE001 — invalid config: error block
+                blocks.append(f"Datasource: {ds}\nERROR: invalid config")
+                continue
+            blocks.append(await self._render_datasource(
+                ds_name=ds, compact=False, fmt="markdown",
+                descriptions_max_chars=descriptions_max_chars, warnings=[],
+            ))
+        return BLOCK_SEP.join(blocks)
+
+    # ------------------------------------------------------------------
     # Memory
     # ------------------------------------------------------------------
 
@@ -483,13 +695,10 @@ class InspectService:
             return self._markdown_with_warnings(trunc_desc or "", warnings)
 
         # compact=False: a per-model schema skeleton for each VISIBLE model,
-        # sorted by name (matches models_summary), still DB-free.
-        models = []
-        for name in await self._storage.list_models(data_source=ds_name):
-            m = await self._storage.get_model(name, data_source=ds_name)
-            if m is not None and not m.hidden:
-                models.append(m)
-        models.sort(key=lambda m: m.name)
+        # sorted by name (matches models_summary), still DB-free. Uses the
+        # shared resilient loader so one malformed model file is skipped rather
+        # than sinking the whole render (parity with the collection JSON path).
+        models = await self._load_visible_models(ds_name)
 
         if fmt == "json":
             return json.dumps({

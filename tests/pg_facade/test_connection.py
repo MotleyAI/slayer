@@ -385,6 +385,24 @@ async def test_multi_statement_begin_select_commit_tx_cycle() -> None:
     assert statuses[-1] == proto.TX_IDLE
 
 
+async def test_begin_read_only_tx_cycle() -> None:
+    # Metabase wraps reads in BEGIN READ ONLY; sqlglot can't parse that, so the
+    # facade recognises it pre-parse (DEV-1594). Whole cycle must succeed.
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("BEGIN READ ONLY; SELECT 1; COMMIT;")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert not any(t == "E" for t, _ in msgs)  # no error
+    tags = [b for t, b in msgs if t == "C"]
+    assert any(b.startswith(b"BEGIN") for b in tags)
+    assert any(b.startswith(b"SELECT 1") for b in tags)
+    assert any(b.startswith(b"COMMIT") for b in tags)
+    assert _ready_statuses(msgs)[-1] == proto.TX_IDLE
+
+
 async def test_error_in_transaction_then_blocked_until_end() -> None:
     inp = (
         _startup(user="u", database="jaffle")

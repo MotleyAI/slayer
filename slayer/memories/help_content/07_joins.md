@@ -99,6 +99,6 @@ filters:
 
 ## See also
 
-- `help(topic='models')` — declaring joins and the `__` alias convention.
-- `help(topic='extending')` — adding ad-hoc joins via `ModelExtension`.
-- `help(topic='queries')` — dotted dimensions and time dimensions.
+- `memory:help.models` — declaring joins and the `__` alias convention.
+- `memory:help.extending` — adding ad-hoc joins via `ModelExtension`.
+- `memory:help.queries` — dotted dimensions and time dimensions.

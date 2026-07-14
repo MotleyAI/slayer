@@ -168,6 +168,10 @@ memories (use `slayer search` for an entity *in context*). Pass **two or more**
 references to inspect several entities of the **same kind** in one call
 (DEV-1612): the output is one `## <canonical>` block per reference, in input
 order (a JSON array under `--format json`), with per-reference error isolation.
+**Omit the reference entirely** (DEV-1667) to list the whole **collection** at
+`--type` — supported for `model` and `datasource` only. `--type model` lists all
+models grouped by datasource (a terse one line per model by default; `--no-compact`
+gives the full per-model tables); `--type datasource` lists all datasources.
 
 ```bash
 slayer inspect jaffle_shop.orders --type model
@@ -176,11 +180,13 @@ slayer inspect jaffle_shop.orders.customers.region --type column --no-compact  #
 slayer inspect memory:42 --type memory --no-compact
 slayer inspect jaffle_shop.orders --type model --format json
 slayer inspect jaffle_shop.orders.order_total jaffle_shop.orders.order_id --type column --no-compact  # batch
+slayer inspect --type model         # collection: all models, grouped by datasource
+slayer inspect --type datasource    # collection: all datasources
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `reference` | Yes | One or more entity references: canonical id, bare name, join path (resolved to the owning model), or `memory:<id>`. Two or more → a same-kind batch. |
+| `reference` | No | Zero or more entity references: canonical id, bare name, join path (resolved to the owning model), or `memory:<id>`. Two or more → a same-kind batch. **Omit entirely** to list the whole collection at `--type` (`model` or `datasource` only). |
 | `--type` | Yes | Entity kind: `datasource`, `model`, `column`, `measure`, `aggregation`, or `memory`. Disambiguates same-named entities and asserts the kind. |
 | `--no-compact` | No | Return the full render. The compact default is description-only for column/measure/aggregation/datasource/memory, and a cheap **schema skeleton** (column/measure/aggregation names + join targets, zero DB calls) for `--type model`; `--no-compact` on a datasource renders a per-model skeleton for each visible model. |
 | `--format` | No | `markdown` (default) or `json`. |

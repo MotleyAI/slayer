@@ -174,7 +174,7 @@ Each per-datasource pass refreshes embeddings for the datasource doc,
 every visible model + its visible children, **and every memory whose
 canonical entities are rooted at the datasource** (DEV-1416). A stale
 `embeddings.db` (created without an `OPENAI_API_KEY`, or after a manual
-`memories.yaml` edit) is therefore repaired by the next
+`memories/<id>.md` edit) is therefore repaired by the next
 `--ingest-on-startup` with no extra step. Per-memory embed failures
 surface as `IngestionError(model_name="memory:<id>", …)` in the
 result's `errors` list.

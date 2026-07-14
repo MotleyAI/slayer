@@ -28,7 +28,7 @@ see the `query` tool's own arg documentation.
 6. ORDER BY → LIMIT / OFFSET.
 
 Knowing which stage your filter lands in is why the auto-routing works. See
-`help(topic='filters')`.
+`memory:help.filters`.
 
 ## Dimensions vs time_dimensions on the same column
 
@@ -82,7 +82,7 @@ query; `customers.regions.name` walks `orders → customers → regions`;
 
 ## See also
 
-- `help(topic='formulas')` — the colon syntax and arithmetic that power `measures`.
-- `help(topic='filters')` — operators, WHERE vs HAVING, post-filters.
-- `help(topic='time')` — granularities, whole_periods_only, `last()` distinctions.
-- `help(topic='extending')` — `source_model` as a `ModelExtension` or a query name.
+- `memory:help.formulas` — the colon syntax and arithmetic that power `measures`.
+- `memory:help.filters` — operators, WHERE vs HAVING, post-filters.
+- `memory:help.time` — granularities, whole_periods_only, `last()` distinctions.
+- `memory:help.extending` — `source_model` as a `ModelExtension` or a query name.

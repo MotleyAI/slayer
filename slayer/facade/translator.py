@@ -2276,6 +2276,43 @@ def _unwrap_probe(
     return ProbeResult(batch=probe)
 
 
+# Transaction-open statements. sqlglot's postgres dialect parses bare ``BEGIN``
+# / ``START TRANSACTION`` but REJECTS the characteristic forms Metabase emits
+# (``BEGIN READ ONLY``, ``START TRANSACTION ISOLATION LEVEL …``). The facade is
+# read-only, so every variant is a no-op that just opens a transaction; we
+# recognise them BEFORE the parse to avoid the parse error entirely.
+#
+# The characteristic run uses a POSSESSIVE quantifier (``[^;]*+``) so the
+# engine can't backtrack into it when the trailing ``;?\s*$`` fails to match.
+# The prior ``(?:\s+[^;]*?)?\s*;?\s*$`` form had ``\s`` matched by both the
+# lazy inner class and the trailing ``\s*``, so a crafted long whitespace run
+# before a mid-string ``;`` drove O(n²) backtracking on the asyncio loop —
+# stalling every connection (SonarCloud ReDoS finding, PR #221).
+_TX_START_RE = re.compile(
+    r"^\s*START\s+TRANSACTION\b[^;]*+;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_TX_BEGIN_RE = re.compile(
+    r"^\s*BEGIN\b(?:\s+(?:WORK|TRANSACTION))?[^;]*+;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _classify_transaction_open(sql: str) -> NoOpResult | None:
+    """Recognise ``BEGIN`` / ``START TRANSACTION`` (with optional
+    characteristics like ``READ ONLY`` / ``ISOLATION LEVEL …``) pre-parse.
+
+    Returns a ``NoOpResult`` opening a transaction, or ``None`` when the
+    statement isn't a transaction-open. ``COMMIT`` / ``ROLLBACK`` / ``END``
+    parse fine on their own and are handled by ``_classify_noop_root``.
+    """
+    if _TX_START_RE.match(sql):
+        return NoOpResult(command_tag="START TRANSACTION")
+    if _TX_BEGIN_RE.match(sql):
+        return NoOpResult(command_tag="BEGIN")
+    return None
+
+
 def translate(
     sql: str,
     catalog: FacadeCatalog,
@@ -2306,6 +2343,13 @@ def translate(
 
     Raises ``TranslationError`` on user-visible failures.
     """
+    # Step 0 — transaction-open shim (before parse): sqlglot rejects the
+    # characteristic forms (``BEGIN READ ONLY`` etc.) that BI tools wrap reads
+    # in, so recognise them here rather than letting the parse fail.
+    tx_open = _classify_transaction_open(sql)
+    if tx_open is not None:
+        return tx_open
+
     token = _IN_FACADE_PARSE.set(True)
     try:
         parsed = _parse_with_keyword_alias_fallback(sql, dialect=dialect)
