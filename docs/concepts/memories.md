@@ -173,8 +173,12 @@ For retrieval, see [`search`](search.md) (MCP `search`, REST `POST
 
 ## Storage layout
 
-YAML uses a single `memories.yaml` file alongside the model and
-datasource folders. SQLite uses a `memories` table plus a
+YAML stores one Markdown file per memory at `memories/<id>.md` — YAML
+frontmatter for the structured fields (`description`, `entities`,
+`query`, `created_at`, `version`) and the Markdown body as the
+`learning`. The id is the filename (not repeated in the frontmatter).
+A legacy flat `memories.yaml` is migrated into per-file `.md` on first
+open (and then deleted). SQLite uses a `memories` table plus a
 `memory_entities` index table for the entity-overlap filter.
 
 IDs are non-empty strings (DEV-1428). The auto-allocator walks

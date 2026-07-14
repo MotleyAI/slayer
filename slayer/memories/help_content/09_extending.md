@@ -85,6 +85,6 @@ refreshed only when you save the model again, never during execution.
 
 ## See also
 
-- `help(topic='models')` — permanent model shape; `hidden: true` for internal ones.
-- `help(topic='joins')` — the `__` vs dot convention for joined paths.
-- `help(topic='workflow')` — when to extend inline vs edit the stored model.
+- `memory:help.models` — permanent model shape; `hidden: true` for internal ones.
+- `memory:help.joins` — the `__` vs dot convention for joined paths.
+- `memory:help.workflow` — when to extend inline vs edit the stored model.

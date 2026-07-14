@@ -309,7 +309,8 @@ class TestMemoryIds:
         self,
     ) -> None:
         """DEV-1405: ``counters.yaml`` is no longer used — the next id is
-        always derived from the current state of ``memories.yaml``. This
+        always derived from the current state of the memory store (the
+        ``memories/`` directory of per-id ``.md`` files, DEV-1658). This
         used to be the recovery path; it's now the only path."""
         with tempfile.TemporaryDirectory() as tmpdir:
             ys = YAMLStorage(base_dir=tmpdir)

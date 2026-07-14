@@ -105,10 +105,10 @@ model use `__` to encode the original join path:
 | `customers.regions.name` | `customers__regions__name` |
 | `revenue:sum` | `revenue_sum` |
 
-See `help(topic='extending')` for multi-stage queries using this.
+See `memory:help.extending` for multi-stage queries using this.
 
 ## See also
 
-- `help(topic='joins')` — `joins` list and the `__` SQL alias convention.
-- `help(topic='extending')` — inline model extension for one-off dims/filters.
-- `help(topic='filters')` — model-level `filters` and filtered measures.
+- `memory:help.joins` — `joins` list and the `__` SQL alias convention.
+- `memory:help.extending` — inline model extension for one-off dims/filters.
+- `memory:help.filters` — model-level `filters` and filtered measures.

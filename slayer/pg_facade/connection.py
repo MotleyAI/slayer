@@ -69,6 +69,24 @@ logger = logging.getLogger(__name__)
 _BACKEND_PID = 1
 _BACKEND_SECRET = 0
 _PARAM_PLACEHOLDER = re.compile(r"\$(\d+)")
+
+# Strips characteristics off a statement-initial ``BEGIN`` / ``START
+# TRANSACTION`` (``READ ONLY``, ``ISOLATION LEVEL …``, ``DEFERRABLE`` …) so the
+# sqlglot-based simple-query splitter — which rejects those forms — can still
+# parse the statement list. Anchored to statement start (^ or after ``;``) so a
+# ``begin`` column reference elsewhere is never touched. The stripped statement
+# stays a plain transaction-open, handled as a no-op downstream (DEV-1594).
+_TX_OPEN_STRIP_RE = re.compile(
+    r"(?P<lead>^|;)(?P<ws>\s*)"
+    r"(?P<verb>BEGIN(?:\s+WORK|\s+TRANSACTION)?|START\s+TRANSACTION)\b[^;]*",
+    re.IGNORECASE,
+)
+
+
+def _strip_tx_open_characteristics(sql: str) -> str:
+    return _TX_OPEN_STRIP_RE.sub(
+        lambda m: f"{m.group('lead')}{m.group('ws')}{m.group('verb')}", sql
+    )
 # The default schema the facade advertises (matches pg_namespace /
 # current_schema). Datasources without an explicit ``postgres_schema`` land here.
 PUBLIC_SCHEMA = "public"
@@ -490,12 +508,24 @@ class PgConnection:
         try:
             statements = [s for s in sqlglot.parse(sql, dialect="postgres") if s is not None]
         except sqlglot.errors.ParseError as exc:
-            await self._send_error(
-                code=proto.SQLSTATE_SYNTAX_ERROR, message=f"SQL parse error: {exc}",
-            )
-            self._fail_tx()
-            await self._send_ready()
-            return
+            # BI tools (Metabase) wrap reads in ``BEGIN READ ONLY`` etc., which
+            # sqlglot can't parse. Strip the transaction characteristics and
+            # retry once before surfacing a syntax error.
+            stripped = _strip_tx_open_characteristics(sql)
+            try:
+                statements = [
+                    s for s in sqlglot.parse(stripped, dialect="postgres") if s is not None
+                ] if stripped != sql else None
+            except sqlglot.errors.ParseError:
+                statements = None
+            if statements is None:
+                logger.warning("pg facade: cannot parse simple query %r: %s", sql, exc)
+                await self._send_error(
+                    code=proto.SQLSTATE_SYNTAX_ERROR, message=f"SQL parse error: {exc}",
+                )
+                self._fail_tx()
+                await self._send_ready()
+                return
         if not statements:
             self._writer.write(proto.encode_empty_query_response())
             await self._send_ready()
@@ -663,10 +693,12 @@ class PgConnection:
         try:
             try:
                 result = self._translate(describe_sql)
-            except TranslationError:
+            except TranslationError as exc:
                 # Describe must not raise to the wire here; the subsequent
                 # Execute surfaces the error. Report NoData so the client
-                # can proceed.
+                # can proceed. Log it (debug) so the silent Describe path is
+                # still greppable when a client swallows the later error.
+                logger.debug("pg facade: cannot describe %r: %s", describe_sql, exc)
                 self._writer.write(proto.encode_no_data())
                 return
         finally:

@@ -317,7 +317,7 @@ class TestMemoryV1ToV2Migration:
                 f"expected dedupe to {'42'!r}; got {ids!r}"
             )
 
-    async def test_yaml_legacy_int_and_string_rows_conflict_raises(self) -> None:
+    def test_yaml_legacy_int_and_string_rows_conflict_raises(self) -> None:
         """Same-id under int and str forms with DIFFERENT learning content
         is a data-loss risk; the migrator must fail loud rather than
         silently picking one."""
@@ -339,6 +339,7 @@ class TestMemoryV1ToV2Migration:
                     ],
                     f,
                 )
-            store = YAMLStorage(base_dir=tmpdir)
+            # DEV-1658: the conflict is caught at construction time, when the
+            # one-time memories.yaml -> per-file migration runs.
             with pytest.raises(ValueError):
-                await store.list_memories()
+                YAMLStorage(base_dir=tmpdir)

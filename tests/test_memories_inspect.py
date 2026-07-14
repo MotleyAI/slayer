@@ -41,7 +41,7 @@ def _shared_mcp_server(_shared_storage: YAMLStorage):
 
 
 def _reset_storage(storage: YAMLStorage) -> None:
-    for sub in ("models", "datasources"):
+    for sub in ("models", "datasources", "memories"):
         d = os.path.join(storage.base_dir, sub)
         if os.path.isdir(d):
             for entry in os.listdir(d):

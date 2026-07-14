@@ -11,13 +11,13 @@
 
 **SLayer** is a lightweight semantic layer and query engine.
 
-Describe queries as measures, dimensions, and filters; SLayer generates and runs the SQL across any database, for any surface: AI agents, dashboards, notebooks. Python-embeddable or standalone (CLI, MCP, API server).
+Define fields and metrics you need in data models, link your context, and query semantically; SLayer generates and runs the SQL across any database, for any surface: AI agents, dashboards, notebooks. Python-embeddable or standalone (CLI, MCP, API server).
 
 ### What you can do with SLayer
 
-- **If you're building a Python app that queries databases you don't control** — point SLayer at them and query semantically. It generates and translates SQL across Postgres, MySQL, Snowflake, BigQuery, and more. Import the library and use it in-process.
-- **If you want your internal users to self-serve analytics** — model your metrics once and let anyone (or their AI agents, over MCP) ask questions, with answers grounded in your definitions and business context instead of the LLM's guesses.
-- **If you ship analytics inside your product** — turn agent-generated query specs into safe, executed SQL, with row-level security so each user sees only what they're allowed to.
+- **Allow your team to self-serve analytics** — model your metrics once and let anyone (or their AI agents, over MCP) ask questions, with answers grounded in your definitions and business context instead of the LLM's guesses.
+- **Embed on-demand analytics into your app** — turn agent-generated query specs into safe, executed SQL, with row-level security so each user sees only what they're allowed to.
+- **Load data from SQL databases to Python semantically** — point SLayer at them, and you don't have to build any SQL-translation logic. It generates and translates SQL across Postgres, MySQL, Snowflake, BigQuery, and more; returns clean dataframes. Import the library and use it in-process.
 
 > If you find SLayer useful, a ⭐ helps others discover it!
 > Questions, ideas, or feedback? [Join our Discord](https://discord.gg/egWxMctHCA).

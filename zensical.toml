@@ -32,6 +32,7 @@ nav = [
     { "References (SQL vs DSL)" = "concepts/references.md" },
     { "Auto-Ingestion" = "concepts/ingestion.md" },
     { "Schema Drift" = "concepts/schema-drift.md" },
+    { "Query Cache" = "concepts/query-cache.md" },
     { "Memories" = "concepts/memories.md" },
     { "Search" = "concepts/search.md" },
     { "Row-Level Security" = "concepts/row-level-security.md" },
@@ -94,6 +95,9 @@ nav = [
     { "dbt MetricFlow Import" = [
       "examples/11_dbt_metricflow/dbt_metricflow.md",
       { "Notebook" = "examples/11_dbt_metricflow/dbt_metricflow_nb.ipynb" },
+    ]},
+    { "Query Cache" = [
+      { "Notebook" = "examples/12_query_cache/query_cache_nb.ipynb" },
     ]},
     { "Schema Drift (worked example)" = "examples/schema-drift.md" },
   ]},

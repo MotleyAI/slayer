@@ -27,6 +27,7 @@ from slayer.engine.profiling import (
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.service import InspectService
+from slayer.memories.help_seed import seed_help_memories
 from slayer.search.service import SearchService
 from slayer.storage import migrations as _mig
 from slayer.storage.base import default_storage_path
@@ -110,6 +111,11 @@ common workflows:
   # 4. Use SQLite storage instead of YAML files
   slayer serve --storage slayer.db
   slayer ingest --datasource my_pg --storage slayer.db
+
+conceptual help:
+  # SLayer's concepts ship as help memories — read them with inspect:
+  slayer inspect memory:help.intro --type memory
+  slayer search --question "how do transforms work"
 
 docs: https://docs.motley.ai/slayer/
 """,
@@ -624,11 +630,12 @@ examples:
     )
     inspect_parser.add_argument(
         "reference",
-        nargs="+",
+        nargs="*",
         help=(
             "Entity reference(s): canonical id (mydb.orders.amount), bare "
             "name, join path, or memory:<id>. Pass two or more for a "
-            "homogeneous-kind batch (one --type for all)."
+            "homogeneous-kind batch (one --type for all). Omit entirely to "
+            "list the whole collection at --type (model / datasource only)."
         ),
     )
     inspect_parser.add_argument(
@@ -786,27 +793,9 @@ examples:
         help="Model name(s) to refresh (repeatable; default: all in scope).",
     )
 
-    # ── help ──────────────────────────────────────────────────────────
-    from slayer.help import TOPIC_SUMMARY_LINE
-
-    help_parser = subparsers.add_parser(
-        "help",
-        help="Show conceptual help on SLayer (concepts, query composition, transforms, joins, workflow)",
-        epilog=(
-            f"{TOPIC_SUMMARY_LINE}\n\n"
-            "examples:\n"
-            "  slayer help                  # intro\n"
-            "  slayer help queries          # deep dive on a topic\n"
-            "  slayer help transforms\n"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    help_parser.add_argument(
-        "topic",
-        nargs="?",
-        default=None,
-        help="Topic name (optional). If omitted, prints the intro.",
-    )
+    # DEV-1658: the standalone `slayer help` subcommand is removed. SLayer's
+    # concepts ship as help memories — read them with
+    # `slayer inspect memory:help.intro --type memory` (see the epilog above).
 
     args = parser.parse_args()
 
@@ -844,8 +833,6 @@ examples:
         _run_search(args)
     elif args.command == "storage":
         _run_storage(args)
-    elif args.command == "help":
-        _run_help(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -853,15 +840,22 @@ examples:
 
 def _run_inspect(*, args, storage) -> None:
     """Run ``slayer inspect`` — a single-entity point-lookup (DEV-1588)."""
+    # DEV-1658: ensure the help.* memories exist so `inspect memory:help.intro`
+    # works on a fresh store (idempotent / warm no-op).
+    run_sync(seed_help_memories(storage=storage))
     service = InspectService(
         storage=storage, engine=SlayerQueryEngine(storage=storage),
     )
-    # argparse ``nargs="+"`` always yields a list; map a single positional back
+    # argparse ``nargs="*"`` always yields a list; map zero positionals to
+    # ``None`` (the collection sentinel, DEV-1667) and a single positional back
     # to a bare str so single-id output stays byte-for-byte (DEV-1612). A direct
     # str (older callers / tests) is passed through unchanged.
     reference = args.reference
-    if isinstance(reference, list) and len(reference) == 1:
-        reference = reference[0]
+    if isinstance(reference, list):
+        if len(reference) == 0:
+            reference = None
+        elif len(reference) == 1:
+            reference = reference[0]
     try:
         out = run_sync(service.inspect(
             reference=reference,
@@ -987,6 +981,9 @@ def _print_search_response_text(response) -> None:
 def _run_search_query(args, storage) -> None:
     """``slayer search [...]`` — call the SearchService and emit JSON or
     pretty text."""
+    # DEV-1658: seed help.* memories so concept searches surface them on a
+    # fresh store. Only on the query path — NOT `search refresh-samples`.
+    run_sync(seed_help_memories(storage=storage))
     service = SearchService(storage=storage)
     query_input = _load_query_arg(args.query) if args.query else None
     try:
@@ -1172,12 +1169,6 @@ async def _load_raw_model_dict(storage, data_source: str, name: str) -> dict | N
         raw = await _asyncio.to_thread(storage._get_model_sync, data_source, name)
         return _json.loads(raw) if raw else None
     return None
-
-
-def _run_help(args):
-    from slayer.help import render_help
-
-    print(render_help(topic=args.topic))
 
 
 def _parse_cli_variables(args) -> dict:
