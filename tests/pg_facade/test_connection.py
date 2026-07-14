@@ -232,7 +232,7 @@ def _ready_statuses(msgs: list[tuple[str, bytes]]) -> list[bytes]:
     return [body for t, body in msgs if t == "Z"]
 
 
-def _error_sqlstate(body: bytes) -> str | None:
+def _error_field(body: bytes, ftype_wanted: bytes) -> str | None:
     i = 0
     while i < len(body) and body[i:i + 1] != b"\x00":
         ftype = body[i:i + 1]
@@ -240,9 +240,17 @@ def _error_sqlstate(body: bytes) -> str | None:
         end = body.index(b"\x00", i)
         val = body[i:end].decode("utf-8")
         i = end + 1
-        if ftype == b"C":
+        if ftype == ftype_wanted:
             return val
     return None
+
+
+def _error_sqlstate(body: bytes) -> str | None:
+    return _error_field(body, b"C")
+
+
+def _error_message(body: bytes) -> str | None:
+    return _error_field(body, b"M")
 
 
 # --- startup / SSL -----------------------------------------------------------
@@ -536,6 +544,108 @@ async def test_execute_unknown_portal_errors() -> None:
     msgs = _messages(writer.buffer)
     err = next(body for t, body in msgs if t == "E")
     assert _error_sqlstate(err) == proto.SQLSTATE_INTERNAL_ERROR
+
+
+class _RaisingEngine:
+    """Engine double that raises a SQLAlchemy-shaped error: a wrapper whose
+    ``.orig`` carries the driver's ``sqlstate`` + bare message (mirrors how
+    asyncpg/psycopg errors reach the facade via SQLAlchemy's DBAPIError)."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    async def execute(self, *, query=None, data_source=None):  # NOSONAR(S7503)
+        raise self._exc
+
+
+class _DriverError(Exception):
+    """asyncpg/psycopg-shaped driver error carrying a SQLSTATE + message."""
+
+    def __init__(self, *, sqlstate=None, pgcode=None, message="") -> None:
+        super().__init__(message)
+        if sqlstate is not None:
+            self.sqlstate = sqlstate
+        if pgcode is not None:
+            self.pgcode = pgcode
+        self.message = message
+
+    def __str__(self) -> str:
+        return self.message
+
+
+def _dbapi_error(*, sqlstate: str, message: str) -> BaseException:
+    """A DBAPIError-like wrapper (``.orig`` holds the real driver error),
+    mirroring how SQLAlchemy nests the driver exception."""
+    wrapper = RuntimeError("(sqlalchemy wrapper) [SQL: SELECT ...]")
+    wrapper.orig = _DriverError(sqlstate=sqlstate, message=message)  # type: ignore[attr-defined]
+    return wrapper
+
+
+async def test_run_query_surfaces_driver_sqlstate_and_message() -> None:
+    """The ``_run_query`` error path must pass the driver's SQLSTATE +
+    bare server message straight through (via ``_engine_error_fields``),
+    NOT the generic XX000 + SQLAlchemy repr. Covers e.g. a client seeing
+    ``permission denied for table Item`` (42501)."""
+    engine = _RaisingEngine(
+        _dbapi_error(sqlstate="42501", message="permission denied for table Item")
+    )
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SELECT revenue_sum FROM orders")
+        + _terminate()
+    )
+    writer = await _run(inp, engine=engine)
+    msgs = _messages(writer.buffer)
+    err = next(body for t, body in msgs if t == "E")
+    assert _error_sqlstate(err) == "42501"
+    assert _error_message(err) == "permission denied for table Item"
+
+
+async def test_run_query_falls_back_to_internal_error_without_sqlstate() -> None:
+    """A plain exception with no driver SQLSTATE in its chain falls back to
+    XX000 + ``str(exc)`` — the ``_engine_error_fields`` default branch."""
+    engine = _RaisingEngine(ValueError("boom"))
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SELECT revenue_sum FROM orders")
+        + _terminate()
+    )
+    writer = await _run(inp, engine=engine)
+    msgs = _messages(writer.buffer)
+    err = next(body for t, body in msgs if t == "E")
+    assert _error_sqlstate(err) == proto.SQLSTATE_INTERNAL_ERROR
+    assert _error_message(err) == "boom"
+
+
+def test_engine_error_fields_walks_exception_chain() -> None:
+    """Unit: ``_engine_error_fields`` finds a driver SQLSTATE through
+    ``.orig`` / ``__cause__`` / ``__context__`` and returns its message;
+    accepts both ``sqlstate`` and ``pgcode`` attributes; is cycle-safe."""
+    from slayer.pg_facade.connection import _engine_error_fields
+
+    # via .orig
+    assert _engine_error_fields(
+        _dbapi_error(sqlstate="42501", message="denied")
+    ) == ("42501", "denied")
+
+    # via __cause__ chain, using pgcode (psycopg spelling)
+    outer = RuntimeError("wrapper")
+    outer.__cause__ = _DriverError(pgcode="23505", message="duplicate key")
+    code, msg = _engine_error_fields(outer)
+    assert code == "23505"
+    assert msg == "duplicate key"
+
+    # No SQLSTATE anywhere → XX000 + str(exc)
+    assert _engine_error_fields(ValueError("plain")) == (
+        proto.SQLSTATE_INTERNAL_ERROR, "plain",
+    )
+
+    # Cyclic chain must terminate (seen-set guard), not hang.
+    a = RuntimeError("a")
+    b = RuntimeError("b")
+    a.__context__ = b
+    b.__context__ = a
+    assert _engine_error_fields(a) == (proto.SQLSTATE_INTERNAL_ERROR, "a")
 
 
 async def test_close_statement_then_complete() -> None:

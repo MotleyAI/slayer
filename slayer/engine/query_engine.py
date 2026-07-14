@@ -60,6 +60,7 @@ from slayer.engine.enriched import (
 )
 from slayer.engine.enrichment import enrich_query
 from slayer.engine.introspect_utils import _safe_get_columns
+from slayer.engine import timing
 from slayer.memories.resolver import (
     _all_models_in_datasource,
     resolve_entity,
@@ -1028,6 +1029,7 @@ class SlayerQueryEngine:
             query = query.snap_to_whole_periods()
 
         resolving: set = set()
+        _t = timing.start()
         model = await self._resolve_query_model(
             query_model=query.source_model,
             named_queries=named_queries,
@@ -1036,20 +1038,27 @@ class SlayerQueryEngine:
             runtime_kwarg=runtime_kwarg,
             prefer_data_source=prefer_data_source,
         )
+        timing.record("resolve_model", _t)
 
         # Auto-correct: move bare field names to dimensions if they match
         query = await self._auto_move_fields_to_dimensions(query, model, named_queries)
 
+        _t = timing.start()
         datasource = await self._resolve_datasource(model=model)
+        timing.record("resolve_datasource", _t)
 
         # Enrich: SlayerQuery + model → EnrichedQuery
+        _t = timing.start()
         enriched = await self._enrich(query=query, model=model, named_queries=named_queries)
+        timing.record("enrich", _t)
 
         # Generate SQL from EnrichedQuery. DEV-1444: pin ``outer`` mode so the
         # projection is trimmed to public_projection_aliases(enriched).
         dialect = self._dialect_for_type(datasource.type)
         generator = SQLGenerator(dialect=dialect)
+        _t = timing.start()
         sql = generator.generate(enriched=enriched, render_mode="outer")
+        timing.record("generate_sql", _t)
         # DEV-1578: forced-filter rewrite. Applied here — before the dry_run
         # return and before execution — so dry_run, explain, real execution,
         # and profiling all see the same tenant-scoped SQL.
@@ -1217,6 +1226,7 @@ class SlayerQueryEngine:
     ) -> SlayerResponse:
         """Execute the prepared SQL, apply schema-drift attribution + the
         dialect read-side decode, and build the response."""
+        _t = timing.start()
         try:
             rows = await client.execute(sql=prepared.sql)
         except Exception as exc:
@@ -1224,6 +1234,7 @@ class SlayerQueryEngine:
                 err=exc, model=prepared.model, enriched=prepared.enriched
             )
             raise
+        timing.record("execute", _t)
         # Dialect-driven read-side decode: BigQuery reverses its alias
         # mangling here so the response keys match SLayer's universal
         # dotted shape. Default hook is identity for every other dialect.

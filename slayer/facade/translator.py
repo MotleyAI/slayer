@@ -1588,11 +1588,19 @@ def _normalise_predicate_columns(
     """Walk ``node`` and rewrite every ``exp.Column``: apply ``alias_map``
     first (so ``<JoinAlias>.<col>`` becomes ``<model>.<col>``), then
     ``strip_prefix`` (so the parent table's ``schema.table.`` qualifier
-    drops). The reverse order would leave alias-qualified refs untouched
-    on parent strip_prefix matches that incidentally collide with the
-    alias text."""
-    if strip_prefix is None and not alias_map:
-        return node
+    drops), then ALWAYS emit the identifiers UNQUOTED.
+
+    The un-quoting is load-bearing, not cosmetic. ``SlayerQuery.filters``
+    is parsed by the Mode B (Python-AST) DSL, where a double-quoted
+    ``"merchantId"`` is a STRING LITERAL identical to ``'merchantId'`` —
+    NOT a column reference (Python doesn't distinguish quote styles).
+    Emitting the quoted form silently rewrites ``WHERE "merchantId" = 'x'``
+    into the constant-vs-constant comparison ``'merchantId' = 'x'``, which
+    matches no rows. Bare identifiers resolve as columns. We un-quote every
+    column regardless of whether alias_map / strip_prefix changed anything,
+    so this fires for the common ``FROM "Table" WHERE "col" = 'x'`` shape
+    that has neither a schema prefix nor a join alias.
+    """
 
     def rewrite(child: exp.Expression) -> exp.Expression:
         if not isinstance(child, exp.Column):
@@ -1600,9 +1608,9 @@ def _normalise_predicate_columns(
         original = _raw_column_parts(child)
         parts = _apply_alias_remap(list(original), alias_map)
         parts = _apply_strip_prefix(parts, strip_prefix)
-        if parts == original:
-            return child
-        # Rebuild the Column from the rewritten parts.
+        # Rebuild the Column with UNQUOTED identifiers. Even when the parts
+        # are unchanged, the original may carry ``quoted=True`` that must be
+        # dropped for the DSL to see a column rather than a string literal.
         new = exp.Column(this=exp.Identifier(this=parts[-1], quoted=False))
         if len(parts) >= 2:
             new.set("table", exp.Identifier(this=parts[-2], quoted=False))

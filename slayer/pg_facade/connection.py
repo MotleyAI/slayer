@@ -28,6 +28,7 @@ from sqlglot.optimizer.scope import traverse_scope
 
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
+from slayer.engine import timing
 from slayer.facade.catalog import (
     FacadeCatalog,
     build_catalog_grouped_by_schema,
@@ -881,11 +882,13 @@ class PgConnection:
             # passing it to the engine.
             if result.data_source is None:
                 raise ValueError("could not resolve a datasource for the query")
-            response = await self._engine.execute(
-                query=result.query, data_source=result.data_source,
-            )
+            with timing.open_query_profile():
+                response = await self._engine.execute(
+                    query=result.query, data_source=result.data_source,
+                )
         except Exception as exc:  # noqa: BLE001 — surface any engine error to the client
-            await self._send_error(code=proto.SQLSTATE_INTERNAL_ERROR, message=str(exc))
+            code, message = _engine_error_fields(exc)
+            await self._send_error(code=code, message=message)
             self._fail_tx()
             return False
         mapping = result.column_name_mapping
@@ -1421,6 +1424,32 @@ def _command_tag(command_tag: str | None) -> str:
     if command_tag is None:
         return "SELECT 0"
     return command_tag
+
+
+def _engine_error_fields(exc: BaseException) -> tuple[str, str]:
+    """Extract a Postgres SQLSTATE + terse message from an engine execution error.
+
+    SQLAlchemy wraps the driver error (asyncpg/psycopg) in a ``DBAPIError``
+    whose ``.orig`` carries the real ``sqlstate`` and the bare server message.
+    Surfacing those lets a client see e.g. ``permission denied for table Item``
+    (42501) instead of the full ``(sqlalchemy...) <class ...>: ... [SQL: ...]``
+    Python repr. Walks ``.orig`` / ``__cause__`` / ``__context__`` and returns
+    the first driver error exposing a 5-char SQLSTATE; falls back to XX000 plus
+    ``str(exc)`` when none is found.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException | None] = [exc]
+    while stack:
+        cur = stack.pop()
+        if cur is None or id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        code = getattr(cur, "sqlstate", None) or getattr(cur, "pgcode", None)
+        if isinstance(code, str) and len(code) == 5:
+            message = getattr(cur, "message", None) or str(cur)
+            return code, message
+        stack.extend([getattr(cur, "orig", None), cur.__cause__, cur.__context__])
+    return proto.SQLSTATE_INTERNAL_ERROR, str(exc)
 
 
 def _sqlstate_for(exc: TranslationError) -> str:
