@@ -114,7 +114,8 @@ def test_import_osi_duplicate_datasets_exits_cleanly(
         "          - name: customer_id\n"
         "            expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}\n"
     )
+    args = _args(store, osi)
     with pytest.raises(SystemExit) as exc_info:
-        _run_import_osi(_args(store, osi))
+        _run_import_osi(args)
     assert exc_info.value.code == 1
     assert "Duplicate dataset names" in capsys.readouterr().out
