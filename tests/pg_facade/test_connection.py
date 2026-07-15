@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import time
 import types
 
 import pytest
@@ -2571,3 +2572,53 @@ async def test_refresh_swallows_build_error_and_keeps_catalog() -> None:
     assert conn._catalog is before  # half-built/None never swapped in
     # Fingerprint not advanced -> the next TTL window retries the rebuild.
     assert conn._catalog_fingerprint == "v1"
+
+
+async def test_describe_triggers_catalog_refresh() -> None:
+    # Regression: Describe advertises the RowDescription, so it must refresh
+    # too — not only Execute — or a mid-window edit could make the later
+    # Execute's rows disagree with the already-sent RowDescription.
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)  # ttl 0.0 -> always re-checks
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    storage._models_by_ds["jaffle"][0].description = "edited"
+    storage.fingerprint = "v2"
+
+    # Missing statement still exercises the refresh at the top of _handle_describe.
+    await conn._handle_describe(proto.DescribeMessage(kind="S", name="nope"))
+
+    assert conn._catalog is not before  # refreshed at Describe
+    assert conn._catalog_fingerprint == "v2"
+
+
+async def test_describe_pins_execute_to_same_catalog_within_window() -> None:
+    ttl = 30.0  # realistic window (NOT 0)
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = PgConnection(
+        asyncio.StreamReader(), _FakeWriter(),
+        engine=_FakeEngine([]), storage=storage,
+        catalog_ttl_seconds=ttl,
+    )
+    conn._storage = storage
+    conn._catalog = await conn._build_catalog()
+    conn._catalog_fingerprint = "v1"
+    # Last checked more than the TTL ago, relative to the live monotonic clock,
+    # so the first check treats the window as expired regardless of process
+    # uptime. (A literal 0.0 would fail on a young process where monotonic() < ttl.)
+    conn._catalog_checked_at = time.monotonic() - (ttl + 1.0)
+
+    # Edit lands before Describe -> Describe rebuilds to the v2 snapshot.
+    storage.fingerprint = "v2"
+    await conn._handle_describe(proto.DescribeMessage(kind="S", name="nope"))
+    pinned = conn._catalog
+    assert conn._catalog_fingerprint == "v2"
+
+    # A further edit lands, but Execute (via _maybe_refresh_catalog) is inside
+    # the same TTL window Describe just stamped, so it must NOT shift the
+    # catalog underneath the RowDescription Describe advertised.
+    storage.fingerprint = "v3"
+    await conn._maybe_refresh_catalog()
+    assert conn._catalog is pinned
+    assert conn._catalog_fingerprint == "v2"

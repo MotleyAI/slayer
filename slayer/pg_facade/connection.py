@@ -482,7 +482,8 @@ class PgConnection:
             # Build into a local and swap only on success, so a failed rebuild
             # never leaves the connection with a half-built or ``None`` catalog.
             catalog = await self._build_catalog()
-        except Exception:  # noqa: BLE001 — refresh is best-effort, keep old catalog
+        # Refresh is best-effort: keep the old catalog on any storage failure.
+        except Exception:  # noqa: BLE001
             logger.warning(
                 "pg facade: catalog refresh failed; keeping current catalog",
                 exc_info=True,
@@ -715,6 +716,12 @@ class PgConnection:
         )
 
     async def _handle_describe(self, msg: proto.DescribeMessage) -> None:
+        # Refresh here too, not just at Execute: Describe advertises the
+        # RowDescription, and it stamps the TTL check so the following Execute
+        # stays in the same window and won't shift the catalog underneath it —
+        # otherwise a mid-window edit could make the rows disagree with the
+        # already-sent RowDescription.
+        await self._maybe_refresh_catalog()
         if msg.kind == "S":
             stmt = self._statements.get(msg.name)
             if stmt is None:
