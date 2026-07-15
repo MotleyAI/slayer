@@ -186,7 +186,7 @@ async def search(
 
 `cypher_filter` accepts full openCypher when the `advanced_search` extra is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges; mutation clauses rejected). Without the extra, only the naive form `MATCH (n:Label1:Label2…) RETURN n.id AS id` is accepted as a label/kind filter — anything richer raises with an install hint.
 
-`SearchResponse` carries a single flat ranked list. Each `SearchHit` has `kind` (`"memory"` / `"datasource"` / `"model"` / `"column"` / `"measure"` / `"aggregation"`), `id`, `score`, `text`, `matched_entities`, and `query` (the attached `SlayerQuery` for query-bearing memories, else `None`). Unresolved input tokens land in `SearchResponse.warnings` instead of raising. Column hits include the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded) and a `Distinct count: N` line when the true cardinality overflows the snapshot; stale column profiles are refreshed lazily inside `search()`.
+`SearchResponse` carries a single flat ranked list. Each `SearchHit` has `kind` (`"memory"` / `"datasource"` / `"model"` / `"column"` / `"measure"` / `"aggregation"`), `id`, `score`, `text`, `matched_entities`, and `query` (the attached `SlayerQuery` for query-bearing memories, else `None`). Unresolved input tokens land in `SearchResponse.warnings` instead of raising. Column hits include the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded; overflow columns are marked `50+ distinct` in the text snapshot); stale column profiles are refreshed lazily inside `search()`.
 
 ## Direct Engine Access
 

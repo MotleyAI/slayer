@@ -3097,22 +3097,32 @@ async def search_env(tmp_path):
     return engine, storage
 
 
-async def test_search_ingest_populates_sampled(search_env):
-    """``slayer ingest`` writes ``Column.sampled`` for every non-pk column
-    on every table-backed model. Categorical and numeric columns get
-    different formats — spot-check one of each."""
-    _engine, storage = search_env
+async def test_refresh_samples_populates_sampled(search_env):
+    """Ingest no longer profiles columns (samples are lazy). An explicit
+    ``refresh-samples`` pass writes ``Column.sampled`` for every non-pk
+    column. Categorical and numeric columns get different formats —
+    spot-check one of each."""
+    from slayer.engine.profiling import refresh_all_table_backed_sampled
+
+    engine, storage = search_env
+    # After ingest alone, samples are unpopulated.
+    orders = await storage.get_model("orders", data_source="test_sqlite")
+    assert next(c for c in orders.columns if c.name == "status").sampled is None
+
+    # Explicit refresh populates them.
+    errors = await refresh_all_table_backed_sampled(
+        engine=engine, storage=storage, data_source="test_sqlite",
+    )
+    assert errors == [], f"Unexpected refresh errors: {errors}"
+
     orders = await storage.get_model("orders", data_source="test_sqlite")
     customers = await storage.get_model("customers", data_source="test_sqlite")
-    assert orders is not None
-    assert customers is not None
-
     for model in (orders, customers):
         for col in model.columns:
             if col.primary_key or col.hidden:
                 continue
             assert col.sampled is not None, (
-                f"{model.name}.{col.name} sampled was not populated by ingest"
+                f"{model.name}.{col.name} sampled was not populated by refresh"
             )
 
     status = next(c for c in orders.columns if c.name == "status")

@@ -212,14 +212,14 @@ Response (`SearchResponse`):
 {
   "results": [
     {"kind": "memory",  "id": "42", "score": 0.13, "text": "orders.is_returned in {0,1,NULL}; treat NULL as not returned", "matched_entities": [], "query": null},
-    {"kind": "column",  "id": "mydb.orders.is_returned", "score": 0.11, "text": "...\nSample values: [\"0\", \"1\", null]\nDistinct count: 3", "matched_entities": [], "query": null}
+    {"kind": "column",  "id": "mydb.orders.is_returned", "score": 0.11, "text": "...\nSample values: [\"0\", \"1\"]", "matched_entities": [], "query": null}
   ],
   "resolved_input_entities": [],
   "warnings": []
 }
 ```
 
-`kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `DELETE /memories/{id}`); `query` carries the saved `SlayerQuery` when the memory is query-bearing. Column hits embed the structured `sampled_values` (top 50 by frequency, JSON-encoded) and `Distinct count: N` lines from the column profile; stale profiles are refreshed lazily inside `/search`.
+`kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `DELETE /memories/{id}`); `query` carries the saved `SlayerQuery` when the memory is query-bearing. Column hits embed the structured `sampled_values` (top 50 by frequency, JSON-encoded; overflow columns are marked `50+ distinct` in the text snapshot); stale profiles are refreshed lazily inside `/search`.
 
 **`POST /memories` body:**
 
