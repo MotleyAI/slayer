@@ -51,7 +51,7 @@ from slayer.engine.cache import (
     RefreshResult,
     _CacheEntry,
 )
-from slayer.engine.join_graph import JoinGraph
+from slayer.engine.join_graph import JoinGraph, min_hops_root
 from slayer.engine.enriched import (
     CrossModelMeasure,
     EnrichedMeasure,
@@ -2116,21 +2116,15 @@ class SlayerQueryEngine:
         hint_model = hint[0] if hint is not None else None
         hint_display = hint[1] if hint is not None else None
 
-        def total_hops(root: str) -> int:
-            return sum(len(graph.shortest_path(root, m) or []) for m in mentioned)
-
         def reaches_all(root: str) -> bool:
             return all(graph.shortest_path(root, m) is not None for m in mentioned)
 
         def missing_models(root: str) -> list[str]:
             return sorted(m for m in mentioned if graph.shortest_path(root, m) is None)
 
-        valid_roots = [name for name in all_names if reaches_all(name)]
-        if valid_roots:
-            auto = min(
-                valid_roots,
-                key=lambda n: (total_hops(n), 0 if n in mentioned else 1, n),
-            )
+        # Shared selection core (also used by the OSI importer's anchor pick).
+        auto = min_hops_root(graph, all_names, mentioned)
+        if auto is not None:
             if hint_model is not None and reaches_all(hint_model):
                 root = hint_model
                 message = (

@@ -1,0 +1,929 @@
+"""Convert parsed OSI documents into SLayer models (DEV-1643).
+
+Each OSI dataset becomes one ``SlayerModel``: its physical table is introspected
+live (real column types + PK) and OSI semantic metadata (labels, descriptions,
+is_time, ai_context, primary keys) is overlaid on top. OSI relationships become
+``ModelJoin`` entries; OSI metrics become ``ModelMeasure`` formulas, anchored on
+the model that reaches every dataset the metric references (via the shared
+``recommend_root_model`` selection core). Constructs that cannot be expressed
+exactly are clean-failed to a ``ConversionResult`` report, never silently lost.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Optional
+
+import sqlalchemy as sa
+import sqlglot
+import sqlglot.expressions as exp
+
+from slayer.core.enums import DataType
+from slayer.core.formula import parse_formula
+from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
+from slayer.engine.column_expansion import _root_scope_column_ids
+from slayer.engine.ingestion import introspect_table_to_model
+from slayer.engine.join_graph import JoinGraph, min_hops_root
+from slayer.ingest_report import ConversionResult, ConversionWarning
+from slayer.sql.client import get_column_types_sync
+from slayer.osi.expression import SQL_DIALECTS, convert_expression
+from slayer.osi.models import (
+    OSIAIContext,
+    OSICustomExtension,
+    OSIDataset,
+    OSIDocument,
+    OSIExpression,
+    OSIField,
+    OSIMetric,
+    OSIRelationship,
+    OSISemanticModel,
+    ai_context_to_dict,
+)
+from slayer.osi.source import parse_source, resolve_datasource
+
+logger = logging.getLogger(__name__)
+
+# Dialects lacking a GROUP BY percentile/median aggregate (mirrors the dbt
+# converter's caveat set).
+_NO_PERCENTILE_DIALECTS = frozenset({"mysql", "tsql", "mssql", "sqlserver"})
+
+# OSI SQL dialect -> sqlglot read dialect for normalizing an expression to
+# default SQL. ANSI_SQL maps to None (already default-compatible).
+_SQLGLOT_DIALECT = {"SNOWFLAKE": "snowflake", "DATABRICKS": "databricks"}
+
+
+class OsiConversionError(Exception):
+    """Raised when an OSI import set cannot be converted (e.g. duplicate names)."""
+
+
+# Characters/shapes that are unsafe in a SLayer model name — notably path
+# separators and NUL, since a model name becomes a filename in YAML storage
+# (``<dir>/<name>.yaml``); an absolute/traversal name would escape the tree.
+_UNSAFE_MODEL_NAME_CHARS = ("__", ".", ":", "/", "\\", "\x00")
+
+
+def _legal_model_name(name: str) -> bool:
+    if not name or name.strip() != name or not name.strip():
+        return False
+    return not any(ch in name for ch in _UNSAFE_MODEL_NAME_CHARS)
+
+
+def _legal_column_name(name: str) -> bool:
+    return "." not in name and ":" not in name
+
+
+def _legal_measure_name(name: str) -> bool:
+    return bool(_IDENTIFIER_RE.match(name))
+
+
+def _as_bare_column(sql: str) -> str | None:
+    """The unquoted column name if ``sql`` is a single unqualified column
+    reference (bare or double-quoted), else ``None``.
+
+    Lets a case-sensitive quoted identifier (e.g. ``"legalEntityType"``) be
+    treated as a base-column reference rather than a derived expression.
+    """
+    stripped = sql.strip()
+    if _IDENTIFIER_RE.match(stripped):
+        return stripped
+    try:
+        tree = sqlglot.parse_one(stripped)
+    except sqlglot.errors.ParseError:
+        return None
+    if (isinstance(tree, exp.Column) and not tree.table
+            and not tree.args.get("db") and not tree.args.get("catalog")):
+        return tree.name
+    return None
+
+
+def _missing_expr_columns(
+    sql: str, available: set[str], self_name: str
+) -> list[str] | None:
+    """Unqualified and self-qualified column names in ``sql`` absent from
+    ``available``. Returns ``None`` when ``sql`` cannot be parsed.
+
+    Self-qualified references (``<self_name>.col``) are validated too; genuinely
+    cross-model references (a different qualifier) are left to query-time join
+    resolution, matching how ``Column.sql`` expansion treats join aliases.
+    """
+    try:
+        tree = sqlglot.parse_one(sql)
+    except sqlglot.errors.ParseError:
+        return None
+    missing = []
+    for col in tree.find_all(exp.Column):
+        if not col.table:
+            if col.name not in available:
+                missing.append(col.name)
+        elif col.table == self_name and col.name not in available:
+            missing.append(f"{col.table}.{col.name}")
+    return missing
+
+
+def _render_description(explicit: Optional[str], ctx: Optional[OSIAIContext]) -> Optional[str]:
+    """Description = explicit OSI description (lead) + ai_context instructions +
+    synonyms."""
+    parts: list[str] = []
+    if explicit:
+        parts.append(explicit)
+    ctx_dict = ai_context_to_dict(ctx)
+    if ctx_dict:
+        instructions = ctx_dict.get("instructions")
+        if instructions and instructions != explicit:
+            parts.append(instructions)
+        synonyms = ctx_dict.get("synonyms")
+        if synonyms:
+            parts.append("Synonyms: " + ", ".join(synonyms))
+    return "\n".join(parts) or None
+
+
+def _build_meta(
+    ctx: Optional[OSIAIContext],
+    custom_extensions: Optional[list[OSICustomExtension]],
+    extra: Optional[dict[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    meta: dict[str, Any] = dict(extra or {})
+    ctx_dict = ai_context_to_dict(ctx)
+    if ctx_dict:
+        meta["osi_ai_context"] = ctx_dict
+    if custom_extensions:
+        meta["osi_custom_extensions"] = [e.model_dump() for e in custom_extensions]
+    return meta or None
+
+
+class OsiToSlayerConverter:
+    """Convert OSI documents into SLayer models."""
+
+    def __init__(
+        self,
+        documents: list[OSIDocument],
+        data_source: str,
+        sa_engine: sa.Engine,
+        *,
+        dialect: str = "ANSI_SQL",
+        target_dialect: str | None = None,
+    ) -> None:
+        self.documents = documents
+        self.data_source = data_source
+        self.sa_engine = sa_engine
+        self.dialect = dialect
+        self.target_dialect = target_dialect
+        self._models: dict[str, SlayerModel] = {}
+        self._warnings: list[ConversionWarning] = []
+        self._unconverted: list[ConversionWarning] = []
+        # (model, column) -> the introspected Column a derived overlay replaced,
+        # so an invalidated overlay can be reverted to the physical column
+        # instead of deleting a real column.
+        self._shadowed: dict[tuple[str, str], Column] = {}
+
+    # ---- report helpers ----
+
+    def _warn(self, message: str, *, model_name: str | None = None,
+              metric_name: str | None = None, category: str = "general",
+              severity: str = "dropped", suggestion: str | None = None) -> None:
+        self._warnings.append(ConversionWarning(
+            model_name=model_name, metric_name=metric_name, message=message,
+            category=category, severity=severity, suggestion=suggestion,
+        ))
+
+    def _unconv(self, message: str, *, metric_name: str, category: str = "metric",
+                suggestion: str | None = None) -> None:
+        self._unconverted.append(ConversionWarning(
+            metric_name=metric_name, message=message, category=category,
+            severity="unconverted", suggestion=suggestion,
+        ))
+
+    # ---- top-level ----
+
+    def convert(self) -> ConversionResult:
+        inspector = sa.inspect(self.sa_engine)
+        semantic_models = [sm for doc in self.documents for sm in doc.semantic_model]
+        self._check_duplicate_dataset_names(semantic_models)
+
+        for sm in semantic_models:
+            for ds in sm.datasets:
+                self._build_model(ds=ds, sm=sm, inspector=inspector)
+        for sm in semantic_models:
+            for rel in sm.relationships or []:
+                self._build_join(rel)
+
+        self._validate_cross_model_field_refs()
+        self._type_cross_model_columns()
+
+        graph = JoinGraph.build_from_models(list(self._models.values()))
+        for sm in semantic_models:
+            self._build_measures_for(sm, graph)
+
+        return ConversionResult(
+            models=list(self._models.values()),
+            unconverted_metrics=self._unconverted,
+            warnings=self._warnings,
+        )
+
+    def _build_measures_for(self, sm: OSISemanticModel, graph: JoinGraph) -> None:
+        sm_model_names = [d.name for d in sm.datasets if d.name in self._models]
+        for metric in sm.metrics or []:
+            self._build_measure(metric=metric, sm_model_names=sm_model_names, graph=graph)
+
+    def _check_duplicate_dataset_names(self, sms: list[OSISemanticModel]) -> None:
+        seen: set[str] = set()
+        dupes: set[str] = set()
+        for sm in sms:
+            for ds in sm.datasets:
+                if ds.name in seen:
+                    dupes.add(ds.name)
+                seen.add(ds.name)
+        if dupes:
+            raise OsiConversionError(
+                f"Duplicate dataset names across the OSI import set: "
+                f"{sorted(dupes)}. Dataset names map to SLayer model names and "
+                f"must be unique within a datasource."
+            )
+
+    # ---- datasets -> models ----
+
+    def _build_model(self, ds: OSIDataset, sm: OSISemanticModel,
+                     inspector: sa.engine.Inspector) -> None:
+        if not _legal_model_name(ds.name):
+            self._warn(
+                f"Dataset name {ds.name!r} is not a safe SLayer model name "
+                f"(empty, surrounding whitespace, or a forbidden character such "
+                f"as '__', '.', ':', '/', '\\\\', NUL); skipping.",
+                model_name=ds.name, category="illegal_name",
+            )
+            return
+
+        parsed = parse_source(ds.source)
+        resolve_datasource(parsed.database, self.data_source)  # stubbed routing
+
+        try:
+            if parsed.is_query:
+                base = self._build_sql_mode_model(ds, parsed.query)
+            else:
+                base = introspect_table_to_model(
+                    sa_engine=self.sa_engine, inspector=inspector,
+                    table_name=parsed.table, schema=parsed.schema_name,
+                    data_source=self.data_source, model_name=ds.name,
+                )
+        except Exception as exc:  # noqa: BLE001 — per-dataset isolation
+            self._warn(
+                f"Failed to introspect dataset {ds.name!r} (source {ds.source!r}): "
+                f"{exc}; skipping.",
+                model_name=ds.name, category="introspection",
+            )
+            return
+
+        self._overlay_fields(base, ds)
+        self._apply_dataset_metadata(base, ds, sm)
+        self._models[ds.name] = base
+
+    def _build_sql_mode_model(self, ds: OSIDataset, query: str) -> SlayerModel:
+        # Query source: introspect the query's output columns live (LIMIT-0 /
+        # cursor-metadata probe), exactly as table sources are introspected.
+        # ``target_dialect`` is the datasource type, used for the dialect-correct
+        # probe (LIMIT 0 vs SELECT TOP vs SQLite's LIMIT-1 fallback).
+        types = get_column_types_sync(
+            sql=query, engine=self.sa_engine, db_type=self.target_dialect,
+        )
+        columns = [Column(name=name, type=category) for name, category in types.items()]
+        return SlayerModel(name=ds.name, sql=query, data_source=self.data_source,
+                           columns=columns)
+
+    def _overlay_fields(self, model: SlayerModel, ds: OSIDataset) -> None:
+        by_name = {c.name: c for c in model.columns}
+        introspected = set(by_name)
+        first_time_dim: str | None = None
+
+        for field in ds.fields or []:
+            time_col = self._overlay_one_field(field=field, model=model, by_name=by_name, introspected=introspected, ds=ds)
+            if time_col and first_time_dim is None:
+                first_time_dim = time_col
+
+        # OSI primary_key is authoritative: when set, it fully REPLACES the
+        # introspected primary key (clearing physical PK flags that OSI omits);
+        # when unset, the introspected PK is kept. If any listed key column is
+        # missing (typo), the override is unsafe (it would leave the model with
+        # no PK) — report and keep the introspected PK instead.
+        if ds.primary_key:
+            present = {c.name for c in model.columns}
+            missing_pk = [k for k in ds.primary_key if k not in present]
+            if missing_pk:
+                self._warn(
+                    f"Dataset {ds.name!r} primary_key references unknown "
+                    f"column(s) {missing_pk}; keeping the introspected primary key.",
+                    model_name=ds.name, category="primary_key",
+                )
+            else:
+                osi_pk = set(ds.primary_key)
+                for col in model.columns:
+                    col.primary_key = col.name in osi_pk
+
+        if first_time_dim and not model.default_time_dimension:
+            model.default_time_dimension = first_time_dim
+
+    def _overlay_one_field(self, field: OSIField, model: SlayerModel,
+                           by_name: dict[str, Column], introspected: set[str],
+                           ds: OSIDataset) -> str | None:
+        """Overlay one OSI field onto the model. Returns the column name if the
+        field is a time dimension, else None (clean-fails are reported)."""
+        if not _legal_column_name(field.name):
+            self._warn(
+                f"Field name {field.name!r} on dataset {ds.name!r} contains "
+                f"'.'/':'; skipping the field.",
+                model_name=ds.name, category="illegal_name",
+            )
+            return None
+
+        sql = self._resolve_expression(field.expression)
+        if sql is None:
+            self._warn(
+                f"Field {field.name!r} on {ds.name!r} has no SQL-dialect "
+                f"expression; skipping.",
+                model_name=ds.name, category="dialect",
+            )
+            return None
+
+        col = self._resolve_field_column(field=field, sql=sql, by_name=by_name, introspected=introspected, ds=ds, model=model)
+        if col is None:
+            return None
+
+        col.label = field.label or col.label
+        col.description = _render_description(explicit=field.description, ctx=field.ai_context) \
+            or col.description
+        meta = _build_meta(ctx=field.ai_context, custom_extensions=field.custom_extensions)
+        if meta:
+            col.meta = {**(col.meta or {}), **meta}
+
+        is_time = bool(field.dimension and field.dimension.is_time)
+        if is_time and col.type not in (DataType.DATE, DataType.TIMESTAMP):
+            col.type = DataType.TIMESTAMP
+
+        # Bare overlays return the existing column object (no-op here); an
+        # aliased/derived field that shadows an existing column REPLACES it so
+        # its expression isn't silently dropped by an append-only path.
+        existing = by_name.get(col.name)
+        if existing is None:
+            model.columns.append(col)
+            by_name[col.name] = col
+        elif existing is not col:
+            # Preserve the shadowed column's primary-key flag across the
+            # redefinition — an introspected PK must survive a derived overlay
+            # unless OSI's primary_key explicitly overrides it later. Remember
+            # the original so an overlay later invalidated by cross-model
+            # validation can revert to the physical column (not delete it).
+            col.primary_key = existing.primary_key
+            self._shadowed.setdefault((model.name, col.name), existing)
+            model.columns[model.columns.index(existing)] = col
+            by_name[col.name] = col
+        return col.name if is_time else None
+
+    def _resolve_field_column(self, field: OSIField, sql: str,
+                              by_name: dict[str, Column], introspected: set[str],
+                              ds: OSIDataset, model: SlayerModel) -> Column | None:
+        """Return the Column (existing or new) this field maps to, or None on a
+        clean-fail (already reported)."""
+        bare = _as_bare_column(sql)
+        if bare is not None:
+            if bare == field.name and field.name in by_name:
+                return by_name[field.name]          # overlay existing column
+            if bare in introspected:
+                # aliased/renamed reference to a real column. Keep the ORIGINAL
+                # expression (preserving any identifier quoting, which matters on
+                # case-folding dialects); use the unquoted name only for lookup.
+                return Column(name=field.name, sql=sql, type=by_name[bare].type)
+            self._warn(
+                f"Field {field.name!r} on {ds.name!r} references column {bare!r} "
+                f"which is not present in the table; skipping.",
+                model_name=ds.name, category="missing_column",
+            )
+            return None
+        # derived expression. Validate its column references exist on the table
+        # (consistent with the bare-field / metric / relationship checks); a
+        # collision with an existing column is handled by the replace-or-append
+        # logic in _overlay_one_field.
+        missing = _missing_expr_columns(sql=sql, available=introspected, self_name=ds.name)
+        if missing is None:
+            self._warn(
+                f"Field {field.name!r} on {ds.name!r} has an unparseable "
+                f"expression {sql!r}; skipping.",
+                model_name=ds.name, category="expression",
+            )
+            return None
+        if missing:
+            self._warn(
+                f"Field {field.name!r} on {ds.name!r} references unknown "
+                f"column(s) {missing}; skipping.",
+                model_name=ds.name, category="missing_column",
+            )
+            return None
+        is_time = bool(field.dimension and field.dimension.is_time)
+        if is_time:
+            dtype = DataType.TIMESTAMP
+        elif field.name in by_name:
+            # A derived field that redefines an existing column inherits that
+            # column's known type (e.g. LOWER(status) stays TEXT).
+            dtype = by_name[field.name].type
+        else:
+            # A genuinely new derived column: live-probe the expression's real
+            # type so a non-numeric expression (UPPER(x), concat, ...) isn't
+            # mis-cast as DOUBLE by the SQL generator. Fall back to DOUBLE if the
+            # probe is unavailable.
+            dtype = self._probe_expression_type(model=model, expr=sql) or DataType.DOUBLE
+        return Column(name=field.name, sql=sql, type=dtype)
+
+    def _probe_expression_type(self, model: SlayerModel, expr: str) -> DataType | None:
+        """Infer a derived expression's SLayer type by probing it against the
+        model's physical source (LIMIT-0 cursor metadata). Returns None if the
+        model has no probeable source or the probe fails."""
+        if model.sql_table:
+            from_clause = model.sql_table
+        elif model.sql:
+            from_clause = f"({model.sql}) AS _osi_sub"
+        else:
+            return None
+        probe = f"SELECT ({expr}) AS _osi_probe FROM {from_clause}"
+        try:
+            types = get_column_types_sync(
+                sql=probe, engine=self.sa_engine, db_type=self.target_dialect,
+            )
+        except Exception:  # noqa: BLE001 — probe is best-effort; fall back
+            return None
+        category = next(iter(types.values()), None)
+        if category is None:
+            return None
+        # Reuse Column's category->DataType coercion (as _build_sql_mode_model does).
+        return Column(name="_osi_probe", type=category).type
+
+    def _apply_dataset_metadata(self, model: SlayerModel, ds: OSIDataset,
+                                sm: OSISemanticModel) -> None:
+        model.description = _render_description(explicit=ds.description, ctx=ds.ai_context) \
+            or model.description
+        extra: dict[str, Any] = {}
+        if ds.unique_keys:
+            extra["osi_unique_keys"] = ds.unique_keys
+        sm_ctx = ai_context_to_dict(sm.ai_context)
+        if sm_ctx or sm.description:
+            extra["osi_semantic_model"] = {
+                "name": sm.name,
+                "description": sm.description,
+                "ai_context": sm_ctx,
+            }
+        meta = _build_meta(ctx=ds.ai_context, custom_extensions=ds.custom_extensions, extra=extra)
+        if meta:
+            model.meta = {**(model.meta or {}), **meta}
+
+    # ---- relationships -> joins ----
+
+    def _build_join(self, rel: OSIRelationship) -> None:
+        src = rel.from_dataset
+        if src not in self._models:
+            self._warn(
+                f"Relationship {rel.name!r} references unknown source dataset "
+                f"{src!r}; skipping.",
+                category="relationship",
+            )
+            return
+        if rel.to not in self._models:
+            self._warn(
+                f"Relationship {rel.name!r} targets unknown dataset {rel.to!r}; "
+                f"skipping.",
+                model_name=src, category="relationship",
+            )
+            return
+        if len(rel.from_columns) != len(rel.to_columns):
+            self._warn(
+                f"Relationship {rel.name!r} has mismatched key lengths "
+                f"({len(rel.from_columns)} vs {len(rel.to_columns)}); skipping.",
+                model_name=src, category="relationship",
+            )
+            return
+
+        missing = self._missing_join_columns(rel)
+        if missing:
+            self._warn(
+                f"Relationship {rel.name!r} references join columns not present "
+                f"on their models: {missing}; skipping.",
+                model_name=src, category="relationship",
+            )
+            return
+
+        # SLayer's ModelJoin keys only on target_model and runtime join-walking
+        # picks the first match, so a second relationship to the same target
+        # (e.g. a distinct role) would be unreachable and could bind refs to the
+        # wrong join. Keep the first; report and skip duplicates.
+        if any(j.target_model == rel.to for j in self._models[src].joins):
+            self._warn(
+                f"Relationship {rel.name!r} is a second join from {src!r} to "
+                f"{rel.to!r}; SLayer cannot disambiguate multiple joins to one "
+                f"model (no join aliases). Keeping the first; skipping this one.",
+                model_name=src, category="relationship",
+            )
+            return
+
+        pairs = [[f, t] for f, t in zip(rel.from_columns, rel.to_columns)]
+        self._models[src].joins.append(ModelJoin(
+            target_model=rel.to,
+            join_pairs=pairs,
+            description=_render_description(explicit=None, ctx=rel.ai_context),
+            meta=_build_meta(ctx=rel.ai_context, custom_extensions=rel.custom_extensions),
+        ))
+
+    def _validate_cross_model_field_refs(self) -> None:
+        """Post-join pass: derived columns may reference joined models via
+        ``<alias>.<col>`` / ``<a>__<b>.<col>``. Resolve each such ref through the
+        join graph and drop (with a report) any column whose cross-model ref
+        names a model with no join path or a nonexistent target column — so a
+        typo clean-fails at import instead of erroring at query time.
+        """
+        # Fixed-point: dropping a column can invalidate another column that
+        # referenced it, and dropping a column used as a join key invalidates
+        # that join (which can in turn invalidate more columns). Re-run column
+        # and join pruning until a pass changes nothing.
+        while True:
+            if not (self._drop_invalid_cross_model_columns()
+                    or self._drop_stale_joins()):
+                break
+
+    def _drop_invalid_cross_model_columns(self) -> bool:
+        dropped = False
+        for model in self._models.values():
+            for col, bad in self._invalid_cross_model_columns(model):
+                self._revert_or_drop_column(model=model, col=col, bad=bad)
+                dropped = True
+        return dropped
+
+    def _invalid_cross_model_columns(
+        self, model: SlayerModel
+    ) -> list[tuple[Column, list[str]]]:
+        result = []
+        for col in model.columns:
+            if col.sql:
+                bad = self._unresolvable_cross_model_refs(model=model, sql=col.sql)
+                if bad:
+                    result.append((col, bad))
+        return result
+
+    def _revert_or_drop_column(
+        self, model: SlayerModel, col: Column, bad: list[str]
+    ) -> None:
+        original = self._shadowed.pop((model.name, col.name), None)
+        if original is not None:
+            # The invalid column was a derived overlay of a physical column —
+            # revert to the physical column, don't delete it.
+            model.columns[model.columns.index(col)] = original
+            self._warn(
+                f"Derived overlay for {col.name!r} on {model.name!r} references "
+                f"unresolvable cross-model column(s) {bad}; reverting to the "
+                f"physical column.",
+                model_name=model.name, category="missing_column",
+            )
+        else:
+            model.columns.remove(col)
+            if model.default_time_dimension == col.name:
+                # Don't leave the default pointing at a dropped column.
+                model.default_time_dimension = next(
+                    (c.name for c in model.columns
+                     if c.type in (DataType.DATE, DataType.TIMESTAMP)),
+                    None,
+                )
+            self._warn(
+                f"Column {col.name!r} on {model.name!r} references unresolvable "
+                f"cross-model column(s) {bad}; dropping.",
+                model_name=model.name, category="missing_column",
+            )
+
+    def _drop_stale_joins(self) -> bool:
+        """Drop joins whose key columns were removed by column validation, so a
+        join never references a column that no longer exists."""
+        dropped = False
+        for model in self._models.values():
+            stale = [j for j in model.joins if self._join_columns_missing(model=model, join=j)]
+            for join in stale:
+                model.joins.remove(join)
+                dropped = True
+                self._warn(
+                    f"Join from {model.name!r} to {join.target_model!r} "
+                    f"references a column removed during validation; dropping.",
+                    model_name=model.name, category="relationship",
+                )
+        return dropped
+
+    def _type_cross_model_columns(self) -> None:
+        """After joins exist, fix the type of a derived column that is exactly a
+        single cross-model column ref (e.g. ``customers.segment``) — the local
+        probe couldn't resolve it, so it was left as the DOUBLE fallback and
+        would mis-cast a joined text/temporal column at query time."""
+        for model in self._models.values():
+            for col in model.columns:
+                if col.sql:
+                    target_type = self._single_cross_model_ref_type(model=model, sql=col.sql)
+                    if target_type is not None:
+                        col.type = target_type
+
+    def _single_cross_model_ref_type(
+        self, model: SlayerModel, sql: str
+    ) -> DataType | None:
+        try:
+            tree = sqlglot.parse_one(sql)
+        except sqlglot.errors.ParseError:
+            return None
+        if not isinstance(tree, exp.Column) or not tree.table or tree.table == model.name:
+            return None
+        target = self._walk_join_alias(host=model, alias=tree.table)
+        if target is None:
+            return None
+        tcol = next((c for c in target.columns if c.name == tree.name), None)
+        return tcol.type if tcol is not None else None
+
+    def _join_columns_missing(self, model: SlayerModel, join: ModelJoin) -> bool:
+        target = self._models.get(join.target_model)
+        for src_col, tgt_col in join.join_pairs:
+            if not self._model_has_column(model_name=model.name, column=src_col):
+                return True
+            if target is None or not any(c.name == tgt_col for c in target.columns):
+                return True
+        return False
+
+    def _unresolvable_cross_model_refs(self, model: SlayerModel, sql: str) -> list[str]:
+        """Cross-model (non-self, qualified) column refs in ``sql`` that don't
+        resolve to a joined model + existing column. Mirrors runtime scope rules:
+        only root-scope refs are checked (nested subquery/CTE aliases are left
+        alone), and catalog/db-qualified physical refs are skipped. Self /
+        unqualified refs were validated at field-overlay time."""
+        try:
+            tree = sqlglot.parse_one(sql)
+        except sqlglot.errors.ParseError:
+            return []
+        root_ids = _root_scope_column_ids(parsed=tree)
+        bad = []
+        for col in tree.find_all(exp.Column):
+            if id(col) not in root_ids:
+                continue  # nested-scope alias (CTE / sub-query) — not a join ref
+            if col.args.get("db") or col.args.get("catalog"):
+                continue  # catalog/db-qualified physical ref — outside SLayer's contract
+            if not col.table or col.table == model.name:
+                continue
+            target = self._walk_join_alias(host=model, alias=col.table)
+            if target is None or not any(c.name == col.name for c in target.columns):
+                bad.append(f"{col.table}.{col.name}")
+        return bad
+
+    def _walk_join_alias(self, host: SlayerModel, alias: str) -> SlayerModel | None:
+        """Resolve a ``__``-delimited join alias (e.g. ``customers__regions``)
+        to the terminal joined model by walking ``host``'s join chain, or None
+        if any hop is not a declared join."""
+        current = host
+        for hop in (alias.split("__") if "__" in alias else [alias]):
+            join = next((j for j in current.joins if j.target_model == hop), None)
+            if join is None:
+                return None
+            current = self._models.get(hop)
+            if current is None:
+                return None
+        return current
+
+    def _model_has_column(self, model_name: str, column: str) -> bool:
+        model = self._models.get(model_name)
+        return model is not None and any(c.name == column for c in model.columns)
+
+    def _model_has_name(self, model_name: str, name: str) -> bool:
+        """Whether ``name`` is taken by a column OR measure on the model —
+        SLayer requires the two to share one namespace, so a materialized
+        hidden-column name must avoid both."""
+        model = self._models.get(model_name)
+        if model is None:
+            return False
+        return (any(c.name == name for c in model.columns)
+                or any(m.name == name for m in model.measures))
+
+    def _missing_join_columns(self, rel: OSIRelationship) -> list[str]:
+        """Qualified names of relationship join columns absent from their
+        model, so a typo clean-fails instead of emitting a broken join."""
+        missing = [f"{rel.from_dataset}.{c}" for c in rel.from_columns
+                   if not self._model_has_column(model_name=rel.from_dataset, column=c)]
+        missing += [f"{rel.to}.{c}" for c in rel.to_columns
+                    if not self._model_has_column(model_name=rel.to, column=c)]
+        return missing
+
+    # ---- metrics -> measures ----
+
+    def _build_measure(self, metric: OSIMetric, sm_model_names: list[str],
+                       graph: JoinGraph) -> None:
+        if not _legal_measure_name(metric.name):
+            self._unconv(
+                f"Metric name {metric.name!r} is not a valid SLayer identifier.",
+                metric_name=metric.name,
+            )
+            return
+
+        expr = self._resolve_expression(metric.expression)
+        if expr is None:
+            self._unconv(
+                f"Metric {metric.name!r} has no SQL-dialect expression.",
+                metric_name=metric.name, category="dialect",
+            )
+            return
+
+        owner_of = self._make_owner_of(sm_model_names)
+        anchor = self._select_anchor(metric_name=metric.name, expr=expr, sm_model_names=sm_model_names, owner_of=owner_of, graph=graph)
+        if anchor is None:
+            return  # already reported
+
+        # Enforce SLayer's namespace invariants before the post-construction
+        # append (which bypasses SlayerModel's validators): a measure name must
+        # be unique and must not collide with a column on the same model.
+        anchor_model = self._models[anchor]
+        if any(m.name == metric.name for m in anchor_model.measures):
+            self._unconv(
+                f"Metric {metric.name!r} duplicates an existing measure on "
+                f"model {anchor!r}.",
+                metric_name=metric.name, category="duplicate_measure",
+            )
+            return
+        if self._model_has_column(model_name=anchor, column=metric.name):
+            self._unconv(
+                f"Metric {metric.name!r} collides with a column name on model "
+                f"{anchor!r}.",
+                metric_name=metric.name, category="name_collision",
+            )
+            return
+
+        ref_of = self._make_ref_of(graph=graph, anchor=anchor)
+        percentile_unsupported = (
+            self.target_dialect is not None
+            and self.target_dialect.lower() in _NO_PERCENTILE_DIALECTS
+        )
+        result = convert_expression(
+            expr, entity_name=metric.name, owner_of=owner_of, ref_of=ref_of,
+            percentile_unsupported=percentile_unsupported,
+            name_taken=self._model_has_name,
+        )
+        if not result.ok:
+            self._unconv(
+                f"Metric {metric.name!r}: {result.reason}",
+                metric_name=metric.name,
+            )
+            return
+
+        try:
+            parse_formula(result.formula)
+        except Exception as exc:  # noqa: BLE001 — reject un-parseable emission
+            self._unconv(
+                f"Metric {metric.name!r}: emitted formula {result.formula!r} is "
+                f"not a valid SLayer formula ({exc}).",
+                metric_name=metric.name,
+            )
+            return
+
+        # Build the measure first so a construction failure (e.g. a metric named
+        # after a reserved transform like ``cumsum``) clean-fails instead of
+        # crashing the import — and before materializing columns, so a rejected
+        # metric leaves no orphan hidden columns.
+        try:
+            measure = ModelMeasure(
+                formula=result.formula,
+                name=metric.name,
+                description=_render_description(explicit=metric.description, ctx=metric.ai_context),
+                meta=_build_meta(ctx=metric.ai_context, custom_extensions=metric.custom_extensions),
+            )
+        except Exception as exc:  # noqa: BLE001 — any validation error -> report
+            self._unconv(
+                f"Metric {metric.name!r} cannot be expressed as a SLayer measure "
+                f"({exc}).",
+                metric_name=metric.name,
+            )
+            return
+
+        self._materialize_columns(result.materialized)
+        self._models[anchor].measures.append(measure)
+        for w in result.warnings:
+            self._warn(f"Metric {metric.name!r}: {w}", metric_name=metric.name,
+                       category="dialect", severity="info")
+
+    def _select_anchor(self, metric_name: str, expr: str, sm_model_names: list[str],
+                       owner_of, graph: JoinGraph) -> str | None:
+        owners = self._referenced_owners(expr, owner_of)
+        if owners:
+            anchor = min_hops_root(graph=graph, candidates=sm_model_names, mentioned=owners)
+            if anchor is None:
+                self._unconv(
+                    f"Metric {metric_name!r} references models {sorted(owners)} "
+                    f"with no single model reaching all of them via joins.",
+                    metric_name=metric_name, category="no_join_path",
+                    suggestion="Add the required relationship(s), or split the "
+                               "metric across a multi-stage query.",
+                )
+            return anchor
+        # No column references (e.g. COUNT(*)). Attribute it to the semantic
+        # model's unique fact table (the one dataset that is never a join
+        # target). When there is no unique fact table, the metric is an orphan
+        # with no determinable grain -> error rather than guess.
+        anchor = self._fact_root(sm_model_names)
+        if anchor is None:
+            self._unconv(
+                f"Metric {metric_name!r} has no column references and the "
+                f"semantic model has no unique fact table to attribute it to; "
+                f"its grain is ambiguous.",
+                metric_name=metric_name, category="orphan_metric",
+                suggestion="Aggregate over an explicit column, or ensure the "
+                           "semantic model has a single fact dataset.",
+            )
+        return anchor
+
+    def _referenced_owners(self, expr: str, owner_of) -> set[str]:
+        try:
+            tree = sqlglot.parse_one(expr)
+        except sqlglot.errors.ParseError:
+            return set()
+        owners: set[str] = set()
+        for col in tree.find_all(exp.Column):
+            owner = owner_of(col.table or None, col.name)
+            if owner:
+                owners.add(owner)
+        return owners
+
+    def _fact_root(self, sm_model_names: list[str]) -> str | None:
+        """The unique dataset that is never a join target (the fact table), or
+        ``None`` when there is no unique fact table (0 or >1 candidates)."""
+        if not sm_model_names:
+            return None
+        targets: set[str] = set()
+        for name in sm_model_names:
+            for j in self._models[name].joins:
+                targets.add(j.target_model)
+        non_targets = [n for n in sm_model_names if n not in targets]
+        return non_targets[0] if len(non_targets) == 1 else None
+
+    def _make_owner_of(self, sm_model_names: list[str]):
+        def has_column(model_name: str, column: str) -> bool:
+            model = self._models.get(model_name)
+            return model is not None and any(c.name == column for c in model.columns)
+
+        def owner_of(qualifier: Optional[str], column: str) -> Optional[str]:
+            if qualifier is not None:
+                # Verify the column actually exists on the qualified model —
+                # otherwise a metric like SUM(orders.no_such_col) would import
+                # as a measure that fails at query time.
+                return qualifier if has_column(qualifier, column) else None
+            # Unqualified: resolve only when exactly one dataset owns the column.
+            # Ambiguity (the same column name on multiple datasets) returns None
+            # so the metric clean-fails instead of binding by dataset order.
+            matches = [name for name in sm_model_names if has_column(name, column)]
+            return matches[0] if len(matches) == 1 else None
+        return owner_of
+
+    def _make_ref_of(self, graph: JoinGraph, anchor: str):
+        def ref_of(model: str, column: str) -> Optional[str]:
+            path = graph.shortest_path(anchor, model)
+            if path is None:
+                return None
+            return ".".join([*path, column])
+        return ref_of
+
+    def _materialize_columns(self, materialized) -> None:
+        for mc in materialized:
+            model = self._models.get(mc.owning_model)
+            if model is None:
+                continue
+            if any(c.name == mc.name for c in model.columns):
+                continue
+            model.columns.append(Column(
+                name=mc.name, sql=mc.sql, type=DataType.DOUBLE, hidden=True,
+            ))
+
+    # ---- dialect selection ----
+
+    def _resolve_expression(self, osi_expr: OSIExpression) -> str | None:
+        """Pick the expression for the requested dialect, else fall back among
+        SQL-compatible dialects. Non-SQL-only expressions return None.
+
+        The requested dialect is honored only when it is itself SQL-compatible —
+        a non-SQL request (e.g. ``--dialect MDX``) must not feed non-SQL syntax
+        into the SQL conversion path; it falls back to an available SQL dialect.
+        """
+        by_dialect = {de.dialect.value: de.expression for de in osi_expr.dialects}
+        resolved = None
+        if self.dialect in by_dialect and self.dialect in SQL_DIALECTS:
+            resolved = self.dialect
+        else:
+            resolved = next((n for n in by_dialect if n in SQL_DIALECTS), None)
+        if resolved is None:
+            return None
+        return self._normalize_sql(raw=by_dialect[resolved], dialect_name=resolved)
+
+    @staticmethod
+    def _normalize_sql(raw: str, dialect_name: str) -> str:
+        """Normalize a dialect-specific expression to default-dialect SQL so all
+        downstream sqlglot parsing (which uses the default dialect) succeeds — a
+        Databricks/Snowflake expression like ``SUM(`amount`)`` would otherwise
+        fail to parse as default SQL. ANSI_SQL is already default-compatible and
+        is returned verbatim; an unparseable expression is returned as-is so the
+        downstream parse clean-fails with a clear reason."""
+        source = _SQLGLOT_DIALECT.get(dialect_name)
+        if source is None:
+            return raw
+        try:
+            return sqlglot.parse_one(raw, read=source).sql()
+        except sqlglot.errors.ParseError:
+            return raw

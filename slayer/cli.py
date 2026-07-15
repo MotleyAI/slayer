@@ -378,6 +378,26 @@ examples:
     )
     _add_storage_arg(import_dbt_parser)
 
+    # ── import-osi ────────────────────────────────────────────────────
+    import_osi_parser = subparsers.add_parser(
+        "import-osi",
+        help="Import OSI (Open Semantic Interchange) configs into SLayer models",
+        epilog="""\
+examples:
+  slayer import-osi ./osi_configs --datasource my_postgres
+  slayer import-osi ./model.yaml --datasource my_pg --dialect SNOWFLAKE
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    import_osi_parser.add_argument("osi_path", help="Path to an OSI file or directory (YAML/JSON)")
+    import_osi_parser.add_argument("--datasource", required=True, help="SLayer datasource name for the imported models")
+    import_osi_parser.add_argument(
+        "--dialect", default="ANSI_SQL",
+        help="OSI expression dialect to read (default: ANSI_SQL). Falls back to "
+             "another SQL dialect when the requested one is absent.",
+    )
+    _add_storage_arg(import_osi_parser)
+
     # ── models ────────────────────────────────────────────────────────
     models_parser = subparsers.add_parser(
         "models",
@@ -799,6 +819,8 @@ examples:
         _run_recommend_root_model(args)
     elif args.command == "import-dbt":
         _run_import_dbt(args)
+    elif args.command == "import-osi":
+        _run_import_osi(args)
     elif args.command == "models":
         _run_models(args)
     elif args.command == "datasources":
@@ -1507,6 +1529,62 @@ def _run_import_dbt(args):
     unconverted, dropped = result.tally()
     print(
         f"\nDone: {visible_count} models, {hidden_count} hidden, "
+        f"{unconverted} unconverted, {dropped} dropped"
+    )
+
+
+def _run_import_osi(args):
+    from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
+    from slayer.osi.parser import parse_osi_path
+    from slayer.sql import engine_factory
+
+    storage = _resolve_storage(args)
+    try:
+        documents = parse_osi_path(args.osi_path)
+    except FileNotFoundError as exc:
+        print(str(exc))
+        sys.exit(1)
+    if not documents:
+        print(f"No OSI documents found in {args.osi_path}")
+        sys.exit(1)
+
+    ds = run_sync(storage.get_datasource(args.datasource))
+    if ds is None:
+        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+        print(
+            f"Datasource '{args.datasource}' not found in {storage_path}; "
+            "a reachable datasource is required (types come from live introspection)."
+        )
+        sys.exit(1)
+
+    sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
+    converter = OsiToSlayerConverter(
+        documents=documents,
+        data_source=args.datasource,
+        sa_engine=sa_engine,
+        dialect=args.dialect,
+        target_dialect=ds.type,
+    )
+    try:
+        result = converter.convert()
+    except OsiConversionError as exc:
+        print(str(exc))
+        sys.exit(1)
+
+    for model in result.models:
+        run_sync(storage.save_model(model))
+        print(
+            f"Imported model: {model.name} "
+            f"({len(model.columns)} columns, {len(model.measures)} measures)"
+        )
+
+    if result.unconverted_metrics or result.warnings:
+        print("\nConversion report:")
+        print(result.render_report())
+
+    unconverted, dropped = result.tally()
+    print(
+        f"\nDone: {len(result.models)} models, "
         f"{unconverted} unconverted, {dropped} dropped"
     )
 

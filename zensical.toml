@@ -52,6 +52,9 @@ nav = [
     { "SLayer vs dbt" = "dbt/slayer_vs_dbt.md" },
     { "Importing dbt definitions" = "dbt/dbt_import.md" },
   ]},
+  { "OSI" = [
+    { "Importing OSI configs" = "osi/osi_import.md" },
+  ]},
   { "Tutorials" = [
     { "Make it dynamic" = "examples/01_dynamic/dynamic.md" },
     { "SQL vs DSL" = [
@@ -95,6 +98,11 @@ nav = [
     ]},
     { "Query Cache" = [
       { "Notebook" = "examples/12_query_cache/query_cache_nb.ipynb" },
+    ]},
+    { "OSI Import" = [
+      "examples/13_osi_import/osi_import.md",
+      { "Notebook (library)" = "examples/13_osi_import/osi_import_nb.ipynb" },
+      { "Notebook (agent: CLI + MCP)" = "examples/13_osi_import/osi_import_agent_nb.ipynb" },
     ]},
     { "Schema Drift (worked example)" = "examples/schema-drift.md" },
   ]},

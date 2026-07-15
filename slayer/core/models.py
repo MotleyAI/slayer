@@ -418,6 +418,11 @@ class ModelJoin(BaseModel):
     target_model: str                               # Name of the joined model
     join_pairs: list[list[str]] = Field(...)        # [["source_dim", "target_dim"], ...]
     join_type: JoinType = JoinType.LEFT             # LEFT (default) or INNER
+    # DEV-1643: optional human/agent metadata (e.g. carrying OSI relationship
+    # ai_context on import). Purely additive/optional — old data omits them and
+    # validates unchanged, so no SlayerModel schema-version bump is needed.
+    description: str | None = None
+    meta: dict[str, Any] | None = None
 
     @field_validator("join_pairs")
     @classmethod
