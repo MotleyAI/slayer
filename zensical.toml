@@ -101,7 +101,8 @@ nav = [
     ]},
     { "OSI Import" = [
       "examples/13_osi_import/osi_import.md",
-      { "Notebook" = "examples/13_osi_import/osi_import_nb.ipynb" },
+      { "Notebook (library)" = "examples/13_osi_import/osi_import_nb.ipynb" },
+      { "Notebook (agent: CLI + MCP)" = "examples/13_osi_import/osi_import_agent_nb.ipynb" },
     ]},
     { "Schema Drift (worked example)" = "examples/schema-drift.md" },
   ]},

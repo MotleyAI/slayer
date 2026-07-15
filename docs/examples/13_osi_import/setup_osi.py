@@ -165,6 +165,53 @@ def fetch_gold(db_path: Path, sql: str) -> List[dict]:
         conn.close()
 
 
+# --- Reference ("gold") answers, shared by both demo notebooks ---------------
+# Hand-written SQL whose results are the trusted numbers every SLayer query in
+# the notebooks is checked against. `rev_plus_pop` mirrors SLayer's sub-query
+# isolation: the joined `regions.population` is summed at the *regions* grain
+# (distinct regions the orders reach), not once per order.
+
+_GOLD_BY_REGION_SQL = """
+    SELECT r.name AS region, SUM(o.amount) AS amount
+    FROM orders o
+        JOIN customers c ON o.customer_id = c.customer_id
+        JOIN regions r ON c.region_id = r.region_id
+    GROUP BY r.name
+    ORDER BY r.name
+"""
+
+_GOLD_REV_PLUS_POP_SQL = """
+    WITH reached AS (
+        SELECT DISTINCT c.region_id
+        FROM orders o JOIN customers c ON o.customer_id = c.customer_id
+    )
+    SELECT (SELECT SUM(amount) FROM orders)
+         + (SELECT SUM(population) FROM regions
+            WHERE region_id IN (SELECT region_id FROM reached)) AS value
+"""
+
+
+def compute_gold(db_path: Path = DB_PATH) -> dict:
+    """Compute all reference answers up front (before SLayer opens ``db_path``).
+
+    Returns a dict with keys ``total``, ``by_region``, ``aov``, ``cust_reach``,
+    ``rev_plus_pop`` — the expected values both notebooks assert their SLayer /
+    MCP query results against.
+    """
+    return {
+        "total": fetch_gold(db_path, "SELECT SUM(amount) AS v FROM orders")[0]["v"],
+        "by_region": fetch_gold(db_path, _GOLD_BY_REGION_SQL),
+        "aov": fetch_gold(
+            db_path, "SELECT SUM(amount) * 1.0 / COUNT(*) AS v FROM orders"
+        )[0]["v"],
+        "cust_reach": fetch_gold(
+            db_path,
+            "SELECT SUM(amount) * 1.0 / COUNT(DISTINCT customer_id) AS v FROM orders",
+        )[0]["v"],
+        "rev_plus_pop": fetch_gold(db_path, _GOLD_REV_PLUS_POP_SQL)[0]["value"],
+    }
+
+
 def ensure_osi_demo() -> "tuple[SlayerClient, Path, ConversionResult]":
     """One-shot convenience: build data, convert OSI, and return a ready client.
 

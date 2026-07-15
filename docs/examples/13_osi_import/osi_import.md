@@ -2,7 +2,12 @@
 
 SLayer can ingest an [OSI](https://open-semantic-interchange.org/) (Open Semantic Interchange) config — its `datasets`, `relationships`, and `metrics` — and turn it into queryable SLayer models. This worked example imports a small retail OSI config end-to-end and answers five questions, checking each answer against gold SQL.
 
-The companion notebook ([`osi_import_nb.ipynb`](osi_import_nb.ipynb)) is self-contained and, unlike the [dbt MetricFlow demo](../11_dbt_metricflow/dbt_metricflow.md), **fully offline** — no network access at any point. Everything it generates lands in a gitignored `.cache/` directory next to it:
+There are two companion notebooks, both self-contained and — unlike the [dbt MetricFlow demo](../11_dbt_metricflow/dbt_metricflow.md) — **fully offline**:
+
+- [`osi_import_nb.ipynb`](osi_import_nb.ipynb) — the **library** workflow (below): import with `OsiToSlayerConverter`, query with the `SlayerClient`.
+- [`osi_import_agent_nb.ipynb`](osi_import_agent_nb.ipynb) — the **agent** workflow: ingest with two `slayer` CLI commands, then explore and query through the **MCP tools** an AI agent calls (`models_summary`, `inspect`, `search`, `query`), and how to register SLayer as an MCP server in Claude.
+
+Both share the same reference answers (`setup_osi.compute_gold`). The library notebook runs as four steps; everything it generates lands in a gitignored `.cache/` directory next to it:
 
 1. **Build** a tiny retail DuckDB (orders, customers, products, regions) with deterministic rows.
 2. **Reference** — run every gold SQL query up front.
