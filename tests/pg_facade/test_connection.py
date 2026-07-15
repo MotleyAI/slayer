@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import time
 import types
 
 import pytest
@@ -2440,3 +2441,184 @@ async def test_static_storage_aclose_not_called_when_scope_swap_did_not_run() ->
     assert static_aclosed["called"] is False, (
         "static storage's aclose must not be called when scope-swap never ran"
     )
+
+
+# --- on-demand catalog refresh (TTL) ----------------------------------------
+
+
+class _RefreshableStorage(_FakeStorage):
+    """Fake storage whose content and fingerprint can be mutated mid-test."""
+
+    def __init__(self, models_by_ds, *, fingerprint: str) -> None:
+        super().__init__(models_by_ds)
+        self.fingerprint = fingerprint
+
+    async def graph_fingerprint(self) -> str:  # NOSONAR(S7503) — async to satisfy the awaited interface
+        return self.fingerprint
+
+
+def _refresh_conn(storage) -> PgConnection:
+    # ttl 0.0 => the window is always "elapsed", so every call re-checks the
+    # cheap fingerprint (the change-gate is what decides whether to rebuild).
+    conn = PgConnection(
+        asyncio.StreamReader(), _FakeWriter(),
+        engine=_FakeEngine([]), storage=storage,
+        catalog_ttl_seconds=0.0,
+    )
+    conn._storage = storage
+    return conn
+
+
+async def _seed_catalog(conn: PgConnection, storage) -> None:
+    conn._catalog = await conn._build_catalog()
+    conn._catalog_fingerprint = storage.fingerprint
+    conn._catalog_checked_at = 0.0
+
+
+async def test_refresh_rebuilds_catalog_when_fingerprint_changes() -> None:
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    # A model edit that also bumps the storage fingerprint.
+    storage._models_by_ds["jaffle"][0].description = "edited"
+    storage.fingerprint = "v2"
+
+    await conn._maybe_refresh_catalog()
+
+    assert conn._catalog is not before  # rebuilt
+    assert conn._catalog_fingerprint == "v2"
+    assert conn._column_type_index is None  # derived index dropped
+
+
+async def test_refresh_skips_when_fingerprint_unchanged() -> None:
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    # Content changes but the fingerprint doesn't -> the cheap check
+    # short-circuits and we never pay for a rebuild.
+    storage._models_by_ds["jaffle"].append(_orders_model())
+
+    await conn._maybe_refresh_catalog()
+
+    assert conn._catalog is before  # NOT rebuilt
+
+
+async def test_refresh_skips_mid_transaction() -> None:
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    storage.fingerprint = "v2"  # changed, but...
+    conn._tx_state = proto.TX_IN_TRANSACTION  # ...we're inside a transaction
+
+    await conn._maybe_refresh_catalog()
+
+    assert conn._catalog is before  # never shift the catalog mid-transaction
+
+
+async def test_refresh_disabled_by_default_never_rebuilds() -> None:
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = PgConnection(
+        asyncio.StreamReader(), _FakeWriter(),
+        engine=_FakeEngine([]), storage=storage,
+    )  # no catalog_ttl_seconds -> static catalog (historical behavior)
+    conn._storage = storage
+    conn._catalog = await conn._build_catalog()
+    before = conn._catalog
+    storage.fingerprint = "v2"
+
+    await conn._maybe_refresh_catalog()
+
+    assert conn._catalog is before
+
+
+async def test_refresh_swallows_fingerprint_error_and_keeps_catalog() -> None:
+    class _BoomFingerprint(_RefreshableStorage):
+        async def graph_fingerprint(self) -> str:
+            raise RuntimeError("storage unreachable")  # not an OSError
+
+    storage = _BoomFingerprint({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    # Best-effort: the error must be swallowed, not propagate to _run_statement.
+    await conn._maybe_refresh_catalog()
+
+    assert conn._catalog is before  # current catalog retained
+
+
+async def test_refresh_swallows_build_error_and_keeps_catalog() -> None:
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    # Fingerprint moves (forces a rebuild attempt), but the rebuild itself fails.
+    storage.fingerprint = "v2"
+
+    async def _boom():
+        raise RuntimeError("rebuild failed")
+
+    conn._build_catalog = _boom  # type: ignore[assignment]
+
+    await conn._maybe_refresh_catalog()  # must not raise
+
+    assert conn._catalog is before  # half-built/None never swapped in
+    # Fingerprint not advanced -> the next TTL window retries the rebuild.
+    assert conn._catalog_fingerprint == "v1"
+
+
+async def test_describe_triggers_catalog_refresh() -> None:
+    # Regression: Describe advertises the RowDescription, so it must refresh
+    # too — not only Execute — or a mid-window edit could make the later
+    # Execute's rows disagree with the already-sent RowDescription.
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)  # ttl 0.0 -> always re-checks
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    storage._models_by_ds["jaffle"][0].description = "edited"
+    storage.fingerprint = "v2"
+
+    # Missing statement still exercises the refresh at the top of _handle_describe.
+    await conn._handle_describe(proto.DescribeMessage(kind="S", name="nope"))
+
+    assert conn._catalog is not before  # refreshed at Describe
+    assert conn._catalog_fingerprint == "v2"
+
+
+async def test_describe_pins_execute_to_same_catalog_within_window() -> None:
+    ttl = 30.0  # realistic window (NOT 0)
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = PgConnection(
+        asyncio.StreamReader(), _FakeWriter(),
+        engine=_FakeEngine([]), storage=storage,
+        catalog_ttl_seconds=ttl,
+    )
+    conn._storage = storage
+    conn._catalog = await conn._build_catalog()
+    conn._catalog_fingerprint = "v1"
+    # Last checked more than the TTL ago, relative to the live monotonic clock,
+    # so the first check treats the window as expired regardless of process
+    # uptime. (A literal 0.0 would fail on a young process where monotonic() < ttl.)
+    conn._catalog_checked_at = time.monotonic() - (ttl + 1.0)
+
+    # Edit lands before Describe -> Describe rebuilds to the v2 snapshot.
+    storage.fingerprint = "v2"
+    await conn._handle_describe(proto.DescribeMessage(kind="S", name="nope"))
+    pinned = conn._catalog
+    assert conn._catalog_fingerprint == "v2"
+
+    # A further edit lands, but Execute (via _maybe_refresh_catalog) is inside
+    # the same TTL window Describe just stamped, so it must NOT shift the
+    # catalog underneath the RowDescription Describe advertised.
+    storage.fingerprint = "v3"
+    await conn._maybe_refresh_catalog()
+    assert conn._catalog is pinned
+    assert conn._catalog_fingerprint == "v2"
