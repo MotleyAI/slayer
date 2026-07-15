@@ -148,7 +148,7 @@ Memories are free-form notes the agent saves against canonical entity strings (`
 }
 ```
 
-`kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `forget_memory`); `hit.query is not None` marks a saved example query. Column hits carry the column's structured sample-value snapshot — the top 50 `sampled_values` are rendered as a JSON array (so values containing commas survive), followed by `Distinct count: N` when the true cardinality exceeds the snapshot. `SearchService` refreshes any column hit whose profile is stale on the fly.
+`kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `forget_memory`); `hit.query is not None` marks a saved example query. Column hits carry the column's structured sample-value snapshot — the top 50 `sampled_values` are rendered as a JSON array (so values containing commas survive); overflow columns (> 50 distinct) are marked `50+ distinct` in the text snapshot. `SearchService` refreshes any column hit whose profile is stale on the fly.
 
 **`save_memory` parameters:**
 

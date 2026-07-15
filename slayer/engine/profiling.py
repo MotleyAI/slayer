@@ -28,23 +28,25 @@ DEV-1480 changes:
   in SQL) so the persisted top-N is "most common values first".
 - New ``Column.sampled_values: Optional[List[str]]`` carries the top-50
   list verbatim (no ambiguous text split). For categorical columns it is
-  populated on ≤50 distinct AND on overflow when the secondary
-  ``count_distinct`` query succeeds. It stays ``None`` only for
-  numeric/temporal columns AND for the rare overflow branch where the
-  secondary ``count_distinct`` query fails (intentional cache-miss retry
-  signal — ``_is_sample_cached`` flags it stale so the next
-  ``inspect_model`` / ``refresh-samples`` call retries).
-- New ``Column.distinct_count: Optional[int]`` carries the true total
-  cardinality; the overflow branch fires a second ``count_distinct`` query
-  via a transient ``ModelExtension`` (bypassing ``Column.allowed_aggregations``
-  and ``Column.filter``).
+  populated on ≤50 distinct AND on overflow (the top-50 is kept). It stays
+  ``None`` only for numeric/temporal columns.
+- New ``Column.distinct_count: Optional[int]`` carries the exact distinct
+  count when ≤50; on overflow it is ``None`` (see the single-scan note).
 - Text ``sampled`` format unchanged for ≤ 50 distinct (top-20 joined). For
-  overflow it becomes ``", ".join(top_20) + " ... (N distinct)"`` carrying
-  the true total — replacing the legacy ``"> 50 distinct"`` marker.
+  overflow it becomes ``", ".join(top_20) + " ... (50+ distinct)"`` — a
+  marker, not the exact total (see the single-scan note).
 - The internal ``_DimProfileEntry`` shape stays the same — overflow keeps
   ``values=None, distinct_count=None`` to signal "data omitted from the
   legacy entry". The richer DEV-1480 data only lives on ``ColumnSample``
   produced by ``profile_column``.
+
+Single-scan overflow (team decision, 2026-07): profiling never fires a
+secondary ``count_distinct`` query for the exact total on overflow — one
+full-table scan per categorical column is enough. The top-50 is still
+populated so ``_is_sample_cached`` marks the column cached (no re-scan on
+every read); ``distinct_count`` stays ``None`` on overflow. Sample
+profiling is also NOT run at ingest time — it is lazy, populated on the
+first ``inspect`` of a column (or explicitly via ``refresh-samples``).
 
 DEV-1516 additions:
 - :func:`ensure_column_sample_fresh` — shared cache-aware refresh helper
@@ -168,8 +170,9 @@ async def _profile_categorical_column(
 
     Returns ``None`` when the column query fails — caller skips the column.
     The returned entry uses the legacy shape (``values=None, distinct_count=None``
-    signals overflow); DEV-1480's true-total ``distinct_count`` is filled
-    by ``profile_column``.
+    signals overflow). The structured top-50 + ``distinct_count`` live on the
+    ``ColumnSample`` produced by ``profile_column`` (which routes categorical
+    columns through ``_profile_categorical_with_total``, not this entry path).
     """
     try:
         q = SlayerQuery.model_validate({
@@ -280,9 +283,10 @@ async def _collect_dim_profile(
     with the set, so callers can profile a single column cheaply.
 
     DEV-1480: ``max_values`` defaults to 50 (was 20). Callers that need
-    the structured top-50 + true total should use :func:`profile_column`
-    per column, which fires the secondary ``count_distinct`` query on
-    overflow and returns a :class:`ColumnSample`.
+    the structured top-50 list should use :func:`profile_column` per
+    column, which returns a :class:`ColumnSample`. On overflow that path
+    keeps the top-50 and reports ``distinct_count=None`` — one scan only,
+    no secondary ``count_distinct`` query for the exact total.
     """
     eligible = [
         c for c in model.columns
@@ -355,64 +359,18 @@ def _is_table_backed(model: SlayerModel) -> bool:
     return bool(model.sql_table) and not model.sql and not model.source_queries
 
 
-async def _count_distinct_via_model_extension(
-    *,
-    model: SlayerModel,
-    column: Column,
-    engine: SlayerQueryEngine,
-) -> int | None:
-    """Fire a secondary ``count_distinct`` query via a transient
-    ``ModelExtension`` column.
-
-    Bypasses both ``Column.allowed_aggregations`` (which might omit
-    ``count_distinct``) and ``Column.filter`` (which would otherwise apply
-    a CASE-WHEN at aggregation time and under-count). Mirrors the existing
-    ``_profile_numeric_temporal_columns`` pattern.
-
-    Returns ``None`` when the query fails.
-    """
-    try:
-        ext_q = SlayerQuery.model_validate({
-            "source_model": {
-                "source_name": model.name,
-                "columns": [{
-                    "name": "_slayer_distinct_probe",
-                    "sql": column.sql if column.sql else column.name,
-                    "type": str(column.type),
-                }],
-            },
-            "measures": [{
-                "formula": "_slayer_distinct_probe:count_distinct",
-            }],
-        })
-        r = await engine.execute(query=ext_q, data_source=model.data_source or None)
-    except Exception:  # NOSONAR(S112) — best-effort: see module docstring
-        return None
-    if not r.data:
-        return None
-    raw = r.data[0].get(
-        f"{model.name}._slayer_distinct_probe_count_distinct",
-    )
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
-
-
 async def _profile_categorical_with_total(
     *,
     model: SlayerModel,
     column: Column,
     engine: SlayerQueryEngine,
 ) -> ColumnSample | None:
-    """DEV-1480 categorical profile: top-50 by frequency + true total on
-    overflow.
+    """DEV-1480 categorical profile: top-50 values by frequency in a SINGLE
+    full-table scan.
 
-    Re-runs the query without the post-overflow path of
-    ``_profile_categorical_column`` so we can keep the top-50 list when
-    overflow is detected (the legacy entry shape would have discarded it).
+    On overflow (> 50 distinct) we keep the top-50 and report the total as
+    unknown rather than firing a second ``count_distinct`` scan — one scan
+    is enough; the exact distinct count isn't worth a second full scan.
     """
     # Run the top-values query directly (instead of going through
     # ``_profile_categorical_column``) so we retain the values list even
@@ -449,29 +407,18 @@ async def _profile_categorical_with_total(
             sampled_values=values,
             distinct_count=len(values),
         )
-    # Overflow: fire the secondary count_distinct query for the true total.
-    total = await _count_distinct_via_model_extension(
-        model=model, column=column, engine=engine,
-    )
+    # Overflow (> _MAX_CATEGORICAL_VALUES distinct). We deliberately do NOT
+    # fire a secondary count_distinct query for the exact total — one full
+    # scan is enough. Keep the top-50 and report the total as unknown
+    # (``distinct_count=None``, sampled text carries a "50+" marker). The
+    # top-50 is still populated so ``_is_sample_cached`` marks the column
+    # cached and we don't re-scan on every read.
     top_50 = values[:_MAX_CATEGORICAL_VALUES]
     top_20_text = ", ".join(top_50[:_TEXT_SAMPLE_CAP])
-    if total is None:
-        # Defensive: count_distinct query failed (transient backend error,
-        # missing permission, etc.). Persist ``sampled_values=None`` rather
-        # than the top-50 list so ``_is_sample_cached`` classifies the
-        # column as a cache miss and the next ``inspect_model`` /
-        # ``refresh-samples`` call retries the secondary query. Persisting
-        # the top-50 here would mark the column "cached" forever despite
-        # ``distinct_count`` being permanently None.
-        return ColumnSample(
-            sampled=f"> {_MAX_CATEGORICAL_VALUES} distinct",
-            sampled_values=None,
-            distinct_count=None,
-        )
     return ColumnSample(
-        sampled=f"{top_20_text} ... ({total} distinct)",
+        sampled=f"{top_20_text} ... ({_MAX_CATEGORICAL_VALUES}+ distinct)",
         sampled_values=top_50,
-        distinct_count=total,
+        distinct_count=None,
     )
 
 

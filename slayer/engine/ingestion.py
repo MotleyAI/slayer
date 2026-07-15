@@ -27,8 +27,6 @@ from slayer.engine.introspect_utils import (  # noqa: F401  (re-exported for bac
     _parse_info_schema_is_float,
     _safe_get_columns,
 )
-from slayer.engine.profiling import refresh_all_table_backed_sampled
-from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.core.errors import AmbiguousModelError, EntityResolutionError
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.memories.resolver import (
@@ -1109,25 +1107,14 @@ async def ingest_datasource_idempotent(
         datasource=datasource, models=scoped_models
     )
 
-    # DEV-1375: refresh persisted Column.sampled values for every
-    # table-backed model in this datasource. Best-effort: per-column
-    # failures are accumulated as IngestionError entries; an unexpected
-    # raise is also caught so ingestion's idempotent contract holds.
-    refresh_engine = SlayerQueryEngine(storage=storage)
-    try:
-        refresh_errors = await refresh_all_table_backed_sampled(
-            engine=refresh_engine,
-            storage=storage,
-            data_source=datasource.name,
-        )
-    except Exception as exc:
-        refresh_errors = [f"{datasource.name}: {exc}"]
-    for err in refresh_errors:
-        errors.append(IngestionError(
-            model_name=err.split(".", 1)[0] if "." in err else "",
-            data_source=datasource.name,
-            error=f"sample-value refresh: {err}",
-        ))
+    # Column sample-value profiling is NOT run at ingest time — it fires a
+    # per-column full-table scan and, on a wide datasource (dozens of tables
+    # × ~10 columns each), would run hundreds of full scans and dominate
+    # ingest wall-clock. Samples are instead refreshed on demand on a cache
+    # miss by the async ``ensure_column_sample_fresh`` helper, invoked from
+    # the read paths that surface samples — ``inspect_model``, the ``inspect``
+    # point-lookup, and ``search()``. Use ``slayer search refresh-samples``
+    # to warm the cache explicitly.
 
     # DEV-1386: refresh persisted embeddings for the datasource doc plus
     # every visible model + its visible children. Best-effort: per-entity

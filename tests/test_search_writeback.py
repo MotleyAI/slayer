@@ -44,21 +44,25 @@ def sqlite_table_setup(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (1) ingest populates Column.sampled
+# (1) ingest does NOT profile columns — samples are lazy (on inspect)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ingest_populates_column_sampled(sqlite_table_setup) -> None:
+async def test_ingest_does_not_profile_columns(sqlite_table_setup) -> None:
+    """Ingest is fast: it no longer fires a per-column full-table scan.
+    Column samples are populated lazily on the first ``inspect`` of the
+    column (or explicitly via ``slayer search refresh-samples``)."""
     storage, db_file = sqlite_table_setup
     ds = DatasourceConfig(name="ds", type="sqlite", database=db_file)
     await storage.save_datasource(ds)
     from slayer.engine.ingestion import ingest_datasource_idempotent
     await ingest_datasource_idempotent(datasource=ds, storage=storage)
     loaded = await storage.get_model("orders", data_source="ds")
-    # Both non-PK columns should have sampled values populated.
-    assert loaded.get_column("amount").sampled is not None
-    assert loaded.get_column("status").sampled is not None
+    # Columns are ingested but NOT profiled — samples stay unpopulated.
+    assert loaded.get_column("amount").sampled is None
+    assert loaded.get_column("status").sampled is None
+    assert loaded.get_column("status").sampled_values is None
 
 
 # ---------------------------------------------------------------------------

@@ -188,7 +188,7 @@ Response (`SearchResponse`):
 {
   "results": [
     {"kind": "memory",  "id": "42", "score": 0.13, "text": "Brooklyn switched POS in late 2024 …", "matched_entities": [], "query": null},
-    {"kind": "column",  "id": "jaffle_shop.orders.order_total", "score": 0.11, "text": "...\nSample values: [\"100.00\", \"42.50\", …]\nDistinct count: 4382", "matched_entities": [], "query": null},
+    {"kind": "column",  "id": "jaffle_shop.orders.order_total", "score": 0.11, "text": "...\nSample values: [\"100.00\", \"42.50\", …]", "matched_entities": [], "query": null},
     {"kind": "model",   "id": "jaffle_shop.stores", "score": 0.09, "text": "...", "matched_entities": [], "query": null}
   ],
   "resolved_input_entities": [],
@@ -196,7 +196,7 @@ Response (`SearchResponse`):
 }
 ```
 
-`kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `DELETE /memories/{id}`); `query` carries the saved `SlayerQuery` when the memory is query-bearing. Column hits embed the structured `sampled_values` (top 50 by frequency, JSON-encoded) and `Distinct count: N` lines from the column profile; stale profiles are refreshed lazily inside `/search`.
+`kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `DELETE /memories/{id}`); `query` carries the saved `SlayerQuery` when the memory is query-bearing. Column hits embed the structured `sampled_values` (top 50 by frequency, JSON-encoded; overflow columns are marked `50+ distinct` in the text snapshot); stale profiles are refreshed lazily inside `/search`.
 
 **`POST /memories` body:**
 

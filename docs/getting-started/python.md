@@ -187,7 +187,7 @@ for hit in resp.results:
     print(hit.kind, hit.id, round(hit.score, 3), hit.text[:80])
 ```
 
-`client.search` also accepts `cypher_filter` for graph-shaped narrowing — full openCypher with the `advanced_search` extra (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges), naive `MATCH (n:Label) RETURN n.id AS id` kind-filter otherwise. Without `advanced_search` (or a provider API key) the dense-embedding channel emits a single warning into `SearchResponse.warnings` and search degrades to BM25 + Tantivy. Column hits embed the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded) plus a `Distinct count: N` line on overflow; stale profiles are refreshed lazily inside `search()`.
+`client.search` also accepts `cypher_filter` for graph-shaped narrowing — full openCypher with the `advanced_search` extra (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges), naive `MATCH (n:Label) RETURN n.id AS id` kind-filter otherwise. Without `advanced_search` (or a provider API key) the dense-embedding channel emits a single warning into `SearchResponse.warnings` and search degrades to BM25 + Tantivy. Column hits embed the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded; overflow columns are marked `50+ distinct` in the text snapshot); stale profiles are refreshed lazily inside `search()`.
 
 See [Search](../concepts/search.md), [Memories](../concepts/memories.md), and the [Python Client Reference](../reference/python-client.md#memories-semantic-search) for the full signature.
 
