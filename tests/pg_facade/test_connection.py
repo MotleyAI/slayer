@@ -2534,3 +2534,40 @@ async def test_refresh_disabled_by_default_never_rebuilds() -> None:
     await conn._maybe_refresh_catalog()
 
     assert conn._catalog is before
+
+
+async def test_refresh_swallows_fingerprint_error_and_keeps_catalog() -> None:
+    class _BoomFingerprint(_RefreshableStorage):
+        async def graph_fingerprint(self) -> str:
+            raise RuntimeError("storage unreachable")  # not an OSError
+
+    storage = _BoomFingerprint({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    # Best-effort: the error must be swallowed, not propagate to _run_statement.
+    await conn._maybe_refresh_catalog()
+
+    assert conn._catalog is before  # current catalog retained
+
+
+async def test_refresh_swallows_build_error_and_keeps_catalog() -> None:
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    # Fingerprint moves (forces a rebuild attempt), but the rebuild itself fails.
+    storage.fingerprint = "v2"
+
+    async def _boom():
+        raise RuntimeError("rebuild failed")
+
+    conn._build_catalog = _boom  # type: ignore[assignment]
+
+    await conn._maybe_refresh_catalog()  # must not raise
+
+    assert conn._catalog is before  # half-built/None never swapped in
+    # Fingerprint not advanced -> the next TTL window retries the rebuild.
+    assert conn._catalog_fingerprint == "v1"

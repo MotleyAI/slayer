@@ -459,6 +459,11 @@ class PgConnection:
         single ``graph_fingerprint`` read per window. Backends that don't
         implement a real fingerprint report a constant, so they never rebuild
         and behave exactly as before.
+
+        Best-effort: a transient storage failure during the fingerprint read
+        or the rebuild must not propagate out of ``_run_statement`` and tear
+        down the client connection. On failure we keep the existing (possibly
+        stale) catalog and retry on the next TTL window.
         """
         if self._catalog_ttl_seconds is None or self._catalog is None:
             return
@@ -467,11 +472,23 @@ class PgConnection:
         now = time.monotonic()
         if now - self._catalog_checked_at < self._catalog_ttl_seconds:
             return
+        # Stamp the check time up front so a failing refresh retries no sooner
+        # than the next window rather than hammering storage every statement.
         self._catalog_checked_at = now
-        fingerprint = await self._read_fingerprint()
-        if fingerprint is not None and fingerprint == self._catalog_fingerprint:
+        try:
+            fingerprint = await self._read_fingerprint()
+            if fingerprint is not None and fingerprint == self._catalog_fingerprint:
+                return
+            # Build into a local and swap only on success, so a failed rebuild
+            # never leaves the connection with a half-built or ``None`` catalog.
+            catalog = await self._build_catalog()
+        except Exception:  # noqa: BLE001 — refresh is best-effort, keep old catalog
+            logger.warning(
+                "pg facade: catalog refresh failed; keeping current catalog",
+                exc_info=True,
+            )
             return
-        self._catalog = await self._build_catalog()
+        self._catalog = catalog
         self._catalog_fingerprint = fingerprint
         # Derived from the catalog; drop it so it rebuilds against the new one.
         self._column_type_index = None
