@@ -133,7 +133,7 @@ def _column_dependencies(
         # referencing a reserved joined model (e.g. ``grant.amount``) parses
         # cleanly here instead of falling back to a noisy ``Command`` parse.
         parsed = sqlglot.parse_one(
-            prequote_reserved_identifiers(column.sql, dialect=_DEPENDENCY_DIALECT),
+            prequote_reserved_identifiers(sql=column.sql, dialect=_DEPENDENCY_DIALECT),
             dialect=_DEPENDENCY_DIALECT,
         )
     except Exception:

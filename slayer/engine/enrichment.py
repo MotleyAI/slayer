@@ -2319,7 +2319,7 @@ def _collect_paths_from_local_column_chain(
         # so join-path discovery finds the ref instead of silently falling
         # back to a ref-less ``Command`` parse (which would drop the JOIN).
         parsed = sqlglot.parse_one(
-            prequote_reserved_identifiers(sql, dialect=dialect), dialect=dialect
+            prequote_reserved_identifiers(sql=sql, dialect=dialect), dialect=dialect
         )
     except Exception:
         _scan_sql_table_refs(sql=sql, model_name=model.name, paths=paths)
@@ -2910,7 +2910,7 @@ def _filter_inline_needs_paren_wrap(*, sql: str, dialect: str) -> bool:
         # DEV-1686: prequote reserved qualifiers so a filter over a reserved
         # joined model classifies correctly instead of conservatively wrapping.
         tree = sqlglot.parse_one(
-            prequote_reserved_identifiers(sql, dialect=dialect), dialect=dialect
+            prequote_reserved_identifiers(sql=sql, dialect=dialect), dialect=dialect
         )
     except Exception:  # noqa: BLE001 — sqlglot raises a variety of error types
         return True

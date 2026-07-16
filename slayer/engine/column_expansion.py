@@ -248,7 +248,7 @@ async def _process_column_node(
     # column referencing a reserved joined model like ``grant.amount``) so the
     # generated SQL parses.
     expanded_ast = sqlglot.parse_one(
-        prequote_reserved_identifiers(expanded_sql, dialect=dialect), dialect=dialect
+        prequote_reserved_identifiers(sql=expanded_sql, dialect=dialect), dialect=dialect
     )
     col.replace(exp.Paren(this=expanded_ast))
 
@@ -296,7 +296,7 @@ async def expand_derived_refs(
     # DEV-1686: prequote reserved-word qualifiers/leaves before parsing user
     # ``Column.sql`` (may reference a reserved joined model, e.g. ``grant.x``).
     parsed = sqlglot.parse_one(
-        prequote_reserved_identifiers(sql, dialect=dialect), dialect=dialect
+        prequote_reserved_identifiers(sql=sql, dialect=dialect), dialect=dialect
     )
     # Materialize the columns first — we may mutate them in place via .replace().
     column_nodes = list(parsed.find_all(exp.Column))

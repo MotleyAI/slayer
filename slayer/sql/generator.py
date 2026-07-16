@@ -510,7 +510,7 @@ class SQLGenerator:
         # DEV-1686: quote bare reserved-word qualifiers/leaves so a generated
         # string embedding e.g. ``grant.col`` parses (bare reserved words fail
         # at parse time, which the emit-time RESERVED_KEYWORDS fix can't reach).
-        sql = prequote_reserved_identifiers(sql, dialect=d)
+        sql = prequote_reserved_identifiers(sql=sql, dialect=d)
         tree = sqlglot.parse_one(sql, dialect=d)
         tree = active.rewrite_parsed_ast(tree)
         # Log-alias rewrite is multi-dialect; the per-base allowlist check
@@ -549,7 +549,7 @@ class SQLGenerator:
         # DEV-1686: quote bare reserved-word qualifiers/leaves (e.g. a WHERE
         # filter qualified to ``grant.amount`` or a joined ``grant.status``)
         # before wrapping/parsing the predicate.
-        sql = prequote_reserved_identifiers(sql, dialect=d)
+        sql = prequote_reserved_identifiers(sql=sql, dialect=d)
         wrapped = sqlglot.parse_one(f"SELECT 1 WHERE {sql}", dialect=d)
         where = wrapped.args.get("where")
         if where is None or where.this is None:  # pragma: no cover — defensive
