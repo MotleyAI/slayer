@@ -26,6 +26,7 @@ from sqlglot import exp
 from slayer.core.errors import ColumnCycleError
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.column_expansion import _is_trivial_base, _root_scope_column_ids
+from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 
 if TYPE_CHECKING:
     from slayer.storage.base import StorageBackend
@@ -128,7 +129,13 @@ def _column_dependencies(
     if column.sql is None or _is_trivial_base(column=column):
         return []
     try:
-        parsed = sqlglot.parse_one(column.sql, dialect=_DEPENDENCY_DIALECT)
+        # DEV-1686: prequote reserved qualifiers/leaves so a derived column
+        # referencing a reserved joined model (e.g. ``grant.amount``) parses
+        # cleanly here instead of falling back to a noisy ``Command`` parse.
+        parsed = sqlglot.parse_one(
+            prequote_reserved_identifiers(column.sql, dialect=_DEPENDENCY_DIALECT),
+            dialect=_DEPENDENCY_DIALECT,
+        )
     except Exception:
         # Parse failure on a save attempt — let the actual save proceed so
         # the surface-level error (storage / pydantic) is what the user

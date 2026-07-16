@@ -1413,6 +1413,20 @@ def _pg_reserved_storage(postgresql_proc, tmp_path_factory):
                 (3, "org_b", 50, 2, "2024-02-10 09:00:00"),
             ],
         )
+        # A non-reserved root (usage) joining TO the reserved `grant` model —
+        # exercises join discovery + execution of a derived column that
+        # references a reserved joined model.
+        cur.execute("""
+            CREATE TABLE usage (
+                id INTEGER PRIMARY KEY,
+                grant_id INTEGER REFERENCES "Grant"(id),
+                qty INTEGER NOT NULL
+            )
+        """)
+        cur.executemany(
+            "INSERT INTO usage VALUES (%s, %s, %s)",
+            [(1, 1, 5), (2, 1, 3), (3, 3, 7)],
+        )
         conn.commit()
 
         tmpdir = str(tmp_path_factory.mktemp("pg_reserved"))
@@ -1440,8 +1454,20 @@ def _pg_reserved_storage(postgresql_proc, tmp_path_factory):
             ],
             joins=[ModelJoin(target_model="merchant", join_pairs=[["merchantId", "id"]])],
         )
+        usage = SlayerModel(
+            name="usage", sql_table="usage", data_source="testpg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="grant_id", sql="grant_id", type=DataType.INT),
+                Column(name="qty", sql="qty", type=DataType.INT),
+                # derived column referencing the reserved joined model `grant`
+                Column(name="bumped", sql="grant.amount + 1", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="grant", join_pairs=[["grant_id", "id"]])],
+        )
         run_sync(storage.save_model(merchant))
         run_sync(storage.save_model(grant))
+        run_sync(storage.save_model(usage))
         yield storage
     finally:
         conn.close()
@@ -1505,3 +1531,15 @@ class TestPostgresReservedWordModel:
         # the reserved-short column resolves (proves AS "order" round-tripped)
         order_key = next(k for k in result.data[0] if k.endswith("order"))
         assert all(isinstance(row[order_key], int) for row in result.data)
+
+    async def test_derived_column_referencing_reserved_join_executes(
+        self, pg_reserved: SlayerQueryEngine,
+    ) -> None:
+        """DEV-1686 (Codex review): a derived column on a non-reserved root that
+        references a reserved joined model (`grant.amount + 1`) must both DISCOVER
+        the join and execute — previously the join was silently dropped."""
+        query = SlayerQuery(source_model="usage", dimensions=["bumped"], measures=["*:count"])
+        result = await pg_reserved.execute(query=query)
+        # grant amounts 100 (usage 1) and 50 (usage 3) → bumped 101 and 51
+        by_bumped = {float(r["usage.bumped"]): r["usage._count"] for r in result.data}
+        assert by_bumped == {101.0: 2, 51.0: 1}

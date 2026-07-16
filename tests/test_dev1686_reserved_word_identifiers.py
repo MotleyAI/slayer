@@ -521,7 +521,13 @@ class TestReservedInComputedPaths:
         await storage.save_model(grant)
         await storage.save_model(orders)
         q = SlayerQuery(source_model="orders", dimensions=["bumped"], measures=["*:count"])
-        sql = await _generate_via_engine(q, orders, storage)
+        sql = _norm(await _generate_via_engine(q, orders, storage))
+        # The reserved joined model must be JOINED (not just referenced): a
+        # quoted qualifier in the expanded derived-column SQL must still be
+        # discovered by join-path resolution (DEV-1686 / Codex review).
+        assert 'LEFT JOIN "Grant" AS "grant"' in sql, sql
+        assert 'ON orders.grant_id = "grant".id' in sql, sql
+        assert '"grant".amount' in sql, sql
         _assert_parses(sql)
 
 

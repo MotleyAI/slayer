@@ -50,11 +50,17 @@ from slayer.engine.enriched import (
     EnrichedTimeDimension,
     EnrichedTransform,
 )
+from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
-_TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
+# DEV-1686: quote-tolerant so join-path discovery matches a reserved qualifier
+# that RESERVED_KEYWORDS emits quoted in expanded derived-column SQL
+# (``"grant".amount``). Strict superset of the old bare ``word.word`` form —
+# ``__``-path aliases and unquoted refs match unchanged; group(1) is still the
+# (unquoted) qualifier name.
+_TABLE_COL_RE = re.compile(r'(?<![\w"])"?([a-zA-Z_]\w*)"?\."?([a-zA-Z_]\w*)"?')
 def _strip_string_literal(value: str) -> str:
     """Strip one layer of single/double quotes from a query parameter value."""
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
@@ -2305,7 +2311,13 @@ def _collect_paths_from_local_column_chain(
     next_visited = (*visited, key)
 
     try:
-        parsed = sqlglot.parse_one(sql, dialect=dialect)
+        # DEV-1686: quote bare reserved-word qualifiers/leaves (a derived
+        # column referencing a reserved joined model, e.g. ``grant.amount``)
+        # so join-path discovery finds the ref instead of silently falling
+        # back to a ref-less ``Command`` parse (which would drop the JOIN).
+        parsed = sqlglot.parse_one(
+            prequote_reserved_identifiers(sql, dialect=dialect), dialect=dialect
+        )
     except Exception:
         _scan_sql_table_refs(sql=sql, model_name=model.name, paths=paths)
         return
@@ -2892,7 +2904,11 @@ def _filter_inline_needs_paren_wrap(*, sql: str, dialect: str) -> bool:
     (errs on the side of correctness over noise).
     """
     try:
-        tree = sqlglot.parse_one(sql, dialect=dialect)
+        # DEV-1686: prequote reserved qualifiers so a filter over a reserved
+        # joined model classifies correctly instead of conservatively wrapping.
+        tree = sqlglot.parse_one(
+            prequote_reserved_identifiers(sql, dialect=dialect), dialect=dialect
+        )
     except Exception:  # noqa: BLE001 — sqlglot raises a variety of error types
         return True
     if isinstance(tree, _COMPOUND_FILTER_INLINE_TYPES):
