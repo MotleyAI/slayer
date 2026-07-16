@@ -115,6 +115,16 @@ def prequote_reserved_identifiers(sql: str, *, dialect: str) -> str:
     Does NOT mutate stored metadata — callers pass a copy of the SQL string, so
     metadata scans (e.g. ``_window_referenced_aliases`` over
     ``measure.filter_sql``) keep seeing the original unquoted text.
+
+    Known limitation: only reserved words in QUALIFIER/LEAF (dot-adjacent)
+    position are quoted. A physical column whose bare name is a *statement-initial*
+    keyword (``grant``/``select``/``insert``/``create``/``drop``/...) referenced
+    UNQUALIFIED inside a compound expression (``Column.sql = "grant + 1"``) is not
+    quoted here — sqlglot parses such a bare word as a statement even in
+    expression context, and blindly quoting non-dot-adjacent reserved words would
+    corrupt genuine keywords (``CASE``/``WHEN``/``AND``/...). The trivial form
+    (``sql="grant"``) and the qualified form (``sql="t.grant + 1"`` → dot-adjacent)
+    both work; only bare statement-keyword columns in expressions do not.
     """
     try:
         toks = sqlglot.tokenize(sql, dialect=dialect)
