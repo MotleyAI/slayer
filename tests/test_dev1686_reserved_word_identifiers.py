@@ -530,6 +530,38 @@ class TestReservedInComputedPaths:
         assert '"grant".amount' in sql, sql
         _assert_parses(sql)
 
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "bigquery", "tsql", "sqlite", "duckdb"])
+    async def test_derived_column_reserved_join_discovered_all_dialects(
+        self, tmp_path, dialect: str,
+    ) -> None:
+        """The reserved qualifier is emitted with the dialect's quote char
+        (`` `grant` `` on MySQL/BigQuery, ``[grant]`` on T-SQL); join-path
+        discovery must still find it on every dialect (DEV-1686 / Codex review)."""
+        install_reserved_keywords()
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        grant = SlayerModel(
+            name="grant", sql_table='"Grant"', data_source="api",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="api",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="grant_id", sql="grant_id", type=DataType.INT),
+                Column(name="bumped", sql="grant.amount + 1", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="grant", join_pairs=[["grant_id", "id"]])],
+        )
+        await storage.save_model(grant)
+        await storage.save_model(orders)
+        q = SlayerQuery(source_model="orders", dimensions=["bumped"], measures=["*:count"])
+        sql = _norm(await _generate_via_engine(q, orders, storage, dialect=dialect))
+        assert "JOIN" in sql, f"[{dialect}] join dropped:\n{sql}"
+        _assert_parses(sql, dialect)
+
 
 # ---------------------------------------------------------------------------
 # 17. Assemble-and-parse smoke across the query shapes on a reserved model

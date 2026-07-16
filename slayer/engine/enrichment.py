@@ -56,11 +56,14 @@ from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
 # DEV-1686: quote-tolerant so join-path discovery matches a reserved qualifier
-# that RESERVED_KEYWORDS emits quoted in expanded derived-column SQL
-# (``"grant".amount``). Strict superset of the old bare ``word.word`` form —
-# ``__``-path aliases and unquoted refs match unchanged; group(1) is still the
-# (unquoted) qualifier name.
-_TABLE_COL_RE = re.compile(r'(?<![\w"])"?([a-zA-Z_]\w*)"?\."?([a-zA-Z_]\w*)"?')
+# that RESERVED_KEYWORDS emits quoted in expanded derived-column SQL. Tolerates
+# every dialect's identifier quote char — ANSI ``"grant"``, MySQL/BigQuery
+# `` `grant` ``, T-SQL ``[grant]`` — as well as bare refs and ``__``-path
+# aliases (strict superset of the old bare ``word.word`` form). group(1) is
+# still the unquoted qualifier name.
+_TABLE_COL_RE = re.compile(
+    r'(?<![\w"`\]])["`\[]?([a-zA-Z_]\w*)["`\]]?\.["`\[]?([a-zA-Z_]\w*)["`\]]?'
+)
 def _strip_string_literal(value: str) -> str:
     """Strip one layer of single/double quotes from a query parameter value."""
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
