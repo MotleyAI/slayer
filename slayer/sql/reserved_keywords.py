@@ -73,6 +73,33 @@ def install_reserved_keywords() -> None:
         gen_cls.RESERVED_KEYWORDS = set(gen_cls.RESERVED_KEYWORDS) | SLAYER_RESERVED_KEYWORDS
 
 
+def _reserved_dot_edit(
+    sql: str, toks: list, i: int, dialect: str
+) -> tuple[int, int, str] | None:
+    """Return the ``(start, end, quoted)`` edit for token ``i`` when it is a
+    reserved word in QUALIFIER (``word.``) or LEAF (``.word``) position whose
+    offsets map cleanly back to ``sql``; otherwise ``None``. Factored out of
+    :func:`prequote_reserved_identifiers` to keep that function's cognitive
+    complexity within the analysis budget."""
+    tok = toks[i]
+    if tok.text.lower() not in SLAYER_RESERVED_KEYWORDS:
+        return None
+    # Defensive: offsets must map back to the original text (Token.end is
+    # inclusive). Skip anything that doesn't round-trip cleanly.
+    if sql[tok.start:tok.end + 1] != tok.text:
+        return None
+    prev_tok = toks[i - 1] if i else None
+    next_tok = toks[i + 1] if i + 1 < len(toks) else None
+    adj_dot = (
+        (prev_tok is not None and prev_tok.token_type == TokenType.DOT)
+        or (next_tok is not None and next_tok.token_type == TokenType.DOT)
+    )
+    if not adj_dot:
+        return None
+    quoted = exp.Identifier(this=tok.text, quoted=True).sql(dialect=dialect)
+    return (tok.start, tok.end, quoted)
+
+
 def prequote_reserved_identifiers(sql: str, *, dialect: str) -> str:
     """Quote reserved-word identifiers sitting in QUALIFIER (``word.``) or LEAF
     (``.word``) position so a generated string embedding a bare reserved
@@ -93,24 +120,11 @@ def prequote_reserved_identifiers(sql: str, *, dialect: str) -> str:
         toks = sqlglot.tokenize(sql, dialect=dialect)
     except Exception:  # unsupported lexer construct — leave unchanged
         return sql
-    edits: list[tuple[int, int, str]] = []
-    for i, tok in enumerate(toks):
-        if tok.text.lower() not in SLAYER_RESERVED_KEYWORDS:
-            continue
-        # Defensive: offsets must map back to the original text (Token.end is
-        # inclusive). Skip anything that doesn't round-trip cleanly.
-        if sql[tok.start:tok.end + 1] != tok.text:
-            continue
-        prev_tok = toks[i - 1] if i else None
-        next_tok = toks[i + 1] if i + 1 < len(toks) else None
-        adj_dot = (
-            (prev_tok is not None and prev_tok.token_type == TokenType.DOT)
-            or (next_tok is not None and next_tok.token_type == TokenType.DOT)
-        )
-        if not adj_dot:
-            continue
-        quoted = exp.Identifier(this=tok.text, quoted=True).sql(dialect=dialect)
-        edits.append((tok.start, tok.end, quoted))
+    edits = [
+        edit
+        for i in range(len(toks))
+        if (edit := _reserved_dot_edit(sql, toks, i, dialect)) is not None
+    ]
     for start, end, replacement in sorted(edits, reverse=True):
         sql = sql[:start] + replacement + sql[end + 1:]
     return sql
