@@ -149,8 +149,37 @@ class TestReservedKeywordsInstalled:
 
     def test_set_includes_reported_and_common_reserved_words(self) -> None:
         for w in ("grant", "order", "user", "group", "select", "table",
-                  "from", "where", "join", "having", "distinct"):
+                  "from", "where", "join", "having", "distinct",
+                  # DEV-1686 completeness (Codex review): words that fail as a
+                  # bare alias in Postgres parse must be in the set.
+                  "between", "alter", "drop", "insert", "qualify", "xor",
+                  "regexp", "revoke", "rollback"):
             assert w in SLAYER_RESERVED_KEYWORDS
+
+    def test_set_covers_all_bare_alias_failures_in_keyword_universe(self) -> None:
+        """Regression for the curation gap Codex found (`between`): every token
+        in the sqlglot keyword universe that fails as a bare Postgres alias must
+        be quoted by our set."""
+        from sqlglot.dialects.dialect import Dialect
+        from sqlglot.errors import ParseError, TokenError
+
+        universe: set[str] = set()
+        for name in ("postgres", "mysql", "duckdb", "bigquery", "redshift",
+                     "trino", "tsql", "snowflake"):
+            D = Dialect.get_or_raise(name)
+            universe |= {k.lower() for k in getattr(D.tokenizer_class, "KEYWORDS", {})}
+            universe |= {k.lower() for k in getattr(D.generator_class, "RESERVED_KEYWORDS", set())}
+        universe = {w for w in universe if w.isidentifier()}
+
+        def fails_as_alias(w: str) -> bool:
+            try:
+                sqlglot.parse_one(f"SELECT {w}.x AS a FROM t AS {w}", dialect="postgres")
+                return False
+            except (ParseError, TokenError):
+                return True
+
+        missing = sorted(w for w in universe if fails_as_alias(w) and w not in SLAYER_RESERVED_KEYWORDS)
+        assert not missing, f"reserved words missing from SLAYER_RESERVED_KEYWORDS: {missing}"
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +199,7 @@ class TestReservedAliasQuoting:
         assert f"{qg}.namespace" in sql or f"{qg}.{_q('namespace', dialect)}" in sql, sql
         _assert_parses(sql, dialect)
 
-    @pytest.mark.parametrize("name", ["order", "user", "group", "select", "table"])
+    @pytest.mark.parametrize("name", ["order", "user", "group", "select", "table", "between"])
     async def test_other_reserved_model_names(self, name: str) -> None:
         install_reserved_keywords()
         model = SlayerModel(
