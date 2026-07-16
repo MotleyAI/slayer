@@ -26,6 +26,7 @@ from sqlglot.optimizer.scope import ScopeType, traverse_scope
 
 from slayer.core.errors import ColumnCycleError
 from slayer.core.models import Column, SlayerModel
+from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 
 ResolveModel = Callable[..., Awaitable[SlayerModel | None]]
 
@@ -243,7 +244,12 @@ async def _process_column_node(
         return
     # Splice in, parenthesized so the surrounding expression's precedence
     # is preserved.
-    expanded_ast = sqlglot.parse_one(expanded_sql, dialect=dialect)
+    # DEV-1686: quote bare reserved-word qualifiers/leaves (e.g. a derived
+    # column referencing a reserved joined model like ``grant.amount``) so the
+    # generated SQL parses.
+    expanded_ast = sqlglot.parse_one(
+        prequote_reserved_identifiers(expanded_sql, dialect=dialect), dialect=dialect
+    )
     col.replace(exp.Paren(this=expanded_ast))
 
 
@@ -287,7 +293,11 @@ async def expand_derived_refs(
     visited = visited or ()
     named_queries = named_queries or {}
 
-    parsed = sqlglot.parse_one(sql, dialect=dialect)
+    # DEV-1686: prequote reserved-word qualifiers/leaves before parsing user
+    # ``Column.sql`` (may reference a reserved joined model, e.g. ``grant.x``).
+    parsed = sqlglot.parse_one(
+        prequote_reserved_identifiers(sql, dialect=dialect), dialect=dialect
+    )
     # Materialize the columns first — we may mutate them in place via .replace().
     column_nodes = list(parsed.find_all(exp.Column))
     # DEV-1410: compute root-scope membership once. Derived-column inlining
