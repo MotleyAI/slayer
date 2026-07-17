@@ -22,6 +22,10 @@ from slayer.core.enums import (
 from slayer.core.errors import UnresolvableOrderColumnError
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
 from slayer.sql.dialects import SqlDialect, get_dialect
+from slayer.sql.reserved_keywords import (
+    SLAYER_RESERVED_KEYWORDS,
+    prequote_reserved_identifiers,
+)
 
 
 def _wrap_cast_for_type(expr: exp.Expression, dt: DataType | None) -> exp.Expression:
@@ -459,6 +463,14 @@ class SQLGenerator:
             table.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
         return table
 
+    def _maybe_quote_qualifier(self, name: str) -> str:
+        """DEV-1686: quote a SLayer-internal qualifier/alias iff it is a reserved
+        word. Non-reserved names (including mixed-case) stay bare, preserving the
+        DEV-1645 fold-consistent behaviour. Used for the string-built ``AS
+        <alias>`` sites that are NOT dot-adjacent (so the parse-time
+        ``prequote_reserved_identifiers`` cannot reach them)."""
+        return self._q(name) if name.lower() in SLAYER_RESERVED_KEYWORDS else name
+
     def _q(self, name: str) -> str:
         """Dialect-aware identifier quoting (DEV-1571 Bug 3 generalised).
 
@@ -495,6 +507,10 @@ class SQLGenerator:
         """
         d = dialect or self.dialect
         active = self._dialect if d == self.dialect else get_dialect(d)
+        # DEV-1686: quote bare reserved-word qualifiers/leaves so a generated
+        # string embedding e.g. ``grant.col`` parses (bare reserved words fail
+        # at parse time, which the emit-time RESERVED_KEYWORDS fix can't reach).
+        sql = prequote_reserved_identifiers(sql=sql, dialect=d)
         tree = sqlglot.parse_one(sql, dialect=d)
         tree = active.rewrite_parsed_ast(tree)
         # Log-alias rewrite is multi-dialect; the per-base allowlist check
@@ -530,6 +546,10 @@ class SQLGenerator:
         """
         d = dialect or self.dialect
         active = self._dialect if d == self.dialect else get_dialect(d)
+        # DEV-1686: quote bare reserved-word qualifiers/leaves (e.g. a WHERE
+        # filter qualified to ``grant.amount`` or a joined ``grant.status``)
+        # before wrapping/parsing the predicate.
+        sql = prequote_reserved_identifiers(sql=sql, dialect=d)
         wrapped = sqlglot.parse_one(f"SELECT 1 WHERE {sql}", dialect=d)
         where = wrapped.args.get("where")
         if where is None or where.this is None:  # pragma: no cover — defensive
@@ -2175,8 +2195,13 @@ class SQLGenerator:
         # tables resolve. The outer query's join injection only matches
         # `FROM <table> AS <model>` and would miss this subquery wrapper.
         if enriched.resolved_joins:
+            # DEV-1686: the ``AS <alias>`` is not dot-adjacent, so the
+            # ``_parse`` prequote (which fixes ``join_cond`` qualifiers and the
+            # ``{model}.*`` projection when this string is re-parsed below)
+            # cannot reach it — quote a reserved alias explicitly.
             join_sql_parts = [
-                f"{jtype.upper()} JOIN {target_table} AS {target_alias} ON {join_cond}"
+                f"{jtype.upper()} JOIN {target_table} "
+                f"AS {self._maybe_quote_qualifier(target_alias)} ON {join_cond}"
                 for target_table, target_alias, join_cond, jtype in enriched.resolved_joins
             ]
             ranked_sql += " " + " ".join(join_sql_parts)

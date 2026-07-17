@@ -102,3 +102,13 @@ def dialect_for_ds_type(ds_type: str | None) -> SqlDialect:
     ``_DIALECT_MAP.get(ds_type or "", "postgres")`` semantics exactly.
     """
     return _BY_DS_TYPE.get(ds_type or "", _BY_SQLGLOT_NAME["postgres"])
+
+
+# DEV-1686: quote reserved-word identifiers. Union the curated reserved-word set
+# into every dialect generator's RESERVED_KEYWORDS as soon as the registry is
+# built, so any ``.sql(dialect=...)`` emission quotes reserved aliases /
+# qualifiers / physical names. Imported here (after ``_ALL_DIALECTS`` is defined)
+# so the installer runs before any SQL is generated; idempotent.
+from slayer.sql.reserved_keywords import install_reserved_keywords  # noqa: E402
+
+install_reserved_keywords()

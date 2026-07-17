@@ -70,6 +70,7 @@ from slayer.sql.dialects import dialect_for_ds_type, get_dialect
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import _runtime_fingerprint
 from slayer.sql.generator import SQLGenerator
+from slayer.sql.reserved_keywords import SLAYER_RESERVED_KEYWORDS
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.storage.base import StorageBackend
 
@@ -3122,8 +3123,18 @@ class SlayerQueryEngine:
         # their dotted aliases mangled. Hardcoded ANSI double quotes
         # would either fail to parse (MySQL) or reference an alias the
         # mangled inner subquery doesn't expose (T-SQL).
+        # DEV-1686: the inner ``alias`` is always dialect-quoted; the ``short``
+        # output alias must also be quoted when it is a reserved word (a
+        # user-declared cross-model rename like ``order``, or an
+        # ``_alias_to_short`` that yields one), else ``AS order`` is bare and
+        # the wrapped SQL fails to parse/execute.
+        def _short_sql(short: str) -> str:
+            if short.lower() in SLAYER_RESERVED_KEYWORDS:
+                return exp.Identifier(this=short, quoted=True).sql(dialect=dialect)
+            return short
+
         rename_parts = [
-            f'{exp.Identifier(this=alias, quoted=True).sql(dialect=dialect)} AS {short}'
+            f'{exp.Identifier(this=alias, quoted=True).sql(dialect=dialect)} AS {_short_sql(short)}'
             for alias, short, _, _, _, _ in column_map
         ]
         wrapped_sql = f"SELECT {', '.join(rename_parts)} FROM ({inner_sql}) AS _inner"
