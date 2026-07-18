@@ -4,6 +4,7 @@ import datetime
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.engine import make_url
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelMeasure, SlayerModel
@@ -1128,6 +1129,97 @@ class TestDatasourceConfig:
         assert "%40" in cs, "the '@' in password must appear as %40"
         assert "sqlserver" in cs
         assert "slayer_demo" in cs
+
+    # Issue #240: the generic (non-tsql) connection-string branch must not
+    # corrupt credentials whose password contains reserved URL characters.
+    # The password below exercises every generic-branch delimiter: '@'
+    # (userinfo/host), ':' (userinfo/port), '/' (path), '#' (fragment),
+    # '?' (query), and a space.
+    _RESERVED_PASSWORD = "p@ss/w:rd#q?x y"  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+
+    @pytest.mark.parametrize(
+        ("ds_type", "expected_driver"),
+        [
+            ("postgres", "postgresql"),
+            ("postgresql", "postgresql"),
+            ("mysql", "mysql+pymysql"),
+            ("mariadb", "mysql+pymysql"),
+            ("clickhouse", "clickhouse+http"),
+            # Fallback dialect (issue #240 names "fallback dialects"): an
+            # unmapped type keeps its own name as the driver and must still
+            # encode reserved-char credentials safely.
+            ("customdb", "customdb"),
+        ],
+    )
+    def test_reserved_char_password_round_trips(
+        self, ds_type: str, expected_driver: str
+    ) -> None:
+        ds = DatasourceConfig(
+            name="example",
+            type=ds_type,
+            host="db.example",
+            port=5432,
+            database="analytics",
+            username="user",
+            password=self._RESERVED_PASSWORD,
+        )
+        cs = ds.get_connection_string()
+
+        # The reserved delimiters the issue names ('@', '/', ':') must be
+        # percent-encoded, not left as raw URL delimiters.
+        assert "%40" in cs  # '@'
+        assert "%2F" in cs  # '/'
+        assert "%3A" in cs  # ':'
+        assert self._RESERVED_PASSWORD not in cs
+
+        url = make_url(cs)
+        assert url.drivername == expected_driver
+        assert url.username == "user"
+        assert url.password == self._RESERVED_PASSWORD
+        assert url.host == "db.example"
+        assert url.port == 5432
+        assert url.database == "analytics"
+
+    @pytest.mark.parametrize(
+        "ds_type",
+        ["postgres", "postgresql", "mysql", "mariadb", "clickhouse", "customdb"],
+    )
+    def test_delimiter_safe_password_no_regression(self, ds_type: str) -> None:
+        # A password with no reserved characters must round-trip exactly as
+        # it did before the URL.create switch.
+        ds = DatasourceConfig(
+            name="example",
+            type=ds_type,
+            host="db.example",
+            port=5432,
+            database="analytics",
+            username="user",
+            password="plain_pass",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.username == "user"
+        assert url.password == "plain_pass"
+        assert url.host == "db.example"
+        assert url.port == 5432
+        assert url.database == "analytics"
+
+    def test_password_without_username_is_dropped(self) -> None:
+        # Parity with the pre-fix generic branch, which only emitted the
+        # password when a username was present. URL.create matches this:
+        # a password without a username is not rendered.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="db.example",
+            port=5432,
+            database="analytics",
+            password="secret",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.username is None
+        assert url.password is None
+        assert url.host == "db.example"
+        assert url.database == "analytics"
 
 
 class TestTimeGranularity:

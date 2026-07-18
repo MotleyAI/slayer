@@ -846,17 +846,21 @@ class DatasourceConfig(BaseModel):
             "clickhouse": "clickhouse+http",
         }
         driver = driver_map.get(self.type, self.type)
-        auth = ""
-        if self.username:
-            auth = self.username
-            if self.password:
-                auth += f":{self.password}"
-            auth += "@"
-        host_port = self.host or "localhost"
-        if self.port:
-            host_port += f":{self.port}"
-        db = self.database or ""
-        return f"{driver}://{auth}{host_port}/{db}"
+        # Build the URL with SQLAlchemy's structured builder (issue #240)
+        # rather than manual string concatenation, so credentials/host/
+        # database containing reserved URL characters (``@``, ``/``, ``:``,
+        # ...) are percent-encoded instead of being misparsed as URL
+        # delimiters. ``username``/``password`` treat values as raw
+        # credentials; ``host or "localhost"`` preserves the pre-fix
+        # default. Mirrors ``_get_tsql_connection_string``.
+        return _SA_URL.create(
+            driver,
+            username=self.username or None,
+            password=self.password or None,
+            host=self.host or "localhost",
+            port=self.port,
+            database=self.database or "",
+        ).render_as_string(hide_password=False)
 
     def resolve_env_vars(self) -> "DatasourceConfig":
         data = self.model_dump()
