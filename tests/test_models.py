@@ -4,6 +4,7 @@ import datetime
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.engine import make_url
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelMeasure, SlayerModel
@@ -1042,6 +1043,31 @@ class TestDatasourceConfig:
         )
         cs = ds.get_connection_string()
         assert cs == "postgresql://user:pass@localhost:5432/mydb"
+
+    @pytest.mark.parametrize("datasource_type", ["postgres", "mysql", "clickhouse"])
+    def test_connection_string_encodes_reserved_password_characters(
+        self,
+        datasource_type: str,
+    ) -> None:
+        ds = DatasourceConfig(
+            name="test",
+            type=datasource_type,
+            host="db.example",
+            port=5432,
+            database="analytics",
+            username="user",
+            password="p@ss/w:rd",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+
+        url = make_url(ds.get_connection_string())
+
+        assert (url.username, url.password, url.host, url.port, url.database) == (
+            "user",
+            "p@ss/w:rd",
+            "db.example",
+            5432,
+            "analytics",
+        )
 
     def test_explicit_connection_string(self) -> None:
         ds = DatasourceConfig(
