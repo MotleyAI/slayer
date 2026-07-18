@@ -895,7 +895,7 @@ class DatasourceConfig(BaseModel):
                 )
             port = int(embedded_port)
         return _SA_URL.create(
-            driver,
+            drivername=driver,
             username=self.username or None,
             password=self.password or None,
             host=host,
