@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 _MULTIDOT_COLUMN_RE = re.compile(r'\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*){2,})\b')
 _STRING_LITERAL_RE = re.compile(r"'[^']*'")
 
+# A host field of the form ``<host>:<numeric-port>`` with no separate port.
+# The leading class excludes ``:`` and ``[`` so bare IPv6 (``::1``) and
+# already-bracketed IPv6 (``[::1]``) never match — only a single-colon,
+# numeric-tail host does. See ``DatasourceConfig.get_connection_string``.
+_HOST_EMBEDDED_PORT_RE = re.compile(r"^([^:\[]+):(\d+)$")
+
 
 class _SubstringRule:
     """Single source of truth for a forbidden substring inside a name.
@@ -853,12 +859,20 @@ class DatasourceConfig(BaseModel):
         # delimiters. ``username``/``password`` treat values as raw
         # credentials; ``host or "localhost"`` preserves the pre-fix
         # default. Mirrors ``_get_tsql_connection_string``.
+        host, port = self.host or "localhost", self.port
+        # Backward-compat with the pre-fix string branch: a caller could put
+        # ``host:port`` in the host field and leave ``port`` unset. Split it
+        # so ``URL.create`` doesn't bracket the colon as an IPv6 host.
+        if port is None:
+            embedded = _HOST_EMBEDDED_PORT_RE.match(host)
+            if embedded:
+                host, port = embedded.group(1), int(embedded.group(2))
         return _SA_URL.create(
             driver,
             username=self.username or None,
             password=self.password or None,
-            host=self.host or "localhost",
-            port=self.port,
+            host=host,
+            port=port,
             database=self.database or "",
         ).render_as_string(hide_password=False)
 

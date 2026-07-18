@@ -1203,6 +1203,38 @@ class TestDatasourceConfig:
         assert url.port == 5432
         assert url.database == "analytics"
 
+    def test_host_with_embedded_port_is_split(self) -> None:
+        # Backward-compat: the pre-fix generic branch let a caller stuff
+        # "host:port" into the host field with port unset. URL.create would
+        # otherwise treat the colon as an IPv6-style host and bracket it, so
+        # a single-colon numeric-port host is split back into host + port.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="db.example:5432",
+            database="analytics",
+            username="user",
+            password="plain_pass",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.host == "db.example"
+        assert url.port == 5432
+        assert url.database == "analytics"
+
+    def test_ipv6_host_is_not_split(self) -> None:
+        # A bare IPv6 host (multiple colons, no bracket) must NOT be treated
+        # as host:port — URL.create brackets it correctly on its own.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="::1",
+            port=5432,
+            database="analytics",
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.host == "::1"
+        assert url.port == 5432
+
     def test_password_without_username_is_dropped(self) -> None:
         # Parity with the pre-fix generic branch, which only emitted the
         # password when a username was present. URL.create matches this:
