@@ -1235,6 +1235,32 @@ class TestDatasourceConfig:
         assert url.host == "::1"
         assert url.port == 5432
 
+    def test_bracketed_ipv6_host_is_unwrapped(self) -> None:
+        # The pre-fix string branch tolerated a bracketed IPv6 host; URL.create
+        # wants the raw host, so the brackets are stripped.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="[::1]",
+            port=5432,
+            database="analytics",
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.host == "::1"
+        assert url.port == 5432
+
+    def test_bracketed_ipv6_host_with_embedded_port_is_split(self) -> None:
+        # Bracketed IPv6 with an embedded port and no separate port field.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="[::1]:5432",
+            database="analytics",
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.host == "::1"
+        assert url.port == 5432
+
     def test_password_without_username_is_dropped(self) -> None:
         # Parity with the pre-fix generic branch, which only emitted the
         # password when a username was present. URL.create matches this:

@@ -27,10 +27,17 @@ logger = logging.getLogger(__name__)
 _MULTIDOT_COLUMN_RE = re.compile(r'\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*){2,})\b')
 _STRING_LITERAL_RE = re.compile(r"'[^']*'")
 
-# A host field of the form ``<host>:<numeric-port>`` with no separate port.
-# The leading class excludes ``:`` and ``[`` so bare IPv6 (``::1``) and
-# already-bracketed IPv6 (``[::1]``) never match — only a single-colon,
-# numeric-tail host does. See ``DatasourceConfig.get_connection_string``.
+# Host-field normalization for the generic connection URL. ``URL.create``
+# wants a raw host (IPv6 without brackets) plus a separate port, but the
+# pre-fix string branch tolerated the port being embedded in the host
+# field. These two patterns split it back out. See
+# ``DatasourceConfig.get_connection_string``.
+#
+# ``[<ipv6>]`` or ``[<ipv6>]:<port>`` — bracketed IPv6, optional port.
+_BRACKETED_HOST_RE = re.compile(r"^\[(.+)\](?::(\d+))?$")
+# ``<host>:<numeric-port>`` — the leading class excludes ``:`` and ``[`` so
+# bare IPv6 (``::1``) and bracketed IPv6 never match here; only a
+# single-colon, numeric-tail host does.
 _HOST_EMBEDDED_PORT_RE = re.compile(r"^([^:\[]+):(\d+)$")
 
 
@@ -860,10 +867,20 @@ class DatasourceConfig(BaseModel):
         # credentials; ``host or "localhost"`` preserves the pre-fix
         # default. Mirrors ``_get_tsql_connection_string``.
         host, port = self.host or "localhost", self.port
-        # Backward-compat with the pre-fix string branch: a caller could put
-        # ``host:port`` in the host field and leave ``port`` unset. Split it
-        # so ``URL.create`` doesn't bracket the colon as an IPv6 host.
-        if port is None:
+        # Backward-compat with the pre-fix string branch, which tolerated the
+        # port (and IPv6 brackets) living in the host field. ``URL.create``
+        # wants a raw host + separate port, so normalize:
+        #   [::1] / [::1]:5432  -> strip brackets, lift embedded port
+        #   db.example:5432     -> split single-colon numeric port
+        # A bare IPv6 host (``::1``) is left as-is — ``URL.create`` brackets
+        # it correctly. An explicit ``port`` field always wins over an
+        # embedded one.
+        bracketed = _BRACKETED_HOST_RE.match(host)
+        if bracketed:
+            host = bracketed.group(1)
+            if port is None and bracketed.group(2):
+                port = int(bracketed.group(2))
+        elif port is None:
             embedded = _HOST_EMBEDDED_PORT_RE.match(host)
             if embedded:
                 host, port = embedded.group(1), int(embedded.group(2))
