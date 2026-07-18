@@ -875,17 +875,25 @@ class DatasourceConfig(BaseModel):
         #   [::1] / [::1]:5432  -> strip brackets, lift embedded port
         #   db.example:5432     -> split single-colon numeric port
         # A bare IPv6 host (``::1``) is left as-is — ``URL.create`` brackets
-        # it correctly. An explicit ``port`` field always wins over an
-        # embedded one.
+        # it correctly. If the host embeds a port AND the ``port`` field is
+        # also set, that is contradictory config — raise rather than guess.
+        embedded_port: str | None = None
         bracketed = _BRACKETED_HOST_RE.match(host)
         if bracketed:
             host = bracketed.group(1)
-            if port is None and bracketed.group(2):
-                port = int(bracketed.group(2))
-        elif port is None:
+            embedded_port = bracketed.group(2)
+        else:
             embedded = _HOST_EMBEDDED_PORT_RE.match(host)
             if embedded:
-                host, port = embedded.group(1), int(embedded.group(2))
+                host, embedded_port = embedded.group(1), embedded.group(2)
+        if embedded_port is not None:
+            if port is not None:
+                raise ValueError(
+                    f"Datasource '{self.name}': port is set both in the host "
+                    f"field ({self.host!r}) and in the 'port' field ({port}); "
+                    f"specify it in only one place."
+                )
+            port = int(embedded_port)
         return _SA_URL.create(
             driver,
             username=self.username or None,

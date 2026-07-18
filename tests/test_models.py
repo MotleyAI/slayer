@@ -1249,6 +1249,31 @@ class TestDatasourceConfig:
         assert url.host == "::1"
         assert url.port == 5432
 
+    def test_conflicting_port_in_host_and_port_field_raises(self) -> None:
+        # A port embedded in the host AND a separate port field is
+        # contradictory config — raise rather than guess which wins.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="db.example:5432",
+            port=9999,
+            database="analytics",
+        )
+        with pytest.raises(ValueError, match="only one place"):
+            ds.get_connection_string()
+
+    def test_conflicting_port_bracketed_ipv6_and_port_field_raises(self) -> None:
+        # Same conflict for a bracketed IPv6 host that embeds a port.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="[::1]:5432",
+            port=9999,
+            database="analytics",
+        )
+        with pytest.raises(ValueError, match="only one place"):
+            ds.get_connection_string()
+
     def test_bracketed_ipv6_host_with_embedded_port_is_split(self) -> None:
         # Bracketed IPv6 with an embedded port and no separate port field.
         ds = DatasourceConfig(
