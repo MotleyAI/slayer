@@ -860,12 +860,14 @@ class DatasourceConfig(BaseModel):
         }
         driver = driver_map.get(self.type, self.type)
         # Build the URL with SQLAlchemy's structured builder (issue #240)
-        # rather than manual string concatenation, so credentials/host/
-        # database containing reserved URL characters (``@``, ``/``, ``:``,
-        # ...) are percent-encoded instead of being misparsed as URL
-        # delimiters. ``username``/``password`` treat values as raw
-        # credentials; ``host or "localhost"`` preserves the pre-fix
-        # default. Mirrors ``_get_tsql_connection_string``.
+        # rather than manual string concatenation, so credentials containing
+        # reserved URL characters (``@``, ``/``, ``:``, ...) are
+        # percent-encoded in the userinfo section instead of being misparsed
+        # as URL delimiters. ``username``/``password`` are treated as raw
+        # credentials; ``host or "localhost"`` preserves the pre-fix default.
+        # (SQLAlchemy renders the database path unencoded, matching the
+        # pre-fix behavior — a ``?`` in a database name is not our concern.)
+        # Mirrors ``_get_tsql_connection_string``.
         host, port = self.host or "localhost", self.port
         # Backward-compat with the pre-fix string branch, which tolerated the
         # port (and IPv6 brackets) living in the host field. ``URL.create``
