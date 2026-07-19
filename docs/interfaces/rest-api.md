@@ -124,7 +124,7 @@ DELETE /datasources/{name}       # Delete a datasource
 # List datasources
 curl http://localhost:5143/datasources
 
-# Get datasource (password/connection_string shown as ***)
+# Get datasource (credential fields shown as ***)
 curl http://localhost:5143/datasources/my_postgres
 ```
 
