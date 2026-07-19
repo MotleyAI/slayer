@@ -27,6 +27,19 @@ logger = logging.getLogger(__name__)
 _MULTIDOT_COLUMN_RE = re.compile(r'\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*){2,})\b')
 _STRING_LITERAL_RE = re.compile(r"'[^']*'")
 
+# Host-field normalization for the generic connection URL. ``URL.create``
+# wants a raw host (IPv6 without brackets) plus a separate port, but the
+# pre-fix string branch tolerated the port being embedded in the host
+# field. These two patterns split it back out. See
+# ``DatasourceConfig.get_connection_string``.
+#
+# ``[<ipv6>]`` or ``[<ipv6>]:<port>`` — bracketed IPv6, optional port.
+_BRACKETED_HOST_RE = re.compile(r"^\[(.+)\](?::(\d+))?$")
+# ``<host>:<numeric-port>`` — the leading class excludes ``:`` and ``[`` so
+# bare IPv6 (``::1``) and bracketed IPv6 never match here; only a
+# single-colon, numeric-tail host does.
+_HOST_EMBEDDED_PORT_RE = re.compile(r"^([^:\[]+):(\d+)$")
+
 
 class _SubstringRule:
     """Single source of truth for a forbidden substring inside a name.
@@ -846,17 +859,49 @@ class DatasourceConfig(BaseModel):
             "clickhouse": "clickhouse+http",
         }
         driver = driver_map.get(self.type, self.type)
-        auth = ""
-        if self.username:
-            auth = self.username
-            if self.password:
-                auth += f":{self.password}"
-            auth += "@"
-        host_port = self.host or "localhost"
-        if self.port:
-            host_port += f":{self.port}"
-        db = self.database or ""
-        return f"{driver}://{auth}{host_port}/{db}"
+        # Build the URL with SQLAlchemy's structured builder (issue #240)
+        # rather than manual string concatenation, so credentials containing
+        # reserved URL characters (``@``, ``/``, ``:``, ...) are
+        # percent-encoded in the userinfo section instead of being misparsed
+        # as URL delimiters. ``username``/``password`` are treated as raw
+        # credentials; ``host or "localhost"`` preserves the pre-fix default.
+        # (SQLAlchemy renders the database path unencoded, matching the
+        # pre-fix behavior — a ``?`` in a database name is not our concern.)
+        # Mirrors ``_get_tsql_connection_string``.
+        host, port = self.host or "localhost", self.port
+        # Backward-compat with the pre-fix string branch, which tolerated the
+        # port (and IPv6 brackets) living in the host field. ``URL.create``
+        # wants a raw host + separate port, so normalize:
+        #   [::1] / [::1]:5432  -> strip brackets, lift embedded port
+        #   db.example:5432     -> split single-colon numeric port
+        # A bare IPv6 host (``::1``) is left as-is — ``URL.create`` brackets
+        # it correctly. If the host embeds a port AND the ``port`` field is
+        # also set, that is contradictory config — raise rather than guess.
+        embedded_port: str | None = None
+        bracketed = _BRACKETED_HOST_RE.match(host)
+        if bracketed:
+            host = bracketed.group(1)
+            embedded_port = bracketed.group(2)
+        else:
+            embedded = _HOST_EMBEDDED_PORT_RE.match(host)
+            if embedded:
+                host, embedded_port = embedded.group(1), embedded.group(2)
+        if embedded_port is not None:
+            if port is not None:
+                raise ValueError(
+                    f"Datasource '{self.name}': port is set both in the host "
+                    f"field ({self.host!r}) and in the 'port' field ({port}); "
+                    f"specify it in only one place."
+                )
+            port = int(embedded_port)
+        return _SA_URL.create(
+            drivername=driver,
+            username=self.username or None,
+            password=self.password or None,
+            host=host,
+            port=port,
+            database=self.database or "",
+        ).render_as_string(hide_password=False)
 
     def resolve_env_vars(self) -> "DatasourceConfig":
         data = self.model_dump()
