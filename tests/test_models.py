@@ -1180,6 +1180,30 @@ class TestDatasourceConfig:
         assert url.port == 5432
         assert url.database == "analytics"
 
+    def test_reserved_char_username_round_trips(self) -> None:
+        # Issue #240 names manually interpolated usernames as affected too,
+        # not just passwords. URL.create must percent-encode reserved
+        # characters in the username so it round-trips intact.
+        username = "user@tenant/name:role"
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="db.example",
+            port=5432,
+            database="analytics",
+            username=username,
+            password="plain_pass",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        cs = ds.get_connection_string()
+
+        assert username not in cs  # raw delimiters must not leak through
+        url = make_url(cs)
+        assert url.username == username
+        assert url.password == "plain_pass"
+        assert url.host == "db.example"
+        assert url.port == 5432
+        assert url.database == "analytics"
+
     @pytest.mark.parametrize(
         "ds_type",
         ["postgres", "postgresql", "mysql", "mariadb", "clickhouse", "customdb"],

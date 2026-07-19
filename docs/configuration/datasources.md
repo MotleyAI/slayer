@@ -26,7 +26,8 @@ connection_string: postgresql://user:pass@host:5432/dbname
 
 When configuring individual connection fields, enter credentials exactly as issued. SLayer URL-encodes
 reserved characters when building the connection string. When supplying `connection_string` directly,
-encode reserved characters yourself.
+percent-encode reserved characters within credential components yourself; do not encode the URL's
+structural delimiters.
 
 ## Environment Variables
 
