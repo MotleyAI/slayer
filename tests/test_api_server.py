@@ -193,13 +193,21 @@ class TestDatasources:
         assert entries[0]["type"] == "postgres"
 
     def test_get_datasource(self, client: TestClient) -> None:
-        ds = {"name": "mydb", "type": "postgres", "host": "localhost", "password": "secret"}
+        ds = {
+            "name": "mydb",
+            "type": "bigquery",
+            "password": "PASSWORD_SENTINEL",
+            "connection_string": "bigquery://project",
+            "credentials_json": '{"private_key": "PRIVATE_KEY_SENTINEL"}',
+        }
         client.post("/datasources", json=ds)
         resp = client.get("/datasources/mydb")
         assert resp.status_code == 200
         data = resp.json()
         assert data["name"] == "mydb"
         assert data["password"] == "***"
+        assert data["connection_string"] == "***"
+        assert data["credentials_json"] == "***"
 
     def test_get_datasource_not_found(self, client: TestClient) -> None:
         resp = client.get("/datasources/nope")

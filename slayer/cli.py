@@ -1666,10 +1666,9 @@ def _run_datasources(args):
             print(f"Datasource '{args.name}' not found.")
             sys.exit(1)
         data = ds.model_dump(mode="json", exclude_none=True)
-        if "password" in data:
-            data["password"] = "********"
-        if "connection_string" in data:
-            data["connection_string"] = "********"
+        for secret_field in ("password", "connection_string", "credentials_json"):
+            if secret_field in data:
+                data[secret_field] = "********"
         print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
 
     elif args.datasources_command == "create":
