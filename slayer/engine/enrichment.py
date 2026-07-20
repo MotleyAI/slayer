@@ -157,6 +157,18 @@ async def _collect_reachable_agg_names(
     return frozenset(names) if names else None
 
 
+def _public_field_name(qfield: Any) -> str:
+    """The public name a query measure surfaces under.
+
+    An explicit ``name`` wins; otherwise the formula is mangled into an
+    identifier. Shared by the main measure loop and the reserved-name set
+    that hidden-transform allocation checks against, so the two can't drift.
+    """
+    return qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace(
+        "*", ""
+    )
+
+
 async def enrich_query(
     query: SlayerQuery,
     model: SlayerModel,
@@ -596,6 +608,36 @@ async def enrich_query(
                 )
         return resolved
 
+    # DEV-1692: names for transforms hoisted out of an arithmetic formula are
+    # derived from the owning measure's field_name, which keeps them distinct
+    # from one another — but nothing stops a user from *also* selecting a
+    # measure or dimension literally named ``_t0_growth``. Both would then
+    # claim the alias ``<model>._t0_growth``: the self-join CTE projects two
+    # columns under that name and the hoisted reference silently resolves to
+    # the user's column (no error, wrong numbers). Allocate against every
+    # projected name instead of trusting field_name uniqueness on its own.
+    # Dimensions and time dimensions alias as ``<model>.<name>`` just like
+    # hoisted transforms do, so they are reserved by bare name too.
+    _reserved_public_names: set[str] = (
+        {_public_field_name(qf) for qf in (query.measures or [])}
+        | {d.name for d in dimensions}
+        | {td.name for td in time_dimensions}
+    )
+    _hidden_names: set[str] = set()
+
+    def _allocate_hidden_name(preferred: str) -> str:
+        candidate = preferred
+        suffix = 2
+        while (
+            candidate in _reserved_public_names
+            or candidate in _hidden_names
+            or candidate in known_aliases
+        ):
+            candidate = f"{preferred}_{suffix}"
+            suffix += 1
+        _hidden_names.add(candidate)
+        return candidate
+
     def _add_transform(
         name: str,
         transform: str,
@@ -882,13 +924,42 @@ async def enrich_query(
         elif isinstance(spec, MixedArithmeticField):
             for mname in spec.measure_names:
                 await _ensure_measure_from_spec(mname, spec.agg_refs)
+            # DEV-1692: the ``_t{n}`` placeholder counter restarts on every
+            # formula parse, so two measures that each wrap a transform in
+            # arithmetic would both flatten under the name ``_t0`` — colliding
+            # on the self-join CTE names (``shifted__t0``) and, worse, on the
+            # expression alias, silently making the second measure read the
+            # first one's value. Qualify with the owning measure's field_name
+            # and run it through _allocate_hidden_name so the result can't
+            # collide with a user measure that happens to share the shape.
+            placeholder_aliases: list[tuple[str, str]] = []
             for placeholder, sub_transform in spec.sub_transforms:
-                await _flatten_spec(sub_transform, placeholder)
+                hidden_name = _allocate_hidden_name(f"{placeholder}_{field_name}")
+                sub_alias = await _flatten_spec(
+                    spec=sub_transform, field_name=hidden_name
+                )
+                placeholder_aliases.append((placeholder, sub_alias))
+            # Bind the placeholders just long enough for _resolve_sql to rewrite
+            # this formula's references, then restore. A user measure may itself
+            # be named `_t0`, so a shadowed binding is put back rather than
+            # dropped.
+            shadowed: list[tuple[str, str | None]] = [
+                (placeholder, known_aliases.get(placeholder))
+                for placeholder, _ in placeholder_aliases
+            ]
+            for placeholder, sub_alias in placeholder_aliases:
+                known_aliases[placeholder] = sub_alias
+            resolved_sql = _resolve_sql(spec.sql)
+            for placeholder, prior in shadowed:
+                if prior is None:
+                    del known_aliases[placeholder]
+                else:
+                    known_aliases[placeholder] = prior
             alias = f"{model_name_str}.{field_name}"
             enriched_expressions.append(
                 EnrichedExpression(
                     name=field_name,
-                    sql=_resolve_sql(spec.sql),
+                    sql=resolved_sql,
                     alias=alias,
                 )
             )
@@ -1268,9 +1339,7 @@ async def enrich_query(
                 f"ORDER BY would otherwise bind to the source column "
                 f"instead of the renamed aggregate."
             )
-        field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace(
-            "*", ""
-        )
+        field_name = _public_field_name(qfield)
 
         if isinstance(spec, AggregatedMeasureRef):
             # New colon syntax: "revenue:sum", "*:count", etc.
