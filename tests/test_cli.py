@@ -1,10 +1,13 @@
 """Tests for CLI helpers."""
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+import yaml
 
-from slayer.cli import _parse_cli_variables, _parse_connection_string, _run_query
+from slayer.cli import _parse_cli_variables, _parse_connection_string, _run_datasources, _run_query
+from slayer.core.models import DatasourceConfig
 
 
 class TestParseConnectionString:
@@ -73,6 +76,26 @@ class TestParseCliVariables:
         args = SimpleNamespace(variables=None, variables_json='[1, 2, 3]')
         with pytest.raises(SystemExit, match="must decode to a JSON object"):
             _parse_cli_variables(args)
+
+
+class TestRunDatasources:
+    def test_show_masks_all_credentials(self, monkeypatch, capsys):
+        datasource = DatasourceConfig(
+            name="mydb",
+            type="bigquery",
+            password="PASSWORD_SENTINEL",
+            connection_string="bigquery://project",
+            credentials_json='{"private_key": "PRIVATE_KEY_SENTINEL"}',
+        )
+        storage = SimpleNamespace(get_datasource=AsyncMock(return_value=datasource))
+        monkeypatch.setattr("slayer.cli._resolve_storage", lambda _args: storage)
+
+        _run_datasources(SimpleNamespace(datasources_command="show", name="mydb"))
+
+        data = yaml.safe_load(capsys.readouterr().out)
+        assert data["password"] == "********"
+        assert data["connection_string"] == "********"
+        assert data["credentials_json"] == "********"
 
 
 class TestRunQueryFileLoading:

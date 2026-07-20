@@ -518,7 +518,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
         # Mask credentials
         data = ds.model_dump(exclude_none=True)
-        for secret_field in ("password", "connection_string"):
+        for secret_field in ("password", "connection_string", "credentials_json"):
             if secret_field in data:
                 data[secret_field] = "***"
         return data
