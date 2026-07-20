@@ -319,7 +319,7 @@ class TestMigration:
         mem_dir = os.path.join(base_dir, "memories")
         os.makedirs(mem_dir, exist_ok=True)
         legacy_path = os.path.join(mem_dir, "X.md")
-        with open(legacy_path, "w") as f:
+        with open(legacy_path, "w") as f:  # NOSONAR(S7493) — test writes a tiny local fixture; sync I/O is intentional
             f.write(_memory_to_md(
                 Memory(id="X", learning="upper", entities=[]),
             ))

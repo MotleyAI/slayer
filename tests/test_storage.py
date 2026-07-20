@@ -86,7 +86,7 @@ class TestModelStorage:
         )
         legacy_dir = os.path.join(storage.models_dir, "test_ds")
         os.makedirs(legacy_dir)
-        with open(os.path.join(legacy_dir, "X.yaml"), "w") as f:
+        with open(os.path.join(legacy_dir, "X.yaml"), "w") as f:  # NOSONAR(S7493) — test writes a tiny local fixture; sync I/O is intentional
             yaml.safe_dump(
                 upper.model_dump(mode="json", exclude_none=True), f,
             )
@@ -166,7 +166,7 @@ class TestDatasourceStorage:
         lower = sample_datasource.model_copy(
             update={"name": "x", "host": "lower"},
         )
-        with open(
+        with open(  # NOSONAR(S7493) — test writes a tiny local fixture; sync I/O is intentional
             os.path.join(storage.datasources_dir, "X.yaml"), "w",
         ) as f:
             yaml.safe_dump(
