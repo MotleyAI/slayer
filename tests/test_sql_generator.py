@@ -1387,6 +1387,44 @@ class TestFields:
         by_name = {e.name: e.sql for e in enriched.expressions}
         assert by_name["growth"] != by_name["growth_2m"]
 
+    async def test_hidden_transform_name_avoids_user_measure_collision(
+        self, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: a hoisted transform must not land on a user measure's name.
+
+        Hidden names are built from the owning measure's field_name, so a user
+        measure literally named `_t0_growth` would otherwise claim the same
+        alias as the shift hoisted out of `growth` — the self-join CTE projects
+        both under that name and the shift silently resolves to the user's
+        measure (valid SQL, wrong numbers).
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+                ModelMeasure(formula="revenue:sum * 2", name="_t0_growth"),
+            ],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+
+        transform_aliases = {t.alias for t in enriched.transforms}
+        expression_aliases = {e.alias for e in enriched.expressions}
+        assert not (transform_aliases & expression_aliases)
+
+        # `growth` must reference the hoisted shift, not the user's measure.
+        growth_sql = next(e.sql for e in enriched.expressions if e.name == "growth")
+        assert "orders._t0_growth" not in growth_sql.replace("orders._t0_growth_2", "")
+
     async def test_dev_1692_repro_shape(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
