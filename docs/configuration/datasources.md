@@ -160,7 +160,7 @@ Statement-level timeout is enforced via
 | `username` | string | No | Database username |
 | `password` | string | No | Database password |
 | `connection_string` | string | No | Full connection string (alternative to individual fields) |
-| `credentials_json` | string | No | Inline BigQuery service-account JSON; masked in REST and CLI datasource detail output |
+| `credentials_json` | string | No | Credentials JSON (used for BigQuery service accounts) |
 | `schema_name` | string | No | Default schema name |
 
 !!! note
