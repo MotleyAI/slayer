@@ -12,7 +12,7 @@ becomes an extra CTE in the generated SQL.
 | `time_shift(x, n)` | Value N time buckets back/ahead (calendar-aware) | Self-join CTE with INTERVAL offset |
 | `time_shift(x, n, 'year')` | Value at a different granularity offset (e.g. YoY) | Self-join CTE with INTERVAL offset |
 | `change(x)` | Period-over-period difference (partition-safe, resets per group) | Desugars to `x − time_shift(x, -1)` |
-| `change_pct(x)` | Period-over-period % change, e.g. month-over-month growth (partition-safe) | Desugars to `(x − ts) / ts` where `ts = time_shift(x, -1)` |
+| `change_pct(x)` | Period-over-period % change, e.g. month-over-month growth (partition-safe; NULL when the prior period's value is 0 or missing) | Desugars to `CASE WHEN ts != 0 THEN (x − ts) / ts END` where `ts = time_shift(x, -1)` |
 | `lag(x, n)` / `lead(x, n)` | N rows back / ahead | `LAG` / `LEAD` window fn, partitioned by dimensions |
 | `consecutive_periods(predicate)` | Current trailing run length where predicate is true | Staged window CTEs with reset groups |
 | `rank(x[, partition_by=...])` | Rank by x, descending; ties skip ranks | `RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |

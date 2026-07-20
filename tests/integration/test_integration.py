@@ -469,8 +469,15 @@ async def test_arithmetic_expression(integration_env):
     assert response.data[0]["orders.avg_amount"] == pytest.approx(125.0)
 
 
-async def test_time_shift_row_based(integration_env):
-    """time_shift(x, -1) without granularity → calendar self-join at the query's time grain."""
+async def test_time_shift_default_granularity_calendar(integration_env):
+    """time_shift(x, n) without granularity → calendar self-join at the query's time grain.
+
+    Filtering to completed orders leaves a gap: Jan(300) and Mar(300), no
+    completed orders in Feb. Calendar shifting matches on the actual month,
+    so the gap yields NULLs where row-based LAG/LEAD would return the
+    adjacent row's value — and reaches across the gap where LAG(2) on a
+    two-row result would fall off the edge.
+    """
     engine = integration_env
 
     query = SlayerQuery(
@@ -482,24 +489,30 @@ async def test_time_shift_row_based(integration_env):
         measures=[
             ModelMeasure(formula="total_amount:sum"),
             ModelMeasure(formula="time_shift(total_amount:sum, -1)", name="prev"),
+            ModelMeasure(formula="time_shift(total_amount:sum, -2)", name="prev2"),
             ModelMeasure(formula="time_shift(total_amount:sum, 1)", name="next"),
         ],
+        filters=["status == 'completed'"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
-    # 3 months: Jan(300), Feb(125), Mar(325)
-    assert response.row_count == 3
+    # 2 months with completed orders: Jan(300), Mar(300) — Feb is a gap
+    assert response.row_count == 2
 
-    # Row-based backward shift (LAG): first row has no previous
-    assert response.data[0]["orders.prev"] is None
-    assert response.data[1]["orders.prev"] == pytest.approx(300.0)  # Feb's prev = Jan
-    assert response.data[2]["orders.prev"] == pytest.approx(125.0)  # Mar's prev = Feb
+    # Calendar backward shift: Mar - 1 month = Feb, which has no data → NULL
+    # (row-based LAG(1) would have returned Jan's 300)
+    assert response.data[0]["orders.prev"] is None  # Jan - 1 = Dec, no data
+    assert response.data[1]["orders.prev"] is None  # Mar - 1 = Feb, gap
 
-    # Row-based forward shift (LEAD): last row has no next
-    assert response.data[0]["orders.next"] == pytest.approx(125.0)  # Jan's next = Feb
-    assert response.data[1]["orders.next"] == pytest.approx(325.0)  # Feb's next = Mar
-    assert response.data[2]["orders.next"] is None
+    # Calendar shift reaches across the gap: Mar - 2 months = Jan → 300
+    # (row-based LAG(2) on a two-row result would have returned NULL)
+    assert response.data[1]["orders.prev2"] == pytest.approx(300.0)
+
+    # Calendar forward shift: Jan + 1 month = Feb, gap → NULL
+    # (row-based LEAD(1) would have returned Mar's 300)
+    assert response.data[0]["orders.next"] is None
+    assert response.data[1]["orders.next"] is None  # Mar + 1 = Apr, no data
 
 
 async def test_time_shift_calendar_based(integration_env):

@@ -136,7 +136,7 @@ Functions apply window operations to measures:
 | `lag(x, n)` | Value N rows back (window function) | `LAG(x, n) OVER (PARTITION BY dims ORDER BY time)` |
 | `lead(x, n)` | Value N rows ahead (window function) | `LEAD(x, n) OVER (PARTITION BY dims ORDER BY time)` |
 | `change(x)` | Period-over-period difference (partition-safe, resets per group) | Desugars to `x - time_shift(x, -1)` |
-| `change_pct(x)` | Period-over-period % change, e.g. month-over-month growth (partition-safe, resets per group) | Desugars to `(x - ts) / ts` where `ts = time_shift(x, -1)` |
+| `change_pct(x)` | Period-over-period % change, e.g. month-over-month growth (partition-safe, resets per group; NULL when the prior period's value is 0 or missing) | Desugars to `CASE WHEN ts != 0 THEN (x - ts) / ts END` where `ts = time_shift(x, -1)` |
 | `consecutive_periods(predicate)` | Current trailing run length where predicate is true | Staged window CTEs with reset groups |
 | `rank(x[, partition_by=...])` | Ranking by value (descending) | `RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
 | `percent_rank(x[, partition_by=...])` | Relative rank in [0, 1] (descending) | `PERCENT_RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |

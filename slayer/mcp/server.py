@@ -354,9 +354,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 {"formula": "lag(revenue:sum, 1)"} (previous row via window function; shifts by row position, NULL at edges),
                 {"formula": "lead(revenue:sum, 1)"} (next row via window function), {"formula": "last(revenue:sum)"} (most recent),
                 {"formula": "rank(revenue:sum)"} (ranking). A bare name like {"formula": "aov"} resolves to a saved ModelMeasure on the model.
-                change / change_pct / time_shift are calendar-aware and partition-safe: they compare each row against
-                the same non-time dimension values one time grain earlier (joined on all non-time dimensions), so
-                per-group series reset cleanly — safe for grouped queries like month-over-month revenue by store.
+                change / change_pct / time_shift are calendar-aware and partition-safe: change and change_pct compare
+                each row against the prior time bucket (one step back at the query's own granularity), while time_shift
+                compares at its explicitly requested offset and granularity. All three join on the same non-time
+                dimension values, so per-group series reset cleanly — safe for grouped queries like month-over-month
+                revenue by store.
                 For period-over-period growth, prefer change_pct (or change for the absolute delta); use time_shift
                 only when you need the shifted value itself as a term in your own arithmetic.
             dimensions: List of dimension names to group by, e.g. ["status", "region"].
