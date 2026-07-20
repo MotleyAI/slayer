@@ -131,12 +131,12 @@ Functions apply window operations to measures:
 | Function | Description | SQL Generated |
 |----------|-------------|---------------|
 | `cumsum(x)` | Running total over time | `SUM(x) OVER (PARTITION BY dims ORDER BY time)` |
-| `time_shift(x, n)` | Value N periods back/ahead | Self-join CTE with INTERVAL offset |
+| `time_shift(x, n)` | Value N time buckets back/ahead (calendar-aware) | Self-join CTE with INTERVAL offset |
 | `time_shift(x, offset, gran)` | Value from a different time bucket | Self-join CTE with INTERVAL offset |
 | `lag(x, n)` | Value N rows back (window function) | `LAG(x, n) OVER (PARTITION BY dims ORDER BY time)` |
 | `lead(x, n)` | Value N rows ahead (window function) | `LEAD(x, n) OVER (PARTITION BY dims ORDER BY time)` |
-| `change(x)` | Difference from previous period | Desugars to `x - time_shift(x, -1)` |
-| `change_pct(x)` | Percentage change from previous | Desugars to `(x - ts) / ts` where `ts = time_shift(x, -1)` |
+| `change(x)` | Period-over-period difference (partition-safe, resets per group) | Desugars to `x - time_shift(x, -1)` |
+| `change_pct(x)` | Period-over-period % change, e.g. month-over-month growth (partition-safe, resets per group) | Desugars to `(x - ts) / ts` where `ts = time_shift(x, -1)` |
 | `consecutive_periods(predicate)` | Current trailing run length where predicate is true | Staged window CTEs with reset groups |
 | `rank(x[, partition_by=...])` | Ranking by value (descending) | `RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
 | `percent_rank(x[, partition_by=...])` | Relative rank in [0, 1] (descending) | `PERCENT_RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
@@ -154,6 +154,14 @@ total per status, not one running total across the whole result set.
 **Self-join transforms vs window-function transforms:**
 
 `time_shift` uses a **self-join CTE** with an INTERVAL-shifted time column. `change` and `change_pct` are desugared into a hidden `time_shift` + arithmetic expression at query enrichment time. The shifted sub-query applies the time offset everywhere (WHERE, GROUP BY, SELECT), so it can reach outside the current result set — no edge NULLs when the database has the data, and correct handling of gaps in time series.
+
+The self-join matches on **all non-time dimensions as well as the shifted time column** (e.g. `ON base.month = shifted.month AND base.store = shifted.store`), so these transforms are partition-safe: each group's series is compared only against itself, and per-group series reset cleanly. One store's first month is never diffed against another store's last month.
+
+**Intent recipes:**
+
+- Month-over-month / period-over-period growth → `change_pct(revenue:sum)` with a `time_dimensions` entry at the desired granularity. Prefer this over hand-building the ratio from `time_shift`.
+- Absolute period-over-period delta → `change(revenue:sum)`.
+- Comparing against a *different* grain than the query's (e.g. year-over-year on a monthly series), or using the shifted value as a term in custom arithmetic → `time_shift(revenue:sum, -1, 'year')`.
 
 `lag(x, n)` and `lead(x, n)` use SQL `LAG`/`LEAD` window functions directly. They are more efficient but have two trade-offs:
 

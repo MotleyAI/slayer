@@ -470,7 +470,7 @@ async def test_arithmetic_expression(integration_env):
 
 
 async def test_time_shift_row_based(integration_env):
-    """time_shift(x, -1) without granularity → LAG (previous row)."""
+    """time_shift(x, -1) without granularity → calendar self-join at the query's time grain."""
     engine = integration_env
 
     query = SlayerQuery(

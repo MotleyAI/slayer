@@ -9,10 +9,10 @@ becomes an extra CTE in the generated SQL.
 | Transform | Purpose | SQL strategy |
 |-----------|---------|--------------|
 | `cumsum(x)` | Running total over time | Window: `SUM(x) OVER (PARTITION BY dims ORDER BY time)` |
-| `time_shift(x, n)` | Value N periods back/ahead | Self-join CTE with INTERVAL offset |
+| `time_shift(x, n)` | Value N time buckets back/ahead (calendar-aware) | Self-join CTE with INTERVAL offset |
 | `time_shift(x, n, 'year')` | Value at a different granularity offset (e.g. YoY) | Self-join CTE with INTERVAL offset |
-| `change(x)` | `x − previous(x)` | Desugars to `x − time_shift(x, -1)` |
-| `change_pct(x)` | `(x − previous) / previous` | Desugars to `(x − ts) / ts` where `ts = time_shift(x, -1)` |
+| `change(x)` | Period-over-period difference (partition-safe, resets per group) | Desugars to `x − time_shift(x, -1)` |
+| `change_pct(x)` | Period-over-period % change, e.g. month-over-month growth (partition-safe) | Desugars to `(x − ts) / ts` where `ts = time_shift(x, -1)` |
 | `lag(x, n)` / `lead(x, n)` | N rows back / ahead | `LAG` / `LEAD` window fn, partitioned by dimensions |
 | `consecutive_periods(predicate)` | Current trailing run length where predicate is true | Staged window CTEs with reset groups |
 | `rank(x[, partition_by=...])` | Rank by x, descending; ties skip ranks | `RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
@@ -32,6 +32,10 @@ the previous/next value. Consequences:
 
 - No NULLs at the first / last rows when the database actually has the data.
 - Handles **gaps** in the time series correctly — shifts by calendar, not by row.
+- **Partition-safe**: the join matches on all non-time dimensions as well as the
+  shifted time column (`ON base.month = shifted.month AND base.store =
+  shifted.store`), so each group's series is compared only against itself and
+  resets cleanly per group.
 - Slightly heavier SQL.
 
 `lag` and `lead` use SQL `LAG` / `LEAD`:
@@ -42,6 +46,17 @@ the previous/next value. Consequences:
 
 Use `time_shift`, `change`, `change_pct` unless you have a specific reason to
 prefer `lag` / `lead`.
+
+**Intent recipes:**
+
+- Month-over-month / period-over-period growth → `change_pct(revenue:sum)`
+  with a `time_dimensions` entry at the desired granularity. Prefer this over
+  hand-building the ratio from `time_shift` — same partition-safe self-join,
+  cleaner SQL.
+- Absolute period-over-period delta → `change(revenue:sum)`.
+- Comparing against a *different* grain than the query's (e.g. year-over-year
+  on a monthly series), or using the shifted value as a term in custom
+  arithmetic → `time_shift(revenue:sum, -1, 'year')`.
 
 ## Time dimension requirement
 
