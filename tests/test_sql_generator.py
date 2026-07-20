@@ -1425,6 +1425,43 @@ class TestFields:
         growth_sql = next(e.sql for e in enriched.expressions if e.name == "growth")
         assert "orders._t0_growth" not in growth_sql.replace("orders._t0_growth_2", "")
 
+    async def test_hidden_transform_name_avoids_dimension_collision(
+        self, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: dimensions alias as `<model>.<name>` too, so they're reserved.
+
+        A dimension named `_t0_growth` otherwise claims the same alias as the
+        shift hoisted out of `growth`, and the measure silently computes
+        `revenue - <dimension>` instead of the period difference.
+        """
+        orders_model.default_time_dimension = "created_at"
+        orders_model.columns.append(
+            Column(name="_t0_growth", sql="customer_id", type=DataType.DOUBLE)
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="_t0_growth")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+            ],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+
+        dim_aliases = {d.alias for d in enriched.dimensions} | {
+            td.alias for td in enriched.time_dimensions
+        }
+        transform_aliases = {t.alias for t in enriched.transforms}
+        assert not (dim_aliases & transform_aliases)
+
     async def test_dev_1692_repro_shape(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:

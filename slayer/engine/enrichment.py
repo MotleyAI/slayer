@@ -610,15 +610,19 @@ async def enrich_query(
 
     # DEV-1692: names for transforms hoisted out of an arithmetic formula are
     # derived from the owning measure's field_name, which keeps them distinct
-    # from one another — but nothing stops a user from *also* declaring a
-    # measure literally named ``_t0_growth``. Both would then claim the alias
-    # ``<model>._t0_growth``: the self-join CTE projects two columns under that
-    # name and the hoisted reference silently resolves to the user's measure
-    # (no error, wrong numbers). Allocate against everything already spoken
-    # for instead of trusting field_name uniqueness on its own.
-    _reserved_public_names: set[str] = {
-        _public_field_name(qf) for qf in (query.measures or [])
-    }
+    # from one another — but nothing stops a user from *also* selecting a
+    # measure or dimension literally named ``_t0_growth``. Both would then
+    # claim the alias ``<model>._t0_growth``: the self-join CTE projects two
+    # columns under that name and the hoisted reference silently resolves to
+    # the user's column (no error, wrong numbers). Allocate against every
+    # projected name instead of trusting field_name uniqueness on its own.
+    # Dimensions and time dimensions alias as ``<model>.<name>`` just like
+    # hoisted transforms do, so they are reserved by bare name too.
+    _reserved_public_names: set[str] = (
+        {_public_field_name(qf) for qf in (query.measures or [])}
+        | {d.name for d in dimensions}
+        | {td.name for td in time_dimensions}
+    )
     _hidden_names: set[str] = set()
 
     def _allocate_hidden_name(preferred: str) -> str:
