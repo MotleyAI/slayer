@@ -1,6 +1,6 @@
 # Models
 
-A model is SLayer's view of a database table or an underlying SQL query. It declares the columns, named metric formulas, joins, and always-applied filters that queries can build on. Models are defined as YAML (one file per model under `models/<data_source>/`) or created via API/MCP — the two paths produce the same persisted object.
+A model is SLayer's view of a database table or an underlying SQL query. It declares the columns, named metric formulas, joins, and always-applied filters that queries can build on. Models are defined as YAML (one file per model under `models/<data_source>/`) or created via API/MCP — the two paths produce the same persisted object. Non-portable ids use reversible UTF-8 hex path components under `models/.encoded/` so filesystem normalization cannot merge distinct model identities.
 
 A tiny example to anchor what follows:
 

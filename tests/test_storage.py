@@ -4,6 +4,7 @@ import os
 import tempfile
 
 import pytest
+import yaml
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
@@ -74,6 +75,32 @@ class TestModelStorage:
         loaded = await storage.get_model("test_model")
         assert loaded.description == "Updated description"
 
+    async def test_case_sensitive_model_ids_do_not_alias(
+        self, storage: YAMLStorage, sample_model: SlayerModel
+    ) -> None:
+        upper = sample_model.model_copy(
+            update={"name": "X", "sql_table": "public.upper"},
+        )
+        lower = sample_model.model_copy(
+            update={"name": "x", "sql_table": "public.lower"},
+        )
+        legacy_dir = os.path.join(storage.models_dir, "test_ds")
+        os.makedirs(legacy_dir)
+        with open(os.path.join(legacy_dir, "X.yaml"), "w") as f:
+            yaml.safe_dump(
+                upper.model_dump(mode="json", exclude_none=True), f,
+            )
+        storage = YAMLStorage(base_dir=storage.base_dir)
+        assert not os.path.exists(os.path.join(legacy_dir, "X.yaml"))
+        await storage.save_model(lower)
+
+        assert (
+            await storage.get_model("X", data_source="test_ds")
+        ).sql_table == "public.upper"
+        assert (
+            await storage.get_model("x", data_source="test_ds")
+        ).sql_table == "public.lower"
+
     async def test_empty_model_file_raises_clear_error(
         self, storage: YAMLStorage, sample_model: SlayerModel
     ) -> None:
@@ -130,6 +157,30 @@ class TestDatasourceStorage:
         loaded = await storage.get_datasource("env_ds")
         assert loaded.host == "resolved-host"
 
+    async def test_case_sensitive_datasource_ids_do_not_alias(
+        self, storage: YAMLStorage, sample_datasource: DatasourceConfig
+    ) -> None:
+        upper = sample_datasource.model_copy(
+            update={"name": "X", "host": "upper"},
+        )
+        lower = sample_datasource.model_copy(
+            update={"name": "x", "host": "lower"},
+        )
+        with open(
+            os.path.join(storage.datasources_dir, "X.yaml"), "w",
+        ) as f:
+            yaml.safe_dump(
+                upper.model_dump(mode="json", exclude_none=True), f,
+            )
+        storage = YAMLStorage(base_dir=storage.base_dir)
+        assert not os.path.exists(
+            os.path.join(storage.datasources_dir, "X.yaml"),
+        )
+        await storage.save_datasource(lower)
+
+        assert (await storage.get_datasource("X")).host == "upper"
+        assert (await storage.get_datasource("x")).host == "lower"
+
     async def test_malformed_yaml_raises_valueerror(self, storage: YAMLStorage) -> None:
         path = os.path.join(storage.datasources_dir, "bad.yaml")
         with open(path, "w") as f:
@@ -158,3 +209,24 @@ class TestDatasourceStorage:
             f.write("name: bad\ntype: [unclosed\n")
         names = await storage.list_datasources()
         assert "bad" in names
+
+    def test_migration_refuses_divergent_duplicate(
+        self, tmp_path,
+    ) -> None:
+        datasources_dir = tmp_path / "datasources"
+        encoded_dir = datasources_dir / ".encoded"
+        encoded_dir.mkdir(parents=True)
+        (tmp_path / "models").mkdir()
+        (tmp_path / "memories").mkdir()
+        (datasources_dir / "x.yaml").write_text(
+            "name: x\ntype: postgres\nhost: raw\n",
+        )
+        (encoded_dir / "78.yaml").write_text(
+            "name: x\ntype: postgres\nhost: encoded\n",
+        )
+
+        with pytest.raises(ValueError, match="different content"):
+            YAMLStorage(base_dir=str(tmp_path))
+
+        assert (datasources_dir / "x.yaml").exists()
+        assert (encoded_dir / "78.yaml").exists()

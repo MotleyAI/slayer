@@ -14,6 +14,7 @@ from collections.abc import Iterator
 
 import pytest
 
+from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_storage import SQLiteStorage
@@ -27,6 +28,41 @@ def storage(request: pytest.FixtureRequest) -> Iterator[StorageBackend]:
             yield YAMLStorage(base_dir=tmpdir)
         else:
             yield SQLiteStorage(db_path=os.path.join(tmpdir, "test.db"))
+
+
+# ---------------------------------------------------------------------------
+# Case-sensitive entity identity
+# ---------------------------------------------------------------------------
+
+
+class TestCaseSensitiveEntityIds:
+    async def test_datasources(self, storage: StorageBackend) -> None:
+        await storage.save_datasource(
+            DatasourceConfig(name="X", type="postgres", host="upper"),
+        )
+        await storage.save_datasource(
+            DatasourceConfig(name="x", type="postgres", host="lower"),
+        )
+
+        assert (await storage.get_datasource("X")).host == "upper"
+        assert (await storage.get_datasource("x")).host == "lower"
+        assert await storage.list_datasources() == ["X", "x"]
+
+    async def test_models(self, storage: StorageBackend) -> None:
+        await storage.save_model(
+            SlayerModel(name="X", data_source="db", sql_table="upper"),
+        )
+        await storage.save_model(
+            SlayerModel(name="x", data_source="db", sql_table="lower"),
+        )
+
+        assert (
+            await storage.get_model("X", data_source="db")
+        ).sql_table == "upper"
+        assert (
+            await storage.get_model("x", data_source="db")
+        ).sql_table == "lower"
+        assert await storage.list_models("db") == ["X", "x"]
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +228,9 @@ class TestUserSuppliedId:
         lower = await storage.get_memory("x")
         assert upper.learning == "upper"
         assert lower.learning == "lower"
+        assert {memory.id for memory in await storage.list_memories()} == {
+            "X", "x",
+        }
 
     async def test_zero_user_id_distinct_from_auto(
         self, storage: StorageBackend,

@@ -9,6 +9,11 @@ On open, ``migrate_yaml_layout`` walks the legacy flat layout and moves each
 file into the new subdirectory. See ``slayer/storage/v4_migration.py`` for the
 contract details.
 
+Portable lowercase ASCII ids retain that readable layout. Other ids use a
+reversible UTF-8 hex filename below a reserved ``.encoded`` directory, so
+case folding and Unicode normalization cannot alias distinct logical ids.
+Legacy paths remain readable only when their spelling matches exactly.
+
 DEV-1405: embedding rows now live in a SQLite sidecar at
 ``<base_dir>/embeddings.db`` (via :class:`SidecarEmbeddingStore`) instead of
 a single ``embeddings.yaml`` whose whole-file-rewrite-on-save bottlenecked
@@ -22,6 +27,7 @@ to ``counters.yaml.legacy`` if present. Both renames are idempotent: if a
 """
 
 import contextlib
+import filecmp
 import os
 from typing import Any
 from collections.abc import Iterator
@@ -50,8 +56,174 @@ from slayer.storage.v4_migration import migrate_yaml_layout
 
 _LEGACY_RENAMES = ("embeddings.yaml", "counters.yaml")
 _YAML_EXTS = (".yaml", ".yml")  # NOSONAR(S1192) — full filenames in _LEGACY_RENAMES are semantically distinct from this extension tuple
+_ENCODED_IDS_DIR = ".encoded"
+_PORTABLE_STORAGE_ID_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz0123456789._-"
+)
+_HEX_CHARS = frozenset("0123456789abcdef")
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)}
+    | {f"lpt{i}" for i in range(1, 10)}
+)
 
 _MD_FENCE = "---\n"
+
+
+# ---- filesystem-safe logical ids ------------------------------------------
+
+
+def _encode_storage_id(value: str) -> str:
+    """Return a reversible, filesystem-independent filename component."""
+    return value.encode("utf-8").hex()
+
+
+def _decode_storage_id(value: str) -> str | None:
+    """Decode :func:`_encode_storage_id`; ignore unrelated/corrupt entries."""
+    if not value or any(ch not in _HEX_CHARS for ch in value):
+        return None
+    try:
+        return bytes.fromhex(value).decode("utf-8")
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def _is_portable_storage_id(value: str) -> bool:
+    """Whether ``value`` is already stable on supported filesystems."""
+    return (
+        bool(value)
+        and all(ch in _PORTABLE_STORAGE_ID_CHARS for ch in value)
+        and value.split(".", 1)[0] not in _WINDOWS_RESERVED_NAMES
+    )
+
+
+def _exact_child_path(parent: str, name: str) -> str | None:
+    """Return a child only when its spelling exactly matches ``name``.
+
+    ``exists(parent/name)`` is insufficient on case-insensitive filesystems:
+    asking for ``x.yaml`` succeeds when only ``X.yaml`` exists.
+    """
+    try:
+        if name not in os.listdir(parent):
+            return None
+    except FileNotFoundError:
+        return None
+    return os.path.join(parent, name)
+
+
+def _encoded_file_path(parent: str, value: str, suffix: str) -> str:
+    return os.path.join(
+        parent, _ENCODED_IDS_DIR, f"{_encode_storage_id(value)}{suffix}",
+    )
+
+
+def _storage_file_path(parent: str, value: str, suffix: str) -> str:
+    """Choose a portable raw path, or encoded storage when raw would alias."""
+    encoded = _encoded_file_path(parent, value, suffix)
+    if os.path.isfile(encoded) or not _is_portable_storage_id(value):
+        return encoded
+    raw = os.path.join(parent, f"{value}{suffix}")
+    exact = _exact_child_path(parent, f"{value}{suffix}")
+    if exact is not None:
+        return exact
+    return encoded if os.path.exists(raw) else raw
+
+
+def _move_identity_files(moves: list[tuple[str, str]]) -> None:
+    """Preflight every move, then atomically relocate the legacy files."""
+    sources_by_target: dict[str, str] = {}
+    for source, target in moves:
+        prior = sources_by_target.setdefault(target, source)
+        if prior != source:
+            raise ValueError(
+                f"Cannot migrate YAML storage identities: {prior!r} and "
+                f"{source!r} map to the same target {target!r}."
+            )
+        if os.path.exists(target) and (
+            not os.path.isfile(target)
+            or not filecmp.cmp(source, target, shallow=False)
+        ):
+            raise ValueError(
+                f"Cannot migrate YAML storage identity {source!r}: target "
+                f"{target!r} already exists with different content."
+            )
+
+    for source, target in moves:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        if os.path.exists(target):
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(source)
+            continue
+        try:
+            os.replace(source, target)
+        except FileNotFoundError:
+            # A concurrent opener may have completed the same atomic move.
+            if not os.path.isfile(target):
+                raise
+
+
+def migrate_identity_paths(base_dir: str) -> None:
+    """Move non-portable legacy filenames into the encoded namespace."""
+    moves: list[tuple[str, str]] = []
+
+    datasources_dir = os.path.join(base_dir, "datasources")
+    for filename in os.listdir(datasources_dir):
+        if not filename.endswith(".yaml"):
+            continue
+        name = filename[: -len(".yaml")]
+        target = _encoded_file_path(datasources_dir, name, ".yaml")
+        if _is_portable_storage_id(name) and not os.path.exists(target):
+            continue
+        moves.append((
+            os.path.join(datasources_dir, filename),
+            target,
+        ))
+
+    models_dir = os.path.join(base_dir, "models")
+    for data_source in os.listdir(models_dir):
+        if data_source == _ENCODED_IDS_DIR:
+            continue
+        ds_dir = os.path.join(models_dir, data_source)
+        if not os.path.isdir(ds_dir):
+            continue
+        for filename in os.listdir(ds_dir):
+            if not filename.endswith(".yaml"):
+                continue
+            name = filename[: -len(".yaml")]
+            target = os.path.join(
+                models_dir,
+                _ENCODED_IDS_DIR,
+                _encode_storage_id(data_source),
+                f"{_encode_storage_id(name)}.yaml",
+            )
+            if (
+                _is_portable_storage_id(data_source)
+                and _is_portable_storage_id(name)
+                and not os.path.exists(target)
+            ):
+                continue
+            moves.append((
+                os.path.join(ds_dir, filename),
+                target,
+            ))
+
+    memories_dir = os.path.join(base_dir, "memories")
+    for filename in os.listdir(memories_dir):
+        if not filename.endswith(".md"):
+            continue
+        memory_id = filename[: -len(".md")]
+        target = _encoded_file_path(memories_dir, memory_id, ".md")
+        if (
+            _is_portable_storage_id(memory_id)
+            and not os.path.exists(target)
+        ):
+            continue
+        moves.append((
+            os.path.join(memories_dir, filename),
+            target,
+        ))
+
+    _move_identity_files(moves)
 
 
 # ---- memory <-> .md (DEV-1658) --------------------------------------------
@@ -141,7 +313,7 @@ def _normalize_legacy_memory_rows(
 
 def migrate_memories_layout(base_dir: str) -> None:
     """DEV-1658: one-time migration of a legacy flat ``memories.yaml`` into
-    per-id ``memories/<id>.md`` files, then delete the legacy file.
+    per-id Markdown files, then delete the legacy file.
 
     Fails loud (raises, legacy file preserved) on invalid YAML, a non-list
     root, or a non-dict row — a corrupt file must never be treated as empty
@@ -184,12 +356,15 @@ def migrate_memories_layout(base_dir: str) -> None:
             )
     normalized = _normalize_legacy_memory_rows(rows)
     mem_dir = os.path.join(base_dir, "memories")
-    os.makedirs(mem_dir, exist_ok=True)
     for r in normalized:
         mem = Memory.model_validate(r)
-        _atomic_write_text(
-            os.path.join(mem_dir, f"{mem.id}.md"), _memory_to_md(mem),
-        )
+        target = _storage_file_path(mem_dir, mem.id, ".md")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        _atomic_write_text(target, _memory_to_md(mem))
+        legacy_path = _exact_child_path(mem_dir, f"{mem.id}.md")
+        if legacy_path is not None and legacy_path != target:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(legacy_path)
     # Guard the removal against a concurrent migrator (two workers opening the
     # same fresh base_dir both run this once): the .md writes are atomic and
     # idempotent, so only the double os.remove would crash. FileNotFoundError
@@ -225,6 +400,9 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         # per-id ``.md`` files. Fails loud on a corrupt/non-list legacy file
         # (never deletes it); a crash mid-migration re-runs cleanly.
         migrate_memories_layout(base_dir)
+        # Atomically move case/normalization-sensitive legacy paths into the
+        # reversible encoded namespace. All collisions are checked first.
+        migrate_identity_paths(base_dir)
         # Idempotent — rename pre-DEV-1405 sidecar files out of the way.
         # If a ``.legacy`` companion already exists (user upgraded twice or
         # manually restored), leave both files in place so we never clobber
@@ -264,31 +442,101 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     # ---- internal helpers --------------------------------------------------
 
+    def _encoded_model_path(self, data_source: str, name: str) -> str:
+        return os.path.join(
+            self.models_dir,
+            _ENCODED_IDS_DIR,
+            _encode_storage_id(data_source),
+            f"{_encode_storage_id(name)}.yaml",
+        )
+
     def _model_path(self, data_source: str, name: str) -> str:
-        return os.path.join(self.models_dir, data_source, f"{name}.yaml")
+        encoded = self._encoded_model_path(data_source, name)
+        if os.path.isfile(encoded):
+            return encoded
+        if not (
+            _is_portable_storage_id(data_source)
+            and _is_portable_storage_id(name)
+        ):
+            return encoded
+
+        raw_ds_dir = os.path.join(self.models_dir, data_source)
+        exact_ds_dir = _exact_child_path(self.models_dir, data_source)
+        if exact_ds_dir is None:
+            if os.path.exists(raw_ds_dir):
+                return encoded
+            return os.path.join(raw_ds_dir, f"{name}.yaml")
+        if not os.path.isdir(exact_ds_dir):
+            return encoded
+        raw_path = os.path.join(exact_ds_dir, f"{name}.yaml")
+        exact_path = _exact_child_path(exact_ds_dir, f"{name}.yaml")
+        if exact_path is not None:
+            return exact_path
+        return encoded if os.path.exists(raw_path) else raw_path
+
+    def _legacy_model_path(
+        self, data_source: str, name: str,
+    ) -> str | None:
+        ds_dir = _exact_child_path(self.models_dir, data_source)
+        if ds_dir is None or not os.path.isdir(ds_dir):
+            return None
+        path = _exact_child_path(ds_dir, f"{name}.yaml")
+        return path if path is not None and os.path.isfile(path) else None
+
+    def _existing_model_path(
+        self, data_source: str, name: str,
+    ) -> str | None:
+        path = self._model_path(data_source, name)
+        if (
+            path == self._encoded_model_path(data_source, name)
+            and os.path.isfile(path)
+        ):
+            return path
+        return self._legacy_model_path(data_source, name)
 
     # ---- model CRUD --------------------------------------------------------
 
     async def _save_model_impl(self, model: SlayerModel) -> None:
-        target_dir = os.path.join(self.models_dir, model.data_source)
-        os.makedirs(target_dir, exist_ok=True)
-        path = os.path.join(target_dir, f"{model.name}.yaml")
+        path = self._model_path(model.data_source, model.name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         data = model.model_dump(mode="json", exclude_none=True)
         with open(path, "w") as f:
             yaml.dump(data, f, sort_keys=False)
+        legacy_path = self._legacy_model_path(
+            model.data_source, model.name,
+        )
+        if legacy_path is not None and legacy_path != path:
+            os.remove(legacy_path)
 
     async def _list_all_model_identities(self) -> list[tuple[str, str]]:
-        result: list[tuple[str, str]] = []
+        result: set[tuple[str, str]] = set()
         if not os.path.isdir(self.models_dir):
-            return result
+            return []
+
+        encoded_root = os.path.join(self.models_dir, _ENCODED_IDS_DIR)
+        if os.path.isdir(encoded_root):
+            for encoded_ds in os.listdir(encoded_root):
+                data_source = _decode_storage_id(encoded_ds)
+                ds_dir = os.path.join(encoded_root, encoded_ds)
+                if data_source is None or not os.path.isdir(ds_dir):
+                    continue
+                for filename in os.listdir(ds_dir):
+                    if not filename.endswith(_YAML_EXTS):
+                        continue
+                    name = _decode_storage_id(filename.rsplit(".", 1)[0])
+                    if name is not None:
+                        result.add((data_source, name))
+
         for ds in sorted(os.listdir(self.models_dir)):
+            if ds == _ENCODED_IDS_DIR:
+                continue
             ds_dir = os.path.join(self.models_dir, ds)
             if not os.path.isdir(ds_dir):
                 continue
             for filename in sorted(os.listdir(ds_dir)):
-                if filename.endswith((".yaml", ".yml")):
-                    result.append((ds, filename.rsplit(".", 1)[0]))
-        return result
+                if filename.endswith(_YAML_EXTS):
+                    result.add((ds, filename.rsplit(".", 1)[0]))
+        return sorted(result)
 
     async def get_model(
         self,
@@ -299,8 +547,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         if target is None:
             return None
         data_source, name = target
-        path = self._model_path(data_source, name)
-        if not os.path.exists(path):  # NOSONAR(S6549) — name/data_source were sanitized by _resolve_target_or_none above (rejects '..', path separators, NULs); SlayerModel Pydantic validators sanitize the save path
+        path = self._existing_model_path(data_source, name)
+        if path is None:  # NOSONAR(S6549) — name/data_source were sanitized by _resolve_target_or_none above (rejects '..', path separators, NULs); SlayerModel Pydantic validators sanitize the save path
             return None
         try:
             with open(path) as f:
@@ -319,11 +567,15 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def _delete_model_row(
         self, *, data_source: str, name: str,
     ) -> bool:
-        path = self._model_path(data_source, name)
-        if os.path.exists(path):
-            os.remove(path)
-            return True
-        return False
+        deleted = False
+        for path in (
+            self._model_path(data_source, name),
+            self._legacy_model_path(data_source, name),
+        ):
+            if path is not None and os.path.isfile(path):
+                os.remove(path)
+                deleted = True
+        return deleted
 
     async def update_column_sampled(
         self,
@@ -335,8 +587,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         sampled_values: list[str] | None,
         distinct_count: int | None,
     ) -> None:
-        path = self._model_path(data_source, model_name)
-        if not os.path.exists(path):
+        path = self._existing_model_path(data_source, model_name)
+        if path is None:
             raise ValueError(
                 f"update_column_sampled: model {model_name!r} in datasource "
                 f"{data_source!r} not found."
@@ -363,17 +615,39 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     # ---- datasource CRUD ---------------------------------------------------
 
+    def _datasource_path(self, name: str) -> str:
+        return _storage_file_path(
+            self.datasources_dir, name, ".yaml",
+        )
+
+    def _legacy_datasource_path(self, name: str) -> str | None:
+        path = _exact_child_path(self.datasources_dir, f"{name}.yaml")
+        return path if path is not None and os.path.isfile(path) else None
+
+    def _existing_datasource_path(self, name: str) -> str | None:
+        path = self._datasource_path(name)
+        encoded = _encoded_file_path(
+            self.datasources_dir, name, ".yaml",
+        )
+        if path == encoded and os.path.isfile(path):
+            return path
+        return self._legacy_datasource_path(name)
+
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
-        path = os.path.join(self.datasources_dir, f"{datasource.name}.yaml")
+        path = self._datasource_path(datasource.name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         data = datasource.model_dump(mode="json", exclude_none=True)
         with open(path, "w") as f:
             yaml.dump(data, f, sort_keys=False)
+        legacy_path = self._legacy_datasource_path(datasource.name)
+        if legacy_path is not None and legacy_path != path:
+            os.remove(legacy_path)
 
     async def get_datasource(self, name: str) -> DatasourceConfig | None:
         # DEV-1405: sanitize before composing the filesystem path.
         _validate_path_component(name, kind="datasource name")
-        path = os.path.join(self.datasources_dir, f"{name}.yaml")
-        if not os.path.exists(path):
+        path = self._existing_datasource_path(name)
+        if path is None:
             return None
         try:
             with open(path) as f:
@@ -390,18 +664,32 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             ) from exc
 
     async def list_datasources(self) -> list[str]:
-        result = []
+        result: set[str] = set()
+        encoded_dir = os.path.join(
+            self.datasources_dir, _ENCODED_IDS_DIR,
+        )
+        if os.path.isdir(encoded_dir):
+            for filename in os.listdir(encoded_dir):
+                if not filename.endswith(_YAML_EXTS):
+                    continue
+                name = _decode_storage_id(filename.rsplit(".", 1)[0])
+                if name is not None:
+                    result.add(name)
         for filename in sorted(os.listdir(self.datasources_dir)):
-            if filename.endswith((".yaml", ".yml")):
-                result.append(filename.rsplit(".", 1)[0])
-        return result
+            if filename.endswith(_YAML_EXTS):
+                result.add(filename.rsplit(".", 1)[0])
+        return sorted(result)
 
     async def _delete_datasource_row(self, name: str) -> bool:
-        path = os.path.join(self.datasources_dir, f"{name}.yaml")
-        if os.path.exists(path):
-            os.remove(path)
-            return True
-        return False
+        deleted = False
+        for path in (
+            self._datasource_path(name),
+            self._legacy_datasource_path(name),
+        ):
+            if path is not None and os.path.isfile(path):
+                os.remove(path)
+                deleted = True
+        return deleted
 
     # ---- datasource priority -----------------------------------------------
 
@@ -453,17 +741,43 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         # (CWE-22). The forbidden set includes "/" and "\\", so a valid id is
         # always a single safe path segment.
         _validate_memory_id_charset(memory_id)
-        return os.path.join(self._memories_dir, f"{memory_id}.md")
+        return _storage_file_path(
+            self._memories_dir, memory_id, ".md",
+        )
+
+    def _legacy_memory_md_path(self, memory_id: str) -> str | None:
+        _validate_memory_id_charset(memory_id)
+        path = _exact_child_path(self._memories_dir, f"{memory_id}.md")
+        return path if path is not None and os.path.isfile(path) else None
+
+    def _existing_memory_md_path(self, memory_id: str) -> str | None:
+        path = self._memory_md_path(memory_id)
+        encoded = _encoded_file_path(
+            self._memories_dir, memory_id, ".md",
+        )
+        if path == encoded and os.path.isfile(path):
+            return path
+        return self._legacy_memory_md_path(memory_id)
 
     def _memory_ids_on_disk(self) -> list[str]:
-        """Every id with a ``memories/<id>.md`` file (stems, ``.md`` stripped)."""
+        """Every id stored in the encoded or legacy per-memory layout."""
         if not os.path.isdir(self._memories_dir):
             return []
-        return [
+        result: set[str] = set()
+        encoded_dir = os.path.join(self._memories_dir, _ENCODED_IDS_DIR)
+        if os.path.isdir(encoded_dir):
+            for filename in os.listdir(encoded_dir):
+                if not filename.endswith(".md"):
+                    continue
+                memory_id = _decode_storage_id(filename[: -len(".md")])
+                if memory_id is not None:
+                    result.add(memory_id)
+        result.update(
             fname[: -len(".md")]
             for fname in os.listdir(self._memories_dir)
             if fname.endswith(".md")
-        ]
+        )
+        return sorted(result)
 
     async def _next_memory_seq(self) -> str:
         """DEV-1658: next int-shaped id from the ``memories/`` dir stems.
@@ -520,17 +834,23 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     async def _save_memory_row(self, memory: Memory) -> None:
         with self._memories_file_lock():
-            os.makedirs(self._memories_dir, exist_ok=True)
+            path = self._memory_md_path(memory.id)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             _atomic_write_text(
-                self._memory_md_path(memory.id), _memory_to_md(memory),
+                path, _memory_to_md(memory),
             )
+            legacy_path = self._legacy_memory_md_path(memory.id)
+            if legacy_path is not None and legacy_path != path:
+                os.remove(legacy_path)
 
     async def _get_memory_row(self, memory_id: str) -> Memory | None:
         # Lock-free read: writes are atomic (temp + os.replace), so a reader
         # always sees a complete old-or-new file. A concurrent delete between
         # the check and the open surfaces as FileNotFoundError → treat as
         # "missing" (return None) rather than crash.
-        path = self._memory_md_path(memory_id)
+        path = self._existing_memory_md_path(memory_id)
+        if path is None:
+            return None
         try:
             with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
                 return _md_to_memory(memory_id, f.read())
@@ -542,7 +862,9 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     ) -> list[Memory]:
         memories: list[Memory] = []
         for mid in self._memory_ids_on_disk():
-            path = self._memory_md_path(mid)
+            path = self._existing_memory_md_path(mid)
+            if path is None:
+                continue
             try:
                 with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
                     memories.append(_md_to_memory(mid, f.read()))
@@ -559,11 +881,15 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     async def _delete_memory_row(self, memory_id: str) -> bool:
         with self._memories_file_lock():
-            path = self._memory_md_path(memory_id)
-            if not os.path.exists(path):
-                return False
-            os.remove(path)
-            return True
+            deleted = False
+            for path in (
+                self._memory_md_path(memory_id),
+                self._legacy_memory_md_path(memory_id),
+            ):
+                if path is not None and os.path.isfile(path):
+                    os.remove(path)
+                    deleted = True
+            return deleted
 
     @contextlib.contextmanager
     def _memories_file_lock(self) -> Iterator[None]:

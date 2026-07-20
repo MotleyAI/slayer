@@ -173,13 +173,16 @@ For retrieval, see [`search`](search.md) (MCP `search`, REST `POST
 
 ## Storage layout
 
-YAML stores one Markdown file per memory at `memories/<id>.md` — YAML
-frontmatter for the structured fields (`description`, `entities`,
-`query`, `created_at`, `version`) and the Markdown body as the
-`learning`. The id is the filename (not repeated in the frontmatter).
-A legacy flat `memories.yaml` is migrated into per-file `.md` on first
-open (and then deleted). SQLite uses a `memories` table plus a
-`memory_entities` index table for the entity-overlap filter.
+YAML stores one Markdown file per memory. Portable lowercase ASCII ids
+use `memories/<id>.md`; other ids use
+`memories/.encoded/<utf8-hex-id>.md`, which prevents filesystem case folding
+or Unicode normalization from merging distinct ids. YAML frontmatter holds
+the structured fields (`description`, `entities`, `query`, `created_at`,
+`version`) and the Markdown body is the `learning`. The id is derived from the
+reversible filename (not repeated in the frontmatter). A legacy flat
+`memories.yaml` is migrated into per-file `.md` on first open (and then
+deleted). SQLite uses a `memories` table plus a `memory_entities` index table
+for the entity-overlap filter.
 
 IDs are non-empty strings (DEV-1428). The auto-allocator walks
 `max(int-shaped id) + 1` over the existing corpus where "int-shaped"

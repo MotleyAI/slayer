@@ -19,7 +19,7 @@ import yaml
 from slayer.core.errors import MemoryNotFoundError
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
-from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.yaml_storage import YAMLStorage, _memory_to_md
 
 
 @pytest.fixture
@@ -294,6 +294,40 @@ class TestMigration:
         assert got.learning == "with query"
         assert got.description == "preview"
         assert got.query == q
+
+    async def test_migration_preserves_case_sensitive_ids(
+        self, base_dir: str,
+    ) -> None:
+        rows = [
+            Memory(id="X", learning="upper", entities=[]).model_dump(
+                mode="json",
+            ),
+            Memory(id="x", learning="lower", entities=[]).model_dump(
+                mode="json",
+            ),
+        ]
+        self._write_legacy(base_dir, rows)
+        storage = YAMLStorage(base_dir=base_dir)
+
+        assert (await storage.get_memory("X")).learning == "upper"
+        assert (await storage.get_memory("x")).learning == "lower"
+        assert storage._memory_md_path("X") != storage._memory_md_path("x")
+
+    async def test_open_migrates_nonportable_per_file_id(
+        self, base_dir: str,
+    ) -> None:
+        mem_dir = os.path.join(base_dir, "memories")
+        os.makedirs(mem_dir, exist_ok=True)
+        legacy_path = os.path.join(mem_dir, "X.md")
+        with open(legacy_path, "w") as f:
+            f.write(_memory_to_md(
+                Memory(id="X", learning="upper", entities=[]),
+            ))
+
+        storage = YAMLStorage(base_dir=base_dir)
+
+        assert not os.path.exists(legacy_path)
+        assert (await storage.get_memory("X")).learning == "upper"
 
     def test_second_construction_is_noop(self, base_dir: str) -> None:
         rows = [Memory(id="1", learning="x", entities=[]

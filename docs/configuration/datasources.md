@@ -1,6 +1,10 @@
 # Datasources
 
-Datasources configure database connections. They are stored as individual YAML files in the `datasources/` directory.
+Datasources configure database connections. They are stored as individual YAML
+files in the `datasources/` directory. Human-authored, portable lowercase
+filenames keep the layout shown below; ids that are not portable across
+filesystems use a reversible UTF-8 hex filename under
+`datasources/.encoded/`.
 
 ## YAML Format
 
