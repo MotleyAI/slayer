@@ -8,26 +8,40 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  label: Store ID
   hidden: false
 - name: name
   sql: name
   type: TEXT
   primary_key: false
+  description: Store name.
+  label: Store
   hidden: false
 - name: opened_at
   sql: opened_at
   type: DATE
   primary_key: false
+  description: When the store opened.
+  label: Opened
   hidden: false
 - name: tax_rate
   sql: tax_rate
   type: DOUBLE
   primary_key: false
+  description: Local sales-tax rate.
+  label: Tax Rate
   hidden: false
   format:
-    type: float
-measures: []
+    type: percent
+    precision: 1
+measures:
+- formula: id:count_distinct
+  name: store_count
+  label: Stores
+  description: Number of stores.
+  type: INT
 aggregations: []
 joins: []
 filters: []
+description: Physical Jaffle Shop locations.
 hidden: false
