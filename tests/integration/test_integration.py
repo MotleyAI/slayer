@@ -531,6 +531,52 @@ async def test_time_shift_calendar_based(integration_env):
     assert response.data[2]["orders.prev_month"] == pytest.approx(125.0)
 
 
+async def test_multiple_time_shifts_in_one_query(integration_env):
+    """DEV-1692: two arithmetic-wrapped time_shifts in one query.
+
+    Used to fail outright with a duplicate-CTE error; the offsets are kept
+    distinct here (-1 vs -2) so a regression that re-collapses them onto one
+    shared CTE shows up as wrong values rather than just a parser error.
+    """
+    engine = integration_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        measures=[
+            ModelMeasure(formula="total_amount:sum"),
+            ModelMeasure(
+                formula="total_amount:sum - time_shift(total_amount:sum, -1, 'month')",
+                name="growth_1m",
+            ),
+            ModelMeasure(
+                formula="total_amount:sum - time_shift(total_amount:sum, -2, 'month')",
+                name="growth_2m",
+            ),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = await engine.execute(query)
+
+    # 3 months: Jan(300), Feb(125), Mar(325)
+    assert response.row_count == 3
+
+    # No month two back from Jan/Feb, and none one back from Jan → NULL
+    assert response.data[0]["orders.growth_1m"] is None
+    assert response.data[0]["orders.growth_2m"] is None
+    assert response.data[1]["orders.growth_2m"] is None
+
+    # Feb vs Jan
+    assert response.data[1]["orders.growth_1m"] == pytest.approx(125.0 - 300.0)
+    # Mar vs Feb (-1) and Mar vs Jan (-2) must differ — same-CTE collapse
+    # would make both read the -1 shift.
+    assert response.data[2]["orders.growth_1m"] == pytest.approx(325.0 - 125.0)
+    assert response.data[2]["orders.growth_2m"] == pytest.approx(325.0 - 300.0)
+
+
 async def test_time_shift_with_date_range(integration_env):
     """time_shift with date_range should fetch shifted data from outside the filtered range."""
     engine = integration_env

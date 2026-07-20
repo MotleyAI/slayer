@@ -882,13 +882,30 @@ async def enrich_query(
         elif isinstance(spec, MixedArithmeticField):
             for mname in spec.measure_names:
                 await _ensure_measure_from_spec(mname, spec.agg_refs)
+            # DEV-1692: the ``_t{n}`` placeholder counter restarts on every
+            # formula parse, so two measures that each wrap a transform in
+            # arithmetic would both flatten under the name ``_t0`` — colliding
+            # on the self-join CTE names (``shifted__t0``) and, worse, on the
+            # expression alias, silently making the second measure read the
+            # first one's value. Qualify with the owning measure's field_name
+            # (unique per query), mirroring the ``_ts_{field_name}`` naming the
+            # change/change_pct desugar already uses.
+            placeholder_aliases: list[tuple[str, str]] = []
             for placeholder, sub_transform in spec.sub_transforms:
-                await _flatten_spec(sub_transform, placeholder)
+                sub_alias = await _flatten_spec(
+                    sub_transform, f"{placeholder}_{field_name}"
+                )
+                placeholder_aliases.append((placeholder, sub_alias))
+            for placeholder, sub_alias in placeholder_aliases:
+                known_aliases[placeholder] = sub_alias
+            resolved_sql = _resolve_sql(spec.sql)
+            for placeholder, _ in placeholder_aliases:
+                known_aliases.pop(placeholder, None)
             alias = f"{model_name_str}.{field_name}"
             enriched_expressions.append(
                 EnrichedExpression(
                     name=field_name,
-                    sql=_resolve_sql(spec.sql),
+                    sql=resolved_sql,
                     alias=alias,
                 )
             )
