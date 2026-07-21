@@ -439,6 +439,35 @@ def _is_auto_default_format(fmt: NumberFormat | None) -> bool:
     return fmt.precision is None and fmt.symbol is None
 
 
+def _enrich_column(column: Column, col_spec: _ColumnEnrichment) -> bool:
+    """Fill unset label / description / auto-default format on one column."""
+    changed = False
+    if column.label is None:
+        column.label = col_spec.label
+        changed = True
+    if column.description is None and col_spec.description is not None:
+        column.description = col_spec.description
+        changed = True
+    if (
+        col_spec.format is not None
+        and column.format != col_spec.format
+        and _is_auto_default_format(column.format)
+    ):
+        column.format = col_spec.format.model_copy(deep=True)
+        changed = True
+    return changed
+
+
+def _new_named_entries(existing: list, additions: list) -> list:
+    """Deep-copied ``additions`` whose ``name`` isn't already in ``existing``.
+
+    Copies keep the module-level ``DEMO_ENRICHMENT`` spec isolated from any
+    later in-place mutation of the attached model objects.
+    """
+    taken = {item.name for item in existing if item.name}
+    return [item.model_copy(deep=True) for item in additions if item.name not in taken]
+
+
 def apply_demo_enrichment(model: SlayerModel) -> bool:
     """Layer the curated jaffle enrichment onto an ingested demo model.
 
@@ -446,11 +475,14 @@ def apply_demo_enrichment(model: SlayerModel) -> bool:
     (DEV-1356): labels / descriptions are only filled where unset, formats
     only replace the auto-ingested bare INTEGER/FLOAT defaults, and
     measures / aggregations already present by name are left untouched — so
-    user edits survive and re-running is a no-op. Returns ``True`` if the
-    model was modified (callers save only on change).
+    user edits survive and re-running is a no-op. Only ``sql_table``-backed
+    models are enriched (same convention): the curated spec assumes the
+    fixed jaffle_shop table schemas, so a model redefined as sql-mode or
+    query-backed is skipped. Returns ``True`` if the model was modified
+    (callers save only on change).
     """
     spec = DEMO_ENRICHMENT.get(model.name)
-    if spec is None:
+    if spec is None or model.sql_table is None:
         return False
 
     changed = False
@@ -469,30 +501,15 @@ def apply_demo_enrichment(model: SlayerModel) -> bool:
     by_name: dict[str, Column] = {c.name: c for c in model.columns}
     for col_name, col_spec in spec.columns.items():
         column = by_name.get(col_name)
-        if column is None:
-            continue
-        if column.label is None:
-            column.label = col_spec.label
-            changed = True
-        if column.description is None and col_spec.description is not None:
-            column.description = col_spec.description
-            changed = True
-        if (
-            col_spec.format is not None
-            and column.format != col_spec.format
-            and _is_auto_default_format(column.format)
-        ):
-            column.format = col_spec.format
+        if column is not None and _enrich_column(column, col_spec):
             changed = True
 
-    existing_measures = {m.name for m in model.measures if m.name}
-    new_measures = [m for m in spec.measures if m.name not in existing_measures]
+    new_measures = _new_named_entries(model.measures, spec.measures)
     if new_measures:
         model.measures = list(model.measures) + new_measures
         changed = True
 
-    existing_aggs = {a.name for a in model.aggregations}
-    new_aggs = [a for a in spec.aggregations if a.name not in existing_aggs]
+    new_aggs = _new_named_entries(model.aggregations, spec.aggregations)
     if new_aggs:
         model.aggregations = list(model.aggregations) + new_aggs
         changed = True
@@ -856,8 +873,6 @@ def ensure_demo_datasource(
     models = ingest_datasource(datasource=ds)
     written: list[SlayerModel] = []
     for model in models:
-        if model.name in DEFAULT_TIME_DIMENSIONS:
-            model.default_time_dimension = DEFAULT_TIME_DIMENSIONS[model.name]
         apply_demo_enrichment(model)
         existing_model: SlayerModel | None = run_sync(
             storage.get_model(name=model.name, data_source=name)

@@ -296,6 +296,42 @@ class TestDemoEnrichment:
         model = SlayerModel(name="unrelated", sql_table="t", data_source="other")
         assert jaffle_shop.apply_demo_enrichment(model) is False
 
+    def test_non_table_backed_model_skipped(self):
+        from slayer.core.models import SlayerModel
+
+        # A user may redefine a demo model as sql-mode (or query-backed); the
+        # curated spec assumes the physical jaffle tables, so it must not apply.
+        model = SlayerModel(
+            name="orders",
+            sql="SELECT 1 AS id",
+            data_source="jaffle_shop",
+        )
+        assert jaffle_shop.apply_demo_enrichment(model) is False
+        assert model.measures == []
+        assert model.description is None
+
+    def test_spec_objects_are_copied_not_shared(self):
+        model_a = self._orders_model()
+        model_b = self._orders_model()
+        jaffle_shop.apply_demo_enrichment(model_a)
+        jaffle_shop.apply_demo_enrichment(model_b)
+
+        measure_a = next(m for m in model_a.measures if m.name == "total_revenue")
+        measure_a.label = "Mutated"
+        measure_b = next(m for m in model_b.measures if m.name == "total_revenue")
+        assert measure_b.label == "Total Revenue"
+        spec_measure = next(
+            m
+            for m in jaffle_shop.DEMO_ENRICHMENT["orders"].measures
+            if m.name == "total_revenue"
+        )
+        assert spec_measure.label == "Total Revenue"
+
+        fmt_a = next(c for c in model_a.columns if c.name == "order_total").format
+        fmt_a.symbol = "€"
+        fmt_b = next(c for c in model_b.columns if c.name == "order_total").format
+        assert fmt_b.symbol == "$"
+
     def test_fast_path_saves_enriched_models(self, tmp_path, monkeypatch):
         from slayer.core.enums import DataType
         from slayer.core.models import Column, SlayerModel
