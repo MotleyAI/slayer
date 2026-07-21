@@ -25,6 +25,7 @@ asyncpg = pytest.importorskip("asyncpg")
 psycopg2 = pytest.importorskip("psycopg2")
 requests = pytest.importorskip("requests")
 
+from slayer.demo.jaffle_shop import DEMO_ENRICHMENT  # noqa: E402
 from tests.integration.conftest_metabase import (  # noqa: E402
     MetabaseE2EEnv,
     encode_mbql_query,
@@ -458,8 +459,6 @@ def test_dataset_source_table_returns_rows(metabase_e2e_env: MetabaseE2EEnv) -> 
     assert 1 <= len(rows) <= 10
     # orders has 7 physical columns plus the saved measures the demo
     # enrichment adds (exposed as queryable fields by the facade catalog).
-    from slayer.demo.jaffle_shop import DEMO_ENRICHMENT
-
     assert len(cols) == 7 + len(DEMO_ENRICHMENT["orders"].measures)
 
 
