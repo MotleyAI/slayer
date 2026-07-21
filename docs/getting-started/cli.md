@@ -23,7 +23,13 @@ slayer datasources create demo --ingest
 slayer query '{"source_model": "orders", "measures": ["*:count"]}'
 ```
 
-This generates ~2 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `items`, `products`, `stores`, `supplies`, `tweets`). Re-running is idempotent — the DuckDB is reused if it already exists. Override the years with `--years N`; the default is kept small so `slayer serve --demo` / `slayer mcp --demo` finish quickly enough to fit inside MCP-client startup timeouts. Only the first four bundled stores open within the first two years — bump `--years` to 4+ if you want all six.
+This generates ~2 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `items`, `products`, `stores`, `supplies`, `tweets`). The demo models come pre-enriched with a curated semantic layer: column labels and descriptions, currency/percent formats, ready-made measures (`total_revenue`, `avg_order_value`, `effective_tax_rate`, `unique_customers`, …), and a custom-aggregation example (`weighted_avg` defaulting its weight to `subtotal`) — so `models_summary` / `inspect` output is informative out of the box and there are saved measures to query by name:
+
+```bash
+slayer query '{"source_model": "orders", "measures": [{"formula": "total_revenue"}, {"formula": "avg_order_value"}], "dimensions": ["stores.name"]}'
+```
+
+Re-running is idempotent — the DuckDB is reused if it already exists, and the enrichment is additive-only (your edits to labels, descriptions, or measures are never overwritten). Override the years with `--years N`; the default is kept small so `slayer serve --demo` / `slayer mcp --demo` finish quickly enough to fit inside MCP-client startup timeouts. Only the first four bundled stores open within the first two years — bump `--years` to 4+ if you want all six.
 
 Pre-populate once and `--demo` is instant afterwards:
 

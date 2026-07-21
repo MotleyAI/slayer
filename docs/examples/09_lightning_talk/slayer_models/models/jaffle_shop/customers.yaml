@@ -8,14 +8,23 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  label: Customer ID
   hidden: false
 - name: name
   sql: name
   type: TEXT
   primary_key: false
+  description: Customer name.
+  label: Customer
   hidden: false
-measures: []
+measures:
+- formula: id:count_distinct
+  name: customer_count
+  label: Customers
+  description: Number of distinct customers.
+  type: INT
 aggregations: []
 joins: []
 filters: []
+description: "Customers of the Jaffle Shop \u2014 one row per person."
 hidden: false
