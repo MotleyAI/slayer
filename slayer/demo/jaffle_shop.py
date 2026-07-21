@@ -133,11 +133,9 @@ CREATE TABLE tweets (
 
 # --- curated semantic enrichment --------------------------------------------
 #
-# Auto-ingestion produces bare models: columns with types but no labels,
-# descriptions, or measures. The jaffle schema is fixed and known, so a
-# hand-curated layer of labels, descriptions, formats, example measures, and a
-# custom-aggregation example is applied on top. All monetary columns are in
-# dollars (the loader converts jafgen's cents on insert — see CENTS_COLUMNS).
+# Hand-curated labels, descriptions, formats, and measures layered on top of
+# the bare auto-ingested models. Monetary columns are in dollars (the loader
+# converts jafgen's cents on insert — see CENTS_COLUMNS).
 
 
 def _currency() -> NumberFormat:
@@ -169,9 +167,8 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                 "dollars. The fact table at the center of the demo: joins to "
                 "customers and stores, and is referenced by items."
             ),
-            # A built-in override: default the ``weighted_avg`` weight to
-            # ``subtotal`` so a bare ``order_total:weighted_avg`` yields a
-            # sales-weighted average order value.
+            # Default the weighted_avg weight to subtotal, so a bare
+            # ``order_total:weighted_avg`` is a sales-weighted average.
             aggregations=[
                 Aggregation(
                     name="weighted_avg",
@@ -429,9 +426,8 @@ DEMO_ENRICHMENT = _build_demo_enrichment()
 
 
 def _is_auto_default_format(fmt: NumberFormat | None) -> bool:
-    """True when ``fmt`` is unset or the bare ``NumberFormat(INTEGER/FLOAT)``
-    default that auto-ingestion stamps on numeric columns — i.e. carries no
-    user-supplied information and is safe to override."""
+    """True when ``fmt`` is unset or the bare INTEGER/FLOAT default that
+    auto-ingestion stamps on numeric columns (safe to override)."""
     if fmt is None:
         return True
     if fmt.type not in (NumberFormatType.INTEGER, NumberFormatType.FLOAT):
@@ -460,26 +456,17 @@ def _enrich_column(column: Column, col_spec: _ColumnEnrichment) -> bool:
 
 def _new_named_entries(existing: list, additions: list) -> list:
     """Deep-copied ``additions`` whose ``name`` isn't already in ``existing``.
-
-    Copies keep the module-level ``DEMO_ENRICHMENT`` spec isolated from any
-    later in-place mutation of the attached model objects.
-    """
+    Copies keep the shared spec isolated from later model mutations."""
     taken = {item.name for item in existing if item.name}
     return [item.model_copy(deep=True) for item in additions if item.name not in taken]
 
 
 def apply_demo_enrichment(model: SlayerModel) -> bool:
-    """Layer the curated jaffle enrichment onto an ingested demo model.
+    """Additively apply the curated enrichment to an ingested demo model.
 
-    Additive and idempotent, following the idempotent-ingest convention
-    (DEV-1356): labels / descriptions are only filled where unset, formats
-    only replace the auto-ingested bare INTEGER/FLOAT defaults, and
-    measures / aggregations already present by name are left untouched — so
-    user edits survive and re-running is a no-op. Only ``sql_table``-backed
-    models are enriched (same convention): the curated spec assumes the
-    fixed jaffle_shop table schemas, so a model redefined as sql-mode or
-    query-backed is skipped. Returns ``True`` if the model was modified
-    (callers save only on change).
+    Fills only unset fields and merges measures/aggregations by name, so
+    user edits survive and re-runs are no-ops. Skips models not backed by
+    ``sql_table``. Returns ``True`` if the model was modified.
     """
     spec = DEMO_ENRICHMENT.get(model.name)
     if spec is None or model.sql_table is None:
@@ -849,11 +836,9 @@ def ensure_demo_datasource(
         return ds, [], db_built
 
     # Fast path: DB was reused and models are already stored — return what's
-    # on disk so callers can report the real count. All lookups are scoped to
-    # the demo datasource: bare-name calls raise on storages whose models span
-    # multiple datasources (DEV-1330). The enrichment pass is additive-only,
-    # so demos set up by older versions gain labels/measures on next startup
-    # while user edits are preserved.
+    # on disk. Lookups are scoped to the demo datasource (bare-name calls
+    # raise on multi-datasource storages). Enrichment still runs so demos
+    # set up by older versions gain labels/measures on next startup.
     existing_model_names = set(run_sync(storage.list_models(data_source=name)))
     if not db_built and all(t in existing_model_names for t in TABLE_NAMES):
         jaffle_models = []

@@ -299,8 +299,8 @@ class TestDemoEnrichment:
     def test_non_table_backed_model_skipped(self):
         from slayer.core.models import SlayerModel
 
-        # A user may redefine a demo model as sql-mode (or query-backed); the
-        # curated spec assumes the physical jaffle tables, so it must not apply.
+        # The curated spec assumes the physical jaffle tables — a demo model
+        # redefined as sql-mode or query-backed must be left alone.
         model = SlayerModel(
             name="orders",
             sql="SELECT 1 AS id",

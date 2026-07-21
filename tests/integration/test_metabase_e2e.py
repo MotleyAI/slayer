@@ -457,8 +457,7 @@ def test_dataset_source_table_returns_rows(metabase_e2e_env: MetabaseE2EEnv) -> 
     rows = _dataset_rows(payload)
     cols = _dataset_cols(payload)
     assert 1 <= len(rows) <= 10
-    # orders has 7 physical columns plus the saved measures the demo
-    # enrichment adds (exposed as queryable fields by the facade catalog).
+    # 7 physical columns + the saved demo measures exposed by the catalog.
     assert len(cols) == 7 + len(DEMO_ENRICHMENT["orders"].measures)
 
 
