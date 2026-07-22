@@ -99,6 +99,7 @@ def _yaml_list_datasource_names(datasources_dir: str) -> list[str]:
 
 
 def _check_layout_case_collisions(
+    *,
     models_dir: str,
     planned: list[tuple[str, dict, str, str]],
 ) -> None:
@@ -172,7 +173,7 @@ def migrate_yaml_layout(base_dir: str) -> None:
             data["data_source"] = ds
         planned.append((path, data, ds, filename))
 
-    _check_layout_case_collisions(models_dir, planned)
+    _check_layout_case_collisions(models_dir=models_dir, planned=planned)
 
     # Pass 2: perform the moves.
     for path, data, ds, filename in planned:

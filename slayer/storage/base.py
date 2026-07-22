@@ -230,13 +230,17 @@ class StorageBackend(ABC):
         identities = await self._list_all_model_identities()
         known_ds = {ds for ds, _ in identities}
         known_ds.update(await self.list_datasources())
-        collide = _find_case_colliding_id(model.data_source, known_ds)
+        collide = _find_case_colliding_id(
+            candidate=model.data_source, existing=known_ds,
+        )
         if collide is not None:
             raise IdCollisionError(
                 kind="datasource", new_id=model.data_source, existing_id=collide,
             )
         names_in_ds = [n for ds, n in identities if ds == model.data_source]
-        collide = _find_case_colliding_id(model.name, names_in_ds)
+        collide = _find_case_colliding_id(
+            candidate=model.name, existing=names_in_ds,
+        )
         if collide is not None:
             raise IdCollisionError(
                 kind="model",
@@ -460,7 +464,7 @@ class StorageBackend(ABC):
         ``save_datasource``."""
         existing = set(await self.list_datasources())
         existing.update(ds for ds, _ in await self._list_all_model_identities())
-        collide = _find_case_colliding_id(name, existing)
+        collide = _find_case_colliding_id(candidate=name, existing=existing)
         if collide is not None:
             raise IdCollisionError(
                 kind="datasource", new_id=name, existing_id=collide,
@@ -688,7 +692,7 @@ class StorageBackend(ABC):
             _validate_memory_id_charset(id)
             if self._ids_collide_as_filenames:
                 ids = [m.id for m in await self._list_memories_rows(entities=None)]
-                collide = _find_case_colliding_id(id, ids)
+                collide = _find_case_colliding_id(candidate=id, existing=ids)
                 if collide is not None:
                     raise IdCollisionError(
                         kind="memory", new_id=id, existing_id=collide,

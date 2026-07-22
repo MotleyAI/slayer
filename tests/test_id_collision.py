@@ -272,6 +272,32 @@ class TestMigrationPreChecks:
             )
             assert md_files == []
 
+    def test_existing_on_disk_memory_pair_refused(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # X.md and x.md can coexist only on a case-sensitive FS; simulate
+        # via listdir so the check is pinned on any dev machine.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            legacy = os.path.join(tmpdir, "memories.yaml")
+            with open(legacy, "w") as f:
+                yaml.safe_dump(
+                    [{"id": "other", "learning": "l", "entities": []}], f,
+                )
+            mem_dir = os.path.join(tmpdir, "memories")
+            real_listdir = os.listdir
+
+            def fake_listdir(path):
+                if os.path.abspath(path) == os.path.abspath(mem_dir):
+                    return ["X.md", "x.md"]
+                return real_listdir(path)
+
+            monkeypatch.setattr(
+                "slayer.storage.yaml_storage.os.listdir", fake_listdir,
+            )
+            with pytest.raises(ValueError, match="differ only by case"):
+                YAMLStorage(base_dir=tmpdir)
+            assert os.path.exists(legacy)
+
     def test_flat_models_case_variant_datasources_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             models_dir = os.path.join(tmpdir, "models")
