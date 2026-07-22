@@ -231,15 +231,9 @@ class JoinSyncStorage(StorageBackend):
         )
 
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
-        # Delegate the PUBLIC method so the case-collision check runs once,
-        # inside the inner backend's template — the wrapper-level template
-        # would additionally trigger _ensure_reconciled() via
-        # _list_all_model_identities on a datasource-only flow.
+        # Pure delegation — the case-collision check runs once, inside the
+        # inner backend's implementation.
         return await self._inner.save_datasource(datasource)
-
-    async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
-        # Satisfies the ABC; unreachable through the public override above.
-        return await self._inner._save_datasource_impl(datasource)
 
     async def get_datasource(self, name: str) -> DatasourceConfig | None:
         return await self._inner.get_datasource(name)

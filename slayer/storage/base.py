@@ -450,29 +450,32 @@ class StorageBackend(ABC):
 
     # ---- datasource CRUD ---------------------------------------------------
 
+    @abstractmethod
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
-        """Persist a datasource config.
+        """Persist a datasource config (upsert by exact name).
 
-        Rejects a name that differs only by case from an existing
-        datasource name — or from a saved model's ``data_source`` (they
-        share the ``models/<ds>/`` directory namespace in the YAML
-        backend) — then delegates to the backend-specific
-        :meth:`_save_datasource_impl`. Same-name saves are upserts.
-        Concrete backends must NOT override this method.
+        Implementations should call :meth:`check_datasource_id_collision`
+        with ``datasource.name`` before writing so case-variant names are
+        rejected — the built-in YAML and SQLite backends do.
+        """
+
+    async def check_datasource_id_collision(self, name: str) -> None:
+        """Raise :class:`IdCollisionError` when ``name`` differs only by
+        case from an existing datasource name or from a saved model's
+        ``data_source`` (they share the ``models/<ds>/`` directory
+        namespace in the YAML backend). An exact match is fine — saves
+        are upserts.
+
+        Public so custom backends can opt into the same protection from
+        their own ``save_datasource`` implementations.
         """
         existing = set(await self.list_datasources())
         existing.update(ds for ds, _ in await self._list_all_model_identities())
-        collide = _find_case_colliding_id(datasource.name, existing)
+        collide = _find_case_colliding_id(name, existing)
         if collide is not None:
             raise IdCollisionError(
-                kind="datasource", new_id=datasource.name, existing_id=collide,
+                kind="datasource", new_id=name, existing_id=collide,
             )
-        await self._save_datasource_impl(datasource)
-
-    @abstractmethod
-    async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
-        """Backend-specific write of the datasource config. Concrete
-        backends implement only this method, not ``save_datasource``."""
 
     @abstractmethod
     async def get_datasource(self, name: str) -> DatasourceConfig | None: ...

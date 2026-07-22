@@ -349,7 +349,8 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             sampled_values=sampled_values, distinct_count=distinct_count,
         )
 
-    async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
+    async def save_datasource(self, datasource: DatasourceConfig) -> None:
+        await self.check_datasource_id_collision(datasource.name)
         await asyncio.to_thread(self._save_datasource_sync, datasource)
 
     async def get_datasource(self, name: str) -> DatasourceConfig | None:
