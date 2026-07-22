@@ -437,9 +437,8 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                 if memory_id is None:
                     memory_id = self._next_memory_seq_sync_from_conn(conn)
                 else:
-                    # Case-collision check must run inside this transaction:
-                    # this override bypasses the base save_memory template
-                    # where the shared check lives.
+                    # Duplicated here because this override bypasses the
+                    # base save_memory template.
                     ids = [
                         row[0] if isinstance(row[0], str) else str(row[0])
                         for row in conn.execute("SELECT id FROM memories")

@@ -1,11 +1,6 @@
-"""YAML read/delete exact-name verification.
-
-On a case-insensitive filesystem ``open`` / ``os.path.exists`` match any
-case variant of a filename, so a lookup for ``Orders`` would silently hit
-``orders.yaml`` — and a delete would remove it. The YAML backend compares
-against ``os.listdir`` instead, so a case mismatch behaves as "not
-found". These assertions hold on both case-sensitive and
-case-insensitive dev machines.
+"""YAML read/delete exact-name verification: a case-variant lookup
+behaves as "not found" instead of hitting the wrong file on a
+case-insensitive filesystem. Assertions hold on both filesystem kinds.
 """
 
 from __future__ import annotations

@@ -106,13 +106,9 @@ def _atomic_write_text(path: str, text: str) -> None:
 
 
 def _exact_entry_exists(dir_path: str, entry_name: str) -> bool:
-    """True iff ``dir_path`` contains an entry named exactly ``entry_name``.
-
-    ``os.path.exists`` matches any case variant on a case-insensitive
-    filesystem, so ``get_model("Orders")`` would silently open
-    ``orders.yaml``. Comparing against ``os.listdir`` restores exact-id
-    semantics: a case mismatch reads as "not found".
-    """
+    """True iff ``dir_path`` contains an entry named exactly
+    ``entry_name`` — unlike ``os.path.exists``, which matches any case
+    variant on a case-insensitive filesystem."""
     try:
         return entry_name in os.listdir(dir_path)
     except (FileNotFoundError, NotADirectoryError):
@@ -198,11 +194,8 @@ def migrate_memories_layout(base_dir: str) -> None:
             )
     normalized = _normalize_legacy_memory_rows(rows)
     mem_dir = os.path.join(base_dir, "memories")
-    # Reject ids that differ only by case BEFORE writing anything: on a
-    # case-insensitive filesystem the second ``.md`` write would clobber
-    # the first and the legacy file would then be deleted — data loss.
-    # Stems already in memories/ participate too, so a crash-resumed run
-    # can't clobber a file written by a previous attempt.
+    # Case-colliding ids would clobber each other as .md files; refuse
+    # before writing anything. Existing stems included for crash-resume.
     id_by_key: dict[str, str] = {}
     if os.path.isdir(mem_dir):
         for fname in os.listdir(mem_dir):
@@ -302,8 +295,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         return os.path.join(self.models_dir, data_source, f"{name}.yaml")
 
     def _model_entry_exists(self, data_source: str, name: str) -> bool:
-        """Exact-case existence check for both path components of a model
-        (the datasource directory and the model file)."""
+        """Exact-case existence check for both path components of a model."""
         return _exact_entry_exists(
             self.models_dir, data_source,
         ) and _exact_entry_exists(
@@ -362,8 +354,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def _delete_model_row(
         self, *, data_source: str, name: str,
     ) -> bool:
-        # Exact match required: os.remove on a case-insensitive filesystem
-        # would otherwise delete a case-variant sibling's file.
+        # Exact match — os.remove would otherwise hit a case-variant sibling.
         if not self._model_entry_exists(data_source, name):
             return False
         os.remove(self._model_path(data_source, name))
@@ -578,9 +569,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         # the check and the open surfaces as FileNotFoundError → treat as
         # "missing" (return None) rather than crash.
         path = self._memory_md_path(memory_id)
-        # The .md content carries no id (the filename is the identity), so
-        # an exact listdir check is the only way to keep a case-variant
-        # lookup from opening the wrong file on a case-insensitive FS.
+        # Filename IS the identity; exact check keeps a case-variant
+        # lookup from opening the wrong file.
         if not _exact_entry_exists(self._memories_dir, f"{memory_id}.md"):
             return None
         try:

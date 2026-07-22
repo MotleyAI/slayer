@@ -1374,8 +1374,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 await storage.save_model(model)
                 saved_models.append(model)
             except ValueError as exc:
-                # e.g. quoted case-variant tables ("Orders" vs orders) —
-                # report and continue instead of aborting the whole ingest.
+                # e.g. quoted case-variant tables — report and continue.
                 save_errors.append(f"- {model.name}: {exc}")
         models = saved_models
 

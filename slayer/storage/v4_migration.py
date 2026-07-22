@@ -102,12 +102,9 @@ def _check_layout_case_collisions(
     models_dir: str,
     planned: list[tuple[str, dict, str, str]],
 ) -> None:
-    """Refuse the layout migration when two targets differ only by case:
-    on a case-insensitive filesystem the second write would clobber the
-    first. Planned targets are checked against each other and against the
-    existing v4 subdirectories/files, before anything moves — a failure
-    leaves every flat file in place.
-    """
+    """Refuse the migration when two targets differ only by case (the
+    second write would clobber the first). Checks planned targets against
+    each other and against existing v4 entries, before anything moves."""
     ds_by_key: dict[str, str] = {}
     file_by_key: dict[tuple[str, str], str] = {}
     for entry in os.listdir(models_dir):
@@ -162,9 +159,8 @@ def migrate_yaml_layout(base_dir: str) -> None:
 
     available = _yaml_list_datasource_names(datasources_dir)
 
-    # Pass 1: read every flat file and resolve its datasource without
-    # moving anything, so the collision check below can veto the whole
-    # migration while the flat files are still intact.
+    # Pass 1: resolve datasources without moving anything, so the
+    # collision check can veto the migration with flat files intact.
     planned: list[tuple[str, dict, str, str]] = []
     for filename in flat_files:
         path = os.path.join(models_dir, filename)

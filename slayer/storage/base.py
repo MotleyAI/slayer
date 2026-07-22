@@ -118,8 +118,7 @@ def _entity_matches_cascade(
 
 
 def _fs_equivalence_key(value: str) -> str:
-    """Identity key under which two ids would address the same file on a
-    case-insensitive filesystem (macOS / Windows defaults)."""
+    """Key under which two ids collide on a case-insensitive filesystem."""
     return value.casefold()
 
 
@@ -127,12 +126,9 @@ def _find_case_colliding_id(
     candidate: str, existing: Iterable[str],
 ) -> str | None:
     """Return an existing id that casefold-equals ``candidate`` but is
-    spelled differently, or ``None``.
-
-    An exact match never counts — same-id saves are upserts. A
-    raw-different collider is reported even when an exact match also
-    exists, so a legacy store holding both spellings surfaces the pair on
-    a save of either one.
+    spelled differently, or ``None``. An exact match never counts
+    (upserts); a collider is reported even alongside an exact match so a
+    legacy store holding both spellings surfaces the pair.
     """
     key = _fs_equivalence_key(candidate)
     for entry in existing:
@@ -221,15 +217,9 @@ class StorageBackend(ABC):
         await self._save_model_impl(model)
 
     async def _check_model_identity_collision(self, model: SlayerModel) -> None:
-        """Reject a model whose identity differs only by case from an
-        existing one — such ids alias to the same file in the YAML backend
-        on case-insensitive filesystems, so they are rejected uniformly.
-
-        Checks both path components: ``data_source`` against registered
-        datasource names and other models' data_sources (they share the
-        ``models/<ds>/`` directory namespace), and ``name`` against models
-        in the same datasource.
-        """
+        """Reject a model whose ``data_source`` or ``name`` differs only
+        by case from an existing one — both are filename components in
+        the YAML backend."""
         identities = await self._list_all_model_identities()
         known_ds = {ds for ds, _ in identities}
         known_ds.update(await self.list_datasources())
@@ -453,22 +443,14 @@ class StorageBackend(ABC):
     @abstractmethod
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         """Persist a datasource config (upsert by exact name).
-
         Implementations should call :meth:`check_datasource_id_collision`
-        with ``datasource.name`` before writing so case-variant names are
-        rejected — the built-in YAML and SQLite backends do.
-        """
+        before writing."""
 
     async def check_datasource_id_collision(self, name: str) -> None:
         """Raise :class:`IdCollisionError` when ``name`` differs only by
-        case from an existing datasource name or from a saved model's
-        ``data_source`` (they share the ``models/<ds>/`` directory
-        namespace in the YAML backend). An exact match is fine — saves
-        are upserts.
-
-        Public so custom backends can opt into the same protection from
-        their own ``save_datasource`` implementations.
-        """
+        case from an existing datasource name or a saved model's
+        ``data_source``. Public so custom backends can call it from
+        ``save_datasource``."""
         existing = set(await self.list_datasources())
         existing.update(ds for ds, _ in await self._list_all_model_identities())
         collide = _find_case_colliding_id(name, existing)
@@ -674,9 +656,8 @@ class StorageBackend(ABC):
         ``"001"`` are ignored. Empty corpus → ``"1"``."""
 
     async def _list_memory_ids(self) -> list[str]:
-        """Every persisted memory id. The default loads full rows;
-        backends override with a cheaper id-only listing (directory scan,
-        ``SELECT id``)."""
+        """Every persisted memory id; backends override with a cheap
+        id-only listing."""
         return [m.id for m in await self._list_memories_rows(entities=None)]
 
     async def save_memory(

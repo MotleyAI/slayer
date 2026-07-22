@@ -183,9 +183,6 @@ class TestUserSuppliedId:
     async def test_case_colliding_ids_rejected(
         self, storage: StorageBackend,
     ) -> None:
-        # Ids differing only by case would alias to the same file in the
-        # YAML backend on case-insensitive filesystems; rejected uniformly
-        # on every backend so stores stay portable.
         await storage.save_memory(
             id="X", learning="upper", entities=["mydb.orders"],
         )
@@ -195,7 +192,6 @@ class TestUserSuppliedId:
             )
         assert exc_info.value.new_id == "x"
         assert exc_info.value.existing_id == "X"
-        # The original memory is untouched.
         upper = await storage.get_memory("X")
         assert upper.learning == "upper"
 

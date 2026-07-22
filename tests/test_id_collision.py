@@ -1,10 +1,7 @@
 """Case-collision rejection for datasource / model / memory ids.
 
-Ids become filenames in the YAML backend, where ids differing only by
-case address the same file on case-insensitive filesystems (macOS /
-Windows defaults). Saves of a case-variant id are rejected uniformly on
-every backend so stores stay portable across backends and platforms.
-Exact-id re-saves remain upserts.
+Saving an id that differs only by case from an existing one raises
+IdCollisionError on every backend; exact-id re-saves remain upserts.
 """
 
 from __future__ import annotations
@@ -65,8 +62,6 @@ class TestHelpers:
         assert _find_case_colliding_id("Orders", ["orders"]) == "orders"
 
     def test_variant_reported_even_with_exact_match(self) -> None:
-        # A legacy store holding both spellings must surface the pair on
-        # a save of either one.
         assert _find_case_colliding_id("orders", ["orders", "Orders"]) == "Orders"
 
     def test_unrelated_ids_do_not_collide(self) -> None:
@@ -98,12 +93,10 @@ class TestDatasourceCollision:
     async def test_collides_with_model_data_source(
         self, storage: StorageBackend,
     ) -> None:
-        # Models saved under an orphan datasource reserve its name: on
-        # YAML they share the models/<ds>/ directory namespace.
+        # Models under an orphan datasource reserve its name.
         await storage.save_model(_model("orders", data_source="db"))
         with pytest.raises(IdCollisionError):
             await storage.save_datasource(_ds("DB"))
-        # An exactly-named config for the orphan datasource is fine.
         await storage.save_datasource(_ds("db"))
 
 
@@ -135,8 +128,6 @@ class TestModelCollision:
     async def test_same_name_in_other_datasource_ok(
         self, storage: StorageBackend,
     ) -> None:
-        # The name check is scoped to one datasource; case variants across
-        # datasources live in different directories.
         await storage.save_model(_model("orders", data_source="db_a"))
         await storage.save_model(_model("Orders", data_source="db_b"))
         assert await storage.get_model("orders", data_source="db_a") is not None
@@ -160,15 +151,13 @@ class TestModelCollision:
     async def test_validate_false_bypasses(
         self, storage: StorageBackend,
     ) -> None:
-        # Trusted internal callers (the migration write-back) must stay
-        # able to re-persist legacy data that predates the check.
+        # The migration write-back path must stay able to persist legacy data.
         await storage.save_model(_model("orders"))
         await storage.save_model(_model("Orders"), _validate=False)
 
 
 # ---------------------------------------------------------------------------
-# Memories (the save-time rejection itself is covered per-backend in
-# test_memory_string_ids.py::test_case_colliding_ids_rejected)
+# Memories (rejection also covered in test_memory_string_ids.py)
 # ---------------------------------------------------------------------------
 
 
@@ -196,8 +185,7 @@ class TestMemoryCollision:
 
 
 # ---------------------------------------------------------------------------
-# Legacy stores that already hold a colliding pair (created pre-check, on
-# a case-sensitive filesystem): a save of EITHER spelling must raise.
+# Legacy stores already holding a colliding pair: either save must raise
 # ---------------------------------------------------------------------------
 
 
@@ -218,7 +206,6 @@ class TestLegacyCollidingPair:
                     await storage.save_memory(
                         id=mid, learning="update", entities=[],
                     )
-            # Both rows are still intact.
             assert (await storage.get_memory("X")).learning == "upper"
             assert (await storage.get_memory("x")).learning == "lower"
 
@@ -240,8 +227,7 @@ class TestLegacyCollidingPair:
 
 
 # ---------------------------------------------------------------------------
-# The production wrapper (resolve_storage → JoinSyncStorage) propagates
-# the rejection through every save surface.
+# The production wrapper (resolve_storage → JoinSyncStorage)
 # ---------------------------------------------------------------------------
 
 
@@ -283,7 +269,6 @@ class TestMigrationPreChecks:
                 )
             with pytest.raises(ValueError, match="differ only by"):
                 YAMLStorage(base_dir=tmpdir)
-            # Legacy file preserved; no .md written.
             assert os.path.exists(legacy)
             mem_dir = os.path.join(tmpdir, "memories")
             md_files = (
@@ -305,7 +290,6 @@ class TestMigrationPreChecks:
                     )
             with pytest.raises(ValueError, match="differs only by case"):
                 YAMLStorage(base_dir=tmpdir)
-            # Flat files untouched; no subdirectory created.
             assert sorted(os.listdir(models_dir)) == ["a.yaml", "b.yaml"]
 
     def test_flat_model_vs_existing_v4_case_variant_refused(self) -> None:
