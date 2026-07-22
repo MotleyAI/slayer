@@ -106,6 +106,7 @@ class JoinSyncStorage(StorageBackend):
     def __init__(self, inner: StorageBackend) -> None:
         self._inner = inner
         self._reconciled = False
+        self._ids_collide_as_filenames = inner._ids_collide_as_filenames
 
     # -- graph fingerprint ------------------------------------------------
 
