@@ -98,6 +98,47 @@ def _yaml_list_datasource_names(datasources_dir: str) -> list[str]:
     ]
 
 
+def _check_layout_case_collisions(
+    models_dir: str,
+    planned: list[tuple[str, dict, str, str]],
+) -> None:
+    """Refuse the layout migration when two targets differ only by case:
+    on a case-insensitive filesystem the second write would clobber the
+    first. Planned targets are checked against each other and against the
+    existing v4 subdirectories/files, before anything moves — a failure
+    leaves every flat file in place.
+    """
+    ds_by_key: dict[str, str] = {}
+    file_by_key: dict[tuple[str, str], str] = {}
+    for entry in os.listdir(models_dir):
+        entry_path = os.path.join(models_dir, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        ds_by_key[entry.casefold()] = entry
+        for f in os.listdir(entry_path):
+            if f.endswith((".yaml", ".yml")):
+                file_by_key[(entry.casefold(), f.casefold())] = os.path.join(entry, f)
+    for path, _data, ds, filename in planned:
+        prior_ds = ds_by_key.get(ds.casefold())
+        if prior_ds is not None and prior_ds != ds:
+            raise ValueError(
+                f"Cannot migrate '{path}' to v4 layout: its datasource "
+                f"{ds!r} differs only by case from existing {prior_ds!r}. "
+                f"Rename one, then reopen storage."
+            )
+        ds_by_key[ds.casefold()] = ds
+        key = (ds.casefold(), filename.casefold())
+        target_rel = os.path.join(ds, filename)
+        prior_file = file_by_key.get(key)
+        if prior_file is not None and prior_file != target_rel:
+            raise ValueError(
+                f"Cannot migrate '{path}' to v4 layout: target "
+                f"'{target_rel}' differs only by case from existing "
+                f"'{prior_file}'. Rename one, then reopen storage."
+            )
+        file_by_key[key] = target_rel
+
+
 def migrate_yaml_layout(base_dir: str) -> None:
     """Move flat ``models/<name>.yaml`` files into ``models/<data_source>/``.
 
@@ -121,6 +162,10 @@ def migrate_yaml_layout(base_dir: str) -> None:
 
     available = _yaml_list_datasource_names(datasources_dir)
 
+    # Pass 1: read every flat file and resolve its datasource without
+    # moving anything, so the collision check below can veto the whole
+    # migration while the flat files are still intact.
+    planned: list[tuple[str, dict, str, str]] = []
     for filename in flat_files:
         path = os.path.join(models_dir, filename)
         with open(path) as f:
@@ -129,6 +174,12 @@ def migrate_yaml_layout(base_dir: str) -> None:
         if not ds:
             ds = _resolve_orphan_data_source(name=filename, available_datasources=available)
             data["data_source"] = ds
+        planned.append((path, data, ds, filename))
+
+    _check_layout_case_collisions(models_dir, planned)
+
+    # Pass 2: perform the moves.
+    for path, data, ds, filename in planned:
         target_dir = os.path.join(models_dir, ds)
         os.makedirs(target_dir, exist_ok=True)
         target_path = os.path.join(target_dir, filename)

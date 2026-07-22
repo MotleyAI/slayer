@@ -22,7 +22,7 @@ A query then asks for `revenue:sum` (aggregate the `revenue` column), `aov` (the
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | Yes | Unique model name |
+| `name` | string | Yes | Unique model name. Names differing only by letter case (`Orders` vs `orders`) are rejected at save time (`IdCollisionError`) — they would collide as filenames in YAML storage on macOS / Windows |
 | `sql_table` | string | One of | A physical database table (e.g. `public.orders`) |
 | `sql` | string | these | A SQL subquery to use as the source |
 | `source_queries` | list[SlayerQuery] | three | Saved query stages — makes the model **query-backed** |

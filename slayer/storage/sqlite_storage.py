@@ -13,11 +13,13 @@ import os
 import sqlite3
 from typing import Any
 
+from slayer.core.errors import IdCollisionError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.base import (
     StorageBackend,
+    _find_case_colliding_id,
     _validate_path_component,
     _write_sample_fields,
 )
@@ -347,7 +349,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             sampled_values=sampled_values, distinct_count=distinct_count,
         )
 
-    async def save_datasource(self, datasource: DatasourceConfig) -> None:
+    async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         await asyncio.to_thread(self._save_datasource_sync, datasource)
 
     async def get_datasource(self, name: str) -> DatasourceConfig | None:
@@ -434,6 +436,20 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                 if memory_id is None:
                     memory_id = self._next_memory_seq_sync_from_conn(conn)
                 else:
+                    # Case-collision check must run inside this transaction:
+                    # this override bypasses the base save_memory template
+                    # where the shared check lives.
+                    ids = [
+                        row[0] if isinstance(row[0], str) else str(row[0])
+                        for row in conn.execute("SELECT id FROM memories")
+                    ]
+                    collide = _find_case_colliding_id(memory_id, ids)
+                    if collide is not None:
+                        raise IdCollisionError(
+                            kind="memory",
+                            new_id=memory_id,
+                            existing_id=collide,
+                        )
                     existing_row = conn.execute(
                         "SELECT data FROM memories WHERE id = ?",
                         (memory_id,),
@@ -542,6 +558,14 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     async def _next_memory_seq(self) -> str:
         return await asyncio.to_thread(self._next_memory_seq_sync)
+
+    def _list_memory_ids_sync(self) -> list[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute("SELECT id FROM memories").fetchall()
+        return [r[0] if isinstance(r[0], str) else str(r[0]) for r in rows]
+
+    async def _list_memory_ids(self) -> list[str]:
+        return await asyncio.to_thread(self._list_memory_ids_sync)
 
     def _get_memory_sync(self, memory_id: str) -> str | None:
         with sqlite3.connect(self.db_path) as conn:

@@ -523,9 +523,15 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 data[secret_field] = "***"
         return data
 
-    @app.post("/datasources")
+    @app.post(
+        "/datasources",
+        responses={400: {"description": "Name conflicts with an existing datasource (differs only by case)."}},
+    )
     async def create_datasource(datasource: DatasourceConfig) -> dict[str, str]:
-        await storage.save_datasource(datasource)
+        try:
+            await storage.save_datasource(datasource)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         return {"status": "created", "name": datasource.name}
 
     @app.delete("/datasources/{name}")

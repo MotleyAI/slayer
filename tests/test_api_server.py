@@ -224,6 +224,17 @@ class TestDatasources:
         resp = client.delete("/datasources/nope")
         assert resp.status_code == 404
 
+    def test_case_variant_name_returns_400(self, client: TestClient) -> None:
+        resp = client.post(
+            "/datasources", json={"name": "mydb", "type": "postgres"},
+        )
+        assert resp.status_code == 200
+        resp = client.post(
+            "/datasources", json={"name": "MyDB", "type": "postgres"},
+        )
+        assert resp.status_code == 400
+        assert "differs only by case" in resp.json()["detail"]
+
 
 class TestIngestEndpoint:
     """``POST /ingest`` translates user-correctable config errors into 422s.

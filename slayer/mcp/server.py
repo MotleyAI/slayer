@@ -1343,7 +1343,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )
         ds = DatasourceConfig.model_validate(data)
         existed = await storage.get_datasource(name) is not None
-        await storage.save_datasource(ds)
+        try:
+            await storage.save_datasource(ds)
+        except ValueError as exc:
+            return f"Cannot create datasource: {exc}"
         verb = "replaced" if existed else "created"
 
         ok, msg = _test_connection(ds)
@@ -1364,20 +1367,33 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 return "\n".join(lines)
             raise
 
+        save_errors: list[str] = []
+        saved_models = []
         for model in models:
-            await storage.save_model(model)
+            try:
+                await storage.save_model(model)
+                saved_models.append(model)
+            except ValueError as exc:
+                # e.g. quoted case-variant tables ("Orders" vs orders) —
+                # report and continue instead of aborting the whole ingest.
+                save_errors.append(f"- {model.name}: {exc}")
+        models = saved_models
 
-        if not models:
+        if not models and not save_errors:
             lines.append("No tables found to ingest.")
             schemas = _get_schemas(ds)
             if schemas:
                 lines.append(f"Available schemas: {', '.join(schemas)}")
-        else:
+        elif models:
             lines.append(f"Ingested {len(models)} model(s):")
             for m in models:
                 lines.append(f"- {m.name} ({len(m.columns)} columns, {len(m.measures)} measures)")
             lines.append("")
             lines.append("Use models_summary and inspect to explore, then query to fetch data.")
+
+        if save_errors:
+            lines.append(f"Failed to save {len(save_errors)} model(s):")
+            lines.extend(save_errors)
 
         return "\n".join(lines)
 

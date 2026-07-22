@@ -105,6 +105,20 @@ def _atomic_write_text(path: str, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _exact_entry_exists(dir_path: str, entry_name: str) -> bool:
+    """True iff ``dir_path`` contains an entry named exactly ``entry_name``.
+
+    ``os.path.exists`` matches any case variant on a case-insensitive
+    filesystem, so ``get_model("Orders")`` would silently open
+    ``orders.yaml``. Comparing against ``os.listdir`` restores exact-id
+    semantics: a case mismatch reads as "not found".
+    """
+    try:
+        return entry_name in os.listdir(dir_path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
 def _normalize_legacy_memory_rows(
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -184,6 +198,26 @@ def migrate_memories_layout(base_dir: str) -> None:
             )
     normalized = _normalize_legacy_memory_rows(rows)
     mem_dir = os.path.join(base_dir, "memories")
+    # Reject ids that differ only by case BEFORE writing anything: on a
+    # case-insensitive filesystem the second ``.md`` write would clobber
+    # the first and the legacy file would then be deleted — data loss.
+    # Stems already in memories/ participate too, so a crash-resumed run
+    # can't clobber a file written by a previous attempt.
+    id_by_key: dict[str, str] = {}
+    if os.path.isdir(mem_dir):
+        for fname in os.listdir(mem_dir):
+            if fname.endswith(".md"):
+                stem = fname[: -len(".md")]
+                id_by_key[stem.casefold()] = stem
+    for r in normalized:
+        rid = str(r["id"])
+        prior = id_by_key.get(rid.casefold())
+        if prior is not None and prior != rid:
+            raise ValueError(
+                f"{legacy}: memory ids {prior!r} and {rid!r} differ only by "
+                f"case and would collide as files. Rename one, then reopen."
+            )
+        id_by_key[rid.casefold()] = rid
     os.makedirs(mem_dir, exist_ok=True)
     for r in normalized:
         mem = Memory.model_validate(r)
@@ -267,6 +301,15 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     def _model_path(self, data_source: str, name: str) -> str:
         return os.path.join(self.models_dir, data_source, f"{name}.yaml")
 
+    def _model_entry_exists(self, data_source: str, name: str) -> bool:
+        """Exact-case existence check for both path components of a model
+        (the datasource directory and the model file)."""
+        return _exact_entry_exists(
+            self.models_dir, data_source,
+        ) and _exact_entry_exists(
+            os.path.join(self.models_dir, data_source), f"{name}.yaml",
+        )
+
     # ---- model CRUD --------------------------------------------------------
 
     async def _save_model_impl(self, model: SlayerModel) -> None:
@@ -299,8 +342,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         if target is None:
             return None
         data_source, name = target
-        path = self._model_path(data_source, name)
-        if not os.path.exists(path):  # NOSONAR(S6549) — name/data_source were sanitized by _resolve_target_or_none above (rejects '..', path separators, NULs); SlayerModel Pydantic validators sanitize the save path
+        path = self._model_path(data_source, name)  # NOSONAR(S6549) — name/data_source were sanitized by _resolve_target_or_none above (rejects '..', path separators, NULs); SlayerModel Pydantic validators sanitize the save path
+        if not self._model_entry_exists(data_source, name):
             return None
         try:
             with open(path) as f:
@@ -319,11 +362,12 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def _delete_model_row(
         self, *, data_source: str, name: str,
     ) -> bool:
-        path = self._model_path(data_source, name)
-        if os.path.exists(path):
-            os.remove(path)
-            return True
-        return False
+        # Exact match required: os.remove on a case-insensitive filesystem
+        # would otherwise delete a case-variant sibling's file.
+        if not self._model_entry_exists(data_source, name):
+            return False
+        os.remove(self._model_path(data_source, name))
+        return True
 
     async def update_column_sampled(
         self,
@@ -336,7 +380,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         distinct_count: int | None,
     ) -> None:
         path = self._model_path(data_source, model_name)
-        if not os.path.exists(path):
+        if not self._model_entry_exists(data_source, model_name):
             raise ValueError(
                 f"update_column_sampled: model {model_name!r} in datasource "
                 f"{data_source!r} not found."
@@ -363,7 +407,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     # ---- datasource CRUD ---------------------------------------------------
 
-    async def save_datasource(self, datasource: DatasourceConfig) -> None:
+    async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         path = os.path.join(self.datasources_dir, f"{datasource.name}.yaml")
         data = datasource.model_dump(mode="json", exclude_none=True)
         with open(path, "w") as f:
@@ -373,7 +417,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         # DEV-1405: sanitize before composing the filesystem path.
         _validate_path_component(name, kind="datasource name")
         path = os.path.join(self.datasources_dir, f"{name}.yaml")
-        if not os.path.exists(path):
+        if not _exact_entry_exists(self.datasources_dir, f"{name}.yaml"):
             return None
         try:
             with open(path) as f:
@@ -397,11 +441,10 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         return result
 
     async def _delete_datasource_row(self, name: str) -> bool:
-        path = os.path.join(self.datasources_dir, f"{name}.yaml")
-        if os.path.exists(path):
-            os.remove(path)
-            return True
-        return False
+        if not _exact_entry_exists(self.datasources_dir, f"{name}.yaml"):
+            return False
+        os.remove(os.path.join(self.datasources_dir, f"{name}.yaml"))
+        return True
 
     # ---- datasource priority -----------------------------------------------
 
@@ -464,6 +507,9 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             for fname in os.listdir(self._memories_dir)
             if fname.endswith(".md")
         ]
+
+    async def _list_memory_ids(self) -> list[str]:
+        return self._memory_ids_on_disk()
 
     async def _next_memory_seq(self) -> str:
         """DEV-1658: next int-shaped id from the ``memories/`` dir stems.
@@ -531,6 +577,11 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         # the check and the open surfaces as FileNotFoundError → treat as
         # "missing" (return None) rather than crash.
         path = self._memory_md_path(memory_id)
+        # The .md content carries no id (the filename is the identity), so
+        # an exact listdir check is the only way to keep a case-variant
+        # lookup from opening the wrong file on a case-insensitive FS.
+        if not _exact_entry_exists(self._memories_dir, f"{memory_id}.md"):
+            return None
         try:
             with open(path, encoding="utf-8") as f:  # NOSONAR(S7493) — sync I/O in async by design
                 return _md_to_memory(memory_id, f.read())
@@ -560,7 +611,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def _delete_memory_row(self, memory_id: str) -> bool:
         with self._memories_file_lock():
             path = self._memory_md_path(memory_id)
-            if not os.path.exists(path):
+            if not _exact_entry_exists(self._memories_dir, f"{memory_id}.md"):
                 return False
             os.remove(path)
             return True

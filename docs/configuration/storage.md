@@ -64,6 +64,8 @@ slayer_data/
 
 **Layout note:** Models live under `models/<data_source>/<name>.yaml` so two datasources sharing a table name don't collide. Opening a `YAMLStorage` on a legacy flat directory migrates `models/<name>.yaml` files into the nested layout automatically. If a flat file has an empty `data_source` and exactly one datasource is registered, the migrator auto-fills it; otherwise it hard-fails so the user can edit `data_source` by hand before reopening.
 
+**Name collisions:** Because names become filenames here, two ids differing only by letter case (`Orders` vs `orders`) would address the same file on macOS / Windows. Saving a datasource, model, or memory whose id differs only by case from an existing one therefore raises `IdCollisionError` — on **every** backend and platform, so a store created on Linux stays portable. Re-saving the exact same id is still a normal upsert. On the read side, YAML lookups compare the exact filename, so `get_model("Orders")` when only `orders.yaml` exists returns "not found" instead of the wrong model (and a delete is a no-op). The layout migrations apply the same check up front and refuse to run — legacy files untouched — if migrating would collide.
+
 **Embeddings sidecar (DEV-1405):** Embedding rows used by the optional dense-search channel live in a SQLite file at `<base_dir>/embeddings.db`, **not** in `embeddings.yaml`. Embeddings are derived artifacts (regeneratable by `slayer ingest` / `--ingest-on-startup`), not user-authored config, so the diffable-in-git property that drives the YAML choice for models doesn't apply. A pre-DEV-1405 `embeddings.yaml` or `counters.yaml` is silently renamed to `<name>.yaml.legacy` on first open and ignored thereafter; re-run `slayer ingest` to repopulate `embeddings.db`. The schema is identical to the `SQLiteStorage` embedding table — both backends delegate to a shared `SidecarEmbeddingStore` helper.
 
 **Memory id allocation (DEV-1658):** The next int-shaped memory id is derived by scanning the `memories/` directory of per-id `.md` files — `max(int-shaped id) + 1` — rather than a separate counter file. Non-int ids (e.g. `help.intro`, `kb.policy.42`) are ignored by the allocator. Ids of deleted memories may be reused by future saves; cascade-on-delete in `delete_memory` already removes the matching embedding row.
@@ -79,6 +81,8 @@ storage = SQLiteStorage(db_path="./slayer.db")
 ```
 
 Tables: `models`, `datasources`, `settings` (for the datasource priority list), `memories` + `memory_entities` (indexed by canonical entity), and `embeddings` (cached embedding rows keyed by `(canonical_id, embedding_model_name)`). Memory ids are assigned by SQLite's `INTEGER PRIMARY KEY` rowid mechanism inside the save transaction — no separate counter table is needed.
+
+SQLite keys are case-sensitive, but the case-collision rule above applies here too (enforced in the shared base class) so a SQLite store can always be exported to the YAML layout and moved across platforms.
 
 ## Storage Resolution
 
@@ -109,19 +113,22 @@ from slayer.storage.base import StorageBackend
 from slayer.core.models import SlayerModel, DatasourceConfig
 
 class MyCustomStorage(StorageBackend):
-    # Models are keyed by (data_source, name).
-    def save_model(self, model: SlayerModel) -> None: ...
+    # Models are keyed by (data_source, name). ``save_model`` and
+    # ``save_datasource`` are template methods on the base class (they run
+    # shared validation, e.g. case-collision rejection) — backends implement
+    # only the ``_impl`` writes.
+    def _save_model_impl(self, model: SlayerModel) -> None: ...
     def _list_all_model_identities(self) -> list[tuple[str, str]]: ...
     def get_model(self, name: str, data_source: str | None = None) -> SlayerModel | None: ...
-    def delete_model(self, name: str, data_source: str | None = None) -> bool: ...
+    def _delete_model_row(self, *, data_source: str, name: str) -> bool: ...
 
     # ``StorageBackend`` provides default implementations of ``list_models``
     # and ``resolve_model_identity`` on top of ``_list_all_model_identities``.
 
-    def save_datasource(self, datasource: DatasourceConfig) -> None: ...
+    def _save_datasource_impl(self, datasource: DatasourceConfig) -> None: ...
     def get_datasource(self, name: str) -> DatasourceConfig | None: ...
     def list_datasources(self) -> list[str]: ...
-    def delete_datasource(self, name: str) -> bool: ...
+    def _delete_datasource_row(self, name: str) -> bool: ...
 ```
 
 Register it for URI-based resolution:
