@@ -180,20 +180,22 @@ class TestUserSuppliedId:
         loaded = await storage.get_memory("kb.policy.42")
         assert loaded.learning == "x"
 
-    async def test_case_colliding_ids_rejected(
-        self, storage: StorageBackend,
-    ) -> None:
+    async def test_case_variant_ids(self, storage: StorageBackend) -> None:
+        # YAML rejects (ids are filenames); SQLite stores both distinctly.
         await storage.save_memory(
             id="X", learning="upper", entities=["mydb.orders"],
         )
-        with pytest.raises(IdCollisionError) as exc_info:
+        if isinstance(storage, YAMLStorage):
+            with pytest.raises(IdCollisionError):
+                await storage.save_memory(
+                    id="x", learning="lower", entities=["mydb.orders"],
+                )
+        else:
             await storage.save_memory(
                 id="x", learning="lower", entities=["mydb.orders"],
             )
-        assert exc_info.value.new_id == "x"
-        assert exc_info.value.existing_id == "X"
-        upper = await storage.get_memory("X")
-        assert upper.learning == "upper"
+            assert (await storage.get_memory("x")).learning == "lower"
+        assert (await storage.get_memory("X")).learning == "upper"
 
     async def test_zero_user_id_distinct_from_auto(
         self, storage: StorageBackend,

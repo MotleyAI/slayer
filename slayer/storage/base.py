@@ -191,6 +191,12 @@ class StorageBackend(ABC):
     across backends.
     """
 
+    #: Backends whose ids become filenames (YAML) set this to True: saves
+    #: then reject ids differing only by case, which would alias to the
+    #: same file on case-insensitive filesystems. Wrappers copy it from
+    #: the inner backend.
+    _ids_collide_as_filenames = False
+
     # ---- model CRUD (composite key) ----------------------------------------
 
     async def save_model(
@@ -198,9 +204,9 @@ class StorageBackend(ABC):
     ) -> None:
         """Persist a model.
 
-        Runs save-time validation (case-collision rejection on the model
-        identity, then derived-column cycle detection) and delegates to
-        the backend-specific :meth:`_save_model_impl`. The
+        Runs save-time validation (case-collision rejection for
+        filename-backed stores, then derived-column cycle detection) and
+        delegates to the backend-specific :meth:`_save_model_impl`. The
         ``_validate=False`` escape hatch is for trusted internal callers —
         currently only the migration write-back in
         :meth:`_migrate_and_refine_on_load` — that must persist legacy
@@ -211,7 +217,8 @@ class StorageBackend(ABC):
         override this method.
         """
         if _validate:
-            await self._check_model_identity_collision(model)
+            if self._ids_collide_as_filenames:
+                await self._check_model_identity_collision(model)
             from slayer.engine.column_dependency import validate_no_column_cycles
             await validate_no_column_cycles(model=model, storage=self)
         await self._save_model_impl(model)
@@ -443,13 +450,13 @@ class StorageBackend(ABC):
     @abstractmethod
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         """Persist a datasource config (upsert by exact name).
-        Implementations should call :meth:`check_datasource_id_collision`
-        before writing."""
+        Filename-backed implementations should call
+        :meth:`check_datasource_id_collision` before writing."""
 
     async def check_datasource_id_collision(self, name: str) -> None:
         """Raise :class:`IdCollisionError` when ``name`` differs only by
         case from an existing datasource name or a saved model's
-        ``data_source``. Public so custom backends can call it from
+        ``data_source``. Public so backends can call it from
         ``save_datasource``."""
         existing = set(await self.list_datasources())
         existing.update(ds for ds, _ in await self._list_all_model_identities())
@@ -655,11 +662,6 @@ class StorageBackend(ABC):
         no-leading-zero ids count toward the max walk; ``"42abc"`` and
         ``"001"`` are ignored. Empty corpus → ``"1"``."""
 
-    async def _list_memory_ids(self) -> list[str]:
-        """Every persisted memory id; backends override with a cheap
-        id-only listing."""
-        return [m.id for m in await self._list_memories_rows(entities=None)]
-
     async def save_memory(
         self,
         *,
@@ -674,8 +676,9 @@ class StorageBackend(ABC):
         * ``id=None`` → allocator picks the next int-shaped id (``str``).
         * ``id="some-string"`` → user-supplied; rejected on bad charset
           or empty. Duplicate id → unconditional upsert; ``created_at``
-          of the original row is preserved. An id that differs only by
-          case from an existing one raises :class:`IdCollisionError`.
+          of the original row is preserved. On filename-backed (YAML)
+          storage an id differing only by case from an existing one
+          raises :class:`IdCollisionError`.
 
         DEV-1549: ``description`` is an optional compact preview shown
         by ``search(compact=True)`` and ``inspect_model(compact=True)``.
@@ -683,11 +686,13 @@ class StorageBackend(ABC):
         """
         if id is not None:
             _validate_memory_id_charset(id)
-            collide = _find_case_colliding_id(id, await self._list_memory_ids())
-            if collide is not None:
-                raise IdCollisionError(
-                    kind="memory", new_id=id, existing_id=collide,
-                )
+            if self._ids_collide_as_filenames:
+                ids = [m.id for m in await self._list_memories_rows(entities=None)]
+                collide = _find_case_colliding_id(id, ids)
+                if collide is not None:
+                    raise IdCollisionError(
+                        kind="memory", new_id=id, existing_id=collide,
+                    )
             existing = await self._get_memory_row(id)
             assigned_id = id
             preserved_created_at = (

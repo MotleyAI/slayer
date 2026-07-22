@@ -228,6 +228,8 @@ def migrate_memories_layout(base_dir: str) -> None:
 
 
 class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
+    _ids_collide_as_filenames = True
+
     def __init__(self, base_dir: str):
         self.base_dir = base_dir
         self.models_dir = os.path.join(base_dir, "models")
@@ -499,9 +501,6 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             for fname in os.listdir(self._memories_dir)
             if fname.endswith(".md")
         ]
-
-    async def _list_memory_ids(self) -> list[str]:
-        return self._memory_ids_on_disk()
 
     async def _next_memory_seq(self) -> str:
         """DEV-1658: next int-shaped id from the ``memories/`` dir stems.

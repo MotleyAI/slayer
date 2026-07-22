@@ -106,6 +106,7 @@ class JoinSyncStorage(StorageBackend):
     def __init__(self, inner: StorageBackend) -> None:
         self._inner = inner
         self._reconciled = False
+        self._ids_collide_as_filenames = inner._ids_collide_as_filenames
 
     # -- graph fingerprint ------------------------------------------------
 
@@ -266,9 +267,6 @@ class JoinSyncStorage(StorageBackend):
 
     async def _next_memory_seq(self) -> str:
         return await self._inner._next_memory_seq()
-
-    async def _list_memory_ids(self) -> list[str]:
-        return await self._inner._list_memory_ids()
 
     async def strip_dangling_entities_from_memories(
         self, *, canonical_id: str,

@@ -117,12 +117,12 @@ class ColumnCycleError(SlayerError, ValueError):
 
 
 class IdCollisionError(SlayerError, ValueError):
-    """Raised when saving an entity whose id differs from an existing id
-    only by letter case — such ids collide as filenames in the YAML
-    backend on case-insensitive filesystems, so every backend rejects
-    them. ``kind`` is ``"model"`` / ``"datasource"`` / ``"memory"``.
-    Multi-inherits ``ValueError`` so existing ``except ValueError`` call
-    sites continue to work unchanged.
+    """Raised by filename-backed (YAML) storage when saving an entity
+    whose id differs from an existing id only by letter case — such ids
+    collide as filenames on case-insensitive filesystems. ``kind`` is
+    ``"model"`` / ``"datasource"`` / ``"memory"``. Multi-inherits
+    ``ValueError`` so existing ``except ValueError`` call sites continue
+    to work unchanged.
     """
 
     _LABELS = {

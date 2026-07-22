@@ -1,14 +1,14 @@
 """Case-collision rejection for datasource / model / memory ids.
 
-Saving an id that differs only by case from an existing one raises
-IdCollisionError on every backend; exact-id re-saves remain upserts.
+Ids are filenames in the YAML backend, so saving an id that differs only
+by case from an existing one raises IdCollisionError there (exact-id
+re-saves remain upserts). SQLite keys are case-sensitive and stores
+case-variant ids distinctly.
 """
 
 from __future__ import annotations
 
-import json
 import os
-import sqlite3
 import tempfile
 from collections.abc import Iterator
 
@@ -17,9 +17,7 @@ import yaml
 
 from slayer.core.errors import IdCollisionError
 from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.memories.models import Memory
 from slayer.storage.base import (
-    StorageBackend,
     _find_case_colliding_id,
     _fs_equivalence_key,
     resolve_storage,
@@ -28,13 +26,16 @@ from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-@pytest.fixture(params=["yaml", "sqlite"])
-def storage(request: pytest.FixtureRequest) -> Iterator[StorageBackend]:
+@pytest.fixture
+def storage() -> Iterator[YAMLStorage]:
     with tempfile.TemporaryDirectory() as tmpdir:
-        if request.param == "yaml":
-            yield YAMLStorage(base_dir=tmpdir)
-        else:
-            yield SQLiteStorage(db_path=os.path.join(tmpdir, "test.db"))
+        yield YAMLStorage(base_dir=tmpdir)
+
+
+@pytest.fixture
+def sqlite_storage() -> Iterator[SQLiteStorage]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        yield SQLiteStorage(db_path=os.path.join(tmpdir, "test.db"))
 
 
 def _ds(name: str, host: str = "h") -> DatasourceConfig:
@@ -69,12 +70,12 @@ class TestHelpers:
 
 
 # ---------------------------------------------------------------------------
-# Datasources
+# YAML: datasources
 # ---------------------------------------------------------------------------
 
 
 class TestDatasourceCollision:
-    async def test_case_variant_rejected(self, storage: StorageBackend) -> None:
+    async def test_case_variant_rejected(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(_ds("db", host="first"))
         with pytest.raises(IdCollisionError) as exc_info:
             await storage.save_datasource(_ds("DB", host="second"))
@@ -84,14 +85,14 @@ class TestDatasourceCollision:
         loaded = await storage.get_datasource("db")
         assert loaded.host == "first"
 
-    async def test_exact_resave_upserts(self, storage: StorageBackend) -> None:
+    async def test_exact_resave_upserts(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(_ds("db", host="first"))
         await storage.save_datasource(_ds("db", host="second"))
         loaded = await storage.get_datasource("db")
         assert loaded.host == "second"
 
     async def test_collides_with_model_data_source(
-        self, storage: StorageBackend,
+        self, storage: YAMLStorage,
     ) -> None:
         # Models under an orphan datasource reserve its name.
         await storage.save_model(_model("orders", data_source="db"))
@@ -101,13 +102,13 @@ class TestDatasourceCollision:
 
 
 # ---------------------------------------------------------------------------
-# Models
+# YAML: models
 # ---------------------------------------------------------------------------
 
 
 class TestModelCollision:
     async def test_case_variant_name_rejected(
-        self, storage: StorageBackend,
+        self, storage: YAMLStorage,
     ) -> None:
         await storage.save_model(_model("orders", table="first"))
         with pytest.raises(IdCollisionError) as exc_info:
@@ -119,14 +120,14 @@ class TestModelCollision:
         loaded = await storage.get_model("orders", data_source="db")
         assert loaded.sql_table == "first"
 
-    async def test_exact_resave_upserts(self, storage: StorageBackend) -> None:
+    async def test_exact_resave_upserts(self, storage: YAMLStorage) -> None:
         await storage.save_model(_model("orders", table="first"))
         await storage.save_model(_model("orders", table="second"))
         loaded = await storage.get_model("orders", data_source="db")
         assert loaded.sql_table == "second"
 
     async def test_same_name_in_other_datasource_ok(
-        self, storage: StorageBackend,
+        self, storage: YAMLStorage,
     ) -> None:
         await storage.save_model(_model("orders", data_source="db_a"))
         await storage.save_model(_model("Orders", data_source="db_b"))
@@ -134,7 +135,7 @@ class TestModelCollision:
         assert await storage.get_model("Orders", data_source="db_b") is not None
 
     async def test_case_variant_data_source_rejected(
-        self, storage: StorageBackend,
+        self, storage: YAMLStorage,
     ) -> None:
         await storage.save_datasource(_ds("db"))
         with pytest.raises(IdCollisionError) as exc_info:
@@ -142,27 +143,25 @@ class TestModelCollision:
         assert exc_info.value.kind == "datasource"
 
     async def test_data_source_vs_other_models_rejected(
-        self, storage: StorageBackend,
+        self, storage: YAMLStorage,
     ) -> None:
         await storage.save_model(_model("orders", data_source="db"))
         with pytest.raises(IdCollisionError):
             await storage.save_model(_model("customers", data_source="DB"))
 
-    async def test_validate_false_bypasses(
-        self, storage: StorageBackend,
-    ) -> None:
+    async def test_validate_false_bypasses(self, storage: YAMLStorage) -> None:
         # The migration write-back path must stay able to persist legacy data.
         await storage.save_model(_model("orders"))
         await storage.save_model(_model("Orders"), _validate=False)
 
 
 # ---------------------------------------------------------------------------
-# Memories (rejection also covered in test_memory_string_ids.py)
+# YAML: memories (rejection also covered in test_memory_string_ids.py)
 # ---------------------------------------------------------------------------
 
 
 class TestMemoryCollision:
-    async def test_exact_upsert_allowed(self, storage: StorageBackend) -> None:
+    async def test_exact_upsert_allowed(self, storage: YAMLStorage) -> None:
         await storage.save_memory(
             id="kb.x", learning="one", entities=["mydb.orders"],
         )
@@ -171,7 +170,7 @@ class TestMemoryCollision:
         )
         assert (await storage.get_memory("kb.x")).learning == "two"
 
-    async def test_error_attrs(self, storage: StorageBackend) -> None:
+    async def test_error_attrs(self, storage: YAMLStorage) -> None:
         await storage.save_memory(
             id="Kb.X", learning="one", entities=["mydb.orders"],
         )
@@ -185,49 +184,44 @@ class TestMemoryCollision:
 
 
 # ---------------------------------------------------------------------------
-# Legacy stores already holding a colliding pair: either save must raise
+# SQLite: case-variant ids are distinct identities, no rejection
 # ---------------------------------------------------------------------------
 
 
-class TestLegacyCollidingPair:
-    async def test_sqlite_memory_pair_blocks_both(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = os.path.join(tmpdir, "test.db")
-            storage = SQLiteStorage(db_path=db_path)
-            with sqlite3.connect(db_path) as conn:
-                for mid, learning in (("X", "upper"), ("x", "lower")):
-                    m = Memory(id=mid, learning=learning, entities=[])
-                    conn.execute(
-                        "INSERT INTO memories (id, data) VALUES (?, ?)",
-                        (mid, json.dumps(m.model_dump(mode="json"))),
-                    )
-            for mid in ("X", "x"):
-                with pytest.raises(IdCollisionError):
-                    await storage.save_memory(
-                        id=mid, learning="update", entities=[],
-                    )
-            assert (await storage.get_memory("X")).learning == "upper"
-            assert (await storage.get_memory("x")).learning == "lower"
+class TestSqliteAllowsCaseVariants:
+    async def test_datasources(self, sqlite_storage: SQLiteStorage) -> None:
+        await sqlite_storage.save_datasource(_ds("db", host="lower"))
+        await sqlite_storage.save_datasource(_ds("DB", host="upper"))
+        assert (await sqlite_storage.get_datasource("db")).host == "lower"
+        assert (await sqlite_storage.get_datasource("DB")).host == "upper"
 
-    async def test_sqlite_model_pair_blocks_both(self) -> None:
+    async def test_models(self, sqlite_storage: SQLiteStorage) -> None:
+        await sqlite_storage.save_model(_model("orders", table="lower"))
+        await sqlite_storage.save_model(_model("Orders", table="upper"))
+        low = await sqlite_storage.get_model("orders", data_source="db")
+        up = await sqlite_storage.get_model("Orders", data_source="db")
+        assert low.sql_table == "lower"
+        assert up.sql_table == "upper"
+
+    async def test_memories(self, sqlite_storage: SQLiteStorage) -> None:
+        await sqlite_storage.save_memory(
+            id="X", learning="upper", entities=["mydb.orders"],
+        )
+        await sqlite_storage.save_memory(
+            id="x", learning="lower", entities=["mydb.orders"],
+        )
+        assert (await sqlite_storage.get_memory("X")).learning == "upper"
+        assert (await sqlite_storage.get_memory("x")).learning == "lower"
+
+    async def test_wrapped_sqlite_allows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = os.path.join(tmpdir, "test.db")
-            storage = SQLiteStorage(db_path=db_path)
-            with sqlite3.connect(db_path) as conn:
-                for name in ("orders", "Orders"):
-                    data = _model(name).model_dump(mode="json", exclude_none=True)
-                    conn.execute(
-                        "INSERT INTO models (data_source, name, data) "
-                        "VALUES (?, ?, ?)",
-                        ("db", name, json.dumps(data)),
-                    )
-            for name in ("orders", "Orders"):
-                with pytest.raises(IdCollisionError):
-                    await storage.save_model(_model(name))
+            storage = resolve_storage(os.path.join(tmpdir, "test.db"))
+            await storage.save_model(_model("orders"))
+            await storage.save_model(_model("Orders"))
 
 
 # ---------------------------------------------------------------------------
-# The production wrapper (resolve_storage → JoinSyncStorage)
+# The production wrapper (resolve_storage → JoinSyncStorage) over YAML
 # ---------------------------------------------------------------------------
 
 

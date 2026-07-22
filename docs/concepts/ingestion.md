@@ -276,7 +276,7 @@ Ingest-on-startup: N/M datasources ingested (K failed: name1, name2)
 - **Existing `sql_table`-mode model** → append new columns and joins from the live schema. Existing columns and joins are **never** mutated — `description`, `label`, `format`, `meta`, and `allowed_aggregations` are preserved verbatim.
 - **Existing `sql`-mode or query-backed model with the matching name** → skipped silently; those are user-authored.
 
-Two live tables whose quoted names differ only by letter case (`"Orders"` vs `orders`) cannot both be persisted — model names collide as filenames in YAML storage on macOS / Windows, so the save is rejected uniformly (`IdCollisionError`). The first table wins; the second surfaces as a per-model entry in `IdempotentIngestResult.errors` (or a per-model message on the CLI / MCP paths) without aborting the rest of the ingest.
+With the default YAML storage, two live tables whose quoted names differ only by letter case (`"Orders"` vs `orders`) cannot both be persisted — model names collide as filenames on macOS / Windows, so the save is rejected (`IdCollisionError`). The first table wins; the second surfaces as a per-model entry in `IdempotentIngestResult.errors` (or a per-model message on the CLI / MCP paths) without aborting the rest of the ingest. SQLite storage persists both.
 
 After the additive pass, `validate_models` runs against the in-scope models and the result is merged into the response (`IdempotentIngestResult.to_delete`). Type-bucket drift on existing columns surfaces there — apply via `slayer validate-models --force-clean`, then re-ingest to pick up the new live type. See [Schema Drift](schema-drift.md) for the full diff / cascade contract.
 
