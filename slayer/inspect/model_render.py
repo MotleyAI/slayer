@@ -995,10 +995,10 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             sample_data = {"columns": cols, "rows": data}
             sample_result.columns = cols
             sample_result.data = data
-            sample_section = f"## Sample Data\n\n{sample_result.to_markdown()}"
+            sample_section = f"## Data Profile\n\n{sample_result.to_markdown()}"
             if show_sql and sample_sql:
                 sample_section = (
-                    f"## Sample Data SQL\n\n```sql\n{sample_sql}\n```\n\n"
+                    f"## Data Profile SQL\n\n```sql\n{sample_sql}\n```\n\n"
                     + sample_section
                 )
             out_sections.append(sample_section)
@@ -1008,10 +1008,10 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             else:
                 err = str(e)
             sample_error = err
-            sample_section = f"## Sample Data\n\n_Error fetching sample data: {err}_"
+            sample_section = f"## Data Profile\n\n_Error fetching data profile: {err}_"
             if show_sql and sample_sql:
                 sample_section = (
-                    f"## Sample Data SQL\n\n```sql\n{sample_sql}\n```\n\n"
+                    f"## Data Profile SQL\n\n```sql\n{sample_sql}\n```\n\n"
                     + sample_section
                 )
             out_sections.append(sample_section)

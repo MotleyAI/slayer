@@ -262,7 +262,7 @@ class TestCompact:
         assert "# Model: `orders`" not in out   # full-render heading
         assert "## Columns (" not in out         # full-render columns table
         assert "- **data_source:**" not in out   # metadata bullets
-        assert "## Sample Data" not in out
+        assert "## Data Profile" not in out
 
 
 # ---------------------------------------------------------------------------
