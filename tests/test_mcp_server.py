@@ -724,7 +724,7 @@ class TestInspectModelSectionGating:
         assert "`customers`, `products`" in result
         # Reachable fields and samples fully omitted
         assert "## Reachable" not in result
-        assert "## Sample Data" not in result
+        assert "## Data Profile" not in result
         # Footer present
         assert "> Sections shown: columns." in result
         assert "> Names-only: measures, aggregations, joins." in result
