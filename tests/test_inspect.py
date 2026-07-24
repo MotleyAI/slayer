@@ -17,16 +17,18 @@ Design (settled in the spec interview + two Codex review passes):
 * The reference is normalized via ``resolve_entity`` (so join paths like
   ``orders.customers.region`` resolve to the owning model's canonical), and
   the normalized canonical id is echoed back (always in the JSON shape).
-* ``compact=True`` (default): leaf (column/measure/aggregation), datasource,
-  and memory render description-only; the **model** kind renders a cheap
-  schema *skeleton* (column / measure / aggregation **names** + join targets,
-  zero DB calls). ``compact=False`` → full render; for the **datasource**
-  kind, ``compact=False`` renders a per-model skeleton for each visible model.
-  ``format`` is ``markdown`` (default) | ``json``.
+* ``compact=True`` (default): a **column**, datasource, and memory render
+  description-only; **measure** / **aggregation** leaves also include their full
+  text (formula / params / type — no sample data, so cheap); the **model** kind
+  renders a cheap schema *skeleton* (column / measure / aggregation **names** +
+  join targets, zero DB calls). ``compact=False`` → full render; for the
+  **datasource** kind, ``compact=False`` renders a per-model skeleton for each
+  visible model. ``format`` is ``markdown`` (default) | ``json``.
 * JSON ``text`` is present **iff non-empty**: ``compact=True`` JSON omits the
-  ``text`` key entirely for every kind; ``compact=False`` JSON carries ``text``
-  only where it holds a render (memory / leaf), ``models`` for the datasource
-  kind, and the full ``inspect_model`` payload for the model kind.
+  ``text`` key for columns / datasource / memory but keeps it for measures /
+  aggregations; ``compact=False`` JSON carries ``text`` wherever it holds a
+  render (memory / leaf), ``models`` for the datasource kind, and the full
+  ``inspect_model`` payload for the model kind.
 * ``inspect`` RENDERS hidden entities (deliberate escape-hatch lookup).
 * Model-only args (``num_rows``/``show_sql``/``sections``/
   ``descriptions_max_chars``) apply where they map; otherwise ignored with a
@@ -1284,18 +1286,37 @@ class TestCompactTextOmittedAllKinds:
         "reference,entity_type",
         [
             ("mydb.orders.amount", "column"),
-            ("mydb.orders.aov", "measure"),
-            ("mydb.orders.big", "aggregation"),
         ],
     )
     async def test_leaf_compact_json_omits_text(
         self, svc: InspectService, reference: str, entity_type: str
     ) -> None:
+        # Columns stay description-only in compact (their text can carry
+        # sampled values / DB reads).
         out = await svc.inspect(
             reference=reference, entity_type=entity_type,
             format="json", compact=True,
         )
         assert "text" not in json.loads(out)
+
+    @pytest.mark.parametrize(
+        "reference,entity_type",
+        [
+            ("mydb.orders.aov", "measure"),
+            ("mydb.orders.big", "aggregation"),
+        ],
+    )
+    async def test_leaf_compact_json_keeps_text_for_measure_and_aggregation(
+        self, svc: InspectService, reference: str, entity_type: str
+    ) -> None:
+        # Formula / params / type are essential and carry no sample data, so
+        # the compact leaf render includes them for measures/aggregations.
+        out = await svc.inspect(
+            reference=reference, entity_type=entity_type,
+            format="json", compact=True,
+        )
+        p = json.loads(out)
+        assert "text" in p and p["text"]
 
     @pytest.mark.parametrize(
         "reference,entity_type",

@@ -317,6 +317,18 @@ class TestResolveEntityDotted:
         result = await resolve_entity("mydb.orders", storage=storage)
         assert result.canonical_forms == ["mydb.orders"]
 
+    async def test_hyphenated_datasource_segment_accepted(
+        self, storage: StorageBackend
+    ) -> None:
+        # A datasource name may embed a UUID (e.g. ``source_019f4323-cb59-...``),
+        # so the identifier guard must accept a hyphenated segment. Resolution
+        # then proceeds and fails on not-found — never on a rejected segment.
+        with pytest.raises(EntityResolutionError) as exc_info:
+            await resolve_entity(
+                "source_019f4323-cb59.nonexistent_model.amount", storage=storage
+            )
+        assert "invalid identifier segment" not in str(exc_info.value)
+
     async def test_two_dot_datasource_model_column(
         self, storage: StorageBackend
     ) -> None:
