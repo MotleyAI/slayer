@@ -2,7 +2,7 @@
 
 import os
 import tempfile
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -10,6 +10,24 @@ from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.embeddings import client as embedding_client
 from slayer.storage.yaml_storage import YAMLStorage
+from tests.parity_xfails import PARITY_XFAILS
+
+
+def pytest_collection_modifyitems(config, items):
+    """DEV-1704 Stage 0: pin every recorded main-parity gap as ``xfail(strict=True)``.
+
+    The typed pipeline is the active path; a set of main-branch feature tests
+    fail against it until later DEV-1703 stages absorb the feature. Rather than
+    delete or skip them (which would silently drop coverage), each is marked
+    strict-xfail keyed by its exact node id — so it flips back to a hard failure
+    the moment the feature lands, and DEV-1485 (Stage 11) can gate on
+    ``tests/parity_xfails.py`` being empty. See the registry module for the
+    per-gap reason / owning stage.
+    """
+    for item in items:
+        reason = PARITY_XFAILS.get(item.nodeid)
+        if reason is not None:
+            item.add_marker(pytest.mark.xfail(reason=reason, strict=True))
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +42,7 @@ def _disable_embedding_channel_by_default(monkeypatch: pytest.MonkeyPatch) -> No
       machine that has ``OPENAI_API_KEY`` set, and emitting per-entity
       bubble-up warnings on CI that doesn't.
     * Tests that *do* want to exercise the embedding code path
-      (``test_embeddings_service.py``, ``test_search_three_channel.py``)
+      (``test_embedding_retriever.py``, ``test_search_three_channel.py``)
       explicitly monkeypatch ``is_available`` back to ``True`` in their
       local fixtures, so this autouse default doesn't interfere.
 

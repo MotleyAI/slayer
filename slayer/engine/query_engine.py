@@ -280,6 +280,19 @@ class SlayerQueryEngine:
         """
         return topologically_order_stages(queries)
 
+    async def aclose(self) -> None:
+        """Dispose every cached client's async engine; keep the clients themselves.
+
+        Per-instance async engines bind their asyncpg/aiomysql pool to the loop
+        that first opened a connection; closing that loop without disposing
+        leaks the server-side connections (asyncpg.Connection.close needs a
+        live loop). Clients are kept so ``_sync_engine`` survives — important
+        for ``:memory:`` SQLite, whose StaticPool pins the connection holding
+        all data.
+        """
+        for client in self._sql_clients.values():
+            await client.aclose()
+
     async def execute(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",

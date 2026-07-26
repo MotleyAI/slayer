@@ -1,0 +1,46 @@
+version: 7
+name: products
+sql_table: bigquery-public-data.thelook_ecommerce.products
+query_variables: {}
+data_source: thelook
+columns:
+- name: id
+  sql: id
+  type: INT
+  primary_key: true
+  hidden: false
+- name: cost
+  sql: cost
+  type: DOUBLE
+  primary_key: false
+  hidden: false
+- name: category
+  sql: category
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: brand
+  sql: brand
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: retail_price
+  sql: retail_price
+  type: DOUBLE
+  primary_key: false
+  hidden: false
+- name: department
+  sql: department
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: sku
+  sql: sku
+  type: TEXT
+  primary_key: false
+  hidden: false
+measures: []
+aggregations: []
+joins: []
+filters: []
+hidden: false

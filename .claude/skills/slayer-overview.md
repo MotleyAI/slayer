@@ -23,16 +23,18 @@ SLayer is a lightweight, agent-first semantic layer. Instead of writing raw SQL,
 
 Query-backed models support two access patterns: **run by name** (`engine.execute("monthly_revenue", variables={...})` runs the stored backing query) and **as a source_model** (`{"source_model": "monthly_revenue", ...}` in another query). Variable precedence: runtime kwarg > stage > outer query > model defaults.
 
+- **SessionPolicy** (Row-Level Security, DEV-1578) — immutable, agent-invisible forced column filter passed at engine/local-client init: `SlayerQueryEngine(storage, policy=SessionPolicy(data_filters=[ColumnFilterRule(column="organization_uuid", value=...)]))`. Silently scopes every query (base, joins, CTEs, sql-mode, query-backed, profiling) to one tenant by wrapping each physical table in a filtered sub-query at the final-SQL layer. Scalar value→`=`, list→`IN`; `on_unapplicable="block"|"pass"` for tables lacking the column; unconfirmable presence fails closed. Local-engine only (HTTP `policy=` raises). See [row-level-security.md](../../docs/concepts/row-level-security.md).
+
 ## MCP Tools
 
-Discovery: `list_datasources`, `models_summary`, `inspect_model` (with sample data)
-Querying: `query`
+Discovery: `list_datasources`, `models_summary`, `inspect` (point lookup by `reference` + required `entity_type`; the model path carries sample data; `reference` accepts a single id, a same-kind **list** for a batched lookup, or **`None`/omitted** for the whole **collection** at that kind — `entity_type="model"` lists all models grouped by datasource, `entity_type="datasource"` lists all datasources, subsuming `models_summary` / `list_datasources`). `inspect_model` is DEPRECATED — use `inspect`.
+Querying: `query`, `recommend_root_model` (given `model.column` / `model.metric` items, introspects the join graph to recommend the query `source_model` + each item's join path from it; optional `root_hint` forces an intended root when it reaches every item; returns partial-root `coverage` when no single model reaches all items)
 Model editing: `create_model`, `edit_model`, `delete_model`
 Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (includes table listing by default), `edit_datasource`, `delete_datasource`, `set_datasource_priority`
 Ingestion: `ingest_datasource_models`
 Schema drift: `validate_models` (read-only diff against live schema; surfaces `SchemaDriftError` cleanups)
 Memory write side: `save_memory`, `forget_memory` (per-entity learnings indexed by canonical entity strings — see [memories.md](../../docs/concepts/memories.md))
-Search: `search` (three-channel: entity-overlap BM25 over memories + tantivy full-text + optional dense embedding similarity, RRF-fused per kind so each output bucket — `memories` / `example_queries` / `entities` — has membership/order invariant under the other buckets' caps; embeddings require the `embedding_search` extra and degrade gracefully when unavailable; partitions query-bearing memories into `example_queries` — see [search.md](../../docs/concepts/search.md))
+Search: `search` (three-channel: entity-overlap BM25 over memory tags + tantivy full-text + optional dense embedding similarity, RRF-fused into a single flat `SearchResponse.results: List[SearchHit]` (DEV-1532) with a `kind` discriminator — `"memory"` / `"datasource"` / `"model"` / `"column"` / `"measure"` / `"aggregation"`; query-bearing memories are still memory hits, distinguished by `hit.query is not None`. Optional `cypher_filter` pre-narrows all three channels: full openCypher when `advanced_search` is installed, naive `MATCH (n:Label) RETURN n.id AS id` kind-filter otherwise. Embeddings also require the `advanced_search` extra and degrade gracefully when unavailable — see [search.md](../../docs/concepts/search.md))
 
 ## Package Structure
 

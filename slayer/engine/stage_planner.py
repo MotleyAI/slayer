@@ -708,6 +708,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         stage_schema=stage_schema,
         active_time_dimension_slot_id=active_td_slot_id,
         render_source_model=render_source_model,
+        distinct_dimension_values=query.distinct_dimension_values,
     )
 
 

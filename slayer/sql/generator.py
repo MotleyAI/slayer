@@ -35,7 +35,7 @@ from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
 )
-from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
+from slayer.sql.dialects.sqlite import rewrite_sqlite_json_extract
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 
 
@@ -1256,9 +1256,10 @@ class SQLGenerator:
         Used to shift raw timestamps before DATE_TRUNC in shifted CTEs so that
         aggregated time buckets align with the base query's buckets.
         """
+        # DEV-1572: a WEEK_SUNDAY offset spans one calendar week, same as WEEK.
         unit_map = {"year": "YEAR", "month": "MONTH", "day": "DAY",
-                    "quarter": "MONTH", "week": "WEEK", "hour": "HOUR",
-                    "minute": "MINUTE", "second": "SECOND"}
+                    "quarter": "MONTH", "week": "WEEK", "week_sunday": "WEEK",
+                    "hour": "HOUR", "minute": "MINUTE", "second": "SECOND"}
         unit = unit_map.get(granularity, granularity.upper())
         val = offset * 3 if granularity == "quarter" else offset
 
@@ -1267,7 +1268,7 @@ class SQLGenerator:
                             "WEEK": "days", "HOUR": "hours", "MINUTE": "minutes",
                             "SECOND": "seconds"}
             sqlite_unit = sqlite_units.get(unit, unit.lower() + "s")
-            sqlite_val = val * 7 if granularity == "week" else val
+            sqlite_val = val * 7 if granularity in ("week", "week_sunday") else val
             return exp.Anonymous(
                 this="DATE",
                 expressions=[col_expr, exp.Literal.string(f"{sqlite_val} {sqlite_unit}")],
@@ -1319,7 +1320,9 @@ class SQLGenerator:
     def _granularity_interval_expr(self, granularity: TimeGranularity, sign: int = 1) -> list[exp.Expression]:
         if granularity == TimeGranularity.QUARTER:
             duration = "3m"
-        elif granularity == TimeGranularity.WEEK:
+        elif granularity in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY):
+            # DEV-1572: a WEEK_SUNDAY shift spans one calendar week, same as WEEK
+            # (only the bucket anchor differs — Sunday vs Monday).
             duration = "1w"
         else:
             unit_to_duration = {
@@ -1636,7 +1639,13 @@ class SQLGenerator:
         # isolated measures were skipped (to deduplicate the dimension spine),
         # or the query is dim-only (auto-dedup distinct dim/time-dim tuples
         # — applied before LIMIT so a row cap can't drop unique tuples).
-        dim_only_dedup = bool(group_by_columns) and not enriched.measures
+        # DEV-1543: distinct_dimension_values=False opts out of the dim-only
+        # dedup GROUP BY, emitting raw rows instead of distinct tuples.
+        dim_only_dedup = (
+            enriched.distinct_dimension_values
+            and bool(group_by_columns)
+            and not enriched.measures
+        )
         needs_group_by = (
             has_aggregation
             or bool(enriched.cross_model_measures)
@@ -2024,6 +2033,14 @@ class SQLGenerator:
         ``TIMESTAMPTZ`` to ``TIMESTAMP``. Idempotent: already-cast
         expressions pass through unchanged.
         """
+        if granularity == TimeGranularity.WEEK_SUNDAY:
+            # DEV-1572: Sunday-anchored week = the Monday-week of (col + 1 day),
+            # shifted back 1 day. Reuses each dialect's existing Monday-based
+            # WEEK truncation via the day-offset helpers, so WEEK_SUNDAY's
+            # correctness tracks WEEK's per dialect (Metabase's own formula).
+            shifted = self._build_time_offset_expr(col_expr, 1, "day")
+            monday = self._build_date_trunc(shifted, TimeGranularity.WEEK)
+            return self._build_time_offset_expr(monday, -1, "day")
         gran_str = _GRANULARITY_MAP.get(granularity, granularity.value)
         if self.dialect == "sqlite":
             # SQLite has no DATE_TRUNC — use STRFTIME
@@ -3022,7 +3039,13 @@ class SQLGenerator:
         # has_aggregation triggers GROUP BY (dim-only emits GROUP BY
         # before LIMIT so unique dim tuples can't silently drop past
         # row N).
-        dim_only_dedup = bool(group_by_keys) and not has_aggregation
+        # DEV-1543: distinct_dimension_values=False opts out of the dim-only
+        # dedup GROUP BY, emitting raw rows instead of distinct tuples.
+        dim_only_dedup = (
+            planned_query.distinct_dimension_values
+            and bool(group_by_keys)
+            and not has_aggregation
+        )
         needs_group_by = has_aggregation or dim_only_dedup
         if needs_group_by and group_by_keys:
             for gb in group_by_keys.values():
@@ -5162,7 +5185,11 @@ class SQLGenerator:
             # dangle joined-column aliases on the outer SELECT scope.
             if base_where is not None and not _base_where_consumed:
                 base_select = base_select.where(base_where)
-            base_dim_only_dedup = bool(base_group_by) and not base_has_agg
+            base_dim_only_dedup = (
+                planned_query.distinct_dimension_values
+                and bool(base_group_by)
+                and not base_has_agg
+            )
             if (base_has_agg or base_dim_only_dedup) and base_group_by:
                 for gb in base_group_by.values():
                     base_select = base_select.group_by(gb)

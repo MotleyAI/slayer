@@ -14,7 +14,8 @@ N=10 concurrent ``executeQuery`` smoke test.
 from __future__ import annotations
 
 import threading
-from typing import Any, Callable, Tuple
+from typing import Any
+from collections.abc import Callable
 
 import pytest
 
@@ -62,7 +63,7 @@ def _columns_of(rs) -> list[str]:
 
 
 def test_get_catalogs(
-    flight_demo_server: Tuple[str, int],
+    flight_demo_server: tuple[str, int],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
 ) -> None:
@@ -84,7 +85,7 @@ def test_get_catalogs(
 
 
 def test_get_schemas_and_tables(
-    flight_demo_server: Tuple[str, int],
+    flight_demo_server: tuple[str, int],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
 ) -> None:
@@ -113,7 +114,7 @@ def test_get_schemas_and_tables(
 
 
 def test_get_primary_keys_empty(
-    flight_demo_server: Tuple[str, int],
+    flight_demo_server: tuple[str, int],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
 ) -> None:
@@ -134,7 +135,7 @@ def test_get_primary_keys_empty(
 
 
 def test_get_keys_and_cross_reference_empty(
-    flight_demo_server: Tuple[str, int],
+    flight_demo_server: tuple[str, int],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
 ) -> None:
@@ -152,7 +153,7 @@ def test_get_keys_and_cross_reference_empty(
 
 
 def test_get_type_info_returns_jdbc_shape(
-    flight_demo_server: Tuple[str, int],
+    flight_demo_server: tuple[str, int],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
 ) -> None:
@@ -180,7 +181,7 @@ def test_get_type_info_returns_jdbc_shape(
 
 
 def test_select_information_schema_metrics(
-    flight_demo_server: Tuple[str, int],
+    flight_demo_server: tuple[str, int],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
 ) -> None:
@@ -202,7 +203,7 @@ def test_select_information_schema_metrics(
 
 
 def test_select_row_count_via_prepared_statement(
-    flight_demo_server: Tuple[str, int],
+    flight_demo_server: tuple[str, int],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
 ) -> None:
@@ -220,7 +221,7 @@ def test_select_row_count_via_prepared_statement(
 
 
 def test_time_grain_select(
-    flight_demo_server: Tuple[str, int],
+    flight_demo_server: tuple[str, int],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
 ) -> None:
@@ -243,7 +244,7 @@ def test_time_grain_select(
 
 
 def test_cross_model_dim_select(
-    flight_demo_server: Tuple[str, int],
+    flight_demo_server: tuple[str, int],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
 ) -> None:
@@ -268,7 +269,7 @@ def test_cross_model_dim_select(
 
 
 def test_select_star_rejected(
-    flight_demo_server: Tuple[str, int],
+    flight_demo_server: tuple[str, int],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
 ) -> None:
@@ -283,7 +284,7 @@ def test_select_star_rejected(
 
 
 def test_dml_rejected(
-    flight_demo_server: Tuple[str, int],
+    flight_demo_server: tuple[str, int],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
 ) -> None:
@@ -310,7 +311,7 @@ def test_dml_rejected(
     ],
 )
 def test_probe_queries(
-    flight_demo_server: Tuple[str, int],
+    flight_demo_server: tuple[str, int],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
     probe_sql: str,
@@ -352,7 +353,7 @@ def test_probe_queries(
     ),
 )
 def test_auth_positive(
-    flight_demo_server_with_token: Tuple[str, int, str],
+    flight_demo_server_with_token: tuple[str, int, str],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
 ) -> None:
@@ -372,7 +373,7 @@ def test_auth_positive(
 
 
 def test_auth_negative_wrong_token(
-    flight_demo_server_with_token: Tuple[str, int, str],
+    flight_demo_server_with_token: tuple[str, int, str],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
 ) -> None:
@@ -402,7 +403,7 @@ def test_auth_negative_wrong_token(
 
 
 def test_n10_concurrent_executequery(
-    flight_demo_server: Tuple[str, int],
+    flight_demo_server: tuple[str, int],
     flight_jdbc_url: Callable[..., str],
     jaydebeapi_connect: Callable[..., Any],
 ) -> None:

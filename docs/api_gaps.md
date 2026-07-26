@@ -27,4 +27,4 @@ Features available in at least one API but missing in at least one other.
 | Health check endpoint | Y | — | — | `GET /health` |
 | Start REST server | — | Y | — | `slayer serve` |
 | Start MCP server | — | Y | — | `slayer mcp` |
-| Conceptual help | — | Y | Y | `help()` MCP tool / `slayer help [TOPIC]` subcommand; identical content from `slayer/help/topics/*.md` |
+| Conceptual help | Y | Y | Y | Seeded `memory:help.*` memories (from `slayer/memories/help_content/*.md`); read via `inspect(entity_type="memory")` / `slayer inspect memory:help.intro --type memory`, or `search` |

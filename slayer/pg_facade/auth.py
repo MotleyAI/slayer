@@ -16,7 +16,8 @@ from __future__ import annotations
 import hmac
 import ipaddress
 import logging
-from typing import Optional
+from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +42,15 @@ def _is_loopback(host: str) -> bool:
     return any(ip in net for net in _LOOPBACK_NETWORKS)
 
 
-def validate_bind_address(*, host: str, token: Optional[str]) -> None:
-    """Raise ``ValueError`` if binding a non-loopback address without a token."""
-    if token:
+def validate_bind_address(
+    *, host: str, token: str | None, authenticated: bool = False
+) -> None:
+    """Raise ``ValueError`` if binding a non-loopback address without auth.
+
+    ``authenticated`` is set by callers that supply a custom password
+    authenticator instead of a static token.
+    """
+    if token or authenticated:
         return
     if _is_loopback(host):
         return
@@ -53,7 +60,7 @@ def validate_bind_address(*, host: str, token: Optional[str]) -> None:
     )
 
 
-def validate_tls_pair(*, cert: Optional[str], key: Optional[str]) -> None:
+def validate_tls_pair(*, cert: str | None, key: str | None) -> None:
     """TLS cert/key must be supplied together or not at all."""
     if (cert is None) != (key is None):
         raise ValueError(
@@ -62,7 +69,7 @@ def validate_tls_pair(*, cert: Optional[str], key: Optional[str]) -> None:
         )
 
 
-def verify_password(client_password: str, expected: Optional[str]) -> bool:
+def verify_password(client_password: str, expected: str | None) -> bool:
     """Constant-time cleartext-password check.
 
     When no token is configured (``expected is None``) any non-empty password
@@ -73,3 +80,77 @@ def verify_password(client_password: str, expected: Optional[str]) -> bool:
     if expected is None:
         return True
     return hmac.compare_digest(client_password, expected)
+
+
+# ---------------------------------------------------------------------------
+# Pluggable authentication
+# ---------------------------------------------------------------------------
+#
+# The facade ships with the static-token check above, but a host application
+# (e.g. Motley Storyline) needs to validate the cleartext password against its
+# own identity store and scope the connection to a tenant. ``Authenticator``
+# is the seam for that: the connection hands over the startup ``user`` /
+# ``database`` parameters plus the cleartext password and gets back an
+# ``AuthOutcome`` whose opaque ``principal`` it carries for the rest of the
+# session (datasource scoping, RLS, logging).
+
+
+@dataclass
+class AuthOutcome:
+    """Result of an authentication attempt.
+
+    ``principal`` is opaque to the facade — a host-defined object (tenant id,
+    user, allowed-datasource set) attached to the connection on success.
+    ``message`` is surfaced to the client only on failure and should stay
+    generic (don't leak which factor failed).
+    """
+
+    ok: bool
+    principal: object | None = None
+    message: str = "password authentication failed"
+
+
+@runtime_checkable
+class Authenticator(Protocol):
+    """Validates a Postgres-facade login.
+
+    ``requires_password`` controls the wire handshake: when False the facade
+    skips the ``AuthenticationCleartextPassword`` exchange and sends
+    ``AuthenticationOk`` directly (loopback dev mode), still calling
+    ``authenticate`` with ``password=None`` so the hook can veto.
+    """
+
+    @property
+    def requires_password(self) -> bool: ...
+
+    async def authenticate(
+        self, *, username: str | None, password: str | None, database: str | None
+    ) -> AuthOutcome: ...
+
+
+class StaticTokenAuthenticator:
+    """Default ``Authenticator``: the legacy single-shared-token behaviour.
+
+    Wraps :func:`verify_password` so existing deployments and tests are
+    unchanged. With no token configured it accepts any non-empty password
+    (and, with ``requires_password`` False, skips the prompt entirely).
+    """
+
+    def __init__(self, token: str | None) -> None:
+        self._token = token
+
+    @property
+    def requires_password(self) -> bool:
+        return self._token is not None
+
+    async def authenticate(  # NOSONAR(S7503,S1172) — Authenticator protocol conformance: async is required so callers can `await`, and username/database are part of the protocol signature for richer authenticators (LDAP, RLS-aware) even though the static-token impl is identity-blind
+        self, *, username: str | None, password: str | None, database: str | None,
+    ) -> AuthOutcome:
+        del username, database  # static-token auth is identity-blind
+        # requires_password is False here, so the facade passed password=None;
+        # treat the no-token loopback case as an unconditional accept.
+        if self._token is None:
+            return AuthOutcome(ok=True)
+        if password is not None and verify_password(password, self._token):
+            return AuthOutcome(ok=True)
+        return AuthOutcome(ok=False)

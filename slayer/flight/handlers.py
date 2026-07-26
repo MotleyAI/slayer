@@ -13,7 +13,6 @@ from __future__ import annotations
 import decimal
 import logging
 from collections import defaultdict
-from typing import Dict, List, Tuple
 
 import pyarrow as pa
 import pyarrow.flight as fl
@@ -45,7 +44,7 @@ logger = logging.getLogger(__name__)
 _TYPE_URL_PREFIX = "type.googleapis.com/arrow.flight.protocol.sql."
 
 
-_COMMAND_BY_TYPE_URL: Dict[str, type] = {
+_COMMAND_BY_TYPE_URL: dict[str, type] = {
     f"{_TYPE_URL_PREFIX}CommandStatementQuery": fsql_pb.CommandStatementQuery,
     f"{_TYPE_URL_PREFIX}CommandPreparedStatementQuery": fsql_pb.CommandPreparedStatementQuery,
     f"{_TYPE_URL_PREFIX}CommandGetCatalogs": fsql_pb.CommandGetCatalogs,
@@ -67,7 +66,7 @@ _COMMAND_BY_TYPE_URL: Dict[str, type] = {
 }
 
 
-def _decode_any(buf: bytes) -> Tuple[str, object]:
+def _decode_any(buf: bytes) -> tuple[str, object]:
     """Decode an Any-wrapped Flight SQL command. Returns ``(type_url, message)``."""
     any_msg = PbAny()
     any_msg.ParseFromString(buf)
@@ -185,10 +184,10 @@ class FlightHandlers:
         models_by_ds = self._fetch_models_by_datasource()
         return build_catalog(models_by_datasource=models_by_ds)
 
-    def _fetch_models_by_datasource(self) -> Dict[str, List[SlayerModel]]:
-        async def fetch() -> Dict[str, List[SlayerModel]]:
+    def _fetch_models_by_datasource(self) -> dict[str, list[SlayerModel]]:
+        async def fetch() -> dict[str, list[SlayerModel]]:
             datasources = await self._storage.list_datasources()
-            out: Dict[str, List[SlayerModel]] = defaultdict(list)
+            out: dict[str, list[SlayerModel]] = defaultdict(list)
             for ds in datasources:
                 model_names = await self._storage.list_models(data_source=ds)
                 for name in model_names:
@@ -401,7 +400,7 @@ class FlightHandlers:
 
     @staticmethod
     def _rewrite_row(
-        row: dict, mapping: List[Tuple[str, str]],
+        row: dict, mapping: list[tuple[str, str]],
     ) -> dict:
         """Rewrite an engine row's keys into projected names + coerce Decimals."""
         out: dict = {}
@@ -439,12 +438,12 @@ class FlightHandlers:
 # --- top-level dispatch -------------------------------------------------------
 
 
-def decode_command(buf: bytes) -> Tuple[str, object]:
+def decode_command(buf: bytes) -> tuple[str, object]:
     """Public re-export for tests / the server."""
     return _decode_any(buf)
 
 
-def decode_ticket(buf: bytes) -> Tuple[str, object]:
+def decode_ticket(buf: bytes) -> tuple[str, object]:
     """Tickets are also Any-wrapped (TicketStatementQuery / CommandPreparedStatementQuery)."""
     return _decode_any(buf)
 

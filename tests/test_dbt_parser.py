@@ -199,7 +199,9 @@ class TestParseDbtProject:
         assert m.name == "completed_amount"
         assert m.type == "simple"
         assert m.label == "Completed Amount"
-        assert m.type_params.measure == "total_amount"
+        # DEV-1595: type_params.measure is now a DbtMetricInputMeasure object
+        # (string shorthand coerced via before-validator); name lives on .name.
+        assert m.type_params.measure_name == "total_amount"
         assert "Dimension" in (m.filter or "")
 
     def test_parse_derived_metric(self, dbt_project_dir) -> None:

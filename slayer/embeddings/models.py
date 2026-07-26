@@ -18,7 +18,7 @@ the source text hasn't changed since the last refresh.
 """
 
 from datetime import datetime, timezone
-from typing import Any, List, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -42,7 +42,7 @@ class Embedding(BaseModel):
     embedding_model_name: str
     entity_kind: EntityKind
     content_hash: str
-    embedding: List[float]
+    embedding: list[float]
     created_at: datetime = Field(default_factory=_utcnow)
 
     @model_validator(mode="before")

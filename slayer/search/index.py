@@ -19,7 +19,6 @@ The index is rebuilt fresh per ``search`` call (no persistence in v1).
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
 
 import tantivy
 from pydantic import BaseModel, ConfigDict
@@ -27,12 +26,9 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.models import SlayerModel
 from slayer.memories.models import Memory
 from slayer.search.render import (
-    render_aggregation_text,
-    render_column_text,
-    render_datasource_text,
-    render_measure_text,
+    collect_model_entity_pairs,
+    render_datasource_pair,
     render_memory_text,
-    render_model_text,
 )
 
 
@@ -51,7 +47,7 @@ class IndexHit(BaseModel):
     canonical: str
     text: str
     score: float
-    memory_id: Optional[str] = None  # populated only when kind == "memory"
+    memory_id: str | None = None  # populated only when kind == "memory"
 
 
 # ---------------------------------------------------------------------------
@@ -86,9 +82,10 @@ def _add_doc(
 
 def build_in_memory_index(
     *,
-    memories: List[Memory],
-    models: List[SlayerModel],
-    datasources: List[str],
+    memories: list[Memory],
+    models: list[SlayerModel],
+    datasources: list[str],
+    datasource_descriptions: dict[str, str | None] | None = None,
 ) -> tantivy.Index:
     """Build a fresh in-RAM tantivy index covering the corpus.
 
@@ -96,11 +93,18 @@ def build_in_memory_index(
     expected to pass datasource names + every model in scope; this
     function does *not* call into storage.
 
+    DEV-1549: ``datasource_descriptions`` mirrors the symmetric kwarg on
+    :func:`build_in_memory_corpus` so direct callers of this helper can
+    also surface datasource-description text in the lexical index.
+
     Returns just the tantivy index for callers that don't need the
     canonical-text lookups. ``build_in_memory_corpus`` returns both.
     """
     corpus = build_in_memory_corpus(
-        memories=memories, models=models, datasources=datasources,
+        memories=memories,
+        models=models,
+        datasources=datasources,
+        datasource_descriptions=datasource_descriptions,
     )
     return corpus.index
 
@@ -109,86 +113,82 @@ class Corpus(BaseModel):
     """The tantivy index plus the parallel ``canonical_id → text`` and
     ``canonical_id → kind`` maps. The embedding channel (DEV-1386) uses
     the maps to recover hit text without re-rendering the entity or
-    round-tripping through the raw ``canonical`` tantivy field."""
+    round-tripping through the raw ``canonical`` tantivy field.
+
+    DEV-1549: ``canonical_to_description`` lets the search service
+    surface the entity's structured description on ``SearchHit`` without
+    re-loading the entity at hit-construction time.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     index: "tantivy.Index"
-    canonical_to_text: Dict[str, str]
-    canonical_to_kind: Dict[str, str]
-
-
-def _render_model_subtree_pairs(
-    model: SlayerModel,
-) -> List[Tuple[str, str, str]]:
-    """Render docs for one model: the model itself + its visible columns +
-    named measures + custom aggregations. Hidden columns and unnamed
-    measures are skipped to match the indexer's filter rules."""
-    model_canonical = f"{model.data_source}.{model.name}"
-    pairs: List[Tuple[str, str, str]] = [(
-        model_canonical, "model", render_model_text(model=model),
-    )]
-    for column in model.columns:
-        if column.hidden:
-            continue
-        pairs.append((
-            f"{model_canonical}.{column.name}", "column",
-            render_column_text(model=model, column=column),
-        ))
-    for measure in model.measures:
-        if measure.name is None:
-            continue
-        pairs.append((
-            f"{model_canonical}.{measure.name}", "measure",
-            render_measure_text(model=model, measure=measure),
-        ))
-    for aggregation in model.aggregations:
-        pairs.append((
-            f"{model_canonical}.{aggregation.name}", "aggregation",
-            render_aggregation_text(model=model, aggregation=aggregation),
-        ))
-    return pairs
+    canonical_to_text: dict[str, str]
+    canonical_to_kind: dict[str, str]
+    canonical_to_description: dict[str, str | None] = {}
 
 
 def _collect_render_pairs(
     *,
-    memories: List[Memory],
-    visible_models: List[SlayerModel],
-    datasources: List[str],
-) -> List[Tuple[str, str, str]]:
-    """Return ``[(canonical_id, kind, rendered_text), ...]`` for every
-    doc that goes into the index. Same filter rules as the indexer:
-    hidden models and hidden columns are skipped."""
-    out: List[Tuple[str, str, str]] = []
-    models_by_ds: Dict[str, List[SlayerModel]] = {}
+    memories: list[Memory],
+    visible_models: list[SlayerModel],
+    datasources: list[str],
+    datasource_descriptions: dict[str, str | None] | None = None,
+) -> list[tuple[str, str, str, str | None]]:
+    """Return ``[(canonical_id, kind, rendered_text, description), ...]``
+    for every doc that goes into the index. Routes through the unified
+    dispatch helpers in ``slayer.search.render`` (DEV-1513). Hidden
+    models and hidden columns are skipped inside the helpers.
+
+    DEV-1549: the fourth tuple element carries the entity's structured
+    ``description`` field (``None`` when absent) so callers can build a
+    ``canonical_id → description`` map symmetrical to the existing
+    canonical-text map.
+    """
+    out: list[tuple[str, str, str, str | None]] = []
+    models_by_ds: dict[str, list[SlayerModel]] = {}
     for m in visible_models:
         models_by_ds.setdefault(m.data_source, []).append(m)
+    descriptions = datasource_descriptions or {}
     for ds in datasources:
-        out.append((
-            ds, "datasource",
-            render_datasource_text(name=ds, models=models_by_ds.get(ds, [])),
-        ))
+        pair = render_datasource_pair(
+            name=ds,
+            models=models_by_ds.get(ds, []),
+            description=descriptions.get(ds),
+        )
+        out.append((pair.canonical_id, pair.kind, pair.text, pair.description))
     for model in visible_models:
-        out.extend(_render_model_subtree_pairs(model))
+        for re in collect_model_entity_pairs(model=model):
+            out.append((re.canonical_id, re.kind, re.text, re.description))
     for memory in memories:
+        # Memories surface ``Memory.description`` directly so the search
+        # service can flip on compact rendering without re-loading the
+        # memory.
         out.append((
             f"memory:{memory.id}", "memory",
             render_memory_text(memory=memory),
+            memory.description,
         ))
     return out
 
 
 def build_in_memory_corpus(
     *,
-    memories: List[Memory],
-    models: List[SlayerModel],
-    datasources: List[str],
+    memories: list[Memory],
+    models: list[SlayerModel],
+    datasources: list[str],
+    datasource_descriptions: dict[str, str | None] | None = None,
 ) -> Corpus:
     """Build the index AND the parallel canonical lookup maps in one walk.
 
     The embedding channel (DEV-1386) reads from the same render pipeline
     as tantivy, so rendering once here keeps the two channels in sync
     without paying for two traversals.
+
+    DEV-1549: ``datasource_descriptions`` is an optional
+    ``{ds_name → description}`` map (``None`` description when the
+    datasource has none). When omitted, datasource hits get
+    ``description=None``.
     """
     schema = _build_schema()
     index = tantivy.Index(schema=schema)
@@ -207,10 +207,12 @@ def build_in_memory_corpus(
         memories=memories,
         visible_models=visible_models,
         datasources=datasources,
+        datasource_descriptions=datasource_descriptions,
     )
-    canonical_to_text: Dict[str, str] = {}
-    canonical_to_kind: Dict[str, str] = {}
-    for canonical, kind, text in pairs:
+    canonical_to_text: dict[str, str] = {}
+    canonical_to_kind: dict[str, str] = {}
+    canonical_to_description: dict[str, str | None] = {}
+    for canonical, kind, text, description in pairs:
         # Memory docs use ``id="memory:<int>"`` and ``canonical="<int>"``
         # to match the DEV-1375 tantivy schema; entity docs use the same
         # canonical string for both ``id`` and ``canonical`` fields.
@@ -227,6 +229,7 @@ def build_in_memory_corpus(
             )
         canonical_to_text[canonical] = text
         canonical_to_kind[canonical] = kind
+        canonical_to_description[canonical] = description
 
     writer.commit()
     index.reload()
@@ -234,6 +237,7 @@ def build_in_memory_corpus(
         index=index,
         canonical_to_text=canonical_to_text,
         canonical_to_kind=canonical_to_kind,
+        canonical_to_description=canonical_to_description,
     )
 
 
@@ -246,8 +250,8 @@ def _apply_kind_filter(
     *,
     query: "tantivy.Query",
     schema: "tantivy.Schema",
-    kind_filter: Optional[str],
-    exclude_kind: Optional[str],
+    kind_filter: str | None,
+    exclude_kind: str | None,
 ) -> "tantivy.Query":
     """Wrap ``query`` in a boolean query that ``Must`` includes (or
     ``MustNot`` excludes) docs whose ``kind`` field exactly equals the
@@ -272,10 +276,10 @@ def search_index(
     index: tantivy.Index,
     question: str,
     limit: int = 20,
-    fields: Optional[List[str]] = None,
-    kind_filter: Optional[str] = None,
-    exclude_kind: Optional[str] = None,
-) -> List[IndexHit]:
+    fields: list[str] | None = None,
+    kind_filter: str | None = None,
+    exclude_kind: str | None = None,
+) -> list[IndexHit]:
     """Run a tantivy query against ``index``.
 
     Args:
@@ -318,12 +322,12 @@ def search_index(
     )
     searcher = index.searcher()
     raw_hits = searcher.search(query, limit).hits
-    out: List[IndexHit] = []
+    out: list[IndexHit] = []
     for score, address in raw_hits:
         doc = searcher.doc(address)
         kind = str(doc.get_first("kind"))
         canonical = str(doc.get_first("canonical"))
-        memory_id: Optional[str] = None
+        memory_id: str | None = None
         if kind == "memory":
             memory_id = canonical or None
         out.append(IndexHit(

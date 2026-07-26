@@ -1,0 +1,147 @@
+# A worked OSI (Open Semantic Interchange) config for the SLayer import demo.
+#
+# It describes a small retail shop over four tables (orders, customers,
+# products, regions) and exercises every OSI feature the importer understands:
+#   * ai_context on the model, fields, joins, and metrics
+#   * custom_extensions carried into column meta
+#   * relationships that become SLayer joins (incl. a multi-hop chain)
+#   * simple, derived, cross-dataset, and multi-hop metrics
+#
+# Sources are BARE table names so the importer's live introspection resolves
+# them directly against the demo DuckDB the notebook builds.
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: shop
+    description: Retail shop semantic model
+    ai_context:
+      instructions: "Use for order, customer, and product analytics."
+      synonyms:
+        - "store"
+        - "retail"
+
+    datasets:
+      - name: orders
+        source: orders
+        primary_key: [order_id]
+        description: Order line items
+        ai_context:
+          instructions: "One row per order."
+          synonyms:
+            - "sales"
+            - "purchases"
+        fields:
+          - name: order_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: order_id}]}
+            description: Order id
+          - name: customer_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}
+          - name: product_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: product_id}]}
+          - name: amount
+            expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}
+            label: Order amount
+            ai_context:
+              instructions: "Gross order value in USD."
+              synonyms:
+                - "revenue"
+                - "gross"
+            custom_extensions:
+              - vendor_name: SNOWFLAKE
+                data: '{"unit": "usd"}'
+          - name: quantity
+            expression: {dialects: [{dialect: ANSI_SQL, expression: quantity}]}
+          - name: ordered_at
+            expression: {dialects: [{dialect: ANSI_SQL, expression: ordered_at}]}
+            dimension: {is_time: true}
+          - name: status
+            expression: {dialects: [{dialect: ANSI_SQL, expression: status}]}
+
+      - name: customers
+        source: customers
+        primary_key: [customer_id]
+        fields:
+          - name: customer_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: customer_id}]}
+          - name: region_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: region_id}]}
+          - name: name
+            expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}
+          - name: segment
+            expression: {dialects: [{dialect: ANSI_SQL, expression: segment}]}
+
+      - name: products
+        source: products
+        primary_key: [product_id]
+        fields:
+          - name: product_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: product_id}]}
+          - name: category
+            expression: {dialects: [{dialect: ANSI_SQL, expression: category}]}
+          - name: price
+            expression: {dialects: [{dialect: ANSI_SQL, expression: price}]}
+
+      - name: regions
+        source: regions
+        primary_key: [region_id]
+        fields:
+          - name: region_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: region_id}]}
+          - name: name
+            expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}
+          - name: population
+            expression: {dialects: [{dialect: ANSI_SQL, expression: population}]}
+
+    relationships:
+      - name: orders_to_customers
+        from: orders
+        to: customers
+        from_columns: [customer_id]
+        to_columns: [customer_id]
+        ai_context:
+          instructions: "Each order has one customer."
+      - name: orders_to_products
+        from: orders
+        to: products
+        from_columns: [product_id]
+        to_columns: [product_id]
+      - name: customers_to_regions
+        from: customers
+        to: regions
+        from_columns: [region_id]
+        to_columns: [region_id]
+
+    metrics:
+      - name: total_amount
+        description: Total order amount
+        ai_context:
+          instructions: "Sum of gross order value."
+          synonyms:
+            - "gmv"
+        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(amount)}]}
+      - name: order_count
+        expression: {dialects: [{dialect: ANSI_SQL, expression: COUNT(*)}]}
+      - name: aov
+        description: Average order value
+        expression: {dialects: [{dialect: ANSI_SQL, expression: (SUM(amount)) / (COUNT(*))}]}
+      - name: revenue_line
+        description: Quantity-weighted revenue (materialized operand)
+        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(quantity * amount)}]}
+      - name: cust_reach
+        description: Amount per distinct customer (cross-dataset, anchor = orders)
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(amount) / COUNT(DISTINCT customers.customer_id)
+      - name: rev_plus_pop
+        description: Amount plus region population (multi-hop orders->customers->regions)
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(amount) + SUM(regions.population)
+      - name: bridge_metric
+        description: References products + customers only; must anchor on orders (bridge)
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(products.price) + COUNT(DISTINCT customers.customer_id)

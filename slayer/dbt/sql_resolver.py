@@ -24,7 +24,6 @@ tokens into the output:
 
 import logging
 import re
-from typing import Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +67,11 @@ _ANY_JINJA_RE = re.compile(r"\{\{[^}]*\}\}")
 
 def resolve_refs(
     sql: str,
-    regular_models_sql: Dict[str, str],
+    regular_models_sql: dict[str, str],
     *,
     max_depth: int = 16,
-    _visited: Optional[Set[str]] = None,
-) -> Tuple[str, List[str]]:
+    _visited: set[str] | None = None,
+) -> tuple[str, list[str]]:
     """Resolve dbt Jinja refs/sources in a SQL body.
 
     Refs pointing at other regular models are recursively inlined as
@@ -99,7 +98,7 @@ def resolve_refs(
     if _visited is None:
         _visited = set()
 
-    warnings: List[str] = []
+    warnings: list[str] = []
 
     if max_depth <= 0:
         warnings.append(

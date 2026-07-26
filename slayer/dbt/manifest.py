@@ -14,7 +14,7 @@ import json
 import importlib.util
 import logging
 import os
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from slayer.dbt.models import DbtColumnMeta, DbtRegularModel
 
@@ -34,7 +34,7 @@ def _manifest_path(project_path: str) -> str:
     return os.path.join(project_path, "target", "manifest.json")
 
 
-def _load_manifest_file(path: str) -> Optional[dict]:
+def _load_manifest_file(path: str) -> dict | None:
     try:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
@@ -67,7 +67,7 @@ def _run_dbt_parse(project_path: str) -> bool:
     return bool(success)
 
 
-def load_or_generate_manifest(project_path: str) -> Optional[dict]:
+def load_or_generate_manifest(project_path: str) -> dict | None:
     """Return the dbt manifest dict for a project, or None.
 
     Resolution order:
@@ -95,9 +95,9 @@ def load_or_generate_manifest(project_path: str) -> Optional[dict]:
     return _load_manifest_file(path)
 
 
-def _semantic_model_referenced_nodes(manifest: dict) -> Set[str]:
+def _semantic_model_referenced_nodes(manifest: dict) -> set[str]:
     """Collect every dbt node key referenced by any semantic_model."""
-    referenced: Set[str] = set()
+    referenced: set[str] = set()
     semantic_models = manifest.get("semantic_models") or {}
     for sm in semantic_models.values():
         # Prefer node_relation when present, fall back to depends_on.nodes
@@ -108,11 +108,11 @@ def _semantic_model_referenced_nodes(manifest: dict) -> Set[str]:
     return referenced
 
 
-def find_orphan_model_nodes(manifest: dict) -> List[dict]:
+def find_orphan_model_nodes(manifest: dict) -> list[dict]:
     """Return manifest nodes for regular models not wrapped by any semantic_model."""
     referenced = _semantic_model_referenced_nodes(manifest)
     nodes = manifest.get("nodes") or {}
-    orphans: List[dict] = []
+    orphans: list[dict] = []
     for node_key, node in nodes.items():
         if node.get("resource_type") != "model":
             continue
@@ -122,7 +122,7 @@ def find_orphan_model_nodes(manifest: dict) -> List[dict]:
     return orphans
 
 
-def _column_from_manifest(raw: Dict[str, Any]) -> DbtColumnMeta:
+def _column_from_manifest(raw: dict[str, Any]) -> DbtColumnMeta:
     return DbtColumnMeta(
         name=raw.get("name", ""),
         description=raw.get("description") or None,
@@ -131,7 +131,7 @@ def _column_from_manifest(raw: Dict[str, Any]) -> DbtColumnMeta:
     )
 
 
-def _regular_model_from_node(node: Dict[str, Any]) -> DbtRegularModel:
+def _regular_model_from_node(node: dict[str, Any]) -> DbtRegularModel:
     columns_raw = node.get("columns") or {}
     columns = [_column_from_manifest(c) for c in columns_raw.values() if c.get("name")]
     return DbtRegularModel(
@@ -145,6 +145,6 @@ def _regular_model_from_node(node: Dict[str, Any]) -> DbtRegularModel:
     )
 
 
-def regular_models_from_manifest(manifest: dict) -> List[DbtRegularModel]:
+def regular_models_from_manifest(manifest: dict) -> list[DbtRegularModel]:
     """Turn the orphan nodes of a dbt manifest into ``DbtRegularModel`` instances."""
     return [_regular_model_from_node(node) for node in find_orphan_model_nodes(manifest)]

@@ -1,0 +1,11 @@
+version: "0.1.1"
+semantic_model:
+  - name: s
+    ai_context: "plain string context"
+    datasets:
+      - name: t
+        source: t
+        ai_context: "dataset string ctx"
+        fields:
+          - name: c
+            expression: {dialects: [{dialect: ANSI_SQL, expression: c}]}

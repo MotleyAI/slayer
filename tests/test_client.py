@@ -10,7 +10,8 @@ on list/str inputs is what the original report describes.
 
 import tempfile
 from types import MappingProxyType
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any
+from collections.abc import Mapping
 
 import pytest
 
@@ -63,7 +64,7 @@ async def _save_orders(storage: YAMLStorage) -> None:
 
 # Minimal response payload that ``SlayerClient._parse_response`` consumes
 # without complaining. Used by the HTTP-mode mocks.
-_CANNED_RESP: Dict[str, Any] = {
+_CANNED_RESP: dict[str, Any] = {
     "data": [],
     "columns": [],
     "sql": "SELECT 1",
@@ -80,16 +81,16 @@ class _CapturedRequests:
     """
 
     def __init__(self) -> None:
-        self.calls: List[Dict[str, Any]] = []
+        self.calls: list[dict[str, Any]] = []
 
     def _replace_sync(
         self,
         *,
         method: str,
         path: str,
-        json: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         self.calls.append(
             {"method": method, "path": path, "json": json, "params": params}
         )
@@ -102,15 +103,15 @@ class _CapturedRequests:
         *,
         method: str,
         path: str,
-        json: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return self._replace_sync(
             method=method, path=path, json=json, params=params
         )
 
     @property
-    def last_body(self) -> Optional[Dict[str, Any]]:
+    def last_body(self) -> dict[str, Any] | None:
         if not self.calls:
             return None
         return self.calls[-1]["json"]
@@ -119,7 +120,7 @@ class _CapturedRequests:
 @pytest.fixture
 def http_client_with_capture(
     monkeypatch: pytest.MonkeyPatch,
-) -> Tuple[SlayerClient, _CapturedRequests]:
+) -> tuple[SlayerClient, _CapturedRequests]:
     """A remote-mode ``SlayerClient`` whose request-wrappers are stubbed.
 
     Returns ``(client, capture)`` where ``capture.last_body`` exposes the
@@ -282,7 +283,7 @@ class TestHttpBodyShape:
 
     def test_list_body_shape(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
         queries = [
@@ -310,7 +311,7 @@ class TestHttpBodyShape:
 
     def test_list_with_slayerquery_items(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         """Mixed list items (``SlayerQuery`` + dict) each serialise to dict."""
         client, cap = http_client_with_capture
@@ -319,7 +320,7 @@ class TestHttpBodyShape:
             source_model="orders",
             measures=[{"formula": "amount:sum"}],
         )
-        items: List[Any] = [q, {"source_model": "a"}]
+        items: list[Any] = [q, {"source_model": "a"}]
         client.query_sync(items)
         body = cap.last_body
         assert body is not None
@@ -339,7 +340,7 @@ class TestHttpBodyShape:
 
     def test_str_body_shape(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
         client.query_sync("rev_by_region")
@@ -349,7 +350,7 @@ class TestHttpBodyShape:
 
     def test_dict_body_shape(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         """Dict input is round-tripped through ``SlayerQuery`` so the
         server sees the JSON-mode dump (string-shorthand normalised,
@@ -373,7 +374,7 @@ class TestHttpBodyShape:
 
     def test_dict_normalizes_string_shorthand(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         """String-shorthand measures (e.g. ``"amount:sum"``) become
         dict-form (``{"formula": "amount:sum"}``) before reaching the
@@ -394,7 +395,7 @@ class TestHttpBodyShape:
 
     def test_slayerquery_body_shape(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
         q = SlayerQuery(
@@ -408,7 +409,7 @@ class TestHttpBodyShape:
 
     def test_dry_run_explain_appended_list(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
         items = [
@@ -428,7 +429,7 @@ class TestHttpBodyShape:
 
     def test_dry_run_explain_appended_str(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
         client.query_sync("m", dry_run=True, explain=True)
@@ -440,7 +441,7 @@ class TestHttpBodyShape:
 
     def test_dry_run_explain_appended_dict(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
         client.query_sync(
@@ -454,7 +455,7 @@ class TestHttpBodyShape:
 
     def test_flags_omitted_when_false(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         """``dry_run=False`` / ``explain=False`` (defaults) → keys not present."""
         client, cap = http_client_with_capture
@@ -468,7 +469,7 @@ class TestHttpBodyShape:
 
     def test_does_not_mutate_caller_dict(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, _cap = http_client_with_capture
         payload = {
@@ -483,10 +484,10 @@ class TestHttpBodyShape:
 
     def test_does_not_mutate_caller_list(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
-        items: List[Dict[str, Any]] = [
+        items: list[dict[str, Any]] = [
             {"name": "a", "source_model": "orders"},
             {"source_model": "a"},
         ]
@@ -506,7 +507,7 @@ class TestHttpBodyShape:
 
     def test_rejects_invalid_input_top_level(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
         with pytest.raises(TypeError, match="SlayerQuery"):
@@ -515,7 +516,7 @@ class TestHttpBodyShape:
 
     def test_rejects_invalid_list_item(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
         with pytest.raises(TypeError, match=r"query\[1\]"):
@@ -528,7 +529,7 @@ class TestHttpBodyShape:
 
     def test_mappingproxy_body_shape(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         """``MappingProxyType`` is a ``Mapping`` but not a ``dict`` — the
         helper must honour the declared ``Mapping[str, Any]`` contract
@@ -544,7 +545,7 @@ class TestHttpBodyShape:
 
     def test_tuple_body_shape(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         """``tuple`` is a ``Sequence`` but not a ``list`` — honoured."""
         client, cap = http_client_with_capture
@@ -567,7 +568,7 @@ class TestHttpBodyShape:
 
     def test_dict_with_variables_preserved(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         """A dict input carrying top-level ``variables`` reaches the server
         verbatim. DEV-1437 doesn't add a ``variables=`` kwarg (see DEV-1438)
@@ -588,7 +589,7 @@ class TestHttpBodyShape:
 
     def test_sql_sync_list_input(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         """``sql_sync`` delegates to ``query_sync(dry_run=True)`` — list
         input must reach the transport with ``dry_run`` set."""
@@ -612,7 +613,7 @@ class TestHttpBodyShape:
 
     def test_sql_sync_str_input(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
         sql = client.sql_sync("rev_by_region")
@@ -621,7 +622,7 @@ class TestHttpBodyShape:
 
     def test_explain_sync_list_input(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         """``explain_sync`` delegates to ``query_sync(explain=True)`` — list
         input must reach the transport with ``explain`` set."""
@@ -645,7 +646,7 @@ class TestHttpBodyShape:
 
     def test_explain_sync_str_input(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
         client.explain_sync("rev_by_region")
@@ -666,9 +667,9 @@ class TestHttpBodyShape:
             *,
             method: str,
             path: str,
-            json: Optional[Dict[str, Any]] = None,
-            params: Optional[Dict[str, Any]] = None,
-        ) -> Dict[str, Any]:
+            json: dict[str, Any] | None = None,
+            params: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
             capture.calls.append(
                 {"method": method, "path": path, "json": json, "params": params}
             )
@@ -702,7 +703,7 @@ class TestHttpBodyShape:
 
     async def test_async_query_list_body_shape(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         """Async ``query`` mirrors sync ``query_sync`` body shape."""
         client, cap = http_client_with_capture
@@ -723,7 +724,7 @@ class TestHttpBodyShape:
 
     async def test_async_query_str_body_shape(
         self,
-        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+        http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
         await client.query("rev_by_region")

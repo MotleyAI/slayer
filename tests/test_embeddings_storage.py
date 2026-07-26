@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import tempfile
 from datetime import datetime, timezone
-from typing import Iterator, List
+from collections.abc import Iterator
 
 import pytest
 
@@ -44,7 +44,7 @@ def _embed(
     model: str = "openai/test-embedding",
     kind: EntityKind = "memory",
     text_hash: str = "h0",
-    vector: List[float] | None = None,
+    vector: list[float] | None = None,
 ) -> Embedding:
     return Embedding(
         canonical_id=canonical_id,
@@ -201,7 +201,7 @@ async def test_delete_model_cascades_subtree_embeddings(
     )
     await storage.save_model(model)
 
-    seeds: List[tuple[str, EntityKind]] = [
+    seeds: list[tuple[str, EntityKind]] = [
         ("dsx.orders", "model"),
         ("dsx.orders.id", "column"),
         ("dsx.orders.rev", "measure"),
@@ -232,7 +232,7 @@ async def test_delete_datasource_cascades_descendants(
         name="dsx", type="postgres", host="h", database="d",
     )
     await storage.save_datasource(ds)
-    seeds: List[tuple[str, EntityKind]] = [
+    seeds: list[tuple[str, EntityKind]] = [
         ("dsx", "datasource"),
         ("dsx.orders", "model"),
         ("dsx.orders.id", "column"),

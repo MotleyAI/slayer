@@ -50,8 +50,18 @@ class InfoSchemaResult(TranslatorResult):
 
 def translate(sql: str, catalog: FacadeCatalog) -> TranslatorResult:
     """Translate ``sql`` for the Flight facade (``dialect=None``), converting
-    the shared ``RowBatch`` results into Arrow-shaped ones."""
-    result = _shared_translate(sql, catalog, dialect=None)
+    the shared ``RowBatch`` results into Arrow-shaped ones.
+
+    ``allow_column_cast=False`` — DEV-1566 ``CAST(<col> AS <type>)`` projections
+    are gated to the pg-facade. The Flight handler materialises rows via
+    ``pa.Table.from_pylist`` against a catalog-typed schema, which rejects
+    values whose Python type doesn't match the declared Arrow type
+    (e.g. ``datetime.date`` against ``pa.timestamp``); Flight has no
+    value-coercion pass to bridge the gap. Rejecting at translate time
+    surfaces a clean ``TranslationError`` instead of an opaque
+    ``ArrowTypeError`` at materialisation.
+    """
+    result = _shared_translate(sql, catalog, dialect=None, allow_column_cast=False)
     if isinstance(result, _SharedProbeResult):
         return ProbeResult(table=row_batch_to_arrow(result.batch))
     if isinstance(result, _SharedInfoSchemaResult):

@@ -49,3 +49,36 @@ class TestSearchLenientValidation:
         svc = SearchService(storage=storage)
         resp = await svc.search(entities=[f"memory:{seed.id}"])
         assert f"memory:{seed.id}" in resp.resolved_input_entities
+
+    # ---- DEV-1513: warning text for named-entity surfacing drops -----------
+
+    async def test_off_datasource_named_entity_warning_text(
+        self, storage: StorageBackend,
+    ) -> None:
+        """DEV-1513: a resolved entity not rooted at ``datasource`` is
+        dropped from the entities bucket with a specific warning shape."""
+        from slayer.core.models import DatasourceConfig, SlayerModel, Column
+
+        await storage.save_datasource(
+            DatasourceConfig(name="otherdb", type="sqlite", database=":memory:"),
+        )
+        await storage.save_model(SlayerModel(
+            name="catalog",
+            sql_table="catalog",
+            data_source="otherdb",
+            columns=[Column(name="id", sql="id", primary_key=True)],
+        ))
+        svc = SearchService(storage=storage)
+        resp = await svc.search(
+            entities=["otherdb.catalog"],
+            datasource="mydb",
+            max_results=20,
+        )
+        entity_hits = [h for h in resp.results if h.kind != "memory"]
+        assert entity_hits == []
+        assert any(
+            "otherdb.catalog" in w
+            and "not rooted at datasource 'mydb'" in w
+            and "dropped from entities bucket" in w
+            for w in resp.warnings
+        )

@@ -12,14 +12,17 @@ canonical entity matches via tantivy full-text — see the search docs).
 A memory has two flavours:
 
 - **Learning** — a memory with no attached query. Surfaces in
-  `inspect_model` and in the `memories` list of `search`.
+  `inspect_model` and as a `kind="memory"` hit in `search` with
+  `hit.query is None`.
 - **Query-bearing** — a memory whose `query` field carries a
-  `SlayerQuery`. Surfaces only in the `example_queries` list of
-  `search` (capped independently from `memories` so bulky examples
-  cannot crowd out small notes).
+  `SlayerQuery`. Surfaces only via `search`, as a `kind="memory"` hit
+  with `hit.query is not None`. Not rendered in `inspect_model`.
 
-The split is implicit: pass an entity list to `save_memory` to record
-a learning; pass a `SlayerQuery` and the memory carries that query.
+Both flavours land in the same flat `SearchResponse.results` list
+(DEV-1532); callers split on `hit.query` rather than on separate
+buckets. The split is implicit at save time: pass an entity list to
+`save_memory` to record a learning; pass a `SlayerQuery` and the
+memory carries that query.
 
 ## The canonical entity form
 
@@ -57,7 +60,7 @@ Memory retrieval is part of [`search`](search.md) (one tool covers
 both memories and canonical entity discovery). This page covers only
 the write side.
 
-### `save_memory(learning, linked_entities, id=None)`
+### `save_memory(learning, linked_entities, id=None, description=None)`
 
 Persist a memory. `linked_entities` accepts either form:
 
@@ -74,12 +77,22 @@ int-shaped id (`"1"`, `"2"`, ...). Supply a string for a stable
 user-controlled id (`"kb.policy.42"`) — useful for knowledge-base
 ingestion pipelines. Charset excludes `:`, `/`, `?`, `#`, whitespace,
 and ASCII control characters. Duplicate id → unconditional **upsert**,
-`created_at` preserved.
+`created_at` preserved. In the default YAML storage, an id that differs
+only by letter case from an existing one (`X` vs `x`) raises
+`IdCollisionError` — ids are filenames there, and case variants collide
+on macOS / Windows.
+
+`description` is optional (≤ 500 chars). When set, `search(compact=True)`
+and `inspect_model(compact=True)` surface this short preview instead of
+the full `learning` body — the token-saving counterpart of the verbose
+body. Empty / whitespace-only `description` is normalized to `None` at
+save time. When unset, compact rendering falls back to the first
+non-empty paragraph of `learning` (capped at 500 chars).
 
 Returns `memory_id` (a non-empty string), the canonical entities
 stored, and any non-fatal warnings.
 
-**Embedding side effect.** When the `embedding_search` extra is
+**Embedding side effect.** When the `advanced_search` extra is
 installed and `SLAYER_EMBEDDING_MODEL` resolves to a configured
 provider, `save_memory` also embeds the new memory inline so it
 participates in the embedding-similarity search channel right away.
@@ -125,9 +138,12 @@ list (exact-match only — `memory:42` never strips `memory:421`).
 1. **Plan the query.** Decide the source model and the columns / measures you
    intend to use.
 2. **Call `search` first.** Pass the entities you're considering (and/or
-   the draft query, and/or a free-text `question`). Read the returned
-   `memories` and `example_queries` — they may flag pitfalls you'd
-   otherwise hit (NULL handling, units, deprecated columns, etc.).
+   the draft query, and/or a free-text `question`). Walk
+   `response.results`: hits with `kind="memory"` are prior notes (a
+   `hit.query is not None` marks a saved example query); other kinds
+   surface canonical entities matched by the full-text / embedding
+   channels. Memory hits may flag pitfalls you'd otherwise hit (NULL
+   handling, units, deprecated columns, etc.).
 3. **Issue the actual query** via the `query` tool.
 4. **Save what you learn.** When you discover a non-obvious quirk
    (encoding, NULL semantics, business rule), call `save_memory`
@@ -139,9 +155,9 @@ list (exact-match only — `memory:42` never strips `memory:421`).
 every memory **whose `query` is `None`** and whose stored entity set
 overlaps the model's own entity set (the model itself, every column,
 every named measure, every custom aggregation). Query-bearing memories
-appear only via `search` (in the `example_queries` bucket). The
-section is auto-pruned when there are no matches — no header is
-emitted in that case.
+appear only via `search` (as `kind="memory"` hits with
+`hit.query is not None`). The section is auto-pruned when there are
+no matches — no header is emitted in that case.
 
 ## Surfaces
 
@@ -160,8 +176,12 @@ For retrieval, see [`search`](search.md) (MCP `search`, REST `POST
 
 ## Storage layout
 
-YAML uses a single `memories.yaml` file alongside the model and
-datasource folders. SQLite uses a `memories` table plus a
+YAML stores one Markdown file per memory at `memories/<id>.md` — YAML
+frontmatter for the structured fields (`description`, `entities`,
+`query`, `created_at`, `version`) and the Markdown body as the
+`learning`. The id is the filename (not repeated in the frontmatter).
+A legacy flat `memories.yaml` is migrated into per-file `.md` on first
+open (and then deleted). SQLite uses a `memories` table plus a
 `memory_entities` index table for the entity-overlap filter.
 
 IDs are non-empty strings (DEV-1428). The auto-allocator walks

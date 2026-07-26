@@ -20,7 +20,6 @@ wrappers catch and format them per their convention.
 
 from __future__ import annotations
 
-from typing import List, Optional, Union
 
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import (
@@ -35,8 +34,8 @@ from slayer.memories.resolver import (
 from slayer.storage.base import StorageBackend
 
 
-QueryInput = Union[SlayerQuery, dict]
-LinkedEntities = Union[List[str], SlayerQuery, dict]
+QueryInput = SlayerQuery | dict
+LinkedEntities = list[str] | SlayerQuery | dict
 
 
 def _coerce_query(query: QueryInput) -> SlayerQuery:
@@ -57,7 +56,7 @@ def _coerce_query(query: QueryInput) -> SlayerQuery:
     )
 
 
-def _coerce_memory_id(identifier: Union[int, str]) -> str:
+def _coerce_memory_id(identifier: int | str) -> str:
     """DEV-1428: accept native ``str`` (canonical form) or legacy
     ``int`` (back-compat: stringify decimally). Validates the result
     through :func:`_validate_memory_id_charset` so the surface layer
@@ -79,9 +78,9 @@ def _coerce_memory_id(identifier: Union[int, str]) -> str:
     return value
 
 
-def _dedup(items: List[str]) -> List[str]:
+def _dedup(items: list[str]) -> list[str]:
     seen: set[str] = set()
-    out: List[str] = []
+    out: list[str] = []
     for x in items:
         if x not in seen:
             seen.add(x)
@@ -104,16 +103,17 @@ class MemoryService:
         *,
         learning: str,
         linked_entities: LinkedEntities,
-        id: Optional[str] = None,  # noqa: A002 — public kwarg
+        id: str | None = None,  # noqa: A002 — public kwarg
+        description: str | None = None,
     ) -> SaveMemoryResponse:
         if not learning or not learning.strip():
             raise ValueError("learning text must be a non-empty string.")
         if id is not None:
             _validate_memory_id_charset(id)
 
-        canonical: List[str] = []
-        warnings: List[str] = []
-        attached_query: Optional[SlayerQuery] = None
+        canonical: list[str] = []
+        warnings: list[str] = []
+        attached_query: SlayerQuery | None = None
 
         if isinstance(linked_entities, list):
             if not linked_entities:
@@ -145,19 +145,19 @@ class MemoryService:
             entities=canonical,
             query=attached_query,
             id=id,
+            description=description,
         )
-        # DEV-1386: best-effort embedding refresh for this single
-        # memory. Local import keeps the embeddings module off the
-        # critical-path import graph; failures are surfaced as warnings,
-        # never aborting the save.
-        from slayer.embeddings.service import EmbeddingService
+        # DEV-1514: fan out the upsert through SearchService so every
+        # registered retriever gets a chance to react. SearchService
+        # isolates per-retriever exceptions as prefixed warnings, so
+        # this site no longer needs its own try/except.
+        # Local import keeps the search module off the critical-path
+        # import graph.
+        from slayer.search.service import SearchService
 
-        try:
-            embed_warnings = await EmbeddingService(
-                storage=self._storage,
-            ).refresh_memory(memory)
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            embed_warnings = [f"embedding refresh failed: {exc}"]
+        embed_warnings = await SearchService(
+            storage=self._storage,
+        ).upsert_memory(memory)
         warnings = _dedup(warnings + embed_warnings)
         return SaveMemoryResponse(
             memory_id=memory.id,
@@ -168,7 +168,7 @@ class MemoryService:
     # ---- forget_memory -------------------------------------------------
 
     async def forget_memory(
-        self, *, identifier: Union[int, str]
+        self, *, identifier: int | str
     ) -> ForgetMemoryResponse:
         memory_id = _coerce_memory_id(identifier)
         await self._storage.delete_memory(memory_id)

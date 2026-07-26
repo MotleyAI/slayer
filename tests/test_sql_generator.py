@@ -12,7 +12,9 @@ import sqlglot.errors
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, AggregationParam, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.dialects import BigqueryDialect
 from slayer.sql.generator import (
     AggRenderSpec,
     SQLGenerator,
@@ -370,6 +372,35 @@ class TestBasicQueries:
         assert "ORDER BY" in sql
         assert "DESC" in sql
 
+    async def test_order_by_shorthand_descending_reaches_sql(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        # DEV-1575: shorthand {col: "descending"} heals + normalizes and emits DESC.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+            order=[{"status": "descending"}],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "ORDER BY" in sql
+        assert "DESC" in sql.upper()
+
+    async def test_order_by_ascending_synonym_not_descending(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        # DEV-1575 regression: a canonical "ASCENDING" must normalize to asc so the
+        # generator's strict ``direction == "asc"`` check does NOT fall through to DESC.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+            order=[{"column": "status", "direction": "ASCENDING"}],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "ORDER BY" in sql
+        assert "DESC" not in sql.upper()
+
 
 class TestTimeDimensions:
     async def test_time_dimension_with_granularity(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
@@ -662,20 +693,6 @@ class TestBareColumnNames:
         assert "amount" in sql.lower()
 
 
-class TestDialects:
-    async def test_mysql_dialect(self, orders_model: SlayerModel) -> None:
-        gen = SQLGenerator(dialect="mysql")
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
-            time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
-            ],
-        )
-        sql = await _generate(gen, query, orders_model)
-        assert "COUNT(*)" in sql  # Basic check — dialect-specific output
-
-
 class TestFields:
     async def test_arithmetic_field(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Arithmetic over aggregates is emitted inline in the SELECT (the
@@ -728,6 +745,60 @@ class TestFields:
         assert "OVER" in sql
         assert "ORDER BY" in sql
         assert "rev_running" in sql.lower()
+
+    async def test_cumsum_over_week_sunday_time_dim(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1572 (full enum wiring): a transform over a WEEK_SUNDAY time
+        dimension must generate valid SQL — the granularity must be wired into
+        the interval helpers, not crash with a KeyError on the 9th enum value.
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.WEEK_SUNDAY,
+            )],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="cumsum(revenue:sum)", name="rev_running"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "OVER" in sql
+        assert "rev_running" in sql.lower()
+        # The WEEK_SUNDAY time dim must compile to the Sunday-week truncation
+        # (the +1-day column-side shift is unique to WEEK_SUNDAY; plain Monday
+        # WEEK has no such shift), proving the granularity wasn't downgraded.
+        assert "+ INTERVAL '1 DAY'" in sql.upper()
+
+    async def test_time_shift_over_week_sunday_uses_one_week_interval(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """A time_shift over a WEEK_SUNDAY time dim (granularity derived from
+        the time dim, not passed explicitly) shifts by one week — exercising
+        ``build_time_offset_expr``'s ``"week_sunday"`` path. Must emit valid
+        date arithmetic, not blow up on the unknown granularity string."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.WEEK_SUNDAY,
+            )],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="time_shift(revenue:sum, -1)", name="rev_prev_week"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "shifted_" in sql
+        # The shift itself must use a one-WEEK interval (7 days). Target the
+        # shift's INTERVAL unit specifically — ``INTERVAL '1 WEEK'`` — so the
+        # assertion can't be satisfied by the ``DATE_TRUNC('WEEK', ...)`` in the
+        # truncation (which uses ``INTERVAL '1 DAY'``, not a WEEK interval).
+        assert "INTERVAL '1 WEEK'" in sql.upper()
 
     async def test_cumsum_partitions_by_dimensions(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1412,6 +1483,175 @@ class TestFields:
         assert "INTERVAL" in sql
         assert "MONTH" in sql
         assert "shifted_" in sql
+
+    async def test_multiple_time_shifts_in_arithmetic_unique_ctes(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: two arithmetic-wrapped time_shifts must not share a CTE name.
+
+        The `_t{n}` placeholder counter restarts per formula, so both measures
+        used to flatten as `_t0` — emitting `shifted__t0` twice (a duplicate-CTE
+        parser error) and silently aliasing the second shift onto the first.
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -2, 'month')", name="growth_2m"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+
+        ctes = _re.findall(r'(?:WITH|,)\s*"?(\w+)"?\s+AS\s*\(', sql)
+        assert len(ctes) == len(set(ctes)), f"duplicate CTE names: {ctes}"
+        assert len([c for c in ctes if c.startswith("shifted_")]) == 2
+
+    async def test_multiple_time_shifts_resolve_to_distinct_aliases(
+        self, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: each shift keeps its own offset — no silent alias sharing.
+
+        Guards the corruption the duplicate name masked: both expressions
+        previously resolved to `orders._t0`, so `growth_2m` would have read
+        `growth`'s -1 month shift.
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -2, 'month')", name="growth_2m"),
+            ],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+
+        shifts = [t for t in enriched.transforms if t.transform == "time_shift"]
+        assert len({t.alias for t in shifts}) == len(shifts)
+        assert {t.offset for t in shifts} == {-1, -2}
+
+        by_name = {e.name: e.sql for e in enriched.expressions}
+        assert by_name["growth"] != by_name["growth_2m"]
+
+    async def test_hidden_transform_name_avoids_user_measure_collision(
+        self, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: a hoisted transform must not land on a user measure's name.
+
+        Hidden names are built from the owning measure's field_name, so a user
+        measure literally named `_t0_growth` would otherwise claim the same
+        alias as the shift hoisted out of `growth` — the self-join CTE projects
+        both under that name and the shift silently resolves to the user's
+        measure (valid SQL, wrong numbers).
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+                ModelMeasure(formula="revenue:sum * 2", name="_t0_growth"),
+            ],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+
+        transform_aliases = {t.alias for t in enriched.transforms}
+        expression_aliases = {e.alias for e in enriched.expressions}
+        assert not (transform_aliases & expression_aliases)
+
+        # `growth` must reference the hoisted shift, not the user's measure.
+        growth_sql = next(e.sql for e in enriched.expressions if e.name == "growth")
+        assert "orders._t0_growth" not in growth_sql.replace("orders._t0_growth_2", "")
+
+    async def test_hidden_transform_name_avoids_dimension_collision(
+        self, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: dimensions alias as `<model>.<name>` too, so they're reserved.
+
+        A dimension named `_t0_growth` otherwise claims the same alias as the
+        shift hoisted out of `growth`, and the measure silently computes
+        `revenue - <dimension>` instead of the period difference.
+        """
+        orders_model.default_time_dimension = "created_at"
+        orders_model.columns.append(
+            Column(name="_t0_growth", sql="customer_id", type=DataType.DOUBLE)
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="_t0_growth")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+            ],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+
+        dim_aliases = {d.alias for d in enriched.dimensions} | {
+            td.alias for td in enriched.time_dimensions
+        }
+        transform_aliases = {t.alias for t in enriched.transforms}
+        assert not (dim_aliases & transform_aliases)
+
+    async def test_dev_1692_repro_shape(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: the reported four-measure period-over-period shape.
+
+        `growth_pct` alone carries two time_shift calls, so uniquification has
+        to hold within a single formula as well as across measures.
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum", name="total_revenue"),
+                ModelMeasure(formula="time_shift(revenue:sum, -1, 'month')", name="prev_revenue"),
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+                ModelMeasure(
+                    formula=(
+                        "(revenue:sum - time_shift(revenue:sum, -1, 'month')) "
+                        "/ time_shift(revenue:sum, -1, 'month')"
+                    ),
+                    name="growth_pct",
+                ),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+
+        ctes = _re.findall(r'(?:WITH|,)\s*"?(\w+)"?\s+AS\s*\(', sql)
+        assert len(ctes) == len(set(ctes)), f"duplicate CTE names: {ctes}"
 
     async def test_nested_self_join_raises(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Nesting self-join transforms (e.g., change(time_shift(x))) should raise."""
@@ -8960,7 +9200,7 @@ class TestGetColumnTypesSql:
 
                 mock_client = MagicMock()
                 mock_client.get_column_types = capture_sql
-                engine._sql_clients["sqlite://"] = mock_client
+                engine._sql_clients[("sqlite://", "")] = mock_client
 
                 await engine.get_column_types("orders")
 
@@ -9839,3 +10079,967 @@ class TestReplaceFunctionInPredicate:
         # Function-call form, not Command.
         assert "REPLACE(" in sql.upper() or "replace(" in sql
         assert "REPLACE (" not in sql.upper()
+
+
+def _build_score_model_dev1539(*, name: str = "m", score_sql: str) -> SlayerModel:
+    """DEV-1539 test helper: build a minimal model with four numeric
+    columns (``a, b, c, d``) and a derived ``score`` column whose ``sql``
+    is the multi-term expression under test. Used by both the local-
+    branch positive test and the SQLite integration test so the model
+    setup boilerplate isn't duplicated across files (Sonar
+    ``new_duplicated_lines_density``).
+    """
+    return SlayerModel(
+        name=name,
+        sql_table=f"public.{name}",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="a", sql="a", type=DataType.DOUBLE),
+            Column(name="b", sql="b", type=DataType.DOUBLE),
+            Column(name="c", sql="c", type=DataType.DOUBLE),
+            Column(name="d", sql="d", type=DataType.DOUBLE),
+            Column(name="score", sql=score_sql, type=DataType.DOUBLE),
+        ],
+    )
+
+
+def _build_backslash_risk_model_dev1539(*, name: str = "m") -> tuple[SlayerModel, str]:
+    """DEV-1539 test helper: build a model with a ``risk`` column whose
+    ``sql`` contains a literal double-backslash inside a string literal.
+    Returns ``(model, double_backslash_literal)``. Used by both the
+    WHERE-side and HAVING-side backslash-safety tests.
+    """
+    backslash = chr(92)
+    double_bs = backslash * 2  # SQL literal `'\\'` (two backslashes)
+    model = SlayerModel(
+        name=name,
+        sql_table=f"public.{name}",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="tag", sql="tag", type=DataType.TEXT),
+            Column(
+                name="risk",
+                sql=f"LENGTH(REPLACE(tag, '{double_bs}', '')) + 0",
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    return model, double_bs
+
+
+async def _build_joined_customers_orders_engine_dev1539(
+    *, tmp_path, customers_score_sql: str,
+) -> SlayerQueryEngine:
+    """DEV-1539 test helper: spin up a storage-backed engine with an
+    ``orders`` model joined to a ``customers`` model whose ``score`` /
+    derived column carries ``customers_score_sql``. Used by the dotted
+    joined-column wrap test and the dotted-branch backslash-safety
+    test so the storage + join boilerplate isn't duplicated.
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_model(SlayerModel(
+        name="customers",
+        sql_table="customers",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="a", sql="a", type=DataType.DOUBLE),
+            Column(name="b", sql="b", type=DataType.DOUBLE),
+            Column(name="tag", sql="tag", type=DataType.TEXT),
+            Column(name="score", sql=customers_score_sql, type=DataType.DOUBLE),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    ))
+    return SlayerQueryEngine(storage=storage)
+
+
+class TestFilterOuterParenWrapDev1539:
+    """DEV-1539: defensive outer-paren wrapping at every site where a
+    multi-term expression gets plopped into a filter context.
+
+    Three sites:
+
+    1. ``resolve_filter_columns`` (local + dotted joined-column branches):
+       a non-bare ``Column.sql`` substituted into a filter's text must be
+       wrapped in ``(...)`` so the precedence of the surrounding comparator
+       is preserved by inspection, not only by SQL precedence rules.
+    2. ``_compare_to_sql`` (DSL filter parser): a Compare LHS / RHS that
+       is ``BinOp`` or ``BoolOp`` must be emitted with outer parens.
+       Chained comparisons (``a < b < c``) are rejected — their Python
+       semantics differ from SQL's left-associative comparison chaining.
+    3. ``_build_where_and_having`` HAVING measure-substitution: when the
+       substituted ``agg_expr`` is a Binary/Connector at the AST root,
+       wrap its emitted SQL string in ``(...)`` before ``re.sub``.
+
+    All three sites also gain ``re.sub(..., lambda _: replacement, ...)``
+    in place of bare string replacement so backslashes inside inlined
+    Column SQL aren't silently mutated as backref escapes.
+    """
+
+    async def test_filter_inlines_multiterm_local_column_with_outer_parens(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A query filter on a Column whose ``sql`` is a multi-term
+        arithmetic expression must surface the inlined body wrapped in
+        outer parens — ``(a + b) > 7``, not ``a + b > 7``.
+        """
+        model = _build_score_model_dev1539(
+            score_sql="a * 0.4 + b * 0.3 + c * 0.1 + d * 0.2",
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["score > 7"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        # The LHS of `> 7` must be a parenthesised arithmetic expression.
+        # NB: this test path doesn't pass a ``resolve_model`` to
+        # ``enrich_query``, so derived-ref expansion (and therefore
+        # column qualification) is skipped — the inlined sql_expr is
+        # left textually as-written. The PAREN WRAP is independent of
+        # qualification, and that's what we're pinning.
+        # Single bounded unbounded quantifier (`[^)]+`) avoids the
+        # multi-quantifier-backtracking pattern Sonar's S5852 flags.
+        assert "WHERE" in norm
+        where_clause = norm.split("WHERE", 1)[1]
+        m = _re.search(r"\( a \* 0\.4[^)]+\) > 7", where_clause)
+        assert m is not None, (
+            f"Expected pattern `( a * 0.4 ... ) > 7` in normalised "
+            f"WHERE; got: {where_clause}"
+        )
+        # Negative: without the wrap, the trailing arithmetic term lands
+        # right next to ``> 7`` with no paren in between.
+        assert "* 0.2 > 7" not in where_clause, (
+            f"Pre-wrap shape `d * 0.2 > 7` should not survive the fix; "
+            f"got: {where_clause}"
+        )
+
+    async def test_filter_inlines_bare_column_no_parens(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """When a Column is a bare identifier (``sql == name`` or sql is a
+        single identifier), no extra parens are added around the qualified
+        reference. ``WHERE orders.customer_id > 100``, not
+        ``WHERE (orders.customer_id) > 100``.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["customer_id > 100"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        assert "orders.customer_id > 100" in norm
+        assert "(orders.customer_id) > 100" not in norm, (
+            f"Bare-identifier Column refs must not gain spurious parens; got:\n{sql}"
+        )
+
+    async def test_filter_inlines_multiterm_joined_column_with_outer_parens(
+        self, generator: SQLGenerator, tmp_path,
+    ) -> None:
+        """The dotted joined-column branch of ``resolve_filter_columns``
+        (enrichment.py around line 2789) must also wrap inlined non-bare
+        Column.sql bodies in outer parens. Filter
+        ``joined_model.score > 7`` where the joined column's sql is a
+        multi-term arithmetic expression.
+        """
+        engine = await _build_joined_customers_orders_engine_dev1539(
+            tmp_path=tmp_path,
+            customers_score_sql="a * 0.6 + b * 0.4",
+        )
+        orders = await engine.storage.get_model("orders", data_source="test")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["customers.score > 7"],
+        )
+        enriched = await engine._enrich(query=query, model=orders)
+        sql = generator.generate(enriched=enriched)
+        norm = _norm(sql)
+        # The inlined cross-model expression must be wrapped before `> 7`.
+        m = _re.search(
+            r"\(\s*customers\.a\s*\*\s*0\.6\s*\+\s*customers\.b\s*\*\s*0\.4\s*\)\s*>\s*7",
+            norm,
+        )
+        assert m is not None, (
+            f"Expected dotted joined-column multi-term sql wrapped before `> 7`; "
+            f"got normalised SQL:\n{norm}"
+        )
+
+    async def test_dsl_compare_lhs_binop_wrapped(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """A DSL filter ``a + b > 7`` must emit ``(a + b) > 7`` so the
+        precedence of the multi-term arithmetic LHS is explicit by
+        inspection, not only by SQL operator-precedence rules.
+        """
+        # Use two bare-name columns so the LHS is a Compare(BinOp(...), 7)
+        # and the BinOp wrap applies at the DSL layer, not at column
+        # inlining (both columns inline as bare qualified identifiers).
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["customer_id + id > 7"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        m = _re.search(
+            r"\(\s*orders\.customer_id\s*\+\s*orders\.id\s*\)\s*>\s*7",
+            norm,
+        )
+        assert m is not None, (
+            f"Expected DSL Compare LHS BinOp wrapped to `(a + b) > 7`; got:\n{norm}"
+        )
+
+    async def test_dsl_compare_rhs_binop_wrapped(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """A DSL filter ``x > a + b`` must emit ``x > (a + b)``."""
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["customer_id > id + 100"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        m = _re.search(
+            r"orders\.customer_id\s*>\s*\(\s*orders\.id\s*\+\s*100\s*\)",
+            norm,
+        )
+        assert m is not None, (
+            f"Expected DSL Compare RHS BinOp wrapped to `x > (a + b)`; got:\n{norm}"
+        )
+
+    async def test_dsl_compare_bare_lhs_not_wrapped(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """A DSL filter with a bare Name LHS (``x > 7``) must not gain
+        spurious parens: ``WHERE orders.x > 7``, not
+        ``WHERE (orders.x) > 7``.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["customer_id > 7"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        assert "orders.customer_id > 7" in norm
+        assert "(orders.customer_id) > 7" not in norm
+
+    async def test_dsl_compare_call_lhs_not_wrapped(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """A DSL filter whose LHS is a function call (``lower(status) == 'a'``)
+        must not gain spurious parens around the call. Only ``BinOp`` and
+        ``BoolOp`` LHSes get wrapped.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["lower(status) == 'active'"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        # LOWER(...) = 'active', not (LOWER(...)) = 'active'.
+        assert _re.search(r"LOWER\([^)]*\)\s*=\s*'active'", norm, _re.IGNORECASE), (
+            f"Call-LHS filter must not gain outer parens; got:\n{norm}"
+        )
+        assert "(LOWER(" not in norm.upper().replace("WHERE (LOWER(", ""), (
+            f"Spurious parens around LOWER(...) call; got:\n{norm}"
+        )
+
+    @pytest.mark.parametrize(
+        ["formula", "expected_sql"],
+        [
+            # IS NULL / IS NOT NULL stay as-is — `_compare_op_to_sql`
+            # returns the complete operator string when the RHS is None.
+            ("flag is None", "flag IS NULL"),
+            ("flag is not None", "flag IS NOT NULL"),
+            # Non-None IS / IS NOT: previously the `continue` in the
+            # IS/IsNot branch dropped the RHS and emitted broken SQL
+            # like `flag IS` / `flag IS NOT`. Fall-through must render
+            # `IS <rhs>` / `IS NOT <rhs>`.
+            ("flag is True", "flag IS True"),
+            ("flag is not False", "flag IS NOT False"),
+            # IS-non-None composed with another predicate still flows
+            # through `_boolop_to_sql`'s outer wrap.
+            ("flag is True and value > 0", "(flag IS True AND value > 0)"),
+        ],
+    )
+    def test_dsl_compare_is_isnot_with_non_none_rhs(
+        self, formula: str, expected_sql: str,
+    ) -> None:
+        """``is`` / ``is not`` against a non-None RHS used to drop the
+        RHS entirely and emit the broken ``IS`` / ``IS NOT`` operator
+        string. Fix: only the ``is None`` / ``is not None`` paths
+        short-circuit to the complete operator; everything else falls
+        through to the standard ``<op> <rhs>`` emission.
+        """
+        from slayer.core.formula import parse_filter
+
+        pf = parse_filter(formula)
+        assert pf.sql == expected_sql, (
+            f"parse_filter({formula!r}).sql == {pf.sql!r}, expected "
+            f"{expected_sql!r}"
+        )
+
+    def test_dsl_chained_compare_rejected(self) -> None:
+        """Chained comparisons (``a < b < c``) have different semantics
+        between Python and SQL. Python: ``(a < b) AND (b < c)``. SQL:
+        ``(a < b) < c`` (a boolean re-compared to c). The DSL parser
+        must reject chained comparisons with a clear, actionable error
+        rather than silently emit subtly wrong SQL.
+        """
+        from slayer.core.formula import parse_filter
+
+        with pytest.raises(ValueError, match=r"[Cc]hained comparison") as excinfo:
+            parse_filter("a < b < c")
+        # The error must point at the actionable alternative.
+        assert "AND" in str(excinfo.value) or "and" in str(excinfo.value), (
+            f"Chained-compare rejection should point at the `AND` rewrite; "
+            f"got: {excinfo.value!r}"
+        )
+
+    async def test_dsl_compare_lhs_boolop_wrapped(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """A DSL filter whose LHS is an ``ast.BoolOp`` (rare but valid)
+        — e.g. ``(a and b) > 7`` — must emit ``(a AND b) > 7``. Covers
+        the BoolOp half of the Site 2 wrap rule symmetrically with the
+        BinOp half.
+        """
+        # NB: customer_id and id are bare-identifier columns, so the
+        # only wrap on emit is the DSL-level BoolOp wrap under test.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["(customer_id and id) > 0"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        m = _re.search(
+            r"\(\s*orders\.customer_id\s+AND\s+orders\.id\s*\)\s*>\s*0",
+            norm,
+            _re.IGNORECASE,
+        )
+        assert m is not None, (
+            f"Expected DSL Compare LHS BoolOp wrapped to `(a AND b) > 0`; got:\n{norm}"
+        )
+
+    async def test_dsl_compare_rhs_boolop_wrapped(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """The RHS-side counterpart: ``x == (a or b)`` must emit
+        ``x = (a OR b)``.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["customer_id == (id or 0)"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        m = _re.search(
+            r"orders\.customer_id\s*=\s*\(\s*orders\.id\s+OR\s+0\s*\)",
+            norm,
+            _re.IGNORECASE,
+        )
+        assert m is not None, (
+            f"Expected DSL Compare RHS BoolOp wrapped to `x = (a OR 0)`; got:\n{norm}"
+        )
+
+    async def test_filter_inline_preserves_backslash_in_joined_column_sql(
+        self, generator: SQLGenerator, tmp_path,
+    ) -> None:
+        """Site 1b backslash safety: the dotted joined-column inlining
+        branch at ``enrichment.py:2789`` must also use lambda-replacement
+        in ``re.sub`` so backslashes inside the joined column's SQL
+        aren't silently halved when substituted into the filter text.
+        """
+        # The joined ``customers.risk`` column must be MULTI-TERM so
+        # the non-bare-identifier inlining branch fires AND contains a
+        # backslash literal. We piggy-back on the shared joined-engine
+        # helper by renaming the ``score`` column's body to a
+        # backslash-bearing expression.
+        backslash = chr(92)
+        double_bs = backslash * 2
+        risk_sql = f"LENGTH(REPLACE(tag, '{double_bs}', '')) + 0"
+        engine = await _build_joined_customers_orders_engine_dev1539(
+            tmp_path=tmp_path,
+            customers_score_sql=risk_sql,
+        )
+        orders = await engine.storage.get_model("orders", data_source="test")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            # The joined column is named ``score`` in the helper; that's
+            # the alias under which the backslash-bearing sql lives.
+            filters=["customers.score > 0"],
+        )
+        enriched = await engine._enrich(query=query, model=orders)
+        sql = generator.generate(enriched=enriched)
+        assert f"'{double_bs}'" in sql, (
+            f"Site 1b (dotted-path) backslash halving regression; got:\n{sql}"
+        )
+
+    async def test_having_substitution_preserves_backslash_in_agg_sql(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """Site 3 backslash safety: HAVING measure-substitution must use
+        lambda-replacement in ``re.sub`` so backslashes inside the
+        aggregated value's source SQL aren't silently halved when the
+        emitted ``agg_sql`` is substituted into the HAVING text.
+        """
+        model, double_bs = _build_backslash_risk_model_dev1539()
+        query = SlayerQuery(
+            source_model="m",
+            dimensions=[ColumnRef(name="id")],
+            measures=[ModelMeasure(formula="risk:sum")],
+            filters=["risk_sum > 0"],
+        )
+        sql = await _generate(generator, query, model)
+        assert "HAVING" in sql
+        having = sql.split("HAVING", 1)[1]
+        assert f"'{double_bs}'" in having, (
+            f"Site 3 (HAVING) backslash halving regression; got HAVING body:\n{having}"
+        )
+
+    async def test_having_multiterm_measure_wrapped(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """When a HAVING filter references a measure whose aggregation
+        expression is a multi-term form (e.g., ``SUM(x * w) / SUM(w)``
+        for a ``weighted_avg`` measure), the substituted expression in
+        the emitted HAVING must be wrapped in outer parens.
+        """
+        model = SlayerModel(
+            name="sales",
+            sql_table="public.sales",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region", sql="region", type=DataType.TEXT),
+                Column(name="price", sql="price", type=DataType.DOUBLE),
+                Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="sales",
+            dimensions=[ColumnRef(name="region")],
+            measures=[
+                ModelMeasure(
+                    formula="price:weighted_avg(weight=quantity)",
+                    name="wavg",
+                ),
+            ],
+            filters=["wavg > 0"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        assert "HAVING" in norm
+        # The substituted multi-term SUM(...) / NULLIF(SUM(...)) must
+        # appear wrapped in parens immediately before `> 0`. Per
+        # CodeRabbit feedback: a substring check like `"(SUM(" in upper
+        # and ") > 0" in upper` would pass even on the un-wrapped
+        # ``SUM(...) / NULLIF(SUM(...), 0) > 0`` because the `(SUM(`
+        # substring matches inside `NULLIF(SUM(`. Anchor on positional
+        # checks instead — find the comparator and verify the LHS as a
+        # whole is parenthesised.
+        having = norm.split("HAVING", 1)[1].strip()
+        gt_index = having.find(" > 0")
+        assert gt_index > 0, (
+            f"HAVING must end with `... > 0`; got:\n{having}"
+        )
+        assert having[gt_index - 1] == ")", (
+            f"Expected `)` immediately before `> 0` (the outer wrap's "
+            f"closer); got char {having[gt_index - 1]!r} at index "
+            f"{gt_index - 1} in:\n{having}"
+        )
+        # The HAVING expression must START with an open paren — the
+        # outer wrap. (After ``strip()`` above any pretty-print
+        # indentation is gone.)
+        assert having.startswith("("), (
+            f"Expected HAVING multi-term LHS to start with `(`; got:\n{having}"
+        )
+        # And the body contains a real top-level divide between two
+        # aggregate calls — not just the inner NULLIF.
+        assert "SUM(" in having.upper() and "/" in having and "NULLIF" in having.upper(), (
+            f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+        )
+
+    async def test_having_simple_measure_not_wrapped(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """A HAVING filter on a simple single-aggregation measure
+        (``revenue:sum > 0``) must NOT gain spurious outer parens:
+        ``HAVING SUM(...) > 0``, not ``HAVING (SUM(...)) > 0``.
+        Only multi-term ``Binary``/``Connector`` ``agg_expr`` shapes
+        warrant the wrap.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="revenue:sum")],
+            filters=["revenue_sum > 0"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        assert "HAVING" in norm
+        having = norm.split("HAVING", 1)[1]
+        # Tight form: HAVING SUM(...) > 0
+        assert _re.search(r"HAVING\s*SUM\([^)]*\)\s*>\s*0", "HAVING" + having, _re.IGNORECASE) or \
+               _re.search(r"SUM\([^)]*\)\s*>\s*0", having, _re.IGNORECASE), (
+            f"Expected `SUM(...) > 0` without outer parens in HAVING; got:\n{having}"
+        )
+        assert _re.search(r"\(\s*SUM\([^)]*\)\s*\)\s*>\s*0", having, _re.IGNORECASE) is None, (
+            f"Single-aggregate HAVING must not gain spurious parens; got:\n{having}"
+        )
+
+    async def test_filter_inline_preserves_backslash_in_column_sql(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """``re.sub(pattern, repl, source)`` interprets backslashes in the
+        replacement string as escape sequences — a literal ``\\\\`` in
+        the inlined Column.sql gets silently halved to ``\\`` in the
+        emitted WHERE. Using ``lambda _: repl`` for the replacement
+        side-steps the bug. This test pins the fix.
+        """
+        model, double_bs = _build_backslash_risk_model_dev1539()
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["risk > 0"],
+        )
+        # Must not raise (e.g., ``re.error: bad escape \\b``) and must
+        # preserve the doubled backslash in the emitted SQL.
+        sql = await _generate(generator, query, model)
+        # The original SQL literal had two backslashes; after substitution
+        # via lambda replacement, both must survive.
+        assert f"'{double_bs}'" in sql, (
+            f"Backslash halving regression: expected '{double_bs}' literal "
+            f"preserved in emitted SQL; got:\n{sql}"
+        )
+
+    @pytest.mark.parametrize(
+        ["formula", "expected_sql"],
+        [
+            # Inner low-prec child under high-prec parent — left operand.
+            ("(a + b) * c > 10", "((a + b) * c) > 10"),
+            # Same shape — RHS of comparator.
+            ("a > (b + c) * d", "a > ((b + c) * d)"),
+            # Equal-precedence right child of /, must stay wrapped.
+            ("a / (b * c) > 0", "(a / (b * c)) > 0"),
+            # Equal-precedence right child of -, must stay wrapped to
+            # preserve right-grouping semantics.
+            ("a - (b - c) > 0", "(a - (b - c)) > 0"),
+            # Left-assoc, no source parens: no inner wrap needed.
+            ("a - b - c > 0", "(a - b - c) > 0"),
+            # Higher-precedence child under lower-precedence parent:
+            # no wrap needed — `a + b * c` reads correctly bare.
+            ("a + b * c > 10", "(a + b * c) > 10"),
+            # User-supplied parens around left equal-precedence are
+            # semantically a no-op (`(a + b) + c` == `a + b + c`) so
+            # we don't emit a stray inner wrap.
+            ("(a + b) + c > 0", "(a + b + c) > 0"),
+            # Pow is RIGHT-associative — the equal-precedence rule
+            # mirrors the others. `(a ** b) ** c` must keep its inner
+            # parens; without the fix it would re-emit as
+            # `a ** b ** c` which Python re-parses as `a ** (b ** c)`,
+            # giving a different result.
+            ("(a ** b) ** c > 0", "((a ** b) ** c) > 0"),
+            # `a ** b ** c` parses RIGHT-assoc; emission must preserve
+            # the grouping via explicit parens on the right operand.
+            ("a ** b ** c > 0", "(a ** (b ** c)) > 0"),
+        ],
+    )
+    def test_dsl_compare_preserves_nested_arithmetic_precedence(
+        self, formula: str, expected_sql: str,
+    ) -> None:
+        """DEV-1539: ``_binop_to_sql`` must wrap nested child operands so
+        the AST-encoded operator precedence survives serialisation.
+        Without this, ``(a + b) * c > 10`` and ``a + b * c > 10`` would
+        both emit as ``(a + b * c) > 10`` — semantically distinct
+        inputs collapse to the same output, silently changing results.
+        """
+        from slayer.core.formula import parse_filter
+
+        pf = parse_filter(formula)
+        assert pf.sql == expected_sql, (
+            f"parse_filter({formula!r}).sql == {pf.sql!r}, expected "
+            f"{expected_sql!r}"
+        )
+
+    @pytest.mark.parametrize(
+        ["body_sql", "connector"],
+        [
+            # sqlglot 30.4.3: ``exp.And`` is a subclass of ``exp.Func``,
+            # so a pure inverse-atomic check would mis-classify this as
+            # atomic and skip the wrap. The compound check must fire
+            # first.
+            ("archived AND deleted", "AND"),
+            ("archived OR deleted", "OR"),
+        ],
+    )
+    async def test_filter_inlines_and_or_connector_column_with_outer_parens(
+        self, generator: SQLGenerator, body_sql: str, connector: str,
+    ) -> None:
+        """Column.sql whose root is ``a AND b`` / ``a OR b`` (sqlglot
+        ``exp.And`` / ``exp.Or``) must be wrapped on inline. These
+        inherit from ``exp.Func`` in sqlglot 30.4.3, so the
+        inverse-atomic check at ``_filter_inline_needs_paren_wrap``
+        would skip them — the compound-types check has to fire first.
+        """
+        model = SlayerModel(
+            name="m",
+            sql_table="public.m",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="archived", sql="archived", type=DataType.BOOLEAN),
+                Column(name="deleted", sql="deleted", type=DataType.BOOLEAN),
+                Column(name="active", sql=body_sql, type=DataType.BOOLEAN),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["active IS NULL"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        # Body matches `(... <connector> ...)` allowing whitespace
+        # padding that sqlglot's pretty-printer injects inside the
+        # parens. Single bounded `[^)]+` quantifier — S5852-safe.
+        m = _re.search(
+            r"\(\s*archived\s+" + connector + r"\s+deleted\s*\)",
+            norm,
+            _re.IGNORECASE,
+        )
+        assert m is not None, (
+            f"{connector}-rooted Column.sql must be wrapped on inline; got:\n{norm}"
+        )
+        # And the wrap really protects the IS NULL precedence —
+        # the char before `IS NULL` must be `)`.
+        is_null_index = norm.find("IS NULL")
+        assert is_null_index > 0, f"WHERE must contain IS NULL; got:\n{norm}"
+        preceding = norm[:is_null_index].rstrip()
+        assert preceding.endswith(")"), (
+            f"Char before `IS NULL` must be `)` (outer wrap closer); "
+            f"got tail {preceding[-15:]!r} in:\n{norm}"
+        )
+
+    async def test_filter_inlines_not_predicate_column_with_outer_parens(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A Column.sql whose root is ``NOT <expr>`` (sqlglot ``exp.Not``)
+        must be wrapped on inline so a surrounding predicate like
+        ``IS NULL`` binds to the whole expression, not just the inner
+        operand. Without the wrap, ``NOT archived IS NULL`` reads as
+        ``NOT (archived IS NULL)`` — different semantics from the
+        intended ``(NOT archived) IS NULL``. The original
+        ``_filter_inline_needs_paren_wrap`` only matched ``Binary``/
+        ``Connector`` and missed this shape.
+        """
+        model = SlayerModel(
+            name="m",
+            sql_table="public.m",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="archived", sql="archived", type=DataType.BOOLEAN),
+                Column(name="active", sql="NOT archived", type=DataType.BOOLEAN),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["active IS NULL"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        # Must wrap: WHERE (NOT archived) IS NULL
+        m = _re.search(r"\(\s*NOT\s+archived\s*\)\s+IS\s+NULL", norm, _re.IGNORECASE)
+        assert m is not None, (
+            f"NOT-predicate Column.sql must be wrapped on inline; got:\n{norm}"
+        )
+
+    async def test_filter_inlines_between_predicate_column_with_outer_parens(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A Column.sql whose root is ``BETWEEN`` (sqlglot ``exp.Between``)
+        must be wrapped on inline. ``exp.Between`` is NOT ``exp.Binary`` —
+        the original positive check missed it.
+        """
+        model = SlayerModel(
+            name="m",
+            sql_table="public.m",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="midrange", sql="amount BETWEEN 100 AND 500", type=DataType.BOOLEAN),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["midrange IS NULL"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        m = _re.search(
+            r"\(\s*amount\s+BETWEEN\s+100\s+AND\s+500\s*\)\s+IS\s+NULL",
+            norm,
+            _re.IGNORECASE,
+        )
+        assert m is not None, (
+            f"BETWEEN-predicate Column.sql must be wrapped on inline; got:\n{norm}"
+        )
+
+    async def test_filter_inlines_in_predicate_column_with_outer_parens(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A Column.sql whose root is ``IN`` (sqlglot ``exp.In``) must
+        also be wrapped — same gap as ``Not`` / ``Between`` in the
+        original positive check.
+        """
+        model = SlayerModel(
+            name="m",
+            sql_table="public.m",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="active", sql="status IN ('a', 'b', 'c')", type=DataType.BOOLEAN),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["active IS NULL"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        m = _re.search(
+            r"\(\s*status\s+IN\s*\([^)]*\)\s*\)\s+IS\s+NULL",
+            norm,
+            _re.IGNORECASE,
+        )
+        assert m is not None, (
+            f"IN-predicate Column.sql must be wrapped on inline; got:\n{norm}"
+        )
+
+    def test_dotted_path_substitution_does_not_match_longer_path(self) -> None:
+        """Site 1b (dotted joined-column branch in
+        ``slayer/engine/enrichment.py``) must guard against substituting
+        a shorter dotted col_name (e.g. ``customers.score``) inside a
+        longer dotted reference (e.g. ``customers.score.extra``).
+        Without the trailing ``(?!\\.)`` lookahead — which the local and
+        HAVING branches both have — a 2-hop col_name mis-substitutes as
+        a prefix of a 3-hop ref, mangling the emitted SQL.
+        """
+        import re as _re_mod
+        col_name = "customers.score"
+        pattern = r"(?<!\.)(?<!\w)\b" + _re_mod.escape(col_name) + r"\b(?!\.)"
+        having_sql = "customers.score > 7 AND customers.score.extra > 0"
+        result = _re_mod.sub(pattern, lambda _m: "EXPANDED", having_sql)
+        # Only the standalone 2-hop ref is rewritten; the 3-hop ref is
+        # left intact for its own (later) substitution.
+        assert result == "EXPANDED > 7 AND customers.score.extra > 0", (
+            f"Post-fix dotted-path regex must skip dotted prefix matches; "
+            f"got: {result!r}"
+        )
+
+    def test_having_substitution_does_not_match_dotted_continuation(
+        self,
+    ) -> None:
+        """The HAVING-side measure substitution regex in
+        ``_build_where_and_having`` must guard against matching a
+        measure name when it appears as the prefix of a dotted
+        continuation. Without ``(?!\\.)`` after ``\\b``, a measure named
+        ``foo`` mis-substitutes inside a literal ``foo.bar`` in the
+        filter SQL.
+
+        This test constructs a case where a query measure's renamed
+        alias (``rev``) is a prefix of a dotted reference inside the
+        same query's HAVING filter SQL — and asserts the substitution
+        does not mangle the dotted form.
+        """
+        # We can't easily synthesise the exact `foo.bar` literal inside
+        # a HAVING string through normal DSL channels, since dotted refs
+        # parse as Attribute nodes. The regression risk is real for
+        # multi-stage / cross-model paths where post-DSL substitutions
+        # leave dotted refs in `having_sql`. This test checks the regex
+        # behaviour directly.
+        import re as _re_mod
+        col_name = "foo"
+        agg_sql = "SUM(amount)"
+        # CURRENT (buggy): no trailing `(?!\.)` guard
+        pattern_with_fix = rf"(?<!\.)(?<!\w)\b{_re_mod.escape(col_name)}\b(?!\.)"
+        # AFTER fix: the dotted continuation must NOT be substituted
+        having_sql = "foo > 100 AND foo.bar > 5"
+        result = _re_mod.sub(pattern_with_fix, lambda _: agg_sql, having_sql)
+        assert result == "SUM(amount) > 100 AND foo.bar > 5", (
+            f"Post-fix HAVING regex must skip dotted continuations; "
+            f"got: {result!r}"
+        )
+        # Also verify the inverse — that the bare `foo` IS substituted.
+        assert "SUM(amount)" in result
+
+
+class TestBigQueryAliasMangling:
+    """BigQuery rejects column names containing dots — SLayer's universal
+    ``<model>.<column>`` alias convention has to be mangled to ``___`` on the
+    way out (and reversed on the way back at the engine).
+
+    These two tests assert the SQLGenerator-level behavior (full SQL output
+    across dialects). Pure unit tests of BigqueryDialect.rewrite_emitted_sql
+    / decode_result_keys live in tests/dialects/test_bigquery.py.
+    """
+
+    async def test_no_dotted_aliases_in_bigquery_sql(self, orders_model: SlayerModel) -> None:
+        gen = SQLGenerator(dialect="bigquery")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="status")],
+            order=[{"column": "count", "direction": "desc"}],
+        )
+        sql = await _generate(gen, query, orders_model)
+        # Every backtick-quoted COLUMN ALIAS emitted by SLayer must NOT
+        # contain a dot — that's what BigQuery rejects. Scope to ``AS `...```
+        # and ORDER/GROUP BY positions so dotted table FQ refs (which use
+        # backticked SEGMENTS like ``\`bigquery-public-data\`.x.y``, not a
+        # single backticked-string with dots inside) don't trip the check.
+        ALIAS_PATTERNS = [
+            r"\bAS\s+`([^`]+)`",            # SELECT expr AS `<alias>`
+            r"\bORDER\s+BY[^\n]*`([^`]+)`",  # ORDER BY `<alias>`
+            r"\bGROUP\s+BY[^\n]*`([^`]+)`",  # GROUP BY `<alias>` (when sqlglot quotes it)
+        ]
+        found_any = False
+        for pat in ALIAS_PATTERNS:
+            for m in _re.findall(pat, sql, flags=_re.IGNORECASE):
+                found_any = True
+                assert "." not in m, (
+                    f"BigQuery output rejects dotted column aliases, but found "
+                    f"`{m}` in:\n{sql}"
+                )
+        assert found_any, f"expected at least one backticked alias in:\n{sql}"
+        # Cross-check the mangled separator made it through.
+        assert "___" in sql, f"expected ___ alias mangling in:\n{sql}"
+
+    async def test_other_dialects_keep_dotted_aliases(self, orders_model: SlayerModel) -> None:
+        # Mangling is bigquery-only; postgres / sqlite / etc. must keep
+        # the dotted alias form (which clients and ORDER BY resolvers
+        # depend on).
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        sql = await _generate(gen, query, orders_model)
+        assert '"orders._count"' in sql
+        assert "___" not in sql
+
+    async def test_wrapped_render_mode_also_mangles_aliases(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """``render_mode="wrapped"`` (used for ``_query_as_model.inner_sql``
+        and inner stages of ``source_queries``) must mangle aliases too —
+        otherwise the outer stage's references to inner-CTE columns would
+        mismatch what the inner CTE actually emits.
+
+        Pins Codex HIGH #1: the consistency of multi-stage BigQuery SQL
+        rests on the rewrite firing on BOTH render modes. The rewrite is
+        deterministic, so as long as it fires on both, the inner emit and
+        the outer reference resolve to the same ``___``-form alias.
+        """
+        gen = SQLGenerator(dialect="bigquery")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+        sql = gen.generate(enriched=enriched, render_mode="wrapped")
+        # Wrapped mode keeps every alias (so the outer stage can reach
+        # them); all aliases must be mangled.
+        for m in _re.findall(r"`([^`]+)`", sql):
+            assert "." not in m, (
+                f"BigQuery wrapped-mode SQL still has dotted alias `{m}`:\n{sql}"
+            )
+        # And the mangle separator is present (the rewrite actually fired).
+        assert "___" in sql, f"wrapped-mode rewrite did not fire:\n{sql}"
+
+    async def test_rewrite_fires_after_outer_projection_trim(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """The BigQuery alias rewrite must fire AFTER
+        ``_apply_outer_projection_trim`` (and not before). Mangling before
+        the trim would let the trim's parser see already-mangled aliases
+        and potentially miss public-projection columns. Pins Codex MEDIUM
+        #5 — the placement contract.
+
+        Strategy: spy on both ``SQLGenerator._apply_outer_projection_trim``
+        and ``BigqueryDialect.rewrite_emitted_sql`` and assert the call
+        order. Both wrappers delegate to the real implementations so the
+        test verifies the production code path, not a stubbed substitute.
+        """
+        gen = SQLGenerator(dialect="bigquery")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+            # Filter using a windowed transform creates a hidden hoisted
+            # column, so the trim has actual work to do (rather than being
+            # a no-op on a trivial query).
+            filters=["dense_rank(revenue:sum) <= 5"],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+        call_order: list[str] = []
+        real_trim = SQLGenerator._apply_outer_projection_trim
+        real_rewrite = BigqueryDialect.rewrite_emitted_sql
+
+        def trim_spy(self, *, sql, enriched):
+            call_order.append("trim")
+            return real_trim(self, sql=sql, enriched=enriched)
+
+        def rewrite_spy(self, sql):
+            call_order.append("rewrite")
+            return real_rewrite(self, sql)
+
+        with patch.object(SQLGenerator, "_apply_outer_projection_trim", trim_spy), \
+                patch.object(BigqueryDialect, "rewrite_emitted_sql", rewrite_spy):
+            gen.generate(enriched=enriched, render_mode="outer")
+        # Trim ran first; rewrite ran after.
+        assert call_order == ["trim", "rewrite"], (
+            f"_apply_outer_projection_trim must run before rewrite_emitted_sql, "
+            f"got call order: {call_order}"
+        )
+

@@ -1,6 +1,10 @@
 """Tests for core domain models."""
 
+import datetime
+
 import pytest
+from pydantic import ValidationError
+from sqlalchemy.engine import make_url
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelMeasure, SlayerModel
@@ -94,6 +98,244 @@ class TestOrderItem:
         item = OrderItem(column="status", direction="asc")
         assert item.column.name == "status"
         assert item.raw_formula is None
+
+
+class TestOrderShorthandHealing:
+    """DEV-1575: heal LLM-shorthand ``order`` items and harden direction validation.
+
+    Shorthand ``{col: "desc"}`` (single- or multi-key) heals to canonical
+    ``{"column": col, "direction": "desc"}``; direction is normalized
+    (case-insensitive, ``asc``/``desc``/``ascending``/``descending``, whitespace
+    trimmed) and anything else is rejected; ``OrderItem`` forbids extra keys.
+    """
+
+    # --- single-key shorthand ---
+
+    def test_shorthand_desc(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"avg_processing_time_days": "desc"}])
+        assert len(q.order) == 1
+        assert q.order[0].column.name == "avg_processing_time_days"
+        assert q.order[0].direction == "desc"
+
+    def test_shorthand_asc(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"status": "asc"}])
+        assert q.order[0].column.name == "status"
+        assert q.order[0].direction == "asc"
+
+    def test_shorthand_equals_canonical(self) -> None:
+        shorthand = SlayerQuery(source_model="orders", order=[{"status": "desc"}])
+        canonical = SlayerQuery(
+            source_model="orders", order=[{"column": "status", "direction": "desc"}]
+        )
+        assert shorthand.order == canonical.order
+
+    # --- direction vocabulary: case-insensitive, synonyms, whitespace ---
+
+    def test_shorthand_uppercase_normalized(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"status": "DESC"}])
+        assert q.order[0].direction == "desc"
+
+    def test_shorthand_descending_synonym(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"status": "DESCENDING"}])
+        assert q.order[0].direction == "desc"
+
+    def test_shorthand_ascending_synonym_mixed_case(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"status": "Ascending"}])
+        assert q.order[0].direction == "asc"
+
+    def test_shorthand_whitespace_trimmed(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"status": " Asc "}])
+        assert q.order[0].direction == "asc"
+
+    # --- formula key composes with existing normalization ---
+
+    def test_shorthand_formula_key(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"revenue:sum": "desc"}])
+        assert q.order[0].column.name == "revenue_sum"
+        assert q.order[0].raw_formula == "revenue:sum"
+        assert q.order[0].direction == "desc"
+
+    def test_shorthand_formula_key_equals_canonical(self) -> None:
+        shorthand = SlayerQuery(source_model="orders", order=[{"revenue:sum": "desc"}])
+        canonical = SlayerQuery(
+            source_model="orders", order=[{"column": "revenue:sum", "direction": "desc"}]
+        )
+        assert shorthand.order == canonical.order
+
+    # --- multi-key expansion (one dict -> N OrderItems, insertion order) ---
+
+    def test_multikey_expands_in_order(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"a": "desc", "b": "asc"}])
+        assert [(o.column.name, o.direction) for o in q.order] == [("a", "desc"), ("b", "asc")]
+
+    def test_multikey_synonyms_and_case(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"a": "ASCENDING", "b": "Desc"}])
+        assert [(o.column.name, o.direction) for o in q.order] == [("a", "asc"), ("b", "desc")]
+
+    def test_multikey_partial_non_direction_raises(self) -> None:
+        # Not every value is a direction -> not shorthand -> canonical validation rejects.
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{"a": "desc", "b": "downward"}])
+
+    # --- bare single item passed without the enclosing list gets wrapped ---
+
+    def test_bare_dict_shorthand_wrapped(self) -> None:
+        q = SlayerQuery(source_model="orders", order={"status": "desc"})
+        assert len(q.order) == 1
+        assert q.order[0].column.name == "status"
+        assert q.order[0].direction == "desc"
+
+    def test_bare_canonical_dict_wrapped(self) -> None:
+        q = SlayerQuery(source_model="orders", order={"column": "status", "direction": "asc"})
+        assert len(q.order) == 1
+        assert q.order[0].column.name == "status"
+        assert q.order[0].direction == "asc"
+
+    def test_bare_multikey_dict_wrapped(self) -> None:
+        q = SlayerQuery(source_model="orders", order={"a": "desc", "b": "asc"})
+        assert [(o.column.name, o.direction) for o in q.order] == [("a", "desc"), ("b", "asc")]
+
+    def test_bare_orderitem_wrapped(self) -> None:
+        item = OrderItem(column="status", direction="desc")
+        q = SlayerQuery(source_model="orders", order=item)
+        assert len(q.order) == 1
+        assert q.order[0].column.name == "status"
+        assert q.order[0].direction == "desc"
+
+    # --- canonical preserved; latent uppercase-direction bug fixed ---
+
+    def test_canonical_unchanged(self) -> None:
+        q = SlayerQuery(source_model="orders", order=[{"column": "status", "direction": "desc"}])
+        assert q.order[0].column.name == "status"
+        assert q.order[0].direction == "desc"
+
+    def test_canonical_uppercase_direction_normalized(self) -> None:
+        # Pre-existing latent bug: SQL generator compares ``direction == "asc"`` strictly,
+        # so a stored "ASCENDING"/"ASC" used to silently emit DESC. Now normalized.
+        q = SlayerQuery(
+            source_model="orders", order=[{"column": "status", "direction": "ASCENDING"}]
+        )
+        assert q.order[0].direction == "asc"
+
+    def test_canonical_column_named_like_direction_word(self) -> None:
+        # Single reserved 'column' key whose value happens to be a direction word
+        # stays canonical (order by a column literally named "desc").
+        q = SlayerQuery(source_model="orders", order=[{"column": "desc"}])
+        assert q.order[0].column.name == "desc"
+        assert q.order[0].direction == "asc"
+
+    # --- rejections: malformed / ambiguous never silently mangled ---
+
+    def test_invalid_direction_value_shorthand_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{"col": "downward"}])
+
+    def test_invalid_direction_value_canonical_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{"column": "status", "direction": "sideways"}])
+
+    def test_mixed_canonical_and_stray_direction_key_raises(self) -> None:
+        # extra='forbid' rejects the stray 'b' rather than silently dropping it.
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{"column": "status", "b": "asc"}])
+
+    def test_mixed_canonical_and_stray_nondirection_key_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{"column": "status", "b": "downward"}])
+
+    def test_direction_only_key_raises(self) -> None:
+        # {"direction": "desc"} is a malformed canonical item (no column), not shorthand.
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{"direction": "desc"}])
+
+    def test_empty_dict_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{}])
+
+    def test_nested_list_item_raises(self) -> None:
+        # No list-of-lists support.
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[["a", "desc"]])
+
+    def test_non_wrappable_scalar_string_raises(self) -> None:
+        with pytest.raises(Exception, match="must be a list"):
+            SlayerQuery(source_model="orders", order="status")
+
+    def test_non_wrappable_int_raises(self) -> None:
+        with pytest.raises(Exception, match="must be a list"):
+            SlayerQuery(source_model="orders", order=42)
+
+    # --- mixed list: shorthand + canonical + multi-key together ---
+
+    def test_mixed_shorthand_canonical_multikey_list(self) -> None:
+        q = SlayerQuery(
+            source_model="orders",
+            order=[
+                {"a": "desc"},
+                {"column": "b", "direction": "asc"},
+                {"c": "asc", "d": "desc"},
+            ],
+        )
+        assert [(o.column.name, o.direction) for o in q.order] == [
+            ("a", "desc"),
+            ("b", "asc"),
+            ("c", "asc"),
+            ("d", "desc"),
+        ]
+
+    # --- None / tuple / non-string keys / passthrough ---
+
+    def test_order_none_stays_none(self) -> None:
+        q = SlayerQuery(source_model="orders", order=None)
+        assert q.order is None
+
+    def test_tuple_input_accepted(self) -> None:
+        q = SlayerQuery(
+            source_model="orders",
+            order=({"a": "desc"}, {"column": "b", "direction": "asc"}),
+        )
+        assert [(o.column.name, o.direction) for o in q.order] == [("a", "desc"), ("b", "asc")]
+
+    def test_non_string_key_not_healed_raises(self) -> None:
+        # A non-string key means the dict is not treated as shorthand; it falls
+        # through to OrderItem validation, which rejects it (no column).
+        with pytest.raises(ValidationError):
+            SlayerQuery(source_model="orders", order=[{1: "desc"}])
+
+    def test_multikey_formula_keys_preserve_raw_formula(self) -> None:
+        q = SlayerQuery(
+            source_model="orders", order=[{"revenue:sum": "desc", "amount:max": "asc"}]
+        )
+        assert len(q.order) == 2
+        assert q.order[0].column.name == "revenue_sum"
+        assert q.order[0].raw_formula == "revenue:sum"
+        assert q.order[0].direction == "desc"
+        assert q.order[1].column.name == "amount_max"
+        assert q.order[1].raw_formula == "amount:max"
+        assert q.order[1].direction == "asc"
+
+    def test_list_orderitem_passthrough(self) -> None:
+        item = OrderItem(column="revenue:sum", direction="desc")
+        q = SlayerQuery(source_model="orders", order=[item])
+        assert len(q.order) == 1
+        assert q.order[0].column.name == "revenue_sum"
+        assert q.order[0].direction == "desc"
+
+    # --- OrderItem-level direction validation + extra=forbid ---
+
+    def test_orderitem_direction_synonym_normalized(self) -> None:
+        assert OrderItem(column="status", direction="DESCENDING").direction == "desc"
+
+    def test_orderitem_direction_default_asc(self) -> None:
+        assert OrderItem(column="status").direction == "asc"
+
+    def test_orderitem_invalid_direction_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            OrderItem(column="status", direction="sideways")
+
+    def test_orderitem_extra_key_forbidden(self) -> None:
+        with pytest.raises(ValidationError):
+            OrderItem(column="status", direction="asc", bogus="x")
 
 
 class TestSlayerModel:
@@ -786,6 +1028,272 @@ class TestDatasourceConfig:
         ds = DatasourceConfig(name="test", type="sqlite", database="/tmp/test.db")
         assert ds.get_connection_string() == "sqlite:////tmp/test.db"
 
+    def test_sqlserver_connection_string_uses_pyodbc_driver(self) -> None:
+        ds = DatasourceConfig(
+            name="test",
+            type="mssql",
+            host="localhost",
+            port=1433,
+            database="mydb",
+            username="sa",
+            password="Secret!123",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        cs = ds.get_connection_string()
+        assert cs.startswith("mssql+pyodbc://")
+        assert "localhost" in cs
+        assert "mydb" in cs
+
+    def test_sqlserver_connection_string_includes_odbc_driver_param(self) -> None:
+        ds = DatasourceConfig(name="test", type="mssql", host="sqlhost", database="db")
+        cs = ds.get_connection_string()
+        assert "driver=ODBC+Driver+18+for+SQL+Server" in cs
+
+    def test_sqlserver_connection_string_includes_trust_server_cert(self) -> None:
+        ds = DatasourceConfig(name="test", type="mssql", host="sqlhost", database="db")
+        cs = ds.get_connection_string()
+        # Required for self-signed certs in Docker dev environments; must be lowercase=yes
+        cs_lower = cs.lower()
+        assert "trustservercertificate" in cs_lower
+        assert "yes" in cs_lower
+
+    def test_sqlserver_type_alias_sqlserver(self) -> None:
+        """'sqlserver' alias gets pyodbc driver and TrustServerCertificate params."""
+        ds = DatasourceConfig(name="test", type="sqlserver", host="h", database="db")
+        cs = ds.get_connection_string()
+        assert cs.startswith("mssql+pyodbc://")
+        assert "trustservercertificate" in cs.lower()
+        assert "odbc" in cs.lower()
+
+    def test_sqlserver_type_alias_tsql(self) -> None:
+        """'tsql' alias gets pyodbc driver and TrustServerCertificate params."""
+        ds = DatasourceConfig(name="test", type="tsql", host="h", database="db")
+        cs = ds.get_connection_string()
+        assert cs.startswith("mssql+pyodbc://")
+        assert "trustservercertificate" in cs.lower()
+        assert "odbc" in cs.lower()
+
+    def test_sqlserver_with_port(self) -> None:
+        ds = DatasourceConfig(
+            name="test", type="mssql", host="sqlhost", port=1433, database="mydb",
+        )
+        cs = ds.get_connection_string()
+        assert "1433" in cs
+
+    def test_sqlserver_special_chars_in_password_are_url_encoded(self) -> None:
+        """Passwords with '@' must not break URL parsing (the Docker example uses 'YourStrong@Passw0rd')."""
+        ds = DatasourceConfig(
+            name="test",
+            type="mssql",
+            host="sqlserver",
+            port=1433,
+            database="slayer_demo",
+            username="sa",
+            password="YourStrong@Passw0rd",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        cs = ds.get_connection_string()
+        assert "@Passw0rd" not in cs, "raw '@' in password must be percent-encoded"
+        assert "%40" in cs, "the '@' in password must appear as %40"
+        assert "sqlserver" in cs
+        assert "slayer_demo" in cs
+
+    # Issue #240: the generic (non-tsql) connection-string branch must not
+    # corrupt credentials whose password contains reserved URL characters.
+    # The password below exercises every generic-branch delimiter: '@'
+    # (userinfo/host), ':' (userinfo/port), '/' (path), '#' (fragment),
+    # '?' (query), and a space.
+    _RESERVED_PASSWORD = "p@ss/w:rd#q?x y"  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+
+    @pytest.mark.parametrize(
+        ("ds_type", "expected_driver"),
+        [
+            ("postgres", "postgresql"),
+            ("postgresql", "postgresql"),
+            ("mysql", "mysql+pymysql"),
+            ("mariadb", "mysql+pymysql"),
+            ("clickhouse", "clickhouse+http"),
+            # Fallback dialect (issue #240 names "fallback dialects"): an
+            # unmapped type keeps its own name as the driver and must still
+            # encode reserved-char credentials safely.
+            ("customdb", "customdb"),
+        ],
+    )
+    def test_reserved_char_password_round_trips(
+        self, ds_type: str, expected_driver: str
+    ) -> None:
+        ds = DatasourceConfig(
+            name="example",
+            type=ds_type,
+            host="db.example",
+            port=5432,
+            database="analytics",
+            username="user",
+            password=self._RESERVED_PASSWORD,
+        )
+        cs = ds.get_connection_string()
+
+        # The reserved delimiters the issue names ('@', '/', ':') must be
+        # percent-encoded, not left as raw URL delimiters.
+        assert "%40" in cs  # '@'
+        assert "%2F" in cs  # '/'
+        assert "%3A" in cs  # ':'
+        assert self._RESERVED_PASSWORD not in cs
+
+        url = make_url(cs)
+        assert url.drivername == expected_driver
+        assert url.username == "user"
+        assert url.password == self._RESERVED_PASSWORD
+        assert url.host == "db.example"
+        assert url.port == 5432
+        assert url.database == "analytics"
+
+    def test_reserved_char_username_round_trips(self) -> None:
+        # Issue #240 names manually interpolated usernames as affected too,
+        # not just passwords. URL.create must percent-encode reserved
+        # characters in the username so it round-trips intact.
+        username = "user@tenant/name:role"
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="db.example",
+            port=5432,
+            database="analytics",
+            username=username,
+            password="plain_pass",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        cs = ds.get_connection_string()
+
+        assert username not in cs  # raw delimiters must not leak through
+        url = make_url(cs)
+        assert url.username == username
+        assert url.password == "plain_pass"
+        assert url.host == "db.example"
+        assert url.port == 5432
+        assert url.database == "analytics"
+
+    @pytest.mark.parametrize(
+        "ds_type",
+        ["postgres", "postgresql", "mysql", "mariadb", "clickhouse", "customdb"],
+    )
+    def test_delimiter_safe_password_no_regression(self, ds_type: str) -> None:
+        # A password with no reserved characters must round-trip exactly as
+        # it did before the URL.create switch.
+        ds = DatasourceConfig(
+            name="example",
+            type=ds_type,
+            host="db.example",
+            port=5432,
+            database="analytics",
+            username="user",
+            password="plain_pass",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.username == "user"
+        assert url.password == "plain_pass"
+        assert url.host == "db.example"
+        assert url.port == 5432
+        assert url.database == "analytics"
+
+    def test_host_with_embedded_port_is_split(self) -> None:
+        # Backward-compat: the pre-fix generic branch let a caller stuff
+        # "host:port" into the host field with port unset. URL.create would
+        # otherwise treat the colon as an IPv6-style host and bracket it, so
+        # a single-colon numeric-port host is split back into host + port.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="db.example:5432",
+            database="analytics",
+            username="user",
+            password="plain_pass",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.host == "db.example"
+        assert url.port == 5432
+        assert url.database == "analytics"
+
+    def test_ipv6_host_is_not_split(self) -> None:
+        # A bare IPv6 host (multiple colons, no bracket) must NOT be treated
+        # as host:port — URL.create brackets it correctly on its own.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="::1",
+            port=5432,
+            database="analytics",
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.host == "::1"
+        assert url.port == 5432
+
+    def test_bracketed_ipv6_host_is_unwrapped(self) -> None:
+        # The pre-fix string branch tolerated a bracketed IPv6 host; URL.create
+        # wants the raw host, so the brackets are stripped.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="[::1]",
+            port=5432,
+            database="analytics",
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.host == "::1"
+        assert url.port == 5432
+
+    def test_conflicting_port_in_host_and_port_field_raises(self) -> None:
+        # A port embedded in the host AND a separate port field is
+        # contradictory config — raise rather than guess which wins.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="db.example:5432",
+            port=9999,
+            database="analytics",
+        )
+        with pytest.raises(ValueError, match="only one place"):
+            ds.get_connection_string()
+
+    def test_conflicting_port_bracketed_ipv6_and_port_field_raises(self) -> None:
+        # Same conflict for a bracketed IPv6 host that embeds a port.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="[::1]:5432",
+            port=9999,
+            database="analytics",
+        )
+        with pytest.raises(ValueError, match="only one place"):
+            ds.get_connection_string()
+
+    def test_bracketed_ipv6_host_with_embedded_port_is_split(self) -> None:
+        # Bracketed IPv6 with an embedded port and no separate port field.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="[::1]:5432",
+            database="analytics",
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.host == "::1"
+        assert url.port == 5432
+
+    def test_password_without_username_is_dropped(self) -> None:
+        # Parity with the pre-fix generic branch, which only emitted the
+        # password when a username was present. URL.create matches this:
+        # a password without a username is not rendered.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="db.example",
+            port=5432,
+            database="analytics",
+            password="secret",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.username is None
+        assert url.password is None
+        assert url.host == "db.example"
+        assert url.database == "analytics"
+
 
 class TestTimeGranularity:
     def test_period_start_week(self) -> None:
@@ -798,6 +1306,56 @@ class TestTimeGranularity:
         import datetime
         end = TimeGranularity.MONTH.period_end(datetime.date(2024, 3, 15))
         assert end == datetime.date(2024, 3, 31)
+
+    # DEV-1572: WEEK_SUNDAY — Sunday-anchored week. period_start rounds back to
+    # the Sunday at or before the date; period_end is the following Saturday.
+    # 2024-01-07 is a Sunday; 2024-01-08..13 are Mon..Sat of that week, all of
+    # which belong to the Sunday-week [2024-01-07 .. 2024-01-13].
+    @pytest.mark.parametrize(
+        "day,expected_start",
+        [
+            (7, datetime.date(2024, 1, 7)),   # Sunday  -> itself
+            (8, datetime.date(2024, 1, 7)),   # Monday
+            (9, datetime.date(2024, 1, 7)),   # Tuesday
+            (10, datetime.date(2024, 1, 7)),  # Wednesday
+            (11, datetime.date(2024, 1, 7)),  # Thursday
+            (12, datetime.date(2024, 1, 7)),  # Friday
+            (13, datetime.date(2024, 1, 7)),  # Saturday
+        ],
+    )
+    def test_period_start_week_sunday_each_weekday(
+        self, day: int, expected_start: datetime.date
+    ) -> None:
+        start = TimeGranularity.WEEK_SUNDAY.period_start(datetime.date(2024, 1, day))
+        assert start == expected_start
+
+    @pytest.mark.parametrize(
+        "day,expected_end",
+        [
+            (7, datetime.date(2024, 1, 13)),   # Sunday
+            (8, datetime.date(2024, 1, 13)),   # Monday
+            (9, datetime.date(2024, 1, 13)),   # Tuesday
+            (10, datetime.date(2024, 1, 13)),  # Wednesday
+            (11, datetime.date(2024, 1, 13)),  # Thursday
+            (12, datetime.date(2024, 1, 13)),  # Friday
+            (13, datetime.date(2024, 1, 13)),  # Saturday -> itself
+        ],
+    )
+    def test_period_end_week_sunday_each_weekday(
+        self, day: int, expected_end: datetime.date
+    ) -> None:
+        end = TimeGranularity.WEEK_SUNDAY.period_end(datetime.date(2024, 1, day))
+        assert end == expected_end
+
+    def test_period_start_week_sunday_crosses_year_boundary(self) -> None:
+        # 2024-01-01 is a Monday; its Sunday-week starts on 2023-12-31.
+        start = TimeGranularity.WEEK_SUNDAY.period_start(datetime.date(2024, 1, 1))
+        assert start == datetime.date(2023, 12, 31)
+
+    def test_period_end_week_sunday_crosses_year_boundary(self) -> None:
+        # 2024-12-30 is a Monday; its Sunday-week ends on Saturday 2025-01-04.
+        end = TimeGranularity.WEEK_SUNDAY.period_end(datetime.date(2024, 12, 30))
+        assert end == datetime.date(2025, 1, 4)
 
 
 class TestStringCoercion:
@@ -976,6 +1534,24 @@ class TestAggregationValidation:
     def test_custom_without_formula_raises(self) -> None:
         with pytest.raises(ValueError, match="not a built-in aggregation"):
             Aggregation(name="my_agg")
+
+    def test_name_with_dot_rejected(self) -> None:
+        """DEV-1567: ``Aggregation.name`` must enforce the same identifier
+        rules as ``Column.name`` and ``ModelMeasure.name``. Otherwise the
+        ``column_x_custom_aggs`` catalog expansion produces a same-model
+        metric like ``amount_my.agg`` whose dotted name the cross-model
+        flatten filter (catalog.local_metrics / local_dimensions) would
+        misclassify."""
+        with pytest.raises(ValueError, match="Invalid name"):
+            Aggregation(name="my.agg", formula="CUSTOM({value})")
+
+    def test_name_with_hyphen_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Invalid name"):
+            Aggregation(name="my-agg", formula="CUSTOM({value})")
+
+    def test_name_starting_with_digit_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Invalid name"):
+            Aggregation(name="9agg", formula="CUSTOM({value})")
 
 
 class TestDimensionLabel:

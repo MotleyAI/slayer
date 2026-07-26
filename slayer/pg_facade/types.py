@@ -23,7 +23,7 @@ import datetime as _dt
 import math
 import struct
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any
 
 from slayer.core.enums import DataType
 from slayer.pg_facade.protocol import (
@@ -35,7 +35,7 @@ from slayer.pg_facade.protocol import (
     OID_TIMESTAMP,
 )
 
-DATATYPE_TO_OID: Dict[DataType, int] = {
+DATATYPE_TO_OID: dict[DataType, int] = {
     DataType.TEXT: OID_TEXT,
     DataType.INT: OID_INT8,
     DataType.DOUBLE: OID_FLOAT8,
@@ -49,7 +49,7 @@ _PG_EPOCH_DATE = _dt.date(2000, 1, 1)
 _PG_EPOCH_DATETIME = _dt.datetime(2000, 1, 1)
 
 
-def datatype_to_oid(dt: Optional[DataType]) -> int:
+def datatype_to_oid(dt: DataType | None) -> int:
     """Map a SLayer ``DataType`` to a Postgres OID; unknown / None → text."""
     if dt is None:
         return OID_TEXT
@@ -59,10 +59,39 @@ def datatype_to_oid(dt: Optional[DataType]) -> int:
 # --- text-format output ------------------------------------------------------
 
 
-def value_to_text(value: Any) -> Optional[bytes]:  # NOSONAR(S3776) — flat per-Python-type dispatch
-    """Encode an engine value as Postgres text-format bytes (``None`` → SQL NULL)."""
+def value_to_text(  # NOSONAR(S3776) — flat per-Python-type dispatch
+    value: Any, oid: int = OID_TEXT,
+) -> bytes | None:
+    """Encode an engine value as Postgres text-format bytes (``None`` → SQL NULL).
+
+    ``oid`` lets the encoder coerce values to match the declared column type.
+    Notably, DuckDB returns ``DATE``-typed columns as ``datetime.datetime``
+    when the value is produced by ``date_trunc(...) :: date``; without
+    coercion the text-format wire payload becomes ``"2024-06-01 00:00:00"``
+    which pgjdbc's ``TimestampUtils.toLocalDate`` mis-parses for a column
+    declared with OID 1082 (DATE).
+    """
     if value is None:
         return None
+    # OID-driven coercion runs first so a datetime in a DATE column is
+    # narrowed to a date before the per-Python-type dispatch below.
+    if oid == OID_DATE and isinstance(value, _dt.datetime):
+        value = value.date()
+    # DEV-1566: symmetric widening for CAST(<DATE col> AS TIMESTAMP). The
+    # bare `dt.date` branch below emits `YYYY-MM-DD`, which pgjdbc /
+    # psycopg2 mis-parse for an OID_TIMESTAMP-declared column. Widen to
+    # `dt.datetime` so the timestamp formatter emits `YYYY-MM-DD HH:MM:SS`.
+    if (
+        oid == OID_TIMESTAMP
+        and isinstance(value, _dt.date)
+        and not isinstance(value, _dt.datetime)
+    ):
+        value = _dt.datetime(value.year, value.month, value.day)
+    # DEV-1566: CAST(<bool> AS TEXT) must emit `true`/`false` (Postgres
+    # text shape), not the BOOL wire shape `t`/`f` the next branch would
+    # produce. Check OID_TEXT BEFORE the bool branch.
+    if oid == OID_TEXT and isinstance(value, bool):
+        return b"true" if value else b"false"
     if isinstance(value, bool):
         return b"t" if value else b"f"
     if isinstance(value, float):
@@ -95,7 +124,7 @@ def _format_timestamp(value: _dt.datetime) -> str:
 # --- binary-format output ----------------------------------------------------
 
 
-def value_to_binary(value: Any, oid: int) -> Optional[bytes]:
+def value_to_binary(value: Any, oid: int) -> bytes | None:
     """Encode an engine value as Postgres binary-format bytes for ``oid``
     (``None`` → SQL NULL)."""
     if value is None:
