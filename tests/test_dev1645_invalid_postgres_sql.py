@@ -371,15 +371,7 @@ class TestFlavorAJoinedOrderByDeferred:
         sql = _norm(await _generate_via_engine(query, orders, storage))
         assert "ORDER BY customers__regions.name" in sql
 
-    # DEV-1704 Stage 0: non-strict on the typed pipeline. The assertion only
-    # checks that ``customers__regions.name`` appears anywhere in the SQL, and
-    # on the typed pipeline the join is already pulled in by the ``== 'US'``
-    # filter (WHERE ``customers__regions.name = 'US'``), so the substring is
-    # present even though the ORDER BY itself still emits the unprojected
-    # dotted alias (the DEV-1645 gap → Stages 8-9). Strict would flip this
-    # coincidental XPASS to a failure; the real fix is pinned by the sibling
-    # reject tests and the DEV-1704 parity registry.
-    @pytest.mark.xfail(strict=False, reason=_REASON)
+    @pytest.mark.xfail(strict=True, reason=_REASON)
     async def test_joined_orderby_in_cte_wrapped_scope_should_resolve(self, tmp_path) -> None:
         """A windowed-measure (combined-CTE) query that filters on and orders by
         a joined column should eventually resolve it in the outer scope."""
@@ -393,7 +385,13 @@ class TestFlavorAJoinedOrderByDeferred:
             order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
         )
         sql = _norm(await _generate_via_engine(query, orders, storage))
-        assert "customers__regions.name" in sql
+        # Assert on the ORDER BY clause specifically (not a bare substring that
+        # the ``== 'US'`` filter's WHERE would satisfy): the aspiration is that
+        # the joined sort key resolves to the ``__`` path alias. On the typed
+        # pipeline the ORDER BY still emits the unprojected dotted alias
+        # ``"customers.regions.name"`` (the DEV-1645 gap → Stages 8-9), so this
+        # correctly xfails until joined ORDER BY resolution lands.
+        assert "ORDER BY customers__regions.name" in sql
 
 
 # ============================================================================

@@ -32,20 +32,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-# DEV-1704 Stage 0 parity gap: DEV-1656 caller-controlled MCP engine teardown
-# (`mcp._slayer_engine` reuse + `aclose()`) rides on main's per-engine SQL-client
-# cache, whose `query_engine._sql_client_cache_key` helper is not yet on the
-# typed pipeline (DEV-1703 later stages). This guard auto-lifts when it lands.
-from slayer.engine import query_engine as _qe_probe
-
-if not hasattr(_qe_probe, "_sql_client_cache_key"):
-    pytest.skip(
-        "DEV-1704 parity gap: DEV-1656 MCP engine teardown depends on the "
-        "per-engine SQL-client cache not yet on the typed pipeline (DEV-1703). "
-        "Guard auto-lifts when query_engine._sql_client_cache_key lands.",
-        allow_module_level=True,
-    )
-
 import slayer.mcp.server as srv
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel

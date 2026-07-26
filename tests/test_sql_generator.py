@@ -9253,7 +9253,7 @@ class TestGetColumnTypesSql:
 
             mock_client = MagicMock()
             mock_client.get_column_types = capture_types
-            engine._sql_clients["sqlite://"] = mock_client
+            engine._sql_clients[("sqlite://", "")] = mock_client
 
             result = await engine.get_column_types("orders")
 

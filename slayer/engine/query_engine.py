@@ -5,13 +5,17 @@ Flow: SlayerQuery → _enrich() → EnrichedQuery → SQLGenerator → SQL → e
 
 import decimal
 import logging
+import re
+from collections.abc import Callable
 from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
+import sqlalchemy as sa
 from pydantic import BaseModel, Field as PydanticField, model_validator
 
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
-from slayer.core.errors import AmbiguousModelError
+from slayer.core.errors import AmbiguousModelError, ForcedFilterError
+from slayer.core.policy import JoinFilterRule, SessionPolicy
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import (
     Column,
@@ -52,8 +56,12 @@ from slayer.engine.source_bundle import (
 from slayer.engine.stage_ordering import topologically_order_stages
 from slayer.engine.stage_planner import plan_stages
 from slayer.engine.variables import apply_variables_to_query
+from slayer.engine.introspect_utils import _safe_get_columns
+from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
+from slayer.sql.engine_factory import _runtime_fingerprint
 from slayer.sql.generator import SQLGenerator, generate_planned_stages
+from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
 
@@ -106,6 +114,17 @@ _EXPLAIN_POSTFIX = {
 
 
 _PLACEHOLDER_FILL_VALUE = "0"
+
+
+def _sql_client_cache_key(datasource: DatasourceConfig) -> tuple[str, str]:
+    """Cache key for ``SlayerQueryEngine._sql_clients``.
+
+    Mirrors ``engine_factory``'s cache key so two datasources differing
+    in (e.g.) Snowflake ``warehouse`` get distinct ``SlayerSQLClient``
+    instances (and therefore distinct factory-cached engines with the
+    correct per-connection ``USE`` listener) — DEV-1551.
+    """
+    return (datasource.get_connection_string(), _runtime_fingerprint(datasource))
 
 
 def _merge_query_variables(
@@ -224,9 +243,209 @@ class SlayerQueryEngine:
     SQLGenerator for SQL generation.
     """
 
-    def __init__(self, storage: StorageBackend):
+    def __init__(
+        self,
+        storage: StorageBackend,
+        *,
+        policy: Optional[SessionPolicy] = None,
+    ):
         self.storage = storage
-        self._sql_clients: Dict[str, SlayerSQLClient] = {}  # connection string → cached client
+        # Cache key: (connection_string, runtime_fingerprint) — matches
+        # ``engine_factory``'s cache so Snowflake datasources sharing a
+        # connection_name but differing in warehouse/role/database/schema get
+        # distinct clients (DEV-1551).
+        self._sql_clients: dict[tuple[str, str], SlayerSQLClient] = {}
+        # DEV-1578: immutable, engine-global forced-filter policy. When set,
+        # every generated SQL is rewritten to scope each physical table to the
+        # configured tenant before execution / dry-run / explain.
+        self.policy = policy
+        # Cache of confirmed column-presence facts keyed by
+        # (ds_key, catalog, schema, table, column). Only ``True``/``False`` are
+        # cached; an unconfirmable ``None`` is re-probed so a transient
+        # introspection failure self-heals once the datasource recovers.
+        self._column_presence_cache: dict[tuple, bool] = {}
+        # DEV-1627: cached ClickHouse ``(major, minor)`` server version per
+        # datasource, for the correlated-subquery join-rule gate. ``None`` (or a
+        # missing entry) fails closed. Populated by
+        # ``_preflight_clickhouse_correlated`` before the policy rewrite.
+        self._ch_version_cache: dict[tuple[str, str], tuple[int, int] | None] = {}
+
+    def _apply_policy(
+        self, *, sql: str, dialect: str, datasource: DatasourceConfig
+    ) -> str:
+        """Rewrite ``sql`` to enforce the forced-filter policy, or return it
+        unchanged when no policy is configured (zero overhead)."""
+        if not (self.policy and self.policy.data_filters):
+            return sql
+        return apply_session_policy(
+            sql,
+            dialect=dialect,
+            policy=self.policy,
+            has_column=lambda scoped, column: self._column_present(
+                datasource=datasource, scoped_table=scoped, column=column
+            ),
+            on_correlated_emitted=self._clickhouse_correlated_guard(
+                dialect=dialect, datasource=datasource
+            ),
+        )
+
+    def _policy_has_join_rules(self) -> bool:
+        if not (self.policy and self.policy.data_filters):
+            return False
+        return any(
+            isinstance(r, JoinFilterRule) for r in self.policy.data_filters
+        )
+
+    @staticmethod
+    def _parse_clickhouse_version(raw: Any) -> tuple[int, int] | None:
+        """Parse a ClickHouse ``version()`` string to ``(major, minor)``.
+
+        Tolerates a leading ``v``, extra patch/build segments, and prerelease
+        suffixes (``25.4.1-lts``). Returns ``None`` when the input is not a
+        string or has no leading ``<int>.<int>`` — so an unparseable version
+        fails closed at the guard.
+        """
+        if not isinstance(raw, str):
+            return None
+        match = re.match(r"\s*v?(\d+)\.(\d+)", raw)
+        if not match:
+            return None
+        return (int(match.group(1)), int(match.group(2)))
+
+    def _clickhouse_correlated_guard(
+        self, *, dialect: str, datasource: DatasourceConfig
+    ) -> Callable[[], None] | None:
+        """Return a sync guard invoked when the rewrite emits a correlated
+        ``EXISTS``, or ``None`` for non-ClickHouse dialects.
+
+        The guard reads the cached server version and raises
+        :class:`ForcedFilterError` when it is unknown (missing/None) or
+        ``< (25, 4)`` (correlated subqueries unsupported); on a supported
+        version it logs a warning and returns.
+        """
+        if dialect != "clickhouse":
+            return None
+        ds_key = _sql_client_cache_key(datasource)
+
+        def guard() -> None:
+            version = self._ch_version_cache.get(ds_key)
+            if version is None:
+                raise ForcedFilterError(
+                    "ClickHouse join-based forced filter needs a correlated "
+                    "subquery (server >= 25.4), but the server version could "
+                    "not be determined; failing closed."
+                )
+            if version < (25, 4):
+                raise ForcedFilterError(
+                    "ClickHouse join-based forced filter needs a correlated "
+                    "subquery, which requires server >= 25.4; detected "
+                    f"{version[0]}.{version[1]}; failing closed."
+                )
+            logger.warning(
+                "Applying a join-based forced filter on ClickHouse via an "
+                "experimental correlated subquery "
+                "(allow_experimental_correlated_subqueries=1); requires "
+                "server >= 25.4 (detected %d.%d).",
+                version[0],
+                version[1],
+            )
+
+        return guard
+
+    async def _preflight_clickhouse_correlated(
+        self, *, dialect: str, datasource: DatasourceConfig
+    ) -> None:
+        """Probe and cache the ClickHouse server version once per datasource
+        when the policy has join rules. No-op for non-ClickHouse dialects and
+        for policies without join rules. A probe failure caches ``None`` (fail
+        closed at the guard). Cheap: cached, and only fires when a join rule
+        could actually emit a correlated subquery."""
+        if dialect != "clickhouse" or not self._policy_has_join_rules():
+            return
+        ds_key = _sql_client_cache_key(datasource)
+        if ds_key in self._ch_version_cache:
+            return  # already probed (value may be None)
+        try:
+            if ds_key not in self._sql_clients:
+                self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
+            client = self._sql_clients[ds_key]
+            rows = await client.execute("SELECT version()")
+            raw = None
+            if rows and isinstance(rows[0], dict):
+                raw = next(iter(rows[0].values()), None)
+            self._ch_version_cache[ds_key] = self._parse_clickhouse_version(raw)
+        except Exception as exc:
+            logger.warning(
+                "ClickHouse version preflight failed for datasource '%s'; "
+                "join-based forced filters will fail closed: %s",
+                datasource.name,
+                exc,
+            )
+            self._ch_version_cache[ds_key] = None
+
+    def _column_present(
+        self,
+        *,
+        datasource: DatasourceConfig,
+        scoped_table: ScopedTable,
+        column: str,
+    ) -> bool | None:
+        """Return whether ``column`` exists on ``scoped_table`` in
+        ``datasource``: ``True`` / ``False`` / ``None`` (cannot confirm).
+
+        Introspects via the shared ``_safe_get_columns`` helper (Inspector
+        with INFORMATION_SCHEMA fallback). The schema is the table's parsed
+        qualifier, else the datasource default. Only confirmed ``True`` /
+        ``False`` results are cached; a ``None`` (any introspection error or
+        empty result) is returned uncached so a transient failure is
+        re-probed on the next query.
+        """
+        schema = scoped_table.schema_name or datasource.schema_name
+        # Cross-catalog refs can't be confirmed: SQLAlchemy's column
+        # introspection takes no catalog argument, so a three-part
+        # ``catalog.schema.table`` naming a catalog other than the
+        # connection's own would probe the wrong relation. Fail closed
+        # (consistent with the unconfirmable-presence rule) rather than risk
+        # an under-filter under ``on_unapplicable="pass"``. Single-catalog
+        # refs (catalog matches the connection, or no catalog) probe normally.
+        if scoped_table.catalog and (
+            not datasource.database
+            or scoped_table.catalog.casefold() != datasource.database.casefold()
+        ):
+            return None
+        # Include catalog in the key so two tables differing only by catalog
+        # (e.g. BigQuery project) never share a cached presence fact.
+        key = (
+            _sql_client_cache_key(datasource),
+            scoped_table.catalog,
+            schema,
+            scoped_table.name,
+            column,
+        )
+        if key in self._column_presence_cache:
+            return self._column_presence_cache[key]
+        try:
+            sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
+            inspector = sa.inspect(sa_engine)
+            cols = _safe_get_columns(
+                inspector, sa_engine, scoped_table.name, schema
+            )
+        except Exception as exc:  # introspection failed -> cannot confirm
+            logger.warning(
+                "Forced filter: column-presence probe failed for %s.%s "
+                "(column %r): %s",
+                schema or "<default>",
+                scoped_table.name,
+                column,
+                exc,
+            )
+            return None
+        if not cols:
+            return None  # no columns resolved -> cannot confirm
+        names = {str(c.get("name", "")).lower() for c in cols}
+        present = column.lower() in names
+        self._column_presence_cache[key] = present
+        return present
 
     def _get_join_target_resolving(self) -> set:
         """Return the per-task in-flight join-target name set, allocating one
@@ -521,6 +740,14 @@ class SlayerQueryEngine:
         sql = generate_planned_stages(
             planned_list, bundle=bundle, dialect=dialect,
         )
+        # DEV-1578: forced-filter (RLS) rewrite — scope each physical table to
+        # the configured tenant. Applied to the rendered SQL before dry-run /
+        # explain / execute so all three surfaces see the policy-rewritten SQL.
+        # Zero overhead (returns unchanged) when no policy is configured.
+        await self._preflight_clickhouse_correlated(
+            dialect=dialect, datasource=datasource
+        )
+        sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
         logger.debug("Generated SQL:\n%s", sql)
 
         # Response metadata (attributes + expected_columns) from the typed
@@ -547,7 +774,7 @@ class SlayerQueryEngine:
             )
 
         # Execute — reuse SQL client (and its connection pool) per datasource
-        ds_key = datasource.get_connection_string()
+        ds_key = _sql_client_cache_key(datasource)
         if ds_key not in self._sql_clients:
             self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
         client = self._sql_clients[ds_key]
@@ -879,7 +1106,7 @@ class SlayerQueryEngine:
         except ValueError:
             return {}
 
-        ds_key = datasource.get_connection_string()
+        ds_key = _sql_client_cache_key(datasource)
         if ds_key not in self._sql_clients:
             self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
         client = self._sql_clients[ds_key]
@@ -957,12 +1184,22 @@ class SlayerQueryEngine:
         dry_run: bool = False,
         explain: bool = False,
     ) -> SlayerResponse:
-        """Synchronous wrapper for execute(). For CLI, notebooks, and scripts."""
+        """Synchronous wrapper for execute(). For CLI, notebooks, and scripts.
+
+        Disposes per-call async engines in ``finally`` so they don't outlive
+        their owning loop — see ``aclose`` (DEV-1656).
+        """
         from slayer.async_utils import run_sync
 
-        return run_sync(
-            self.execute(query, variables=variables, dry_run=dry_run, explain=explain)
-        )
+        async def _run_and_cleanup() -> SlayerResponse:
+            try:
+                return await self.execute(
+                    query, variables=variables, dry_run=dry_run, explain=explain
+                )
+            finally:
+                await self.aclose()
+
+        return run_sync(_run_and_cleanup())
 
     async def edit_model_remove(
         self,
@@ -2515,8 +2752,6 @@ class SlayerQueryEngine:
         Dimensions and filters referencing models not reachable from the
         target are dropped.
         """
-        import re
-
         from slayer.core.formula import parse_filter
 
         target_model = await self._resolve_model(

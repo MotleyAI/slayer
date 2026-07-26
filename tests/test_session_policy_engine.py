@@ -13,22 +13,6 @@ import logging
 
 import pytest
 
-# DEV-1704 Stage 0 parity gap: the DEV-1578 RLS session-policy engine
-# integration (`_column_present`, forced-filter rewrite, and the
-# `query_engine._sql_client_cache_key` cache-key helper it relies on) is a main
-# feature not yet ported to the typed pipeline (DEV-1703 later stages). This
-# module-level guard auto-lifts the moment the symbol lands, so the tests
-# promote back to running without further edits.
-from slayer.engine import query_engine as _qe_probe
-
-if not hasattr(_qe_probe, "_sql_client_cache_key"):
-    pytest.skip(
-        "DEV-1704 parity gap: RLS session-policy engine infra not yet on the "
-        "typed pipeline (DEV-1703). Guard auto-lifts when "
-        "query_engine._sql_client_cache_key lands.",
-        allow_module_level=True,
-    )
-
 import slayer.engine.query_engine as qe
 from slayer.core.errors import ForcedFilterError
 from slayer.core.models import DatasourceConfig

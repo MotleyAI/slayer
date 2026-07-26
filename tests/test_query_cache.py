@@ -24,17 +24,19 @@ import pydantic
 import pytest
 import sqlalchemy
 
-# DEV-1704 Stage 0 parity gap: the DEV-1587 per-engine query-result cache is a
-# main feature not yet ported to the typed pipeline (DEV-1703 lists it as a
-# parity item — cache table-detection over the new CTE shapes). This
-# module-level guard auto-lifts once the engine cache infra lands.
-from slayer.engine import query_engine as _qe_probe
+# APPROVED DEFERRAL (DEV-1704 Stage-0 review, Finding 1a → owned by DEV-1715):
+# the DEV-1587 per-engine query cache genuinely needs rework over the typed
+# pipeline's CTE shapes (not a clean port), so its wiring is deferred to
+# DEV-1715 rather than restored in Stage 0. This module-level skip guard is the
+# ONE approved guard under tests/ — it is pinned by tests/test_parity_guards.py
+# (any new/removed guard fails that meta-test) and auto-lifts the moment the
+# engine grows cache support. Do NOT add further skip guards without approval.
+from slayer.engine.query_engine import SlayerQueryEngine as _EngineProbe
 
-if not hasattr(_qe_probe, "_sql_client_cache_key"):
+if not hasattr(_EngineProbe, "cache_config"):
     pytest.skip(
-        "DEV-1704 parity gap: DEV-1587 query cache not yet on the typed "
-        "pipeline (DEV-1703). Guard auto-lifts when "
-        "query_engine._sql_client_cache_key lands.",
+        "DEV-1715: DEV-1587 query cache not yet on the typed pipeline. "
+        "Guard auto-lifts when SlayerQueryEngine.cache_config lands.",
         allow_module_level=True,
     )
 

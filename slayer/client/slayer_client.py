@@ -70,19 +70,19 @@ class SlayerClient:
         self.url = url.rstrip("/")
         self._storage = storage
         self._engine = None
-        if policy is not None:
-            # DEV-1578 forced-filter (RLS) policy is not yet wired into the
-            # typed-pipeline engine (DEV-1704 parity gap; DEV-1703 later
-            # stages). Fail fast rather than silently dropping a security
-            # control.
-            raise ValueError(
-                "policy= is not yet supported on the typed pipeline "
-                "(DEV-1578 RLS lands in a later DEV-1703 stage)."
-            )
         if storage is not None:
             from slayer.engine.query_engine import SlayerQueryEngine
 
-            self._engine = SlayerQueryEngine(storage=storage)
+            self._engine = SlayerQueryEngine(storage=storage, policy=policy)
+        elif policy is not None:
+            # DEV-1578: forced-filter policy is enforced in the local engine
+            # only. Silently ignoring it in HTTP mode would disable a security
+            # control, so fail fast instead.
+            raise ValueError(
+                "policy= is only supported in local-engine mode (pass "
+                "storage=...); server-side policy over HTTP is not yet "
+                "available."
+            )
 
     async def _request(
         self,

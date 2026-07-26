@@ -2068,12 +2068,23 @@ async def _collect_sql_diffs(
     out: dict[str, tuple[ToDeleteEntry | None, set[str]]] = {}
     if not sql_models:
         return out
-    # Typed pipeline keys ``SlayerQueryEngine._sql_clients`` by connection
-    # string (DEV-1551 tuple-keying / DEV-1656 client-disposal caching are
-    # main-engine features deferred to a later DEV-1703 stage).
-    client = (sql_clients or {}).get(datasource.get_connection_string())
+    # DEV-1551: SlayerQueryEngine._sql_clients is tuple-keyed
+    # (connection_string, runtime_fingerprint) so Snowflake datasources
+    # sharing a connection_name but differing in warehouse/role get
+    # distinct clients. Mirror that key shape here via the shared
+    # ``_sql_client_cache_key`` helper.
+    from slayer.engine.query_engine import _sql_client_cache_key  # noqa: PLC0415
+    key = _sql_client_cache_key(datasource)
+    client = (sql_clients or {}).get(key)
     if client is None:
         client = SlayerSQLClient(datasource=datasource)
+        # DEV-1656: cache the client back into the shared engine dict so the
+        # asyncpg pool it opens (trial-execute of sql-mode models) is
+        # reachable by ``SlayerQueryEngine.aclose()`` and disposed at task
+        # teardown. When ``sql_clients`` is None (no engine — direct/test
+        # callers own the lifecycle), behaviour is unchanged.
+        if sql_clients is not None:
+            sql_clients[key] = client
 
     async def _diff_one(model: SlayerModel) -> None:
         live_cols = await _live_columns_for_sql_model(model=model, client=client)

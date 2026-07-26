@@ -13,6 +13,24 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests.parity_xfails import PARITY_XFAILS
 
 
+def _collects_full_registry(config) -> bool:
+    """True when this run collects the entire non-integration tree, so every
+    registry key (all non-integration) is expected to match a collected test.
+
+    False for ``-k`` keyword filters, path-subset runs, and *positive* ``-m``
+    selections (e.g. ``-m integration``) — those legitimately collect a subset,
+    so the stale-key check must not fire. A deselecting marker (``-m "not
+    integration ..."``) still collects every registry test, so it stays full.
+    """
+    if config.option.keyword:
+        return False
+    markexpr = (config.option.markexpr or "").strip()
+    if markexpr and not markexpr.startswith("not "):
+        return False
+    args = [a for a in config.args if a.rstrip("/") not in ("", "tests")]
+    return not args
+
+
 def pytest_collection_modifyitems(config, items):
     """DEV-1704 Stage 0: pin every recorded main-parity gap as ``xfail(strict=True)``.
 
@@ -22,12 +40,28 @@ def pytest_collection_modifyitems(config, items):
     strict-xfail keyed by its exact node id — so it flips back to a hard failure
     the moment the feature lands, and DEV-1485 (Stage 11) can gate on
     ``tests/parity_xfails.py`` being empty. See the registry module for the
-    per-gap reason / owning stage.
+    per-gap reason / owning issue.
+
+    The registry is self-policing in both directions: ``strict=True`` catches a
+    key whose test has been *fixed* (XPASS -> failure), and the stale-key check
+    below catches a key that matches *no* collected test (renamed test, param-id
+    churn from a sqlglot bump, an already-deleted test) so a zombie entry can't
+    silently rot and block the Stage-11 gate.
     """
+    consumed = set()
     for item in items:
         reason = PARITY_XFAILS.get(item.nodeid)
         if reason is not None:
             item.add_marker(pytest.mark.xfail(reason=reason, strict=True))
+            consumed.add(item.nodeid)
+
+    stale = set(PARITY_XFAILS) - consumed
+    if stale and _collects_full_registry(config):
+        raise pytest.UsageError(
+            f"tests/parity_xfails.py has {len(stale)} stale key(s) matching no "
+            "collected test (renamed/deleted test or changed param id) — fix or "
+            "remove them:\n  " + "\n  ".join(sorted(stale))
+        )
 
 
 @pytest.fixture(autouse=True)
