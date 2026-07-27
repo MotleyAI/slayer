@@ -864,6 +864,32 @@ class TestDatasourceResolution:
         assert entries[0].response.data[0]["orders.amount_sum"] == pytest.approx(350.0)
 
 
+async def _engine_with_repointed_datasource(tmp_path, *, a_stem, b_stem):
+    """Cache two entries under the SAME datasource name ``ds`` repointed from
+    db_a (seeded, ``amount`` sums to 350) to db_b (a single distinguishable row,
+    999) — leaving two fingerprint-scoped cache entries, each carrying the
+    ``MAX(updated_at)`` refresh key. Returns ``(engine, db_a, db_b)``."""
+    db_a = tmp_path / f"{a_stem}.db"
+    _seed_db(db_a)
+    db_b = tmp_path / f"{b_stem}.db"
+    _seed_orders_single(db_b, amount=999.0)
+    storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+    await storage.save_datasource(
+        DatasourceConfig(name="ds", type="sqlite", database=str(db_a))
+    )
+    await storage.save_model(_orders_model("ds"))
+    engine = SlayerQueryEngine(
+        storage=storage,
+        cache_config=CacheConfig(refresh_keys=[("orders", "MAX(updated_at)")]),
+    )
+    await engine.execute(_sum_query(), cache=True)  # entry vs db_a
+    await storage.save_datasource(
+        DatasourceConfig(name="ds", type="sqlite", database=str(db_b))
+    )
+    await engine.execute(_sum_query(), cache=True)  # entry vs db_b
+    return engine, db_a, db_b
+
+
 class TestReviewFollowups:
     """Regressions pinned by the PR #254 review (Codex + CodeRabbit)."""
 
@@ -903,34 +929,14 @@ class TestReviewFollowups:
         assert entry.variables["ids"] == [1, 2, 3]  # snapshot unaffected
 
     async def test_refresh_scans_by_fingerprint_not_name(self, tmp_path):
-        # Two DBs behind the SAME datasource name at different times → two cache
-        # entries with different SQL-client fingerprints. refresh() must scan
-        # each entry against the connection it was cached under (its ds_key),
-        # NOT re-resolve the name to the current config. Name-based scanning
-        # would scan the db_a entry against db_b (whose MAX(updated_at) differs)
-        # and spuriously report it refreshed.
-        db_a = tmp_path / "fp_a.db"
-        _seed_db(db_a)  # MAX(updated_at) = 2025-01-03
-        db_b = tmp_path / "fp_b.db"
-        _seed_orders_single(db_b, amount=999.0)  # updated_at = 2025-01-01
-
-        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
-        await storage.save_datasource(
-            DatasourceConfig(name="ds", type="sqlite", database=str(db_a))
+        # Two DBs behind the SAME datasource name → two fingerprint-scoped
+        # entries. refresh() must scan each against the connection it was cached
+        # under (its ds_key), NOT re-resolve the name to the current config —
+        # else the db_a entry is scanned against db_b (whose MAX(updated_at)
+        # differs) and spuriously reported refreshed.
+        engine, _db_a, _db_b = await _engine_with_repointed_datasource(
+            tmp_path, a_stem="fp_a", b_stem="fp_b"
         )
-        await storage.save_model(_orders_model("ds"))
-        engine = SlayerQueryEngine(
-            storage=storage,
-            cache_config=CacheConfig(refresh_keys=[("orders", "MAX(updated_at)")]),
-        )
-        await engine.execute(_sum_query(), cache=True)  # cached against db_a
-
-        # Repoint the SAME datasource name to db_b, cache again → second entry
-        # under a different fingerprint.
-        await storage.save_datasource(
-            DatasourceConfig(name="ds", type="sqlite", database=str(db_b))
-        )
-        await engine.execute(_sum_query(), cache=True)
         assert engine.cache_size == 2
 
         # Neither DB changed since its entry was cached → both must be unchanged.
@@ -943,26 +949,9 @@ class TestReviewFollowups:
         # A refresh() re-exec must run against the DB the entry was cached under
         # (its ds_key), not a repointed same-name datasource — else the
         # refreshed rows come from the wrong database.
-        db_a = tmp_path / "re_a.db"
-        _seed_db(db_a)  # sum 350, MAX(updated_at) = 2025-01-03
-        db_b = tmp_path / "re_b.db"
-        _seed_orders_single(db_b, amount=999.0)
-
-        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
-        await storage.save_datasource(
-            DatasourceConfig(name="ds", type="sqlite", database=str(db_a))
+        engine, db_a, _db_b = await _engine_with_repointed_datasource(
+            tmp_path, a_stem="re_a", b_stem="re_b"
         )
-        await storage.save_model(_orders_model("ds"))
-        engine = SlayerQueryEngine(
-            storage=storage,
-            cache_config=CacheConfig(refresh_keys=[("orders", "MAX(updated_at)")]),
-        )
-        await engine.execute(_sum_query(), cache=True)  # entry vs db_a (350)
-
-        await storage.save_datasource(
-            DatasourceConfig(name="ds", type="sqlite", database=str(db_b))
-        )
-        await engine.execute(_sum_query(), cache=True)  # entry vs db_b (999)
         assert engine.cache_size == 2
 
         # Move db_a's MAX(updated_at) so ONLY its entry is detected stale.
