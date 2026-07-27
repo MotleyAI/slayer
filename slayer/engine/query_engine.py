@@ -26,6 +26,12 @@ from slayer.core.models import (
     SourceModelOrigin,
 )
 from slayer.core.warnings import NormalizationWarning
+from slayer.core.recommend import (
+    CandidateCoverage,
+    ItemPath,
+    RootModelRecommendation,
+)
+from slayer.core.refs import split_agg_suffix
 from slayer.core.query import (
     ColumnRef,
     SlayerQuery,
@@ -57,6 +63,8 @@ from slayer.engine.stage_ordering import topologically_order_stages
 from slayer.engine.stage_planner import plan_stages
 from slayer.engine.variables import apply_variables_to_query
 from slayer.engine.introspect_utils import _safe_get_columns
+from slayer.engine.join_graph import JoinGraph, min_hops_root
+from slayer.memories.resolver import _all_models_in_datasource, resolve_entity
 from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.engine_factory import _runtime_fingerprint
@@ -66,6 +74,127 @@ from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
+
+
+# ------------------------------------------------------------------
+# recommend_root_model (DEV-1626) — ported from origin/main (DEV-1717)
+# ------------------------------------------------------------------
+class _ResolvedItem(BaseModel):
+    """A recommend_root_model input item after resolution/validation."""
+
+    input_item: str
+    data_source: str
+    model: str
+    leaf: str
+    suffix: str | None = None
+
+
+def _emit_recommend_path(graph: JoinGraph, root: str, item: "_ResolvedItem") -> str:
+    """Join-qualified path to ``item`` from ``root`` (root name excluded),
+    with the original aggregation suffix re-attached verbatim."""
+    hops = graph.shortest_path(root, item.model) or []
+    core = item.leaf if not hops else ".".join(hops) + "." + item.leaf
+    return core if item.suffix is None else f"{core}:{item.suffix}"
+
+
+def _resolve_root_hint(
+    raw_hint: str | None, *, data_source: str, all_names: list[str]
+) -> tuple[str, str] | None:
+    """Resolve a caller-supplied ``root_hint`` to a bare model name within
+    ``data_source`` (follow-up to DEV-1626).
+
+    Returns ``(model, display)`` where ``model`` is the validated bare model
+    name used for graph logic and ``display`` is the caller's original string
+    (whitespace-trimmed) reused verbatim in diagnostics — so a
+    ``mydb.customers`` hint surfaces as ``mydb.customers`` in warnings, not the
+    resolved ``customers``. Returns ``None`` when the hint is empty /
+    whitespace-only (treated as "no hint" — a no-op).
+
+    Raises ``ValueError`` for a non-existent / wrong-kind / cross-datasource /
+    otherwise malformed hint (the caller surfaces it loudly).
+    """
+    if raw_hint is None:
+        return None
+    display = raw_hint.strip()
+    if not display:
+        return None
+    if "." in display:
+        segs = display.split(".")
+        if len(segs) == 2 and segs[0] == data_source:
+            model = segs[1]
+        else:
+            raise ValueError(
+                f"root_hint '{display}' must be a bare model name or "
+                f"'{data_source}.<model>' within datasource '{data_source}'."
+            )
+    else:
+        model = display
+    if model not in all_names:
+        raise ValueError(
+            f"root_hint '{display}' is not a model in datasource '{data_source}'."
+        )
+    return model, display
+
+
+def _build_recommend_coverage(
+    graph: JoinGraph,
+    all_names: list[str],
+    mentioned: set[str],
+    resolved: list["_ResolvedItem"],
+    *,
+    force_include: set[str] | None = None,
+) -> list[CandidateCoverage]:
+    """Pareto frontier of partial-root candidates for the no-common-root
+    diagnostic. Item reachability ≡ owning-model reachability, so dominance
+    is computed on reached owning-model sets + per-model hop counts.
+
+    ``force_include`` names models whose row must appear even when they reach
+    zero mentioned models or are Pareto-dominated (used to surface a caller's
+    ``root_hint``). Forced rows still sort by the same key, so a hint that is
+    genuinely on the frontier is not duplicated.
+    """
+    forced = force_include or set()
+    items_in_order = [r.input_item for r in resolved]
+    model_of_item = {r.input_item: r.model for r in resolved}
+
+    candidates: list[tuple[str, set[str], dict[str, int]]] = []
+    for name in all_names:
+        reach = {m for m in mentioned if graph.shortest_path(name, m) is not None}
+        if not reach and name not in forced:
+            continue
+        hops = {m: len(graph.shortest_path(name, m) or []) for m in reach}
+        candidates.append((name, reach, hops))
+
+    def dominates(a: tuple, b: tuple) -> bool:
+        _an, ar, ah = a
+        _bn, br, bh = b
+        if ar > br:  # strict superset → covers strictly more
+            return True
+        if ar == br:  # same coverage, no path longer, at least one shorter
+            return all(ah[m] <= bh[m] for m in ar) and any(ah[m] < bh[m] for m in ar)
+        return False
+
+    frontier = [
+        c for c in candidates
+        if c[0] in forced
+        or not any(dominates(o, c) for o in candidates if o[0] != c[0])
+    ]
+
+    entries: list[tuple[CandidateCoverage, int]] = []
+    for name, reach, hops in frontier:
+        reachable_items = [it for it in items_in_order if model_of_item[it] in reach]
+        unreachable_items = [it for it in items_in_order if model_of_item[it] not in reach]
+        entries.append((
+            CandidateCoverage(
+                model_name=name,
+                reachable_items=reachable_items,
+                unreachable_items=unreachable_items,
+            ),
+            sum(hops.values()),
+        ))
+    entries.sort(key=lambda e: (-len(e[0].reachable_items), e[1], e[0].model_name))
+    return [e[0] for e in entries]
+
 
 
 # Per-task in-flight join-target names. Used by _resolve_join_target to break
@@ -1200,6 +1329,258 @@ class SlayerQueryEngine:
                 await self.aclose()
 
         return run_sync(_run_and_cleanup())
+
+    # ------------------------------------------------------------------
+    async def _scope_bare_name_to_datasource(
+        self, *, raw: str, name: str, data_source: str
+    ) -> "tuple[str, str, str]":
+        """Resolve a bare (dotless) item within a single datasource, so the
+        requested ``data_source`` genuinely scopes it (rather than deferring
+        to the global datasource-priority list). Returns ``(ds, model, leaf)``.
+        """
+        models = await _all_models_in_datasource(self.storage, data_source)
+        if any(m.name == name for m in models):
+            raise ValueError(
+                f"'{raw}' resolves to model '{name}' in '{data_source}', which "
+                f"is not a column or metric. recommend_root_model needs "
+                f"'model.column' / 'model.metric' items."
+            )
+        # Ownership is column/metric only — a model whose sole match is a
+        # custom aggregation named the same must NOT make a valid column
+        # ambiguous; it only drives the aggregation-specific error below.
+        owners = [
+            m for m in models
+            if m.get_column(name) is not None or m.get_measure(name) is not None
+        ]
+        if len(owners) == 1:
+            return data_source, owners[0].name, name
+        if len(owners) > 1:
+            names = sorted(m.name for m in owners)
+            raise ValueError(
+                f"'{raw}' is ambiguous in datasource '{data_source}' — matches "
+                f"{names}. Qualify it as '<model>.{name}'."
+            )
+        if any(m.get_aggregation(name) is not None for m in models):
+            raise ValueError(
+                f"'{raw}' names a custom aggregation in datasource "
+                f"'{data_source}'. Aggregations are operators applied to "
+                f"columns, not join-path targets — pass the column."
+            )
+        raise ValueError(
+            f"'{raw}' does not name a column or metric in datasource "
+            f"'{data_source}'."
+        )
+
+    async def _resolve_recommend_item(
+        self, *, raw: str, data_source: str | None
+    ) -> "tuple[_ResolvedItem, list[str]]":
+        """Resolve + validate a single recommend_root_model item.
+
+        Reuses ``resolve_entity`` for normalization; requires the resolved
+        entity to be a column or a named measure (metric). Raises on a
+        malformed / wrong-kind item or a datasource-scope mismatch.
+        """
+        entity_ref, suffix = split_agg_suffix(raw)
+        warnings: list[str] = []
+        if data_source and "." not in entity_ref:
+            # Bare name + explicit scope → resolve within the datasource.
+            ds, model_name, leaf = await self._scope_bare_name_to_datasource(
+                raw=raw, name=entity_ref, data_source=data_source,
+            )
+        else:
+            # With an explicit data_source, force every dotted item into that
+            # datasource unless it already leads with it — so a model name
+            # colliding with a *datasource* name (``shared.status`` under
+            # ``data_source='mydb'``) still resolves to the model, and a ref
+            # naming a different datasource fails as a cross-datasource item.
+            resolution_input = entity_ref
+            if data_source and entity_ref.split(".")[0] != data_source:
+                resolution_input = f"{data_source}.{entity_ref}"
+            res = await resolve_entity(resolution_input, storage=self.storage)
+            warnings = res.warnings
+            segs = res.canonical_forms[0].split(".")
+            if len(segs) < 3:
+                raise ValueError(
+                    f"'{raw}' resolves to '{res.canonical_forms[0]}', which is "
+                    f"not a column or metric. recommend_root_model needs "
+                    f"'model.column' / 'model.metric' items."
+                )
+            ds, model_name, leaf = segs[0], segs[1], segs[2]
+        owning = await self.storage.get_model(model_name, data_source=ds)
+        if owning is None:
+            raise ValueError(
+                f"'{raw}' resolves to model '{model_name}' in '{ds}', which "
+                f"is not a saved model."
+            )
+        if owning.get_column(leaf) is None and owning.get_measure(leaf) is None:
+            if owning.get_aggregation(leaf) is not None:
+                raise ValueError(
+                    f"'{raw}' names the custom aggregation '{leaf}' on "
+                    f"'{model_name}'. Aggregations are operators applied to "
+                    f"columns, not join-path targets — pass the column."
+                )
+            raise ValueError(
+                f"'{raw}' does not name a column or metric on '{model_name}'."
+            )
+        item = _ResolvedItem(
+            input_item=raw, data_source=ds, model=model_name,
+            leaf=leaf, suffix=suffix,
+        )
+        return item, warnings
+
+    async def _recommend_resolve_items(
+        self, items: list[str], data_source: str | None
+    ) -> "tuple[list[_ResolvedItem], list[str]]":
+        """Resolve every input item, then enforce single-datasource + dedup.
+
+        Raises on malformed / wrong-kind items and on a cross-datasource mix.
+        """
+        resolved: list[_ResolvedItem] = []
+        warnings: list[str] = []
+        seen_inputs: set[str] = set()
+        for original in items:
+            raw = original.strip()
+            if not raw or raw in seen_inputs:
+                continue
+            seen_inputs.add(raw)
+            item, item_warnings = await self._resolve_recommend_item(
+                raw=raw, data_source=data_source,
+            )
+            resolved.append(item)
+            warnings.extend(item_warnings)
+
+        if not resolved:
+            raise ValueError("recommend_root_model requires at least one item.")
+        datasources = {r.data_source for r in resolved}
+        if len(datasources) > 1:
+            raise ValueError(
+                f"items span multiple datasources {sorted(datasources)}; "
+                f"cross-datasource queries are not supported. Pass items from "
+                f"a single datasource (optionally set data_source=...)."
+            )
+        deduped_warnings: list[str] = []
+        seen_w: set[str] = set()
+        for w in warnings:
+            if w not in seen_w:
+                seen_w.add(w)
+                deduped_warnings.append(w)
+        return resolved, deduped_warnings
+
+    async def recommend_root_model(
+        self,
+        items: list[str],
+        *,
+        data_source: str | None = None,
+        root_hint: str | None = None,
+    ) -> RootModelRecommendation:
+        """Recommend the query ``source_model`` (root) for a set of
+        ``model.column`` / ``model.metric`` items, plus each item's
+        join-qualified path from that root (DEV-1626).
+
+        A valid root reaches every mentioned owning model over the join
+        graph (LEFT = directed, INNER = symmetric via storage). Selection
+        minimizes total hops summed over distinct owning models, prefers a
+        mentioned model on ties, then the lexicographically smallest name.
+        When no single model reaches everything, returns a structured
+        ``reachable=False`` result with the Pareto frontier of partial
+        roots in ``coverage`` (never raises for a valid-but-unroutable set).
+
+        ``root_hint`` (optional) names the intended root — a bare model name
+        or ``<data_source>.<model>`` within the resolved datasource. When the
+        hint is a feasible root (reaches every item), it is honored outright,
+        overriding the min-hops selection so a caller can force a *bridge*
+        model that owns none of the items but matches the intended grain.
+        When it is infeasible, the auto-pick is used and a warning explains
+        why; whether the hint was honored is conveyed via ``message`` /
+        ``warnings`` (no structured field). A non-existent / wrong-kind /
+        cross-datasource hint raises ``ValueError``. Note: ``root_hint`` is
+        resolved *after* the datasource is determined from ``items`` /
+        ``data_source``, so it cannot influence datasource selection.
+        """
+        resolved, base_warnings = await self._recommend_resolve_items(items, data_source)
+        ds = resolved[0].data_source
+        models = await _all_models_in_datasource(self.storage, ds)
+        graph = JoinGraph.build_from_models(models)
+        all_names = sorted(m.name for m in models)
+        mentioned = {r.model for r in resolved}
+        warnings = list(base_warnings)
+
+        hint = _resolve_root_hint(root_hint, data_source=ds, all_names=all_names)
+        hint_model = hint[0] if hint is not None else None
+        hint_display = hint[1] if hint is not None else None
+
+        def reaches_all(root: str) -> bool:
+            return all(graph.shortest_path(root, m) is not None for m in mentioned)
+
+        def missing_models(root: str) -> list[str]:
+            return sorted(m for m in mentioned if graph.shortest_path(root, m) is None)
+
+        # Shared selection core (also used by the OSI importer's anchor pick).
+        auto = min_hops_root(graph, all_names, mentioned)
+        if auto is not None:
+            if hint_model is not None and reaches_all(hint_model):
+                root = hint_model
+                message = (
+                    f"All items are reachable from '{root}' (requested via root_hint)."
+                )
+            else:
+                root = auto
+                if hint_model is not None:
+                    missing = ", ".join(missing_models(hint_model))
+                    warnings.append(
+                        f"root_hint '{hint_display}' cannot reach {{{missing}}}; "
+                        f"fell back to '{auto}'."
+                    )
+                message = f"All items are reachable from '{root}'."
+            item_paths = [
+                ItemPath(input_item=r.input_item, path=_emit_recommend_path(graph, root, r))
+                for r in resolved
+            ]
+            return RootModelRecommendation(
+                data_source=ds, root_model=root, reachable=True,
+                item_paths=item_paths, warnings=warnings, message=message,
+            )
+
+        force_include = {hint_model} if hint_model is not None else None
+        coverage = _build_recommend_coverage(
+            graph, all_names, mentioned, resolved, force_include=force_include
+        )
+        if hint_model is not None:
+            missing = ", ".join(missing_models(hint_model))
+            warnings.append(
+                f"root_hint '{hint_display}' cannot reach {{{missing}}}; "
+                f"no single model reaches every item — see coverage."
+            )
+        return RootModelRecommendation(
+            data_source=ds, root_model=None, reachable=False, item_paths=[],
+            coverage=coverage, warnings=warnings,
+            message=(
+                "No single model reaches every requested item. See 'coverage' "
+                "for the best partial roots — split the request into a "
+                "multi-stage query rooted at those models."
+            ),
+        )
+
+    def recommend_root_model_sync(
+        self,
+        items: list[str],
+        *,
+        data_source: str | None = None,
+        root_hint: str | None = None,
+    ) -> RootModelRecommendation:
+        """Synchronous wrapper for :meth:`recommend_root_model`."""
+        from slayer.async_utils import run_sync
+
+        async def _run() -> RootModelRecommendation:
+            try:
+                return await self.recommend_root_model(
+                    items, data_source=data_source, root_hint=root_hint
+                )
+            finally:
+                await self.aclose()
+
+        return run_sync(_run())
+
 
     async def edit_model_remove(
         self,

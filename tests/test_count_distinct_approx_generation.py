@@ -118,3 +118,19 @@ async def test_approx_on_primary_key_column_generates() -> None:
     # Must not raise an eligibility error on the PK column.
     sql = await _generate("duckdb", query, _model())
     assert "approx_count_distinct(" in sql.lower()
+
+
+async def test_alias_heals_to_count_distinct_approx_and_emits_native() -> None:
+    """DEV-1717 gap-fill: the colon-form aliases for ``count_distinct_approx``
+    (``approx_count_distinct`` / ``countdistinctapprox`` — see
+    ``slayer/core/enums.py`` ``AGGREGATION_ALIASES``) heal to the canonical
+    name and dispatch through the same built-in generator branch, so a native
+    dialect emits its approximate-distinct function rather than raising
+    'Unknown aggregation' or 'has no formula'."""
+    for alias in ("approx_count_distinct", "countdistinctapprox"):
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula=f"customer_id:{alias}")],
+        )
+        sql = (await _generate("duckdb", query, _model())).lower()
+        assert "approx_count_distinct(" in sql, alias

@@ -1,6 +1,7 @@
 """Core enums for SLayer."""
 
 import datetime  # noqa: F401  (kept for downstream imports of TimeGranularity)
+import difflib
 from enum import Enum
 from typing import Any
 
@@ -185,6 +186,21 @@ def normalize_aggregation_name(name: str) -> str:
     lowered = name.lower()
     candidate = AGGREGATION_ALIASES.get(lowered, lowered)
     return candidate if candidate in BUILTIN_AGGREGATIONS else name
+
+
+def format_unknown_aggregation(name: str, known: "set[str] | frozenset[str]") -> str:
+    """DEV-1576: the shared 'Unknown aggregation' error message.
+
+    Used by both the ``enrich_query`` gate (``slayer/engine/enrichment.py``)
+    and the typed binding gate (``slayer/engine/binding.py``) so the wording
+    stays byte-identical: an unknown aggregation name is distinguished from a
+    known-but-disallowed one, with a close-match suggestion and the model-wide
+    known list. ``known`` = ``BUILTIN_AGGREGATIONS`` unioned with the owning
+    model's custom aggregation names.
+    """
+    suggestion = difflib.get_close_matches(word=name, possibilities=sorted(known), n=1)
+    hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
+    return f"Unknown aggregation '{name}'.{hint} Known: {sorted(known)}."
 
 
 # Built-in aggregation SQL formulas (for aggregations that use a template).

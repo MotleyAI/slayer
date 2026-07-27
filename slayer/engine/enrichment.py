@@ -8,7 +8,6 @@ Separated from query_engine.py for clarity — this is the largest single
 transformation step in the query pipeline.
 """
 
-import difflib
 import re
 from typing import Any
 from collections.abc import Mapping
@@ -21,6 +20,7 @@ from slayer.core.enums import (
     DEFAULT_AGGREGATIONS_BY_TYPE,
     DataType,
     PRIMARY_KEY_AGGREGATIONS,
+    format_unknown_aggregation,
 )
 from slayer.core.formula import (
     canonical_agg_name,
@@ -442,15 +442,10 @@ async def enrich_query(
                 a.name for a in model.aggregations
             }
             if aggregation_name not in known_aggregations:
-                suggestion = difflib.get_close_matches(
-                    word=aggregation_name,
-                    possibilities=sorted(known_aggregations),
-                    n=1,
-                )
-                hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
+                # DEV-1576 / DEV-1717: shared formatter, so this local gate and
+                # the typed binding gate (binding.py) stay byte-identical.
                 raise ValueError(
-                    f"Unknown aggregation '{aggregation_name}'.{hint} "
-                    f"Known: {sorted(known_aggregations)}."
+                    format_unknown_aggregation(aggregation_name, known_aggregations)
                 )
             # Apply aggregation eligibility gates per the v2 contract:
             # 1. Primary-key columns are always restricted to count/count_distinct

@@ -35,6 +35,7 @@ from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
 )
+from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.sqlite import rewrite_sqlite_json_extract
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 
@@ -335,7 +336,8 @@ _TWO_ARG_STAT_AGGS: frozenset[str] = frozenset({"corr", "covar_samp", "covar_pop
 # Name kept as ``_LOCAL_SLICE`` for grep continuity with 7b.8-7b.12
 # call sites and tests; the set is no longer local-only.
 _BUILTIN_BAREARG_AGGS_LOCAL_SLICE: frozenset[str] = frozenset({
-    "sum", "avg", "min", "max", "count", "count_distinct", "median",
+    "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx",
+    "median",
     "percentile", "weighted_avg",
     "corr", "covar_samp", "covar_pop",
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
@@ -400,6 +402,35 @@ def _wrap_filter(sql_str: str, filter_sql: Optional[str]) -> str:
     if not filter_sql:
         return sql_str
     return f"(CASE WHEN {filter_sql} THEN {sql_str} END)"
+
+
+def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
+    """Wrap the first arg of a 2-arg ``ROUND`` in ``CAST(... AS DECIMAL)`` (DEV-1576).
+
+    Postgres has no ``round(double precision, integer)`` overload — only
+    ``round(numeric, integer)`` — so a 2-arg round over a DOUBLE expression
+    fails without an explicit numeric cast. 1-arg round (``round(double)``)
+    is fine and left alone. Idempotent: skips when the arg is already cast to
+    a numeric/decimal type. Applied Postgres-only in ``_parse``; ported from
+    main's ``PostgresDialect.rewrite_target_ast`` as a local transform (the
+    full dialect-strategy delegation is DEV-1716's scope).
+    """
+    if not isinstance(node, exp.Round):
+        return node
+    decimals = node.args.get("decimals")
+    if decimals is None:  # 1-arg round — no overload problem.
+        return node
+    inner = node.this
+    if isinstance(inner, exp.Cast):
+        cast_to = inner.to
+        if isinstance(cast_to, exp.DataType) and cast_to.this in (
+            exp.DataType.Type.DECIMAL,
+            exp.DataType.Type.BIGDECIMAL,
+        ):
+            return node  # already numeric-cast — idempotent.
+    node.set("this", exp.cast(inner.copy(), "DECIMAL"))
+    return node
+
 
 _WINDOW_DURATION_RE = re.compile(r"(?P<num>\d+)(?P<unit>min|[ymwdhs])")
 _WINDOW_UNIT_SQL = {
@@ -666,7 +697,30 @@ class SQLGenerator:
         # Log-alias rewrite is multi-dialect; the per-base allowlist check
         # lives inside ``_rewrite_log_aliases`` so unsupported dialects
         # (oracle; tsql for log2) keep the canonical 2-arg LOG form.
-        return tree.transform(self._rewrite_log_aliases)
+        tree = tree.transform(self._rewrite_log_aliases)
+        # DEV-1576: numeric-cast the first arg of every 2-arg ROUND on Postgres
+        # (round(double, int) has no overload). Keyed to the generator's TARGET
+        # dialect (``self.dialect``), NOT the parse dialect ``d`` — formula /
+        # measure expressions parse canonically regardless of target. Applied
+        # in ``_parse`` only; the ``_parse_predicate`` (Mode-A filter) variant
+        # rides main's ``rewrite_target_ast`` and stays DEV-1716's scope.
+        if self.dialect == "postgres":
+            tree = tree.transform(_cast_round_arg_to_numeric)
+        return tree
+
+    def _finalize_scalar_call(self, expr: exp.Expression) -> exp.Expression:
+        """Apply target-dialect scalar-call AST rewrites (DEV-1576).
+
+        Scalar calls (``round``/``abs``/``coalesce``/…) in formulas are
+        assembled directly as ``exp.func(...)`` AST, never string-parsed, so
+        the ``_parse`` round-cast transform never sees them. This is the
+        AST-side equivalent: on Postgres it numeric-casts the first arg of a
+        2-arg ``ROUND`` (no ``round(double, int)`` overload). Idempotent and a
+        no-op for every other dialect / function.
+        """
+        if self.dialect == "postgres":
+            return expr.transform(_cast_round_arg_to_numeric)
+        return expr
 
     def _parse_predicate(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
         """Parse a bare WHERE/HAVING predicate expression (DEV-1378).
@@ -2553,6 +2607,18 @@ class SQLGenerator:
             # mirrors _build_median.
             if agg_name in _STAT_AGG_NAMES:
                 return self._build_stat_agg(spec), True
+            # count_distinct_approx (DEV-1595): dialect-aware approximate-
+            # distinct — native function (DuckDB/ClickHouse/BigQuery/…) or the
+            # exact COUNT(DISTINCT) fallback (Postgres/SQLite/MySQL). Built like
+            # percentile/stat-agg (via _wrap_filter + _resolve_value_sql) so a
+            # row-level filter wraps as COUNT(DISTINCT (CASE WHEN ... END)).
+            if agg_name == "count_distinct_approx":
+                col_expr = _wrap_filter(
+                    self._resolve_value_sql(spec), spec.filter_sql
+                )
+                return get_dialect(self.dialect).build_approx_count_distinct(
+                    col_expr, parse=self._parse
+                ), True
             return self._build_formula_agg(spec, agg_name), True
 
         # --- Resolve inner expression ---
@@ -4789,7 +4855,9 @@ class SQLGenerator:
                     args.append(exp.Literal.string(str(a)))
             if key.name == "like":
                 return exp.Like(this=args[0], expression=args[1]), any_agg
-            return exp.func(key.name.upper(), *args), any_agg
+            return self._finalize_scalar_call(
+                exp.func(key.name.upper(), *args)
+            ), any_agg
         if isinstance(key, LiteralKey):
             v = key.value
             if v is None:
@@ -7336,7 +7404,7 @@ class SQLGenerator:
             ]
             if key.name == "like":
                 return exp.Like(this=args[0], expression=args[1])
-            return exp.func(key.name.upper(), *args)
+            return self._finalize_scalar_call(exp.func(key.name.upper(), *args))
 
         if isinstance(key, BetweenKey):
             return exp.Between(
