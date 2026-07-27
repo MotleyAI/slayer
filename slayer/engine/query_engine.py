@@ -3,6 +3,7 @@
 Flow: SlayerQuery → _enrich() → EnrichedQuery → SQLGenerator → SQL → execute
 """
 
+import copy
 import decimal
 import logging
 import re
@@ -11,7 +12,12 @@ from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
-from pydantic import BaseModel, Field as PydanticField, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict as PydanticConfigDict,
+    Field as PydanticField,
+    model_validator,
+)
 
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
 from slayer.core.errors import AmbiguousModelError, ForcedFilterError
@@ -37,6 +43,14 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
     extract_placeholder_names,
+)
+from slayer.engine.cache import (
+    CacheConfig,
+    QueryCache,
+    RefreshError,
+    RefreshKeyValue,
+    RefreshResult,
+    _CacheEntry,
 )
 from slayer.engine.enriched import (
     CrossModelMeasure,
@@ -341,6 +355,38 @@ def _normalize_source_query_stages(
     return model.model_copy(update={"source_queries": new_stages})
 
 
+class _Prepared(BaseModel):
+    """DB-free product of ``_prepare_pipeline`` (DEV-1715).
+
+    Everything the execute / cache-hook / evict / refresh paths need after
+    resolve→enrich→plan→SQL-gen→policy but BEFORE any SQL-client construction.
+    ``sql`` is the FINAL, policy-rewritten SQL that is actually executed, so a
+    cache key computed from it (``make_key(sql, ds_fingerprint)``) always
+    matches the executed statement. ``resolved_data_source`` is
+    ``datasource.name`` — the authoritative datasource used to run the query
+    (not ``model.data_source``, which is less authoritative for inline /
+    expanded query-backed models).
+
+    The ds-key / ds-fingerprint are intentionally NOT eager fields: computing
+    them calls ``datasource.get_connection_string()``, which some dialects
+    (e.g. Snowflake) reject without credentials. A ``dry_run`` must still
+    render SQL for a credential-less datasource, so the fingerprint is computed
+    lazily via ``_ds_fingerprint`` only on the cache / execute paths.
+    """
+
+    model_config = PydanticConfigDict(arbitrary_types_allowed=True)
+
+    sql: str
+    dialect: str
+    datasource: DatasourceConfig
+    resolved_data_source: Optional[str] = None
+    attributes: Any
+    expected_columns: List[str]
+    touched: set
+    model: SlayerModel
+    slack_warnings: List[Any] = PydanticField(default_factory=list)
+
+
 class SlayerQueryEngine:
     """Central orchestrator: resolves queries via storage, generates SQL, executes.
 
@@ -354,8 +400,15 @@ class SlayerQueryEngine:
         storage: StorageBackend,
         *,
         policy: Optional[SessionPolicy] = None,
+        cache_config: Optional[CacheConfig] = None,
     ):
         self.storage = storage
+        # DEV-1587 / DEV-1715: per-engine, in-memory, opt-in query result cache.
+        # ``cache_config`` defaults to an empty ``CacheConfig()`` (caches
+        # indefinitely with no auto-staleness). The cache lives on the engine
+        # instance, so two engines with different connection settings / policy
+        # keep separate caches.
+        self._cache = QueryCache(config=cache_config or CacheConfig())
         # Cache key: (connection_string, runtime_fingerprint) — matches
         # ``engine_factory``'s cache so Snowflake datasources sharing a
         # connection_name but differing in warehouse/role/database/schema get
@@ -375,6 +428,29 @@ class SlayerQueryEngine:
         # missing entry) fails closed. Populated by
         # ``_preflight_clickhouse_correlated`` before the policy rewrite.
         self._ch_version_cache: dict[tuple[str, str], tuple[int, int] | None] = {}
+
+    # ---- query cache management (DEV-1587 / DEV-1715) ----------------------
+
+    @property
+    def cache_config(self) -> CacheConfig:
+        """The active :class:`CacheConfig` (read-only view of ``_cache``)."""
+        return self._cache.config
+
+    @cache_config.setter
+    def cache_config(self, config: CacheConfig) -> None:
+        """Reassign the cache policy. This **clears the cache** — stale entries
+        must not survive under a new TTL / refresh-key set. The existing clock
+        is preserved so an injected test clock survives the reassignment."""
+        self._cache = QueryCache(config=config, clock=self._cache._clock)
+
+    @property
+    def cache_size(self) -> int:
+        """Number of live cache entries."""
+        return self._cache.size()
+
+    def clear_cache(self) -> None:
+        """Drop every cached entry."""
+        self._cache.clear()
 
     def _apply_policy(
         self, *, sql: str, dialect: str, datasource: DatasourceConfig
@@ -618,7 +694,7 @@ class SlayerQueryEngine:
         for client in self._sql_clients.values():
             await client.aclose()
 
-    async def execute(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
+    async def execute(
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
         variables: Optional[Dict[str, Any]] = None,
@@ -626,20 +702,48 @@ class SlayerQueryEngine:
         dry_run: bool = False,
         explain: bool = False,
         data_source: Optional[str] = None,
+        cache: bool = False,
     ) -> SlayerResponse:
         runtime_kwarg = variables or {}
+        main_query, named_queries, prefer_data_source = await self._normalize_input(
+            query, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
+        )
+        return await self._execute_pipeline(
+            query=main_query,
+            named_queries=named_queries,
+            runtime_kwarg=runtime_kwarg,
+            dry_run=dry_run,
+            explain=explain,
+            prefer_data_source=prefer_data_source,
+            cache=cache,
+            original_input=query,
+            original_data_source=data_source,
+        )
 
-        # Run-by-name dispatch: ``execute("model_name", variables=...)`` runs
-        # the backing query of a query-backed model.
+    async def _normalize_input(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
+        self,
+        query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
+        *,
+        runtime_kwarg: Dict[str, Any],
+        prefer_data_source: Optional[str],
+    ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str]]":
+        """Resolve the user input union into ``(main_query, named_queries,
+        prefer_data_source)`` shared by ``execute()``, ``evict()``, and
+        ``refresh()`` re-exec (DEV-1715).
+
+        Async because the ``str`` (run-by-name) branch reads storage — which is
+        exactly what lets ``refresh()`` re-prep pick up ``source_queries``
+        edits and pin the model lookup to the entry's originally-resolved
+        datasource (``prefer_data_source``).
+        """
+        # Run-by-name dispatch: ``execute("model_name", ...)`` runs the backing
+        # query of a query-backed model.
         if isinstance(query, str):
-            return await self._execute_by_name(
+            return await self._normalize_by_name(
                 name=query,
                 runtime_kwarg=runtime_kwarg,
-                dry_run=dry_run,
-                explain=explain,
-                data_source=data_source,
+                prefer_data_source=prefer_data_source,
             )
-
 
         # Accept dicts and validate them into SlayerQuery objects
         if isinstance(query, list):
@@ -653,40 +757,39 @@ class SlayerQueryEngine:
             # last entry stays last as the entry point. Validates names,
             # duplicates, self-refs, root-as-sink, and cycles up front.
             queries = self._topologically_order_queries(queries)
-            query = queries[-1]
+            main_query = queries[-1]
             named_queries = {q.name: q for q in queries[:-1] if q.name}
         else:
             if isinstance(query, dict):
                 query = SlayerQuery.model_validate(query)
+            main_query = query
             named_queries = {}
 
         # Merge ``variables=`` kwarg into query.variables so filter
         # substitution and downstream resolution see the merged set.
         # ``runtime_kwarg`` always wins (per spec precedence).
         if runtime_kwarg:
-            merged_top = {**(query.variables or {}), **runtime_kwarg}
-            if merged_top != (query.variables or {}):
-                query = query.model_copy(update={"variables": merged_top})
+            merged_top = {**(main_query.variables or {}), **runtime_kwarg}
+            if merged_top != (main_query.variables or {}):
+                main_query = main_query.model_copy(update={"variables": merged_top})
 
-        return await self._execute_pipeline(
-            query=query,
-            named_queries=named_queries,
-            runtime_kwarg=runtime_kwarg,
-            dry_run=dry_run,
-            explain=explain,
-            prefer_data_source=data_source,
-        )
+        return main_query, named_queries, prefer_data_source
 
-    async def _execute_by_name(
+    async def _normalize_by_name(
         self,
+        *,
         name: str,
         runtime_kwarg: Dict[str, Any],
-        dry_run: bool = False,
-        explain: bool = False,
-        data_source: Optional[str] = None,
-    ) -> SlayerResponse:
-        """Run the backing query of a query-backed model by name."""
-        model = await self.storage.get_model(name, data_source=data_source)
+        prefer_data_source: Optional[str],
+    ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str]]":
+        """Normalize a run-by-name input into the shared prepare tuple.
+
+        ``prefer_data_source`` pins the ``storage.get_model`` lookup: on a
+        ``refresh()`` re-exec it is the entry's originally-resolved datasource,
+        so a datasource-priority flip after caching cannot re-read a different
+        query-backed model (Codex #3).
+        """
+        model = await self.storage.get_model(name, data_source=prefer_data_source)
         if model is None:
             raise ValueError(f"Model '{name}' not found")
         if not model.source_queries:
@@ -725,29 +828,29 @@ class SlayerQueryEngine:
         if merged != (main_query.variables or {}):
             main_query = main_query.model_copy(update={"variables": merged})
 
-        return await self._execute_pipeline(
-            query=main_query,
-            named_queries=named_queries,
-            runtime_kwarg=runtime_kwarg,
-            dry_run=dry_run,
-            explain=explain,
-            prefer_data_source=model.data_source or data_source,
-        )
+        return main_query, named_queries, model.data_source or prefer_data_source
 
-    async def _execute_pipeline(  # NOSONAR S3776 — linear pipeline (resolve→enrich→generate→execute); breaking it up obscures the order of operations
+    async def _prepare_pipeline(  # NOSONAR S3776 — linear pipeline (resolve→enrich→generate→policy); breaking it up obscures the order of operations
         self,
         query: SlayerQuery,
         named_queries: Dict[str, SlayerQuery],
         runtime_kwarg: Dict[str, Any],
         *,
-        dry_run: bool = False,
-        explain: bool = False,
         prefer_data_source: Optional[str] = None,
-    ) -> SlayerResponse:
-        """Shared pipeline used by both ``execute()`` and ``_execute_by_name()``.
+        override_datasource: Optional[DatasourceConfig] = None,
+    ) -> _Prepared:
+        """DB-free-ish prepare portion shared by execute / evict / refresh
+        (DEV-1715): resolve→enrich→normalize→plan→SQL-gen→ClickHouse-preflight→
+        policy-rewrite→response-metadata. Produces the FINAL executed SQL and
+        the datasource fingerprint but constructs **no** SQL client on the
+        common (no-policy) path — so ``evict()`` recomputes a cache key without
+        connecting. When a policy IS configured, producing the correct SQL may
+        introspect column presence / preflight ClickHouse; that is inherent to
+        the rewrite.
 
         Assumes ``query.variables`` already reflects the resolved variable
-        context for the top of the chain (kwarg merged in by the caller).
+        context for the top of the chain (kwarg merged in by ``_normalize_
+        input``).
         """
         # Pre-processing: strip redundant source model name prefixes from all references
         query = query.strip_source_model_prefix()
@@ -841,15 +944,21 @@ class SlayerQueryEngine:
         planned_list = plan_stages(queries=stages, bundle=bundle)
         root_planned = planned_list[-1]
 
-        datasource = await self._resolve_datasource(model=model)
+        # ``override_datasource`` pins the connection identity (used by
+        # refresh() re-exec): the query is re-run against the EXACT datasource
+        # the entry was cached under (its ds_key), not whatever the model's
+        # ``data_source`` name resolves to now — so a same-name repoint can't
+        # migrate the entry or store rows from a different database.
+        datasource = override_datasource or await self._resolve_datasource(model=model)
         dialect = self._dialect_for_type(datasource.type)
         sql = generate_planned_stages(
             planned_list, bundle=bundle, dialect=dialect,
         )
         # DEV-1578: forced-filter (RLS) rewrite — scope each physical table to
         # the configured tenant. Applied to the rendered SQL before dry-run /
-        # explain / execute so all three surfaces see the policy-rewritten SQL.
-        # Zero overhead (returns unchanged) when no policy is configured.
+        # explain / execute so all three surfaces (and the cache key) see the
+        # policy-rewritten SQL. Zero overhead (returns unchanged) when no
+        # policy is configured.
         await self._preflight_clickhouse_correlated(
             dialect=dialect, datasource=datasource
         )
@@ -872,50 +981,478 @@ class SlayerQueryEngine:
             original_source_model=original_source_model,
         )
 
-        # dry_run: return SQL without executing
-        if dry_run:
-            return SlayerResponse(
-                data=[], columns=expected_columns, sql=sql,
-                attributes=attributes, warnings=slack_warnings,
-            )
+        return _Prepared(
+            sql=sql,
+            dialect=dialect,
+            datasource=datasource,
+            resolved_data_source=datasource.name,
+            attributes=attributes,
+            expected_columns=list(expected_columns),
+            touched=touched,
+            model=model,
+            slack_warnings=slack_warnings,
+        )
 
-        # Execute — reuse SQL client (and its connection pool) per datasource
+    @staticmethod
+    def _ds_fingerprint(datasource: DatasourceConfig) -> str:
+        """The datasource identity fingerprint used in the cache key —
+        ``connection_string|runtime_fingerprint``. Computed lazily (only on the
+        cache / execute paths) because ``get_connection_string`` rejects some
+        credential-less dialects that a ``dry_run`` must still render."""
+        return "|".join(_sql_client_cache_key(datasource))
+
+    def _client_for(self, datasource: DatasourceConfig) -> SlayerSQLClient:
+        """Reuse (or lazily construct) the cached SQL client for a datasource.
+
+        Keyed by ``_sql_client_cache_key`` so two datasources differing only in
+        (e.g.) Snowflake warehouse get distinct clients (DEV-1551).
+        """
         ds_key = _sql_client_cache_key(datasource)
         if ds_key not in self._sql_clients:
             self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
-        client = self._sql_clients[ds_key]
+        return self._sql_clients[ds_key]
 
-        # explain: run dialect-appropriate EXPLAIN on the query
+    async def _execute_pipeline(
+        self,
+        query: SlayerQuery,
+        named_queries: Dict[str, SlayerQuery],
+        runtime_kwarg: Dict[str, Any],
+        *,
+        dry_run: bool = False,
+        explain: bool = False,
+        prefer_data_source: Optional[str] = None,
+        cache: bool = False,
+        original_input: Any = None,
+        original_data_source: Optional[str] = None,
+    ) -> SlayerResponse:
+        """Prepare (DB-free-ish) then dry-run / explain / cache-hook / execute.
+
+        The cache hook sits at the one seam between ``_prepare_pipeline`` (which
+        produces the final policy-rewritten SQL + ds fingerprint) and SQL-client
+        construction: a hit skips only the DB execute + decode; a miss scans
+        refresh-key baselines BEFORE the data query and stores a deep copy.
+        """
+        prepared = await self._prepare_pipeline(
+            query=query,
+            named_queries=named_queries,
+            runtime_kwarg=runtime_kwarg,
+            prefer_data_source=prefer_data_source,
+        )
+
+        # dry_run: return SQL without executing. NEVER cached.
+        if dry_run:
+            return SlayerResponse(
+                data=[], columns=prepared.expected_columns, sql=prepared.sql,
+                attributes=prepared.attributes, warnings=prepared.slack_warnings,
+            )
+
+        use_cache = cache and not dry_run and not explain
+        # Bind the cache instance ONCE for the whole cached path. A concurrent
+        # ``cache_config`` reassignment (the setter swaps in a fresh QueryCache)
+        # during the DB awaits below must not split the read (get) and write
+        # (put) across two caches — that would land an entry whose applicable /
+        # baselines were computed under the old refresh-key set into the new
+        # cache, defeating the "reassigning cache_config clears stale entries"
+        # contract on CacheConfig.
+        cache_obj = self._cache
+        key: Optional[str] = None
+        if use_cache:
+            key = QueryCache.make_key(prepared.sql, self._ds_fingerprint(prepared.datasource))
+            entry = await cache_obj.get(key)
+            if entry is not None:
+                # Hit: return an independent deep copy so caller mutation can't
+                # poison the cached response.
+                return entry.response.model_copy(deep=True)
+
+        # Miss (or cache=False) → a SQL client is required.
+        client = self._client_for(prepared.datasource)
+
+        # explain: run dialect-appropriate EXPLAIN on the query. NEVER cached.
         if explain:
-            explain_sql = _build_explain_sql(dialect=dialect, sql=sql)
+            explain_sql = _build_explain_sql(dialect=prepared.dialect, sql=prepared.sql)
             try:
                 rows = await client.execute(sql=explain_sql)
             except Exception as exc:
                 await self._maybe_raise_schema_drift(
-                    err=exc, model=model, touched_models=touched
+                    err=exc, model=prepared.model, touched_models=prepared.touched
                 )
                 raise
             return SlayerResponse(
-                data=rows, sql=sql, attributes=attributes,
-                warnings=slack_warnings,
+                data=rows, sql=prepared.sql, attributes=prepared.attributes,
+                warnings=prepared.slack_warnings,
             )
 
+        # On a cache miss, capture refresh-key baselines BEFORE the data query
+        # (so the cached data reflects a state >= the baseline). A write-time
+        # baseline-scan failure PROPAGATES — nothing is stored.
+        applicable: list[tuple[str, str]] = []
+        refresh_key_values: list[RefreshKeyValue] = []
+        if use_cache:
+            applicable, refresh_key_values = await self._scan_refresh_key_baselines(
+                prepared=prepared, client=client, cache=cache_obj
+            )
+
+        rows = await self._run_data_query(prepared=prepared, client=client)
+        columns = prepared.expected_columns if not rows else []  # [] triggers auto-derive
+        response = SlayerResponse(
+            data=rows, columns=columns, sql=prepared.sql,
+            attributes=prepared.attributes, warnings=prepared.slack_warnings,
+        )
+
+        if use_cache:
+            entry = self._build_cache_entry(
+                prepared=prepared,
+                response=response,
+                original_input=original_input,
+                variables=runtime_kwarg,
+                data_source=original_data_source,
+                created_at=cache_obj.now(),
+                applicable=applicable,
+                refresh_key_values=refresh_key_values,
+            )
+            await cache_obj.put(key, entry)
+        # Return the original response; the stored copy is a defensive deep copy.
+        return response
+
+    async def _run_data_query(
+        self, *, prepared: _Prepared, client: SlayerSQLClient
+    ) -> "list[dict]":
+        """Run the prepared data query with schema-drift attribution on error.
+
+        DEV-1716: applies the dialect's read-side ``decode_result_keys`` hook so
+        BigQuery / T-SQL alias-mangled result keys are reversed back to SLayer's
+        universal dotted shape (identity for every other dialect / on empty
+        rows). Shared by the execute miss path and the refresh() re-exec.
+        """
         try:
-            rows = await client.execute(sql=sql)
+            rows = await client.execute(sql=prepared.sql)
         except Exception as exc:
             await self._maybe_raise_schema_drift(
-                err=exc, model=model, touched_models=touched
+                err=exc, model=prepared.model, touched_models=prepared.touched
             )
             raise
-        # DEV-1716: dialect-driven read-side decode — BigQuery / T-SQL reverse
-        # their alias mangling here so response keys match SLayer's universal
-        # dotted shape. Identity hook for every other dialect; identity on [].
-        rows = get_dialect(dialect).decode_result_keys(rows)
-        columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
-        return SlayerResponse(
-            data=rows, columns=columns, sql=sql, attributes=attributes,
-            warnings=slack_warnings,
+        return get_dialect(prepared.dialect).decode_result_keys(rows)
+
+    async def _scan_one_table_values(
+        self,
+        *,
+        table: str,
+        exprs: "list[str]",
+        dialect: str,
+        datasource: DatasourceConfig,
+        client: SlayerSQLClient,
+    ) -> "dict[str, Any]":
+        """Run one batched refresh-key scan for a table and return
+        ``{expression: value}`` (read from the ``slayer_rk_<i>`` aliases).
+
+        The scan SQL is policy-rewritten identically to the data query so a
+        tenant-scoped query's baseline can't be masked by a global MAX/COUNT.
+        """
+        scan_sql = self._cache.build_refresh_key_sql(table, exprs, dialect)
+        scan_sql = self._apply_policy(sql=scan_sql, dialect=dialect, datasource=datasource)
+        rows = await client.execute(sql=scan_sql)
+        row0 = rows[0] if rows else {}
+        return {e: row0.get(self._cache.rk_alias(i)) for i, e in enumerate(exprs)}
+
+    async def _scan_refresh_key_baselines(
+        self, *, prepared: _Prepared, client: SlayerSQLClient, cache: QueryCache
+    ) -> "tuple[list[tuple[str, str]], list[RefreshKeyValue]]":
+        """Capture the write-time refresh-key baselines for a cache entry.
+
+        Returns ``(applicable, refresh_key_values)`` where ``applicable`` is the
+        entry's applicable ``(table, expression)`` refresh keys (order + dups
+        preserved) and ``refresh_key_values`` are the scanned baselines in the
+        same order. Scan failures propagate (write-time contract).
+        """
+        applicable = cache.applicable_keys(prepared.sql, prepared.dialect)
+        if not applicable:
+            return [], []
+        by_table = self._group_expressions_by_table(applicable)
+        scanned: dict[str, dict[str, Any]] = {}
+        for table, exprs in by_table.items():
+            scanned[table] = await self._scan_one_table_values(
+                table=table, exprs=exprs, dialect=prepared.dialect,
+                datasource=prepared.datasource, client=client,
+            )
+        values = [
+            RefreshKeyValue(table=t, expression=e, value=scanned[t][e])
+            for (t, e) in applicable
+        ]
+        return applicable, values
+
+    @staticmethod
+    def _group_expressions_by_table(
+        applicable: "list[tuple[str, str]]",
+    ) -> "dict[str, list[str]]":
+        """Collate ``(table, expression)`` pairs into ``{table: [exprs]}``,
+        preserving first-occurrence order and de-duplicating identical
+        expressions (so the ``slayer_rk_<i>`` alias order is stable)."""
+        by_table: dict[str, list[str]] = {}
+        for table, expr in applicable:
+            exprs = by_table.setdefault(table, [])
+            if expr not in exprs:
+                exprs.append(expr)
+        return by_table
+
+    def _build_cache_entry(
+        self,
+        *,
+        prepared: _Prepared,
+        response: SlayerResponse,
+        original_input: Any,
+        variables: Optional[Dict[str, Any]],
+        data_source: Optional[str],
+        created_at: float,
+        applicable: "list[tuple[str, str]]",
+        refresh_key_values: "list[RefreshKeyValue]",
+    ) -> _CacheEntry:
+        """Build a ``_CacheEntry`` holding a defensive deep copy of the response
+        and the original user input (so later caller mutation can't change a
+        cached hit or a refresh replay)."""
+        ds_key = _sql_client_cache_key(prepared.datasource)
+        return _CacheEntry(
+            response=response.model_copy(deep=True),
+            sql=prepared.sql,
+            ds_fingerprint="|".join(ds_key),
+            dialect=prepared.dialect,
+            ds_key=ds_key,
+            resolved_data_source=prepared.resolved_data_source,
+            original_input=copy.deepcopy(original_input),
+            # Deep copy (not a shallow ``dict(...)``) so nested list/dict values
+            # can't be mutated by the caller after execute and leak into a
+            # refresh() replay — matching the ``original_input`` snapshot above.
+            variables=copy.deepcopy(dict(variables)) if variables else None,
+            data_source=data_source,
+            created_at=created_at,
+            applicable=list(applicable),
+            refresh_key_values=list(refresh_key_values),
         )
+
+    async def evict(
+        self,
+        query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
+        variables: Optional[Dict[str, Any]] = None,
+        *,
+        data_source: Optional[str] = None,
+    ) -> bool:
+        """Remove one cached entry, recomputing its key DB-free (resolve→enrich
+        →SQL-gen→policy). Returns ``True`` if an entry was present. Never
+        constructs a SQL client on the no-policy path."""
+        runtime_kwarg = variables or {}
+        main_query, named_queries, prefer_ds = await self._normalize_input(
+            query, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
+        )
+        prepared = await self._prepare_pipeline(
+            query=main_query,
+            named_queries=named_queries,
+            runtime_kwarg=runtime_kwarg,
+            prefer_data_source=prefer_ds,
+        )
+        key = QueryCache.make_key(prepared.sql, self._ds_fingerprint(prepared.datasource))
+        return await self._cache.delete(key)
+
+    def evict_sync(
+        self,
+        query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
+        variables: Optional[Dict[str, Any]] = None,
+        *,
+        data_source: Optional[str] = None,
+    ) -> bool:
+        """Synchronous wrapper for :meth:`evict`."""
+        from slayer.async_utils import run_sync
+
+        async def _run() -> bool:
+            try:
+                return await self.evict(query, variables=variables, data_source=data_source)
+            finally:
+                await self.aclose()
+
+        return run_sync(_run())
+
+    async def _reexecute_entry(self, entry: _CacheEntry, now: float) -> _CacheEntry:
+        """Re-prepare a stale entry from its ORIGINAL input and re-execute it,
+        returning a fresh entry (``created_at=now`` → TTL reset).
+
+        Replays through the full ``_normalize_input`` / ``_prepare_pipeline``
+        pipeline — so model / ``source_queries`` edits and ``whole_periods_only``
+        re-snapping are picked up — but the connection identity is PINNED to the
+        entry's ``ds_key`` via ``override_datasource`` (the datasource carried by
+        the client cached at write time). So neither a datasource-priority flip
+        NOR a same-name config edit can migrate the entry or re-execute against a
+        different database; a new identity is a new cache entry via ``execute``,
+        never a refresh migration. If the write-time client is gone the re-exec
+        can't be pinned faithfully → raise, and ``refresh()`` records the
+        ``re_execute`` error and keeps the stale entry. Any other error (e.g. the
+        re-exec baseline scan hitting a dropped table) propagates the same way.
+        """
+        client = self._sql_clients.get(entry.ds_key)
+        if client is None:
+            raise RuntimeError(
+                f"no cached SQL client for datasource fingerprint {entry.ds_key!r}; "
+                "cannot pin re-execution to the entry's connection identity"
+            )
+        main_query, named_queries, prefer_ds = await self._normalize_input(
+            entry.original_input,
+            runtime_kwarg=entry.variables or {},
+            prefer_data_source=entry.resolved_data_source,
+        )
+        prepared = await self._prepare_pipeline(
+            query=main_query,
+            named_queries=named_queries,
+            runtime_kwarg=entry.variables or {},
+            prefer_data_source=prefer_ds,
+            override_datasource=client.datasource,
+        )
+        applicable, refresh_key_values = await self._scan_refresh_key_baselines(
+            prepared=prepared, client=client, cache=self._cache
+        )
+        rows = await self._run_data_query(prepared=prepared, client=client)
+        columns = prepared.expected_columns if not rows else []
+        response = SlayerResponse(
+            data=rows, columns=columns, sql=prepared.sql,
+            attributes=prepared.attributes, warnings=prepared.slack_warnings,
+        )
+        return self._build_cache_entry(
+            prepared=prepared,
+            response=response,
+            original_input=entry.original_input,
+            variables=entry.variables,
+            data_source=entry.data_source,
+            created_at=now,
+            applicable=applicable,
+            refresh_key_values=refresh_key_values,
+        )
+
+    async def refresh(self) -> RefreshResult:  # NOSONAR S3776 — Cube-style refresh: snapshot → collate scans → per-entry TTL/refresh-key decision
+        """Cube-style explicit refresh over all cached entries.
+
+        Snapshots the cache, runs one batched refresh-key scan per
+        ``(datasource-fingerprint, table)`` — through the SQL client cached at
+        write time, so each entry is scanned against the exact connection
+        identity (``ds_key``) it was cached under. Keying by fingerprint (not
+        the bare datasource name) mirrors the cache key: a same-name config
+        edit or a datasource-priority flip cannot migrate the scan to a
+        different database. Then per entry: TTL-expired ⇒ re-exec
+        (``expired_refreshed``); an applicable table whose scan failed ⇒ keep
+        ``unchanged``; any applicable refresh-key value moved ⇒ re-exec
+        (``refreshed``); else ``unchanged``. Continue-on-failure: scan /
+        re-exec errors become :class:`RefreshError` and keep the stale entry.
+        """
+        result = RefreshResult()
+        snapshot = await self._cache.snapshot()
+        if not snapshot:
+            return result
+
+        # Collate {ds_key: {table: ordered exprs}} across entries — keyed by the
+        # SQL-client fingerprint (connection_string|runtime_fingerprint), NOT
+        # the bare datasource name. An entry cached under one connection
+        # identity is thus scanned against THAT identity even if the datasource
+        # was later edited under the same name (the cache key is fingerprint-
+        # scoped too, so such entries coexist).
+        collate: dict[tuple[str, str], dict[str, list[str]]] = {}
+        for entry in snapshot.values():
+            if not entry.applicable:
+                continue
+            tables = collate.setdefault(entry.ds_key, {})
+            for table, expr in entry.applicable:
+                exprs = tables.setdefault(table, [])
+                if expr not in exprs:
+                    exprs.append(expr)
+
+        # One batched scan per (ds_key, table), continue-on-error per table.
+        # The scan runs through the client cached at write time (which carries
+        # its exact DatasourceConfig) — no name re-resolution, so a priority
+        # flip or same-name config edit can't migrate the scan.
+        scanned: dict[tuple[tuple[str, str], str], dict[str, Any]] = {}
+        failed: set[tuple[tuple[str, str], str]] = set()
+        for ds_key, tables in collate.items():
+            client = self._sql_clients.get(ds_key)
+            for table, exprs in tables.items():
+                if client is None:
+                    # The write-time client is gone (should not happen — clients
+                    # live for the engine's lifetime). Fail-soft: keep the entry
+                    # rather than re-resolve the name to a possibly-different
+                    # fingerprint and scan the wrong database.
+                    failed.add((ds_key, table))
+                    result.errors.append(RefreshError(
+                        key=table, phase="refresh_key_scan",
+                        message=f"no cached SQL client for datasource fingerprint {ds_key!r}",
+                    ))
+                    continue
+                try:
+                    datasource = client.datasource
+                    dialect = self._dialect_for_type(datasource.type)
+                    # Codex #5: warm the ClickHouse correlated-subquery version
+                    # cache before policy-applying the standalone scan SQL, so
+                    # a join-policy refresh scan matches normal execution.
+                    await self._preflight_clickhouse_correlated(
+                        dialect=dialect, datasource=datasource
+                    )
+                    scanned[(ds_key, table)] = await self._scan_one_table_values(
+                        table=table, exprs=exprs, dialect=dialect,
+                        datasource=datasource, client=client,
+                    )
+                except Exception as exc:
+                    failed.add((ds_key, table))
+                    result.errors.append(RefreshError(
+                        key=table, phase="refresh_key_scan", message=str(exc),
+                    ))
+
+        for key, entry in snapshot.items():
+            now = self._cache.now()
+            ttl = self._cache.config.ttl_seconds
+            ttl_expired = ttl is not None and (now - entry.created_at) > ttl
+            if ttl_expired:
+                bucket = result.expired_refreshed
+            else:
+                dk = entry.ds_key
+                if any((dk, t) in failed for (t, _e) in entry.applicable):
+                    result.unchanged.append(key)
+                    continue
+                moved = any(
+                    QueryCache.values_differ(
+                        scanned.get((dk, rkv.table), {}).get(rkv.expression),
+                        rkv.value,
+                    )
+                    for rkv in entry.refresh_key_values
+                )
+                if not moved:
+                    result.unchanged.append(key)
+                    continue
+                bucket = result.refreshed
+
+            # Re-exec. Bucket only after a SUCCESSFUL re-exec AND a landed
+            # commit: a re-exec failure records a re_execute error and keeps the
+            # stale entry; a commit skipped by the identity guard (the entry was
+            # concurrently evicted / cleared / superseded) must NOT be reported
+            # as refreshed, since the cache was not actually updated.
+            try:
+                new_entry = await self._reexecute_entry(entry, now)
+            except Exception as exc:
+                result.errors.append(RefreshError(
+                    key=key, phase="re_execute", message=str(exc),
+                ))
+                continue
+            new_key = QueryCache.make_key(new_entry.sql, new_entry.ds_fingerprint)
+            replaced = await self._cache.commit_replace(
+                old_key=key, expected=entry, new_key=new_key, new_entry=new_entry,
+            )
+            if replaced:
+                bucket.append(key)
+
+        return result
+
+    def refresh_sync(self) -> RefreshResult:
+        """Synchronous wrapper for :meth:`refresh`."""
+        from slayer.async_utils import run_sync
+
+        async def _run() -> RefreshResult:
+            try:
+                return await self.refresh()
+            finally:
+                await self.aclose()
+
+        return run_sync(_run())
 
     def _normalize_stage(
         self,
@@ -1309,18 +1846,23 @@ class SlayerQueryEngine:
         *,
         dry_run: bool = False,
         explain: bool = False,
+        data_source: Optional[str] = None,
+        cache: bool = False,
     ) -> SlayerResponse:
         """Synchronous wrapper for execute(). For CLI, notebooks, and scripts.
 
-        Disposes per-call async engines in ``finally`` so they don't outlive
-        their owning loop — see ``aclose`` (DEV-1656).
+        Forwards ``cache`` and ``data_source`` (the sync surface previously
+        lacked ``data_source``; DEV-1715 closes that gap). Disposes per-call
+        async engines in ``finally`` so they don't outlive their owning loop —
+        see ``aclose`` (DEV-1656).
         """
         from slayer.async_utils import run_sync
 
         async def _run_and_cleanup() -> SlayerResponse:
             try:
                 return await self.execute(
-                    query, variables=variables, dry_run=dry_run, explain=explain
+                    query, variables=variables, dry_run=dry_run,
+                    explain=explain, data_source=data_source, cache=cache,
                 )
             finally:
                 await self.aclose()

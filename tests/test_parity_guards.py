@@ -20,8 +20,6 @@ from pathlib import Path
 # guard. Keep this the single source of truth; add an entry ONLY with Egor's
 # explicit approval and a stated restoration path.
 APPROVED_GUARDS: dict[str, str] = {
-    # Deferred parity coverage — remove with its owning issue.
-    "tests/test_query_cache.py": "DEV-1715 — DEV-1587 query-cache rework over the typed CTE shapes",
     # Pre-existing legitimate environment skip (not a coverage deferral): the
     # bundled Jaffle-shop demo CLI is optional; skips when `jafgen` is absent.
     "tests/integration/test_demo_cli.py": "pre-existing env-skip (optional jafgen CLI)",
