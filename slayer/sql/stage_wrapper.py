@@ -19,6 +19,8 @@ from typing import List
 import sqlglot
 from sqlglot import exp
 
+from slayer.sql.dialects import get_dialect
+
 
 def build_flat_rename_wrapper(
     *,
@@ -50,9 +52,22 @@ def build_flat_rename_wrapper(
     prefix = f"{source_relation}."
     select = exp.Select()
     produced: List[str] = []
-    for out_name in body.named_selects:
+    raw_names = body.named_selects
+    # DEV-1716: on BigQuery / T-SQL the rendered stage SQL carries alias-mangled
+    # output names (``orders___status``); decode to the canonical dotted form for
+    # the ``source_relation.`` prefix-strip + flat-name computation, but keep
+    # referencing the ACTUAL rendered (mangled) name as the inner-column source.
+    # ``decode_result_keys`` is identity for every non-mangling dialect and a
+    # no-op on already-dotted names (multi-stage internal use), so this is safe
+    # for both the query-backed-model wrap and the internal stage-CTE wrap.
+    canonical_names = (
+        list(get_dialect(dialect).decode_result_keys([dict.fromkeys(raw_names)])[0])
+        if raw_names
+        else []
+    )
+    for out_name, canonical in zip(raw_names, canonical_names):
         remainder = (
-            out_name[len(prefix):] if out_name.startswith(prefix) else out_name
+            canonical[len(prefix):] if canonical.startswith(prefix) else canonical
         )
         flat = remainder.replace(".", "__")
         produced.append(flat)
