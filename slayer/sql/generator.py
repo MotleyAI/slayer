@@ -1121,9 +1121,9 @@ class SQLGenerator:
         for m in enriched.measures:
             if not _has_cross_model_filter(m) and not _is_windowed_measure(m):
                 base_cols.append(m.alias)
-        final_parts = [f'_base."{a}"' for a in base_cols]
+        final_parts = [f'_base.{self._quote_ident(a)}' for a in base_cols]
         for cte_name, alias, _ in measure_cte_refs:
-            final_parts.append(f'{cte_name}."{alias}"')
+            final_parts.append(f'{cte_name}.{self._quote_ident(alias)}')
 
         from_clause_str = "FROM _base"
         joined_ctes: set = set()
@@ -1137,7 +1137,7 @@ class SQLGenerator:
             effective_aliases = cte_join_aliases if cte_join_aliases is not None else join_aliases
             join_on_parts = []
             for a in effective_aliases:
-                join_on_parts.append(f'_base."{a}" = {cte_name}."{a}"')
+                join_on_parts.append(f'_base.{self._quote_ident(a)} = {cte_name}.{self._quote_ident(a)}')
             if join_on_parts:
                 from_clause_str += f"\nLEFT JOIN {cte_name} ON {' AND '.join(join_on_parts)}"
             else:
@@ -1855,7 +1855,7 @@ class SQLGenerator:
 
         # Add any remaining expressions/transforms that couldn't be layered
         for expr in pending_expressions:
-            final_parts.append(f'{expr.sql} AS "{expr.alias}"')
+            final_parts.append(f'{expr.sql} AS {self._quote_ident(expr.alias)}')
         for t in pending_transforms:
             if t.transform in _SELF_JOIN_TRANSFORMS:
                 continue  # Should not happen — self-joins are always materialized
@@ -1865,7 +1865,7 @@ class SQLGenerator:
             if t.type is not None:
                 wrapped = _wrap_cast_for_type(self._parse(window_sql), t.type)
                 window_sql = wrapped.sql(dialect=self.dialect)
-            final_parts.append(f'{window_sql} AS "{t.alias}"')
+            final_parts.append(f'{window_sql} AS {self._quote_ident(t.alias)}')
 
         outer_select = "SELECT\n    " + _SQL_COL_SEP.join(final_parts)
 
@@ -1889,7 +1889,7 @@ class SQLGenerator:
                 # Wrap qualified names in quotes for alias references
                 for col_name in dict.fromkeys(f.columns):
                     qualified = f"{model}.{col_name}"
-                    qualified_sql = qualified_sql.replace(qualified, f'"{qualified}"')
+                    qualified_sql = qualified_sql.replace(qualified, self._quote_ident(qualified))
                 conditions.append(qualified_sql)
             where_clause = _SQL_AND_JOINER.join(conditions)
             sql = f"SELECT *\nFROM (\n{sql}\n) AS _filtered\nWHERE {where_clause}"
@@ -3079,7 +3079,7 @@ class SQLGenerator:
                 carry_aliases_sorted = sorted(
                     a for aliases in aliases_by_slot_id.values() for a in aliases
                 )
-                step_parts = [f'"{a}"' for a in carry_aliases_sorted]
+                step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
                 for layer in ready_window:
                     for slot_id in layer.slot_ids:
                         slot = slots_by_id[slot_id]
@@ -3101,7 +3101,7 @@ class SQLGenerator:
                                 self._parse(window_sql), slot.type,
                             )
                             window_sql = wrapped.sql(dialect=self.dialect)
-                        step_parts.append(f'{window_sql} AS "{full_alias}"')
+                        step_parts.append(f'{window_sql} AS {self._quote_ident(full_alias)}')
                         aliases_by_slot_id.setdefault(slot_id, []).append(
                             full_alias,
                         )
@@ -3176,7 +3176,7 @@ class SQLGenerator:
             carry_aliases_sorted = sorted(
                 a for aliases in aliases_by_slot_id.values() for a in aliases
             )
-            step_parts = [f'"{a}"' for a in carry_aliases_sorted]
+            step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
             for cslot in unmaterialised:
                 alias = (
                     cslot.public_aliases[0]
@@ -3195,7 +3195,7 @@ class SQLGenerator:
                         self._parse(expr_sql), cslot.type,
                     )
                     expr_sql = wrapped.sql(dialect=self.dialect)
-                step_parts.append(f'{expr_sql} AS "{full_alias}"')
+                step_parts.append(f'{expr_sql} AS {self._quote_ident(full_alias)}')
                 aliases_by_slot_id.setdefault(cslot.id, []).append(
                     full_alias,
                 )
@@ -3217,7 +3217,7 @@ class SQLGenerator:
         )
         inner_sql = (
             "SELECT\n    "
-            + _SQL_COL_SEP.join(f'"{a}"' for a in inner_sorted)
+            + _SQL_COL_SEP.join(self._quote_ident(a) for a in inner_sorted)
             + f"\nFROM {final_cte}"
         )
 
@@ -3261,7 +3261,7 @@ class SQLGenerator:
             public_aliases_user_order.append(alias)
         outer_sql = (
             "SELECT\n    "
-            + _SQL_COL_SEP.join(f'"{a}"' for a in public_aliases_user_order)
+            + _SQL_COL_SEP.join(self._quote_ident(a) for a in public_aliases_user_order)
             + f"\nFROM (\n{chain_sql}\n) AS _outer"
         )
 
@@ -5235,7 +5235,7 @@ class SQLGenerator:
         for sid in host_combined_ids:
             aliases = aliases_by_slot_id.get(sid, [])
             for full_alias in aliases:
-                combined_parts.append(f'_base."{full_alias}"')
+                combined_parts.append(f'_base.{self._quote_ident(full_alias)}')
             if aliases:
                 combined_aliases_by_slot_id[sid] = list(aliases)
         # DEV-1503 (Codex round 2 #1) — composite slots routed to the outer
@@ -5292,7 +5292,7 @@ class SQLGenerator:
                 outer_emission_count[sid] = idx + 1
                 full_alias = f"{source_relation}.{public_alias}"
                 combined_parts.append(
-                    f'{_render_outer_composite(cslot)} AS "{full_alias}"',
+                    f'{_render_outer_composite(cslot)} AS {self._quote_ident(full_alias)}',
                 )
                 combined_aliases_by_slot_id.setdefault(sid, []).append(
                     full_alias,
@@ -5340,10 +5340,10 @@ class SQLGenerator:
             )
             for pub in public_aliases:
                 if pub == agg_col_alias:
-                    combined_parts.append(f'{cte_name}."{agg_col_alias}"')
+                    combined_parts.append(f'{cte_name}.{self._quote_ident(agg_col_alias)}')
                 else:
                     combined_parts.append(
-                        f'{cte_name}."{agg_col_alias}" AS "{pub}"',
+                        f'{cte_name}.{self._quote_ident(agg_col_alias)} AS {self._quote_ident(pub)}',
                     )
             combined_aliases_by_slot_id[plan.aggregate_slot_id] = list(
                 public_aliases,
@@ -5362,7 +5362,7 @@ class SQLGenerator:
             )
             if joinback_pairs:
                 join_parts = [
-                    f'_base."{host}" = {cte_name}."{cte_col}"'
+                    f'_base.{self._quote_ident(host)} = {cte_name}.{self._quote_ident(cte_col)}'
                     for host, cte_col in joinback_pairs
                 ]
                 from_clause_str += (
@@ -5536,7 +5536,7 @@ class SQLGenerator:
             carry_aliases_sorted = sorted(
                 a for aliases in aliases_by_slot_id.values() for a in aliases
             )
-            step_parts = [f'"{a}"' for a in carry_aliases_sorted]
+            step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
             for layer in ready:
                 for slot_id in layer.slot_ids:
                     slot = slots_by_id[slot_id]
@@ -5557,7 +5557,7 @@ class SQLGenerator:
                         window_sql = _wrap_cast_for_type(
                             self._parse(window_sql), slot.type,
                         ).sql(dialect=self.dialect)
-                    step_parts.append(f'{window_sql} AS "{full_alias}"')
+                    step_parts.append(f'{window_sql} AS {self._quote_ident(full_alias)}')
                     aliases_by_slot_id.setdefault(slot_id, []).append(full_alias)
                     available_alias_by_slot_id.setdefault(slot_id, full_alias)
             step_sql = (
@@ -5590,7 +5590,7 @@ class SQLGenerator:
             carry_aliases_sorted = sorted(
                 a for aliases in aliases_by_slot_id.values() for a in aliases
             )
-            step_parts = [f'"{a}"' for a in carry_aliases_sorted]
+            step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
             for cslot in unmaterialised:
                 alias = (
                     cslot.public_aliases[0]
@@ -5608,7 +5608,7 @@ class SQLGenerator:
                     expr_sql = _wrap_cast_for_type(
                         self._parse(expr_sql), cslot.type,
                     ).sql(dialect=self.dialect)
-                step_parts.append(f'{expr_sql} AS "{full_alias}"')
+                step_parts.append(f'{expr_sql} AS {self._quote_ident(full_alias)}')
                 aliases_by_slot_id.setdefault(cslot.id, []).append(full_alias)
                 available_alias_by_slot_id.setdefault(cslot.id, full_alias)
             step_sql = (
@@ -5624,7 +5624,7 @@ class SQLGenerator:
         )
         inner_sql = (
             "SELECT\n    "
-            + _SQL_COL_SEP.join(f'"{a}"' for a in inner_sorted)
+            + _SQL_COL_SEP.join(self._quote_ident(a) for a in inner_sorted)
             + f"\nFROM {final_cte}"
         )
         cte_clause = (
@@ -5661,7 +5661,7 @@ class SQLGenerator:
             public_aliases_user_order.append(alias)
         outer_sql = (
             "SELECT\n    "
-            + _SQL_COL_SEP.join(f'"{a}"' for a in public_aliases_user_order)
+            + _SQL_COL_SEP.join(self._quote_ident(a) for a in public_aliases_user_order)
             + f"\nFROM (\n{chain_sql}\n) AS _outer"
         )
 
@@ -6652,9 +6652,9 @@ class SQLGenerator:
             alias = cm_alias_for_plan.get(entry.slot_id)
             if alias is None:
                 return None
-            return f'"{alias}" {direction}'
+            return f'{self._quote_ident(alias)} {direction}'
         if entry.slot_id in outer_aliases:
-            return f'"{outer_aliases[entry.slot_id]}" {direction}'
+            return f'{self._quote_ident(outer_aliases[entry.slot_id])} {direction}'
         if outer_expressions and entry.slot_id in outer_expressions:
             return f'{outer_expressions[entry.slot_id]} {direction}'
         full_alias = self._full_alias_for_slot(
@@ -6663,8 +6663,8 @@ class SQLGenerator:
             alias_index={},
         )
         if entry.slot_id in bare_ids:
-            return f'"{full_alias}" {direction}'
-        return f'_base."{full_alias}" {direction}'
+            return f'{self._quote_ident(full_alias)} {direction}'
+        return f'_base.{self._quote_ident(full_alias)} {direction}'
 
     def _full_alias_for_slot(
         self,
@@ -7024,7 +7024,7 @@ class SQLGenerator:
                     f"op={key.op!r}, input_key={key.input!r}.",
                 )
             input_alias = available_alias_by_slot_id[input_sid]
-            measure = f'"{input_alias}"'
+            measure = self._quote_ident(input_alias)
 
         # Resolve time-key alias (None for rank-family without time).
         time_alias: Optional[str] = None
@@ -7036,7 +7036,7 @@ class SQLGenerator:
                     f"slot id={slot.id!r}, op={key.op!r}, "
                     f"time_key={key.time_key!r}.",
                 )
-            time_alias = f'"{available_alias_by_slot_id[tk_sid]}"'
+            time_alias = self._quote_ident(available_alias_by_slot_id[tk_sid])
 
         # Resolve partition aliases. Explicit partition_keys take
         # precedence; otherwise auto-partition by query dimension slots
@@ -7076,7 +7076,7 @@ class SQLGenerator:
                     partition_aliases.append(alias)
 
         partition_clause = (
-            _SQL_PARTITION_BY + ", ".join(f'"{a}"' for a in partition_aliases)
+            _SQL_PARTITION_BY + ", ".join(self._quote_ident(a) for a in partition_aliases)
             if partition_aliases
             else ""
         )
@@ -7403,7 +7403,7 @@ class SQLGenerator:
             direction = (
                 "ASC" if order_entry.direction == "asc" else "DESC"
             )
-            order_parts.append(f'"{alias}" {direction}')
+            order_parts.append(f'{self._quote_ident(alias)} {direction}')
         if order_parts:
             sql += "\nORDER BY " + ", ".join(order_parts)
         if planned_query.limit is not None:
@@ -7699,14 +7699,14 @@ class SQLGenerator:
         # Projected: time-trunc shifted under the base time alias.
         shifted_trunc_sql = shifted_trunc_expr.sql(dialect=self.dialect)
         shifted_select_parts.append(
-            f'{shifted_trunc_sql} AS "{time_alias}"',
+            f'{shifted_trunc_sql} AS {self._quote_ident(time_alias)}',
         )
         shifted_group_by.append(shifted_trunc_sql)
 
         # partition_keys: SELECT + GROUP BY under their base aliases.
         for _, pk_alias, pk_expr in partition_specs:
             pk_sql = pk_expr.sql(dialect=self.dialect)
-            shifted_select_parts.append(f'{pk_sql} AS "{pk_alias}"')
+            shifted_select_parts.append(f'{pk_sql} AS {self._quote_ident(pk_alias)}')
             shifted_group_by.append(pk_sql)
 
         # Aggregate: re-emit the AggregateKey using the same synth /
@@ -7733,7 +7733,7 @@ class SQLGenerator:
             agg_expr, _ = self._build_agg(synth)
             agg_expr = _wrap_cast_for_type(agg_expr, inner_slot.type)
             shifted_select_parts.append(
-                f'{agg_expr.sql(dialect=self.dialect)} AS "{input_alias}"',
+                f'{agg_expr.sql(dialect=self.dialect)} AS {self._quote_ident(input_alias)}',
             )
         else:
             # Row-level column input (not aggregated). Pass-through.
@@ -7743,7 +7743,7 @@ class SQLGenerator:
                 leaf=inner_key.leaf,
             )
             shifted_select_parts.append(
-                f'{col_expr.sql(dialect=self.dialect)} AS "{input_alias}"',
+                f'{col_expr.sql(dialect=self.dialect)} AS {self._quote_ident(input_alias)}',
             )
             shifted_group_by.append(col_expr.sql(dialect=self.dialect))
 
@@ -7787,23 +7787,23 @@ class SQLGenerator:
             a for aliases in aliases_by_slot_id.values() for a in aliases
         )
         sjoin_select_parts = [
-            f'{prev_cte}."{a}"' for a in carry_aliases_sorted
+            f'{prev_cte}.{self._quote_ident(a)}' for a in carry_aliases_sorted
         ]
         slot_full_aliases: List[str] = []
         for slot_alias in slot_aliases:
             full_slot_alias = f"{source_relation}.{slot_alias}"
             slot_full_aliases.append(full_slot_alias)
             sjoin_select_parts.append(
-                f'{shifted_cte_name}."{input_alias}" AS "{full_slot_alias}"',
+                f'{shifted_cte_name}.{self._quote_ident(input_alias)} AS {self._quote_ident(full_slot_alias)}',
             )
 
         # JOIN conditions: time equality + every partition equality.
         join_conds = [
-            f'{prev_cte}."{time_alias}" = {shifted_cte_name}."{time_alias}"',
+            f'{prev_cte}.{self._quote_ident(time_alias)} = {shifted_cte_name}.{self._quote_ident(time_alias)}',
         ]
         for _, pk_alias, _ in partition_specs:
             join_conds.append(
-                f'{prev_cte}."{pk_alias}" = {shifted_cte_name}."{pk_alias}"',
+                f'{prev_cte}.{self._quote_ident(pk_alias)} = {shifted_cte_name}.{self._quote_ident(pk_alias)}',
             )
 
         sjoin_sql = (
@@ -7896,7 +7896,7 @@ class SQLGenerator:
                 )
             input_alias = available_alias_by_slot_id[input_sid]
             predicate_sql = (
-                f'"{input_alias}" IS NOT NULL AND "{input_alias}" <> 0'
+                f'{self._quote_ident(input_alias)} IS NOT NULL AND {self._quote_ident(input_alias)} <> 0'
             )
             predicate_is_boolean = False
         elif isinstance(inner_key, ArithmeticKey):
@@ -7953,20 +7953,20 @@ class SQLGenerator:
         carry_aliases_sorted = sorted(
             a for aliases in aliases_by_slot_id.values() for a in aliases
         )
-        carry_select = ",\n  ".join(f'"{a}"' for a in carry_aliases_sorted)
+        carry_select = ",\n  ".join(self._quote_ident(a) for a in carry_aliases_sorted)
         partition_clause = (
-            _SQL_PARTITION_BY + ", ".join(f'"{a}"' for a in partition_aliases)
+            _SQL_PARTITION_BY + ", ".join(self._quote_ident(a) for a in partition_aliases)
             if partition_aliases
             else ""
         )
         over_reset = " ".join(p for p in (
             partition_clause,
-            f'ORDER BY "{time_alias}"',
+            f'ORDER BY {self._quote_ident(time_alias)}',
             "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
         ) if p)
         reset_window_sql = (
             f'SUM(CASE WHEN {pred_in_case} THEN 0 ELSE 1 END) '
-            f'OVER ({over_reset}) AS "{cp_reset_alias}"'
+            f'OVER ({over_reset}) AS {self._quote_ident(cp_reset_alias)}'
         )
         cp_reset_cte_name = f"cp_reset_{slot_alias}"
         cp_reset_sql = (
@@ -7981,11 +7981,11 @@ class SQLGenerator:
         # counted within its own reset group.
         value_partition_aliases = partition_aliases + [cp_reset_alias]
         value_partition_clause = _SQL_PARTITION_BY + ", ".join(
-            f'"{a}"' for a in value_partition_aliases
+            self._quote_ident(a) for a in value_partition_aliases
         )
         over_value = " ".join((
             value_partition_clause,
-            f'ORDER BY "{time_alias}"',
+            f'ORDER BY {self._quote_ident(time_alias)}',
             "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
         ))
         # Outer CASE WHEN guarantees rows where the predicate is false
@@ -7997,7 +7997,7 @@ class SQLGenerator:
         value_outer_case = (
             f'CASE WHEN {pred_in_case} '
             f'THEN {value_inner_window_sql} ELSE 0 END '
-            f'AS "{full_slot_alias}"'
+            f'AS {self._quote_ident(full_slot_alias)}'
         )
         cp_value_cte_name = f"cp_value_{slot_alias}"
         cp_value_sql = (

@@ -190,10 +190,4 @@ PARITY_XFAILS: dict[str, str] = {
     'tests/integration/test_integration_postgres.py::TestPostgresReservedWordModel::test_grant_measure_and_filter_executes': "DEV-1706 (Stage 2): DEV-1686 reserved-identifier quoting.",
     'tests/integration/test_integration_postgres.py::TestPostgresReservedWordModel::test_query_backed_model_with_reserved_short_executes': "DEV-1706 (Stage 2): DEV-1686 reserved-identifier quoting.",
     'tests/integration/test_integration_postgres.py::TestPostgresReservedWordModel::test_derived_column_referencing_reserved_join_executes': "DEV-1706 (Stage 2): DEV-1686 reserved-identifier quoting.",
-    'tests/integration/test_integration_mysql.py::TestMySQLQueries::test_time_shift_with_date_range': "DEV-1716: MySQL dialect emission for time_shift/date-range not yet on the typed pipeline.",
-    'tests/integration/test_integration_mysql.py::TestMySQLQueries::test_consecutive_periods_with_boolean_predicate': "DEV-1716: MySQL dialect emission for consecutive_periods not yet on the typed pipeline.",
-    'tests/integration/test_integration_mysql.py::TestMySQLQueries::test_change_with_date_range': "DEV-1716: MySQL dialect emission for change/date-range not yet on the typed pipeline.",
-    'tests/integration/test_integration_mysql.py::TestMySQLQueries::test_change_pct_with_date_range': "DEV-1716: MySQL dialect emission for change_pct/date-range not yet on the typed pipeline.",
-    'tests/integration/test_integration_mysql.py::TestMySQLQueries::test_multiple_date_range_shifts': "DEV-1716: MySQL dialect emission for multiple date-range shifts (DEV-1692) not yet on the typed pipeline.",
-    'tests/integration/test_integration_mysql.py::TestCrossModelAndMultistageMySQL::test_cross_model_measure': "DEV-1716: MySQL dialect emission for cross-model measures not yet on the typed pipeline.",
 }
