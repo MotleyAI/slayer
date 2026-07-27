@@ -13,24 +13,6 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests.parity_xfails import PARITY_XFAILS
 
 
-def _collects_full_registry(config) -> bool:
-    """True when this run collects the entire non-integration tree, so every
-    registry key (all non-integration) is expected to match a collected test.
-
-    False for ``-k`` keyword filters, path-subset runs, and *positive* ``-m``
-    selections (e.g. ``-m integration``) — those legitimately collect a subset,
-    so the stale-key check must not fire. A deselecting marker (``-m "not
-    integration ..."``) still collects every registry test, so it stays full.
-    """
-    if config.option.keyword:
-        return False
-    markexpr = (config.option.markexpr or "").strip()
-    if markexpr and not markexpr.startswith("not "):
-        return False
-    args = [a for a in config.args if a.rstrip("/") not in ("", "tests")]
-    return not args
-
-
 def pytest_collection_modifyitems(config, items):
     """DEV-1704 Stage 0: pin every recorded main-parity gap as ``xfail(strict=True)``.
 
@@ -55,8 +37,18 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.xfail(reason=reason, strict=True))
             consumed.add(item.nodeid)
 
-    stale = set(PARITY_XFAILS) - consumed
-    if stale and _collects_full_registry(config):
+    # Stale-key self-policing, scoped to the test FILES this run actually
+    # collected: a `-m "not integration"` run must not flag integration keys
+    # (their files weren't collected), and vice versa; a full run checks every
+    # key. Skipped under `-k`, which collects arbitrary within-file subsets.
+    if config.option.keyword:
+        return
+    collected_files = {it.nodeid.split("::", 1)[0] for it in items}
+    stale = {
+        k for k in PARITY_XFAILS
+        if k not in consumed and k.split("::", 1)[0] in collected_files
+    }
+    if stale:
         raise pytest.UsageError(
             f"tests/parity_xfails.py has {len(stale)} stale key(s) matching no "
             "collected test (renamed/deleted test or changed param id) — fix or "
