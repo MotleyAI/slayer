@@ -901,3 +901,40 @@ class TestReviewFollowups:
         (entry,) = engine._cache._entries.values()
         nested["ids"].append(999)  # mutate the caller's nested list post-execute
         assert entry.variables["ids"] == [1, 2, 3]  # snapshot unaffected
+
+    async def test_refresh_scans_by_fingerprint_not_name(self, tmp_path):
+        # Two DBs behind the SAME datasource name at different times → two cache
+        # entries with different SQL-client fingerprints. refresh() must scan
+        # each entry against the connection it was cached under (its ds_key),
+        # NOT re-resolve the name to the current config. Name-based scanning
+        # would scan the db_a entry against db_b (whose MAX(updated_at) differs)
+        # and spuriously report it refreshed.
+        db_a = tmp_path / "fp_a.db"
+        _seed_db(db_a)  # MAX(updated_at) = 2025-01-03
+        db_b = tmp_path / "fp_b.db"
+        _seed_orders_single(db_b, amount=999.0)  # updated_at = 2025-01-01
+
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await storage.save_datasource(
+            DatasourceConfig(name="ds", type="sqlite", database=str(db_a))
+        )
+        await storage.save_model(_orders_model("ds"))
+        engine = SlayerQueryEngine(
+            storage=storage,
+            cache_config=CacheConfig(refresh_keys=[("orders", "MAX(updated_at)")]),
+        )
+        await engine.execute(_sum_query(), cache=True)  # cached against db_a
+
+        # Repoint the SAME datasource name to db_b, cache again → second entry
+        # under a different fingerprint.
+        await storage.save_datasource(
+            DatasourceConfig(name="ds", type="sqlite", database=str(db_b))
+        )
+        await engine.execute(_sum_query(), cache=True)
+        assert engine.cache_size == 2
+
+        # Neither DB changed since its entry was cached → both must be unchanged.
+        result = await engine.refresh()
+        assert result.refreshed == []
+        assert len(result.unchanged) == 2
+        assert result.errors == []

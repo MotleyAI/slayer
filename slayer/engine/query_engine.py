@@ -1181,43 +1181,60 @@ class SlayerQueryEngine:
         """Cube-style explicit refresh over all cached entries.
 
         Snapshots the cache, runs one batched refresh-key scan per
-        ``(datasource, table)`` (pinned to each entry's originally-resolved
-        datasource, ignoring current priority), then per entry: TTL-expired ⇒
-        re-exec (``expired_refreshed``); an applicable table whose scan failed
-        ⇒ keep ``unchanged``; any applicable refresh-key value moved ⇒ re-exec
-        (``refreshed``); else ``unchanged``. Continue-on-failure: scan / re-exec
-        errors become :class:`RefreshError` and keep the stale entry.
+        ``(datasource-fingerprint, table)`` — through the SQL client cached at
+        write time, so each entry is scanned against the exact connection
+        identity (``ds_key``) it was cached under. Keying by fingerprint (not
+        the bare datasource name) mirrors the cache key: a same-name config
+        edit or a datasource-priority flip cannot migrate the scan to a
+        different database. Then per entry: TTL-expired ⇒ re-exec
+        (``expired_refreshed``); an applicable table whose scan failed ⇒ keep
+        ``unchanged``; any applicable refresh-key value moved ⇒ re-exec
+        (``refreshed``); else ``unchanged``. Continue-on-failure: scan /
+        re-exec errors become :class:`RefreshError` and keep the stale entry.
         """
         result = RefreshResult()
         snapshot = await self._cache.snapshot()
         if not snapshot:
             return result
 
-        # Collate {resolved_data_source: {table: ordered exprs}} across entries.
-        collate: dict[Optional[str], dict[str, list[str]]] = {}
+        # Collate {ds_key: {table: ordered exprs}} across entries — keyed by the
+        # SQL-client fingerprint (connection_string|runtime_fingerprint), NOT
+        # the bare datasource name. An entry cached under one connection
+        # identity is thus scanned against THAT identity even if the datasource
+        # was later edited under the same name (the cache key is fingerprint-
+        # scoped too, so such entries coexist).
+        collate: dict[tuple[str, str], dict[str, list[str]]] = {}
         for entry in snapshot.values():
             if not entry.applicable:
                 continue
-            tables = collate.setdefault(entry.resolved_data_source, {})
+            tables = collate.setdefault(entry.ds_key, {})
             for table, expr in entry.applicable:
                 exprs = tables.setdefault(table, [])
                 if expr not in exprs:
                     exprs.append(expr)
 
-        # One batched scan per (ds, table), continue-on-error per table.
-        scanned: dict[tuple[Optional[str], str], dict[str, Any]] = {}
-        failed: set[tuple[Optional[str], str]] = set()
-        for ds_name, tables in collate.items():
-            datasource = await self._resolve_scan_datasource(ds_name)
+        # One batched scan per (ds_key, table), continue-on-error per table.
+        # The scan runs through the client cached at write time (which carries
+        # its exact DatasourceConfig) — no name re-resolution, so a priority
+        # flip or same-name config edit can't migrate the scan.
+        scanned: dict[tuple[tuple[str, str], str], dict[str, Any]] = {}
+        failed: set[tuple[tuple[str, str], str]] = set()
+        for ds_key, tables in collate.items():
+            client = self._sql_clients.get(ds_key)
             for table, exprs in tables.items():
-                if datasource is None:
-                    failed.add((ds_name, table))
+                if client is None:
+                    # The write-time client is gone (should not happen — clients
+                    # live for the engine's lifetime). Fail-soft: keep the entry
+                    # rather than re-resolve the name to a possibly-different
+                    # fingerprint and scan the wrong database.
+                    failed.add((ds_key, table))
                     result.errors.append(RefreshError(
                         key=table, phase="refresh_key_scan",
-                        message=f"datasource {ds_name!r} not resolvable",
+                        message=f"no cached SQL client for datasource fingerprint {ds_key!r}",
                     ))
                     continue
                 try:
+                    datasource = client.datasource
                     dialect = self._dialect_for_type(datasource.type)
                     # Codex #5: warm the ClickHouse correlated-subquery version
                     # cache before policy-applying the standalone scan SQL, so
@@ -1225,13 +1242,12 @@ class SlayerQueryEngine:
                     await self._preflight_clickhouse_correlated(
                         dialect=dialect, datasource=datasource
                     )
-                    client = self._client_for(datasource)
-                    scanned[(ds_name, table)] = await self._scan_one_table_values(
+                    scanned[(ds_key, table)] = await self._scan_one_table_values(
                         table=table, exprs=exprs, dialect=dialect,
                         datasource=datasource, client=client,
                     )
                 except Exception as exc:
-                    failed.add((ds_name, table))
+                    failed.add((ds_key, table))
                     result.errors.append(RefreshError(
                         key=table, phase="refresh_key_scan", message=str(exc),
                     ))
@@ -1243,13 +1259,13 @@ class SlayerQueryEngine:
             if ttl_expired:
                 bucket = result.expired_refreshed
             else:
-                ds = entry.resolved_data_source
-                if any((ds, t) in failed for (t, _e) in entry.applicable):
+                dk = entry.ds_key
+                if any((dk, t) in failed for (t, _e) in entry.applicable):
                     result.unchanged.append(key)
                     continue
                 moved = any(
                     QueryCache.values_differ(
-                        scanned.get((ds, rkv.table), {}).get(rkv.expression),
+                        scanned.get((dk, rkv.table), {}).get(rkv.expression),
                         rkv.value,
                     )
                     for rkv in entry.refresh_key_values
@@ -1279,22 +1295,6 @@ class SlayerQueryEngine:
                 bucket.append(key)
 
         return result
-
-    async def _resolve_scan_datasource(
-        self, ds_name: Optional[str]
-    ) -> Optional[DatasourceConfig]:
-        """Resolve a datasource by name for a refresh-key scan, pinned to the
-        entry's originally-resolved datasource. Returns ``None`` (fail-soft, the
-        scan is recorded as failed) when the name is missing or unresolvable."""
-        if not ds_name:
-            return None
-        try:
-            return await self.storage.get_datasource(ds_name)
-        except Exception as exc:  # noqa: BLE001 — fail-soft; caller records a RefreshError
-            logger.debug(
-                "refresh: datasource %r lookup failed: %s", ds_name, exc,
-            )
-            return None
 
     def refresh_sync(self) -> RefreshResult:
         """Synchronous wrapper for :meth:`refresh`."""
