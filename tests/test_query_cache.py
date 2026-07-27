@@ -862,3 +862,42 @@ class TestDatasourceResolution:
         assert len(entries) == 1
         assert entries[0].resolved_data_source == "db_a"  # not migrated to db_b
         assert entries[0].response.data[0]["orders.amount_sum"] == pytest.approx(350.0)
+
+
+class TestReviewFollowups:
+    """Regressions pinned by the PR #254 review (Codex + CodeRabbit)."""
+
+    async def test_concurrent_clear_not_reported_as_refreshed(self, tmp_path):
+        # A re-exec whose identity-guarded commit is skipped (the entry was
+        # concurrently cleared during refresh's awaits) must NOT be reported in
+        # refreshed / expired_refreshed — the cache was not actually updated.
+        clk = FakeClock()
+        engine = await _build_engine(tmp_path)
+        engine._cache = QueryCache(config=CacheConfig(ttl_seconds=100), clock=clk)
+        q = _sum_query()
+        await engine.execute(q, cache=True)
+
+        orig_reexec = engine._reexecute_entry
+
+        async def clearing_reexec(entry, now):
+            out = await orig_reexec(entry, now)
+            engine.clear_cache()  # a concurrent clear during refresh's awaits
+            return out
+
+        engine._reexecute_entry = clearing_reexec
+
+        clk.advance(200)  # TTL expired → re-exec path
+        result = await engine.refresh()
+        assert engine.cache_size == 0
+        assert result.expired_refreshed == []  # commit skipped → not reported
+        assert result.refreshed == []
+
+    async def test_variables_snapshot_is_deep_copied(self, tmp_path):
+        # The cached entry deep-copies variables (not a shallow dict), so a
+        # post-execute mutation of a nested value can't leak into the snapshot.
+        engine = await _build_engine(tmp_path)
+        nested = {"ids": [1, 2, 3]}
+        await engine.execute(_sum_query(), variables=nested, cache=True)
+        (entry,) = engine._cache._entries.values()
+        nested["ids"].append(999)  # mutate the caller's nested list post-execute
+        assert entry.variables["ids"] == [1, 2, 3]  # snapshot unaffected

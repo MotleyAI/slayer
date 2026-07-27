@@ -273,7 +273,7 @@ class _Prepared(BaseModel):
     sql: str
     dialect: str
     datasource: DatasourceConfig
-    resolved_data_source: Optional[str]
+    resolved_data_source: Optional[str] = None
     attributes: Any
     expected_columns: List[str]
     touched: set
@@ -935,10 +935,18 @@ class SlayerQueryEngine:
             )
 
         use_cache = cache and not dry_run and not explain
+        # Bind the cache instance ONCE for the whole cached path. A concurrent
+        # ``cache_config`` reassignment (the setter swaps in a fresh QueryCache)
+        # during the DB awaits below must not split the read (get) and write
+        # (put) across two caches — that would land an entry whose applicable /
+        # baselines were computed under the old refresh-key set into the new
+        # cache, defeating the "reassigning cache_config clears stale entries"
+        # contract on CacheConfig.
+        cache_obj = self._cache
         key: Optional[str] = None
         if use_cache:
             key = QueryCache.make_key(prepared.sql, self._ds_fingerprint(prepared.datasource))
-            entry = await self._cache.get(key)
+            entry = await cache_obj.get(key)
             if entry is not None:
                 # Hit: return an independent deep copy so caller mutation can't
                 # poison the cached response.
@@ -969,7 +977,7 @@ class SlayerQueryEngine:
         refresh_key_values: list[RefreshKeyValue] = []
         if use_cache:
             applicable, refresh_key_values = await self._scan_refresh_key_baselines(
-                prepared=prepared, client=client
+                prepared=prepared, client=client, cache=cache_obj
             )
 
         rows = await self._run_data_query(prepared=prepared, client=client)
@@ -986,11 +994,11 @@ class SlayerQueryEngine:
                 original_input=original_input,
                 variables=runtime_kwarg,
                 data_source=original_data_source,
-                created_at=self._cache.now(),
+                created_at=cache_obj.now(),
                 applicable=applicable,
                 refresh_key_values=refresh_key_values,
             )
-            await self._cache.put(key, entry)
+            await cache_obj.put(key, entry)
         # Return the original response; the stored copy is a defensive deep copy.
         return response
 
@@ -1028,7 +1036,7 @@ class SlayerQueryEngine:
         return {e: row0.get(self._cache.rk_alias(i)) for i, e in enumerate(exprs)}
 
     async def _scan_refresh_key_baselines(
-        self, *, prepared: _Prepared, client: SlayerSQLClient
+        self, *, prepared: _Prepared, client: SlayerSQLClient, cache: QueryCache
     ) -> "tuple[list[tuple[str, str]], list[RefreshKeyValue]]":
         """Capture the write-time refresh-key baselines for a cache entry.
 
@@ -1037,7 +1045,7 @@ class SlayerQueryEngine:
         preserved) and ``refresh_key_values`` are the scanned baselines in the
         same order. Scan failures propagate (write-time contract).
         """
-        applicable = self._cache.applicable_keys(prepared.sql, prepared.dialect)
+        applicable = cache.applicable_keys(prepared.sql, prepared.dialect)
         if not applicable:
             return [], []
         by_table = self._group_expressions_by_table(applicable)
@@ -1091,7 +1099,10 @@ class SlayerQueryEngine:
             ds_key=ds_key,
             resolved_data_source=prepared.resolved_data_source,
             original_input=copy.deepcopy(original_input),
-            variables=dict(variables) if variables else None,
+            # Deep copy (not a shallow ``dict(...)``) so nested list/dict values
+            # can't be mutated by the caller after execute and leak into a
+            # refresh() replay — matching the ``original_input`` snapshot above.
+            variables=copy.deepcopy(dict(variables)) if variables else None,
             data_source=data_source,
             created_at=created_at,
             applicable=list(applicable),
@@ -1163,7 +1174,7 @@ class SlayerQueryEngine:
         )
         client = self._client_for(prepared.datasource)
         applicable, refresh_key_values = await self._scan_refresh_key_baselines(
-            prepared=prepared, client=client
+            prepared=prepared, client=client, cache=self._cache
         )
         rows = await self._run_data_query(prepared=prepared, client=client)
         columns = prepared.expected_columns if not rows else []
@@ -1264,8 +1275,11 @@ class SlayerQueryEngine:
                     continue
                 bucket = result.refreshed
 
-            # Re-exec. Bucket only after a SUCCESSFUL re-exec (Codex #1); a
-            # failure records a re_execute error and keeps the stale entry.
+            # Re-exec. Bucket only after a SUCCESSFUL re-exec AND a landed
+            # commit: a re-exec failure records a re_execute error and keeps the
+            # stale entry; a commit skipped by the identity guard (the entry was
+            # concurrently evicted / cleared / superseded) must NOT be reported
+            # as refreshed, since the cache was not actually updated.
             try:
                 new_entry = await self._reexecute_entry(entry, now)
             except Exception as exc:
@@ -1274,10 +1288,11 @@ class SlayerQueryEngine:
                 ))
                 continue
             new_key = QueryCache.make_key(new_entry.sql, new_entry.ds_fingerprint)
-            await self._cache.commit_replace(
+            replaced = await self._cache.commit_replace(
                 old_key=key, expected=entry, new_key=new_key, new_entry=new_entry,
             )
-            bucket.append(key)
+            if replaced:
+                bucket.append(key)
 
         return result
 
@@ -1291,7 +1306,10 @@ class SlayerQueryEngine:
             return None
         try:
             return await self.storage.get_datasource(ds_name)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 — fail-soft; caller records a RefreshError
+            logger.debug(
+                "refresh: datasource %r lookup failed: %s", ds_name, exc,
+            )
             return None
 
     def refresh_sync(self) -> RefreshResult:
