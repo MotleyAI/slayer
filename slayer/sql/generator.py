@@ -14,6 +14,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import (
+    BUILTIN_AGGREGATIONS,
     BUILTIN_AGGREGATION_FORMULAS,
     BUILTIN_AGGREGATION_REQUIRED_PARAMS,
     DataType,
@@ -334,14 +335,13 @@ _TWO_ARG_STAT_AGGS: frozenset[str] = frozenset({"corr", "covar_samp", "covar_pop
 #
 # Name kept as ``_LOCAL_SLICE`` for grep continuity with 7b.8-7b.12
 # call sites and tests; the set is no longer local-only.
-_BUILTIN_BAREARG_AGGS_LOCAL_SLICE: frozenset[str] = frozenset({
-    "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx",
-    "median",
-    "percentile", "weighted_avg",
-    "corr", "covar_samp", "covar_pop",
-    "stddev_samp", "stddev_pop", "var_samp", "var_pop",
-    "first", "last",
-})
+#
+# DEV-1717: bound to the canonical ``BUILTIN_AGGREGATIONS`` enum rather than a
+# hand-maintained duplicate. The two allowlists must stay byte-identical — a
+# new built-in aggregation added to the enum is dispatched here automatically,
+# so they can never silently desync (a lockstep-edit hazard CodeRabbit flagged
+# when ``count_distinct_approx`` had to be added to both).
+_BUILTIN_BAREARG_AGGS_LOCAL_SLICE: frozenset[str] = BUILTIN_AGGREGATIONS
 
 # DEV-1337: dialects with native single-arg `log10(x)` / `log2(x)`. sqlglot
 # normalises both into a generic ``Log(this=Literal(base), expression=arg)``
@@ -2578,7 +2578,7 @@ class SQLGenerator:
                     self._resolve_value_sql(spec), spec.filter_sql
                 )
                 return self._dialect.build_approx_count_distinct(
-                    col_expr, parse=self._parse
+                    col_sql=col_expr, parse=self._parse
                 ), True
             return self._build_formula_agg(spec, agg_name), True
 
@@ -9493,6 +9493,15 @@ class SQLGenerator:
                     ))
             if key.name == "like":
                 return exp.Like(this=args[0], expression=args[1])
+            # DEV-1576: a 2-arg ROUND needs the Postgres numeric cast, so it
+            # must be a TYPED node (exp.Round) routed through the target-dialect
+            # rewrite. Only ROUND is retyped: the string-hygiene functions
+            # (substr / concat / lower / ...) must emit literally as written
+            # (DEV-1484), which exp.func would break by transpiling them per
+            # dialect — so they stay as Anonymous passthrough.
+            typed = exp.func(key.name.upper(), *args)
+            if isinstance(typed, exp.Round):
+                return self._finalize_scalar_call(typed)
             return exp.Anonymous(this=key.name.upper(), expressions=args)
         if isinstance(key, BetweenKey):
             col_expr = self._render_value_key_for_filter(
@@ -9671,6 +9680,15 @@ class SQLGenerator:
                     ))
             if key.name == "like":
                 return exp.Like(this=args[0], expression=args[1])
+            # DEV-1576: a 2-arg ROUND needs the Postgres numeric cast, so it
+            # must be a TYPED node (exp.Round) routed through the target-dialect
+            # rewrite. Only ROUND is retyped: the string-hygiene functions
+            # (substr / concat / lower / ...) must emit literally as written
+            # (DEV-1484), which exp.func would break by transpiling them per
+            # dialect — so they stay as Anonymous passthrough.
+            typed = exp.func(key.name.upper(), *args)
+            if isinstance(typed, exp.Round):
+                return self._finalize_scalar_call(typed)
             return exp.Anonymous(this=key.name.upper(), expressions=args)
         if isinstance(key, BetweenKey):
             col_expr = self._render_filter_for_outer_wrapper(

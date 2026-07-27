@@ -897,6 +897,33 @@ def _resolve_column_filter_key(
     return SqlExprKey(canonical_sql=col.filter, referenced_join_paths=paths)
 
 
+def _resolve_gate_owner(
+    source, bundle: ResolvedSourceBundle,
+) -> "Optional[tuple[SlayerModel, str]]":
+    """Resolve the ``(owning_model, leaf)`` an aggregation gate applies to.
+
+    Returns ``None`` when the target can't be confirmed — a ``StarKey``
+    (``*:count`` has no column), a source with no leaf, no host model, or an
+    unresolved join hop — so the caller best-effort skips the gate (the
+    compile-time path validator catches truly broken refs).
+    """
+    if isinstance(source, StarKey):
+        return None
+    leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
+    if leaf is None:
+        return None
+    host = bundle.source_model
+    if host is None:
+        return None
+    current: SlayerModel = host
+    for hop in tuple(getattr(source, "path", ())):
+        nxt = bundle.get_referenced_model(hop)
+        if nxt is None:
+            return None
+        current = nxt
+    return current, leaf
+
+
 def _validate_agg_eligibility(
     *, source, agg: str, bundle: ResolvedSourceBundle,
 ) -> str:
@@ -931,21 +958,10 @@ def _validate_agg_eligibility(
     target) the gate is skipped — the compile-time path validator would
     have raised earlier on a truly broken ref.
     """
-    if isinstance(source, StarKey):
+    owner = _resolve_gate_owner(source, bundle)
+    if owner is None:
         return normalize_aggregation_name(agg)
-    path = tuple(getattr(source, "path", ()))
-    leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
-    if leaf is None:
-        return normalize_aggregation_name(agg)
-    host = bundle.source_model
-    if host is None:
-        return normalize_aggregation_name(agg)
-    current: SlayerModel = host
-    for hop in path:
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None:
-            return normalize_aggregation_name(agg)
-        current = nxt
+    current, leaf = owner
     # DEV-1576 alias healing — custom aggregation named like an alias wins.
     custom_names = {a.name for a in (current.aggregations or [])}
     effective = agg if agg in custom_names else normalize_aggregation_name(agg)

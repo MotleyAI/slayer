@@ -1426,7 +1426,7 @@ class SlayerQueryEngine:
         return item, warnings
 
     async def _recommend_resolve_items(
-        self, items: list[str], data_source: str | None
+        self, *, items: list[str], data_source: str | None
     ) -> "tuple[list[_ResolvedItem], list[str]]":
         """Resolve every input item, then enforce single-datasource + dedup.
 
@@ -1494,7 +1494,9 @@ class SlayerQueryEngine:
         resolved *after* the datasource is determined from ``items`` /
         ``data_source``, so it cannot influence datasource selection.
         """
-        resolved, base_warnings = await self._recommend_resolve_items(items, data_source)
+        resolved, base_warnings = await self._recommend_resolve_items(
+            items=items, data_source=data_source
+        )
         ds = resolved[0].data_source
         models = await _all_models_in_datasource(self.storage, ds)
         graph = JoinGraph.build_from_models(models)
