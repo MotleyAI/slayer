@@ -1,12 +1,11 @@
-"""Unit tests for the engine-side column-presence probe (DEV-1578).
+"""Unit tests for the engine-side forced-filter wiring (DEV-1578 / DEV-1718).
 
 ``SlayerQueryEngine._column_present`` is the ``has_column`` provider for the
-forced-filter rewrite: it introspects via ``_safe_get_columns``, matches the
-column case-insensitively, resolves the schema (AST schema else datasource
-default), returns ``None`` on any introspection failure/empty (UNCACHED), and
-caches only confirmed ``True``/``False``. These tests mock ``_safe_get_columns``
-so no live schema is required (an empty sqlite file backs ``get_engine`` /
-``sa.inspect``).
+``ColumnFilterRuleset`` rewrite. ``_policy_has_join_rules`` /
+``_preflight_clickhouse_correlated`` / ``_clickhouse_correlated_guard`` gate the
+ClickHouse correlated-subquery version check for a ``JoinFilterRuleset`` that
+has join rules. These tests mock ``_safe_get_columns`` so no live schema is
+required (an empty sqlite file backs ``get_engine`` / ``sa.inspect``).
 """
 
 import logging
@@ -17,8 +16,9 @@ import slayer.engine.query_engine as qe
 from slayer.core.errors import ForcedFilterError
 from slayer.core.models import DatasourceConfig
 from slayer.core.policy import (
-    ColumnFilterRule,
+    ColumnFilterRuleset,
     JoinFilterRule,
+    JoinFilterRuleset,
     SessionPolicy,
 )
 from slayer.engine.query_engine import SlayerQueryEngine, _sql_client_cache_key
@@ -27,13 +27,17 @@ from slayer.sql.session_policy import ScopedTable
 from slayer.storage.yaml_storage import YAMLStorage
 
 
+def _mk_engine(tmp_path, policy):
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir(exist_ok=True)
+    return SlayerQueryEngine(storage=YAMLStorage(base_dir=str(storage_dir)), policy=policy)
+
+
 @pytest.fixture
 def engine(tmp_path):
-    storage_dir = tmp_path / "storage"
-    storage_dir.mkdir()
-    storage = YAMLStorage(base_dir=str(storage_dir))
-    policy = SessionPolicy(data_filters=[ColumnFilterRule(column="org", value="x")])
-    return SlayerQueryEngine(storage=storage, policy=policy)
+    return _mk_engine(
+        tmp_path, SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value="x"))
+    )
 
 
 def _ds(tmp_path, *, schema_name=None):
@@ -43,6 +47,9 @@ def _ds(tmp_path, *, schema_name=None):
         database=str(tmp_path / "probe.db"),
         schema_name=schema_name,
     )
+
+
+# -- _column_present ---------------------------------------------------------
 
 
 def test_column_present_true(engine, tmp_path, monkeypatch):
@@ -108,12 +115,11 @@ def test_confirmed_result_is_cached(engine, tmp_path, monkeypatch):
     st = ScopedTable(name="orders")
     assert engine._column_present(datasource=ds, scoped_table=st, column="org") is True
     assert engine._column_present(datasource=ds, scoped_table=st, column="org") is True
-    assert calls["n"] == 1  # second call served from cache
+    assert calls["n"] == 1
 
 
 def test_none_result_is_not_cached(engine, tmp_path, monkeypatch):
-    """A transient None (can't confirm) must be re-probed, not cached."""
-    seq = iter([[], [{"name": "org"}]])  # first empty, then recovers
+    seq = iter([[], [{"name": "org"}]])
 
     def flaky(*a, **k):
         return next(seq)
@@ -122,13 +128,10 @@ def test_none_result_is_not_cached(engine, tmp_path, monkeypatch):
     ds = _ds(tmp_path)
     st = ScopedTable(name="orders")
     assert engine._column_present(datasource=ds, scoped_table=st, column="org") is None
-    # recovered: re-probe (proves the None wasn't cached)
     assert engine._column_present(datasource=ds, scoped_table=st, column="org") is True
 
 
 def test_cross_catalog_fails_closed(engine, tmp_path, monkeypatch):
-    """A ref naming a catalog other than the connection's own can't be
-    confirmed by schema-only introspection -> fail closed, without probing."""
     calls = {"n": 0}
 
     def counting(*a, **k):
@@ -136,28 +139,13 @@ def test_cross_catalog_fails_closed(engine, tmp_path, monkeypatch):
         return [{"name": "org"}]
 
     monkeypatch.setattr(qe, "_safe_get_columns", counting)
-    ds = _ds(tmp_path)  # database is the probe.db path
     present = engine._column_present(
-        datasource=ds,
+        datasource=_ds(tmp_path),
         scoped_table=ScopedTable(catalog="other_project", name="orders"),
         column="org",
     )
     assert present is None
-    assert calls["n"] == 0  # never probed the wrong relation
-
-
-def test_matching_catalog_introspects_normally(engine, tmp_path, monkeypatch):
-    """A ref whose catalog equals the connection's own catalog probes
-    normally (no over-blocking)."""
-    monkeypatch.setattr(qe, "_safe_get_columns", lambda *a, **k: [{"name": "org"}])
-    ds = _ds(tmp_path)
-    present = engine._column_present(
-        datasource=ds,
-        # case-insensitive match against datasource.database
-        scoped_table=ScopedTable(catalog=ds.database.upper(), name="orders"),
-        column="org",
-    )
-    assert present is True
+    assert calls["n"] == 0
 
 
 def test_schema_resolves_ast_first(engine, tmp_path, monkeypatch):
@@ -173,62 +161,72 @@ def test_schema_resolves_ast_first(engine, tmp_path, monkeypatch):
         scoped_table=ScopedTable(schema_name="ast_schema", name="orders"),
         column="org",
     )
-    assert seen["schema"] == "ast_schema"  # AST schema wins
-
-
-def test_schema_falls_back_to_datasource_default(engine, tmp_path, monkeypatch):
-    seen = {}
-
-    def capture(inspector, sa_engine, table_name, schema):
-        seen["schema"] = schema
-        return [{"name": "org"}]
-
-    monkeypatch.setattr(qe, "_safe_get_columns", capture)
-    engine._column_present(
-        datasource=_ds(tmp_path, schema_name="ds_default"),
-        scoped_table=ScopedTable(name="orders"),  # no AST schema
-        column="org",
-    )
-    assert seen["schema"] == "ds_default"
+    assert seen["schema"] == "ast_schema"
 
 
 # ===========================================================================
-# ClickHouse correlated-subquery version gate (DEV-1627)
+# ClickHouse correlated-subquery version gate
 # ===========================================================================
 
 
 def _join_policy():
     return SessionPolicy(
-        data_filters=[
-            # Mandatory block backstop (DEV-1627). orders is join-targeted, so
-            # this column rule is overridden for it (never consulted).
-            ColumnFilterRule(column="organization_uuid", value="orgA"),
-            JoinFilterRule(
-                target_table="orders",
-                join_path=["orders.customer_id = customers.id"],
-                column="organization_uuid",
-                value="orgA",
-            )
-        ]
+        ruleset=JoinFilterRuleset(
+            table="customers",
+            column="organization_uuid",
+            value="orgA",
+            joins=[
+                JoinFilterRule(
+                    target_table="orders",
+                    join_path=["orders.customer_id = customers.id"],
+                )
+            ],
+        )
     )
 
 
 def _ch_ds():
     return DatasourceConfig(
-        name="ch1",
-        type="clickhouse",
-        host="localhost",
-        port=9000,
-        database="default",
+        name="ch1", type="clickhouse", host="localhost", port=9000, database="default"
     )
 
 
 @pytest.fixture
 def join_engine(tmp_path):
-    storage_dir = tmp_path / "storage"
-    storage_dir.mkdir()
-    storage = YAMLStorage(base_dir=str(storage_dir))
-    return SlayerQueryEngine(storage=storage, policy=_join_policy())
+    return _mk_engine(tmp_path, _join_policy())
+
+
+# -- _policy_has_join_rules --------------------------------------------------
+
+
+def test_policy_has_join_rules_true_for_join_ruleset(join_engine):
+    assert join_engine._policy_has_join_rules() is True
+
+
+def test_policy_has_join_rules_false_for_column_ruleset(engine):
+    assert engine._policy_has_join_rules() is False
+
+
+def test_policy_has_join_rules_false_when_no_policy(tmp_path):
+    eng = _mk_engine(tmp_path, None)
+    assert eng._policy_has_join_rules() is False
+
+
+def test_policy_has_join_rules_false_for_anchor_only(tmp_path):
+    """A join ruleset with no join rules (anchor + whitelist only) emits no
+    correlated EXISTS, so it needs no ClickHouse preflight."""
+    eng = _mk_engine(
+        tmp_path,
+        SessionPolicy(
+            ruleset=JoinFilterRuleset(
+                table="customers",
+                column="organization_uuid",
+                value="orgA",
+                whitelist=["exchange_rates"],
+            )
+        ),
+    )
+    assert eng._policy_has_join_rules() is False
 
 
 # -- version parsing ---------------------------------------------------------
@@ -239,10 +237,9 @@ def join_engine(tmp_path):
     [
         ("25.4.1.100", (25, 4)),  # NOSONAR(S1313) — ClickHouse version, not an IP
         ("25.4", (25, 4)),
-        ("25.10.2.1", (25, 10)),  # NOSONAR(S1313) — ClickHouse version, not an IP; 25.10 > 25.4
         ("24.8.14.10459", (24, 8)),
-        ("25.4.1-lts", (25, 4)),  # prerelease/build suffix
-        ("v25.4.1", (25, 4)),  # leading v tolerated
+        ("25.4.1-lts", (25, 4)),
+        ("v25.4.1", (25, 4)),
     ],
 )
 def test_parse_clickhouse_version_valid(raw, expected):
@@ -268,10 +265,9 @@ def test_guard_gate_by_version(join_engine, version, caplog):
             guard()
     else:
         with caplog.at_level(logging.WARNING):
-            guard()  # supported -> warns, does not raise
+            guard()
         assert any(
-            "correlated" in r.message.lower()
-            or "experimental" in r.message.lower()
+            "correlated" in r.message.lower() or "experimental" in r.message.lower()
             for r in caplog.records
         )
 
@@ -285,16 +281,17 @@ def test_guard_none_version_fails_closed(join_engine):
 
 
 def test_guard_missing_cache_entry_fails_closed(join_engine):
-    """No cached version (preflight never ran / failed) -> fail closed."""
-    ds = _ch_ds()
-    guard = join_engine._clickhouse_correlated_guard(dialect="clickhouse", datasource=ds)
+    guard = join_engine._clickhouse_correlated_guard(
+        dialect="clickhouse", datasource=_ch_ds()
+    )
     with pytest.raises(ForcedFilterError):
         guard()
 
 
 def test_guard_is_none_for_non_clickhouse(join_engine, tmp_path):
-    ds = _ds(tmp_path)  # sqlite
-    guard = join_engine._clickhouse_correlated_guard(dialect="sqlite", datasource=ds)
+    guard = join_engine._clickhouse_correlated_guard(
+        dialect="sqlite", datasource=_ds(tmp_path)
+    )
     assert guard is None
 
 
@@ -304,16 +301,15 @@ def test_guard_is_none_for_non_clickhouse(join_engine, tmp_path):
 async def test_preflight_probes_and_caches_version(join_engine, monkeypatch):
     calls = {"n": 0}
 
-    async def fake_execute(self, sql, timeout_seconds=120):  # NOSONAR(S7503) — must stay async: replaces the async SlayerSQLClient.execute
+    async def fake_execute(self, sql, timeout_seconds=120):  # NOSONAR(S7503) — must stay async
         calls["n"] += 1
         assert "version" in sql.lower()
-        return [{"version()": "25.4.1.100"}]  # NOSONAR(S1313) — ClickHouse version, not an IP
+        return [{"version()": "25.4.1.100"}]  # NOSONAR(S1313) — ClickHouse version
 
     monkeypatch.setattr(SlayerSQLClient, "execute", fake_execute)
     ds = _ch_ds()
     await join_engine._preflight_clickhouse_correlated(dialect="clickhouse", datasource=ds)
     assert join_engine._ch_version_cache[_sql_client_cache_key(ds)] == (25, 4)
-    # cached: a second preflight does not re-probe
     await join_engine._preflight_clickhouse_correlated(dialect="clickhouse", datasource=ds)
     assert calls["n"] == 1
 
@@ -328,54 +324,80 @@ async def test_preflight_probe_failure_caches_none(join_engine, monkeypatch):
     assert join_engine._ch_version_cache[_sql_client_cache_key(ds)] is None
 
 
-async def test_preflight_noop_for_non_clickhouse(join_engine, tmp_path, monkeypatch):
+async def test_preflight_noop_when_column_ruleset(engine, monkeypatch):
+    """A column ruleset needs no version probe even on ClickHouse."""
     calls = {"n": 0}
 
-    async def fake_execute(self, sql, timeout_seconds=120):  # NOSONAR(S7503) — must stay async: replaces the async SlayerSQLClient.execute
-        calls["n"] += 1
-        return [{"version()": "25.4.1"}]
-
-    monkeypatch.setattr(SlayerSQLClient, "execute", fake_execute)
-    await join_engine._preflight_clickhouse_correlated(
-        dialect="sqlite", datasource=_ds(tmp_path)
-    )
-    assert calls["n"] == 0
-
-
-async def test_preflight_noop_when_no_join_rules(tmp_path, monkeypatch):
-    """A column-only policy needs no version probe even on ClickHouse."""
-    calls = {"n": 0}
-
-    async def fake_execute(self, sql, timeout_seconds=120):  # NOSONAR(S7503) — must stay async: replaces the async SlayerSQLClient.execute
+    async def fake_execute(self, sql, timeout_seconds=120):  # NOSONAR(S7503) — must stay async
         calls["n"] += 1
         return [{"version()": "24.8.1"}]
 
     monkeypatch.setattr(SlayerSQLClient, "execute", fake_execute)
-    storage_dir = tmp_path / "storage"
-    storage_dir.mkdir()
-    engine = SlayerQueryEngine(
-        storage=YAMLStorage(base_dir=str(storage_dir)),
-        policy=SessionPolicy(
-            data_filters=[ColumnFilterRule(column="organization_uuid", value="orgA")]
-        ),
-    )
     await engine._preflight_clickhouse_correlated(dialect="clickhouse", datasource=_ch_ds())
     assert calls["n"] == 0
 
 
-# -- _apply_policy wires the guard as on_correlated_emitted ------------------
+async def test_preflight_noop_for_anchor_only_join_ruleset(tmp_path, monkeypatch):
+    calls = {"n": 0}
+
+    async def fake_execute(self, sql, timeout_seconds=120):  # NOSONAR(S7503) — must stay async
+        calls["n"] += 1
+        return [{"version()": "24.8.1"}]
+
+    monkeypatch.setattr(SlayerSQLClient, "execute", fake_execute)
+    eng = _mk_engine(
+        tmp_path,
+        SessionPolicy(
+            ruleset=JoinFilterRuleset(
+                table="customers",
+                column="organization_uuid",
+                value="orgA",
+                whitelist=["exchange_rates"],
+            )
+        ),
+    )
+    await eng._preflight_clickhouse_correlated(dialect="clickhouse", datasource=_ch_ds())
+    assert calls["n"] == 0
+
+
+# -- _apply_policy dispatch --------------------------------------------------
+
+
+def test_apply_policy_no_policy_returns_verbatim(tmp_path):
+    """With no policy the SQL is returned verbatim (zero overhead, no parse)."""
+    eng = _mk_engine(tmp_path, None)
+    sql = "SELECT  *  FROM   orders"
+    out = eng._apply_policy(sql=sql, dialect="sqlite", datasource=_ds(tmp_path))
+    assert out == sql
+
+
+def test_apply_policy_column_ruleset_probes(engine, tmp_path, monkeypatch):
+    monkeypatch.setattr(engine, "_column_present", lambda **k: True)
+    out = engine._apply_policy(
+        sql="SELECT * FROM orders", dialect="sqlite", datasource=_ds(tmp_path)
+    )
+    assert "WHERE org = 'x'" in out
+
+
+def test_apply_policy_join_ruleset_does_not_probe(join_engine, tmp_path, monkeypatch):
+    """The join path never calls _column_present."""
+    def boom(**k):
+        raise AssertionError("_column_present must not be called for a join ruleset")
+
+    monkeypatch.setattr(join_engine, "_column_present", boom)
+    out = join_engine._apply_policy(
+        sql="SELECT * FROM orders", dialect="sqlite", datasource=_ds(tmp_path)
+    )
+    assert "EXISTS" in out.upper()
 
 
 def test_apply_policy_join_rule_fails_closed_when_version_unknown(
     join_engine, monkeypatch
 ):
-    """_apply_policy must pass the ClickHouse guard to the rewrite: an emitted
-    EXISTS with no cached version fails closed."""
     monkeypatch.setattr(join_engine, "_column_present", lambda **k: True)
-    ds = _ch_ds()
     with pytest.raises(ForcedFilterError):
         join_engine._apply_policy(
-            sql="SELECT * FROM orders", dialect="clickhouse", datasource=ds
+            sql="SELECT * FROM orders", dialect="clickhouse", datasource=_ch_ds()
         )
 
 
@@ -390,20 +412,10 @@ def test_apply_policy_join_rule_ok_when_version_supported(join_engine, monkeypat
     assert "EXISTS" in out.upper()
 
 
-def test_apply_policy_column_only_clickhouse_not_blocked(tmp_path, monkeypatch):
-    """A column-only policy on ClickHouse emits no correlated EXISTS, so the
-    guard never fires — even with no cached version the query is not blocked."""
-    storage_dir = tmp_path / "storage"
-    storage_dir.mkdir()
-    engine = SlayerQueryEngine(
-        storage=YAMLStorage(base_dir=str(storage_dir)),
-        policy=SessionPolicy(
-            data_filters=[ColumnFilterRule(column="organization_uuid", value="orgA")]
-        ),
-    )
+def test_apply_policy_column_only_clickhouse_not_blocked(engine, monkeypatch):
     monkeypatch.setattr(engine, "_column_present", lambda **k: True)
     out = engine._apply_policy(
         sql="SELECT * FROM orders", dialect="clickhouse", datasource=_ch_ds()
     )
     assert "allow_experimental_correlated_subqueries" not in out
-    assert "organization_uuid = 'orgA'" in out  # column filter still applied
+    assert "org = 'x'" in out

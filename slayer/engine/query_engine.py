@@ -21,7 +21,7 @@ from sqlglot import exp
 
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
 from slayer.core.errors import AmbiguousModelError, ForcedFilterError
-from slayer.core.policy import JoinFilterRule, SessionPolicy
+from slayer.core.policy import JoinFilterRuleset, SessionPolicy
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import (
     Column,
@@ -472,7 +472,7 @@ class SlayerQueryEngine:
     ) -> str:
         """Rewrite ``sql`` to enforce the forced-filter policy, or return it
         unchanged when no policy is configured (zero overhead)."""
-        if not (self.policy and self.policy.data_filters):
+        if not self.policy:
             return sql
         return apply_session_policy(
             sql,
@@ -487,10 +487,10 @@ class SlayerQueryEngine:
         )
 
     def _policy_has_join_rules(self) -> bool:
-        if not (self.policy and self.policy.data_filters):
-            return False
-        return any(
-            isinstance(r, JoinFilterRule) for r in self.policy.data_filters
+        return bool(
+            self.policy
+            and isinstance(self.policy.ruleset, JoinFilterRuleset)
+            and self.policy.ruleset.joins
         )
 
     @staticmethod

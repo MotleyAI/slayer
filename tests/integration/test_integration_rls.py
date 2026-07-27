@@ -1,10 +1,13 @@
-"""Integration tests for forced-filter RLS (DEV-1578) — end-to-end against a
-real SQLite database with two tenants.
+"""Integration tests for forced-filter RLS (DEV-1578 / DEV-1718) — end-to-end
+against a real SQLite database with two tenants.
 
 Verifies that ``SlayerQueryEngine(storage, policy=...)`` silently scopes every
 query — base, joins, profiling/sample data, dry-run preview — to the
-configured tenant, that the column-presence probe is cached, and that the
-``block`` / ``pass`` semantics behave on a tenant-less (shared) table.
+configured tenant, that the column-presence probe is cached, that the
+``block`` / ``pass`` semantics of a ``ColumnFilterRuleset`` behave on a
+tenant-less (shared) table, and that a ``JoinFilterRuleset`` scopes the anchor
+directly, reaches other tables via explicit joins, passes whitelisted tables
+through, and fails closed on an unlisted table.
 
 Run with: poetry run pytest tests/integration/test_integration_rls.py -m integration
 """
@@ -23,8 +26,9 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.policy import (
-    ColumnFilterRule,
+    ColumnFilterRuleset,
     JoinFilterRule,
+    JoinFilterRuleset,
     SessionPolicy,
 )
 from slayer.core.query import ColumnRef, SlayerQuery
@@ -148,7 +152,7 @@ async def rls_storage(tmp_path):
 
 def _org_policy(org=ORG_A, **kw):
     return SessionPolicy(
-        data_filters=[ColumnFilterRule(column="organization_uuid", value=org, **kw)]
+        ruleset=ColumnFilterRuleset(column="organization_uuid", value=org, **kw)
     )
 
 
@@ -342,7 +346,7 @@ async def test_column_presence_is_cached(rls_storage, monkeypatch):
 
 
 # ===========================================================================
-# JoinFilterRule — end-to-end explicit-join scoping (DEV-1627)
+# JoinFilterRuleset — end-to-end explicit-join scoping (DEV-1627 / DEV-1718)
 # ===========================================================================
 
 
@@ -467,30 +471,24 @@ async def rls_join_storage(tmp_path):
 _ORDERS_HOP = "orders.customer_id = customers.id"
 
 
-def _join_policy(org=ORG_A):
-    """Column rule for customers + join overrides for orders (single-hop) and
-    line_items (multihop)."""
+def _join_policy(org=ORG_A, *, whitelist=()):
+    """Single-anchor join ruleset: the tenant column lives on ``customers``
+    (the anchor); orders (single-hop) and line_items (multihop) reach it via
+    explicit joins. ``whitelist`` names any pass-through shared tables."""
     return SessionPolicy(
-        data_filters=[
-            ColumnFilterRule(column="organization_uuid", value=org),
-            JoinFilterRule(
-                name="orders_tenant",
-                target_table="orders",
-                join_path=[_ORDERS_HOP],
-                column="organization_uuid",
-                value=org,
-            ),
-            JoinFilterRule(
-                name="line_items_tenant",
-                target_table="line_items",
-                join_path=[
-                    "line_items.order_id = orders.id",
-                    _ORDERS_HOP,
-                ],
-                column="organization_uuid",
-                value=org,
-            ),
-        ]
+        ruleset=JoinFilterRuleset(
+            table="customers",
+            column="organization_uuid",
+            value=org,
+            joins=[
+                JoinFilterRule(target_table="orders", join_path=[_ORDERS_HOP]),
+                JoinFilterRule(
+                    target_table="line_items",
+                    join_path=["line_items.order_id = orders.id", _ORDERS_HOP],
+                ),
+            ],
+            whitelist=whitelist,
+        )
     )
 
 
@@ -520,9 +518,9 @@ async def test_multihop_join_scopes_line_items(rls_join_storage):
     assert resp.data[0]["line_items._count"] == 1  # only item 100 (orgA)
 
 
-async def test_join_override_does_not_block_columnless_target(rls_join_storage):
-    """orders lacks organization_uuid; without the join override the column
-    rule's block would fail the query. The override rescues it."""
+async def test_columnless_target_scoped_via_join(rls_join_storage):
+    """orders lacks organization_uuid but is a join target, so it is scoped via
+    the correlated EXISTS rather than failing closed."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     resp = await engine.execute(
         SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
@@ -530,7 +528,8 @@ async def test_join_override_does_not_block_columnless_target(rls_join_storage):
     assert resp.data[0]["orders._count"] == 1  # no ForcedFilterError raised
 
 
-async def test_customers_still_column_scoped(rls_join_storage):
+async def test_anchor_directly_scoped(rls_join_storage):
+    """customers is the anchor -> filtered directly by organization_uuid."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     resp = await engine.execute(
         SlayerQuery(source_model="customers", measures=[ModelMeasure(formula="*:count")])
@@ -538,8 +537,9 @@ async def test_customers_still_column_scoped(rls_join_storage):
     assert resp.data[0]["customers._count"] == 1  # only orgA's customer
 
 
-async def test_untargeted_columnless_table_still_blocks(rls_join_storage):
-    """exchange_rates has no join rule and no tenant column -> block backstop."""
+async def test_unlisted_table_fails_closed(rls_join_storage):
+    """exchange_rates is neither the anchor, a join target, nor whitelisted ->
+    fails closed."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     query = SlayerQuery(
         source_model="exchange_rates",
@@ -548,6 +548,20 @@ async def test_untargeted_columnless_table_still_blocks(rls_join_storage):
     with pytest.raises(ForcedFilterError) as exc:
         await engine.execute(query)
     assert exc.value.table == "exchange_rates"
+
+
+async def test_whitelisted_table_passes_through(rls_join_storage):
+    """A whitelisted shared table is emitted unfiltered."""
+    engine = SlayerQueryEngine(
+        storage=rls_join_storage,
+        policy=_join_policy(ORG_A, whitelist=("exchange_rates",)),
+    )
+    resp = await engine.execute(
+        SlayerQuery(
+            source_model="exchange_rates", measures=[ModelMeasure(formula="*:count")]
+        )
+    )
+    assert resp.data[0]["exchange_rates._count"] == 2  # both rows, unfiltered
 
 
 async def test_dry_run_shows_exists_wrap(rls_join_storage):

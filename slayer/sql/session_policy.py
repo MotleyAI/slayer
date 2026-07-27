@@ -1,17 +1,21 @@
-"""Forced-filter SQL rewrite for session-policy RLS (DEV-1578 / DEV-1627).
+"""Forced-filter SQL rewrite for session-policy RLS (DEV-1578 / DEV-1627 / DEV-1718).
 
-``apply_session_policy`` is a pure sqlglot transform. Given final SQL, it
-wraps every *physical* table reference whose configured rule(s) apply.
+``apply_session_policy`` is a pure sqlglot transform. Given final SQL and a
+``SessionPolicy``, it wraps every *physical* table reference according to the
+policy's single ``ruleset``.
 
-**Column rules** (DEV-1578) wrap the table in a filtered ``SELECT *`` subquery,
-preserving the original alias::
+**Column ruleset** (``ColumnFilterRuleset``) wraps every table that has the
+tenant column in a filtered ``SELECT *`` subquery, preserving the alias::
 
     FROM orders               -->  FROM (SELECT * FROM orders
                                          WHERE organization_uuid = '7ef3') AS orders
 
-**Join rules** (DEV-1627) scope a table that lacks the tenant column via a
-correlated ``EXISTS`` semi-join along an explicit, policy-authored join path
-(cardinality-safe, ``LEFT JOIN``-preserving)::
+**Join ruleset** (``JoinFilterRuleset``) classifies each physical table
+structurally (no column introspection):
+
+* the anchor ``table`` is wrapped directly (``WHERE column = value``);
+* a ``JoinFilterRule.target_table`` is scoped via a correlated ``EXISTS``
+  semi-join to the anchor (cardinality-safe, ``LEFT JOIN``-preserving)::
 
     FROM orders  -->  FROM (SELECT * FROM orders AS _rls_src
                             WHERE EXISTS (
@@ -20,9 +24,8 @@ correlated ``EXISTS`` semi-join along an explicit, policy-authored join path
                                 AND _rls_j0.organization_uuid = '7ef3'
                             )) AS orders
 
-Composition is **override**: if any join rule targets a table, that table is
-scoped only by its join rule(s) (column rules do not touch it, and its column
-presence is never probed). Otherwise the table falls under the column rules.
+* a table in the ``whitelist`` is emitted unchanged;
+* anything else fails closed (``ForcedFilterError``).
 
 Why the final-SQL layer: base tables, joins, every CTE, sql-mode raw tables,
 and query-backed stages all compile to physical-table ``FROM``s here, so one
@@ -42,9 +45,11 @@ from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from slayer.core.errors import ForcedFilterError
 from slayer.core.policy import (
-    ColumnFilterRule,
+    ColumnFilterRuleset,
     JoinFilterRule,
+    JoinFilterRuleset,
     SessionPolicy,
+    _table_names_match,
 )
 
 # Statement roots the rewrite is willing to operate on. Anything else
@@ -85,10 +90,6 @@ class ScopedTable(BaseModel):
 HasColumn = Callable[[ScopedTable, str], Optional[bool]]
 
 
-def _rule_label(rule: ColumnFilterRule) -> str:
-    return f"'{rule.name}'" if rule.name else f"on column '{rule.column}'"
-
-
 def _scoped_table(table: exp.Table) -> ScopedTable:
     return ScopedTable(
         catalog=(table.catalog or None),
@@ -97,13 +98,11 @@ def _scoped_table(table: exp.Table) -> ScopedTable:
     )
 
 
-def _build_predicate(rule: ColumnFilterRule) -> exp.Expression:
-    col = exp.column(rule.column)
-    value = rule.value
+def _build_predicate(column: str, value) -> exp.Expression:
+    """Unqualified ``column = value`` / ``column IN (...)`` predicate."""
+    col = exp.column(column)
     if isinstance(value, tuple):
-        return exp.In(
-            this=col, expressions=[exp.convert(v) for v in value]
-        )
+        return exp.In(this=col, expressions=[exp.convert(v) for v in value])
     return exp.EQ(this=col, expression=exp.convert(value))
 
 
@@ -121,7 +120,8 @@ def _physical_tables(ast: exp.Expression) -> list:
 
 
 def _target_matches(scoped: ScopedTable, target_table: str) -> bool:
-    """Whether ``scoped`` is the table a ``JoinFilterRule`` targets.
+    """Whether ``scoped`` is the table a policy entry (join target / anchor /
+    whitelist) names.
 
     A bare target (``orders``) matches the table in any schema; a qualified
     target (``public.orders`` / ``proj.dataset.orders``) matches only when the
@@ -137,44 +137,6 @@ def _target_matches(scoped: ScopedTable, target_table: str) -> bool:
     ):
         return False
     return True
-
-
-def _predicates_for_table(
-    *,
-    scoped: ScopedTable,
-    column_rules: list,
-    has_column: HasColumn,
-) -> list:
-    """Return the predicates that apply to ``scoped`` (one per column rule
-    whose column the table has). Raises :class:`ForcedFilterError` on a
-    fail-closed condition (unconfirmable column, or ``block`` on a confirmed-
-    absent column). A ``pass`` rule whose column is absent contributes
-    nothing."""
-    predicates = []
-    for rule in column_rules:
-        present = has_column(scoped, rule.column)
-        if present is None:
-            raise ForcedFilterError(
-                f"Forced filter rule {_rule_label(rule)}: could not confirm "
-                f"column '{rule.column}' on table '{scoped.name}'; failing "
-                f"closed.",
-                table=scoped.name,
-                column=rule.column,
-                rule_name=rule.name,
-            )
-        if present is False:
-            if rule.on_unapplicable == "block":
-                raise ForcedFilterError(
-                    f"Forced filter rule {_rule_label(rule)} requires column "
-                    f"'{rule.column}' on table '{scoped.name}', which does not "
-                    f"have it.",
-                    table=scoped.name,
-                    column=rule.column,
-                    rule_name=rule.name,
-                )
-            continue  # "pass": skip this rule for this table
-        predicates.append(_build_predicate(rule))
-    return predicates
 
 
 def _wrap_table(table: exp.Table, predicates: list) -> None:
@@ -193,24 +155,71 @@ def _wrap_table(table: exp.Table, predicates: list) -> None:
     )
 
 
-def _terminal_predicate(rule: JoinFilterRule, *, table_alias: str) -> exp.Expression:
-    """The tenant predicate on the last hop's ``to_table`` alias — scalar ``=``
-    or ``IN``, always emitted, values via ``exp.convert`` (injection-safe)."""
-    col = exp.column(rule.column, table=table_alias)
-    value = rule.value
+# ---------------------------------------------------------------------------
+# ColumnFilterRuleset
+# ---------------------------------------------------------------------------
+
+
+def _apply_column_ruleset(
+    ast: exp.Expression, ruleset: ColumnFilterRuleset, has_column: HasColumn
+) -> None:
+    predicate = _build_predicate(ruleset.column, ruleset.value)
+    for table in _physical_tables(ast):
+        scoped = _scoped_table(table)
+        present = has_column(scoped, ruleset.column)
+        if present is None:
+            raise ForcedFilterError(
+                f"Forced filter on column '{ruleset.column}': could not confirm "
+                f"the column on table '{scoped.name}'; failing closed.",
+                table=scoped.name,
+                column=ruleset.column,
+            )
+        if present is False:
+            if ruleset.on_unapplicable == "block":
+                raise ForcedFilterError(
+                    f"Forced filter requires column '{ruleset.column}' on table "
+                    f"'{scoped.name}', which does not have it.",
+                    table=scoped.name,
+                    column=ruleset.column,
+                )
+            continue  # "pass": leave this table unfiltered
+        _wrap_table(table, [predicate])
+
+
+# ---------------------------------------------------------------------------
+# JoinFilterRuleset
+# ---------------------------------------------------------------------------
+
+
+def _terminal_predicate(*, column: str, value, table_alias: str) -> exp.Expression:
+    """The tenant predicate on the anchor alias — scalar ``=`` or ``IN``, always
+    emitted, values via ``exp.convert`` (injection-safe)."""
+    col = exp.column(column, table=table_alias)
     if isinstance(value, tuple):
         return exp.In(this=col, expressions=[exp.convert(v) for v in value])
     return exp.EQ(this=col, expression=exp.convert(value))
 
 
-def _build_exists(rule: JoinFilterRule) -> exp.Exists:
+def _build_exists(rule: JoinFilterRule, *, ruleset: JoinFilterRuleset) -> exp.Exists:
     """Build the correlated ``EXISTS`` body for one join rule.
 
-    ``FROM`` is the first hop's ``to_table`` (alias ``_rls_j0``); each later
-    hop becomes an inner ``JOIN``; the first hop correlates to the wrapper's
-    inner base alias (``_rls_src``); the terminal predicate lives on the last
-    hop's alias. All identifiers are structural (dotted/quoted-safe)."""
-    hops = rule.parsed_hops
+    Uses ``rule.oriented_hops()`` (target-first): ``FROM`` is the first hop's
+    ``to_table`` (alias ``_rls_j0``); each later hop becomes an inner ``JOIN``;
+    the first hop correlates to the wrapper's inner base alias (``_rls_src``);
+    the terminal tenant predicate lives on the last hop's alias — which must be
+    the anchor table. All identifiers are structural (dotted/quoted-safe).
+    """
+    hops = rule.oriented_hops()
+    if not _table_names_match(hops[-1].to_table, ruleset.table):
+        # Defensive: a bad model_copy could break the anchor reachability the
+        # ruleset validator enforces — fail closed rather than land the tenant
+        # predicate on a non-anchor table.
+        raise ForcedFilterError(
+            f"Forced filter join path for '{rule.target_table}' does not reach "
+            f"the anchor table '{ruleset.table}'; failing closed.",
+            table=rule.target_table,
+            column=ruleset.column,
+        )
 
     first_to = exp.to_table(hops[0].to_table)
     first_to.set("alias", exp.TableAlias(this=exp.to_identifier(_hop_alias(0))))
@@ -233,12 +242,18 @@ def _build_exists(rule: JoinFilterRule) -> exp.Exists:
     )
     inner = inner.where(correlation)
     inner = inner.where(
-        _terminal_predicate(rule, table_alias=_hop_alias(len(hops) - 1))
+        _terminal_predicate(
+            column=ruleset.column,
+            value=ruleset.value,
+            table_alias=_hop_alias(len(hops) - 1),
+        )
     )
     return exp.Exists(this=inner)
 
 
-def _wrap_table_exists(table: exp.Table, rules: list) -> None:
+def _wrap_table_exists(
+    table: exp.Table, rules: list, *, ruleset: JoinFilterRuleset
+) -> None:
     """Replace ``table`` in place with a correlated-EXISTS wrapper: one
     ``EXISTS`` per targeting rule, AND-combined, preserving the outer alias."""
     alias = table.alias_or_name
@@ -246,12 +261,45 @@ def _wrap_table_exists(table: exp.Table, rules: list) -> None:
     bare.set("alias", exp.TableAlias(this=exp.to_identifier(_RLS_SRC)))
     inner = exp.select("*").from_(bare)
     for rule in rules:
-        inner = inner.where(_build_exists(rule))  # chained .where AND-combines
+        inner = inner.where(_build_exists(rule, ruleset=ruleset))
     table.replace(
         exp.Subquery(
             this=inner, alias=exp.TableAlias(this=exp.to_identifier(alias))
         )
     )
+
+
+def _apply_join_ruleset(ast: exp.Expression, ruleset: JoinFilterRuleset) -> bool:
+    """Structurally scope every physical table under a join ruleset. Returns
+    whether at least one correlated ``EXISTS`` was emitted (drives the
+    ClickHouse setting/guard). Never probes column presence."""
+    emitted_correlated = False
+    for table in _physical_tables(ast):
+        scoped = _scoped_table(table)
+        if _target_matches(scoped, ruleset.table):
+            _wrap_table(table, [_build_predicate(ruleset.column, ruleset.value)])
+            continue
+        targeting = [
+            r for r in ruleset.joins if _target_matches(scoped, r.target_table)
+        ]
+        if targeting:
+            _wrap_table_exists(table, targeting, ruleset=ruleset)
+            emitted_correlated = True
+            continue
+        if any(_target_matches(scoped, w) for w in ruleset.whitelist):
+            continue  # whitelisted: emitted unfiltered
+        raise ForcedFilterError(
+            f"Forced filter: table '{scoped.name}' is not covered by the policy "
+            "(not the anchor, not a join target, not whitelisted); failing "
+            "closed.",
+            table=scoped.name,
+        )
+    return emitted_correlated
+
+
+# ---------------------------------------------------------------------------
+# ClickHouse correlated-subquery SETTINGS
+# ---------------------------------------------------------------------------
 
 
 _CH_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
@@ -300,21 +348,18 @@ def apply_session_policy(
     has_column: HasColumn,
     on_correlated_emitted: Optional[Callable[[], None]] = None,
 ) -> str:
-    """Wrap every physical-table ref whose rule(s) apply.
+    """Wrap every physical-table ref per the policy's ``ruleset``.
 
     ``has_column(scoped_table, column)`` returns ``True`` / ``False`` /
-    ``None`` (cannot confirm) and is consulted only for column-rule tables.
-    ``on_correlated_emitted`` (if given) is invoked once when at least one
-    correlated ``EXISTS`` is emitted (any dialect) — the engine uses it as the
-    ClickHouse version guard. Raises :class:`ForcedFilterError` on a
-    fail-closed condition (unconfirmable column, ``block`` on an absent column,
-    or a non-SELECT statement root).
+    ``None`` (cannot confirm) and is consulted **only** for a
+    ``ColumnFilterRuleset``. ``on_correlated_emitted`` (if given) is invoked
+    once when at least one correlated ``EXISTS`` is emitted (any dialect) — the
+    engine uses it as the ClickHouse version guard. Raises
+    :class:`ForcedFilterError` on a fail-closed condition (unconfirmable column,
+    ``block`` on an absent column, an unlisted table under a join ruleset, or a
+    non-SELECT statement root).
     """
-    if not policy.data_filters:
-        return sql  # zero-overhead: no parse, no introspection
-
-    column_rules = [r for r in policy.data_filters if isinstance(r, ColumnFilterRule)]
-    join_rules = [r for r in policy.data_filters if isinstance(r, JoinFilterRule)]
+    ruleset = policy.ruleset
 
     ast = sqlglot.parse_one(sql, dialect=dialect)
     if not isinstance(ast, _ALLOWED_ROOTS):
@@ -323,21 +368,11 @@ def apply_session_policy(
             f"({type(ast).__name__}); failing closed."
         )
 
-    emitted_correlated = False
-    for table in _physical_tables(ast):
-        scoped = _scoped_table(table)
-        # Override: a join-targeted table is scoped ONLY by its join rule(s);
-        # column rules never touch it and its column presence is not probed.
-        targeting = [r for r in join_rules if _target_matches(scoped, r.target_table)]
-        if targeting:
-            _wrap_table_exists(table, targeting)
-            emitted_correlated = True
-            continue
-        predicates = _predicates_for_table(
-            scoped=scoped, column_rules=column_rules, has_column=has_column
-        )
-        if predicates:
-            _wrap_table(table, predicates)
+    if isinstance(ruleset, ColumnFilterRuleset):
+        _apply_column_ruleset(ast, ruleset, has_column)
+        emitted_correlated = False
+    else:  # JoinFilterRuleset
+        emitted_correlated = _apply_join_ruleset(ast, ruleset)
 
     if emitted_correlated:
         if on_correlated_emitted is not None:
