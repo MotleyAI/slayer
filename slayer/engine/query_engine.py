@@ -708,6 +708,7 @@ class SlayerQueryEngine:
         runtime_kwarg: Dict[str, Any],
         *,
         prefer_data_source: Optional[str] = None,
+        override_datasource: Optional[DatasourceConfig] = None,
     ) -> _Prepared:
         """DB-free-ish prepare portion shared by execute / evict / refresh
         (DEV-1715): resolve→enrich→normalize→plan→SQL-gen→ClickHouse-preflight→
@@ -814,7 +815,12 @@ class SlayerQueryEngine:
         planned_list = plan_stages(queries=stages, bundle=bundle)
         root_planned = planned_list[-1]
 
-        datasource = await self._resolve_datasource(model=model)
+        # ``override_datasource`` pins the connection identity (used by
+        # refresh() re-exec): the query is re-run against the EXACT datasource
+        # the entry was cached under (its ds_key), not whatever the model's
+        # ``data_source`` name resolves to now — so a same-name repoint can't
+        # migrate the entry or store rows from a different database.
+        datasource = override_datasource or await self._resolve_datasource(model=model)
         dialect = self._dialect_for_type(datasource.type)
         sql = generate_planned_stages(
             planned_list, bundle=bundle, dialect=dialect,
@@ -1139,12 +1145,23 @@ class SlayerQueryEngine:
         returning a fresh entry (``created_at=now`` → TTL reset).
 
         Replays through the full ``_normalize_input`` / ``_prepare_pipeline``
-        pipeline pinned to ``entry.resolved_data_source`` — so model /
-        ``source_queries`` edits and ``whole_periods_only`` re-snapping are
-        picked up, and a datasource-priority flip cannot migrate the entry.
-        Any error (e.g. the re-exec baseline scan hitting a dropped table)
-        propagates to ``refresh()``, which records it and keeps the stale entry.
+        pipeline — so model / ``source_queries`` edits and ``whole_periods_only``
+        re-snapping are picked up — but the connection identity is PINNED to the
+        entry's ``ds_key`` via ``override_datasource`` (the datasource carried by
+        the client cached at write time). So neither a datasource-priority flip
+        NOR a same-name config edit can migrate the entry or re-execute against a
+        different database; a new identity is a new cache entry via ``execute``,
+        never a refresh migration. If the write-time client is gone the re-exec
+        can't be pinned faithfully → raise, and ``refresh()`` records the
+        ``re_execute`` error and keeps the stale entry. Any other error (e.g. the
+        re-exec baseline scan hitting a dropped table) propagates the same way.
         """
+        client = self._sql_clients.get(entry.ds_key)
+        if client is None:
+            raise RuntimeError(
+                f"no cached SQL client for datasource fingerprint {entry.ds_key!r}; "
+                "cannot pin re-execution to the entry's connection identity"
+            )
         main_query, named_queries, prefer_ds = await self._normalize_input(
             entry.original_input,
             runtime_kwarg=entry.variables or {},
@@ -1155,8 +1172,8 @@ class SlayerQueryEngine:
             named_queries=named_queries,
             runtime_kwarg=entry.variables or {},
             prefer_data_source=prefer_ds,
+            override_datasource=client.datasource,
         )
-        client = self._client_for(prepared.datasource)
         applicable, refresh_key_values = await self._scan_refresh_key_baselines(
             prepared=prepared, client=client, cache=self._cache
         )

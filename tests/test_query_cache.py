@@ -938,3 +938,44 @@ class TestReviewFollowups:
         assert result.refreshed == []
         assert len(result.unchanged) == 2
         assert result.errors == []
+
+    async def test_refresh_reexec_pinned_to_entry_fingerprint(self, tmp_path):
+        # A refresh() re-exec must run against the DB the entry was cached under
+        # (its ds_key), not a repointed same-name datasource — else the
+        # refreshed rows come from the wrong database.
+        db_a = tmp_path / "re_a.db"
+        _seed_db(db_a)  # sum 350, MAX(updated_at) = 2025-01-03
+        db_b = tmp_path / "re_b.db"
+        _seed_orders_single(db_b, amount=999.0)
+
+        storage = YAMLStorage(base_dir=str(tmp_path / "store"))
+        await storage.save_datasource(
+            DatasourceConfig(name="ds", type="sqlite", database=str(db_a))
+        )
+        await storage.save_model(_orders_model("ds"))
+        engine = SlayerQueryEngine(
+            storage=storage,
+            cache_config=CacheConfig(refresh_keys=[("orders", "MAX(updated_at)")]),
+        )
+        await engine.execute(_sum_query(), cache=True)  # entry vs db_a (350)
+
+        await storage.save_datasource(
+            DatasourceConfig(name="ds", type="sqlite", database=str(db_b))
+        )
+        await engine.execute(_sum_query(), cache=True)  # entry vs db_b (999)
+        assert engine.cache_size == 2
+
+        # Move db_a's MAX(updated_at) so ONLY its entry is detected stale.
+        _mutate(db_a, "INSERT INTO orders VALUES (4, 'pending', 1000.0, '2025-06-01')")
+        result = await engine.refresh()
+        assert len(result.refreshed) == 1
+
+        # The db_a entry re-executed against db_a → 1350, NOT db_b's 999.
+        vals = {
+            e.ds_key[0]: e.response.data[0]["orders.amount_sum"]
+            for e in engine._cache._entries.values()
+        }
+        a_val = next(v for k, v in vals.items() if "re_a" in k)
+        b_val = next(v for k, v in vals.items() if "re_b" in k)
+        assert a_val == pytest.approx(1350.0)
+        assert b_val == pytest.approx(999.0)
