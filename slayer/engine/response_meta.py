@@ -76,7 +76,7 @@ def _infer_aggregated_format(
     """Infer NumberFormat for an aggregated measure based on aggregation type and source measure format.
 
     Rules:
-    - count, count_distinct: always INTEGER
+    - count, count_distinct, count_distinct_approx: always INTEGER
     - avg, weighted_avg, median: always FLOAT
     - sum, min, max, first, last: inherit from source measure
     - *:count (measure_name="*"): INTEGER
@@ -84,7 +84,7 @@ def _infer_aggregated_format(
     if measure_name == "*":
         return NumberFormat(type=NumberFormatType.INTEGER)
 
-    if aggregation in ("count", "count_distinct"):
+    if aggregation in ("count", "count_distinct", "count_distinct_approx"):
         return NumberFormat(type=NumberFormatType.INTEGER)
 
     if aggregation in ("avg", "weighted_avg", "median"):
