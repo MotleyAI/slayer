@@ -159,6 +159,31 @@ _OVER_RE = re.compile(r"\bOVER\s*\(", re.IGNORECASE)
 # (Codex). Used by ``_normalize_sql_filter_operators``, ``_preprocess_colons``,
 # and the raw-``OVER(`` pre-scan.
 _PY_STRING_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
+# SQL ``LIKE`` / ``NOT LIKE`` operator → the ``like(col, pattern)`` scalar the
+# Mode-B DSL already accepts (DEV-1484 emits it as SQL ``LIKE``). Mirrors
+# ``formula._preprocess_like`` so the typed filter parser accepts the same LIKE
+# spelling as the documented Mode-B filter grammar — a pg-facade WHERE
+# ``col LIKE 'p%'`` (or ``NOT LIKE``) lands here as a verbatim filter (DEV-1704).
+# LHS is a bare/dotted identifier or a single scalar call; RHS a quoted pattern.
+# Applied to the whole expression (the pattern is a string literal), same as
+# ``formula._preprocess_like``.
+_SQL_LIKE_RE = re.compile(
+    r"\b(\w+\([^()]*\)|(?:\w+\.)*\w+)\s+(not\s+)?like\s+('[^']*')",
+    flags=re.IGNORECASE,
+)
+
+
+def _rewrite_sql_like(text: str) -> str:
+    """``col LIKE 'p%'`` → ``like(col, 'p%')``; ``col NOT LIKE 'p%'`` →
+    ``not like(col, 'p%')`` — outside/inside handling matches
+    ``formula._preprocess_like``."""
+
+    def _sub(m: "re.Match[str]") -> str:
+        lhs, neg, pat = m.group(1), m.group(2), m.group(3)
+        call = f"like({lhs}, {pat})"
+        return f"not {call}" if neg else call
+
+    return _SQL_LIKE_RE.sub(_sub, text)
 _COLON_AGG_RE = re.compile(
     r"(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)"  # source: * / ident / dotted
     r":"
@@ -283,10 +308,14 @@ def _normalize_sql_filter_operators(text: str) -> str:
     """Rewrite SQL operator spellings to Python ones outside string literals.
 
     ``NULL`` → ``None``; ``IS`` / ``NOT`` / ``AND`` / ``OR`` / ``IN`` →
-    lowercase; standalone ``=`` → ``==``; ``<>`` → ``!=``. Replicated from the
-    legacy ``slayer.core.formula._preprocess_sql_operators`` so the typed
-    pipeline doesn't depend on the module DEV-1452 deletes.
+    lowercase; standalone ``=`` → ``==``; ``<>`` → ``!=``; ``col [NOT] LIKE
+    'p%'`` → ``[not ]like(col, 'p%')``. Replicated from the legacy
+    ``slayer.core.formula._preprocess_sql_operators`` / ``_preprocess_like`` so
+    the typed pipeline doesn't depend on the module DEV-1452 deletes.
     """
+    # LIKE runs first, on the whole string: its pattern is a quoted literal, so
+    # it can't be rewritten per-non-literal-part like the other operators.
+    text = _rewrite_sql_like(text)
     # CR review: use the escape-aware Python-string matcher so backslash-
     # escaped quotes don't leak ``IS`` / ``IN`` / ``AND`` rewrites into
     # the string body (``"x \" IN ("``).

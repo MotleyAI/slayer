@@ -500,6 +500,42 @@ class TestFilterOperatorNormalization:
         assert result.left.args == (Ref(name="status"), Ref(name="status"))
         assert result.right == Literal(value="foo")
 
+    def test_sql_like_operator_normalised(self):
+        # DEV-1704: a SQL ``LIKE`` operator (e.g. from the pg-facade WHERE
+        # translation) normalises to the ``like(col, pattern)`` scalar the DSL
+        # already emits as SQL LIKE — matching formula._preprocess_like.
+        result = parse_filter_expr("name LIKE 'do%'")
+        assert isinstance(result, ScalarCall)
+        assert result.name == "like"
+        assert result.args == (Ref(name="name"), Literal(value="do%"))
+
+    def test_sql_not_like_operator_normalised(self):
+        result = parse_filter_expr("name NOT LIKE 'x%'")
+        assert isinstance(result, UnaryOp)
+        assert result.op == "not"
+        assert isinstance(result.operand, ScalarCall)
+        assert result.operand.name == "like"
+        assert result.operand.args == (Ref(name="name"), Literal(value="x%"))
+
+    def test_sql_like_dotted_and_comma_pattern(self):
+        # Dotted LHS (joined column) + a pattern that contains a comma (the
+        # categorical-comma metabase repro) must both round-trip.
+        result = parse_filter_expr("customers.name LIKE '%,%'")
+        assert isinstance(result, ScalarCall)
+        assert result.name == "like"
+        assert result.args == (
+            DottedRef(parts=("customers", "name")), Literal(value="%,%"),
+        )
+
+    def test_like_word_inside_string_literal_not_rewritten(self):
+        # The ``like`` inside a string literal is NOT a LIKE operator: the value
+        # stays a literal, the LHS a column reference.
+        result = parse_filter_expr("name == 'a like b'")
+        assert isinstance(result, Cmp)
+        assert result.op == "=="
+        assert result.left == Ref(name="name")
+        assert result.right == Literal(value="a like b")
+
     def test_transform_kwarg_preserved_in_filter(self):
         # DEV-1492: ntile(revenue:sum, n=4) <= 1 — the n=4 kwarg must
         # survive the SQL operator-normalization (the previous '=' -> '=='
