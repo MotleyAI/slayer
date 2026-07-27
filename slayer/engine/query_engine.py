@@ -1269,6 +1269,16 @@ class SlayerQueryEngine:
             root = planned[-1]
             dialect = self._dialect_for_type(datasource.type)
             sql = generate_planned_stages(planned, bundle=bundle, dialect=dialect)
+            # DEV-1578: type probing is a user-visible execution path, so it
+            # honours the forced-filter policy too — a policy failure
+            # (block / fail-closed) degrades to {} via this try/except rather
+            # than leaking an unscoped probe. DEV-1627: preflight the ClickHouse
+            # version before the rewrite so the correlated-subquery guard can
+            # gate (no-op otherwise, and no-op entirely when no policy is set).
+            await self._preflight_clickhouse_correlated(
+                dialect=dialect, datasource=datasource
+            )
+            sql = self._apply_policy(sql=sql, dialect=dialect, datasource=datasource)
         except Exception:
             logger.warning(
                 "get_column_types plan/generate failed for model '%s'",
