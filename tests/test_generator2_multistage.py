@@ -13,6 +13,7 @@ non-root stage, flat downstream binding, the DEV-1448/1449 contracts).
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import tempfile
 from typing import AsyncIterator, List, Tuple
@@ -362,12 +363,10 @@ async def test_multistage_bigquery_root_emit_mangles_aliases(harness):
     """``generate_planned_stages(..., dialect='bigquery')`` must emit NO dotted
     backticked aliases (BigQuery rejects dots in column names) — the rewrite
     hook must fire on the multi-stage root emit, not just single-stage."""
-    import re as _re
-
     _, storage, _ = harness
     planned, bundle = await _two_stage_bundle_and_plan(storage)
     sql = generate_planned_stages(planned, bundle=bundle, dialect="bigquery")
-    for m in _re.findall(r"`([^`]+)`", sql):
+    for m in re.findall(r"`([^`]+)`", sql):
         assert "." not in m, (
             f"multi-stage BigQuery SQL leaks a dotted backticked alias `{m}`:\n{sql}"
         )

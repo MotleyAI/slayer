@@ -238,7 +238,7 @@ def _measure_label(
     return None
 
 
-def build_response_metadata(
+def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classification (dimension vs measure, TimeTruncKey, label/format lookup) over one candidate-slot loop; complexity is inherent to the projection-to-metadata mapping and pre-dates this change. Splitting the loop body out would scatter the shared public_keys / source_relation state without improving readability.
     *,
     root_planned: PlannedQuery,
     bundle: ResolvedSourceBundle,

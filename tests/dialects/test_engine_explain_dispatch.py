@@ -67,8 +67,9 @@ def test_build_explain_sql_unsupported_dialect_raises() -> None:
 def test_bigquery_dialect_explain_unsupported_matches_helper() -> None:
     """Cross-check: the dialect class and the engine helper agree that
     BigQuery EXPLAIN is unsupported (same failure mode, single source)."""
+    dialect = BigqueryDialect()
     with pytest.raises(ValueError, match="EXPLAIN is not supported"):
-        BigqueryDialect().build_explain_sql("SELECT 1")
+        dialect.build_explain_sql("SELECT 1")
 
 
 def test_build_explain_sql_unsupported_dispatches_through_hook() -> None:

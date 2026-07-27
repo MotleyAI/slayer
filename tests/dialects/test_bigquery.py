@@ -717,6 +717,33 @@ async def test_bigquery_attributes_survive_alias_mangling() -> None:
         tmp.cleanup()
 
 
+async def test_query_as_model_wrapped_refs_match_mangled_inner_bigquery() -> None:
+    """DEV-1716 (Codex review): ``generate(render_mode="wrapped")`` alias-mangles
+    the inner query's projection on BigQuery, so ``_query_as_model``'s outer
+    rename wrapper must reference the mangled, backticked (``___``) form — NOT a
+    raw ANSI ``"orders.status"``, which BigQuery reads as a string literal
+    pointing at a column the mangled inner subquery no longer exposes."""
+    engine, tmp, _ = await _build_bigquery_engine(rows=[])
+    try:
+        inner = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count"}],
+            dimensions=["status"],
+        )
+        vmodel = await engine._query_as_model(inner_query=inner)
+        wrapped = vmodel.sql
+        # No ANSI-quoted dotted identifier survives (would be a string literal
+        # on BigQuery and reference a non-existent column).
+        assert '"orders.' not in wrapped, f"ANSI dotted ref leaked:\n{wrapped}"
+        # Both the inner projection AND the outer rename reference the mangled
+        # form. ``orders.status`` -> ``orders___status``; ``orders._count`` ->
+        # ``orders____count`` (3 underscores from the dot + 1 leading).
+        assert "orders___status" in wrapped, wrapped
+        assert "orders____count" in wrapped, wrapped
+    finally:
+        tmp.cleanup()
+
+
 async def test_bigquery_dry_run_does_not_decode_data_rows() -> None:
     """The DATA-path row decode must NOT run on dry_run (Codex Med 3): dry_run
     returns the SQL without executing, so the fetched data rows are never

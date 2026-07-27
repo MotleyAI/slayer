@@ -2383,8 +2383,19 @@ class SlayerQueryEngine:
                 short = _alias_to_short(cm.alias)
             column_map.append((cm.alias, short, DataType.DOUBLE, cm.label, None, cm.format))
 
-        # Wrap inner SQL: SELECT "orders.id" AS id, "orders.count" AS count, ... FROM (inner) AS _inner
-        rename_parts = [f'"{alias}" AS {short}' for alias, short, _, _, _, _ in column_map]
+        # Wrap inner SQL: SELECT <ref> AS id, <ref> AS count, ... FROM (inner) AS _inner
+        # DEV-1716: ``generate(render_mode="wrapped")`` dialect-quotes AND
+        # (BigQuery / T-SQL) alias-mangles the inner query's projection, so the
+        # outer reference must match. Dialect-quote each alias and apply the same
+        # ``rewrite_emitted_sql`` — identity for Postgres/SQLite/DuckDB and for
+        # MySQL's dot-preserving backticks; mangles the dotted alias on
+        # BigQuery/T-SQL to the ``___`` form the inner actually exposes. A raw
+        # ANSI ``"{alias}"`` would reference a column the mangled inner no longer
+        # has (and be a string literal, not an identifier, on MySQL/BigQuery/T-SQL).
+        def _inner_ref(alias: str) -> str:
+            return generator._dialect.rewrite_emitted_sql(generator._quote_ident(alias))
+
+        rename_parts = [f'{_inner_ref(alias)} AS {short}' for alias, short, _, _, _, _ in column_map]
         wrapped_sql = f"SELECT {', '.join(rename_parts)} FROM ({inner_sql}) AS _inner"
 
         # One Column per result column — each is potentially both a dimension
