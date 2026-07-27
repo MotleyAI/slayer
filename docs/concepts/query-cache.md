@@ -117,6 +117,17 @@ re-snap and model/schema edits are picked up. If the freshly-prepared SQL differ
 `refresh()` is continue-on-failure: a failed refresh-key scan or re-execution
 leaves the existing entry unchanged and records a `RefreshError`.
 
+`refresh()` scans and re-executes each entry against the **datasource identity
+it was cached under** (its SQL-client fingerprint), reusing the client created
+at write time — so a `datasource`-priority change or a same-name connection edit
+between caching and `refresh()` can never migrate a table-backed entry or read
+from a different database. One residual: a run-by-name **query-backed** model
+resolves its inner `source_queries` metadata through the current datasource
+priority, so if the same backing-model name lives in two datasources and the
+priority changes between caching and `refresh()`, the inner SQL may be shaped
+from the other datasource. After repointing or re-prioritising a datasource
+while a cache is live, call `clear_cache()`.
+
 The synchronous wrappers `execute_sync(..., cache=True, data_source=...)`,
 `refresh_sync()`, and `evict_sync(...)` are available for CLI / notebook /
 script use.
