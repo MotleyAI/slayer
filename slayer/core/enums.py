@@ -16,8 +16,13 @@ class DataType(StrEnum):
     a translation map. (DEV-1361.)
 
     ``UNKNOWN`` is the explicit *opaque* type: the column's database type was
-    detected but SLayer cannot operate on it (``point``, ``json``, ``xml``,
-    ``bytea``, arrays, ``tsvector``, PostGIS geometries, ...). Such a column is
+    detected but SLayer cannot operate on it — it has no default btree/hash
+    operator class, which is exactly what ``GROUP BY`` / ``DISTINCT`` require
+    (``json``, ``xml``, the geometric / PostGIS types, range types, ...).
+    Comparable types keep working as ``TEXT`` even when unmapped — ``jsonb``,
+    ``uuid``, ``bytea``, arrays and ``tsvector`` are all groupable and are
+    deliberately *not* opaque. ``slayer.engine.ingestion._OPAQUE_SA_TYPE_NAMES``
+    is the source of truth for that classification. Such a column is
     **stored and displayed** — its raw DB type string is kept on
     ``Column.db_type`` — but it is never used in ``GROUP BY``, ``DISTINCT``,
     aggregation, or ``CAST``, because those operations fail at the database

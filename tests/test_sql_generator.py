@@ -5756,7 +5756,10 @@ class TestCastEmissionOpaqueType:
         wrapped = _wrap_cast_for_type(expr, DataType.DOUBLE)
         assert isinstance(wrapped, sqlglot.exp.Cast)
 
-    async def test_opaque_column_emits_no_cast(self) -> None:
+    async def test_opaque_column_rejected_as_dimension(self) -> None:
+        """An opaque column has no equality operator, so grouping by it would
+        emit SQL the database refuses. Reject it up front with an actionable
+        message rather than letting a raw driver error surface."""
         model = SlayerModel(
             name="places",
             sql_table="public.places",
@@ -5773,6 +5776,33 @@ class TestCastEmissionOpaqueType:
         )
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(source_model="places", dimensions=[ColumnRef(name="loc")])
+        with pytest.raises(ValueError, match="cannot be used as a dimension"):
+            await _generate(gen, query, model)
+
+    async def test_opaque_column_emits_no_cast_when_projected(self) -> None:
+        """The CAST guard still holds for a query that doesn't group by the
+        opaque column: no ``CAST(... AS UNKNOWN)`` may reach the SQL."""
+        model = SlayerModel(
+            name="places",
+            sql_table="public.places",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="city", sql="city", type=DataType.TEXT),
+                Column(
+                    name="loc",
+                    sql="coalesce(loc, home_loc)",
+                    type=DataType.UNKNOWN,
+                    db_type="point",
+                ),
+            ],
+        )
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="places",
+            measures=["*:count"],
+            dimensions=[ColumnRef(name="city")],
+        )
         sql = await _generate(gen, query, model)
         assert "UNKNOWN" not in sql.upper()
         assert "CAST(" not in sql.upper()

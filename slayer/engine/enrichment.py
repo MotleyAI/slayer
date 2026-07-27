@@ -2143,6 +2143,19 @@ async def _resolve_dimensions(
                     resolve_dimension_via_joins=resolve_dimension_via_joins,
                 )
             )
+        # Grouping by an opaque column emits SQL the database rejects (no
+        # equality operator), so fail here with an actionable message instead
+        # of surfacing a raw driver error. Projecting such a column is fine —
+        # only its use as a GROUP BY / DISTINCT key is refused.
+        if dim_def is not None and dim_def.type.is_opaque:
+            db_type = getattr(dim_def, "db_type", None)
+            described = f" (database type {db_type!r})" if db_type else ""
+            raise ValueError(
+                f"Column '{dim_ref.full_name}'{described} cannot be used as a "
+                f"dimension: its type does not support the grouping this query "
+                f"requires. Define a derived column that extracts a comparable "
+                f"value instead, e.g. sql=\"payload->>'status'\" with type TEXT."
+            )
         expanded_sql = await _maybe_expand(
             sql=dim_def.sql if dim_def else None,
             terminal_model=terminal_model,

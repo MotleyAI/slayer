@@ -25,7 +25,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 from slayer.core.enums import DataType
+from slayer.core.models import DatasourceConfig
 from slayer.engine.ingestion import (
+    ingest_datasource,
     _generate_joins,
     _get_columns_fallback,
     _get_pk_constraint_fallback,
@@ -432,9 +434,6 @@ class TestUnmappedTypeBecomesOpaque:
         assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
 
     def test_ingest_populates_db_type_only_for_opaque_columns(self) -> None:
-        from slayer.core.models import DatasourceConfig
-        from slayer.engine.ingestion import ingest_datasource
-
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "opaque.db")
             engine = sa.create_engine(f"sqlite:///{db_path}")

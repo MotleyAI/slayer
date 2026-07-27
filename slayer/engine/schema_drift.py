@@ -202,15 +202,27 @@ def data_type_bucket(dt: DataType) -> str:
 def _type_buckets_conflict(*, persisted: DataType, live: DataType) -> bool:
     """True when persisted vs live types are genuinely incompatible.
 
-    An opaque (``UNKNOWN``) type on either side is treated as compatible with
-    anything. Unmapped DB types (``point``, ``jsonb``, PostGIS, ...) used to
-    coarse to TEXT at introspection time and now read as UNKNOWN, so a strict
-    bucket comparison would report every such pre-existing column as a
-    spurious drift-delete. UNKNOWN carries no type claim to contradict — it
-    only says "we could not classify this" — so it never triggers drift in
-    either direction.
+    Opacity is deliberately **one-way**:
+
+    - *live* opaque + operable persisted type → **conflict**. The physical
+      column has no equality operator, so the persisted model is promising a
+      ``GROUP BY`` / ``DISTINCT`` / aggregation the database will refuse. That
+      is a real runtime hazard and must surface rather than be hidden.
+    - *persisted* opaque + known live type → no conflict. ``UNKNOWN`` makes no
+      type claim to contradict; it only says "we could not classify this", and
+      the live type is strictly more information.
+    - both opaque → no conflict (they agree).
+    - both known → ordinary bucket comparison.
+
+    Note this means models ingested before opaque classification existed (an
+    exotic column coarsed to TEXT back then, read as UNKNOWN now) will be
+    reported. That is intentional: those columns really are unusable as
+    declared. The remedy is to re-ingest / retype the column to ``UNKNOWN``,
+    after which the conflict disappears.
     """
-    if persisted.is_opaque or live.is_opaque:
+    if live.is_opaque:
+        return not persisted.is_opaque
+    if persisted.is_opaque:
         return False
     return data_type_bucket(persisted) != data_type_bucket(live)
 

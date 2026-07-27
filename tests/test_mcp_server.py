@@ -18,6 +18,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
+from slayer.inspect.model_render import _choose_sample_agg
 from slayer.mcp.server import (
     _build_sample_query_args,
     _escape_md_cell,
@@ -579,6 +580,10 @@ Column(name="m", sql="val", type=DataType.DOUBLE)
         assert parsed["model_name"] == "jtest"
         # sample_sql should NOT appear when show_sql is not requested
         assert "sample_sql" not in parsed
+        # A complete profile must advertise itself as not reduced, so a JSON
+        # caller can distinguish it from the count-only fallback.
+        assert parsed["sample_data_reduced"] is False
+        assert parsed["sample_data_reduced_reason"] is None
 
 
 class TestInspectModelShowSQL:
@@ -1408,8 +1413,6 @@ class TestBuildSampleQueryArgs:
         """An opaque (``UNKNOWN``) column has no equality operator in the DB,
         so ``count_distinct``/``min``/``max`` on it would take the whole Data
         Profile query down. It must be skipped as both measure and dimension."""
-        from slayer.inspect.model_render import _choose_sample_agg
-
         opaque = Column(name="loc", type=DataType.UNKNOWN, db_type="point")
         assert _choose_sample_agg(opaque, measure_types={}) is None
         # ...even when the driver reports a categorical-looking cursor type.

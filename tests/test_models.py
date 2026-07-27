@@ -2139,19 +2139,20 @@ class TestOpaqueColumn:
         assert Column.model_validate(col.model_dump()).db_type == "point"
 
     def test_allowed_aggregations_rejected_on_opaque_column(self) -> None:
+        # Built outside the raises block so only the SlayerModel construction
+        # can produce the expected failure.
+        opaque_col = Column(
+            name="loc",
+            type=DataType.UNKNOWN,
+            db_type="point",
+            allowed_aggregations=["count"],
+        )
         with pytest.raises(ValidationError) as exc_info:
             SlayerModel(
                 name="places",
                 sql_table="places",
                 data_source="ds",
-                columns=[
-                    Column(
-                        name="loc",
-                        type=DataType.UNKNOWN,
-                        db_type="point",
-                        allowed_aggregations=["count"],
-                    ),
-                ],
+                columns=[opaque_col],
             )
         msg = str(exc_info.value)
         assert "loc" in msg

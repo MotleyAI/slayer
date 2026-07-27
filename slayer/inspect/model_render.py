@@ -996,6 +996,10 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     sample_sql: str | None = None
     sample_data: dict[str, Any] | None = None
     sample_error: str | None = None
+    # Set when the profile fell back to a row count so JSON callers can tell a
+    # reduced profile from a complete one (the markdown note is not machine
+    # readable).
+    sample_reduced_reason: str | None = None
     if engine is not None and "samples" in included_set:
         query_args = _build_sample_query_args(
             model=model, num_rows=num_rows, measure_types=measure_types,
@@ -1019,10 +1023,11 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 sample_result = await engine.execute(
                     query=sample_query, data_source=model.data_source or None
                 )
-                note = (
-                    "\n\n_Reduced to a row count: at least one column's type does not "
-                    "support the grouping/DISTINCT this profile uses._"
+                sample_reduced_reason = (
+                    "at least one column's type does not support the "
+                    "grouping/DISTINCT this profile uses"
                 )
+                note = f"\n\n_Reduced to a row count: {sample_reduced_reason}._"
             sample_sql = sample_result.sql
             cols, data = _strip_model_prefix(
                 columns=sample_result.columns,
@@ -1219,6 +1224,8 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         if "samples" in included_set:
             payload["sample_data"] = sample_data
             payload["sample_data_error"] = sample_error
+            payload["sample_data_reduced"] = sample_reduced_reason is not None
+            payload["sample_data_reduced_reason"] = sample_reduced_reason
             if show_sql and sample_sql:
                 payload["sample_sql"] = sample_sql
 
