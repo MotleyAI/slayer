@@ -60,6 +60,7 @@ from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.engine_factory import _runtime_fingerprint
+from slayer.sql.dialects import dialect_for_ds_type, get_dialect
 from slayer.sql.generator import SQLGenerator, generate_planned_stages
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
@@ -88,29 +89,6 @@ _join_target_resolving_var: ContextVar[Optional[set]] = ContextVar(
 _forbidden_sibling_refs_var: ContextVar[Optional[Dict[str, str]]] = ContextVar(
     "_forbidden_sibling_refs", default=None
 )
-
-
-_EXPLAIN_PREFIX = {
-    "postgres": "EXPLAIN ANALYZE",
-    "redshift": "EXPLAIN",
-    "mysql": "EXPLAIN FORMAT=JSON",
-    "sqlite": "EXPLAIN QUERY PLAN",
-    "duckdb": "EXPLAIN ANALYZE",
-    "clickhouse": "EXPLAIN",
-    "snowflake": "EXPLAIN USING JSON",
-    "bigquery": None,  # BigQuery doesn't support EXPLAIN via SQL
-    "trino": "EXPLAIN ANALYZE",
-    "presto": "EXPLAIN ANALYZE",
-    "databricks": "EXPLAIN EXTENDED",
-    "spark": "EXPLAIN EXTENDED",
-    "tsql": "SET SHOWPLAN_ALL ON;",  # SQL Server: batch prefix, needs suffix too
-    "oracle": "EXPLAIN PLAN FOR",
-}
-
-
-_EXPLAIN_POSTFIX = {
-    "tsql": "; SET SHOWPLAN_ALL OFF",
-}
 
 
 _PLACEHOLDER_FILL_VALUE = "0"
@@ -158,14 +136,13 @@ def _apply_placeholder_fill(
 
 
 def _build_explain_sql(dialect: str, sql: str) -> str:
-    """Build a dialect-appropriate EXPLAIN statement."""
-    prefix = _EXPLAIN_PREFIX.get(dialect)
-    if prefix is None:
-        raise ValueError(
-            f"EXPLAIN is not supported for dialect '{dialect}'. Use dry_run=True to inspect the generated SQL instead."
-        )
-    suffix = _EXPLAIN_POSTFIX.get(dialect, "")
-    return f"{prefix} {sql}{suffix}"
+    """Build a dialect-appropriate EXPLAIN statement.
+
+    DEV-1716: delegates to the dialect strategy's ``build_explain_sql`` hook
+    (raises ``ValueError`` for dialects without SQL-level EXPLAIN, e.g.
+    BigQuery) instead of an inline prefix/postfix map.
+    """
+    return get_dialect(dialect).build_explain_sql(sql)
 
 
 class SlayerResponse(BaseModel):
@@ -801,6 +778,10 @@ class SlayerQueryEngine:
                 err=exc, model=model, touched_models=touched
             )
             raise
+        # DEV-1716: dialect-driven read-side decode — BigQuery / T-SQL reverse
+        # their alias mangling here so response keys match SLayer's universal
+        # dotted shape. Identity hook for every other dialect; identity on [].
+        rows = get_dialect(dialect).decode_result_keys(rows)
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
         return SlayerResponse(
             data=rows, columns=columns, sql=sql, attributes=attributes,
@@ -2910,25 +2891,10 @@ class SlayerQueryEngine:
 
     @staticmethod
     def _dialect_for_type(ds_type: Optional[str]) -> str:
-        _DIALECT_MAP = {
-            "postgres": "postgres",
-            "postgresql": "postgres",
-            "mysql": "mysql",
-            "mariadb": "mysql",
-            "clickhouse": "clickhouse",
-            "bigquery": "bigquery",
-            "snowflake": "snowflake",
-            "sqlite": "sqlite",
-            "duckdb": "duckdb",
-            "redshift": "redshift",
-            "trino": "trino",
-            "presto": "presto",
-            "athena": "presto",
-            "databricks": "databricks",
-            "spark": "spark",
-            "mssql": "tsql",
-            "sqlserver": "tsql",
-            "tsql": "tsql",
-            "oracle": "oracle",
-        }
-        return _DIALECT_MAP.get(ds_type or "", "postgres")
+        """Map a datasource ``type`` to its sqlglot dialect name.
+
+        DEV-1716: delegates to the DEV-1542 registry (``dialect_for_ds_type``)
+        — single source of truth for the ds-type → dialect mapping — instead
+        of an inline duplicate map. Lenient (unknown / None → ``postgres``).
+        """
+        return dialect_for_ds_type(ds_type).sqlglot_name

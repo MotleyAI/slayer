@@ -42,6 +42,7 @@ from slayer.core.keys import (
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.planned import PlannedQuery, ValueSlot
 from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.sql.dialects import get_dialect
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +254,16 @@ def build_response_metadata(
     a guard against any divergence between this derivation and the generator.
     """
     expected_columns = expected_columns_from_sql(sql=sql, dialect=dialect)
+    # DEV-1716: on BigQuery / T-SQL the rendered SQL carries alias-mangled
+    # projection names (``orders___status``); decode them back to the canonical
+    # dotted form so ``expected_columns`` and the attribute-matching below
+    # operate in the same space as the plan's slot result keys. Reuses the
+    # dialect read-side hook (identity for every non-mangling dialect) via a
+    # synthetic-row wrap — no ``decode_columns`` method needed.
+    if expected_columns:
+        expected_columns = list(
+            get_dialect(dialect).decode_result_keys([dict.fromkeys(expected_columns)])[0]
+        )
     public_keys = set(expected_columns)
     source_relation = root_planned.source_relation
 
