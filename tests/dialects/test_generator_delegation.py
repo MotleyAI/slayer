@@ -670,6 +670,17 @@ class TestTsqlDialect:
         assert "DATEADD" in sql.upper()
         assert "MONTH" in sql.upper()
 
+    def test_build_time_offset_week_sunday_normalises_to_week(self, gen: SQLGenerator) -> None:
+        """DEV-1716 (Codex review): a time_shift over a WEEK_SUNDAY time
+        dimension must emit ``DATEADD(WEEK, ...)`` — a one-period Sunday-week
+        shift is one week (DEV-1572). Without the ``week_sunday`` normalization
+        in the T-SQL unit map, ``DATEADD(WEEK_SUNDAY, ...)`` is invalid T-SQL."""
+        col = sqlglot.parse_one("created_at", dialect="tsql")
+        sql = gen._build_time_offset_expr(col, -1, "week_sunday").sql(dialect="tsql")
+        assert "DATEADD" in sql.upper()
+        assert "WEEK_SUNDAY" not in sql.upper(), sql
+        assert "WEEK" in sql.upper()
+
     def test_build_time_offset_positive(self, gen: SQLGenerator) -> None:
         col = sqlglot.parse_one("created_at", dialect="tsql")
         sql = gen._build_time_offset_expr(col, 3, "day").sql(dialect="tsql")

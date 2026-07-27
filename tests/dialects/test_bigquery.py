@@ -664,3 +664,150 @@ def test_build_engine_with_non_object_credentials_json_raises(payload: str) -> N
     dialect = BigqueryDialect()
     with pytest.raises(ValueError, match="credentials_json must be a JSON object"):
         dialect.build_engine(ds, connection_string="bigquery://my-project")
+
+
+# ---------------------------------------------------------------------------
+# DEV-1716 (Codex test-review High 2 / Med 3) — engine-level metadata
+# reconciliation + decode scoping for the mangling dialect.
+# ---------------------------------------------------------------------------
+
+
+async def _build_labeled_bigquery_engine(
+    rows: list[dict],
+) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory, DatasourceConfig]:
+    """Like ``_build_bigquery_engine`` but the ``status`` column carries a
+    label, so ``resp.attributes.dimensions`` is non-empty iff the SQL-derived
+    ``expected_columns`` were decoded back to canonical dotted form."""
+    tmp = tempfile.TemporaryDirectory()
+    storage = YAMLStorage(base_dir=tmp.name)
+    ds = DatasourceConfig(name="bq", type="bigquery", database="proj.dataset")
+    await storage.save_datasource(ds)
+    model = SlayerModel(
+        name="orders",
+        sql_table="proj.dataset.orders_t",
+        data_source="bq",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT, label="Order Status"),
+        ],
+    )
+    await storage.save_model(model)
+    engine = SlayerQueryEngine(storage=storage)
+    engine._sql_clients[(ds.get_connection_string(), "")] = _FakeBigQueryClient(rows)
+    return engine, tmp, ds
+
+
+async def test_bigquery_attributes_survive_alias_mangling() -> None:
+    """The mangled SQL-derived expected_columns must be decoded back to
+    canonical dotted form so the dimension's label survives in
+    ``resp.attributes`` (Codex High 2). Without the §3f reconciliation the
+    dotted slot key ``orders.status`` wouldn't match the mangled SQL key and
+    ``attributes.dimensions`` would be empty."""
+    rows = [{"orders___status": "paid"}]
+    engine, tmp, _ = await _build_labeled_bigquery_engine(rows)
+    try:
+        query = SlayerQuery(source_model="orders", dimensions=["status"])
+        resp = await engine.execute(query)
+        assert "orders.status" in resp.attributes.dimensions, (
+            f"BigQuery attributes lost the dimension after mangling: "
+            f"{resp.attributes.dimensions!r}"
+        )
+        assert resp.attributes.dimensions["orders.status"].label == "Order Status"
+    finally:
+        tmp.cleanup()
+
+
+class _EchoTypesClient:
+    """Stub SQL client whose ``get_column_types`` echoes the probe SQL's
+    projected column names (mangled, exactly as BigQuery would report them),
+    so the engine's read-side decode + qualified-alias map-back is exercised
+    end-to-end without predicting the probe's alias names."""
+
+    async def execute(self, *, sql: str) -> list[dict]:  # noqa: ARG002  # NOSONAR(S7503)
+        return []
+
+    async def get_column_types(self, *, sql: str) -> dict:
+        import sqlglot
+        parsed = sqlglot.parse_one(sql, dialect="bigquery")
+        return {name: "DOUBLE" for name in parsed.named_selects}
+
+
+async def test_get_column_types_decodes_bigquery_mangled_probe_keys() -> None:
+    """DEV-1716 (Codex review): the type-probe SQL is alias-mangled on BigQuery
+    (it must be, to execute), so the cursor returns mangled keys
+    (``orders___amount_max``). ``get_column_types`` must decode them before the
+    canonical-dotted map-back — otherwise type inference silently returns ``{}``
+    for BigQuery / T-SQL."""
+    tmp = tempfile.TemporaryDirectory()
+    try:
+        storage = YAMLStorage(base_dir=tmp.name)
+        ds = DatasourceConfig(name="bq", type="bigquery", database="proj.dataset")
+        await storage.save_datasource(ds)
+        model = SlayerModel(
+            name="orders",
+            sql_table="proj.dataset.orders_t",
+            data_source="bq",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+        await storage.save_model(model)
+        engine = SlayerQueryEngine(storage=storage)
+        engine._sql_clients[(ds.get_connection_string(), "")] = _EchoTypesClient()
+        types = await engine.get_column_types("orders")
+        # Without the decode fix, the mangled probe keys never match the dotted
+        # ``full`` lookups and this is empty for BigQuery.
+        assert types, f"expected a non-empty type map, got {types!r}"
+    finally:
+        tmp.cleanup()
+
+
+async def test_query_as_model_wrapped_refs_match_mangled_inner_bigquery() -> None:
+    """DEV-1716 (Codex review): ``generate(render_mode="wrapped")`` alias-mangles
+    the inner query's projection on BigQuery, so ``_query_as_model``'s outer
+    rename wrapper must reference the mangled, backticked (``___``) form — NOT a
+    raw ANSI ``"orders.status"``, which BigQuery reads as a string literal
+    pointing at a column the mangled inner subquery no longer exposes."""
+    engine, tmp, _ = await _build_bigquery_engine(rows=[])
+    try:
+        inner = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count"}],
+            dimensions=["status"],
+        )
+        vmodel = await engine._query_as_model(inner_query=inner)
+        wrapped = vmodel.sql
+        # No ANSI-quoted dotted identifier survives (would be a string literal
+        # on BigQuery and reference a non-existent column).
+        assert '"orders.' not in wrapped, f"ANSI dotted ref leaked:\n{wrapped}"
+        # Both the inner projection AND the outer rename reference the mangled
+        # form. ``orders.status`` -> ``orders___status``; ``orders._count`` ->
+        # ``orders____count`` (3 underscores from the dot + 1 leading).
+        assert "orders___status" in wrapped, wrapped
+        assert "orders____count" in wrapped, wrapped
+    finally:
+        tmp.cleanup()
+
+
+async def test_bigquery_dry_run_does_not_decode_data_rows() -> None:
+    """The DATA-path row decode must NOT run on dry_run (Codex Med 3): dry_run
+    returns the SQL without executing, so the fetched data rows are never
+    decoded. (The response-metadata reconciliation legitimately decodes the
+    synthetic expected-columns row through the same hook — assert only that no
+    decode call received the actual data rows.)"""
+    data_rows = [{"orders___status": "paid"}]
+    engine, tmp, _ = await _build_bigquery_engine(rows=data_rows)
+    try:
+        query = SlayerQuery(source_model="orders", dimensions=["status"])
+        with patch.object(
+            BigqueryDialect, "decode_result_keys", autospec=True,
+            side_effect=lambda self, rows: rows,
+        ) as spy:
+            await engine.execute(query, dry_run=True)
+        decoded_args = [call.args[-1] for call in spy.call_args_list]
+        assert data_rows not in decoded_args, (
+            "dry_run must not decode the fetched data rows."
+        )
+    finally:
+        tmp.cleanup()

@@ -2408,7 +2408,10 @@ class TestMultiDialectGeneration:
         assert "CAST(ORDERS.CREATED_AT" not in sql.upper(), sql
         assert "CAST(CREATED_AT" not in sql.upper(), sql
 
-    @pytest.mark.parametrize("dialect", ALL_DIALECTS)
+    # T-SQL excluded: it now emits DATEADD via the dialect strategy, covered by
+    # tests/dialects/test_multi_dialect_generation.py::test_calendar_time_shift
+    # (DEV-1716).
+    @pytest.mark.parametrize("dialect", [d for d in ALL_DIALECTS if d != "tsql"])
     async def test_calendar_time_shift(self, dialect: str, orders_model: SlayerModel) -> None:
         """Calendar-based time_shift should produce dialect-appropriate date arithmetic in shifted CTE."""
         if dialect == "bigquery":
@@ -2545,10 +2548,13 @@ class TestMultiDialectGeneration:
             f"expected single-arg call (ORDERS.AMOUNT) in SQL for {formula!r} on {dialect}:\n{sql}"
         )
 
-    # corr / covar_samp / covar_pop are not supported on MySQL — the generator
-    # raises NotImplementedError there, so MySQL is filtered out of the matrix.
+    # corr / covar_samp / covar_pop: MySQL and T-SQL are excluded here. MySQL
+    # emits the variance-decomposition formula (not the single-arg call this
+    # test asserts) and T-SQL likewise routes through build_covar_2arg; both
+    # are covered correctly in tests/dialects/test_multi_dialect_generation.py
+    # (test_two_arg_stat_formula_dialects_generate_valid_sql) — DEV-1716.
     @pytest.mark.parametrize(
-        "dialect", [d for d in ALL_DIALECTS if d != "mysql"],
+        "dialect", [d for d in ALL_DIALECTS if d not in ("mysql", "tsql")],
     )
     @pytest.mark.parametrize(
         "formula",
@@ -2582,23 +2588,10 @@ class TestMultiDialectGeneration:
             f"on {dialect}:\n{sql}"
         )
 
-    @pytest.mark.parametrize(
-        "formula", [
-            "revenue:corr(other=quantity)",
-            "revenue:covar_samp(other=quantity)",
-            "revenue:covar_pop(other=quantity)",
-        ],
-    )
-    async def test_two_arg_stat_agg_mysql_raises(
-        self, formula: str, orders_model: SlayerModel,
-    ) -> None:
-        gen = SQLGenerator(dialect="mysql")
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula=formula)],
-        )
-        with pytest.raises(NotImplementedError, match="MySQL"):
-            await _generate(generator=gen, query=query, model=orders_model)
+    # DEV-1716: ``test_two_arg_stat_agg_mysql_raises`` removed — MySQL now
+    # emits the variance-decomposition formula for corr/covar (not
+    # NotImplementedError). Covered by tests/dialects/
+    # test_multi_dialect_generation.py::test_two_arg_stat_agg_mysql_emits_formula_valid_sql.
 
     @pytest.mark.parametrize(
         "dialect",
@@ -3134,14 +3127,11 @@ class TestStatAggsPerDialect:
         # ClickHouse casing is its own thing; assert the call shape only.
         assert sql.lower() == f"{agg.lower()}(orders.amount, orders.quantity)"
 
-    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
-    def test_build_two_arg_stat_mysql_raises(self, agg: str) -> None:
-        # MySQL has no native CORR / COVAR_SAMP / COVAR_POP and no Python-
-        # UDF mechanism, so all three raise at SQL generation time.
-        gen = SQLGenerator(dialect="mysql")
-        m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
-        with pytest.raises(NotImplementedError, match="MySQL"):
-            gen._build_agg(m)
+    # DEV-1716: ``test_build_two_arg_stat_mysql_raises`` removed — MySQL now
+    # emits the variance-decomposition formula (not NotImplementedError) via
+    # the dialect strategy. Covered by
+    # tests/dialects/test_generator_delegation.py::TestStatAggsPerDialect
+    # ::test_build_two_arg_stat_mysql_emits_formula.
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     def test_build_two_arg_stat_mysql_missing_other_prioritises_param_error(
