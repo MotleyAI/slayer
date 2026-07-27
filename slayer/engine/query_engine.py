@@ -1146,6 +1146,12 @@ class SlayerQueryEngine:
             )
             return {}
 
+        # DEV-1716: on BigQuery / T-SQL the probe SQL is alias-mangled (it has to
+        # be, to execute), so the cursor returns mangled keys like
+        # ``orders___revenue_max``. Decode them back to the canonical dotted form
+        # the ``full`` lookups below use. Identity for every non-mangling dialect.
+        raw_types = get_dialect(dialect).decode_result_keys([raw_types])[0]
+
         # Map qualified aliases (e.g., "orders.revenue_max") back to bare
         # measure names. Probe sources can be ColumnKey (.leaf) or
         # ColumnSqlKey (.column_name) per DEV-1369 derived columns.

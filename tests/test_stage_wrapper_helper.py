@@ -16,6 +16,8 @@ from __future__ import annotations
 import pytest
 import sqlglot
 
+from slayer.sql.stage_wrapper import build_flat_rename_wrapper
+
 
 def test_module_surface_exists() -> None:
     from slayer.sql.stage_wrapper import build_flat_rename_wrapper  # noqa: F401
@@ -92,8 +94,6 @@ def test_decodes_bigquery_mangled_aliases() -> None:
     the expected flat schema, while still referencing the ACTUAL mangled inner
     column. Without the decode the prefix-strip misses and the produced/expected
     assertion raises for BigQuery/T-SQL query-backed models."""
-    from slayer.sql.stage_wrapper import build_flat_rename_wrapper
-
     # ``orders.status`` -> ``orders___status``; ``orders._count`` -> ``orders____count``.
     stage_sql = (
         "SELECT status AS `orders___status`, COUNT(*) AS `orders____count`\n"
@@ -117,8 +117,6 @@ def test_decodes_bigquery_mangled_aliases() -> None:
 def test_non_mangling_dialect_unaffected_by_decode() -> None:
     """The decode is identity for Postgres — dotted aliases still strip/flatten
     exactly as before (guards against the decode altering non-mangled input)."""
-    from slayer.sql.stage_wrapper import build_flat_rename_wrapper
-
     stage_sql = (
         'SELECT status AS "orders.status", COUNT(*) AS "orders._count" '
         "FROM orders_t AS orders"

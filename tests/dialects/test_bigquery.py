@@ -717,6 +717,52 @@ async def test_bigquery_attributes_survive_alias_mangling() -> None:
         tmp.cleanup()
 
 
+class _EchoTypesClient:
+    """Stub SQL client whose ``get_column_types`` echoes the probe SQL's
+    projected column names (mangled, exactly as BigQuery would report them),
+    so the engine's read-side decode + qualified-alias map-back is exercised
+    end-to-end without predicting the probe's alias names."""
+
+    async def execute(self, *, sql: str) -> list[dict]:  # noqa: ARG002  # NOSONAR(S7503)
+        return []
+
+    async def get_column_types(self, *, sql: str) -> dict:
+        import sqlglot
+        parsed = sqlglot.parse_one(sql, dialect="bigquery")
+        return {name: "DOUBLE" for name in parsed.named_selects}
+
+
+async def test_get_column_types_decodes_bigquery_mangled_probe_keys() -> None:
+    """DEV-1716 (Codex review): the type-probe SQL is alias-mangled on BigQuery
+    (it must be, to execute), so the cursor returns mangled keys
+    (``orders___amount_max``). ``get_column_types`` must decode them before the
+    canonical-dotted map-back — otherwise type inference silently returns ``{}``
+    for BigQuery / T-SQL."""
+    tmp = tempfile.TemporaryDirectory()
+    try:
+        storage = YAMLStorage(base_dir=tmp.name)
+        ds = DatasourceConfig(name="bq", type="bigquery", database="proj.dataset")
+        await storage.save_datasource(ds)
+        model = SlayerModel(
+            name="orders",
+            sql_table="proj.dataset.orders_t",
+            data_source="bq",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+        await storage.save_model(model)
+        engine = SlayerQueryEngine(storage=storage)
+        engine._sql_clients[(ds.get_connection_string(), "")] = _EchoTypesClient()
+        types = await engine.get_column_types("orders")
+        # Without the decode fix, the mangled probe keys never match the dotted
+        # ``full`` lookups and this is empty for BigQuery.
+        assert types, f"expected a non-empty type map, got {types!r}"
+    finally:
+        tmp.cleanup()
+
+
 async def test_query_as_model_wrapped_refs_match_mangled_inner_bigquery() -> None:
     """DEV-1716 (Codex review): ``generate(render_mode="wrapped")`` alias-mangles
     the inner query's projection on BigQuery, so ``_query_as_model``'s outer
