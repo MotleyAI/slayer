@@ -26,7 +26,7 @@ BI wire protocols; `slayer/memories` + `slayer/search` agent memory & semantic s
 
 ```bash
 poetry install -E all                                # install with all extras
-poetry run pytest                                    # unit tests (excludes integration)
+poetry run pytest -m "not integration"               # unit tests (excludes integration)
 poetry run pytest tests/integration/ -m integration  # all integration tests
 poetry run pytest tests/test_sql_generator.py -v     # one file
 poetry run slayer serve                              # REST API server
@@ -68,7 +68,7 @@ Always use `poetry run` (correct Poetry-managed virtualenv). Integration tests a
 `tests/conftest.py`.
 
 ```bash
-poetry run pytest                                             # unit only
+poetry run pytest -m "not integration"                        # unit only
 poetry run pytest tests/integration/ -m integration           # integration
 poetry run pytest tests/ -m "integration or not integration"  # everything
 poetry run pytest -m metabase_e2e tests/integration/test_metabase_e2e.py  # live Metabase e2e (needs Docker)
@@ -92,9 +92,9 @@ ALWAYS update documentation when making API or user-facing changes:
 - When renaming a field or changing a response shape, grep all docs and skills for the old name
 
 Every page under `docs/` must be linked from the `nav` block in `zensical.toml` (repo
-root) — add or update the entry in the same commit as the page, or it ships as an orphan
-the published site can't reach. Intentional exceptions: `docs/CLAUDE.md` and
-`docs/api_gaps.md`.
+root) — add or update the entry in the same commit as the page. Otherwise the page is
+still published, but as an orphan users cannot reach through site navigation.
+Intentional exceptions: `docs/CLAUDE.md` and `docs/api_gaps.md`.
 
 ## Design Decisions
 
