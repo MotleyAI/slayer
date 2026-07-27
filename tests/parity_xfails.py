@@ -214,8 +214,6 @@ PARITY_XFAILS: dict[str, str] = {
     'tests/integration/test_integration.py::test_multiple_time_shifts_in_one_query': "DEV-1713 (Stage 9): DEV-1692 duplicate time_shift CTE de-collision.",
     'tests/integration/test_integration.py::test_dev1539_where_multiterm_filter_emits_outer_parens': "DEV-1706 (Stage 2): DEV-1539 predicate outer-parens (resolver invariant).",
     'tests/integration/test_integration.py::test_dev1539_having_multiterm_measure_emits_outer_parens': "DEV-1706 (Stage 2): DEV-1539 predicate outer-parens (resolver invariant).",
-    'tests/integration/test_integration.py::test_round_over_bare_measure_raises': "DEV-1717: DEV-1576 round/abs bare-measure handling not yet on the typed pipeline.",
-    'tests/integration/test_integration.py::test_abs_over_bare_measure_raises': "DEV-1717: DEV-1576 round/abs bare-measure handling not yet on the typed pipeline.",
     'tests/integration/test_integration_postgres.py::TestDev1645ValidPostgres::test_flavor_b_mixed_case_column_sql_executes': "DEV-1712 (Stage 8): DEV-1645 ORDER BY / mixed-case identifier policies.",
     'tests/integration/test_integration_postgres.py::TestDev1645ValidPostgres::test_flavor_b_mixed_case_join_key_executes': "DEV-1712 (Stage 8): DEV-1645 ORDER BY / mixed-case identifier policies.",
     'tests/integration/test_integration_postgres.py::TestDev1645ValidPostgres::test_flavor_a_orderby_nonprojected_column_executes': "DEV-1712 (Stage 8): DEV-1645 ORDER BY unprojected column policy.",

@@ -432,6 +432,42 @@ def _cast_round_arg_to_numeric(node: exp.Expression) -> exp.Expression:
     return node
 
 
+def _first_bare_column_name(key) -> Optional[str]:
+    """Return the leaf name of the first bare column reference inside a
+    ROW-phase composite key (DEV-1576 / DEV-1717 error messages).
+
+    Walks ``ArithmeticKey`` operands / ``ScalarCallKey`` args / a
+    ``TransformKey`` input for a ``ColumnKey`` / ``ColumnSqlKey`` leaf so the
+    "Bare measure name '<col>'" error names the offending column. Returns
+    ``None`` when no column ref is found (caller falls back to the alias).
+    """
+    from slayer.core.keys import (
+        ArithmeticKey,
+        ColumnKey,
+        ColumnSqlKey,
+        ScalarCallKey,
+        TransformKey,
+    )
+
+    if isinstance(key, ColumnKey):
+        return key.leaf
+    if isinstance(key, ColumnSqlKey):
+        return key.column_name
+    if isinstance(key, ArithmeticKey):
+        children = key.operands
+    elif isinstance(key, ScalarCallKey):
+        children = key.args
+    elif isinstance(key, TransformKey):
+        children = [key.input]
+    else:
+        return None
+    for child in children:
+        name = _first_bare_column_name(child)
+        if name is not None:
+            return name
+    return None
+
+
 _WINDOW_DURATION_RE = re.compile(r"(?P<num>\d+)(?P<unit>min|[ymwdhs])")
 _WINDOW_UNIT_SQL = {
     "y": "year",
@@ -3796,9 +3832,11 @@ class SQLGenerator:
         from slayer.core.enums import TimeGranularity
         from slayer.core.keys import (
             AggregateKey,
+            ArithmeticKey,
             ColumnKey,
             ColumnSqlKey,
             Phase,
+            ScalarCallKey,
             TimeTruncKey,
         )
 
@@ -3960,6 +3998,23 @@ class SQLGenerator:
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
+                elif isinstance(key, (ScalarCallKey, ArithmeticKey)):
+                    # DEV-1576 / DEV-1717: a ROW-phase composite here is a
+                    # non-aggregating measure expression (a bare column, or
+                    # arithmetic / scalar-call over bare columns such as
+                    # ``round(amount, 2)`` / ``abs(amount)`` / ``amount + 1``).
+                    # Dimensions are ColumnKey / TimeTruncKey / ColumnSqlKey,
+                    # already handled above; the only way to reach here with a
+                    # composite key is a measure that never aggregates. Raise
+                    # the same actionable "Bare measure name" error the
+                    # enrich_query path raises rather than leaking an internal
+                    # NotImplementedError.
+                    bare = _first_bare_column_name(key) or full_alias
+                    raise ValueError(
+                        f"Bare measure name '{bare}' is not valid. "
+                        f"Use colon syntax (e.g., '{bare}:sum', '{bare}:avg'). "
+                        f"For COUNT(*), use '*:count'."
+                    )
                 else:
                     raise NotImplementedError(
                         f"DEV-1450 stage 7b.10+: row-phase key type "
