@@ -130,6 +130,10 @@ class TsqlDialect(SqlDialect):
         unit_map = {
             "year": "YEAR", "month": "MONTH", "day": "DAY",
             "quarter": "MONTH", "week": "WEEK",
+            # DEV-1572: a one-period shift of a Sunday-week is one week — same
+            # normalization the base ``_granularity_to_unit`` applies (without
+            # it, ``DATEADD(WEEK_SUNDAY, ...)`` is invalid T-SQL).
+            "week_sunday": "WEEK",
             "hour": "HOUR", "minute": "MINUTE", "second": "SECOND",
         }
         unit = unit_map.get(granularity, granularity.upper())

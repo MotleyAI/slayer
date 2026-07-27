@@ -68,6 +68,7 @@ from slayer.memories.resolver import _all_models_in_datasource, resolve_entity
 from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.engine_factory import _runtime_fingerprint
+from slayer.sql.dialects import dialect_for_ds_type, get_dialect
 from slayer.sql.generator import SQLGenerator, generate_planned_stages
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
@@ -219,29 +220,6 @@ _forbidden_sibling_refs_var: ContextVar[Optional[Dict[str, str]]] = ContextVar(
 )
 
 
-_EXPLAIN_PREFIX = {
-    "postgres": "EXPLAIN ANALYZE",
-    "redshift": "EXPLAIN",
-    "mysql": "EXPLAIN FORMAT=JSON",
-    "sqlite": "EXPLAIN QUERY PLAN",
-    "duckdb": "EXPLAIN ANALYZE",
-    "clickhouse": "EXPLAIN",
-    "snowflake": "EXPLAIN USING JSON",
-    "bigquery": None,  # BigQuery doesn't support EXPLAIN via SQL
-    "trino": "EXPLAIN ANALYZE",
-    "presto": "EXPLAIN ANALYZE",
-    "databricks": "EXPLAIN EXTENDED",
-    "spark": "EXPLAIN EXTENDED",
-    "tsql": "SET SHOWPLAN_ALL ON;",  # SQL Server: batch prefix, needs suffix too
-    "oracle": "EXPLAIN PLAN FOR",
-}
-
-
-_EXPLAIN_POSTFIX = {
-    "tsql": "; SET SHOWPLAN_ALL OFF",
-}
-
-
 _PLACEHOLDER_FILL_VALUE = "0"
 
 
@@ -287,14 +265,13 @@ def _apply_placeholder_fill(
 
 
 def _build_explain_sql(dialect: str, sql: str) -> str:
-    """Build a dialect-appropriate EXPLAIN statement."""
-    prefix = _EXPLAIN_PREFIX.get(dialect)
-    if prefix is None:
-        raise ValueError(
-            f"EXPLAIN is not supported for dialect '{dialect}'. Use dry_run=True to inspect the generated SQL instead."
-        )
-    suffix = _EXPLAIN_POSTFIX.get(dialect, "")
-    return f"{prefix} {sql}{suffix}"
+    """Build a dialect-appropriate EXPLAIN statement.
+
+    DEV-1716: delegates to the dialect strategy's ``build_explain_sql`` hook
+    (raises ``ValueError`` for dialects without SQL-level EXPLAIN, e.g.
+    BigQuery) instead of an inline prefix/postfix map.
+    """
+    return get_dialect(dialect).build_explain_sql(sql)
 
 
 class SlayerResponse(BaseModel):
@@ -930,6 +907,10 @@ class SlayerQueryEngine:
                 err=exc, model=model, touched_models=touched
             )
             raise
+        # DEV-1716: dialect-driven read-side decode — BigQuery / T-SQL reverse
+        # their alias mangling here so response keys match SLayer's universal
+        # dotted shape. Identity hook for every other dialect; identity on [].
+        rows = get_dialect(dialect).decode_result_keys(rows)
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
         return SlayerResponse(
             data=rows, columns=columns, sql=sql, attributes=attributes,
@@ -1293,6 +1274,12 @@ class SlayerQueryEngine:
                 "get_column_types probe failed for model '%s'", model_name,
             )
             return {}
+
+        # DEV-1716: on BigQuery / T-SQL the probe SQL is alias-mangled (it has to
+        # be, to execute), so the cursor returns mangled keys like
+        # ``orders___revenue_max``. Decode them back to the canonical dotted form
+        # the ``full`` lookups below use. Identity for every non-mangling dialect.
+        raw_types = get_dialect(dialect).decode_result_keys([raw_types])[0]
 
         # Map qualified aliases (e.g., "orders.revenue_max") back to bare
         # measure names. Probe sources can be ColumnKey (.leaf) or
@@ -2783,8 +2770,19 @@ class SlayerQueryEngine:
                 short = _alias_to_short(cm.alias)
             column_map.append((cm.alias, short, DataType.DOUBLE, cm.label, None, cm.format))
 
-        # Wrap inner SQL: SELECT "orders.id" AS id, "orders.count" AS count, ... FROM (inner) AS _inner
-        rename_parts = [f'"{alias}" AS {short}' for alias, short, _, _, _, _ in column_map]
+        # Wrap inner SQL: SELECT <ref> AS id, <ref> AS count, ... FROM (inner) AS _inner
+        # DEV-1716: ``generate(render_mode="wrapped")`` dialect-quotes AND
+        # (BigQuery / T-SQL) alias-mangles the inner query's projection, so the
+        # outer reference must match. Dialect-quote each alias and apply the same
+        # ``rewrite_emitted_sql`` — identity for Postgres/SQLite/DuckDB and for
+        # MySQL's dot-preserving backticks; mangles the dotted alias on
+        # BigQuery/T-SQL to the ``___`` form the inner actually exposes. A raw
+        # ANSI ``"{alias}"`` would reference a column the mangled inner no longer
+        # has (and be a string literal, not an identifier, on MySQL/BigQuery/T-SQL).
+        def _inner_ref(alias: str) -> str:
+            return generator._dialect.rewrite_emitted_sql(generator._quote_ident(alias))
+
+        rename_parts = [f'{_inner_ref(alias)} AS {short}' for alias, short, _, _, _, _ in column_map]
         wrapped_sql = f"SELECT {', '.join(rename_parts)} FROM ({inner_sql}) AS _inner"
 
         # One Column per result column — each is potentially both a dimension
@@ -3301,25 +3299,10 @@ class SlayerQueryEngine:
 
     @staticmethod
     def _dialect_for_type(ds_type: Optional[str]) -> str:
-        _DIALECT_MAP = {
-            "postgres": "postgres",
-            "postgresql": "postgres",
-            "mysql": "mysql",
-            "mariadb": "mysql",
-            "clickhouse": "clickhouse",
-            "bigquery": "bigquery",
-            "snowflake": "snowflake",
-            "sqlite": "sqlite",
-            "duckdb": "duckdb",
-            "redshift": "redshift",
-            "trino": "trino",
-            "presto": "presto",
-            "athena": "presto",
-            "databricks": "databricks",
-            "spark": "spark",
-            "mssql": "tsql",
-            "sqlserver": "tsql",
-            "tsql": "tsql",
-            "oracle": "oracle",
-        }
-        return _DIALECT_MAP.get(ds_type or "", "postgres")
+        """Map a datasource ``type`` to its sqlglot dialect name.
+
+        DEV-1716: delegates to the DEV-1542 registry (``dialect_for_ds_type``)
+        — single source of truth for the ds-type → dialect mapping — instead
+        of an inline duplicate map. Lenient (unknown / None → ``postgres``).
+        """
+        return dialect_for_ds_type(ds_type).sqlglot_name

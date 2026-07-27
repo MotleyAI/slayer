@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import re
 import tempfile
+from unittest.mock import patch
 
 import sqlglot
 from sqlglot import exp
@@ -742,6 +743,76 @@ class TestEngineTsqlDecodeIntegration:
             assert "orders.status" in resp.columns
         finally:
             tmp.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# DEV-1716 (Codex test-review High 2 / Med 3) — T-SQL also mangles+decodes,
+# so the metadata reconciliation and data-path-only decode scoping apply here
+# too, not just BigQuery.
+# ---------------------------------------------------------------------------
+
+
+async def _build_labeled_tsql_engine(
+    rows: list[dict],
+) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory, DatasourceConfig]:
+    tmp = tempfile.TemporaryDirectory()
+    storage = YAMLStorage(base_dir=tmp.name)
+    ds = DatasourceConfig(name="mssql", type="mssql", database=":memory:")
+    await storage.save_datasource(ds)
+    model = SlayerModel(
+        name="orders",
+        sql_table="orders_t",
+        data_source="mssql",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT, label="Order Status"),
+        ],
+    )
+    await storage.save_model(model)
+    engine = SlayerQueryEngine(storage=storage)
+    engine._sql_clients[(ds.get_connection_string(), "")] = _FakeTsqlClient(rows)
+    return engine, tmp, ds
+
+
+async def test_tsql_attributes_survive_alias_mangling() -> None:
+    """T-SQL brackets+mangles dotted aliases; the SQL-derived expected_columns
+    must be decoded back so the dimension label survives in ``resp.attributes``
+    (Codex High 2)."""
+    engine, tmp, _ = await _build_labeled_tsql_engine([{"orders___status": "paid"}])
+    try:
+        query = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")])
+        resp = await engine.execute(query)
+        assert "orders.status" in resp.attributes.dimensions, (
+            f"T-SQL attributes lost the dimension after mangling: "
+            f"{resp.attributes.dimensions!r}"
+        )
+        assert resp.attributes.dimensions["orders.status"].label == "Order Status"
+    finally:
+        tmp.cleanup()
+
+
+async def test_tsql_explain_does_not_decode_data_rows() -> None:
+    """The DATA-path row decode must NOT run on the explain path (Codex Med 3):
+    the EXPLAIN plan rows are returned verbatim. T-SQL is the mangling dialect
+    that DOES support EXPLAIN (BigQuery raises), so it exercises the explain
+    branch. (The metadata reconciliation legitimately decodes the synthetic
+    expected-columns row through the same hook — assert only that no decode
+    call received the fetched EXPLAIN rows.)"""
+    explain_rows = [{"plan": "..."}]
+    engine, tmp, _ = await _build_labeled_tsql_engine(explain_rows)
+    try:
+        query = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")])
+        with patch.object(
+            TsqlDialect, "decode_result_keys", autospec=True,
+            side_effect=lambda self, rows: rows,
+        ) as spy:
+            await engine.execute(query, explain=True)
+        decoded_args = [call.args[-1] for call in spy.call_args_list]
+        assert explain_rows not in decoded_args, (
+            "explain must not decode the fetched EXPLAIN plan rows."
+        )
+    finally:
+        tmp.cleanup()
 
 
 # ---------------------------------------------------------------------------
