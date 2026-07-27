@@ -607,7 +607,7 @@ def _agg_output_type(*, column: Column, agg: str) -> DataType | None:
     wire schema is always derived from the actual ``LIMIT 0`` execution
     (§5.3), so any inference here is informational.
     """
-    if agg in {"count", "count_distinct"}:
+    if agg in {"count", "count_distinct", "count_distinct_approx"}:
         return DataType.INT
     if agg in {"sum"}:
         # SUM(INT) → INT for SQLite/Postgres; SUM(DOUBLE) → DOUBLE.
