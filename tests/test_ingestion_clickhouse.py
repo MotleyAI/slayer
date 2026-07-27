@@ -178,6 +178,8 @@ class TestUnmappedTypeWarning:
     def test_warning_fires_once_per_type_name(self, caplog):
         with caplog.at_level(logging.WARNING, logger="slayer.engine.ingestion"):
             for _ in range(3):
+                # Unrecognized types stay TEXT: most unmapped types are
+                # comparable. Only the known non-comparable ones are opaque.
                 result = _sa_type_to_data_type(_FakeUnknownType())
                 assert result is DataType.TEXT
 

@@ -278,11 +278,12 @@ def build_catalog_grouped_by_schema(
 
 def _column_types_supported(*, model: SlayerModel) -> bool:
     """Reject the whole model if any non-hidden column has a Column.type
-    outside the six base types (§12 gotcha #7). DataType is a StrEnum so the
-    pydantic field is already constrained to the six values — but a future
-    extension that adds a new variant would silently surface here as
+    outside ``SUPPORTED_DATATYPES`` (§12 gotcha #7). DataType is a StrEnum so
+    the pydantic field is already constrained to the known values — but a
+    future extension that adds a new variant would silently surface here as
     unmappable, which we'd rather catch with a clear warning than emit a
-    half-typed catalog."""
+    half-typed catalog. Opaque ``UNKNOWN`` columns ARE supported: they map to
+    VARCHAR and carry no aggregations (see DEFAULT_AGGREGATIONS_BY_TYPE)."""
     supported = set(SUPPORTED_DATATYPES)
     for col in model.columns:
         if col.hidden:

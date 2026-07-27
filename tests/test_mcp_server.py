@@ -1404,6 +1404,30 @@ class TestBuildSampleQueryArgs:
             "*:count", "extra_string:count_distinct", "quantity:avg",
         ]
 
+    def test_opaque_column_excluded_from_data_profile(self) -> None:
+        """An opaque (``UNKNOWN``) column has no equality operator in the DB,
+        so ``count_distinct``/``min``/``max`` on it would take the whole Data
+        Profile query down. It must be skipped as both measure and dimension."""
+        from slayer.inspect.model_render import _choose_sample_agg
+
+        opaque = Column(name="loc", type=DataType.UNKNOWN, db_type="point")
+        assert _choose_sample_agg(opaque, measure_types={}) is None
+        # ...even when the driver reports a categorical-looking cursor type.
+        assert _choose_sample_agg(opaque, measure_types={"loc": "string"}) is None
+
+        model = SlayerModel(
+            name="places", sql_table="places", data_source="ds",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="city", type=DataType.TEXT),
+                opaque,
+                Column(name="area", type=DataType.DOUBLE),
+            ],
+        )
+        args = _build_sample_query_args(model=model, num_rows=3)
+        assert [f["formula"] for f in args["measures"]] == ["*:count", "area:avg"]
+        assert [d["name"] for d in args["dimensions"]] == ["city"]
+
 
 class TestMarkdownHelpers:
     def test_escape_none_and_empty(self) -> None:

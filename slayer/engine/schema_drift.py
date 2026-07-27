@@ -199,6 +199,22 @@ def data_type_bucket(dt: DataType) -> str:
     return str(dt)
 
 
+def _type_buckets_conflict(*, persisted: DataType, live: DataType) -> bool:
+    """True when persisted vs live types are genuinely incompatible.
+
+    An opaque (``UNKNOWN``) type on either side is treated as compatible with
+    anything. Unmapped DB types (``point``, ``jsonb``, PostGIS, ...) used to
+    coarse to TEXT at introspection time and now read as UNKNOWN, so a strict
+    bucket comparison would report every such pre-existing column as a
+    spurious drift-delete. UNKNOWN carries no type claim to contradict — it
+    only says "we could not classify this" — so it never triggers drift in
+    either direction.
+    """
+    if persisted.is_opaque or live.is_opaque:
+        return False
+    return data_type_bucket(persisted) != data_type_bucket(live)
+
+
 def _is_bare_identifier(s: str | None) -> bool:
     """``s`` is a bare SQL identifier (alphanumeric + underscore, no leading digit)."""
     if not s:
@@ -246,7 +262,7 @@ def _diff_sql_table_columns(
             )
             continue
         live_dt = live_table.columns[bare_name]
-        if data_type_bucket(col.type) != data_type_bucket(live_dt):
+        if _type_buckets_conflict(persisted=col.type, live=live_dt):
             dropped.append(col.name)
             reasons.append(
                 DeleteReason(
@@ -427,7 +443,7 @@ def diff_sql_model(
                     )
                 )
             continue
-        if data_type_bucket(col.type) != data_type_bucket(live_dt):
+        if _type_buckets_conflict(persisted=col.type, live=live_dt):
             dropped_cols.append(col.name)
             reasons.append(
                 DeleteReason(

@@ -225,6 +225,19 @@ def _markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
     return "\n".join([header, sep] + body)
 
 
+def _render_column_type(column: Column) -> str:
+    """Render the ``type`` cell of the Columns table.
+
+    Opaque (``UNKNOWN``) columns are still shown — SLayer stores and displays
+    them — but annotated with their raw database type and a marker saying they
+    can't be queried, so an agent doesn't try to group or aggregate on them.
+    """
+    if not column.type.is_opaque:
+        return str(column.type)
+    detail = column.db_type or "unrecognized DB type"
+    return f"{column.type} ({detail}; not queryable)"
+
+
 def _choose_sample_dims(
     model: SlayerModel,
 ) -> tuple[list[dict[str, str]], set]:
@@ -236,7 +249,8 @@ def _choose_sample_dims(
     for c in model.columns:
         if c.hidden or c.primary_key:
             continue
-        # DEV-1361: TEXT/BOOLEAN are the categorical-shaped types.
+        # DEV-1361: TEXT/BOOLEAN are the categorical-shaped types. This filter
+        # also excludes opaque (UNKNOWN) columns, which cannot be GROUP BY'd.
         if c.type not in (DataType.TEXT, DataType.BOOLEAN):
             continue
         dims.append({"name": c.name})
@@ -260,7 +274,12 @@ def _choose_sample_agg(
     - Otherwise (``avg`` permitted): prefer ``avg`` for numeric columns, else
       ``count_distinct`` (type inferred from ``measure_types`` — the lowercase
       ``engine.get_column_types`` contract — or the column's own ``type``).
+    - Opaque (``UNKNOWN``) columns are always skipped: the DB has no equality
+      operator for their underlying type, so ``count_distinct``/``min``/``max``
+      would fail and take the whole Data Profile query down with them.
     """
+    if column.type.is_opaque:
+        return None
     allowed = column.allowed_aggregations
     if allowed is not None and "avg" not in allowed:
         if not allowed:
@@ -859,7 +878,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 sampled_cell = measure_profile.get(c.name)
             col_rows.append({
                 "name": c.name,
-                "type": str(c.type),
+                "type": _render_column_type(c),
                 "primary_key": "yes" if c.primary_key else "",
                 "sql": c.sql if c.sql else c.name,
                 "allowed_aggregations": aggs,
@@ -981,11 +1000,29 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         query_args = _build_sample_query_args(
             model=model, num_rows=num_rows, measure_types=measure_types,
         )
+        # A single column whose underlying DB type has no equality operator
+        # (point, json, xml — all coarsed to TEXT here, so undetectable up
+        # front) makes the grouped/DISTINCT profile fail. Retry once with a
+        # row-count-only profile so one exotic column can't sink the section.
+        note = ""
         try:
-            sample_query = SlayerQuery.model_validate(query_args)
-            sample_result = await engine.execute(
-                query=sample_query, data_source=model.data_source or None
-            )
+            try:
+                sample_query = SlayerQuery.model_validate(query_args)
+                sample_result = await engine.execute(
+                    query=sample_query, data_source=model.data_source or None
+                )
+            except Exception:
+                minimal_args = dict(query_args)
+                minimal_args["measures"] = [{"formula": "*:count"}]
+                minimal_args["dimensions"] = []
+                sample_query = SlayerQuery.model_validate(minimal_args)
+                sample_result = await engine.execute(
+                    query=sample_query, data_source=model.data_source or None
+                )
+                note = (
+                    "\n\n_Reduced to a row count: at least one column's type does not "
+                    "support the grouping/DISTINCT this profile uses._"
+                )
             sample_sql = sample_result.sql
             cols, data = _strip_model_prefix(
                 columns=sample_result.columns,
@@ -995,7 +1032,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             sample_data = {"columns": cols, "rows": data}
             sample_result.columns = cols
             sample_result.data = data
-            sample_section = f"## Data Profile\n\n{sample_result.to_markdown()}"
+            sample_section = f"## Data Profile\n\n{sample_result.to_markdown()}{note}"
             if show_sql and sample_sql:
                 sample_section = (
                     f"## Data Profile SQL\n\n```sql\n{sample_sql}\n```\n\n"
@@ -1103,6 +1140,12 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 col_payloads.append({
                     "name": c.name,
                     "type": str(c.type),
+                    # Opaque columns only: the raw DB type plus an explicit
+                    # not-queryable marker (see _render_column_type).
+                    **(
+                        {"db_type": c.db_type, "queryable": False}
+                        if c.type.is_opaque else {}
+                    ),
                     "primary_key": c.primary_key,
                     **({"sql": c.sql} if show_sql else {}),
                     "allowed_aggregations": c.allowed_aggregations,

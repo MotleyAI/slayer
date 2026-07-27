@@ -19,6 +19,10 @@ from sqlalchemy.dialects.mssql import (
     TIMESTAMP as MSSQL_TIMESTAMP,
     TINYINT,
 )
+from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
+from sqlalchemy.dialects.postgresql import JSON as PG_JSON
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 from slayer.core.enums import DataType
 from slayer.engine.ingestion import (
@@ -393,6 +397,73 @@ class TestSaTypeToDataTypeIntDouble:
         assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
 
 
+class TestUnmappedTypeBecomesOpaque:
+    """DB types with no equality operator map to the explicit opaque
+    ``UNKNOWN`` type, and the raw type string is retained on
+    ``Column.db_type``. Comparable types — including unmapped ones — keep
+    working as TEXT."""
+
+    def test_non_comparable_sa_type_maps_to_unknown(self) -> None:
+        assert _sa_type_to_data_type(PG_JSON()) is DataType.UNKNOWN
+        assert _sa_type_to_data_type(PG_JSON()).is_opaque is True
+
+    @pytest.mark.parametrize(
+        "sa_type",
+        [
+            JSONB(),  # jsonb HAS ``=`` in Postgres, unlike json
+            PG_UUID(),
+            sa.LargeBinary(),  # bytea
+            PG_ARRAY(sa.Text()),
+        ],
+        ids=["jsonb", "uuid", "bytea", "array"],
+    )
+    def test_comparable_unmapped_types_stay_text(self, sa_type) -> None:
+        """Regression: these are groupable/joinable and must not be marked
+        opaque — doing so would tell an agent a usable column is unusable."""
+        mapped = _sa_type_to_data_type(sa_type)
+        assert mapped is DataType.TEXT
+        assert mapped.is_opaque is False
+
+    def test_mapped_sa_type_unaffected(self) -> None:
+        assert _sa_type_to_data_type(sa.VARCHAR(32)) is DataType.TEXT
+
+    def test_mssql_rowversion_special_case_still_text(self) -> None:
+        # The explicit isinstance guard must survive the UNKNOWN fallback.
+        assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
+
+    def test_ingest_populates_db_type_only_for_opaque_columns(self) -> None:
+        from slayer.core.models import DatasourceConfig
+        from slayer.engine.ingestion import ingest_datasource
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "opaque.db")
+            engine = sa.create_engine(f"sqlite:///{db_path}")
+            with engine.connect() as c:
+                c.execute(sa.text(
+                    "CREATE TABLE t (id INTEGER PRIMARY KEY, "
+                    "name VARCHAR(64), payload JSON, blob_col BLOB)"
+                ))
+                c.commit()
+            engine.dispose()
+
+            ds = DatasourceConfig(name="opaque_ds", type="sqlite", database=db_path)
+            model = next(m for m in ingest_datasource(datasource=ds) if m.name == "t")
+            by_name = {c.name: c for c in model.columns}
+
+            # Opaque: explicit UNKNOWN + raw DB type retained.
+            assert by_name["payload"].type is DataType.UNKNOWN
+            assert by_name["payload"].db_type == "JSON"
+
+            # Mapped types are untouched and carry no db_type.
+            assert by_name["name"].type is DataType.TEXT
+            assert by_name["name"].db_type is None
+            assert by_name["id"].type is DataType.INT
+            assert by_name["id"].db_type is None
+            # bytea/BLOB is comparable — it must NOT be marked opaque.
+            assert by_name["blob_col"].type is DataType.TEXT
+            assert by_name["blob_col"].db_type is None
+
+
 class TestSqliteIngestionRoundTrip:
     """End-to-end: introspect a real SQLite table and confirm narrow types."""
 
@@ -644,8 +715,8 @@ class TestSqliteIngestionProbe:
         ):
             # Mixed bag: one base column (no '.') and one dotted alias.
             columns = [
-                ("qty", DataType.INT, False, False),
-                ("customers.region_id", DataType.INT, False, False),
+                ("qty", DataType.INT, False, False, None),
+                ("customers.region_id", DataType.INT, False, False, None),
             ]
             _sqlite_probe_integer_columns(
                 sa_engine=sa_engine,

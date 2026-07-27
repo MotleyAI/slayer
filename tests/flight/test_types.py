@@ -81,10 +81,22 @@ def test_arrow_to_datatype_returns_none_for_unmappable(arrow_type: pa.DataType) 
 
 
 def test_forward_then_reverse_round_trip() -> None:
-    """For every SLayer DataType, forward-map to Arrow then reverse-map back."""
+    """For every operable SLayer DataType, forward-map to Arrow then back.
+
+    ``UNKNOWN`` is excluded by design: opaque columns travel as Arrow strings,
+    so the reverse map lands on TEXT. Arrow has no "we could not classify
+    this" type to round-trip through.
+    """
     for dt in DataType:
+        if dt.is_opaque:
+            continue
         round_tripped = arrow_to_datatype(datatype_to_arrow(dt))
         assert round_tripped == dt, f"{dt} did not round-trip cleanly"
+
+
+def test_opaque_datatype_maps_to_utf8() -> None:
+    assert datatype_to_arrow(DataType.UNKNOWN) == pa.utf8()
+    assert datatype_to_jdbc(DataType.UNKNOWN) == "VARCHAR"
 
 
 def test_pa_table_from_pylist_with_explicit_schema_preserves_null_cells() -> None:
