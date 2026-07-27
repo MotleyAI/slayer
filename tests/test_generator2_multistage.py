@@ -383,4 +383,11 @@ async def test_multistage_tsql_root_emit_mangles_bracketed_aliases(harness):
     assert '"orders.' not in sql and '"stage1.' not in sql, (
         f"multi-stage T-SQL SQL leaks ANSI-quoted dotted identifiers:\n{sql}"
     )
+    # And no BRACKETED dotted identifier (the T-SQL quote form) survives — a
+    # `[stage1.amount_sum]` would mean the mangle didn't fire on that alias.
+    for identifier in re.findall(r"\[([^\]]+)\]", sql):
+        assert "." not in identifier, (
+            f"multi-stage T-SQL SQL leaks a dotted bracketed identifier "
+            f"[{identifier}]:\n{sql}"
+        )
     assert "___" in sql, f"multi-stage T-SQL mangling did not fire:\n{sql}"
