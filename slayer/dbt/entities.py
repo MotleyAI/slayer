@@ -6,7 +6,6 @@ then generates SLayer ModelJoin objects for foreign entity references.
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple
 
 from slayer.core.enums import JoinType
 from slayer.core.models import ModelJoin
@@ -20,9 +19,9 @@ class EntityRegistry:
 
     def __init__(self) -> None:
         # {entity_name: [(model_name, expr), ...]}
-        self._primaries: Dict[str, List[Tuple[str, str]]] = {}
+        self._primaries: dict[str, list[tuple[str, str]]] = {}
 
-    def build(self, models: List[DbtSemanticModel]) -> None:
+    def build(self, models: list[DbtSemanticModel]) -> None:
         """First pass: register all primary and unique entities."""
         for model in models:
             # Check primary_entity shorthand
@@ -61,7 +60,7 @@ class EntityRegistry:
             )
         self._primaries[entity_name].append((model_name, expr))
 
-    def get_primary_model(self, entity_name: str) -> Optional[Tuple[str, str]]:
+    def get_primary_model(self, entity_name: str) -> tuple[str, str] | None:
         """Look up which model owns this entity as primary.
 
         Returns (model_name, expr) or None.  When multiple models share the
@@ -73,13 +72,13 @@ class EntityRegistry:
             return None
         return min(entries, key=lambda e: e[0])
 
-    def resolve_joins_for_model(self, model: DbtSemanticModel) -> List[ModelJoin]:
+    def resolve_joins_for_model(self, model: DbtSemanticModel) -> list[ModelJoin]:
         """For each foreign entity in the model, generate a ModelJoin to the primary model.
 
         Returns a list of ModelJoin objects. Skips entities whose primary model
         is the same as the current model (self-joins are not useful).
         """
-        joins: List[ModelJoin] = []
+        joins: list[ModelJoin] = []
         # Dedupe by full join signature (target + FK columns) so distinct FKs
         # to the same target — e.g. buyer_id -> users.id AND seller_id -> users.id —
         # each get their own ModelJoin instead of silently collapsing.
@@ -135,14 +134,14 @@ class EntityRegistry:
 
         return joins
 
-    def resolve_entity_to_model(self, entity_name: str) -> Optional[str]:
+    def resolve_entity_to_model(self, entity_name: str) -> str | None:
         """Given an entity name, return the first model that owns it as primary."""
         entry = self.get_primary_model(entity_name)
         if entry is None:
             return None
         return entry[0]
 
-    def get_entity_expr(self, entity_name: str) -> Optional[str]:
+    def get_entity_expr(self, entity_name: str) -> str | None:
         """Get the SQL expression for an entity's primary key column."""
         entry = self.get_primary_model(entity_name)
         if entry is None:

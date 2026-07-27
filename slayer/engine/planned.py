@@ -363,6 +363,10 @@ class PlannedQuery(BaseModel):
     # generator builds a synthetic model from the upstream schema) and for a
     # plain single-model query (the generator uses ``bundle.source_model``).
     render_source_model: Optional[SlayerModel] = None
+    # DEV-1543 — pass-through of ``SlayerQuery.distinct_dimension_values``. When
+    # ``False`` the generator skips the dim-only dedup GROUP BY and emits raw
+    # rows for a measure-less dimension query.
+    distinct_dimension_values: bool = True
 
 
 # ``CrossModelAggregatePlan.rerooted_plan`` is a forward reference to

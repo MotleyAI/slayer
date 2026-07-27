@@ -13,7 +13,6 @@ falls through to the next pipeline step.
 
 from __future__ import annotations
 
-from typing import Optional
 
 import sqlglot.expressions as exp
 
@@ -135,7 +134,7 @@ def _matches_select_current_database(node: exp.Expression) -> bool:
     return False
 
 
-def match_probe(parsed: exp.Expression) -> Optional[RowBatch]:
+def match_probe(parsed: exp.Expression) -> RowBatch | None:
     """Return the canned ``RowBatch`` for a matching probe, else ``None``."""
     if _matches_select_one(parsed):
         return _batch_select_one()

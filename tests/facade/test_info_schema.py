@@ -169,7 +169,10 @@ def test_columns_table_flattens_metrics_and_dimensions() -> None:
     }
     assert kinds_by_col[("orders", "status")] == "DIMENSION"
     assert kinds_by_col[("orders", "ordered_at")] == "DIMENSION"
-    assert kinds_by_col[("orders", "row_count")] == "METRIC"
+    # DEV-1567: synthetic metrics (rule-1 row_count, rule-3 <col>_<agg>,
+    # rule-4 column×custom-agg) are filtered out of INFORMATION_SCHEMA.COLUMNS
+    # — only saved ModelMeasures appear as METRIC kinds in the flat view.
+    assert ("orders", "row_count") not in kinds_by_col
     assert kinds_by_col[("orders", "aov")] == "METRIC"
     for (sch, tbl), ords in _group_ordinals(rows).items():
         assert ords == list(range(1, len(ords) + 1)), f"{(sch, tbl)} ordinals: {ords}"

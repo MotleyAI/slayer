@@ -51,6 +51,23 @@ FK columns from referenced tables are excluded from the source model to avoid re
 
 All models use `sql_table` (the source table) plus `joins` (direct FK joins only, storing source/target column pairs). Multi-hop JOINs are resolved dynamically at query time by walking the join graph.
 
+### SQLite affinity probing
+
+SQLite's declared column types are affinity hints, not strict constraints: a column declared `INTEGER` can store `INTEGER`, `REAL`, `TEXT`, or `BLOB` values per row. To prevent silent truncation downstream (a column declared `INTEGER` but actually storing `0.99` would cast to `0` and break `AVG`/`SUM` results), SLayer runs an additional value-level probe on SQLite ingestion for every column the inspector reports as `INTEGER`-affinity.
+
+The probe samples up to **`PROBE_SCAN_CAP + 1` rows** (100,001 by default; configurable via `slayer.sql.sqlite_introspect.PROBE_SCAN_CAP`). The `+1` lets the probe detect saturation — if 100,001 rows come back, there's at least one row past the cap, and the probe declines to certify INT. It decides per column:
+
+- **DOUBLE** when any row's storage class is `REAL`, or any integer-storage value fails `ROUND(col) = col`, or every distinct TEXT value coerces to a finite `float()`.
+- **TEXT** when any row holds a `BLOB`, or any TEXT value is non-coercible / non-finite, or the distinct-text sample saturates the 1,000-distinct-value cap.
+- **INT** when the entire sample is integer-shaped and the sample isn't saturated.
+- The SA-derived `INT` is kept (probe returns `None`) when the column is empty, all-NULL, the row sample saturates without enough evidence, or the probe itself errors. The probe logs a `WARNING` in the saturated / error cases.
+
+The probe is **idempotent re-ingest aware**: a persisted `Column.type = INT` is widened to `DOUBLE` / `TEXT` on the next `slayer ingest` if the live storage classes disagree. `Column.format = NumberFormat(INTEGER)` (the auto-ingested default) is flipped to `FLOAT` for `DOUBLE` or cleared for `TEXT`; user-set custom formats (currency, custom precision) are preserved verbatim with an `INFO` log noting the type change. The CLI prints `Updated: <model> (widened: <col>)` so the change is visible.
+
+Non-SQLite datasources (Postgres, MySQL, DuckDB, ClickHouse, SQL Server) skip the probe entirely — their type systems are strict and this class of bug doesn't exist.
+
+Already-persisted v7 SQLite models with the wrong `INT` type are **not** auto-repaired on `storage.get_model()` load (running a full table scan per column on every load would be too expensive). Re-ingest is the auto-heal path: `slayer ingest` or `slayer serve --ingest-on-startup`. The DEV-1361 DOUBLE → INT narrowing on legacy-dict migration is also gated on the probe on SQLite — it only fires when the probe positively certifies INT.
+
 ## Usage
 
 ### CLI
@@ -157,7 +174,7 @@ Each per-datasource pass refreshes embeddings for the datasource doc,
 every visible model + its visible children, **and every memory whose
 canonical entities are rooted at the datasource** (DEV-1416). A stale
 `embeddings.db` (created without an `OPENAI_API_KEY`, or after a manual
-`memories.yaml` edit) is therefore repaired by the next
+`memories/<id>.md` edit) is therefore repaired by the next
 `--ingest-on-startup` with no extra step. Per-memory embed failures
 surface as `IngestionError(model_name="memory:<id>", …)` in the
 result's `errors` list.
@@ -259,15 +276,17 @@ Ingest-on-startup: N/M datasources ingested (K failed: name1, name2)
 - **Existing `sql_table`-mode model** → append new columns and joins from the live schema. Existing columns and joins are **never** mutated — `description`, `label`, `format`, `meta`, and `allowed_aggregations` are preserved verbatim.
 - **Existing `sql`-mode or query-backed model with the matching name** → skipped silently; those are user-authored.
 
+With the default YAML storage, two live tables whose quoted names differ only by letter case (`"Orders"` vs `orders`) cannot both be persisted — model names collide as filenames on macOS / Windows, so the save is rejected (`IdCollisionError`). The first table wins; the second surfaces as a per-model entry in `IdempotentIngestResult.errors` (or a per-model message on the CLI / MCP paths) without aborting the rest of the ingest. SQLite storage persists both.
+
 After the additive pass, `validate_models` runs against the in-scope models and the result is merged into the response (`IdempotentIngestResult.to_delete`). Type-bucket drift on existing columns surfaces there — apply via `slayer validate-models --force-clean`, then re-ingest to pick up the new live type. See [Schema Drift](schema-drift.md) for the full diff / cascade contract.
 
 ### Search side effects
 
 After validation, every ingest also refreshes the search corpus for the touched datasource:
 
-- **Sample values** (`Column.sampled`) — re-profiled for every non-hidden, non-PK column on every table-backed model in the datasource. The cached snapshot is consumed by the tantivy search index and by `inspect_model`. See [Search](search.md#sample-value-cache).
-- **Embedding rows** — when the `embedding_search` extra is installed and a usable provider API key is in the environment, the embedding refresh re-runs for the datasource doc plus every visible model + its visible children. `SLAYER_EMBEDDING_MODEL` is an *optional* override of the default (`openai/text-embedding-3-small`); setting it is not required. The SHA256 `content_hash` on each row means re-ingests are cheap when nothing changed. See [Search](search.md#channel-3--dense-embedding-similarity).
+- **Sample values** (`Column.sampled`) — **not** re-profiled at ingest. A per-column full-table scan would dominate ingest wall-clock on wide datasources, so samples are populated lazily on the first `inspect` of a column (or explicitly via `slayer search refresh-samples`). See [Search](search.md#sample-value-cache).
+- **Embedding rows** — when the `advanced_search` extra is installed and a usable provider API key is in the environment, the embedding refresh re-runs for the datasource doc plus every visible model + its visible children. `SLAYER_EMBEDDING_MODEL` is an *optional* override of the default (`openai/text-embedding-3-small`); setting it is not required. The SHA256 `content_hash` on each row means re-ingests are cheap when nothing changed. See [Search](search.md#channel-3--dense-embedding-similarity).
 
-Both refreshes are best-effort: per-entity runtime failures land in `IdempotentIngestResult.errors` as friendly strings, never aborting ingestion. When the `embedding_search` extra is not installed or no API key is configured for the active embedding model, the embedding pass is silently skipped — the user-visible signal lives on the next `search` response.
+Both refreshes are best-effort: per-entity runtime failures land in `IdempotentIngestResult.errors` as friendly strings, never aborting ingestion. When the `advanced_search` extra is not installed or no API key is configured for the active embedding model, the embedding pass is silently skipped — the user-visible signal lives on the next `search` response.
 
 `include_tables` / `exclude_tables` constrain the additive pass plus the `sql_table`-mode subset of validation: a `sql_table`-mode model whose table is excluded is left out of both. `sql`-mode and query-backed models in the same datasource are still passed through `validate_models` regardless of the table filter — they are not tied to a specific table name. Run `validate_models` directly (no `--include`/`--exclude`) to validate only those modes.

@@ -75,8 +75,9 @@ claude mcp list
 
 | Tool | Description |
 |------|-------------|
-| `models_summary` | Brief summary of all non-hidden models in a datasource: each model's name, description, a table of its **columns** and **measures** (named formulas), and the list of models it joins to. The Markdown form (default) shows just `name` + `description` per column; the JSON form (`format="json"`) additionally includes the column `type`. Neither form includes distinct values, sample data, or joined-model field expansion — call `inspect_model` for those. Params: `datasource_name`, `format` (default `"markdown"`; also `"json"`). |
-| `inspect_model` | Complete view of a single model: metadata with row count (and a `**meta:**` bullet when the model has `meta` set), any model-level or column-level filters, **columns table** (with a `sampled` column — distinct values for string/boolean columns, `min .. max` for number/date/time columns — and a `meta` cell when set), **measures table** of named formulas (with `formula`, `label`, `description`, `meta`), custom aggregations (with `meta`), joins, all fields reachable via joins (default depth 5), and a sample-data table. Every Markdown table auto-prunes all-empty columns (so the `meta` column is hidden when no entity has meta) and collapses to a comma-separated backticked list when only one column remains. Params: `model_name`, `num_rows` (default 3), `show_sql` (default false — include SQL for the sample-data query, the custom-SQL block, model-level filters, the cached backing-query SQL, and aggregation formulas/param SQL), `format` (default `"markdown"`; also `"json"`), `sections` (subset of `["columns", "measures", "aggregations", "joins", "reachable_fields", "samples"]` — default `None`/`[]` renders all six; the first four collapse to a one-line backticked CSV of names when omitted, `reachable_fields`/`samples` are dropped entirely, unknown names emit a footer warning. A non-empty list of *only* unknown names resolves to no sections — "all six" is reserved for `None`/`[]` so a typo can't silently trigger the full payload), `descriptions_max_chars` (when set, truncate each description longer than this with the suffix `"... [truncated]"` (prefixed by a space); applies to model, columns, measures, and aggregations; must be `>= 0`), `reachable_fields_depth` (max BFS depth in path segments — default 5, allowed range `[0, 20]`; ignored when `reachable_fields` is not in `sections`). When any section is trimmed, a quoted-Markdown footer lists what was shown / names-only / omitted with a hint on how to re-call. JSON output mirrors this with `<section>_names` siblings and top-level `omitted_sections`, `names_only_sections`, `unknown_sections` arrays. |
+| `models_summary` | Brief summary of all non-hidden models in a datasource: each model's name, description, a table of its **columns** and **measures** (named formulas), and the list of models it joins to. The Markdown form (default) shows just `name` + `description` per column; the JSON form (`format="json"`) additionally includes the column `type`. Neither form includes distinct values or sample data — call `inspect_model` for those. For multi-hop discovery (fields reachable via joins from a given model), use the `search` tool with `cypher_filter` for graph queries. Params: `datasource_name`, `format` (default `"markdown"`; also `"json"`). |
+| `inspect` | Single-entity point lookup: the rendered detail for **exactly one** entity by `reference` + required `entity_type` (`datasource`/`model`/`column`/`measure`/`aggregation`/`memory`). No fusion/ranking/cypher and no bundled memories — use `search` for an entity *in context*. `reference` accepts canonical ids, bare names, join paths (`orders.customers.region` → owning model), and `memory:<id>`; normalised via the shared resolver (normalised id echoed in the JSON shape). `entity_type` settles the 3-part canonical collision (column vs measure vs aggregation sharing a name) and asserts the kind (mismatch → detailed error). Renders hidden entities. Params: `reference`, `entity_type`, `compact` (default true), `format` (`"markdown"`/`"json"`), and the model-only `num_rows`/`show_sql`/`sections`/`descriptions_max_chars` (used for `entity_type="model"`; `descriptions_max_chars` applies to every kind; others ignored-with-warning for non-model kinds, `show_sql` a silent no-op for column/measure/aggregation). **`compact=True`** is description-only for leaf/datasource/memory, and a cheap **schema skeleton** (column/measure/aggregation **names** + join targets, zero DB calls) for `model`. **`compact=False`** reuses the full `inspect_model` rendering for `model`, and renders a per-model skeleton per visible model (sorted by name; `models: [...]` in JSON) for `datasource`. JSON `text` is present iff non-empty (omitted under `compact=True`). Also on REST `POST /inspect`, CLI `slayer inspect`, and `SlayerClient.inspect`/`inspect_sync`. **Batch (DEV-1612):** `reference` also accepts a **list** of ids (homogeneous kind, one `entity_type` for all). A single `str` stays byte-for-byte; a list returns one block per id in input order, each echoing its resolved canonical id (`## <canonical>` headers in markdown, a JSON array under `format="json"`). One-element lists are still framed; per-id errors are isolated; an empty list raises. |
+| `inspect_model` | **DEPRECATED — use `inspect`.** Complete view of a single model: metadata with row count (and a `**meta:**` bullet when the model has `meta` set), any model-level or column-level filters, **columns table** (with a `sampled` column — distinct values for string/boolean columns, `min .. max` for number/date/time columns — and a `meta` cell when set), **measures table** of named formulas (with `formula`, `label`, `description`, `meta`), custom aggregations (with `meta`), direct joins, and a sample-data table. Every Markdown table auto-prunes all-empty columns (so the `meta` column is hidden when no entity has meta) and collapses to a comma-separated backticked list when only one column remains. Params: `model_name`, `num_rows` (default 3), `show_sql` (default false — include SQL for the sample-data query, the custom-SQL block, model-level filters, the cached backing-query SQL, and aggregation formulas/param SQL), `format` (default `"markdown"`; also `"json"`), `sections` (subset of `["columns", "measures", "aggregations", "joins", "samples", "learnings"]` — default `None`/`[]` renders all six; the first four collapse to a one-line backticked CSV of names when omitted, `samples`/`learnings` are dropped entirely, unknown names emit a footer warning. A non-empty list of *only* unknown names resolves to no sections — "all six" is reserved for `None`/`[]` so a typo can't silently trigger the full payload), `descriptions_max_chars` (when set, truncate each description longer than this with the suffix `"... [truncated]"` (prefixed by a space); applies to model, columns, measures, and aggregations; must be `>= 0`). When any section is trimmed, a quoted-Markdown footer lists what was shown / names-only / omitted with a hint on how to re-call. JSON output mirrors this with `<section>_names` siblings and top-level `omitted_sections`, `names_only_sections`, `unknown_sections` arrays. For multi-hop reachability use the `search` tool. |
 | `create_model` | Create a model from a table/SQL definition or from a query. Pass `sql_table`/`sql` with `columns` (and optional named-formula `measures`) for table-based, or pass `query` (a SLayer query dict) to save it as a query-backed model whose `columns` + `backing_query_sql` are populated by a save-time dry-run. |
 | `edit_model` | Edit an existing model in one call. Upserts `columns`, `measures` (named formulas), `aggregations`, `joins` (pass the new entries; existing names are updated, new ones are added). Also accepts `description`, `data_source`, `default_time_dimension`, `sql_table`/`sql`/`source_queries`, `query_variables`, `hidden`, `meta`, `add_filters`/`remove_filters`, and `remove: {"columns": [...], "measures": [...], "aggregations": [...], "joins": [...]}` for entity removal. |
 | `delete_model` | Delete a model entirely. |
@@ -86,6 +87,7 @@ claude mcp list
 | Tool | Description |
 |------|-------------|
 | `query` | Execute a semantic query. See [Queries](../concepts/queries.md) for format. |
+| `query_nested` | Execute a multi-stage DAG of named sub-queries that reference one another via `source_model` or `joins.target_model`. Companion to `query`; the engine auto-sorts the list, so order doesn't matter. Params: `queries: List[Dict[str, Any]]`, plus `variables` / `show_sql` / `dry_run` / `explain` / `format` mirroring `query`. |
 
 **`query` parameters:**
 
@@ -111,26 +113,56 @@ claude mcp list
 |------|-------------|
 | `ingest_datasource_models` | Auto-generate models from DB schema with rollup joins. Params: `datasource_name`, `include_tables`, `schema_name`. |
 
-### Conceptual Help
+### Memories + semantic search
+
+Memories are free-form notes the agent saves against canonical entity strings (`<ds>`, `<ds>.<model>`, `<ds>.<model>.<leaf>`, or `memory:<id>`). `search` is the only retrieval surface and returns memories **and** entity discovery hits in one flat ranked list. See [Memories](../concepts/memories.md) and [Search](../concepts/search.md).
 
 | Tool | Description |
 |------|-------------|
-| `help` | Return SLayer concept explanations that complement the schema-focused tool docstrings. Call without arguments for the intro; pass `topic="..."` for a deep dive. The tool description lists every available topic — no exploratory call needed. |
+| `search` | Up to three-channel retrieval over memories and canonical entities (datasource / model / column / measure / aggregation), RRF-fused (k=60) into a single ranked list of `SearchHit` objects. |
+| `save_memory` | Persist a free-form `learning` tagged with canonical entities or an inline `SlayerQuery`. |
+| `forget_memory` | Delete a memory by id. Cascade-strips every other memory's `memory:<id>` ref to it. |
 
-Available topics and what they cover (content lives in `slayer/help/topics/*.md`, discovered dynamically):
+**`search` parameters:**
 
-| Topic | Covers |
-|-------|--------|
-| `queries` | Anatomy of a [query](../concepts/queries.md); evaluation order; dimensions vs [time dimensions](../concepts/queries.md#timedimension) on the same column; `main_time_dimension` disambiguation |
-| `formulas` | The [formula mini-language](../concepts/formulas.md) shared by `measures` and `filters`; colon syntax; arithmetic; nesting |
-| `aggregations` | Built-in and [custom aggregations](../examples/07_aggregations/aggregations.md); `first`/`last` time-column resolution; `allowed_aggregations` |
-| `transforms` | `cumsum`, `time_shift`, `change`, `lag`, the rank family (`rank`/`percent_rank`/`dense_rank`/`ntile`, optional `partition_by=`), `last()` — trade-offs and nesting ([time post](../examples/04_time/time.md)) |
-| `time` | Granularities, `date_range`, `whole_periods_only`, the three meanings of "last" |
-| `filters` | Operators; auto-routing to HAVING / post-filter; filtered measures; [model-level filters](../concepts/models.md#model-filters) |
-| `joins` | Dot syntax and the `__` alias convention; cross-model measures and diamond joins ([joins post](../examples/05_joins/joins.md), [joined measures](../examples/05_joined_measures/joined_measures.md)) |
-| `models` | Source modes (`sql_table`, `sql`, `source_queries`); query-backed models, `query_variables`, cached `backing_query_sql`; result column naming; `default_time_dimension`; hidden models ([models ref](../concepts/models.md)) |
-| `extending` | `ModelExtension`, query lists, `create_model_from_query` (with `variables=`), run-by-name via `query` tool ([multistage post](../examples/06_multistage_queries/multistage_queries.md)) |
-| `workflow` | Tool-chaining playbook, query-iteration tips, common-error decoder |
+| Param | Type | Description |
+|-------|------|-------------|
+| `entities` | list[str] | Canonical entity strings (`mydb.orders.amount`, `memory:42`, …) or aggregated colon forms (`revenue:sum` — the suffix is stripped). Drives the BM25 channel. Unresolved tokens emit warnings, not errors. |
+| `query` | dict \| SlayerQuery | Inline query; its `source_model`, dimensions, measures, time dims, and filters are walked for canonical entities. |
+| `question` | str | Free-text question. Drives the Tantivy full-text channel and (when available) the dense-embedding channel. |
+| `datasource` | str | When set, every channel pre-filters to canonical ids rooted at that datasource. Unknown name → error. |
+| `cypher_filter` | str | Graph pre-filter applied to all three channels. Full openCypher when `advanced_search` is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges; read-only — `CREATE`, `MERGE`, `DELETE`, `SET`, `REMOVE`, `DROP`, `CALL` are rejected). Without the extra, only the naive form `MATCH (n:Label1:Label2…) RETURN n.id AS id` is accepted as a label/kind filter; richer Cypher raises with an install hint. |
+| `max_results` | int | Cap applied **after** RRF fusion and the `cypher_filter` allowlist. Default `10`. |
+
+`SearchResponse.results` is a flat list of `SearchHit { kind, id, score, text, matched_entities, query }`. `kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `forget_memory`); `hit.query is not None` marks a saved example query. Column hits embed the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded; overflow columns are marked `50+ distinct` in the text snapshot); stale column profiles are refreshed lazily inside `search()`.
+
+**`save_memory(learning, linked_entities, id=None)`** — `linked_entities` accepts canonical entity strings (strict resolution; `memory:<id>` valid for cross-memory refs) **or** an inline `SlayerQuery` dict (the entities are auto-extracted and the query is persisted on the memory). Optional `id` pins a user-controlled canonical memory id; forbidden charset: `:`, `/`, `?`, `#`, whitespace, ASCII control. Omit `id` to let the allocator assign the next int-shaped id (`max(int-shaped id) + 1`). Duplicate id → unconditional upsert; `created_at` preserved.
+
+**`forget_memory(id)`** — removes the memory, drops the matching embedding row, and strips every `memory:<id>` ref to it from every other memory's `entities` list (exact-match only — `memory:42` does not strip `memory:421`).
+
+### Conceptual help (help memories)
+
+SLayer's conceptual help is not a tool — it ships as a predefined set of **help
+memories** seeded into storage on server startup. Read the entry point with
+`inspect(reference="memory:help.intro", entity_type="memory")`; it lists the
+deep-dive topics, each of which you inspect the same way. `search(question="…")`
+also surfaces the relevant topic. The server instructions point new agents at
+`memory:help.intro`.
+
+Available topics and what they cover (content lives in `slayer/memories/help_content/*.md`, seeded as `memory:help.<topic>`):
+
+| Topic id | Covers |
+|----------|--------|
+| `memory:help.queries` | Anatomy of a [query](../concepts/queries.md); evaluation order; dimensions vs [time dimensions](../concepts/queries.md#timedimension) on the same column; `main_time_dimension` disambiguation |
+| `memory:help.formulas` | The [formula mini-language](../concepts/formulas.md) shared by `measures` and `filters`; colon syntax; arithmetic; nesting |
+| `memory:help.aggregations` | Built-in and [custom aggregations](../examples/07_aggregations/aggregations.md); `first`/`last` time-column resolution; `allowed_aggregations` |
+| `memory:help.transforms` | `cumsum`, `time_shift`, `change`, `lag`, the rank family (`rank`/`percent_rank`/`dense_rank`/`ntile`, optional `partition_by=`), `last()` — trade-offs and nesting ([time post](../examples/04_time/time.md)) |
+| `memory:help.time` | Granularities, `date_range`, `whole_periods_only`, the three meanings of "last" |
+| `memory:help.filters` | Operators; auto-routing to HAVING / post-filter; filtered measures; [model-level filters](../concepts/models.md#model-filters) |
+| `memory:help.joins` | Dot syntax and the `__` alias convention; cross-model measures and diamond joins ([joins post](../examples/05_joins/joins.md), [joined measures](../examples/05_joined_measures/joined_measures.md)) |
+| `memory:help.models` | Source modes (`sql_table`, `sql`, `source_queries`); query-backed models, `query_variables`, cached `backing_query_sql`; result column naming; `default_time_dimension`; hidden models ([models ref](../concepts/models.md)) |
+| `memory:help.extending` | `ModelExtension`, query lists, `create_model_from_query` (with `variables=`), run-by-name via `query` tool ([multistage post](../examples/06_multistage_queries/multistage_queries.md)) |
+| `memory:help.workflow` | Tool-chaining playbook, query-iteration tips, common-error decoder |
 
 ## Typical Agent Workflows
 

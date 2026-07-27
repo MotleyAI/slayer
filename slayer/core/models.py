@@ -3,9 +3,10 @@
 import logging
 import os
 import re
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Optional
 
 from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
+from sqlalchemy.engine import URL as _SA_URL
 
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
@@ -22,6 +23,19 @@ from slayer.storage.migrations import migrate as _migrate_schema
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 logger = logging.getLogger(__name__)
+
+# Host-field normalization for the generic connection URL. ``URL.create``
+# wants a raw host (IPv6 without brackets) plus a separate port, but the
+# pre-fix string branch tolerated the port being embedded in the host
+# field. These two patterns split it back out. See
+# ``DatasourceConfig.get_connection_string``.
+#
+# ``[<ipv6>]`` or ``[<ipv6>]:<port>`` — bracketed IPv6, optional port.
+_BRACKETED_HOST_RE = re.compile(r"^\[(.+)\](?::(\d+))?$")
+# ``<host>:<numeric-port>`` — the leading class excludes ``:`` and ``[`` so
+# bare IPv6 (``::1``) and bracketed IPv6 never match here; only a
+# single-colon, numeric-tail host does.
+_HOST_EMBEDDED_PORT_RE = re.compile(r"^([^:\[]+):(\d+)$")
 
 
 class _SubstringRule:
@@ -122,19 +136,19 @@ class Column(BaseModel):
     Replaces v1 ``Dimension`` and ``Measure`` (which were merged in v2).
     """
     name: str
-    sql: Optional[str] = None
+    sql: str | None = None
     type: DataType = DataType.TEXT
     primary_key: bool = False
-    description: Optional[str] = None
-    label: Optional[str] = None
+    description: str | None = None
+    label: str | None = None
     hidden: bool = False
-    format: Optional[NumberFormat] = None
-    allowed_aggregations: Optional[List[str]] = None
-    filter: Optional[str] = None  # Applied inside CASE WHEN at aggregation time only
-    meta: Optional[Dict[str, Any]] = None
-    sampled: Optional[str] = None  # DEV-1375: cached sample-value snapshot
-    sampled_values: Optional[List[str]] = None  # DEV-1480: structured top-N
-    distinct_count: Optional[int] = None  # DEV-1480: true cardinality at profile time
+    format: NumberFormat | None = None
+    allowed_aggregations: list[str] | None = None
+    filter: str | None = None  # Applied inside CASE WHEN at aggregation time only
+    meta: dict[str, Any] | None = None
+    sampled: str | None = None  # DEV-1375: cached sample-value snapshot
+    sampled_values: list[str] | None = None  # DEV-1480: structured top-N
+    distinct_count: int | None = None  # DEV-1480: true cardinality at profile time
 
     @model_validator(mode="before")
     @classmethod
@@ -181,11 +195,11 @@ class ModelMeasure(BaseModel):
     contexts; the difference is scope.
     """
     formula: str
-    name: Optional[str] = None
-    label: Optional[str] = None
-    description: Optional[str] = None
-    type: Optional[DataType] = None
-    meta: Optional[Dict[str, Any]] = None
+    name: str | None = None
+    label: str | None = None
+    description: str | None = None
+    type: DataType | None = None
+    meta: dict[str, Any] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -203,7 +217,7 @@ class ModelMeasure(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def _validate_name(cls, v: Optional[str]) -> Optional[str]:
+    def _validate_name(cls, v: str | None) -> str | None:
         if v is not None and not _NAME_PATTERN.match(v):
             raise ValueError(
                 f"Invalid name '{v}': must contain only letters, digits, "
@@ -213,7 +227,7 @@ class ModelMeasure(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def _reject_transform_shadowing(cls, v: Optional[str]) -> Optional[str]:
+    def _reject_transform_shadowing(cls, v: str | None) -> str | None:
         """A saved measure named after a built-in transform (``cumsum`` etc.)
         would shadow the transform when written as ``cumsum(...)`` in another
         formula. Reject these names at construction time.
@@ -261,10 +275,24 @@ class Aggregation(BaseModel):
     For fully custom aggregations, ``formula`` is required.
     """
     name: str
-    formula: Optional[str] = None  # SQL template; None = use built-in formula
-    params: List[AggregationParam] = Field(default_factory=list)
-    description: Optional[str] = None
-    meta: Optional[Dict[str, Any]] = None
+    formula: str | None = None  # SQL template; None = use built-in formula
+    params: list[AggregationParam] = Field(default_factory=list)
+    description: str | None = None
+    meta: dict[str, Any] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        # DEV-1567: same identifier rule as Column.name / ModelMeasure.name.
+        # The pg-facade catalog flattens cross-model entries with a dotted
+        # prefix; the local/cross-model split would misclassify a dotted
+        # Aggregation.name as cross-model.
+        if not _NAME_PATTERN.match(v):
+            raise ValueError(
+                f"Invalid name '{v}': must contain only letters, digits, "
+                f"and underscores, and start with a letter or underscore"
+            )
+        return v
 
     @model_validator(mode="after")
     def _require_formula_for_custom(self) -> "Aggregation":
@@ -347,7 +375,7 @@ class SourceModelOrigin(BaseModel):
     ``exclude=True`` so accidental save paths drop it cleanly.
     """
     name: str
-    data_source: Optional[str] = None
+    data_source: str | None = None
     parent: Optional["SourceModelOrigin"] = None
     agg_column_names: frozenset[str] = Field(default_factory=frozenset)
 
@@ -355,12 +383,17 @@ class SourceModelOrigin(BaseModel):
 class ModelJoin(BaseModel):
     """A join relationship to another model."""
     target_model: str                               # Name of the joined model
-    join_pairs: List[List[str]] = Field(...)        # [["source_dim", "target_dim"], ...]
+    join_pairs: list[list[str]] = Field(...)        # [["source_dim", "target_dim"], ...]
     join_type: JoinType = JoinType.LEFT             # LEFT (default) or INNER
+    # DEV-1643: optional human/agent metadata (e.g. carrying OSI relationship
+    # ai_context on import). Purely additive/optional — old data omits them and
+    # validates unchanged, so no SlayerModel schema-version bump is needed.
+    description: str | None = None
+    meta: dict[str, Any] | None = None
 
     @field_validator("join_pairs")
     @classmethod
-    def _validate_join_pairs(cls, v: List[List[str]]) -> List[List[str]]:
+    def _validate_join_pairs(cls, v: list[list[str]]) -> list[list[str]]:
         if not v:
             raise ValueError("join_pairs must be non-empty")
         for i, pair in enumerate(v):
@@ -374,17 +407,17 @@ class ModelJoin(BaseModel):
 class SlayerModel(BaseModel):
     version: int = 7
     name: str
-    sql_table: Optional[str] = None
-    sql: Optional[str] = None
+    sql_table: str | None = None
+    sql: str | None = None
     source_queries: Annotated[
-        Optional[List], BeforeValidator(_coerce_source_queries)
+        list | None, BeforeValidator(_coerce_source_queries)
     ] = None  # List of SlayerQuery — query-backed source mode
-    query_variables: Dict[str, Any] = Field(default_factory=dict)
-    backing_query_sql: Optional[str] = None
+    query_variables: dict[str, Any] = Field(default_factory=dict)
+    backing_query_sql: str | None = None
     data_source: str = ""
-    columns: List[Column] = Field(default_factory=list)
-    measures: List[ModelMeasure] = Field(default_factory=list)
-    aggregations: List[Aggregation] = Field(default_factory=list)
+    columns: list[Column] = Field(default_factory=list)
+    measures: list[ModelMeasure] = Field(default_factory=list)
+    aggregations: list[Aggregation] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -436,20 +469,20 @@ class SlayerModel(BaseModel):
                 f"model belongs to."
             )
         return self
-    joins: List[ModelJoin] = Field(default_factory=list)
-    filters: List[str] = Field(default_factory=list)  # Model-level filters (always applied)
-    default_time_dimension: Optional[str] = None
-    description: Optional[str] = None
+    joins: list[ModelJoin] = Field(default_factory=list)
+    filters: list[str] = Field(default_factory=list)  # Model-level filters (always applied)
+    default_time_dimension: str | None = None
+    description: str | None = None
     hidden: bool = False
-    meta: Optional[Dict[str, Any]] = None
+    meta: dict[str, Any] | None = None
     # DEV-1449: in-memory breadcrumb for virtual stage models produced by
     # ``_query_as_model``. ``exclude=True`` keeps it out of YAML/SQLite
     # roundtrips; virtual stage models are not persisted in the first place.
-    source_model_origin: Optional[SourceModelOrigin] = Field(default=None, exclude=True)
+    source_model_origin: SourceModelOrigin | None = Field(default=None, exclude=True)
 
     @field_validator("filters")
     @classmethod
-    def _validate_filter_predicates(cls, v: List[str]) -> List[str]:
+    def _validate_filter_predicates(cls, v: list[str]) -> list[str]:
         """Validate each model filter as a SQL-mode predicate (DEV-1369).
 
         Model filters are SQL snippets: joined column references use the
@@ -619,7 +652,7 @@ class SlayerModel(BaseModel):
                         f"in source_queries must have a 'name'."
                     )
         seen: set = set()
-        dupes: List[str] = []
+        dupes: list[str] = []
         for stage in stages:
             n = getattr(stage, "name", None)
             if not n:
@@ -634,19 +667,19 @@ class SlayerModel(BaseModel):
             )
         return self
 
-    def get_column(self, name: str) -> Optional[Column]:
+    def get_column(self, name: str) -> Column | None:
         for c in self.columns:
             if c.name == name:
                 return c
         return None
 
-    def get_measure(self, name: str) -> Optional[ModelMeasure]:
+    def get_measure(self, name: str) -> ModelMeasure | None:
         for m in self.measures:
             if m.name == name:
                 return m
         return None
 
-    def get_aggregation(self, name: str) -> Optional[Aggregation]:
+    def get_aggregation(self, name: str) -> Aggregation | None:
         for a in self.aggregations:
             if a.name == name:
                 return a
@@ -654,17 +687,40 @@ class SlayerModel(BaseModel):
 
 
 class DatasourceConfig(BaseModel):
-    version: int = 1
+    version: int = 2
     name: str
-    type: Optional[str] = None
-    host: Optional[str] = None
-    port: Optional[int] = None
-    database: Optional[str] = None
-    username: Optional[str] = None
-    password: Optional[str] = None
-    connection_string: Optional[str] = None
-    schema_name: Optional[str] = None
-    description: Optional[str] = None
+    type: str | None = None
+    host: str | None = None
+    port: int | None = None
+    database: str | None = None
+    username: str | None = None
+    password: str | None = None
+    connection_string: str | None = None
+    schema_name: str | None = None
+    # ``schema_name`` (above) is the UPSTREAM physical schema this datasource
+    # reads from (e.g. a Snowflake/Postgres source schema). ``postgres_schema``
+    # is unrelated: it's the schema name the Postgres *facade* advertises this
+    # datasource's models under. Default ``None`` => "public", so by default
+    # every datasource's models share one schema; set it to separate them.
+    postgres_schema: str | None = None
+    description: str | None = None
+    # Snowflake-specific (v2, DEV-1551). Other dialects ignore them.
+    # ``connection_name`` is the primary auth path — when set, all credentials
+    # come from ``~/.snowflake/connections.toml`` via
+    # ``snowflake.connector.connect(connection_name=...)``. Inline form
+    # (host as account, username, password, database, schema_name) is the
+    # secondary path; ``warehouse`` and ``role`` populate the URL's query
+    # string for that path. See docs/configuration/datasources.md#snowflake.
+    connection_name: str | None = None
+    warehouse: str | None = None
+    role: str | None = None
+    # BigQuery-specific. Other dialects ignore it. The contents of a Google
+    # service-account key file as a JSON string. When set, the BigQuery dialect
+    # constructs the SQLAlchemy engine with ``credentials_info=json.loads(...)``
+    # so the connection authenticates against that service account directly.
+    # When unset, BigQuery falls back to Application Default Credentials
+    # (``GOOGLE_APPLICATION_CREDENTIALS`` env var or attached compute identity).
+    credentials_json: str | None = Field(default=None, repr=False)
 
     @model_validator(mode="before")
     @classmethod
@@ -696,11 +752,54 @@ class DatasourceConfig(BaseModel):
         _NO_COLON.check(name=v, context=label)
         return v
 
+    @field_validator("postgres_schema")
+    @classmethod
+    def _validate_postgres_schema(cls, v: str | None) -> str | None:
+        # The facade advertises models under this schema, so it must be a
+        # plain unquoted Postgres identifier. Postgres folds unquoted
+        # identifiers to lowercase, so we require lowercase to avoid the
+        # quoting ambiguity that would otherwise surprise BI tools.
+        if v is None:
+            return v
+        _require_non_empty_trimmed(v=v, context="Datasource 'postgres_schema'")
+        if not re.fullmatch(r"[a-z_][a-z0-9_]*", v):
+            raise ValueError(
+                f"Datasource 'postgres_schema' must be a lowercase Postgres "
+                f"identifier matching [a-z_][a-z0-9_]*, got {v!r}"
+            )
+        return v
+
+    def _get_tsql_connection_string(self) -> str:
+        return _SA_URL.create(
+            "mssql+pyodbc",
+            username=self.username or None,
+            password=self.password or None,
+            host=self.host or "localhost",
+            port=self.port,
+            database=self.database or "",
+            query={
+                "driver": "ODBC Driver 18 for SQL Server",
+                "TrustServerCertificate": "yes",
+            },
+        ).render_as_string(hide_password=False)
+
     def get_connection_string(self) -> str:
         if self.connection_string:
             return self.connection_string
+        # Dialect-specific hook (DEV-1551): SnowflakeDialect builds the
+        # sentinel ``snowflake://?connection_name=<name>`` URL or the
+        # full snowflake-sqlalchemy URL from inline fields. Tier-1
+        # dialects without a custom hook return None and fall through
+        # to the standard branches below.
+        from slayer.sql.dialects import dialect_for_ds_type  # noqa: PLC0415
+        dialect = dialect_for_ds_type(self.type)
+        url_from_dialect = dialect.build_connection_url(self)
+        if url_from_dialect is not None:
+            return str(url_from_dialect)
         if self.type in ("sqlite", "duckdb"):
             return f"{self.type}:///{self.database}"
+        if self.type in ("mssql", "sqlserver", "tsql"):
+            return self._get_tsql_connection_string()
         driver_map = {
             "postgres": "postgresql",
             "postgresql": "postgresql",
@@ -709,17 +808,49 @@ class DatasourceConfig(BaseModel):
             "clickhouse": "clickhouse+http",
         }
         driver = driver_map.get(self.type, self.type)
-        auth = ""
-        if self.username:
-            auth = self.username
-            if self.password:
-                auth += f":{self.password}"
-            auth += "@"
-        host_port = self.host or "localhost"
-        if self.port:
-            host_port += f":{self.port}"
-        db = self.database or ""
-        return f"{driver}://{auth}{host_port}/{db}"
+        # Build the URL with SQLAlchemy's structured builder (issue #240)
+        # rather than manual string concatenation, so credentials containing
+        # reserved URL characters (``@``, ``/``, ``:``, ...) are
+        # percent-encoded in the userinfo section instead of being misparsed
+        # as URL delimiters. ``username``/``password`` are treated as raw
+        # credentials; ``host or "localhost"`` preserves the pre-fix default.
+        # (SQLAlchemy renders the database path unencoded, matching the
+        # pre-fix behavior — a ``?`` in a database name is not our concern.)
+        # Mirrors ``_get_tsql_connection_string``.
+        host, port = self.host or "localhost", self.port
+        # Backward-compat with the pre-fix string branch, which tolerated the
+        # port (and IPv6 brackets) living in the host field. ``URL.create``
+        # wants a raw host + separate port, so normalize:
+        #   [::1] / [::1]:5432  -> strip brackets, lift embedded port
+        #   db.example:5432     -> split single-colon numeric port
+        # A bare IPv6 host (``::1``) is left as-is — ``URL.create`` brackets
+        # it correctly. If the host embeds a port AND the ``port`` field is
+        # also set, that is contradictory config — raise rather than guess.
+        embedded_port: str | None = None
+        bracketed = _BRACKETED_HOST_RE.match(host)
+        if bracketed:
+            host = bracketed.group(1)
+            embedded_port = bracketed.group(2)
+        else:
+            embedded = _HOST_EMBEDDED_PORT_RE.match(host)
+            if embedded:
+                host, embedded_port = embedded.group(1), embedded.group(2)
+        if embedded_port is not None:
+            if port is not None:
+                raise ValueError(
+                    f"Datasource '{self.name}': port is set both in the host "
+                    f"field ({self.host!r}) and in the 'port' field ({port}); "
+                    f"specify it in only one place."
+                )
+            port = int(embedded_port)
+        return _SA_URL.create(
+            drivername=driver,
+            username=self.username or None,
+            password=self.password or None,
+            host=host,
+            port=port,
+            database=self.database or "",
+        ).render_as_string(hide_password=False)
 
     def resolve_env_vars(self) -> "DatasourceConfig":
         data = self.model_dump()

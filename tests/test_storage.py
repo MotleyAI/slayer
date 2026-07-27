@@ -74,6 +74,35 @@ class TestModelStorage:
         loaded = await storage.get_model("test_model")
         assert loaded.description == "Updated description"
 
+    async def test_empty_model_file_raises_clear_error(
+        self, storage: YAMLStorage, sample_model: SlayerModel
+    ) -> None:
+        # A zero-byte model file (disk-full / interrupted write) must surface
+        # an actionable error, not a bare Pydantic model_type failure.
+        await storage.save_model(sample_model)
+        path = os.path.join(storage.models_dir, "test_ds", "test_model.yaml")
+        open(path, "w").close()  # NOSONAR(S7493) — test corrupts a tiny local fixture file; sync I/O is intentional
+
+        with pytest.raises(ValueError, match="empty or corrupt") as excinfo:
+            await storage.get_model("test_model")
+        assert "test_model" in str(excinfo.value)
+        assert "slayer ingest" in str(excinfo.value)
+
+    async def test_truncated_model_file_raises_clear_error(
+        self, storage: YAMLStorage, sample_model: SlayerModel
+    ) -> None:
+        # A file cut off mid-write (full disk) is invalid YAML; the error must
+        # name the file and the remediation, not surface a bare yaml trace.
+        await storage.save_model(sample_model)
+        path = os.path.join(storage.models_dir, "test_ds", "test_model.yaml")
+        with open(path, "w") as f:  # NOSONAR(S7493) — test corrupts a tiny local fixture file; sync I/O is intentional
+            f.write('name: "test_model\ncolumns:\n  - name: "id\n')
+
+        with pytest.raises(ValueError, match="invalid YAML") as excinfo:
+            await storage.get_model("test_model")
+        assert "test_model.yaml" in str(excinfo.value)
+        assert "slayer ingest" in str(excinfo.value)
+
 
 class TestDatasourceStorage:
     async def test_save_and_get(self, storage: YAMLStorage, sample_datasource: DatasourceConfig) -> None:

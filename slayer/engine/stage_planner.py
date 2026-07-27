@@ -708,6 +708,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         stage_schema=stage_schema,
         active_time_dimension_slot_id=active_td_slot_id,
         render_source_model=render_source_model,
+        distinct_dimension_values=query.distinct_dimension_values,
     )
 
 
@@ -852,7 +853,9 @@ def _format_description_for_dimension(
     return col.format, col.description
 
 
-_COUNT_AGGREGATIONS: FrozenSet[str] = frozenset({"count", "count_distinct"})
+_COUNT_AGGREGATIONS: FrozenSet[str] = frozenset(
+    {"count", "count_distinct", "count_distinct_approx"}
+)
 _FLOAT_AGGREGATIONS: FrozenSet[str] = frozenset({
     "avg", "weighted_avg", "median",
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
@@ -870,7 +873,7 @@ def _infer_aggregated_type(
     ``_infer_aggregated_format`` (decision #2 of the Stage B plan):
 
     * ``*:count`` (measure_name=``"*"``) → ``INT``
-    * ``count`` / ``count_distinct`` → ``INT``
+    * ``count`` / ``count_distinct`` / ``count_distinct_approx`` → ``INT``
     * ``avg`` / ``weighted_avg`` / ``median`` / parametric / stat aggs →
       ``DOUBLE``
     * ``sum`` / ``min`` / ``max`` / ``first`` / ``last`` → inherit from

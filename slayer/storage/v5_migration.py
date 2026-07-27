@@ -12,7 +12,6 @@ backends after this dict-migrator runs.
 
 from __future__ import annotations
 
-from typing import Optional
 
 from slayer.storage.migrations import register_migration
 
@@ -32,7 +31,7 @@ _LEGACY_PSEUDO: frozenset[str] = frozenset({
 })
 
 
-def _coerce_type_string(t: Optional[str]) -> tuple[bool, Optional[str]]:
+def _coerce_type_string(t: str | None) -> tuple[bool, str | None]:
     """Map a single ``type`` value. Returns ``(should_set, new_value)``.
 
     * Legacy lowercase canonical → mapped uppercase.

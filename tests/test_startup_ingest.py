@@ -22,7 +22,6 @@ import sys
 import tempfile
 import types
 from pathlib import Path
-from typing import List, Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -59,9 +58,9 @@ def _ds(name: str) -> DatasourceConfig:
 
 def _stub_storage(
     *,
-    names: List[str],
-    list_raises: Optional[BaseException] = None,
-    missing: Optional[List[str]] = None,
+    names: list[str],
+    list_raises: BaseException | None = None,
+    missing: list[str] | None = None,
 ) -> MagicMock:
     """Build a storage stub with async `list_datasources` and `get_datasource`.
 
@@ -74,7 +73,7 @@ def _stub_storage(
     else:
         storage.list_datasources = AsyncMock(return_value=list(names))
 
-    async def _get(name: str) -> Optional[DatasourceConfig]:  # NOSONAR(S7503) — must be `async def` to be a valid AsyncMock.side_effect
+    async def _get(name: str) -> DatasourceConfig | None:  # NOSONAR(S7503) — must be `async def` to be a valid AsyncMock.side_effect
         if name in missing_set:
             return None
         if name in names:
@@ -139,7 +138,7 @@ def _patch_ingester(monkeypatch, behaviour):
     `behaviour` is a callable `(name, ds) -> IdempotentIngestResult` (or
     `(name, ds) -> raise`). Awaited by the orchestrator.
     """
-    call_log: List[str] = []
+    call_log: list[str] = []
 
     async def fake(*, datasource, storage, schema, include_tables, exclude_tables):  # NOSONAR(S7503) — must be `async def` to replace the real async ingest_datasource_idempotent
         call_log.append(datasource.name)
@@ -652,6 +651,21 @@ class TestDemoIngestOrdering:
 
 
 class TestProgrammaticKwarg:
+    @pytest.fixture(autouse=True)
+    def _no_seed_help(self, monkeypatch):
+        # DEV-1658: create_app / create_mcp_server now seed help.* memories on
+        # startup. These tests pass a MagicMock stub storage (no async memory
+        # API), and are about ingest orchestration, not seeding — so no-op the
+        # seed in both server modules.
+        async def _noop(*, storage):  # noqa: ANN001, ANN002 # NOSONAR(S7503) — async signature required; replaces the awaited seed_help_memories
+            return 0
+
+        import slayer.api.server as api_server
+        import slayer.mcp.server as mcp_server_mod
+
+        monkeypatch.setattr(api_server, "seed_help_memories", _noop)
+        monkeypatch.setattr(mcp_server_mod, "seed_help_memories", _noop)
+
     def test_create_app_with_kwarg_triggers_orchestrator(self, monkeypatch):
         calls: list = []
 
@@ -859,12 +873,13 @@ class TestMemoryEmbeddingsOnStartup:
             )
 
             async def fake_embed_batch(  # NOSONAR(S7503) — must be `async def` to match the patched embed_batch signature
-                texts: List[str], *, model: Optional[str] = None,
-            ) -> List[Optional[List[float]]]:
+                texts: list[str], *, model: str | None = None,
+            ) -> list[list[float] | None]:
                 return [[0.1, 0.2, 0.3] for _ in texts]
 
             monkeypatch.setattr(
-                "slayer.embeddings.service.embed_batch", fake_embed_batch,
+                "slayer.search.retrievers.embeddings.embed_batch",
+                fake_embed_batch,
             )
 
             stream = io.StringIO()

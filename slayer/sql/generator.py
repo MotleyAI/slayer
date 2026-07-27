@@ -14,6 +14,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import (
+    BUILTIN_AGGREGATIONS,
     BUILTIN_AGGREGATION_FORMULAS,
     BUILTIN_AGGREGATION_REQUIRED_PARAMS,
     DataType,
@@ -35,7 +36,7 @@ from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
 )
-from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
+from slayer.sql.dialects import SqlDialect, get_dialect
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 
 
@@ -334,31 +335,21 @@ _TWO_ARG_STAT_AGGS: frozenset[str] = frozenset({"corr", "covar_samp", "covar_pop
 #
 # Name kept as ``_LOCAL_SLICE`` for grep continuity with 7b.8-7b.12
 # call sites and tests; the set is no longer local-only.
-_BUILTIN_BAREARG_AGGS_LOCAL_SLICE: frozenset[str] = frozenset({
-    "sum", "avg", "min", "max", "count", "count_distinct", "median",
-    "percentile", "weighted_avg",
-    "corr", "covar_samp", "covar_pop",
-    "stddev_samp", "stddev_pop", "var_samp", "var_pop",
-    "first", "last",
-})
+#
+# DEV-1717: bound to the canonical ``BUILTIN_AGGREGATIONS`` enum rather than a
+# hand-maintained duplicate. The two allowlists must stay byte-identical — a
+# new built-in aggregation added to the enum is dispatched here automatically,
+# so they can never silently desync (a lockstep-edit hazard CodeRabbit flagged
+# when ``count_distinct_approx`` had to be added to both).
+_BUILTIN_BAREARG_AGGS_LOCAL_SLICE: frozenset[str] = BUILTIN_AGGREGATIONS
 
 # DEV-1337: dialects with native single-arg `log10(x)` / `log2(x)`. sqlglot
 # normalises both into a generic ``Log(this=Literal(base), expression=arg)``
 # AST and re-emits as ``LOG(base, x)`` for almost every dialect, which
 # diverges from the recipe formula text and (on dialects without 2-arg
 # ``LOG``) can break a previously working call. We rewrite the AST back
-# to ``Anonymous(this='log10'|'log2', ...)`` for the dialects below;
-# unsupported dialects (oracle; tsql for log2) keep the canonical 2-arg
-# form. Mirrored in tests/test_sql_generator.py — keep in sync.
-_LOG10_NATIVE_DIALECTS: frozenset[str] = frozenset({
-    "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
-    "snowflake", "bigquery", "redshift",
-    "trino", "presto", "databricks", "spark", "tsql",
-})
-_LOG2_NATIVE_DIALECTS: frozenset[str] = frozenset({
-    "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
-    "bigquery", "trino", "presto", "databricks", "spark",
-})
+# to ``Anonymous(this='log10'|'log2', ...)``; the per-dialect native-alias
+# decision is delegated to ``SqlDialect.should_use_native_log`` (DEV-1716).
 
 # Transforms that use self-join CTEs instead of window functions.
 # This gives correct results at result-set edges (no NULLs when the DB has the data)
@@ -400,6 +391,43 @@ def _wrap_filter(sql_str: str, filter_sql: Optional[str]) -> str:
     if not filter_sql:
         return sql_str
     return f"(CASE WHEN {filter_sql} THEN {sql_str} END)"
+
+
+def _first_bare_column_name(key) -> Optional[str]:
+    """Return the leaf name of the first bare column reference inside a
+    ROW-phase composite key (DEV-1576 / DEV-1717 error messages).
+
+    Walks ``ArithmeticKey`` operands / ``ScalarCallKey`` args / a
+    ``TransformKey`` input for a ``ColumnKey`` / ``ColumnSqlKey`` leaf so the
+    "Bare measure name '<col>'" error names the offending column. Returns
+    ``None`` when no column ref is found (caller falls back to the alias).
+    """
+    from slayer.core.keys import (
+        ArithmeticKey,
+        ColumnKey,
+        ColumnSqlKey,
+        ScalarCallKey,
+        TransformKey,
+    )
+
+    if isinstance(key, ColumnKey):
+        return key.leaf
+    if isinstance(key, ColumnSqlKey):
+        return key.column_name
+    if isinstance(key, ArithmeticKey):
+        children = key.operands
+    elif isinstance(key, ScalarCallKey):
+        children = key.args
+    elif isinstance(key, TransformKey):
+        children = [key.input]
+    else:
+        return None
+    for child in children:
+        name = _first_bare_column_name(child)
+        if name is not None:
+            return name
+    return None
+
 
 _WINDOW_DURATION_RE = re.compile(r"(?P<num>\d+)(?P<unit>min|[ymwdhs])")
 _WINDOW_UNIT_SQL = {
@@ -638,8 +666,18 @@ def _strip_trailing_pagination(sql: str) -> str:
 class SQLGenerator:
     """Generates SQL from an EnrichedQuery."""
 
-    def __init__(self, dialect: str = "postgres"):
-        self.dialect = dialect
+    def __init__(self, dialect: "str | SqlDialect" = "postgres"):
+        if isinstance(dialect, SqlDialect):
+            self._dialect: SqlDialect = dialect
+        else:
+            self._dialect = get_dialect(dialect)
+
+    @property
+    def dialect(self) -> str:
+        """The sqlglot dialect name. Read-only — derived from
+        ``self._dialect.sqlglot_name``. Mutating it would desync the
+        strategy object from the string sqlglot consumes (DEV-1716)."""
+        return self._dialect.sqlglot_name
 
     def _parse(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
         """Parse ``sql`` via sqlglot, applying SLayer-specific AST rewrites.
@@ -660,13 +698,33 @@ class SQLGenerator:
         site.
         """
         d = dialect or self.dialect
+        active = self._dialect if d == self.dialect else get_dialect(d)
         tree = sqlglot.parse_one(sql, dialect=d)
-        if d == "sqlite":
-            tree = rewrite_sqlite_json_extract(tree)
+        # DEV-1716: PARSE-dialect keyed AST rewrite (SQLite rewrites
+        # JSONExtract to the function-call form — DEV-1331). Default identity.
+        tree = active.rewrite_parsed_ast(tree)
         # Log-alias rewrite is multi-dialect; the per-base allowlist check
         # lives inside ``_rewrite_log_aliases`` so unsupported dialects
         # (oracle; tsql for log2) keep the canonical 2-arg LOG form.
-        return tree.transform(self._rewrite_log_aliases)
+        tree = tree.transform(self._rewrite_log_aliases)
+        # DEV-1716: TARGET-dialect keyed AST rewrite (Postgres wraps the first
+        # arg of a 2-arg ROUND in a numeric CAST — DEV-1576). Keyed to the
+        # generator's target dialect, not the parse dialect.
+        return self._dialect.rewrite_target_ast(tree)
+
+    def _finalize_scalar_call(self, expr: exp.Expression) -> exp.Expression:
+        """Apply the target-dialect AST rewrite to a scalar-call expression
+        (DEV-1576 / DEV-1717).
+
+        Scalar calls (``round``/``abs``/``coalesce``/…) in formulas are
+        assembled directly as ``exp.func(...)`` AST, never string-parsed, so
+        the ``rewrite_target_ast`` applied inside ``_parse`` never sees them.
+        Routing them through the same dialect hook here keeps the 2-arg
+        Postgres ``ROUND`` numeric-cast (and any future target rewrite)
+        consistent between parsed and AST-built expressions. Identity for
+        dialects whose ``rewrite_target_ast`` is a no-op.
+        """
+        return self._dialect.rewrite_target_ast(expr)
 
     def _parse_predicate(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
         """Parse a bare WHERE/HAVING predicate expression (DEV-1378).
@@ -686,16 +744,16 @@ class SQLGenerator:
         possible.
         """
         d = dialect or self.dialect
+        active = self._dialect if d == self.dialect else get_dialect(d)
         wrapped = sqlglot.parse_one(f"SELECT 1 WHERE {sql}", dialect=d)
         where = wrapped.args.get("where")
         if where is None or where.this is None:  # pragma: no cover — defensive
             raise ValueError(
                 f"Could not extract WHERE predicate from {sql!r} (dialect={d!r})"
             )
-        tree = where.this
-        if d == "sqlite":
-            tree = rewrite_sqlite_json_extract(tree)
-        return tree.transform(self._rewrite_log_aliases)
+        tree = active.rewrite_parsed_ast(where.this)
+        tree = tree.transform(self._rewrite_log_aliases)
+        return self._dialect.rewrite_target_ast(tree)
 
     def generate(
         self,
@@ -755,6 +813,12 @@ class SQLGenerator:
 
         if render_mode == "outer":
             sql = self._apply_outer_projection_trim(sql=sql, enriched=enriched)
+        # DEV-1716: dialect-driven post-pass — BigQuery / T-SQL mangle dotted
+        # aliases here (identity for every other dialect). Fires for BOTH
+        # render modes so inner-CTE column names are mangled consistently with
+        # the outer projection (the outer stage's references to inner columns
+        # must resolve to the same ``___``-form alias).
+        sql = self._dialect.rewrite_emitted_sql(sql)
         return sql
 
     def _apply_outer_projection_trim(
@@ -827,40 +891,57 @@ class SQLGenerator:
         limit,
         offset_arg,
     ) -> str:
-        """Emit ``SELECT <public> FROM (<inner>) AS _outer [ORDER/LIMIT/OFFSET]``.
+        """Thin delegate to ``self._dialect.emit_outer_wrap`` (DEV-1716).
 
-        ``inner_sql`` is used as-is to preserve its formatting (callers
-        diff against literal ``OVER (...)`` substrings). Trailing
-        ORDER/LIMIT/OFFSET segments are stripped from ``inner_sql`` and
-        re-emitted on the outer wrapper.
+        Strips trailing ORDER BY / LIMIT / OFFSET from ``inner_sql``
+        (text-level) before handing off to the dialect hook, then passes
+        the detached AST nodes for re-emission on the outer statement. The
+        hook owns the wrap shape (base derived-table form; ``TsqlDialect``
+        hoists inner CTEs) AND the dialect-correct identifier quoting of the
+        public-alias list (backticks / brackets / ANSI double quotes).
         """
-        outer_select = _SQL_COL_SEP.join(f'"{a}"' for a in public)
         if order is None and limit is None and offset_arg is None:
-            return (
-                f"SELECT\n    {outer_select}\n"
-                f"FROM (\n{inner_sql.rstrip()}\n) AS _outer"
-            )
-        inner_no_pag = _strip_trailing_pagination(inner_sql)
-        out = (
-            f"SELECT\n    {outer_select}\n"
-            f"FROM (\n{inner_no_pag.rstrip()}\n) AS _outer"
+            stripped = inner_sql
+        else:
+            stripped = _strip_trailing_pagination(inner_sql)
+        return self._dialect.emit_outer_wrap(
+            inner_sql=stripped,
+            public=public,
+            order=order,
+            limit=limit,
+            offset_arg=offset_arg,
+            parse=self._parse,
         )
-        if order is not None:
-            # DEV-1444 (Codex review on PR #134): the detached ORDER BY
-            # may carry inner-CTE qualifiers like ``_base."col"`` from
-            # ``_assemble_combined_sql``; those don't resolve at the
-            # outer wrapper level (only ``_outer`` is in scope). Strip
-            # every Column's table qualifier — the outer scope exposes
-            # each column by its bare alias name.
-            for col in order.find_all(exp.Column):
-                if col.args.get("table") is not None:
-                    col.set("table", None)
-            out += "\n" + order.sql(dialect=self.dialect, pretty=True)
-        if limit is not None:
-            out += "\n" + limit.sql(dialect=self.dialect, pretty=True)
-        if offset_arg is not None:
-            out += "\n" + offset_arg.sql(dialect=self.dialect, pretty=True)
-        return out
+
+    def _quote_ident(self, name: str) -> str:
+        """Render ``name`` as ONE dialect-quoted identifier string (DEV-1716).
+
+        Backticks on MySQL/BigQuery, brackets on T-SQL, ANSI double quotes on
+        Postgres/SQLite/DuckDB. Replaces raw ``f'"{name}"'`` sites in the
+        string-assembled CTE/projection paths so non-ANSI dialects get correct
+        quoting in the first place (a terminal string-rewrite can't fix ANSI
+        quotes — MySQL re-parses them as string literals). The BigQuery / T-SQL
+        alias-mangling ``rewrite_emitted_sql`` post-pass then fires on the
+        dotted quoted identifier. Identity round-trip on Postgres/SQLite (still
+        ``"name"``), so those emissions are unchanged.
+        """
+        return exp.to_identifier(name, quoted=True).sql(dialect=self.dialect)
+
+    def _ordered(self, order_col: exp.Expression, *, ascending: bool) -> exp.Ordered:
+        """Build an ``exp.Ordered`` node, suppressing sqlglot's NULLS-emulation
+        ``CASE WHEN`` on T-SQL (DEV-1571 Bug 2 / DEV-1716).
+
+        On T-SQL, sqlglot emits ``CASE WHEN <alias> IS NULL THEN 1 ELSE 0 END,
+        <alias>`` to emulate NULLS ordering whenever ``nulls_first`` is unset;
+        the bracketed alias INSIDE the CASE WHEN mis-resolves against the FROM
+        scope (``Invalid column name``). Pinning ``nulls_first`` to T-SQL's
+        native default for the direction (FIRST on ASC, LAST on DESC)
+        suppresses the wrapper. No-op on every other dialect.
+        """
+        kwargs: dict = {"this": order_col, "desc": not ascending}
+        if self.dialect == "tsql":
+            kwargs["nulls_first"] = ascending
+        return exp.Ordered(**kwargs)
 
     def _build_combined(self, enriched: EnrichedQuery,
                          base_sql: str) -> list[tuple[str, str]]:
@@ -1092,9 +1173,9 @@ class SQLGenerator:
         for m in enriched.measures:
             if not _has_cross_model_filter(m) and not _is_windowed_measure(m):
                 base_cols.append(m.alias)
-        final_parts = [f'_base."{a}"' for a in base_cols]
+        final_parts = [f'_base.{self._quote_ident(a)}' for a in base_cols]
         for cte_name, alias, _ in measure_cte_refs:
-            final_parts.append(f'{cte_name}."{alias}"')
+            final_parts.append(f'{cte_name}.{self._quote_ident(alias)}')
 
         from_clause_str = "FROM _base"
         joined_ctes: set = set()
@@ -1108,7 +1189,7 @@ class SQLGenerator:
             effective_aliases = cte_join_aliases if cte_join_aliases is not None else join_aliases
             join_on_parts = []
             for a in effective_aliases:
-                join_on_parts.append(f'_base."{a}" = {cte_name}."{a}"')
+                join_on_parts.append(f'_base.{self._quote_ident(a)} = {cte_name}.{self._quote_ident(a)}')
             if join_on_parts:
                 from_clause_str += f"\nLEFT JOIN {cte_name} ON {' AND '.join(join_on_parts)}"
             else:
@@ -1147,10 +1228,11 @@ class SQLGenerator:
                 col = order_item.column
                 col_name = self._resolve_order_column(col=col, enriched=enriched)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
+                qcol = self._quote_ident(col_name)  # DEV-1716: dialect-quoted
                 if col_name in base_cols:
-                    order_parts.append(f'_base."{col_name}" {direction}')
+                    order_parts.append(f'_base.{qcol} {direction}')
                 else:
-                    order_parts.append(f'"{col_name}" {direction}')
+                    order_parts.append(f'{qcol} {direction}')
             sql += "\nORDER BY " + ", ".join(order_parts)
         if enriched.limit is not None:
             sql += f"\nLIMIT {enriched.limit}"
@@ -1159,8 +1241,7 @@ class SQLGenerator:
 
         return sql
 
-    @staticmethod
-    def _apply_pagination_to_sql(enriched: EnrichedQuery, sql: str) -> str:
+    def _apply_pagination_to_sql(self, enriched: EnrichedQuery, sql: str) -> str:
         """Apply ORDER BY, LIMIT, OFFSET to a raw SQL string."""
         if enriched.order:
             order_parts = []
@@ -1168,7 +1249,7 @@ class SQLGenerator:
                 col = order_item.column
                 col_name = SQLGenerator._resolve_order_column(col=col, enriched=enriched)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
-                order_parts.append(f'"{col_name}" {direction}')
+                order_parts.append(f'{self._quote_ident(col_name)} {direction}')  # DEV-1716
             sql += "\nORDER BY " + ", ".join(order_parts)
         if enriched.limit is not None:
             sql += f"\nLIMIT {enriched.limit}"
@@ -1256,70 +1337,26 @@ class SQLGenerator:
         Used to shift raw timestamps before DATE_TRUNC in shifted CTEs so that
         aggregated time buckets align with the base query's buckets.
         """
-        unit_map = {"year": "YEAR", "month": "MONTH", "day": "DAY",
-                    "quarter": "MONTH", "week": "WEEK", "hour": "HOUR",
-                    "minute": "MINUTE", "second": "SECOND"}
-        unit = unit_map.get(granularity, granularity.upper())
-        val = offset * 3 if granularity == "quarter" else offset
-
-        if self.dialect == "sqlite":
-            sqlite_units = {"YEAR": "years", "MONTH": "months", "DAY": "days",
-                            "WEEK": "days", "HOUR": "hours", "MINUTE": "minutes",
-                            "SECOND": "seconds"}
-            sqlite_unit = sqlite_units.get(unit, unit.lower() + "s")
-            sqlite_val = val * 7 if granularity == "week" else val
-            return exp.Anonymous(
-                this="DATE",
-                expressions=[col_expr, exp.Literal.string(f"{sqlite_val} {sqlite_unit}")],
-            )
-
-        # Standard SQL: col ± INTERVAL N UNIT (single-unit; sqlglot transpiles
-        # to the dialect-correct form, e.g. MySQL `INTERVAL N UNIT`,
-        # ClickHouse same, BigQuery same).
-        if val >= 0:
-            return exp.Add(this=col_expr, expression=exp.Interval(
-                this=exp.Literal.number(val), unit=exp.Var(this=unit),
-            ))
-        return exp.Sub(this=col_expr, expression=exp.Interval(
-            this=exp.Literal.number(-val), unit=exp.Var(this=unit),
-        ))
+        return self._dialect.build_time_offset_expr(
+            col_expr=col_expr, offset=offset, granularity=granularity,
+        )
 
     def _duration_interval_exprs(self, duration: str, sign: int = 1) -> list[exp.Expression]:
         """Return per-unit AST nodes that `_add_intervals_expr` will chain.
 
-        Non-SQLite: one positive `exp.Interval` per parsed (amount, unit) pair.
-        The Add-vs-Sub direction is decided by `_add_intervals_expr` from its
-        own `sign` arg, not baked into the Interval — sqlglot transpiles each
-        single-unit interval per dialect (MySQL: `INTERVAL N UNIT`;
-        ClickHouse: same; BigQuery: same), avoiding the broken Postgres-shape
-        multi-unit literal `INTERVAL '1 year 2 month 3 day'` that fails on
-        every Tier-1+ non-SQLite/non-Postgres dialect.
-
-        SQLite: one DATETIME-modifier string literal per pair, sign baked in.
-        Week is converted to `N*7 days` (SQLite has no week unit).
+        Delegates to the dialect strategy (DEV-1716) — Postgres-shape returns
+        ``exp.Interval`` nodes; SQLite returns DATETIME-modifier string
+        literals with sign baked in.
         """
         parts = _parse_window_duration(duration)
-        if self.dialect == "sqlite":
-            prefix = "+" if sign >= 0 else "-"
-            return [
-                exp.Literal.string(
-                    f"{prefix}{(amount * 7 if unit == 'w' else amount)} "
-                    f"{_WINDOW_UNIT_SQLITE[unit]}"
-                )
-                for amount, unit in parts
-            ]
-        return [
-            exp.Interval(
-                this=exp.Literal.number(amount),
-                unit=exp.Var(this=_WINDOW_UNIT_SQL[unit].upper()),
-            )
-            for amount, unit in parts
-        ]
+        return self._dialect.duration_interval_exprs(parts=parts, sign=sign)
 
     def _granularity_interval_expr(self, granularity: TimeGranularity, sign: int = 1) -> list[exp.Expression]:
         if granularity == TimeGranularity.QUARTER:
             duration = "3m"
-        elif granularity == TimeGranularity.WEEK:
+        elif granularity in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY):
+            # DEV-1572: a WEEK_SUNDAY shift spans one calendar week, same as WEEK
+            # (only the bucket anchor differs — Sunday vs Monday).
             duration = "1w"
         else:
             unit_to_duration = {
@@ -1337,20 +1374,13 @@ class SQLGenerator:
                             sign: int = 1) -> exp.Expression:
         """Compose `expr ± interval [± interval ...]` as AST.
 
-        SQLite: wraps as `DATETIME(expr, mod1, mod2, ...)` (sign baked into
-        each modifier by `_duration_interval_exprs`); the `sign` arg is
-        ignored on SQLite.
-        Other dialects: chains `exp.Add` (sign>=0) or `exp.Sub` (sign<0). The
-        result transpiles per dialect via sqlglot — MySQL renders
-        `INTERVAL N UNIT` clauses unquoted, ClickHouse same, etc.
+        Delegates to the dialect strategy (DEV-1716) — defaults to chained
+        Add/Sub with ``exp.Interval`` nodes; SQLite wraps as ``DATETIME(...)``;
+        T-SQL chains ``DATEADD(...)`` calls.
         """
-        if self.dialect == "sqlite":
-            return exp.Anonymous(this="DATETIME", expressions=[expr, *intervals])
-        op_cls = exp.Add if sign >= 0 else exp.Sub
-        result = expr
-        for iv in intervals:
-            result = op_cls(this=result, expression=iv)
-        return result
+        return self._dialect.add_intervals_expr(
+            expr=expr, intervals=intervals, sign=sign,
+        )
 
     def _build_window_source_cols(
         self,
@@ -1636,7 +1666,13 @@ class SQLGenerator:
         # isolated measures were skipped (to deduplicate the dimension spine),
         # or the query is dim-only (auto-dedup distinct dim/time-dim tuples
         # — applied before LIMIT so a row cap can't drop unique tuples).
-        dim_only_dedup = bool(group_by_columns) and not enriched.measures
+        # DEV-1543: distinct_dimension_values=False opts out of the dim-only
+        # dedup GROUP BY, emitting raw rows instead of distinct tuples.
+        dim_only_dedup = (
+            enriched.distinct_dimension_values
+            and bool(group_by_columns)
+            and not enriched.measures
+        )
         needs_group_by = (
             has_aggregation
             or bool(enriched.cross_model_measures)
@@ -1748,19 +1784,24 @@ class SQLGenerator:
             remaining_expressions = []
             remaining_transforms = []
 
-            # Collect window transforms and expressions that can go in one layer
-            layer_parts = [f'"{a}"' for a in sorted(available_aliases)]
+            # Collect window transforms and expressions that can go in one layer.
+            # DEV-1716: carried-forward alias refs are dialect-quoted.
+            layer_parts = [self._quote_ident(a) for a in sorted(available_aliases)]
 
             for expr in pending_expressions:
                 if self._deps_available(expr.sql, available_aliases):
                     # DEV-1361: when the source ModelMeasure declared a
                     # result type, wrap the expression in CAST so the outer
                     # SELECT yields the typed value.
-                    expr_sql = expr.sql
+                    # DEV-1716: ``expr.sql`` is ANSI-quoted (enrichment output);
+                    # parse it as Postgres (where ``"..."`` is an identifier,
+                    # NOT a string literal as MySQL would read it) and re-emit
+                    # under the target dialect so identifiers get correct quotes.
+                    parsed_expr = self._parse(expr.sql, dialect="postgres")
                     if expr.type is not None:
-                        wrapped = _wrap_cast_for_type(self._parse(expr_sql), expr.type)
-                        expr_sql = wrapped.sql(dialect=self.dialect)
-                    layer_parts.append(f'{expr_sql} AS "{expr.alias}"')
+                        parsed_expr = _wrap_cast_for_type(parsed_expr, expr.type)
+                    expr_sql = parsed_expr.sql(dialect=self.dialect)
+                    layer_parts.append(f'{expr_sql} AS {self._quote_ident(expr.alias)}')
                     added_this_layer.append(expr.alias)
                 else:
                     remaining_expressions.append(expr)
@@ -1783,7 +1824,7 @@ class SQLGenerator:
                     if t.type is not None:
                         wrapped = _wrap_cast_for_type(self._parse(window_sql), t.type)
                         window_sql = wrapped.sql(dialect=self.dialect)
-                    layer_parts.append(f'{window_sql} AS "{t.alias}"')
+                    layer_parts.append(f'{window_sql} AS {self._quote_ident(t.alias)}')
                     added_this_layer.append(t.alias)
 
             # Emit window layer CTE if anything was added
@@ -1805,20 +1846,25 @@ class SQLGenerator:
                 )
                 ctes.append((shift_name, shifted_sql))
 
-                # Build the self-join CTE: src LEFT JOIN shifted ON time equality
-                time_col = f'"{t.time_alias}"'
+                # Build the self-join CTE: src LEFT JOIN shifted ON time
+                # equality. DEV-1716: identifier leaves are dialect-quoted so
+                # MySQL/T-SQL/BigQuery emit correct quotes (not ANSI ``"..."``).
+                time_col = self._quote_ident(t.time_alias)
                 join_cond = f'{src_cte}.{time_col} = {shift_name}.{time_col}'
                 # Also join on all dimension columns for correct matching
                 for dim in enriched.dimensions:
-                    join_cond += f' AND {src_cte}."{dim.alias}" = {shift_name}."{dim.alias}"'
+                    dim_col = self._quote_ident(dim.alias)
+                    join_cond += f' AND {src_cte}.{dim_col} = {shift_name}.{dim_col}'
                 col_sql = self._build_self_join_column(
                     transform=t.transform, right_table=shift_name,
                     measure_alias=t.measure_alias,
                 )
-                join_cols = ", ".join(f'{src_cte}."{a}"' for a in sorted(available_aliases))
+                join_cols = ", ".join(
+                    f'{src_cte}.{self._quote_ident(a)}' for a in sorted(available_aliases)
+                )
                 join_layer = f"sjoin_{t.name}"
                 join_sql = (
-                    f"SELECT {join_cols}, {col_sql} AS \"{t.alias}\"\n"
+                    f"SELECT {join_cols}, {col_sql} AS {self._quote_ident(t.alias)}\n"
                     f"FROM {src_cte}\n"
                     f"LEFT JOIN {shift_name}\n"
                     f"    ON {join_cond}"
@@ -1856,12 +1902,12 @@ class SQLGenerator:
 
         final_cte = ctes[-1][0]
 
-        # Build final SELECT
-        final_parts = [f'"{a}"' for a in sorted(available_aliases)]
+        # Build final SELECT (DEV-1716: dialect-quoted projection aliases)
+        final_parts = [self._quote_ident(a) for a in sorted(available_aliases)]
 
         # Add any remaining expressions/transforms that couldn't be layered
         for expr in pending_expressions:
-            final_parts.append(f'{expr.sql} AS "{expr.alias}"')
+            final_parts.append(f'{expr.sql} AS {self._quote_ident(expr.alias)}')
         for t in pending_transforms:
             if t.transform in _SELF_JOIN_TRANSFORMS:
                 continue  # Should not happen — self-joins are always materialized
@@ -1871,7 +1917,7 @@ class SQLGenerator:
             if t.type is not None:
                 wrapped = _wrap_cast_for_type(self._parse(window_sql), t.type)
                 window_sql = wrapped.sql(dialect=self.dialect)
-            final_parts.append(f'{window_sql} AS "{t.alias}"')
+            final_parts.append(f'{window_sql} AS {self._quote_ident(t.alias)}')
 
         outer_select = "SELECT\n    " + _SQL_COL_SEP.join(final_parts)
 
@@ -1895,7 +1941,7 @@ class SQLGenerator:
                 # Wrap qualified names in quotes for alias references
                 for col_name in dict.fromkeys(f.columns):
                     qualified = f"{model}.{col_name}"
-                    qualified_sql = qualified_sql.replace(qualified, f'"{qualified}"')
+                    qualified_sql = qualified_sql.replace(qualified, self._quote_ident(qualified))
                 conditions.append(qualified_sql)
             where_clause = _SQL_AND_JOINER.join(conditions)
             sql = f"SELECT *\nFROM (\n{sql}\n) AS _filtered\nWHERE {where_clause}"
@@ -2010,62 +2056,32 @@ class SQLGenerator:
         return [(reset_cte, reset_sql)], [(value_cte, value_sql)]
 
     def _build_date_trunc(self, col_expr: exp.Expression, granularity: TimeGranularity) -> exp.Expression:
-        """Build a DATE_TRUNC expression, with SQLite STRFTIME fallback.
+        """Build a DATE_TRUNC expression. Dispatches to the dialect strategy
+        (DEV-1716).
 
-        When ``col_expr`` is not a bare column reference (e.g., a string
-        literal or other unknown-typed sub-expression), the result is
-        wrapped in ``CAST(... AS TIMESTAMP)`` before being passed to
-        ``DATE_TRUNC``. Postgres has multiple ``date_trunc`` overloads
-        keyed on the second argument's type; an ``unknown``-typed operand
-        (the bare literal `'2025-12-01'`) makes the planner fail with
-        ``function date_trunc(unknown, unknown) is not unique``. The cast
-        pins one overload. Bare columns are left alone — their live DB
-        type is already known, and an explicit cast could strip a
-        ``TIMESTAMPTZ`` to ``TIMESTAMP``. Idempotent: already-cast
-        expressions pass through unchanged.
+        The dialect determines the wire form — DATE_TRUNC for
+        Postgres/DuckDB/ClickHouse, STRFTIME for SQLite (with CASE WHEN for
+        quarter and weekday-modifier for week), DATETRUNC for T-SQL, native
+        Sunday-week for BigQuery. Cast-wrapping of non-column operands and the
+        WEEK_SUNDAY day-shift are handled inside the dialect (base) impl.
         """
-        gran_str = _GRANULARITY_MAP.get(granularity, granularity.value)
-        if self.dialect == "sqlite":
-            # SQLite has no DATE_TRUNC — use STRFTIME
-            fmt_map = {
-                "year": "%Y-01-01",
-                "month": "%Y-%m-01",
-                "day": "%Y-%m-%d",
-                "hour": "%Y-%m-%d %H:00:00",
-                "minute": "%Y-%m-%d %H:%M:00",
-                "second": "%Y-%m-%d %H:%M:%S",
-            }
-            # Week: SQLite weekday 0=Sunday, use date() with weekday modifier
-            if gran_str == "week":
-                return self._parse(f"DATE({col_expr.sql(dialect='sqlite')}, 'weekday 0', '-6 days')", dialect="sqlite")
-            if gran_str == "quarter":
-                # Quarter start: derive from month
-                col_sql = col_expr.sql(dialect="sqlite")
-                return self._parse(
-                    f"STRFTIME('%Y-', {col_sql}) || CASE "
-                    f"WHEN CAST(STRFTIME('%m', {col_sql}) AS INTEGER) <= 3 THEN '01-01' "
-                    f"WHEN CAST(STRFTIME('%m', {col_sql}) AS INTEGER) <= 6 THEN '04-01' "
-                    f"WHEN CAST(STRFTIME('%m', {col_sql}) AS INTEGER) <= 9 THEN '07-01' "
-                    f"ELSE '10-01' END",
-                    dialect="sqlite",
-                )
-            fmt = fmt_map.get(gran_str, "%Y-%m-%d")
-            return exp.Anonymous(
-                this="STRFTIME",
-                expressions=[exp.Literal.string(fmt), col_expr],
-            )
-        if not isinstance(col_expr, (exp.Column, exp.Cast)):
-            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
-        return exp.DateTrunc(this=col_expr, unit=exp.Literal.string(gran_str))
+        return self._dialect.build_date_trunc(
+            col_expr=col_expr, granularity=granularity, parse=self._parse,
+        )
 
-    @staticmethod
-    def _build_transform_sql(t) -> str:  # NOSONAR S3776 — flat dispatch over transform names; per-transform SQL forms read better as one if/elif tree than as named helpers
-        """Build a window function SQL expression for a transform."""
-        measure = f'"{t.measure_alias}"'
-        time_col = f'"{t.time_alias}"' if t.time_alias else None
+    def _build_transform_sql(self, t) -> str:  # NOSONAR S3776 — flat dispatch over transform names; per-transform SQL forms read better as one if/elif tree than as named helpers
+        """Build a window function SQL expression for a transform.
+
+        DEV-1716: identifier refs are dialect-quoted (``_quote_ident``) so
+        MySQL/T-SQL/BigQuery get correct quotes; the subsequent
+        ``self._parse(window_sql)`` reads them back as identifiers (backticks
+        on MySQL, brackets on T-SQL) rather than string literals.
+        """
+        measure = self._quote_ident(t.measure_alias)
+        time_col = self._quote_ident(t.time_alias) if t.time_alias else None
         partition_cols = getattr(t, "partition_aliases", []) or []
         partition_clause = (
-            _SQL_PARTITION_BY + ", ".join(f'"{a}"' for a in partition_cols)
+            _SQL_PARTITION_BY + ", ".join(self._quote_ident(a) for a in partition_cols)
             if partition_cols
             else ""
         )
@@ -2111,11 +2127,14 @@ class SQLGenerator:
         else:
             raise ValueError(f"Unsupported transform: {t.transform}")
 
-    @staticmethod
-    def _build_self_join_column(transform: str, right_table: str,
+    def _build_self_join_column(self, transform: str, right_table: str,
                                 measure_alias: str) -> str:
-        """Build the SELECT expression for a self-join transform."""
-        prev = f'{right_table}."{measure_alias}"'
+        """Build the SELECT expression for a self-join transform.
+
+        DEV-1716: the column leaf is dialect-quoted so MySQL/T-SQL/BigQuery
+        get correct quoting (not ANSI ``"..."``).
+        """
+        prev = f'{right_table}.{self._quote_ident(measure_alias)}'
         if transform == "time_shift":
             return prev
         raise ValueError(f"Unknown self-join transform: {transform}")
@@ -2128,7 +2147,7 @@ class SQLGenerator:
                 col_name = self._resolve_order_column(col=col, enriched=enriched)
                 order_col = exp.Column(this=exp.to_identifier(col_name, quoted=True))
                 ascending = order_item.direction == "asc"
-                select = select.order_by(exp.Ordered(this=order_col, desc=not ascending))
+                select = select.order_by(self._ordered(order_col, ascending=ascending))
 
         if enriched.limit is not None:
             select = select.limit(enriched.limit)
@@ -2370,9 +2389,9 @@ class SQLGenerator:
             base_val = float(base.this)
         except (TypeError, ValueError):
             return node
-        if base_val == 10 and self.dialect in _LOG10_NATIVE_DIALECTS:
+        if base_val == 10 and self._dialect.should_use_native_log(10):
             return exp.Anonymous(this="log10", expressions=[arg.copy()])
-        if base_val == 2 and self.dialect in _LOG2_NATIVE_DIALECTS:
+        if base_val == 2 and self._dialect.should_use_native_log(2):
             return exp.Anonymous(this="log2", expressions=[arg.copy()])
         return node
 
@@ -2451,13 +2470,26 @@ class SQLGenerator:
 
     def _build_agg(
         self,
-        spec: AggRenderSpec,
+        spec: "AggRenderSpec | None" = None,
         rn_suffix_map: Optional[dict[str, str]] = None,
         default_time_col: Optional[str] = None,
         filtered_rn_map: Optional[dict[str, str]] = None,
         filtered_match_map: Optional[dict[str, str]] = None,
+        *,
+        measure: "EnrichedMeasure | None" = None,
     ) -> tuple[exp.Expression, bool]:
-        """Build an aggregation expression from an AggRenderSpec."""
+        """Build an aggregation expression from an ``AggRenderSpec``.
+
+        DEV-1716 compat: callers may pass a legacy ``EnrichedMeasure`` via the
+        ``measure=`` keyword instead of ``spec`` — it is adapted through
+        ``_agg_render_spec_from_enriched``. The typed pipeline uses ``spec``
+        (DEV-1452 decoupling); the ``measure=`` surface preserves the
+        main-branch delegation-test interface without reverting that split.
+        """
+        if measure is not None:
+            spec = _agg_render_spec_from_enriched(measure)
+        if spec is None:  # pragma: no cover — defensive
+            raise ValueError("_build_agg requires either 'spec' or 'measure'.")
         agg_name = spec.aggregation
         if not agg_name:
             # Not an aggregation — raw expression
@@ -2536,6 +2568,18 @@ class SQLGenerator:
             # mirrors _build_median.
             if agg_name in _STAT_AGG_NAMES:
                 return self._build_stat_agg(spec), True
+            # count_distinct_approx (DEV-1595): dialect-aware approximate-
+            # distinct — native function (DuckDB/ClickHouse/BigQuery/…) or the
+            # exact COUNT(DISTINCT) fallback (Postgres/SQLite/MySQL). Built like
+            # percentile/stat-agg (via _wrap_filter + _resolve_value_sql) so a
+            # row-level filter wraps as COUNT(DISTINCT (CASE WHEN ... END)).
+            if agg_name == "count_distinct_approx":
+                col_expr = _wrap_filter(
+                    self._resolve_value_sql(spec), spec.filter_sql
+                )
+                return self._dialect.build_approx_count_distinct(
+                    col_sql=col_expr, parse=self._parse
+                ), True
             return self._build_formula_agg(spec, agg_name), True
 
         # --- Resolve inner expression ---
@@ -2642,20 +2686,10 @@ class SQLGenerator:
         return self._parse(substituted)
 
     def _build_median(self, inner: exp.Expression) -> exp.Expression:
-        """Build a median aggregation expression (dialect-dependent)."""
-        inner_sql = inner.sql(dialect=self.dialect)
-        if self.dialect == "mysql":
-            raise NotImplementedError(
-                "Aggregation 'median' is not supported on MySQL: MySQL has no native "
-                "MEDIAN/PERCENTILE_CONT function and no Python UDF mechanism. "
-                "Use MariaDB (has MEDIAN()) or compute the value client-side."
-            )
-        if self.dialect in ("sqlite", "clickhouse"):
-            # SQLite: provided by the median() UDF registered on connect.
-            # ClickHouse: native median() aggregate.
-            return self._parse(f"median({inner_sql})")
-        # Postgres, DuckDB, and most others: PERCENTILE_CONT
-        return self._parse(f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {inner_sql})")
+        """Build a median aggregation expression. Dispatches to the dialect
+        (DEV-1716) — MySQL/T-SQL raise NotImplementedError, SQLite/ClickHouse
+        emit ``median()``, others ``PERCENTILE_CONT(0.5)``."""
+        return self._dialect.build_median(inner=inner, parse=self._parse)
 
     def _build_percentile(self, spec: AggRenderSpec) -> exp.Expression:
         """Build a PERCENTILE_CONT(p) aggregation expression (dialect-dependent).
@@ -2691,25 +2725,14 @@ class SQLGenerator:
                 f"Aggregation 'percentile' parameter 'p' must be in [0, 1]; got {p_float}."
             )
 
-        if self.dialect == "mysql":
-            raise NotImplementedError(
-                "Aggregation 'percentile' is not supported on MySQL: MySQL has no native "
-                "PERCENTILE_CONT function and no Python UDF mechanism. "
-                "Use MariaDB or compute the value client-side."
-            )
-
+        # Pass the **original string** ``p`` (not ``p_float``) to the dialect so
+        # user literals like ``0.50`` / ``1`` / ``5e-2`` survive verbatim.
+        # DEV-1716: dialect owns the wire form (MySQL/T-SQL raise, SQLite UDF,
+        # ClickHouse parametric ``quantile(p)(x)``, others ``PERCENTILE_CONT``).
         col_expr = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
-
-        if self.dialect == "sqlite":
-            # Provided by the percentile_cont(value, p) UDF registered on connect.
-            sql_str = f"percentile_cont({col_expr}, {p})"
-        elif self.dialect == "clickhouse":
-            # ClickHouse parametric aggregate syntax.
-            sql_str = f"quantile({p})({col_expr})"
-        else:
-            sql_str = f"PERCENTILE_CONT({p}) WITHIN GROUP (ORDER BY {col_expr})"
-
-        return self._parse(sql_str)
+        return self._dialect.build_percentile(
+            p_str=p, col_sql=col_expr, parse=self._parse,
+        )
 
     def _build_stat_agg(self, spec: AggRenderSpec) -> exp.Expression:
         """Build SQL for the statistical aggregations added in DEV-1317.
@@ -2738,6 +2761,9 @@ class SQLGenerator:
         # MySQL-not-supported error when both conditions hold — the
         # missing-param message points at the actual user mistake. Closes
         # Codex #5 on PR #82.
+        # Resolve the `other=` kwarg BEFORE any dialect guard so a
+        # missing-required-param error takes priority over a dialect-specific
+        # error (the missing-param message points at the actual user mistake).
         other_expr: Optional[str] = None
         if agg_name in _TWO_ARG_STAT_AGGS:
             other_expr = _wrap_filter(
@@ -2745,40 +2771,23 @@ class SQLGenerator:
                 spec.filter_sql,
             )
 
-        if agg_name in _TWO_ARG_STAT_AGGS and self.dialect == "mysql":
-            raise NotImplementedError(
-                f"Aggregation '{agg_name}' is not supported on MySQL: MySQL has no "
-                f"native {agg_name.upper()} function and no Python UDF mechanism. "
-                f"Use MariaDB or compute the value client-side."
-            )
-
         col_expr = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
 
+        # DEV-1716: the dialect owns the wire form — native CORR/COVAR on
+        # Postgres/DuckDB/ClickHouse, variance-decomposition formula on
+        # MySQL/T-SQL; canonical stddev/var name (sqlglot-transpiled) with the
+        # MySQL ``exp.Anonymous`` var_samp/var_pop bypass in the dialect class.
         if agg_name in _TWO_ARG_STAT_AGGS:
-            sql_str = f"{agg_name.upper()}({col_expr}, {other_expr})"
-        else:
-            # stddev_samp, stddev_pop, var_samp, var_pop: emit the
-            # canonical Postgres-style name and let sqlglot transpile per
-            # dialect (e.g., var_samp → VARIANCE on SQLite/DuckDB/MySQL,
-            # var_pop → VARIANCE_POP on SQLite/MySQL). Both spellings
-            # resolve via the SQLite UDF aliases.
-            #
-            # MySQL exception: sqlglot's MySQL dialect rewrites
-            # ``VAR_POP`` → ``VARIANCE_POP`` (no such function in MySQL —
-            # only VAR_POP / VARIANCE exist) and ``VAR_SAMP`` →
-            # ``VARIANCE`` (silently wrong, since MySQL's ``VARIANCE``
-            # equals ``VAR_POP`` — sample variance gets aliased to
-            # population variance). Bypass both by emitting the
-            # MySQL-native names through ``exp.Anonymous``, which
-            # sqlglot leaves verbatim.
-            if self.dialect == "mysql" and agg_name in {"var_samp", "var_pop"}:
-                return exp.Anonymous(
-                    this=agg_name.upper(),
-                    expressions=[self._parse(col_expr)],
-                )
-            sql_str = f"{agg_name.upper()}({col_expr})"
-
-        return self._parse(sql_str)
+            assert other_expr is not None  # set above when two-arg
+            return self._dialect.build_covar_2arg(
+                agg_name=agg_name,
+                col_sql=col_expr,
+                other_sql=other_expr,
+                parse=self._parse,
+            )
+        return self._dialect.build_stat_agg_1arg(
+            agg_name=agg_name, col_expr=col_expr, parse=self._parse,
+        )
 
     # ------------------------------------------------------------------
     # WHERE / HAVING (filters still use ColumnRef for member resolution)
@@ -2893,6 +2902,12 @@ class SQLGenerator:
         bundle,
     ) -> str:
         """Render a typed ``PlannedQuery`` to SQL.
+
+        NOTE (DEV-1716): this is a STAGE renderer — its output feeds
+        ``generate_planned_stages``' flat-column stage-schema wrapper, so the
+        dialect ``rewrite_emitted_sql`` alias-mangling post-pass is applied by
+        the DB-bound terminal (``generate_planned_stages``), NOT here. Mangling
+        a stage's column names would break the downstream flat-name binding.
 
         Mirrors the local-only branch of ``_generate_base`` but reads
         from typed PlannedQuery fields (``row_slots`` / ``aggregate_slots``
@@ -3022,7 +3037,13 @@ class SQLGenerator:
         # has_aggregation triggers GROUP BY (dim-only emits GROUP BY
         # before LIMIT so unique dim tuples can't silently drop past
         # row N).
-        dim_only_dedup = bool(group_by_keys) and not has_aggregation
+        # DEV-1543: distinct_dimension_values=False opts out of the dim-only
+        # dedup GROUP BY, emitting raw rows instead of distinct tuples.
+        dim_only_dedup = (
+            planned_query.distinct_dimension_values
+            and bool(group_by_keys)
+            and not has_aggregation
+        )
         needs_group_by = has_aggregation or dim_only_dedup
         if needs_group_by and group_by_keys:
             for gb in group_by_keys.values():
@@ -3122,7 +3143,7 @@ class SQLGenerator:
                 carry_aliases_sorted = sorted(
                     a for aliases in aliases_by_slot_id.values() for a in aliases
                 )
-                step_parts = [f'"{a}"' for a in carry_aliases_sorted]
+                step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
                 for layer in ready_window:
                     for slot_id in layer.slot_ids:
                         slot = slots_by_id[slot_id]
@@ -3144,7 +3165,7 @@ class SQLGenerator:
                                 self._parse(window_sql), slot.type,
                             )
                             window_sql = wrapped.sql(dialect=self.dialect)
-                        step_parts.append(f'{window_sql} AS "{full_alias}"')
+                        step_parts.append(f'{window_sql} AS {self._quote_ident(full_alias)}')
                         aliases_by_slot_id.setdefault(slot_id, []).append(
                             full_alias,
                         )
@@ -3219,7 +3240,7 @@ class SQLGenerator:
             carry_aliases_sorted = sorted(
                 a for aliases in aliases_by_slot_id.values() for a in aliases
             )
-            step_parts = [f'"{a}"' for a in carry_aliases_sorted]
+            step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
             for cslot in unmaterialised:
                 alias = (
                     cslot.public_aliases[0]
@@ -3238,7 +3259,7 @@ class SQLGenerator:
                         self._parse(expr_sql), cslot.type,
                     )
                     expr_sql = wrapped.sql(dialect=self.dialect)
-                step_parts.append(f'{expr_sql} AS "{full_alias}"')
+                step_parts.append(f'{expr_sql} AS {self._quote_ident(full_alias)}')
                 aliases_by_slot_id.setdefault(cslot.id, []).append(
                     full_alias,
                 )
@@ -3260,7 +3281,7 @@ class SQLGenerator:
         )
         inner_sql = (
             "SELECT\n    "
-            + _SQL_COL_SEP.join(f'"{a}"' for a in inner_sorted)
+            + _SQL_COL_SEP.join(self._quote_ident(a) for a in inner_sorted)
             + f"\nFROM {final_cte}"
         )
 
@@ -3304,7 +3325,7 @@ class SQLGenerator:
             public_aliases_user_order.append(alias)
         outer_sql = (
             "SELECT\n    "
-            + _SQL_COL_SEP.join(f'"{a}"' for a in public_aliases_user_order)
+            + _SQL_COL_SEP.join(self._quote_ident(a) for a in public_aliases_user_order)
             + f"\nFROM (\n{chain_sql}\n) AS _outer"
         )
 
@@ -3707,9 +3728,11 @@ class SQLGenerator:
         from slayer.core.enums import TimeGranularity
         from slayer.core.keys import (
             AggregateKey,
+            ArithmeticKey,
             ColumnKey,
             ColumnSqlKey,
             Phase,
+            ScalarCallKey,
             TimeTruncKey,
         )
 
@@ -3871,6 +3894,23 @@ class SQLGenerator:
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
+                elif isinstance(key, (ScalarCallKey, ArithmeticKey)):
+                    # DEV-1576 / DEV-1717: a ROW-phase composite here is a
+                    # non-aggregating measure expression (a bare column, or
+                    # arithmetic / scalar-call over bare columns such as
+                    # ``round(amount, 2)`` / ``abs(amount)`` / ``amount + 1``).
+                    # Dimensions are ColumnKey / TimeTruncKey / ColumnSqlKey,
+                    # already handled above; the only way to reach here with a
+                    # composite key is a measure that never aggregates. Raise
+                    # the same actionable "Bare measure name" error the
+                    # enrich_query path raises rather than leaking an internal
+                    # NotImplementedError.
+                    bare = _first_bare_column_name(key) or full_alias
+                    raise ValueError(
+                        f"Bare measure name '{bare}' is not valid. "
+                        f"Use colon syntax (e.g., '{bare}:sum', '{bare}:avg'). "
+                        f"For COUNT(*), use '*:count'."
+                    )
                 else:
                     raise NotImplementedError(
                         f"DEV-1450 stage 7b.10+: row-phase key type "
@@ -4766,7 +4806,9 @@ class SQLGenerator:
                     args.append(exp.Literal.string(str(a)))
             if key.name == "like":
                 return exp.Like(this=args[0], expression=args[1]), any_agg
-            return exp.func(key.name.upper(), *args), any_agg
+            return self._finalize_scalar_call(
+                exp.func(key.name.upper(), *args)
+            ), any_agg
         if isinstance(key, LiteralKey):
             v = key.value
             if v is None:
@@ -5162,7 +5204,11 @@ class SQLGenerator:
             # dangle joined-column aliases on the outer SELECT scope.
             if base_where is not None and not _base_where_consumed:
                 base_select = base_select.where(base_where)
-            base_dim_only_dedup = bool(base_group_by) and not base_has_agg
+            base_dim_only_dedup = (
+                planned_query.distinct_dimension_values
+                and bool(base_group_by)
+                and not base_has_agg
+            )
             if (base_has_agg or base_dim_only_dedup) and base_group_by:
                 for gb in base_group_by.values():
                     base_select = base_select.group_by(gb)
@@ -5274,7 +5320,7 @@ class SQLGenerator:
         for sid in host_combined_ids:
             aliases = aliases_by_slot_id.get(sid, [])
             for full_alias in aliases:
-                combined_parts.append(f'_base."{full_alias}"')
+                combined_parts.append(f'_base.{self._quote_ident(full_alias)}')
             if aliases:
                 combined_aliases_by_slot_id[sid] = list(aliases)
         # DEV-1503 (Codex round 2 #1) — composite slots routed to the outer
@@ -5331,7 +5377,7 @@ class SQLGenerator:
                 outer_emission_count[sid] = idx + 1
                 full_alias = f"{source_relation}.{public_alias}"
                 combined_parts.append(
-                    f'{_render_outer_composite(cslot)} AS "{full_alias}"',
+                    f'{_render_outer_composite(cslot)} AS {self._quote_ident(full_alias)}',
                 )
                 combined_aliases_by_slot_id.setdefault(sid, []).append(
                     full_alias,
@@ -5379,10 +5425,10 @@ class SQLGenerator:
             )
             for pub in public_aliases:
                 if pub == agg_col_alias:
-                    combined_parts.append(f'{cte_name}."{agg_col_alias}"')
+                    combined_parts.append(f'{cte_name}.{self._quote_ident(agg_col_alias)}')
                 else:
                     combined_parts.append(
-                        f'{cte_name}."{agg_col_alias}" AS "{pub}"',
+                        f'{cte_name}.{self._quote_ident(agg_col_alias)} AS {self._quote_ident(pub)}',
                     )
             combined_aliases_by_slot_id[plan.aggregate_slot_id] = list(
                 public_aliases,
@@ -5401,7 +5447,7 @@ class SQLGenerator:
             )
             if joinback_pairs:
                 join_parts = [
-                    f'_base."{host}" = {cte_name}."{cte_col}"'
+                    f'_base.{self._quote_ident(host)} = {cte_name}.{self._quote_ident(cte_col)}'
                     for host, cte_col in joinback_pairs
                 ]
                 from_clause_str += (
@@ -5575,7 +5621,7 @@ class SQLGenerator:
             carry_aliases_sorted = sorted(
                 a for aliases in aliases_by_slot_id.values() for a in aliases
             )
-            step_parts = [f'"{a}"' for a in carry_aliases_sorted]
+            step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
             for layer in ready:
                 for slot_id in layer.slot_ids:
                     slot = slots_by_id[slot_id]
@@ -5596,7 +5642,7 @@ class SQLGenerator:
                         window_sql = _wrap_cast_for_type(
                             self._parse(window_sql), slot.type,
                         ).sql(dialect=self.dialect)
-                    step_parts.append(f'{window_sql} AS "{full_alias}"')
+                    step_parts.append(f'{window_sql} AS {self._quote_ident(full_alias)}')
                     aliases_by_slot_id.setdefault(slot_id, []).append(full_alias)
                     available_alias_by_slot_id.setdefault(slot_id, full_alias)
             step_sql = (
@@ -5629,7 +5675,7 @@ class SQLGenerator:
             carry_aliases_sorted = sorted(
                 a for aliases in aliases_by_slot_id.values() for a in aliases
             )
-            step_parts = [f'"{a}"' for a in carry_aliases_sorted]
+            step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
             for cslot in unmaterialised:
                 alias = (
                     cslot.public_aliases[0]
@@ -5647,7 +5693,7 @@ class SQLGenerator:
                     expr_sql = _wrap_cast_for_type(
                         self._parse(expr_sql), cslot.type,
                     ).sql(dialect=self.dialect)
-                step_parts.append(f'{expr_sql} AS "{full_alias}"')
+                step_parts.append(f'{expr_sql} AS {self._quote_ident(full_alias)}')
                 aliases_by_slot_id.setdefault(cslot.id, []).append(full_alias)
                 available_alias_by_slot_id.setdefault(cslot.id, full_alias)
             step_sql = (
@@ -5663,7 +5709,7 @@ class SQLGenerator:
         )
         inner_sql = (
             "SELECT\n    "
-            + _SQL_COL_SEP.join(f'"{a}"' for a in inner_sorted)
+            + _SQL_COL_SEP.join(self._quote_ident(a) for a in inner_sorted)
             + f"\nFROM {final_cte}"
         )
         cte_clause = (
@@ -5700,7 +5746,7 @@ class SQLGenerator:
             public_aliases_user_order.append(alias)
         outer_sql = (
             "SELECT\n    "
-            + _SQL_COL_SEP.join(f'"{a}"' for a in public_aliases_user_order)
+            + _SQL_COL_SEP.join(self._quote_ident(a) for a in public_aliases_user_order)
             + f"\nFROM (\n{chain_sql}\n) AS _outer"
         )
 
@@ -6691,9 +6737,9 @@ class SQLGenerator:
             alias = cm_alias_for_plan.get(entry.slot_id)
             if alias is None:
                 return None
-            return f'"{alias}" {direction}'
+            return f'{self._quote_ident(alias)} {direction}'
         if entry.slot_id in outer_aliases:
-            return f'"{outer_aliases[entry.slot_id]}" {direction}'
+            return f'{self._quote_ident(outer_aliases[entry.slot_id])} {direction}'
         if outer_expressions and entry.slot_id in outer_expressions:
             return f'{outer_expressions[entry.slot_id]} {direction}'
         full_alias = self._full_alias_for_slot(
@@ -6702,8 +6748,8 @@ class SQLGenerator:
             alias_index={},
         )
         if entry.slot_id in bare_ids:
-            return f'"{full_alias}" {direction}'
-        return f'_base."{full_alias}" {direction}'
+            return f'{self._quote_ident(full_alias)} {direction}'
+        return f'_base.{self._quote_ident(full_alias)} {direction}'
 
     def _full_alias_for_slot(
         self,
@@ -7063,7 +7109,7 @@ class SQLGenerator:
                     f"op={key.op!r}, input_key={key.input!r}.",
                 )
             input_alias = available_alias_by_slot_id[input_sid]
-            measure = f'"{input_alias}"'
+            measure = self._quote_ident(input_alias)
 
         # Resolve time-key alias (None for rank-family without time).
         time_alias: Optional[str] = None
@@ -7075,7 +7121,7 @@ class SQLGenerator:
                     f"slot id={slot.id!r}, op={key.op!r}, "
                     f"time_key={key.time_key!r}.",
                 )
-            time_alias = f'"{available_alias_by_slot_id[tk_sid]}"'
+            time_alias = self._quote_ident(available_alias_by_slot_id[tk_sid])
 
         # Resolve partition aliases. Explicit partition_keys take
         # precedence; otherwise auto-partition by query dimension slots
@@ -7115,7 +7161,7 @@ class SQLGenerator:
                     partition_aliases.append(alias)
 
         partition_clause = (
-            _SQL_PARTITION_BY + ", ".join(f'"{a}"' for a in partition_aliases)
+            _SQL_PARTITION_BY + ", ".join(self._quote_ident(a) for a in partition_aliases)
             if partition_aliases
             else ""
         )
@@ -7309,7 +7355,7 @@ class SQLGenerator:
             ]
             if key.name == "like":
                 return exp.Like(this=args[0], expression=args[1])
-            return exp.func(key.name.upper(), *args)
+            return self._finalize_scalar_call(exp.func(key.name.upper(), *args))
 
         if isinstance(key, BetweenKey):
             return exp.Between(
@@ -7442,7 +7488,7 @@ class SQLGenerator:
             direction = (
                 "ASC" if order_entry.direction == "asc" else "DESC"
             )
-            order_parts.append(f'"{alias}" {direction}')
+            order_parts.append(f'{self._quote_ident(alias)} {direction}')
         if order_parts:
             sql += "\nORDER BY " + ", ".join(order_parts)
         if planned_query.limit is not None:
@@ -7738,14 +7784,14 @@ class SQLGenerator:
         # Projected: time-trunc shifted under the base time alias.
         shifted_trunc_sql = shifted_trunc_expr.sql(dialect=self.dialect)
         shifted_select_parts.append(
-            f'{shifted_trunc_sql} AS "{time_alias}"',
+            f'{shifted_trunc_sql} AS {self._quote_ident(time_alias)}',
         )
         shifted_group_by.append(shifted_trunc_sql)
 
         # partition_keys: SELECT + GROUP BY under their base aliases.
         for _, pk_alias, pk_expr in partition_specs:
             pk_sql = pk_expr.sql(dialect=self.dialect)
-            shifted_select_parts.append(f'{pk_sql} AS "{pk_alias}"')
+            shifted_select_parts.append(f'{pk_sql} AS {self._quote_ident(pk_alias)}')
             shifted_group_by.append(pk_sql)
 
         # Aggregate: re-emit the AggregateKey using the same synth /
@@ -7772,7 +7818,7 @@ class SQLGenerator:
             agg_expr, _ = self._build_agg(synth)
             agg_expr = _wrap_cast_for_type(agg_expr, inner_slot.type)
             shifted_select_parts.append(
-                f'{agg_expr.sql(dialect=self.dialect)} AS "{input_alias}"',
+                f'{agg_expr.sql(dialect=self.dialect)} AS {self._quote_ident(input_alias)}',
             )
         else:
             # Row-level column input (not aggregated). Pass-through.
@@ -7782,7 +7828,7 @@ class SQLGenerator:
                 leaf=inner_key.leaf,
             )
             shifted_select_parts.append(
-                f'{col_expr.sql(dialect=self.dialect)} AS "{input_alias}"',
+                f'{col_expr.sql(dialect=self.dialect)} AS {self._quote_ident(input_alias)}',
             )
             shifted_group_by.append(col_expr.sql(dialect=self.dialect))
 
@@ -7826,23 +7872,23 @@ class SQLGenerator:
             a for aliases in aliases_by_slot_id.values() for a in aliases
         )
         sjoin_select_parts = [
-            f'{prev_cte}."{a}"' for a in carry_aliases_sorted
+            f'{prev_cte}.{self._quote_ident(a)}' for a in carry_aliases_sorted
         ]
         slot_full_aliases: List[str] = []
         for slot_alias in slot_aliases:
             full_slot_alias = f"{source_relation}.{slot_alias}"
             slot_full_aliases.append(full_slot_alias)
             sjoin_select_parts.append(
-                f'{shifted_cte_name}."{input_alias}" AS "{full_slot_alias}"',
+                f'{shifted_cte_name}.{self._quote_ident(input_alias)} AS {self._quote_ident(full_slot_alias)}',
             )
 
         # JOIN conditions: time equality + every partition equality.
         join_conds = [
-            f'{prev_cte}."{time_alias}" = {shifted_cte_name}."{time_alias}"',
+            f'{prev_cte}.{self._quote_ident(time_alias)} = {shifted_cte_name}.{self._quote_ident(time_alias)}',
         ]
         for _, pk_alias, _ in partition_specs:
             join_conds.append(
-                f'{prev_cte}."{pk_alias}" = {shifted_cte_name}."{pk_alias}"',
+                f'{prev_cte}.{self._quote_ident(pk_alias)} = {shifted_cte_name}.{self._quote_ident(pk_alias)}',
             )
 
         sjoin_sql = (
@@ -7935,7 +7981,7 @@ class SQLGenerator:
                 )
             input_alias = available_alias_by_slot_id[input_sid]
             predicate_sql = (
-                f'"{input_alias}" IS NOT NULL AND "{input_alias}" <> 0'
+                f'{self._quote_ident(input_alias)} IS NOT NULL AND {self._quote_ident(input_alias)} <> 0'
             )
             predicate_is_boolean = False
         elif isinstance(inner_key, ArithmeticKey):
@@ -7992,20 +8038,20 @@ class SQLGenerator:
         carry_aliases_sorted = sorted(
             a for aliases in aliases_by_slot_id.values() for a in aliases
         )
-        carry_select = ",\n  ".join(f'"{a}"' for a in carry_aliases_sorted)
+        carry_select = ",\n  ".join(self._quote_ident(a) for a in carry_aliases_sorted)
         partition_clause = (
-            _SQL_PARTITION_BY + ", ".join(f'"{a}"' for a in partition_aliases)
+            _SQL_PARTITION_BY + ", ".join(self._quote_ident(a) for a in partition_aliases)
             if partition_aliases
             else ""
         )
         over_reset = " ".join(p for p in (
             partition_clause,
-            f'ORDER BY "{time_alias}"',
+            f'ORDER BY {self._quote_ident(time_alias)}',
             "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
         ) if p)
         reset_window_sql = (
             f'SUM(CASE WHEN {pred_in_case} THEN 0 ELSE 1 END) '
-            f'OVER ({over_reset}) AS "{cp_reset_alias}"'
+            f'OVER ({over_reset}) AS {self._quote_ident(cp_reset_alias)}'
         )
         cp_reset_cte_name = f"cp_reset_{slot_alias}"
         cp_reset_sql = (
@@ -8020,11 +8066,11 @@ class SQLGenerator:
         # counted within its own reset group.
         value_partition_aliases = partition_aliases + [cp_reset_alias]
         value_partition_clause = _SQL_PARTITION_BY + ", ".join(
-            f'"{a}"' for a in value_partition_aliases
+            self._quote_ident(a) for a in value_partition_aliases
         )
         over_value = " ".join((
             value_partition_clause,
-            f'ORDER BY "{time_alias}"',
+            f'ORDER BY {self._quote_ident(time_alias)}',
             "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
         ))
         # Outer CASE WHEN guarantees rows where the predicate is false
@@ -8036,7 +8082,7 @@ class SQLGenerator:
         value_outer_case = (
             f'CASE WHEN {pred_in_case} '
             f'THEN {value_inner_window_sql} ELSE 0 END '
-            f'AS "{full_slot_alias}"'
+            f'AS {self._quote_ident(full_slot_alias)}'
         )
         cp_value_cte_name = f"cp_value_{slot_alias}"
         cp_value_sql = (
@@ -9447,6 +9493,15 @@ class SQLGenerator:
                     ))
             if key.name == "like":
                 return exp.Like(this=args[0], expression=args[1])
+            # DEV-1576: a 2-arg ROUND needs the Postgres numeric cast, so it
+            # must be a TYPED node (exp.Round) routed through the target-dialect
+            # rewrite. Only ROUND is retyped: the string-hygiene functions
+            # (substr / concat / lower / ...) must emit literally as written
+            # (DEV-1484), which exp.func would break by transpiling them per
+            # dialect — so they stay as Anonymous passthrough.
+            typed = exp.func(key.name.upper(), *args)
+            if isinstance(typed, exp.Round):
+                return self._finalize_scalar_call(typed)
             return exp.Anonymous(this=key.name.upper(), expressions=args)
         if isinstance(key, BetweenKey):
             col_expr = self._render_value_key_for_filter(
@@ -9625,6 +9680,15 @@ class SQLGenerator:
                     ))
             if key.name == "like":
                 return exp.Like(this=args[0], expression=args[1])
+            # DEV-1576: a 2-arg ROUND needs the Postgres numeric cast, so it
+            # must be a TYPED node (exp.Round) routed through the target-dialect
+            # rewrite. Only ROUND is retyped: the string-hygiene functions
+            # (substr / concat / lower / ...) must emit literally as written
+            # (DEV-1484), which exp.func would break by transpiling them per
+            # dialect — so they stay as Anonymous passthrough.
+            typed = exp.func(key.name.upper(), *args)
+            if isinstance(typed, exp.Round):
+                return self._finalize_scalar_call(typed)
             return exp.Anonymous(this=key.name.upper(), expressions=args)
         if isinstance(key, BetweenKey):
             col_expr = self._render_filter_for_outer_wrapper(
@@ -9932,7 +9996,7 @@ class SQLGenerator:
                     )
                     ascending = order_entry.direction == "asc"
                     select = select.order_by(
-                        exp.Ordered(this=order_col, desc=not ascending),
+                        self._ordered(order_col, ascending=ascending),
                     )
                     continue
                 # Hidden ROW / transform / cross-model / composite ORDER
@@ -9960,7 +10024,7 @@ class SQLGenerator:
             )
             ascending = order_entry.direction == "asc"
             select = select.order_by(
-                exp.Ordered(this=order_col, desc=not ascending),
+                self._ordered(order_col, ascending=ascending),
             )
 
         if planned_query.limit is not None:
@@ -10057,9 +10121,12 @@ def generate_planned_stages(
     if not planned_queries:
         raise ValueError("generate_planned_stages requires at least one stage")
     if len(planned_queries) == 1:
-        return generate_from_planned(
+        # DEV-1716: single-stage DB-bound terminal — apply the dialect alias
+        # mangling post-pass (BigQuery / T-SQL; identity otherwise).
+        sql = generate_from_planned(
             planned_queries[0], bundle=bundle, dialect=dialect,
         )
+        return get_dialect(dialect).rewrite_emitted_sql(sql)
 
     schema_by_name = {
         p.stage_schema.relation_name: p.stage_schema
@@ -10110,7 +10177,13 @@ def generate_planned_stages(
     for cte in existing_ctes:
         root_ast = root_ast.with_(cte.args["alias"], as_=cte.this, dialect=dialect)
 
-    return root_ast.sql(dialect=dialect, pretty=True)
+    # DEV-1716: terminal emit of the multi-stage root — apply the dialect
+    # rewrite_emitted_sql post-pass (BigQuery / T-SQL alias mangling; identity
+    # otherwise). The re-parse/with_ grafting above can surface dotted aliases
+    # the per-stage emits already mangled, so mangle once more here
+    # (idempotent) to catch the root's own projection.
+    sql = root_ast.sql(dialect=dialect, pretty=True)
+    return get_dialect(dialect).rewrite_emitted_sql(sql)
 
 
 def _stage_rename_wrapper(*, planned, stage_sql, dialect):

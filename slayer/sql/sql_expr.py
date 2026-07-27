@@ -40,7 +40,7 @@ from sqlglot import exp
 
 from slayer.core.errors import IllegalWindowInFilterError
 from slayer.core.keys import SqlExprKey
-from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
+from slayer.sql.dialects.sqlite import rewrite_sqlite_json_extract
 from slayer.sql.window_detect import has_window_function as _has_window_function
 
 __all__ = [

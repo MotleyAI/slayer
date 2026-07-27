@@ -16,7 +16,6 @@ returns ``None`` for genuinely unmappable Arrow types.
 
 from __future__ import annotations
 
-from typing import Optional
 
 import pyarrow as pa
 
@@ -39,7 +38,7 @@ def datatype_to_arrow(dt: DataType) -> pa.DataType:
     return _DATATYPE_TO_ARROW[dt]
 
 
-def arrow_to_datatype(at: pa.DataType) -> Optional[DataType]:
+def arrow_to_datatype(at: pa.DataType) -> DataType | None:
     """Best-effort reverse map.
 
     Returns ``None`` if ``at`` cannot be coerced into one of the six

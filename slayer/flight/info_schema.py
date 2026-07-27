@@ -7,7 +7,6 @@ callers (and tests) keep their Arrow-shaped contract.
 
 from __future__ import annotations
 
-from typing import Optional
 
 import pyarrow as pa
 import sqlglot.expressions as exp
@@ -23,7 +22,7 @@ from slayer.flight.types import row_batch_to_arrow
 
 def match_info_schema(
     *, parsed: exp.Expression, catalog: FlightCatalog,
-) -> Optional[pa.Table]:
+) -> pa.Table | None:
     """Return the canned ``INFORMATION_SCHEMA.<table>`` answer as a
     ``pyarrow.Table`` or ``None``."""
     batch = _shared_match_info_schema(parsed=parsed, catalog=catalog)

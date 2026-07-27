@@ -23,7 +23,13 @@ slayer datasources create demo --ingest
 slayer query '{"source_model": "orders", "measures": ["*:count"]}'
 ```
 
-This generates ~2 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `items`, `products`, `stores`, `supplies`, `tweets`). Re-running is idempotent — the DuckDB is reused if it already exists. Override the years with `--years N`; the default is kept small so `slayer serve --demo` / `slayer mcp --demo` finish quickly enough to fit inside MCP-client startup timeouts. Only the first four bundled stores open within the first two years — bump `--years` to 4+ if you want all six.
+This generates ~2 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `items`, `products`, `stores`, `supplies`, `tweets`). The demo models come pre-enriched with a curated semantic layer: column labels and descriptions, currency/percent formats, ready-made measures (`total_revenue`, `avg_order_value`, `effective_tax_rate`, `unique_customers`, …), and a custom-aggregation example (`weighted_avg` defaulting its weight to `subtotal`) — so `models_summary` / `inspect` output is informative out of the box and there are saved measures to query by name:
+
+```bash
+slayer query '{"source_model": "orders", "measures": [{"formula": "total_revenue"}, {"formula": "avg_order_value"}], "dimensions": ["stores.name"]}'
+```
+
+Re-running is idempotent — the DuckDB is reused if it already exists, and the enrichment is additive-only (your edits to labels, descriptions, or measures are never overwritten). Override the years with `--years N`; the default is kept small so `slayer serve --demo` / `slayer mcp --demo` finish quickly enough to fit inside MCP-client startup timeouts. Only the first four bundled stores open within the first two years — bump `--years` to 4+ if you want all six.
 
 Pre-populate once and `--demo` is instant afterwards:
 
@@ -129,6 +135,37 @@ orders._count
 ```
 
 If you see "Model 'orders' not found", check that `slayer ingest` ran successfully and that `--storage` points to the right location.
+
+## Search & memories
+
+`slayer search` runs semantic retrieval over memories and canonical entities (models, columns, named measures, custom aggregations). Three channels run in parallel — BM25 over memory entity tags, Tantivy full-text, and (with `motley-slayer[advanced_search]` plus a provider API key) dense embeddings — and are RRF-fused into a single ranked list.
+
+```bash
+# Entity-driven
+slayer search --entity jaffle_shop.orders.order_total
+
+# Question-driven
+slayer search --question "What stores are in jaffle_shop?"
+
+# Graph-narrow with cypher_filter (naive form, always available)
+slayer search --question "Brooklyn POS" \
+  --cypher-filter 'MATCH (n:Memory) RETURN n.id AS id'
+```
+
+`--cypher-filter` accepts full openCypher when `advanced_search` is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges). Without the extra, only the naive `MATCH (n:Label) RETURN n.id AS id` kind-filter form is accepted; richer Cypher raises with an install hint. Without the extra (or a provider API key) the embedding channel emits a single warning into `SearchResponse.warnings` and search degrades to BM25 + Tantivy.
+
+Persist a note with `slayer memory save` so the next session inherits it:
+
+```bash
+slayer memory save \
+  --learning "orders.is_returned in {0,1,NULL}; treat NULL as not returned" \
+  --entities jaffle_shop.orders.is_returned \
+  --id kb.returns.null-handling
+
+slayer memory forget kb.returns.null-handling   # cascade-strips memory:<id> refs
+```
+
+See [Search](../concepts/search.md), [Memories](../concepts/memories.md), and the [CLI Reference](../reference/cli.md#slayer-search) for the full signature.
 
 ## Start a server (optional)
 

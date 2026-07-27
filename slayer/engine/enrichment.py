@@ -9,7 +9,8 @@ transformation step in the query pipeline.
 """
 
 import re
-from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
+from typing import Any
+from collections.abc import Mapping
 
 import sqlglot
 from sqlglot import exp
@@ -19,6 +20,7 @@ from slayer.core.enums import (
     DEFAULT_AGGREGATIONS_BY_TYPE,
     DataType,
     PRIMARY_KEY_AGGREGATIONS,
+    format_unknown_aggregation,
 )
 from slayer.core.formula import (
     canonical_agg_name,
@@ -36,7 +38,7 @@ from slayer.core.formula import (
     parse_formula,
 )
 from slayer.core.models import Column, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.query import OrderItem, SlayerQuery
 from slayer.core.refs import DOTTED_IDENT_REF_RE as _DOTTED_IDENT_REF_RE
 from slayer.engine.column_expansion import _is_trivial_base, expand_derived_refs
 from slayer.engine.enriched import (
@@ -48,11 +50,20 @@ from slayer.engine.enriched import (
     EnrichedTimeDimension,
     EnrichedTransform,
 )
+from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
-_TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
+# DEV-1686: quote-tolerant so join-path discovery matches a reserved qualifier
+# that RESERVED_KEYWORDS emits quoted in expanded derived-column SQL. Tolerates
+# every dialect's identifier quote char — ANSI ``"grant"``, MySQL/BigQuery
+# `` `grant` ``, T-SQL ``[grant]`` — as well as bare refs and ``__``-path
+# aliases (strict superset of the old bare ``word.word`` form). group(1) is
+# still the unquoted qualifier name.
+_TABLE_COL_RE = re.compile(
+    r'(?<![\w"`\]])["`\[]?([a-zA-Z_]\w*)["`\]]?\.["`\[]?([a-zA-Z_]\w*)["`\]]?'
+)
 def _strip_string_literal(value: str) -> str:
     """Strip one layer of single/double quotes from a query parameter value."""
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
@@ -63,7 +74,7 @@ def _strip_string_literal(value: str) -> str:
 _canonical_agg_name = canonical_agg_name  # Module-internal alias for the shared helper
 
 
-def canonical_expression_key(node: Any) -> Tuple[Any, ...]:  # NOSONAR(S8495) — variable-length tuple shape IS the discriminator; type signature already declares Tuple[Any, ...]
+def canonical_expression_key(node: Any) -> tuple[Any, ...]:  # NOSONAR(S8495) — variable-length tuple shape IS the discriminator; type signature already declares Tuple[Any, ...]
     """DEV-1444: build an alias-independent, structural hash key for a
     parsed formula AST node.
 
@@ -110,8 +121,8 @@ def canonical_expression_key(node: Any) -> Tuple[Any, ...]:  # NOSONAR(S8495) �
 async def _collect_reachable_agg_names(
     model: SlayerModel,
     resolve_join_target,
-    named_queries: Dict,
-) -> Optional[frozenset[str]]:
+    named_queries: dict,
+) -> frozenset[str] | None:
     """Collect custom aggregation names from the source model and all reachable joined models.
 
     Walks the full reachable join graph via BFS, bounded only by the ``visited``
@@ -146,10 +157,22 @@ async def _collect_reachable_agg_names(
     return frozenset(names) if names else None
 
 
+def _public_field_name(qfield: Any) -> str:
+    """The public name a query measure surfaces under.
+
+    An explicit ``name`` wins; otherwise the formula is mangled into an
+    identifier. Shared by the main measure loop and the reserved-name set
+    that hidden-transform allocation checks against, so the two can't drift.
+    """
+    return qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace(
+        "*", ""
+    )
+
+
 async def enrich_query(
     query: SlayerQuery,
     model: SlayerModel,
-    named_queries: Optional[Dict[str, SlayerQuery]] = None,
+    named_queries: dict[str, SlayerQuery] | None = None,
     *,
     resolve_dimension_via_joins,
     resolve_cross_model_measure,
@@ -193,7 +216,7 @@ async def enrich_query(
     # Saved-formula library for bare-name resolution. Only the source model's
     # named measures are in scope here; cross-model references (`other.aov`)
     # remain handled by the cross-model resolver.
-    named_measures: Dict[str, str] = {}
+    named_measures: dict[str, str] = {}
     for m in model.measures:
         if not m.name:
             continue
@@ -203,6 +226,20 @@ async def enrich_query(
                 f"'{model.name}'. Saved measure names must be unique."
             )
         named_measures[m.name] = m.formula
+
+    # A bare named-measure reference like ``measures=["companies_count"]`` is
+    # an implicit rename: the user already chose ``companies_count`` as the
+    # surfacing name when they declared the ModelMeasure. Promote it to an
+    # explicit ``qf.name`` so DEV-1443's surface / collision / canonical
+    # machinery (which keys on ``qf.name``) treats it identically to an
+    # explicit ``{"formula": "...", "name": "..."}`` rename. Without this,
+    # the SELECT alias canonicalises off the expanded formula
+    # (``company_name_count_distinct``) while ORDER BY / result-key lookups
+    # still use the declared measure name (``companies_count``) — they
+    # diverge and the emitted SQL references a column that isn't projected.
+    for qf in (query.measures or []):
+        if qf.name is None and qf.formula.strip() in named_measures:
+            qf.name = qf.formula.strip()
 
     # --- Dimensions ---
     dimensions = await _resolve_dimensions(
@@ -216,7 +253,7 @@ async def enrich_query(
     )
 
     # --- Measures (populated from fields below) ---
-    measures: List[EnrichedMeasure] = []
+    measures: list[EnrichedMeasure] = []
 
     # --- Time dimensions ---
     time_dimensions = await _resolve_time_dimensions(
@@ -258,22 +295,22 @@ async def enrich_query(
     )
 
     # --- Process fields ---
-    enriched_expressions: List[EnrichedExpression] = []
-    enriched_transforms: List[EnrichedTransform] = []
-    cross_model_measures: List[CrossModelMeasure] = []
-    known_aliases: Dict[str, str] = {}
-    field_name_aliases: Dict[str, str] = {}
+    enriched_expressions: list[EnrichedExpression] = []
+    enriched_transforms: list[EnrichedTransform] = []
+    cross_model_measures: list[CrossModelMeasure] = []
+    known_aliases: dict[str, str] = {}
+    field_name_aliases: dict[str, str] = {}
     # DEV-1443: canonical-agg alias → user-supplied measure name. Populated
     # when a query measure renames the canonical (``{"formula": "col:agg",
     # "name": "alias"}``). Consumed by the filter pre-pass (so a filter
     # written as ``col:agg <op> N`` resolves to the user alias and HAVINGs
     # correctly) and by the ORDER BY enrichment (same shape).
-    canonical_to_user_name: Dict[str, str] = {}
+    canonical_to_user_name: dict[str, str] = {}
     # Cached source-column name set for the remap eligibility guard
     # (Codex Finding 1 — skip remap when the canonical alias also literally
     # names a source column on the model, since the regex sub would then
     # clobber the literal source-column reference).
-    _source_column_names: Set[str] = {c.name for c in model.columns}
+    _source_column_names: set[str] = {c.name for c in model.columns}
 
     # DEV-1444 provenance-merge index: canonical_expression_key →
     # surfaced alias. Populated when an EnrichedMeasure is created;
@@ -282,7 +319,7 @@ async def enrich_query(
     # (e.g. order-by ``revenue:sum`` matching a user-declared
     # ``{"formula":"revenue:sum","name":"total"}``) reuses the existing
     # alias instead of materialising a phantom ``orders.revenue_sum``.
-    measure_canonical_key_to_alias: Dict[Tuple[Any, ...], str] = {}
+    measure_canonical_key_to_alias: dict[tuple[Any, ...], str] = {}
 
     def _mark_user_declared(alias: str) -> bool:
         """DEV-1444: flip ``user_declared=True`` on the enriched entry that
@@ -312,8 +349,8 @@ async def enrich_query(
         alias_key: str,
         measure_name: str,
         aggregation_name: str,
-        agg_args: Optional[list] = None,
-        agg_kwargs: Optional[dict] = None,
+        agg_args: list | None = None,
+        agg_kwargs: dict | None = None,
     ):
         """Create an EnrichedMeasure for an aggregated measure ref.
 
@@ -395,6 +432,21 @@ async def enrich_query(
                 raise ValueError(
                     f"Column '{measure_name}' not found in model '{model.name}'"
                 )
+            # DEV-1576 §3: distinguish "unknown aggregation name" from "known
+            # but not allowed for this column type". The name check runs BEFORE
+            # the PK / whitelist / type gates so an unknown name never gets
+            # mislabelled as a type restriction (a perfectly aggregatable DOUBLE
+            # column with a misspelled agg should say "Unknown aggregation",
+            # not "not applicable to DOUBLE column").
+            known_aggregations = BUILTIN_AGGREGATIONS | {
+                a.name for a in model.aggregations
+            }
+            if aggregation_name not in known_aggregations:
+                # DEV-1576 / DEV-1717: shared formatter, so this local gate and
+                # the typed binding gate (binding.py) stay byte-identical.
+                raise ValueError(
+                    format_unknown_aggregation(aggregation_name, known_aggregations)
+                )
             # Apply aggregation eligibility gates per the v2 contract:
             # 1. Primary-key columns are always restricted to count/count_distinct
             #    (regardless of type or any explicit whitelist).
@@ -463,7 +515,7 @@ async def enrich_query(
         # syntax, transform calls, ``OVER``) were rejected at construction
         # by ``parse_sql_predicate``.
         filter_sql = None
-        filter_columns: List[str] = []
+        filter_columns: list[str] = []
         if measure_def and measure_def.filter:
             parsed = parse_sql_predicate(measure_def.filter)
             resolved = await resolve_filter_columns(
@@ -520,7 +572,7 @@ async def enrich_query(
             resolved = re.sub(rf'(?<![."])\b{re.escape(name)}\b', f'"{alias}"', resolved)
         return resolved
 
-    def _resolve_rank_partition(transform: str, partition_by: List[str]) -> List[str]:
+    def _resolve_rank_partition(transform: str, partition_by: list[str]) -> list[str]:
         """Resolve partition_by= column references to base-CTE aliases.
 
         partition_by entries must reference query dimensions or time dimensions —
@@ -536,7 +588,7 @@ async def enrich_query(
             by_name.setdefault(td.name, td.alias)
             by_alias.setdefault(td.alias, td.alias)
 
-        resolved: List[str] = []
+        resolved: list[str] = []
         for col in partition_by:
             if col in by_alias:
                 resolved.append(by_alias[col])
@@ -551,6 +603,36 @@ async def enrich_query(
                 )
         return resolved
 
+    # DEV-1692: names for transforms hoisted out of an arithmetic formula are
+    # derived from the owning measure's field_name, which keeps them distinct
+    # from one another — but nothing stops a user from *also* selecting a
+    # measure or dimension literally named ``_t0_growth``. Both would then
+    # claim the alias ``<model>._t0_growth``: the self-join CTE projects two
+    # columns under that name and the hoisted reference silently resolves to
+    # the user's column (no error, wrong numbers). Allocate against every
+    # projected name instead of trusting field_name uniqueness on its own.
+    # Dimensions and time dimensions alias as ``<model>.<name>`` just like
+    # hoisted transforms do, so they are reserved by bare name too.
+    _reserved_public_names: set[str] = (
+        {_public_field_name(qf) for qf in (query.measures or [])}
+        | {d.name for d in dimensions}
+        | {td.name for td in time_dimensions}
+    )
+    _hidden_names: set[str] = set()
+
+    def _allocate_hidden_name(preferred: str) -> str:
+        candidate = preferred
+        suffix = 2
+        while (
+            candidate in _reserved_public_names
+            or candidate in _hidden_names
+            or candidate in known_aliases
+        ):
+            candidate = f"{preferred}_{suffix}"
+            suffix += 1
+        _hidden_names.add(candidate)
+        return candidate
+
     def _add_transform(
         name: str,
         transform: str,
@@ -558,7 +640,7 @@ async def enrich_query(
         offset: int = 1,
         granularity: str = None,
         predicate_is_boolean: bool = False,
-        kwargs: Optional[Dict[str, Any]] = None,
+        kwargs: dict[str, Any] | None = None,
     ):
         needs_time = transform in TIME_TRANSFORMS
         if needs_time and resolved_time_alias is None:
@@ -609,7 +691,7 @@ async def enrich_query(
     # falls through to the cross-model CTE path for them.
     _DISTRIBUTIVE_AGGS = frozenset({"sum", "min", "max"})
 
-    def _intercept_candidate_for_cross_model(ref) -> "Optional[Tuple[str, str]]":
+    def _intercept_candidate_for_cross_model(ref) -> "tuple[str, str] | None":
         """DEV-1449: return ``(flat_with_agg, outer_agg)`` if the
         intercept would resolve a virtual-stage cross-model agg ref to a
         local re-aggregation on a flat column, or ``None`` if the
@@ -672,7 +754,7 @@ async def enrich_query(
 
     async def _try_intercept_cross_model_as_local(
         ref, field_name: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Apply the intercept (computes candidate + builds the
         EnrichedMeasure). Returns the full enriched alias the caller
         can use, or ``None`` if no candidate."""
@@ -714,7 +796,7 @@ async def enrich_query(
         field_name_aliases[ref_canonical] = local_alias
         return local_alias
 
-    async def _ensure_measure_from_spec(mname: str, agg_refs: Optional[dict] = None):
+    async def _ensure_measure_from_spec(mname: str, agg_refs: dict | None = None):
         """Ensure a measure is resolved — handles agg refs only."""
         agg_refs = agg_refs or {}
         if mname in agg_refs:
@@ -837,13 +919,42 @@ async def enrich_query(
         elif isinstance(spec, MixedArithmeticField):
             for mname in spec.measure_names:
                 await _ensure_measure_from_spec(mname, spec.agg_refs)
+            # DEV-1692: the ``_t{n}`` placeholder counter restarts on every
+            # formula parse, so two measures that each wrap a transform in
+            # arithmetic would both flatten under the name ``_t0`` — colliding
+            # on the self-join CTE names (``shifted__t0``) and, worse, on the
+            # expression alias, silently making the second measure read the
+            # first one's value. Qualify with the owning measure's field_name
+            # and run it through _allocate_hidden_name so the result can't
+            # collide with a user measure that happens to share the shape.
+            placeholder_aliases: list[tuple[str, str]] = []
             for placeholder, sub_transform in spec.sub_transforms:
-                await _flatten_spec(sub_transform, placeholder)
+                hidden_name = _allocate_hidden_name(f"{placeholder}_{field_name}")
+                sub_alias = await _flatten_spec(
+                    spec=sub_transform, field_name=hidden_name
+                )
+                placeholder_aliases.append((placeholder, sub_alias))
+            # Bind the placeholders just long enough for _resolve_sql to rewrite
+            # this formula's references, then restore. A user measure may itself
+            # be named `_t0`, so a shadowed binding is put back rather than
+            # dropped.
+            shadowed: list[tuple[str, str | None]] = [
+                (placeholder, known_aliases.get(placeholder))
+                for placeholder, _ in placeholder_aliases
+            ]
+            for placeholder, sub_alias in placeholder_aliases:
+                known_aliases[placeholder] = sub_alias
+            resolved_sql = _resolve_sql(spec.sql)
+            for placeholder, prior in shadowed:
+                if prior is None:
+                    del known_aliases[placeholder]
+                else:
+                    known_aliases[placeholder] = prior
             alias = f"{model_name_str}.{field_name}"
             enriched_expressions.append(
                 EnrichedExpression(
                     name=field_name,
-                    sql=_resolve_sql(spec.sql),
+                    sql=resolved_sql,
                     alias=alias,
                 )
             )
@@ -951,7 +1062,7 @@ async def enrich_query(
 
     # DEV-1444: track aliases in declared order so EnrichedQuery.user_projection
     # can be populated at the end. Dims and time-dims come first.
-    user_projection: List[str] = [d.alias for d in dimensions]
+    user_projection: list[str] = [d.alias for d in dimensions]
     user_projection.extend(td.alias for td in time_dimensions)
 
     # DEV-1444 (Codex review on PR #134): the provenance-merge index in
@@ -964,7 +1075,7 @@ async def enrich_query(
     # outer trim would then project a column the inner SELECT doesn't
     # expose. Track the set of canonical keys already owned by a
     # user-declared qfield and refuse the duplicate.
-    user_declared_canon_keys: Dict[Tuple[Any, ...], str] = {}
+    user_declared_canon_keys: dict[tuple[Any, ...], str] = {}
 
     # DEV-1443 (CodeRabbit thread + Codex round 4 on PR #133): the
     # duplicate-explicit-name check must run for every query measure
@@ -973,7 +1084,7 @@ async def enrich_query(
     # arithmetic/transform measures fall through to ``_flatten_spec``; in
     # both cases a duplicate ``name`` would silently collapse two
     # measures onto a single alias. Run the pairwise check once up front.
-    _seen_explicit_names: Dict[str, str] = {}
+    _seen_explicit_names: dict[str, str] = {}
     for qf in (query.measures or []):
         if not qf.name:
             continue
@@ -1068,8 +1179,8 @@ async def enrich_query(
         stripped = alias.split(".", 1)[-1] if "." in alias else alias
         return stripped.replace(".", "__")
 
-    _occupied_aliases: Dict[str, str] = {}
-    _occupied_shorts: Dict[str, str] = {}
+    _occupied_aliases: dict[str, str] = {}
+    _occupied_shorts: dict[str, str] = {}
     for _d in dimensions:
         _occupied_aliases[_d.alias] = f"dimension '{_d.name}'"
         _occupied_shorts[_alias_to_short_local(_d.alias)] = (
@@ -1223,9 +1334,7 @@ async def enrich_query(
                 f"ORDER BY would otherwise bind to the source column "
                 f"instead of the renamed aggregate."
             )
-        field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace(
-            "*", ""
-        )
+        field_name = _public_field_name(qfield)
 
         if isinstance(spec, AggregatedMeasureRef):
             # New colon syntax: "revenue:sum", "*:count", etc.
@@ -1235,7 +1344,10 @@ async def enrich_query(
                 agg_args=spec.agg_args,
                 agg_kwargs=spec.agg_kwargs,
             )
-            if field_name == qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace("*", ""):
+            if (
+                field_name == qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace("*", "")
+                and qfield.formula.strip() not in named_measures
+            ):
                 field_name = canonical_name
 
             if "." in spec.measure_name and spec.measure_name != "*":
@@ -1652,7 +1764,7 @@ async def enrich_query(
     # operators) flow through unchanged. The construction-time validator
     # at ``slayer/core/models.py:412`` already rejected DSL constructs.
     measure_names_set = {m.name for m in measures}
-    parsed_model_filters: List[ParsedFilter] = []
+    parsed_model_filters: list[ParsedFilter] = []
     for mf in model.filters:
         parsed_mf = parse_sql_predicate(mf)
         for col in parsed_mf.columns:
@@ -1676,11 +1788,26 @@ async def enrich_query(
             substitute_variables(filter_str=f, variables=query.variables) for f in query_filters
         ]
 
+    # DEV-1543: distinct_dimension_values=False rejects any measure
+    # reference in filters / order. This pass runs AFTER variable
+    # substitution (so a ``{var}`` revealing an aggregation is caught)
+    # and BEFORE ``extract_filter_transforms`` lifts transforms into
+    # hidden fields (so the original measure-reference shape is still
+    # visible). Pre-empts the construction-time check which is structural
+    # only.
+    if not query.distinct_dimension_values:
+        _reject_measure_references_for_raw_rows(
+            query=query,
+            query_filters=query_filters,
+            custom_agg_names=custom_agg_names,
+            named_measures=named_measures,
+        )
+
     # Transform extraction runs only on Mode B (DSL) query filters. Model
     # filters are SQL mode — they don't carry SLayer transforms (rejected
     # at construction by ``parse_sql_predicate``) and don't go through
     # ``_preprocess_like`` / ``_preprocess_agg_refs``.
-    processed_query_filters: List[str] = []
+    processed_query_filters: list[str] = []
     ft_counter = [0]
     for f_str in query_filters:
         rewritten, extra_fields = extract_filter_transforms(
@@ -1700,7 +1827,7 @@ async def enrich_query(
     # query filters. Used by the windowed-column scan, ``_resolve_joins`` /
     # ``_collect_needed_paths``, and the ordering of the final
     # ``EnrichedQuery.filters`` list.
-    processed_filters_with_mode: List[Tuple[str, str]] = (
+    processed_filters_with_mode: list[tuple[str, str]] = (
         [(mf, "sql") for mf in model.filters]
         + [(qf, "dsl") for qf in processed_query_filters]
     )
@@ -1713,7 +1840,7 @@ async def enrich_query(
     # (`rank` / `percent_rank` / `dense_rank` / `ntile`) cover top-N
     # filtering in pure DSL. Applied to both modes — neither standard SQL
     # nor SLayer DSL allows window functions in WHERE.
-    _windowed_columns: Dict[str, str] = {
+    _windowed_columns: dict[str, str] = {
         c.name: c.sql for c in model.columns if c.sql and has_window_function(c.sql)
     }
     if _windowed_columns:
@@ -1747,7 +1874,7 @@ async def enrich_query(
     # Names that resolve at the query level (named measures, transforms,
     # expressions) — pass through as legitimate filter targets even though
     # they are not Columns / ModelMeasures on the source model.
-    _query_aliases: Set[str] = set()
+    _query_aliases: set[str] = set()
     _query_aliases.update(m.name for m in measures if m.name)
     _query_aliases.update(t.name for t in enriched_transforms if t.name)
     _query_aliases.update(e.name for e in enriched_expressions if e.name)
@@ -1841,6 +1968,7 @@ async def enrich_query(
         offset=query.offset,
         field_name_aliases=field_name_aliases,
         user_projection=user_projection,
+        distinct_dimension_values=query.distinct_dimension_values,
     )
 
 
@@ -1863,15 +1991,15 @@ def _unpack_dim_resolution(result):
 
 async def _maybe_expand(
     *,
-    sql: Optional[str],
-    terminal_model: Optional[SlayerModel],
+    sql: str | None,
+    terminal_model: SlayerModel | None,
     fallback_model: SlayerModel,
     alias_path: str,
     resolve_model,
     named_queries: dict,
     dialect: str,
     is_root: bool = True,
-) -> Optional[str]:
+) -> str | None:
     """Run the column-SQL expander when we have what we need; otherwise
     return ``sql`` unchanged. Lets tests that don't supply ``resolve_model``
     keep getting the legacy unexpanded behavior — production always supplies
@@ -1895,8 +2023,8 @@ async def _maybe_expand(
 
 
 def resolve_via_stage_origin(
-    *, model: SlayerModel, parts: List[str],
-) -> Optional[Column]:
+    *, model: SlayerModel, parts: list[str],
+) -> Column | None:
     """DEV-1449: Resolve a dotted reference against a virtual stage
     model produced by ``_query_as_model``.
 
@@ -1954,7 +2082,7 @@ async def _resolve_dotted_dim_with_stage_fallback(
     model_name_str: str,
     named_queries: dict,
     resolve_dimension_via_joins,
-) -> "tuple[Optional[Column], Optional[SlayerModel], str]":
+) -> "tuple[Column | None, SlayerModel | None, str]":
     """Resolve a dotted dim / time-dim reference for one query field.
 
     Shared by ``_resolve_dimensions`` and ``_resolve_time_dimensions``
@@ -1990,10 +2118,10 @@ async def _resolve_dimensions(
     resolve_dimension_via_joins,
     resolve_model=None,
     dialect: str = "postgres",
-) -> List[EnrichedDimension]:
+) -> list[EnrichedDimension]:
     dimensions = []
     for dim_ref in query.dimensions or []:
-        terminal_model: Optional[SlayerModel] = None
+        terminal_model: SlayerModel | None = None
         is_local = dim_ref.model is None
         if is_local:
             dim_def = model.get_column(dim_ref.name)
@@ -2042,10 +2170,10 @@ async def _resolve_time_dimensions(
     resolve_dimension_via_joins,
     resolve_model=None,
     dialect: str = "postgres",
-) -> List[EnrichedTimeDimension]:
+) -> list[EnrichedTimeDimension]:
     time_dimensions = []
     for td in query.time_dimensions or []:
-        terminal_model: Optional[SlayerModel] = None
+        terminal_model: SlayerModel | None = None
         is_local = td.dimension.model is None
         if is_local:
             dim_def = model.get_column(td.dimension.name)
@@ -2087,10 +2215,10 @@ async def _resolve_time_dimensions(
 
 
 def _resolve_time_alias(
-    time_dimensions: List[EnrichedTimeDimension],
+    time_dimensions: list[EnrichedTimeDimension],
     query: SlayerQuery,
     model: SlayerModel,
-) -> Optional[str]:
+) -> str | None:
     if len(time_dimensions) == 1:
         return time_dimensions[0].alias
     elif len(time_dimensions) > 1:
@@ -2108,16 +2236,16 @@ def _resolve_time_alias(
 def _resolve_last_agg_time(
     query: SlayerQuery,
     model: SlayerModel,
-    dimensions: List[EnrichedDimension],
-    time_dimensions: List[EnrichedTimeDimension],
-) -> Optional[str]:
+    dimensions: list[EnrichedDimension],
+    time_dimensions: list[EnrichedTimeDimension],
+) -> str | None:
     if query.main_time_dimension:
         mtd = query.main_time_dimension
         if "." not in mtd:
             mtd = f"{model.name}.{mtd}"
         return mtd
 
-    def _qualified(model_name: str, sql: Optional[str], name: str) -> str:
+    def _qualified(model_name: str, sql: str | None, name: str) -> str:
         # Once derived-ref expansion has run, `sql` may already be qualified
         # (e.g. ``orders.created_at`` instead of bare ``created_at``); don't
         # double-prefix in that case.
@@ -2148,14 +2276,14 @@ def _resolve_last_agg_time(
 # ---------------------------------------------------------------------------
 
 
-def _add_with_prefixes(segments: List[str], paths: Set[Tuple[str, ...]]) -> None:
+def _add_with_prefixes(segments: list[str], paths: set[tuple[str, ...]]) -> None:
     """Add ``segments[:1], segments[:2], …, segments`` to ``paths``."""
     for i in range(1, len(segments) + 1):
         paths.add(tuple(segments[:i]))
 
 
 def _raise_column_cycle(
-    visited: Tuple[Tuple[str, str], ...], key: Tuple[str, str],
+    visited: tuple[tuple[str, str], ...], key: tuple[str, str],
 ) -> None:
     """Raise a deterministic ``Circular column reference`` error matching
     the chain format used by ``expand_derived_refs``.
@@ -2166,7 +2294,7 @@ def _raise_column_cycle(
     raise ValueError(f"Circular column reference detected: {chain}")
 
 
-def _scan_sql_table_refs(*, sql: str, model_name: str, paths: Set[Tuple[str, ...]]) -> None:
+def _scan_sql_table_refs(*, sql: str, model_name: str, paths: set[tuple[str, ...]]) -> None:
     """Regex-fallback scan: pick out ``<table>.<col>`` shapes and add the
     table prefix paths (skipping references to ``model_name`` itself).
     """
@@ -2180,9 +2308,9 @@ def _process_node_for_paths(
     *,
     node: exp.Column,
     model: SlayerModel,
-    paths: Set[Tuple[str, ...]],
-    visited: Tuple[Tuple[str, str], ...],
-    dialect: Optional[str] = None,
+    paths: set[tuple[str, ...]],
+    visited: tuple[tuple[str, str], ...],
+    dialect: str | None = None,
 ) -> None:
     """Resolve one ``exp.Column`` node into either a recursion into a
     local derived column or a join-path-prefix add.
@@ -2218,9 +2346,9 @@ def _collect_paths_from_local_column_chain(
     *,
     model: SlayerModel,
     col_name: str,
-    paths: Set[Tuple[str, ...]],
-    visited: Tuple[Tuple[str, str], ...] = (),
-    dialect: Optional[str] = None,
+    paths: set[tuple[str, ...]],
+    visited: tuple[tuple[str, str], ...] = (),
+    dialect: str | None = None,
 ) -> None:
     """Walk the SQL of a *local* derived column on ``model`` to discover
     the join paths its expression implies — recursing through references
@@ -2250,7 +2378,13 @@ def _collect_paths_from_local_column_chain(
     next_visited = (*visited, key)
 
     try:
-        parsed = sqlglot.parse_one(sql, dialect=dialect)
+        # DEV-1686: quote bare reserved-word qualifiers/leaves (a derived
+        # column referencing a reserved joined model, e.g. ``grant.amount``)
+        # so join-path discovery finds the ref instead of silently falling
+        # back to a ref-less ``Command`` parse (which would drop the JOIN).
+        parsed = sqlglot.parse_one(
+            prequote_reserved_identifiers(sql=sql, dialect=dialect), dialect=dialect
+        )
     except Exception:
         _scan_sql_table_refs(sql=sql, model_name=model.name, paths=paths)
         return
@@ -2264,14 +2398,14 @@ def _collect_paths_from_local_column_chain(
 
 def _collect_needed_paths(
     model: SlayerModel,
-    dimensions: List[EnrichedDimension],
-    time_dimensions: List[EnrichedTimeDimension],
-    measures: List[EnrichedMeasure],
+    dimensions: list[EnrichedDimension],
+    time_dimensions: list[EnrichedTimeDimension],
+    measures: list[EnrichedMeasure],
     cross_model_measures: list,
-    processed_filters: List[Tuple[str, str]],
-    extra_agg_names: Optional[frozenset] = None,
-    dialect: Optional[str] = None,
-) -> Set[Tuple[str, ...]]:
+    processed_filters: list[tuple[str, str]],
+    extra_agg_names: frozenset | None = None,
+    dialect: str | None = None,
+) -> set[tuple[str, ...]]:
     """Extract ordered join-path tuples the query needs (including all prefixes).
 
     ``processed_filters`` is a list of ``(filter_text, mode)`` tuples
@@ -2280,7 +2414,7 @@ def _collect_needed_paths(
     matching parser so model filters with arbitrary SQL functions
     don't trip the DSL allowlist (DEV-1378).
     """
-    paths: Set[Tuple[str, ...]] = set()
+    paths: set[tuple[str, ...]] = set()
 
     for d in dimensions:
         if d.model_name != model.name:
@@ -2326,8 +2460,8 @@ def _scan_filter_column_ref(
     *,
     model: SlayerModel,
     col: str,
-    paths: Set[Tuple[str, ...]],
-    dialect: Optional[str] = None,
+    paths: set[tuple[str, ...]],
+    dialect: str | None = None,
 ) -> None:
     """Route one entry from a parsed filter's column list to the right
     path-discovery branch.
@@ -2350,7 +2484,7 @@ def _scan_filter_column_ref(
         return
     if _looks_like_dotted_identifier_ref(col):
         parts = col.split(".")
-        expanded: List[str] = []
+        expanded: list[str] = []
         for part in parts[:-1]:
             # Model filters convert dots to __; expand both forms.
             expanded.extend(part.split("__"))
@@ -2376,16 +2510,16 @@ def _looks_like_dotted_identifier_ref(value: str) -> bool:
 async def _resolve_joins(
     model: SlayerModel,
     model_name_str: str,
-    dimensions: List[EnrichedDimension],
-    time_dimensions: List[EnrichedTimeDimension],
-    measures: List[EnrichedMeasure],
+    dimensions: list[EnrichedDimension],
+    time_dimensions: list[EnrichedTimeDimension],
+    measures: list[EnrichedMeasure],
     cross_model_measures: list,
-    processed_filters: List[Tuple[str, str]],
+    processed_filters: list[tuple[str, str]],
     named_queries: dict,
     resolve_join_target,
-    extra_agg_names: Optional[frozenset] = None,
-    dialect: Optional[str] = None,
-) -> List[tuple]:
+    extra_agg_names: frozenset | None = None,
+    dialect: str | None = None,
+) -> list[tuple]:
     """Resolve only the JOINs the query actually needs by walking the join graph.
 
     Instead of relying on baked-in multi-hop joins, this walks each intermediate
@@ -2410,8 +2544,8 @@ async def _resolve_joins(
     # Sort shorter paths first so prefixes are resolved before extensions
     sorted_paths = sorted(needed_paths, key=len)
 
-    resolved_joins: Dict[str, tuple] = {}  # alias -> (table_sql, alias, condition)
-    resolved_models: Dict[str, SlayerModel] = {}  # model_name -> SlayerModel
+    resolved_joins: dict[str, tuple] = {}  # alias -> (table_sql, alias, condition)
+    resolved_models: dict[str, SlayerModel] = {}  # model_name -> SlayerModel
 
     for path in sorted_paths:
         alias = "__".join(path)
@@ -2479,7 +2613,7 @@ async def _resolve_joins(
 def _remap_renamed_aliases_in_filter(
     *,
     pf: ParsedFilter,
-    canonical_to_user_name: Dict[str, str],
+    canonical_to_user_name: dict[str, str],
 ) -> None:
     """DEV-1443: rewrite canonical-agg aliases in a parsed query filter
     to the user-supplied alias when the same node renamed the measure.
@@ -2538,11 +2672,172 @@ def _remap_renamed_aliases_in_filter(
     pf.columns = [eligible.get(c, c) for c in pf.columns]
 
 
+# DEV-1543: rejection-helper module-level state. Pre-compiled string-literal
+# regex used to mask quoted ``'a:b'`` content before colon-aggregation
+# detection so the literal's colon isn't mis-classified.
+_RAW_ROW_FIX_HINT = (
+    "Either remove the measure reference, or set "
+    "distinct_dimension_values=True (the default) to keep the "
+    "auto-aggregating behaviour."
+)
+_RAW_ROW_STR_LIT_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
+
+
+def _reject_measure_ref_in_filter(
+    *,
+    raw_filter: str,
+    custom_agg_names: frozenset,
+    named_measures: dict[str, str],
+) -> None:
+    """DEV-1543: walk a single (substituted) query filter for measure
+    references and raise ``DistinctDimensionValuesError`` on any match.
+    Co-defined with :func:`_reject_measure_ref_in_order_item` below;
+    both are dispatched by :func:`_reject_measure_references_for_raw_rows`.
+    """
+    from slayer.core.errors import DistinctDimensionValuesError
+    from slayer.core.formula import parse_filter
+
+    masked = _RAW_ROW_STR_LIT_RE.sub("''", raw_filter)
+
+    # Transform-call detection FIRST. ``extract_filter_transforms`` is
+    # robust against filter shapes ``parse_filter`` rejects (e.g.
+    # ``rank(amount:sum) <= 5``).
+    try:
+        _, lifted = extract_filter_transforms(
+            masked,
+            counter=[0],
+            extra_agg_names=custom_agg_names,
+            named_measures=named_measures,
+        )
+    except Exception:
+        lifted = []
+    if lifted:
+        raise DistinctDimensionValuesError(
+            f"distinct_dimension_values=False rejects measure references. "
+            f"Filter {raw_filter!r} contains a transform call "
+            f"({lifted[0][1]}). {_RAW_ROW_FIX_HINT}"
+        )
+
+    # Colon-aggregation + saved-measure detection via ``parse_filter``.
+    try:
+        parsed = parse_filter(masked, extra_agg_names=custom_agg_names)
+    except Exception:
+        # The real parser raises downstream with a useful message tied
+        # to the original filter text; don't pre-empt.
+        return
+    if parsed.agg_refs:
+        ref = parsed.agg_refs[0]
+        raise DistinctDimensionValuesError(
+            f"distinct_dimension_values=False rejects measure references. "
+            f"Filter {raw_filter!r} contains an aggregation "
+            f"({ref.measure_name}:{ref.aggregation_name}). "
+            f"{_RAW_ROW_FIX_HINT}"
+        )
+    for col in parsed.columns:
+        if col in named_measures:
+            raise DistinctDimensionValuesError(
+                f"distinct_dimension_values=False rejects measure references. "
+                f"Filter {raw_filter!r} references saved ModelMeasure "
+                f"{col!r}. {_RAW_ROW_FIX_HINT}"
+            )
+
+
+def _reject_measure_ref_in_order_item(
+    *,
+    item: OrderItem,
+    custom_agg_names: frozenset,
+    named_measures: dict[str, str],
+) -> None:
+    """DEV-1543: walk a single ``OrderItem`` for measure references.
+
+    Covers ``raw_formula`` shapes (``AggregatedMeasureRef``,
+    ``TransformField``, ``MixedArithmeticField``, and ``ArithmeticField``
+    when its ``agg_refs`` is non-empty — i.e. arithmetic OVER
+    aggregations like ``revenue:sum / *:count``; a scalar arithmetic
+    formula like ``amount + 1`` is fine in raw-row mode) plus the
+    bare-name case where ``item.column.name`` resolves to a saved
+    ``ModelMeasure``.
+    """
+    from slayer.core.errors import DistinctDimensionValuesError
+    from slayer.core.formula import (
+        AggregatedMeasureRef as _AggRef,
+        ArithmeticField as _ArithField,
+        MixedArithmeticField as _MixedField,
+        TransformField as _TransformField,
+        parse_formula,
+    )
+
+    if item.raw_formula is not None:
+        try:
+            spec = parse_formula(
+                item.raw_formula,
+                extra_agg_names=custom_agg_names,
+                named_measures=named_measures,
+            )
+        except Exception:
+            spec = None
+        # Direct aggregation / transform / mixed forms are always rejected.
+        is_agg_form = isinstance(spec, (_AggRef, _TransformField, _MixedField))
+        # ArithmeticField is only an aggregation form when it actually
+        # carries aggregate refs (``revenue:sum / *:count``); a pure
+        # scalar arithmetic like ``amount + 1`` is fine in raw-row mode.
+        is_agg_arith = isinstance(spec, _ArithField) and bool(spec.agg_refs)
+        if is_agg_form or is_agg_arith:
+            raise DistinctDimensionValuesError(
+                f"distinct_dimension_values=False rejects measure references. "
+                f"Order item raw_formula={item.raw_formula!r} contains a "
+                f"measure / transform reference. {_RAW_ROW_FIX_HINT}"
+            )
+
+    # Bare-name resolution: OrderItem.column.name matches a saved measure.
+    col_name = item.column.name if item.column else None
+    if col_name and col_name in named_measures:
+        raise DistinctDimensionValuesError(
+            f"distinct_dimension_values=False rejects measure references. "
+            f"Order item column={col_name!r} resolves to a saved "
+            f"ModelMeasure on the source model. {_RAW_ROW_FIX_HINT}"
+        )
+
+
+def _reject_measure_references_for_raw_rows(
+    *,
+    query: SlayerQuery,
+    query_filters: list[str],
+    custom_agg_names: frozenset,
+    named_measures: dict[str, str],
+) -> None:
+    """DEV-1543: when ``query.distinct_dimension_values is False``, reject
+    any measure reference in ``query.filters`` or ``query.order``.
+
+    Hooks AFTER variable substitution and BEFORE
+    ``extract_filter_transforms`` / order-formula hoisting, so the
+    original measure-reference shape is still visible. The construction-
+    time check in ``SlayerQuery._validate_distinct_dimension_values`` is
+    structural only (``measures`` non-empty, dims+tds both empty); this
+    pass is the authoritative measure-reference catch.
+
+    Dispatches per-filter and per-order-item to the focused helpers
+    above so each unit stays cognitively simple.
+    """
+    for raw_filter in query_filters:
+        _reject_measure_ref_in_filter(
+            raw_filter=raw_filter,
+            custom_agg_names=custom_agg_names,
+            named_measures=named_measures,
+        )
+    for item in query.order or []:
+        _reject_measure_ref_in_order_item(
+            item=item,
+            custom_agg_names=custom_agg_names,
+            named_measures=named_measures,
+        )
+
+
 def extract_filter_transforms(
     filter_str: str,
-    counter: Optional[List[int]] = None,
-    extra_agg_names: Optional[frozenset[str]] = None,
-    named_measures: Optional[Mapping[str, str]] = None,
+    counter: list[int] | None = None,
+    extra_agg_names: frozenset[str] | None = None,
+    named_measures: Mapping[str, str] | None = None,
 ) -> tuple:
     """Extract transform function calls from a filter string.
 
@@ -2578,7 +2873,9 @@ def extract_filter_transforms(
     preprocessed = _preprocess_concat(preprocessed)
     preprocessed = _preprocess_like(preprocessed)
     # Preprocess colon syntax (e.g., "order_total:sum") into ast-safe placeholders
-    preprocessed, agg_refs = _preprocess_agg_refs(preprocessed)
+    preprocessed, agg_refs = _preprocess_agg_refs(
+        formula=preprocessed, custom_agg_names=extra_agg_names or frozenset()
+    )
     # Build reverse map: placeholder → original colon form
     _agg_reverse = {
         ph: (
@@ -2594,7 +2891,7 @@ def extract_filter_transforms(
     except SyntaxError:
         return filter_str, []
 
-    transforms: List[tuple] = []
+    transforms: list[tuple] = []
 
     def _unmangle(s: str) -> str:
         """Restore colon syntax from placeholders in unparsed formulas."""
@@ -2627,6 +2924,65 @@ def extract_filter_transforms(
     return _unmangle(_ast.unparse(modified)), transforms
 
 
+# DEV-1539: compound AST shapes that ALWAYS need an outer ``(...)``
+# wrap when their SQL is substituted into a filter context with a
+# surrounding comparator. Checked **before** the atomic list below
+# because in sqlglot 30.4.3 ``exp.And`` and ``exp.Or`` inherit from
+# ``exp.Func`` — a single inverse-atomic check would mis-classify
+# ``a AND b`` as atomic and skip the wrap (Codex finding).
+_COMPOUND_FILTER_INLINE_TYPES: tuple = (
+    exp.Binary,     # arith / comparison
+    exp.Connector,  # AND / OR
+    exp.Unary,      # NOT, -x
+    exp.Predicate,  # BETWEEN, IN, LIKE, IS, …
+)
+
+# DEV-1539: AST shapes whose precedence is already unambiguous when
+# substituted into a filter context. A ``Column.sql`` body whose root
+# is one of these does NOT need an outer paren wrap. Used as the
+# fallback after the compound-types check.
+_ATOMIC_FILTER_INLINE_TYPES: tuple = (
+    exp.Column,
+    exp.Literal,
+    exp.Func,      # covers function calls, CAST, CASE, Anonymous, …
+    exp.Paren,     # already self-wrapped
+    exp.Boolean,   # TRUE / FALSE
+    exp.Null,
+)
+
+
+def _filter_inline_needs_paren_wrap(*, sql: str, dialect: str) -> bool:
+    """DEV-1539: decide whether an inlined ``Column.sql`` body needs an
+    outer ``(...)`` wrap when substituted into a filter's text.
+
+    The wrap matters when the body is a multi-term / predicate
+    expression whose precedence is ambiguous against the surrounding
+    comparator. Atomic shapes — bare columns, literals, single
+    function calls, single CASE / CAST — are already unambiguous;
+    wrapping them adds noise without changing meaning. **Anything
+    else** (BinOp, BoolOp, ``NOT``, ``BETWEEN``, ``IN``, ``LIKE``,
+    ``IS``, …) needs wrapping.
+
+    Parses ``sql`` once via sqlglot to determine the root AST shape.
+    The compound-type check fires first because in sqlglot 30.4.3
+    ``exp.And`` / ``exp.Or`` inherit from ``exp.Func``; a single
+    inverse-atomic check would mis-classify ``a AND b`` as atomic.
+    Conservative on parse failure: returns ``True`` so the caller wraps
+    (errs on the side of correctness over noise).
+    """
+    try:
+        # DEV-1686: prequote reserved qualifiers so a filter over a reserved
+        # joined model classifies correctly instead of conservatively wrapping.
+        tree = sqlglot.parse_one(
+            prequote_reserved_identifiers(sql=sql, dialect=dialect), dialect=dialect
+        )
+    except Exception:  # noqa: BLE001 — sqlglot raises a variety of error types
+        return True
+    if isinstance(tree, _COMPOUND_FILTER_INLINE_TYPES):
+        return True
+    return not isinstance(tree, _ATOMIC_FILTER_INLINE_TYPES)
+
+
 async def resolve_filter_columns(
     parsed_filters: list,
     model: SlayerModel,
@@ -2638,7 +2994,7 @@ async def resolve_filter_columns(
     *,
     strict: bool = False,
     drop_if_unresolved: bool = False,
-    query_aliases: Optional[Set[str]] = None,
+    query_aliases: set[str] | None = None,
 ) -> list:
     """Resolve filter column references through model dimensions/measures.
 
@@ -2708,9 +3064,24 @@ async def resolve_filter_columns(
                             alias_path=model_name,
                             is_root=True,
                         )
+                        # DEV-1539: wrap the inlined non-bare Column.sql
+                        # in outer parens so the precedence of any
+                        # surrounding comparator is explicit. Mirrors the
+                        # ``exp.Paren`` wrap that ``expand_derived_refs``
+                        # already applies to spliced derived bodies. Skip
+                        # the wrap when the inlined body is already a
+                        # single atomic expression (literal / column /
+                        # function call) — its precedence is unambiguous
+                        # and the wrap would only add noise.
+                        if _filter_inline_needs_paren_wrap(sql=qualified, dialect=dialect):
+                            qualified = f"({qualified})"
+                    # DEV-1539: lambda replacement so backslashes inside
+                    # ``qualified`` aren't interpreted as ``re`` escape
+                    # sequences (which would silently halve ``\\`` or
+                    # raise on a ``\1`` backref).
                     resolved_sql = _re.sub(
                         rf"(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)",
-                        qualified,
+                        lambda _m, q=qualified: q,
                         resolved_sql,
                     )
                     resolved_columns.append(qualified)
@@ -2797,9 +3168,22 @@ async def resolve_filter_columns(
                                 alias_path=table_alias,
                                 is_root=False,
                             )
+                            # DEV-1539: wrap inlined non-bare joined
+                            # Column.sql in outer parens; mirror of the
+                            # local-branch fix above. Skip when the body
+                            # is already an atomic expression.
+                            if _filter_inline_needs_paren_wrap(sql=qualified, dialect=dialect):
+                                qualified = f"({qualified})"
+                        # DEV-1539: lambda replacement for backslash
+                        # safety. Symmetric ``(?<!\.)…(?!\.)`` guards
+                        # mirror the local-branch pattern — without the
+                        # trailing guard, a shorter dotted col_name like
+                        # ``customers.score`` would mis-substitute as a
+                        # prefix of a longer reference such as
+                        # ``customers.score.extra``, mangling the SQL.
                         resolved_sql = _re.sub(
-                            rf"(?<!\w)\b{_re.escape(col_name)}\b",
-                            qualified,
+                            rf"(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)",
+                            lambda _m, q=qualified: q,
                             resolved_sql,
                         )
                         # Keep the original dotted path in resolved_columns
@@ -2943,9 +3327,9 @@ def _classify_one_filter(
 def classify_filters(
     filters: list,
     measure_names: set,
-    computed_names: Optional[set] = None,
-    groupby_names: Optional[set] = None,
-    windowed_measure_names: Optional[set] = None,
+    computed_names: set | None = None,
+    groupby_names: set | None = None,
+    windowed_measure_names: set | None = None,
 ) -> list:
     """Classify filters as WHERE, HAVING, or post-filter.
 

@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import List
 from unittest.mock import patch
 
 import pytest
@@ -102,7 +101,7 @@ async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
 class TestApplyDriftDeletes:
     async def test_applies_edit_model_delete(self, workspace: Path) -> None:
         engine, _ = await _setup(workspace)
-        deletes: List[ToDeleteEntry] = [
+        deletes: list[ToDeleteEntry] = [
             EditModelDelete(
                 model_name="orders",
                 data_source="ds",
@@ -122,7 +121,7 @@ class TestApplyDriftDeletes:
 
     async def test_applies_whole_model_delete(self, workspace: Path) -> None:
         engine, _ = await _setup(workspace)
-        deletes: List[ToDeleteEntry] = [
+        deletes: list[ToDeleteEntry] = [
             WholeModelDelete(
                 model_name="orders",
                 data_source="ds",

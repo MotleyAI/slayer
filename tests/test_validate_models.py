@@ -19,7 +19,6 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import pytest
 
@@ -39,6 +38,8 @@ from slayer.engine.schema_drift import (
     LiveTable,
     RemoveSpec,
     WholeModelDelete,
+    _resolve_live_table,
+    _strip_ident_quotes,
     compute_datasource_drops,
     data_type_bucket,
     diff_sql_model,
@@ -55,10 +56,10 @@ from slayer.storage.yaml_storage import YAMLStorage
 def _orders_model(
     *,
     data_source: str = "ds",
-    columns: Optional[List[Column]] = None,
-    joins: Optional[List[ModelJoin]] = None,
-    measures: Optional[List[ModelMeasure]] = None,
-    filters: Optional[List[str]] = None,
+    columns: list[Column] | None = None,
+    joins: list[ModelJoin] | None = None,
+    measures: list[ModelMeasure] | None = None,
+    filters: list[str] | None = None,
     sql_table: str = "orders",
 ) -> SlayerModel:
     return SlayerModel(
@@ -80,8 +81,8 @@ def _orders_model(
 
 def _live_orders(
     *,
-    columns: Optional[Dict[str, DataType]] = None,
-    pk_columns: Optional[set[str]] = None,
+    columns: dict[str, DataType] | None = None,
+    pk_columns: set[str] | None = None,
 ) -> LiveTable:
     return LiveTable(
         columns=columns
@@ -95,7 +96,7 @@ def _live_orders(
     )
 
 
-def _entry_for(model_name: str, entries: List) -> Optional[object]:
+def _entry_for(model_name: str, entries: list) -> object | None:
     for e in entries:
         if e.model_name == model_name:
             return e
@@ -995,3 +996,330 @@ class TestValidateModelsEndToEnd:
         # Cascades are bound per-DS — entries reference their own DS only
         for entry in result:
             assert entry.data_source in {"ds", "ds_b"}
+
+
+# ---------------------------------------------------------------------------
+# DEV-1538: validate_models — SQLite affinity probe surfaces type drift
+# when persisted INT disagrees with the value-level probe verdict, and
+# the probe-derived column drops cascade to dependent measures/derived
+# columns through the existing fixed-point cascade machinery.
+# ---------------------------------------------------------------------------
+
+
+def _create_sqlite_with_mixed_storage(
+    db_path: str, table: str, column: str, values: list
+) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            f'CREATE TABLE "{table}" (id INTEGER PRIMARY KEY, "{column}" INTEGER)'
+        )
+        for i, v in enumerate(values, start=1):
+            conn.execute(
+                f'INSERT INTO "{table}" VALUES (?, ?)', (i, v),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestValidateModelsSqliteProbe:
+    """DEV-1538: validate_models SQLite branch — the per-column probe runs
+    against each persisted INT base column and emits drift entries when the
+    probe disagrees with the persisted type. Drift entries must feed the
+    cascade machinery, not just append final-form EditModelDelete."""
+
+    @pytest.fixture
+    def workspace(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            yield Path(tmp.name)
+        finally:
+            tmp.cleanup()
+
+    async def _setup_sensordata(
+        self,
+        workspace: Path,
+        *,
+        values: list,
+        columns: list[Column],
+        measures: list[ModelMeasure] | None = None,
+        ds_type: str = "sqlite",
+    ) -> tuple[SlayerQueryEngine, str]:
+        """Persist a sensordata model whose ``tempstabidx`` column is
+        declared INT but whose live values are controlled by ``values``."""
+        db_path = str(workspace / "live.db")
+        if ds_type == "sqlite":
+            _create_sqlite_with_mixed_storage(
+                db_path, "sensordata", "tempstabidx", values,
+            )
+
+        storage = YAMLStorage(base_dir=str(workspace / "storage"))
+        await storage.save_datasource(
+            DatasourceConfig(name="ds", type=ds_type, database=db_path)
+        )
+        await storage.save_model(
+            SlayerModel(
+                name="sensordata",
+                sql_table="sensordata",
+                data_source="ds",
+                columns=columns,
+                measures=measures or [],
+            )
+        )
+        return SlayerQueryEngine(storage=storage), db_path
+
+    async def test_surfaces_probe_drift_when_storage_widens_to_double(
+        self, workspace: Path
+    ) -> None:
+        engine, _ = await self._setup_sensordata(
+            workspace,
+            values=[1, 0.5, 0.7, 0.9, 0.99],
+            columns=[
+                Column(
+                    name="id", sql="id", type=DataType.INT, primary_key=True,
+                ),
+                Column(name="tempstabidx", sql="tempstabidx", type=DataType.INT),
+            ],
+        )
+        result = await engine.validate_models(data_source="ds")
+        entry = _entry_for("sensordata", result)
+        assert isinstance(entry, EditModelDelete)
+        assert "tempstabidx" in entry.remove.columns
+        # Reason must reference the affinity probe, the column, the source
+        # type INT, the verdict DOUBLE, and the suggested remediation
+        # (re-run slayer ingest). Tightening this guards against the
+        # message drifting to a generic 'column drifted' wording.
+        reasons = [r.reason for r in entry.reasons if r.target == "column:tempstabidx"]
+        assert reasons, f"missing reason for column:tempstabidx in {entry.reasons!r}"
+        msg = reasons[0].lower()
+        assert "affinity" in msg or "probe" in msg
+        assert "tempstabidx" in reasons[0]
+        assert "int" in msg
+        assert "double" in msg
+        assert "slayer ingest" in msg
+
+    async def test_surfaces_probe_drift_when_storage_widens_to_text(
+        self, workspace: Path
+    ) -> None:
+        """Same shape as the DOUBLE drift but verdict TEXT — non-coercible
+        text storage in a declared-INT column."""
+        engine, _ = await self._setup_sensordata(
+            workspace,
+            values=[1, 2, "abc", "xyz"],
+            columns=[
+                Column(
+                    name="id", sql="id", type=DataType.INT, primary_key=True,
+                ),
+                Column(name="tempstabidx", sql="tempstabidx", type=DataType.INT),
+            ],
+        )
+        result = await engine.validate_models(data_source="ds")
+        entry = _entry_for("sensordata", result)
+        assert isinstance(entry, EditModelDelete)
+        assert "tempstabidx" in entry.remove.columns
+        reasons = [r.reason for r in entry.reasons if r.target == "column:tempstabidx"]
+        assert reasons
+        msg = reasons[0].lower()
+        assert "text" in msg
+
+    async def test_no_drift_when_probe_agrees(
+        self, workspace: Path
+    ) -> None:
+        """All-integer storage → probe returns INT → no drift entry."""
+        engine, _ = await self._setup_sensordata(
+            workspace,
+            values=[1, 2, 3, 4, 5],
+            columns=[
+                Column(
+                    name="id", sql="id", type=DataType.INT, primary_key=True,
+                ),
+                Column(name="tempstabidx", sql="tempstabidx", type=DataType.INT),
+            ],
+        )
+        result = await engine.validate_models(data_source="ds")
+        assert result == []
+
+    async def test_non_sqlite_skips_probe(self, workspace: Path) -> None:
+        """Non-SQLite datasources never run the probe at validate time."""
+        pytest.importorskip("duckdb")
+        import duckdb
+
+        db_path = str(workspace / "live.duckdb")
+        con = duckdb.connect(db_path)
+        con.execute(
+            "CREATE TABLE sensordata (id INTEGER PRIMARY KEY, tempstabidx INTEGER)"
+        )
+        con.execute("INSERT INTO sensordata VALUES (1, 10), (2, 20)")
+        con.close()
+
+        storage = YAMLStorage(base_dir=str(workspace / "storage"))
+        await storage.save_datasource(
+            DatasourceConfig(name="ds", type="duckdb", database=db_path)
+        )
+        await storage.save_model(
+            SlayerModel(
+                name="sensordata",
+                sql_table="sensordata",
+                data_source="ds",
+                columns=[
+                    Column(
+                        name="id", sql="id", type=DataType.INT, primary_key=True,
+                    ),
+                    Column(
+                        name="tempstabidx", sql="tempstabidx", type=DataType.INT,
+                    ),
+                ],
+            )
+        )
+        engine = SlayerQueryEngine(storage=storage)
+
+        from unittest.mock import patch
+        with patch(
+            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+            side_effect=AssertionError("probe must not fire on non-SQLite"),
+        ):
+            result = await engine.validate_models(data_source="ds")
+        # No probe-related drift; the test mainly asserts the patch never
+        # fires.
+        assert all(e.model_name != "sensordata" or
+                   "tempstabidx" not in getattr(e, "remove", RemoveSpec()).columns
+                   for e in result)
+
+    async def test_probe_failure_no_entry(self, workspace: Path) -> None:
+        """A failing probe returns None — validate_models must not emit a
+        drift entry for that column, and only log a WARNING."""
+        engine, _ = await self._setup_sensordata(
+            workspace,
+            values=[1, 0.5, 0.7],
+            columns=[
+                Column(
+                    name="id", sql="id", type=DataType.INT, primary_key=True,
+                ),
+                Column(name="tempstabidx", sql="tempstabidx", type=DataType.INT),
+            ],
+        )
+        from unittest.mock import patch
+        with patch(
+            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+            return_value=None,
+        ):
+            result = await engine.validate_models(data_source="ds")
+        # No drift entry for tempstabidx via the probe path.
+        entry = _entry_for("sensordata", result)
+        assert entry is None or "tempstabidx" not in (
+            entry.remove.columns if isinstance(entry, EditModelDelete) else []
+        )
+
+    async def test_probe_drift_cascades_to_dependent_measure(
+        self, workspace: Path
+    ) -> None:
+        """Codex finding #4: probe-derived drops must feed the cascade
+        machinery. A ModelMeasure referencing the widened column is dropped
+        in the same validate pass."""
+        engine, _ = await self._setup_sensordata(
+            workspace,
+            values=[1, 0.5, 0.7, 0.9],
+            columns=[
+                Column(
+                    name="id", sql="id", type=DataType.INT, primary_key=True,
+                ),
+                Column(name="tempstabidx", sql="tempstabidx", type=DataType.INT),
+            ],
+            measures=[
+                ModelMeasure(
+                    formula="tempstabidx:sum",
+                    name="stab_total",
+                ),
+            ],
+        )
+        result = await engine.validate_models(data_source="ds")
+        entry = _entry_for("sensordata", result)
+        assert isinstance(entry, EditModelDelete)
+        assert "tempstabidx" in entry.remove.columns
+        # Cascade: the dependent measure is also dropped.
+        assert "stab_total" in entry.remove.measures
+
+    async def test_probe_drift_cascades_to_derived_column(
+        self, workspace: Path
+    ) -> None:
+        """Cascade through a derived column whose sql references the
+        widened base column."""
+        engine, _ = await self._setup_sensordata(
+            workspace,
+            values=[1, 0.5, 0.7, 0.9],
+            columns=[
+                Column(
+                    name="id", sql="id", type=DataType.INT, primary_key=True,
+                ),
+                Column(name="tempstabidx", sql="tempstabidx", type=DataType.INT),
+                Column(name="doubled", sql="tempstabidx * 2", type=DataType.INT),
+            ],
+        )
+        result = await engine.validate_models(data_source="ds")
+        entry = _entry_for("sensordata", result)
+        assert isinstance(entry, EditModelDelete)
+        # Both the base column and the derived column are dropped.
+        assert "tempstabidx" in entry.remove.columns
+        assert "doubled" in entry.remove.columns
+
+
+class TestStripIdentQuotes:
+    def test_bare_identifier_unchanged(self) -> None:
+        assert _strip_ident_quotes("Company") == "Company"
+
+    def test_double_quoted(self) -> None:
+        assert _strip_ident_quotes('"Company"') == "Company"
+
+    def test_escaped_inner_quote(self) -> None:
+        assert _strip_ident_quotes('"Comp""any"') == 'Comp"any'
+
+    def test_unbalanced_quotes_left_alone(self) -> None:
+        assert _strip_ident_quotes('"Company') == '"Company'
+
+    def test_surrounding_whitespace_stripped(self) -> None:
+        assert _strip_ident_quotes('  "Company"  ') == "Company"
+
+
+class TestResolveLiveTable:
+    """Live-table lookup must handle schema-qualified and quoted identifiers."""
+
+    @staticmethod
+    def _live(name: str) -> LiveTable:
+        return LiveTable(columns={"id": DataType.DOUBLE}, pk_columns={"id"})
+
+    def test_bare_table_matches(self) -> None:
+        live = self._live("orders")
+        assert _resolve_live_table(
+            sql_table="orders", live_tables={"orders": live}
+        ) is live
+
+    def test_schema_qualified_falls_back_to_bare(self) -> None:
+        live = self._live("orders")
+        assert _resolve_live_table(
+            sql_table="public.orders", live_tables={"orders": live}
+        ) is live
+
+    def test_quoted_table_part_strips_quotes(self) -> None:
+        live = self._live("Company")
+        # The bug's repro: prod."Company" with introspection keyed by bare name.
+        assert _resolve_live_table(
+            sql_table='prod."Company"', live_tables={"Company": live}
+        ) is live
+
+    def test_both_parts_quoted(self) -> None:
+        live = self._live("Company")
+        assert _resolve_live_table(
+            sql_table='"prod"."Company"', live_tables={"Company": live}
+        ) is live
+
+    def test_escaped_inner_quote_in_table(self) -> None:
+        live = self._live('Comp"any')
+        assert _resolve_live_table(
+            sql_table='prod."Comp""any"', live_tables={'Comp"any': live}
+        ) is live
+
+    def test_missing_returns_none(self) -> None:
+        assert _resolve_live_table(
+            sql_table='prod."Missing"', live_tables={"orders": self._live("orders")}
+        ) is None

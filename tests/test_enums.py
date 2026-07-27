@@ -62,9 +62,11 @@ class TestDefaultAggregationsByType:
         assert "avg" in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INT]
 
     def test_text_set_unchanged(self) -> None:
-        # Mirror of the old STRING set.
+        # Mirror of the old STRING set, plus DEV-1595's count_distinct_approx
+        # (eligible wherever count_distinct is — see DEFAULT_AGGREGATIONS_BY_TYPE).
         assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.TEXT] == frozenset({
-            "count", "count_distinct", "first", "last", "min", "max",
+            "count", "count_distinct", "count_distinct_approx",
+            "first", "last", "min", "max",
         })
 
     def test_no_pseudo_type_keys(self) -> None:

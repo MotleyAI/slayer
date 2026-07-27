@@ -13,13 +13,13 @@ the storage backends — they reduce duplicates before loading rows through
 this converter.
 """
 
-from typing import Any, Dict
+from typing import Any
 
 from slayer.storage.migrations import register_migration
 
 
 @register_migration("Memory", 1)
-def _memory_v1_to_v2(data: Dict[str, Any]) -> Dict[str, Any]:
+def _memory_v1_to_v2(data: dict[str, Any]) -> dict[str, Any]:
     """v1 → v2: stringify the id field. Default sentinel preserved."""
     raw_id = data.get("id", "")
     if isinstance(raw_id, bool):

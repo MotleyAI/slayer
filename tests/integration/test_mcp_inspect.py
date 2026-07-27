@@ -8,7 +8,7 @@ Run with: poetry run pytest tests/integration/test_mcp_inspect.py -m integration
 """
 
 import sqlite3
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 
@@ -257,7 +257,7 @@ class TestInspectModelEndToEnd:
     """Full ``inspect_model`` run against the SQLite fixture — confirms every
     section of the markdown output is produced end-to-end."""
 
-    async def _call(self, server: Any, *, name: str, arguments: Optional[dict] = None) -> str:
+    async def _call(self, server: Any, *, name: str, arguments: dict | None = None) -> str:
         content, _ = await server.call_tool(name=name, arguments=arguments or {})
         return content[0].text
 
@@ -307,8 +307,8 @@ class TestInspectModelEndToEnd:
 
         # Sample data table: count + amount_avg + quantity_avg + 2 dim columns
         # SLayer names the *:count output '_count' when grouped by dimensions.
-        assert "## Sample Data" in result
-        sample_section = result.split("## Sample Data", 1)[1]
+        assert "## Data Profile" in result
+        sample_section = result.split("## Data Profile", 1)[1]
         assert "_count" in sample_section
         assert "amount_avg" in sample_section
         assert "quantity_avg" in sample_section
@@ -333,14 +333,13 @@ class TestInspectModelSectionGatingIntegration:
     short-circuits actually take effect when sections are dropped.
     """
 
-    async def _call(self, server: Any, *, name: str, arguments: Optional[dict] = None) -> str:
+    async def _call(self, server: Any, *, name: str, arguments: dict | None = None) -> str:
         content, _ = await server.call_tool(name=name, arguments=arguments or {})
         return content[0].text
 
     async def test_columns_only_short_circuits_samples(self, env) -> None:
         """sections=['columns'] keeps the columns table populated and skips
-        sample-data and reachable-fields entirely; the footer documents what
-        was trimmed."""
+        sample-data entirely; the footer documents what was trimmed."""
         server = create_mcp_server(storage=env["storage"])
         result = await self._call(
             server, name="inspect_model",
@@ -352,16 +351,17 @@ class TestInspectModelSectionGatingIntegration:
         col_section = result.split("## Columns")[1]
         # Profile data still in the columns table when columns is included
         assert "completed" in col_section
-        # No sample data section, no reachable-fields section
-        assert "## Sample Data" not in result
+        # No sample data section; the reachable-via-joins heading was removed
+        # entirely in DEV-1560 and must never appear.
+        assert "## Data Profile" not in result
         assert "## Reachable" not in result
         # Empty list-only headings for the rest are OK (model has no measures /
         # aggregations / joins, so they render nothing); footer should still
         # document what was omitted.
         assert "> Sections shown: columns." in result
         # ``learnings`` joined the omittable section list when DEV-1357
-        # landed; the footer now lists every section gated out.
-        assert "> Omitted: reachable_fields, samples, learnings." in result
+        # landed; ``reachable_fields`` was removed in DEV-1560.
+        assert "> Omitted: samples, learnings." in result
 
     async def test_descriptions_max_chars_truncates_in_columns_table(self, env) -> None:
         """descriptions_max_chars trims long descriptions and appends the marker."""
@@ -714,6 +714,122 @@ class TestInspectModelSampledValuesAndDistinctCount:
         assert notes["distinct_count"] == 0
         # Text sampled is empty string, NOT the numeric-fallback "all NULL".
         assert notes["sampled"] == ""
+
+    async def test_markdown_table_caps_sampled_at_20_values(
+        self, tmp_path,
+    ) -> None:
+        """DEV-1516: per-column markdown rendering must still show at most
+        20 values per column (via the persisted ``Column.sampled`` text)
+        even when ``sampled_values`` holds the full 50. The markdown table
+        is the all-columns-at-once surface and stays readable."""
+        db_path = tmp_path / "wide_values.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.cursor().execute(
+            "CREATE TABLE many_values (id INTEGER PRIMARY KEY, kind TEXT)"
+        )
+        # Insert 30 distinct categorical values. <= 50 so no overflow, but
+        # > 20 so the markdown text cap kicks in.
+        conn.executemany(
+            "INSERT INTO many_values VALUES (?, ?)",
+            [(i, f"k_{i:02d}") for i in range(1, 31)],
+        )
+        conn.commit()
+        conn.close()
+        storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+        await storage.save_datasource(DatasourceConfig(
+            name="mv_ds", type="sqlite", database=str(db_path),
+        ))
+        await storage.save_model(SlayerModel(
+            name="many_values", sql_table="many_values", data_source="mv_ds",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="kind", type=DataType.TEXT),
+            ],
+        ))
+        server = create_mcp_server(storage=storage)
+        content, _ = await server.call_tool(
+            name="inspect_model",
+            arguments={"model_name": "many_values"},  # markdown
+        )
+        text = content[0].text
+        col_section = text.split("## Columns")[1]
+        kind_row_start = col_section.find("| kind ")
+        if kind_row_start < 0:
+            pytest.fail("``kind`` row not found in markdown ## Columns table")
+        # Scan only the kind row (terminated by newline).
+        kind_row = col_section[kind_row_start:col_section.find("\n", kind_row_start)]
+        # Codex round-3 finding #9: positive AND negative assertions.
+        # Values within the cap MUST appear (the cell isn't empty).
+        assert "k_01" in kind_row, (
+            "markdown table is missing in-cap sample values — sampled cell "
+            "appears empty"
+        )
+        assert "k_20" in kind_row, (
+            "markdown table dropped a top-20 sample value"
+        )
+        # Values past the 20-cap MUST NOT appear.
+        assert "k_21" not in kind_row, (
+            "DEV-1516 regression: markdown table leaked the 21st sample value "
+            "for one column — the 20-cap is broken."
+        )
+        assert "k_29" not in kind_row, (
+            "DEV-1516 regression: markdown table leaked the 29th sample value "
+            "for one column. The full 50 belongs only on per-column search "
+            "hits, not the all-columns inspect_model markdown surface."
+        )
+        # And the persisted ``sampled_values`` still carries the full set.
+        reloaded = await storage.get_model("many_values", data_source="mv_ds")
+        assert reloaded is not None
+        kind_col = reloaded.get_column("kind")
+        assert kind_col is not None
+        assert kind_col.sampled_values is not None
+        assert len(kind_col.sampled_values) == 30
+
+    async def test_legacy_sampled_text_preserved_in_markdown_on_profile_failure(
+        self, env, monkeypatch,
+    ) -> None:
+        """Codex finding #6: when ``inspect_model``'s refactor delegates to
+        ``ensure_column_sample_fresh`` and ``profile_column`` raises, the
+        markdown column for ``sampled`` must still show the LEGACY persisted
+        text. The helper returns the input column on failure (which still
+        carries the legacy ``sampled`` set), so the markdown rendering
+        reads the legacy value from there. Don't surface an empty cell."""
+        storage = env["storage"]
+        # Pre-populate a v6-style legacy state: ``sampled`` set, no list.
+        await storage.update_column_sampled(
+            data_source="test_sqlite", model_name="orders",
+            column_name="status",
+            sampled="legacy text from v6",
+            sampled_values=None,
+            distinct_count=None,
+        )
+
+        # Force every profile_column call to fail.
+        async def explodes(**_kwargs):
+            raise RuntimeError("simulated profile failure")
+
+        monkeypatch.setattr(
+            "slayer.engine.profiling.profile_column", explodes,
+        )
+
+        server = create_mcp_server(storage=storage)
+        content, _ = await server.call_tool(
+            name="inspect_model",
+            arguments={"model_name": "orders"},  # markdown by default
+        )
+        text = content[0].text
+        col_section = text.split("## Columns")[1]
+        status_row_start = col_section.find("| status ")
+        assert status_row_start >= 0
+        status_row = col_section[status_row_start:col_section.find("\n", status_row_start)]
+        # Legacy text MUST appear in the cell so the agent still sees data.
+        assert "legacy text from v6" in status_row, (
+            "Codex finding #6: legacy ``Column.sampled`` text must survive "
+            "a profile_column failure in inspect_model. The refactored "
+            "helper returns the INPUT column on failure (which carries "
+            "the legacy text); the markdown rendering must read from "
+            "there. An empty cell is a regression."
+        )
 
     async def test_profiles_more_than_10_categorical_columns(
         self, tmp_path,

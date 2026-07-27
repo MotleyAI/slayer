@@ -9,7 +9,7 @@ Remote-mode behaviour is exercised by ``test_memories_rest.py``.
 """
 
 import tempfile
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio

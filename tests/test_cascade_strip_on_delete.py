@@ -131,17 +131,19 @@ class TestEmbeddingRefreshNotFired:
     ) -> None:
         """Cascade-strip writes go through ``_save_memory_row`` directly,
         bypassing ``MemoryService.save_memory`` (and therefore the
-        per-memory ``EmbeddingService.refresh_memory`` hook). This is the
-        "no embedding cost per deleted entity" invariant from the plan."""
+        per-memory ``EmbeddingRetriever.upsert_memory`` hook). This is
+        the "no embedding cost per deleted entity" invariant from the
+        plan."""
         await storage.save_memory(
             learning="x",
             entities=["mydb.orders", "mydb.orders.amount"],
         )
-        # Patch the refresh method itself; if cascade routed through
-        # MemoryService.save_memory, it would have called refresh_memory
+        # Patch the upsert method itself; if cascade routed through
+        # MemoryService.save_memory, it would have called upsert_memory
         # for the rewrite.
         with patch(
-            "slayer.embeddings.service.EmbeddingService.refresh_memory",
+            "slayer.search.retrievers.embeddings."
+            "EmbeddingRetriever.upsert_memory",
         ) as mock_refresh:
             await storage.delete_model("orders", data_source="mydb")
             assert mock_refresh.call_count == 0
@@ -162,7 +164,7 @@ class TestEmbeddingRefreshNotFired:
             entities=["mydb.orders", "mydb.orders.amount"],
         )
         with patch(
-            "slayer.embeddings.service.embed_batch",
+            "slayer.search.retrievers.embeddings.embed_batch",
         ) as mock_embed:
             await storage.delete_model("orders", data_source="mydb")
             assert mock_embed.call_count == 0

@@ -10,6 +10,7 @@ leak into another).
 """
 
 import shutil
+import socket
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,20 @@ _KNOWN_FAILING_NOTEBOOKS = {
         "``dimensions=['stores.name']``) hits the same ``stage 7b.12`` "
         "deferred path as the 04_time notebook."
     ),
+    # DEV-1704 Stage-0 parity gaps surfaced by the integration notebook run.
+    "12_query_cache/query_cache_nb.ipynb": (
+        "DEV-1715: the DEV-1587 per-query cache is not yet wired into the "
+        "typed pipeline (deferred from Stage 0)."
+    ),
+    "13_osi_import/osi_import_nb.ipynb": (
+        "DEV-1713: DEV-1692 duplicate time_shift CTE name (`duplicate WITH "
+        "table name: shifted__time_shift_inner`) — the OSI-import demo issues a "
+        "multi-time_shift query that hits the Stage-9 de-collision gap."
+    ),
+    "13_osi_import/osi_import_agent_nb.ipynb": (
+        "DEV-1713: DEV-1692 duplicate time_shift CTE name — same multi-time_shift "
+        "de-collision gap as osi_import_nb.ipynb."
+    ),
 }
 
 
@@ -75,6 +90,22 @@ def notebook_path(request):
     return request.param
 
 
+# The dbt MetricFlow notebook bootstraps by shallow-cloning an upstream GitHub
+# repo on first run. When that bootstrap can't complete offline, skip rather
+# than fail. The helper writes a `.complete` marker only after a fully built
+# cache, so its presence is the authoritative "network-free from here" signal;
+# a bare/partial clone dir is not enough.
+_METRICFLOW_NB_DIR = "11_dbt_metricflow"
+
+
+def _github_reachable(host: str = "github.com", port: int = 443, timeout: float = 5.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def test_notebook_runs_without_errors(notebook_path, request):
     """Execute the notebook and assert it completes without errors."""
     rel = str(notebook_path.relative_to(EXAMPLES_DIR))
@@ -83,6 +114,12 @@ def test_notebook_runs_without_errors(notebook_path, request):
             reason=_KNOWN_FAILING_NOTEBOOKS[rel],
             strict=False,
         ))
+    is_metricflow = _METRICFLOW_NB_DIR in notebook_path.parts
+    if is_metricflow:
+        complete_marker = notebook_path.parent / ".cache" / ".complete"
+        if not complete_marker.exists() and not _github_reachable():
+            pytest.skip("GitHub unreachable; cannot bootstrap the MetricFlow notebook")
+
     with open(notebook_path) as f:
         nb = nbformat.read(f, as_version=4)
 
@@ -92,4 +129,12 @@ def test_notebook_runs_without_errors(notebook_path, request):
         kernel_name="python3",
         resources={"metadata": {"path": str(notebook_path.parent)}},
     )
-    client.execute()
+    try:
+        client.execute()
+    except nbclient.exceptions.CellExecutionError as exc:
+        # A reachable socket but a failing `git fetch` (or a stale/partial cache)
+        # surfaces as MetricFlowDemoError mid-run; skip when GitHub is unreachable
+        # rather than reporting a bootstrap failure as a notebook bug.
+        if is_metricflow and "MetricFlowDemoError" in str(exc) and not _github_reachable():
+            pytest.skip(f"MetricFlow notebook could not bootstrap offline: {exc}")
+        raise

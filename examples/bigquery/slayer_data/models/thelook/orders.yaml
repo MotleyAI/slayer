@@ -1,0 +1,57 @@
+version: 7
+name: orders
+sql_table: bigquery-public-data.thelook_ecommerce.orders
+query_variables: {}
+data_source: thelook
+columns:
+- name: order_id
+  sql: order_id
+  type: INT
+  primary_key: true
+  hidden: false
+- name: user_id
+  sql: user_id
+  type: INT
+  primary_key: false
+  hidden: false
+- name: status
+  sql: status
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: gender
+  sql: gender
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: created_at
+  sql: created_at
+  type: TIMESTAMP
+  primary_key: false
+  hidden: false
+- name: shipped_at
+  sql: shipped_at
+  type: TIMESTAMP
+  primary_key: false
+  hidden: false
+- name: delivered_at
+  sql: delivered_at
+  type: TIMESTAMP
+  primary_key: false
+  hidden: false
+- name: num_of_item
+  sql: num_of_item
+  type: INT
+  primary_key: false
+  hidden: false
+measures: []
+aggregations: []
+joins:
+- target_model: users
+  join_pairs:
+  - - user_id
+    - id
+  join_type: left
+filters: []
+default_time_dimension: created_at
+hidden: false

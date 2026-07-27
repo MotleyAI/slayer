@@ -14,7 +14,7 @@ Key terms used throughout SLayer documentation and code.
 
 **Measure (named formula)** — A saved formula stored on a model (`SlayerModel.measures: List[ModelMeasure]`). Shape `{formula, name, label, description}` — same as a query's inline `measures` entry. Queries reference saved measures by bare name in any formula context (`{"formula": "aov"}`).
 
-**Aggregation** — How a column is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. Custom aggregations can be defined at model level. Applied at query time via colon syntax: `revenue:sum`, `*:count`, `price:weighted_avg(weight=quantity)`, `price:corr(other=quantity)`.
+**Aggregation** — How a column is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. Custom aggregations can be defined at model level. Applied at query time via colon syntax: `revenue:sum`, `*:count`, `price:weighted_avg(weight=quantity)`, `price:corr(other=quantity)`.
 
 **Join** — A LEFT JOIN relationship between two models. Defined by a target model name and join key pairs (from the model's own foreign keys). Each model only stores direct joins — multi-hop paths like `customers.regions.name` are resolved at query time by walking each intermediate model's own joins.
 
@@ -38,7 +38,7 @@ Key terms used throughout SLayer documentation and code.
 
 **Time dimension** — A dimension of type `time` or `date`, used for time-based grouping. When specified in `time_dimensions`, SLayer truncates it to the given granularity (e.g., monthly buckets). The same column can also be used as a regular dimension (without truncation).
 
-**Granularity** — The level of time truncation applied to a time dimension, to determine the size of each time bucket (one row's time span) in the result, or as an argument in time related functions. Available granularities: `second`, `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year`.
+**Granularity** — The level of time truncation applied to a time dimension, to determine the size of each time bucket (one row's time span) in the result, or as an argument in time related functions. Available granularities: `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`. (`week` is Monday-anchored; `week_sunday` is Sunday-anchored.)
 
 **Time bucket** — A single unit of the granularity. If granularity is `month`, each time bucket is one calendar month (e.g., January 2024, February 2024). Each time bucket becomes one row in the query result.
 
@@ -52,7 +52,7 @@ Key terms used throughout SLayer documentation and code.
 
 **Self-join vs window-function transforms:**
 
-- `time_shift`, `change`, and `change_pct` use self-join CTEs — they can reach outside the current result set (no edge NULLs) and handle gaps in data correctly. `time_shift(revenue, -1, 'year')` (with granularity) joins on calendar date arithmetic for comparisons like year-over-year.
+- `time_shift`, `change`, and `change_pct` use self-join CTEs — they can reach outside the current result set (no edge NULLs) and handle gaps in data correctly. The join matches on all non-time dimensions as well as the shifted time column, so grouped comparisons are partition-safe and reset per group. `time_shift(revenue, -1, 'year')` (with granularity) joins on calendar date arithmetic for comparisons like year-over-year.
 - `lag(revenue, 1)` / `lead(revenue, 1)` use SQL `LAG`/`LEAD` window functions directly — more efficient, but produce NULLs at the edges and are sensitive to gaps in data.
 
 **Nesting** — Formulas can be nested: `change(cumsum(revenue))` applies `change` to the result of `cumsum`. Each level of nesting generates an additional CTE layer in the SQL.

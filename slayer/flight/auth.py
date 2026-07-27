@@ -20,7 +20,6 @@ from __future__ import annotations
 import hmac
 import ipaddress
 import logging
-from typing import Optional
 
 import pyarrow.flight as fl
 
@@ -52,7 +51,7 @@ def _is_loopback(host: str) -> bool:
     return False
 
 
-def validate_bind_address(*, host: str, token: Optional[str]) -> None:
+def validate_bind_address(*, host: str, token: str | None) -> None:
     """Raise ``ValueError`` if the server is about to bind a non-loopback
     address without a configured token (§4.3 / §7.1).
     """
@@ -66,7 +65,7 @@ def validate_bind_address(*, host: str, token: Optional[str]) -> None:
     )
 
 
-def validate_tls_pair(*, cert: Optional[str], key: Optional[str]) -> None:
+def validate_tls_pair(*, cert: str | None, key: str | None) -> None:
     """TLS cert/key must be supplied together or not at all (§4.4)."""
     if (cert is None) != (key is None):
         raise ValueError(
@@ -78,10 +77,10 @@ def validate_tls_pair(*, cert: Optional[str], key: Optional[str]) -> None:
 class _BearerTokenMiddleware(fl.ServerMiddleware):
     """No-op once-per-call middleware; auth check happened in the factory."""
 
-    def __init__(self, *, environment_id: Optional[str] = None) -> None:
+    def __init__(self, *, environment_id: str | None = None) -> None:
         self._environment_id = environment_id
 
-    def call_completed(self, exception: Optional[BaseException]) -> None:
+    def call_completed(self, exception: BaseException | None) -> None:
         if exception is not None and self._environment_id is not None:
             logger.debug(
                 "Flight SQL call (environmentId=%s) failed: %r",
@@ -107,12 +106,12 @@ class BearerTokenMiddlewareFactory(fl.ServerMiddlewareFactory):
     handler-layer recheck would be possible if we ever want one.)
     """
 
-    def __init__(self, *, token: Optional[str]) -> None:
+    def __init__(self, *, token: str | None) -> None:
         self._expected = token
 
     def start_call(
         self, info: fl.CallInfo, headers: dict
-    ) -> Optional[fl.ServerMiddleware]:
+    ) -> fl.ServerMiddleware | None:
         # Extract and lowercase header keys (gRPC standardises to lowercase
         # but client implementations differ).
         normalised = {
@@ -121,7 +120,7 @@ class BearerTokenMiddlewareFactory(fl.ServerMiddlewareFactory):
             for k, v in (headers or {}).items()
         }
         env_id_raw = normalised.get("environmentid")
-        environment_id: Optional[str] = None
+        environment_id: str | None = None
         if isinstance(env_id_raw, (bytes, bytearray)):
             environment_id = env_id_raw.decode("utf-8", errors="replace")
         elif isinstance(env_id_raw, str):
@@ -130,7 +129,7 @@ class BearerTokenMiddlewareFactory(fl.ServerMiddlewareFactory):
             logger.info("Flight SQL request environmentId=%s", environment_id)
 
         auth_raw = normalised.get("authorization")
-        provided: Optional[str] = None
+        provided: str | None = None
         if isinstance(auth_raw, (bytes, bytearray)):
             auth_raw = auth_raw.decode("utf-8", errors="replace")
         if isinstance(auth_raw, str) and auth_raw.lower().startswith("bearer "):

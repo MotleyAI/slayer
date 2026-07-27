@@ -1,0 +1,57 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "YourStrong@Passw0rd"
+      MSSQL_PID: "Developer"
+    ports:
+      - "1433:1433"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - >
+          /opt/mssql-tools18/bin/sqlcmd
+          -S localhost -U sa -P 'YourStrong@Passw0rd'
+          -Q 'SELECT 1' -No || exit 1
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+
+  createdb:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    command: >
+      /opt/mssql-tools18/bin/sqlcmd
+      -S sqlserver -U sa -P 'YourStrong@Passw0rd'
+      -Q "IF DB_ID(N'slayer_demo') IS NULL CREATE DATABASE slayer_demo;" -No
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+
+  seed:
+    build:
+      context: ../..
+      dockerfile: examples/sqlserver/Dockerfile
+    command: >
+      python /examples/seed.py
+      "mssql+pyodbc://sa:YourStrong%40Passw0rd@sqlserver:1433/slayer_demo?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+    volumes:
+      - ../seed.py:/examples/seed.py:ro
+    depends_on:
+      createdb:
+        condition: service_completed_successfully
+
+  slayer:
+    build:
+      context: ../..
+      dockerfile: examples/sqlserver/Dockerfile
+    command: sh /examples/start.sh
+    ports:
+      - "5143:5143"
+    volumes:
+      - ./start.sh:/examples/start.sh:ro
+      - ./slayer_data:/data
+    depends_on:
+      seed:
+        condition: service_completed_successfully

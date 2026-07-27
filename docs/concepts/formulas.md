@@ -131,12 +131,12 @@ Functions apply window operations to measures:
 | Function | Description | SQL Generated |
 |----------|-------------|---------------|
 | `cumsum(x)` | Running total over time | `SUM(x) OVER (PARTITION BY dims ORDER BY time)` |
-| `time_shift(x, n)` | Value N periods back/ahead | Self-join CTE with INTERVAL offset |
+| `time_shift(x, n)` | Value N time buckets back/ahead (calendar-aware) | Self-join CTE with INTERVAL offset |
 | `time_shift(x, offset, gran)` | Value from a different time bucket | Self-join CTE with INTERVAL offset |
 | `lag(x, n)` | Value N rows back (window function) | `LAG(x, n) OVER (PARTITION BY dims ORDER BY time)` |
 | `lead(x, n)` | Value N rows ahead (window function) | `LEAD(x, n) OVER (PARTITION BY dims ORDER BY time)` |
-| `change(x)` | Difference from previous period | Desugars to `x - time_shift(x, -1)` |
-| `change_pct(x)` | Percentage change from previous | Desugars to `(x - ts) / ts` where `ts = time_shift(x, -1)` |
+| `change(x)` | Period-over-period difference (partition-safe, resets per group) | Desugars to `x - time_shift(x, -1)` |
+| `change_pct(x)` | Period-over-period % change, e.g. month-over-month growth (partition-safe, resets per group; NULL when the prior period's value is 0 or missing) | Desugars to `CASE WHEN ts != 0 THEN (x - ts) / ts END` where `ts = time_shift(x, -1)` |
 | `consecutive_periods(predicate)` | Current trailing run length where predicate is true | Staged window CTEs with reset groups |
 | `rank(x[, partition_by=...])` | Ranking by value (descending) | `RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
 | `percent_rank(x[, partition_by=...])` | Relative rank in [0, 1] (descending) | `PERCENT_RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
@@ -154,6 +154,14 @@ total per status, not one running total across the whole result set.
 **Self-join transforms vs window-function transforms:**
 
 `time_shift` uses a **self-join CTE** with an INTERVAL-shifted time column. `change` and `change_pct` are desugared into a hidden `time_shift` + arithmetic expression at query enrichment time. The shifted sub-query applies the time offset everywhere (WHERE, GROUP BY, SELECT), so it can reach outside the current result set — no edge NULLs when the database has the data, and correct handling of gaps in time series.
+
+The self-join matches on **all non-time dimensions as well as the shifted time column** (e.g. `ON base.month = shifted.month AND base.store = shifted.store`), so these transforms are partition-safe: each group's series is compared only against itself, and per-group series reset cleanly. One store's first month is never diffed against another store's last month.
+
+**Intent recipes:**
+
+- Month-over-month / period-over-period growth → `change_pct(revenue:sum)` with a `time_dimensions` entry at the desired granularity. Prefer this over hand-building the ratio from `time_shift`.
+- Absolute period-over-period delta → `change(revenue:sum)`.
+- Comparing against a *different* grain than the query's (e.g. year-over-year on a monthly series), or using the shifted value as a term in custom arithmetic → `time_shift(revenue:sum, -1, 'year')`.
 
 `lag(x, n)` and `lead(x, n)` use SQL `LAG`/`LEAD` window functions directly. They are more efficient but have two trade-offs:
 
@@ -277,8 +285,20 @@ Inside `Column.sql`, `ModelMeasure.formula`, or any `Aggregation.formula`, you c
 | `exp(x)` | 1 | `e^x` |
 | `sqrt(x)` | 1 | Square root |
 | `pow(x, n)` / `power(x, n)` | 2 | `x^n`. Both spellings are accepted (sqlglot may emit either depending on origin dialect). |
+| `round(x[, ndigits])` | 1–2 | Round to `ndigits` decimal places (default 0). `ndigits` must be an integer literal. |
+| `abs(x)` | 1 | Absolute value. |
 
-These are native on Postgres / DuckDB / MySQL / ClickHouse. SQLite doesn't have most of them in the standard build, so SLayer registers Python implementations on every connection (see `slayer/sql/sqlite_udfs.py`). NULL inputs always return NULL. Math-domain errors (`ln(0)`, `sqrt(-1)`, `pow(0, -1)`) propagate as `sqlite3.OperationalError` — matching Postgres's strict semantics rather than SQLite ≥3.35's silent-NULL built-in `log()`.
+Unlike the other scalar functions above — which pass through only when embedded in a larger `Column.sql` or arithmetic expression — `round` and `abs` are also valid as the **top-level** form of a query measure or `ModelMeasure.formula`:
+
+```python
+{"formula": "round(revenue:sum, 2)"}        # round an aggregate
+{"formula": "abs(revenue:sum - cost:sum)"}  # absolute difference
+{"formula": "round(revenue:sum / *:count, 2)"}
+```
+
+On Postgres, 2-argument `round` over a floating-point value is automatically cast to `numeric` so it executes (Postgres has no `round(double precision, integer)` overload). SQLite and DuckDB round `DOUBLE` natively.
+
+These are native on Postgres / DuckDB / MySQL / ClickHouse. SQLite doesn't have most of them in the standard build, so SLayer registers Python implementations on every connection (see `slayer/sql/dialects/sqlite.py`). NULL inputs always return NULL. Math-domain errors (`ln(0)`, `sqrt(-1)`, `pow(0, -1)`) propagate as `sqlite3.OperationalError` — matching Postgres's strict semantics rather than SQLite ≥3.35's silent-NULL built-in `log()`.
 
 The 2-arg `log(B, X)` UDF is registered on **every** SQLite version, including ≥3.35 where it overrides the built-in's silent-NULL behaviour to match Postgres's strict error semantics. `ln`, `log10`, and `log2` also always register; the `log2` UDF overrides SQLite ≥3.35's silent-NULL built-in to keep the same strict semantics.
 
