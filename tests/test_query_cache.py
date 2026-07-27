@@ -24,22 +24,6 @@ import pydantic
 import pytest
 import sqlalchemy
 
-# APPROVED DEFERRAL (DEV-1704 Stage-0 review, Finding 1a → owned by DEV-1715):
-# the DEV-1587 per-engine query cache genuinely needs rework over the typed
-# pipeline's CTE shapes (not a clean port), so its wiring is deferred to
-# DEV-1715 rather than restored in Stage 0. This module-level skip guard is the
-# ONE approved guard under tests/ — it is pinned by tests/test_parity_guards.py
-# (any new/removed guard fails that meta-test) and auto-lifts the moment the
-# engine grows cache support. Do NOT add further skip guards without approval.
-from slayer.engine.query_engine import SlayerQueryEngine as _EngineProbe
-
-if not hasattr(_EngineProbe, "cache_config"):
-    pytest.skip(
-        "DEV-1715: DEV-1587 query cache not yet on the typed pipeline. "
-        "Guard auto-lifts when SlayerQueryEngine.cache_config lands.",
-        allow_module_level=True,
-    )
-
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.policy import ColumnFilterRule, SessionPolicy
