@@ -207,7 +207,6 @@ PARITY_XFAILS: dict[str, str] = {
     'tests/test_dev1686_reserved_word_identifiers.py::TestReservedInComputedPaths::test_derived_column_reserved_join_discovered_all_dialects[sqlite]': "DEV-1706 (Stage 2): DEV-1686 reserved-identifier quoting via the resolver/dialect package.",
     'tests/test_dev1686_reserved_word_identifiers.py::TestReservedInComputedPaths::test_derived_column_reserved_join_discovered_all_dialects[duckdb]': "DEV-1706 (Stage 2): DEV-1686 reserved-identifier quoting via the resolver/dialect package.",
     'tests/test_filtered_count_forms.py::test_filtered_count_distinct_approx_wraps_case_in_exact_fallback': "DEV-1717: count_distinct_approx built-in aggregation not yet on the typed pipeline.",
-    'tests/test_help_seed.py::TestHelpPackageRemoved::test_slayer_help_package_is_deleted': "DEV-1717: DEV-1658 help()->inspect(memory:help.*) migration not adopted; typed pipeline still ships slayer.help.",
     'tests/test_named_measures.py::TestBareNamedMeasureAliasing::test_select_alias_uses_measure_name': "DEV-1713 (Stage 9): bare named-measure SELECT-alias naming.",
     'tests/test_named_measures.py::TestBareNamedMeasureAliasing::test_order_by_resolves_against_measure_name': "DEV-1713 (Stage 9): bare named-measure SELECT-alias naming.",
     'tests/test_mcp_engine_teardown.py::TestToolsReuseClosureEngine::test_recommend_root_model_constructs_no_new_engine': "DEV-1717: DEV-1626 recommend_root_model engine method not yet on the typed pipeline.",
