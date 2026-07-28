@@ -317,6 +317,45 @@ class JoinFilterRule(BaseModel):
         return self
 
 
+def _validate_join_rule_anchor(
+    rule: JoinFilterRule, anchor: str
+) -> Tuple[JoinHop, ...]:
+    """Validate one join rule's path against the ruleset ``anchor`` and return
+    its **target-first** oriented hops. Raises ``ValueError`` on any violation.
+
+    Single source of truth for the per-rule anchor invariants — shared by
+    :class:`JoinFilterRuleset` construction AND the SQL-boundary re-check in
+    ``slayer/sql/session_policy.py::_build_exists``, so a ``model_copy`` that
+    bypasses construction can never feed SQL generation a rule that satisfies a
+    weaker set of invariants (it fails closed instead). The cross-rule checks
+    (duplicate targets, whitelist overlaps) stay on the ruleset validator.
+    """
+    oriented = rule.oriented_hops()  # target-first; raises if target not endpoint
+    terminal = oriented[-1].to_table
+    if not _reaches_anchor(terminal, anchor):
+        raise ValueError(
+            f"JoinFilterRule for target '{rule.target_table}': the join_path "
+            f"must reach the anchor table '{anchor}' at its non-target endpoint, "
+            f"qualified at least as fully as the anchor (got '{terminal}')."
+        )
+    # The anchor must appear EXACTLY ONCE in the oriented path, only as the
+    # terminal to_table — never as an intermediate hop (Codex #3).
+    node_sequence = [oriented[0].from_table] + [h.to_table for h in oriented]
+    if sum(1 for n in node_sequence if _table_names_match(n, anchor)) != 1:
+        raise ValueError(
+            f"JoinFilterRule for target '{rule.target_table}': the anchor table "
+            f"'{anchor}' must appear exactly once in the join path, only as the "
+            "terminal endpoint (not as an intermediate hop)."
+        )
+    # A join rule may not target the anchor (it is filtered directly).
+    if _table_names_match(rule.target_table, anchor):
+        raise ValueError(
+            f"JoinFilterRule may not target the anchor table '{anchor}' "
+            "(the anchor is filtered directly)."
+        )
+    return oriented
+
+
 class JoinFilterRuleset(BaseModel):
     """Single-anchor join model (DEV-1718).
 
@@ -364,35 +403,8 @@ class JoinFilterRuleset(BaseModel):
         master = self.table
         seen_targets: list[str] = []
         for rule in self.joins:
-            oriented = rule.oriented_hops()  # target-first
-            # The non-target endpoint (terminal to_table) must be the anchor,
-            # qualified at least as fully (so a qualified anchor is never
-            # reached via a bare, wrong-schema endpoint).
-            terminal = oriented[-1].to_table
-            if not _reaches_anchor(terminal, master):
-                raise ValueError(
-                    f"JoinFilterRule for target '{rule.target_table}': the "
-                    f"join_path must reach the anchor table '{master}' at its "
-                    f"non-target endpoint, qualified at least as fully as the "
-                    f"anchor (got '{terminal}')."
-                )
-            # The anchor must appear EXACTLY ONCE in the oriented path, only as
-            # the terminal to_table — never as an intermediate hop (Codex #3).
-            node_sequence = [oriented[0].from_table] + [h.to_table for h in oriented]
-            master_hits = sum(1 for n in node_sequence if _table_names_match(n, master))
-            if master_hits != 1:
-                raise ValueError(
-                    f"JoinFilterRule for target '{rule.target_table}': the "
-                    f"anchor table '{master}' must appear exactly once in the "
-                    "join path, only as the terminal endpoint (not as an "
-                    "intermediate hop)."
-                )
-            # A join rule may not target the anchor (it is filtered directly).
-            if _table_names_match(rule.target_table, master):
-                raise ValueError(
-                    f"JoinFilterRule may not target the anchor table "
-                    f"'{master}' (the anchor is filtered directly)."
-                )
+            # Per-rule anchor invariants (shared with the SQL boundary).
+            _validate_join_rule_anchor(rule, master)
             # No two join rules may target the same table (one path per target).
             if any(_table_names_match(rule.target_table, t) for t in seen_targets):
                 raise ValueError(

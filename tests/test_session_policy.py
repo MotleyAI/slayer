@@ -562,6 +562,33 @@ def test_corrupted_qualified_anchor_bare_terminal_fails_closed():
         )
 
 
+def test_corrupted_anchor_as_intermediate_fails_closed():
+    """Defensive: a model_copy that makes the anchor appear as an intermediate
+    hop (while the terminal still reaches it) bypasses construction but fails
+    closed at the SQL boundary — _build_exists re-runs the full per-rule anchor
+    validation, not just reachability."""
+    good = SessionPolicy(ruleset=_join_ruleset())  # anchor customers, target orders
+    # orders -> customers -> x -> customers: anchor 'customers' appears twice.
+    bad_rule = good.ruleset.joins[0].model_copy(
+        update={
+            "join_path": (
+                "orders.customer_id = customers.id",
+                "customers.x = x.y",
+                "x.z = customers.w",
+            )
+        }
+    )
+    bad_ruleset = good.ruleset.model_copy(update={"joins": (bad_rule,)})
+    bad_policy = good.model_copy(update={"ruleset": bad_ruleset})
+    with pytest.raises(ForcedFilterError):
+        apply_session_policy(
+            "SELECT * FROM orders",
+            dialect="sqlite",
+            policy=bad_policy,
+            has_column=_boom_probe,
+        )
+
+
 def test_forced_filter_error_has_no_rule_name():
     """DEV-1718: ForcedFilterError dropped the rule_name param/attribute."""
     with pytest.raises(TypeError):

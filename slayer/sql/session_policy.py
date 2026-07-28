@@ -49,7 +49,7 @@ from slayer.core.policy import (
     JoinFilterRule,
     JoinFilterRuleset,
     SessionPolicy,
-    _reaches_anchor,
+    _validate_join_rule_anchor,
 )
 
 # Statement roots the rewrite is willing to operate on. Anything else
@@ -197,35 +197,29 @@ def _apply_column_ruleset(
 def _build_exists(rule: JoinFilterRule, *, ruleset: JoinFilterRuleset) -> exp.Exists:
     """Build the correlated ``EXISTS`` body for one join rule.
 
-    Uses ``rule.oriented_hops()`` (target-first): ``FROM`` is the first hop's
-    ``to_table`` (alias ``_rls_j0``); each later hop becomes an inner ``JOIN``;
-    the first hop correlates to the wrapper's inner base alias (``_rls_src``);
-    the terminal tenant predicate lives on the last hop's alias — which must be
-    the anchor table. All identifiers are structural (dotted/quoted-safe).
+    Uses the shared ``_validate_join_rule_anchor`` (the same per-rule invariants
+    the ``JoinFilterRuleset`` validator enforces) to get target-first oriented
+    hops: ``FROM`` is the first hop's ``to_table`` (alias ``_rls_j0``); each
+    later hop becomes an inner ``JOIN``; the first hop correlates to the
+    wrapper's inner base alias (``_rls_src``); the terminal tenant predicate
+    lives on the last hop's alias — the anchor table. All identifiers are
+    structural (dotted/quoted-safe).
     """
     try:
-        hops = rule.oriented_hops()
+        # Re-validate against the anchor at the SQL boundary using the SAME
+        # helper as construction, so a model_copy that bypassed the ruleset
+        # validator (broken chaining, target not an endpoint, path not reaching
+        # the anchor, or the anchor appearing more than once) fails closed as a
+        # ForcedFilterError rather than emitting a mis-scoped EXISTS.
+        hops = _validate_join_rule_anchor(rule, ruleset.table)
     except ValueError as exc:
-        # A corrupt rule (e.g. a model_copy that broke chaining or dropped
-        # target_table off the endpoints) must fail closed as a ForcedFilterError
-        # at the SQL boundary, not leak a raw ValueError.
         raise ForcedFilterError(
             f"Forced filter join path for '{rule.target_table}' is invalid "
-            "(non-chaining, or target_table is not an endpoint); failing closed.",
+            "(non-chaining, target not an endpoint, does not reach the anchor, "
+            "or the anchor appears more than once); failing closed.",
             table=rule.target_table,
             column=ruleset.column,
         ) from exc
-    if not _reaches_anchor(hops[-1].to_table, ruleset.table):
-        # Defensive: a bad model_copy could break the anchor reachability the
-        # ruleset validator enforces (including reducing a qualified anchor to a
-        # bare, wrong-schema terminal) — fail closed rather than land the tenant
-        # predicate on a non-anchor table. Mirrors the construction-time check.
-        raise ForcedFilterError(
-            f"Forced filter join path for '{rule.target_table}' does not reach "
-            f"the anchor table '{ruleset.table}'; failing closed.",
-            table=rule.target_table,
-            column=ruleset.column,
-        )
 
     first_to = exp.to_table(hops[0].to_table)
     first_to.set("alias", exp.TableAlias(this=exp.to_identifier(_hop_alias(0))))
