@@ -395,9 +395,10 @@ def test_apply_policy_join_rule_fails_closed_when_version_unknown(
     join_engine, monkeypatch
 ):
     monkeypatch.setattr(join_engine, "_column_present", lambda **k: True)
+    ds = _ch_ds()
     with pytest.raises(ForcedFilterError):
         join_engine._apply_policy(
-            sql="SELECT * FROM orders", dialect="clickhouse", datasource=_ch_ds()
+            sql="SELECT * FROM orders", dialect="clickhouse", datasource=ds
         )
 
 

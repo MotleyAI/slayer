@@ -153,10 +153,11 @@ def test_join_rule_name_field_removed():
 
 def test_join_rule_column_value_removed():
     """column/value are hoisted to the ruleset — the nested rule rejects them."""
+    hop = _hop()
     with pytest.raises(ValidationError):
         JoinFilterRule(
             target_table="orders",
-            join_path=[_hop()],
+            join_path=[hop],
             column="organization_uuid",
             value="7ef3",
         )
@@ -480,16 +481,15 @@ def test_join_ruleset_whitelist_list_coerced():
 
 def test_ruleset_non_target_endpoint_must_be_master():
     """The join path's non-target endpoint must equal the ruleset anchor."""
+    # endpoints {line_items, orders}; master=customers absent
+    rule = JoinFilterRule(
+        target_table="line_items",
+        join_path=["line_items.order_id = orders.id"],
+    )
     with pytest.raises(ValidationError):
         JoinFilterRuleset(
             table="customers", column="organization_uuid", value="7ef3",
-            joins=[
-                JoinFilterRule(
-                    target_table="line_items",
-                    # endpoints {line_items, orders}; master=customers absent
-                    join_path=["line_items.order_id = orders.id"],
-                )
-            ],
+            joins=[rule],
         )
 
 
@@ -509,57 +509,55 @@ def test_ruleset_master_first_path_accepted():
 def test_ruleset_master_as_intermediate_rejected():
     """Master appearing mid-path (not solely as the terminal) is rejected even
     when the endpoints are {target, master} (Codex #3)."""
+    rule = JoinFilterRule(
+        target_table="line_items",
+        join_path=[
+            "line_items.a = customers.b",   # master mid-path
+            "customers.c = orders.d",
+            "orders.e = customers.f",        # master terminal too
+        ],
+    )
     with pytest.raises(ValidationError):
         JoinFilterRuleset(
             table="customers", column="organization_uuid", value="7ef3",
-            joins=[
-                JoinFilterRule(
-                    target_table="line_items",
-                    join_path=[
-                        "line_items.a = customers.b",   # master mid-path
-                        "customers.c = orders.d",
-                        "orders.e = customers.f",        # master terminal too
-                    ],
-                )
-            ],
+            joins=[rule],
         )
 
 
 def test_ruleset_join_targeting_anchor_rejected():
+    rule = JoinFilterRule(
+        target_table="customers",  # == anchor
+        join_path=["customers.id = customers.id"],
+    )
     with pytest.raises(ValidationError):
         JoinFilterRuleset(
             table="customers", column="organization_uuid", value="7ef3",
-            joins=[
-                JoinFilterRule(
-                    target_table="customers",  # == anchor
-                    join_path=["customers.id = customers.id"],
-                )
-            ],
+            joins=[rule],
         )
 
 
 def test_ruleset_duplicate_target_rejected():
+    rule_a = JoinFilterRule(
+        target_table="orders",
+        join_path=["orders.customer_id = customers.id"],
+    )
+    rule_b = JoinFilterRule(
+        target_table="orders",  # duplicate
+        join_path=["orders.region_id = customers.id"],
+    )
     with pytest.raises(ValidationError):
         JoinFilterRuleset(
             table="customers", column="organization_uuid", value="7ef3",
-            joins=[
-                JoinFilterRule(
-                    target_table="orders",
-                    join_path=["orders.customer_id = customers.id"],
-                ),
-                JoinFilterRule(
-                    target_table="orders",  # duplicate
-                    join_path=["orders.region_id = customers.id"],
-                ),
-            ],
+            joins=[rule_a, rule_b],
         )
 
 
 def test_ruleset_whitelist_intersects_target_rejected():
+    rule = _join_rule()  # target orders
     with pytest.raises(ValidationError):
         JoinFilterRuleset(
             table="customers", column="organization_uuid", value="7ef3",
-            joins=[_join_rule()],  # target orders
+            joins=[rule],
             whitelist=["orders"],  # also whitelisted -> contradiction
         )
 
@@ -567,6 +565,45 @@ def test_ruleset_whitelist_intersects_target_rejected():
 def test_ruleset_anchor_in_whitelist_rejected():
     with pytest.raises(ValidationError):
         _join_ruleset(whitelist=["customers"])  # anchor can't be whitelisted
+
+
+def test_ruleset_qualified_anchor_requires_qualified_endpoint():
+    """A qualified anchor reached via a bare hop endpoint is rejected — the
+    anchor's schema would otherwise be dropped from the emitted SQL (Codex)."""
+    rule = JoinFilterRule(
+        target_table="public.orders",
+        join_path=["public.orders.customer_id = customers.id"],  # bare anchor endpoint
+    )
+    with pytest.raises(ValidationError):
+        JoinFilterRuleset(
+            table="public.customers", column="organization_uuid", value="7ef3",
+            joins=[rule],
+        )
+
+
+def test_ruleset_qualified_anchor_qualified_endpoint_accepted():
+    rule = JoinFilterRule(
+        target_table="public.orders",
+        join_path=["public.orders.customer_id = public.customers.id"],
+    )
+    rs = JoinFilterRuleset(
+        table="public.customers", column="organization_uuid", value="7ef3",
+        joins=[rule],
+    )
+    assert rs.table == "public.customers"
+
+
+def test_ruleset_bare_anchor_qualified_endpoint_accepted():
+    """Over-qualifying the endpoint of a bare anchor is safe and allowed."""
+    rule = JoinFilterRule(
+        target_table="orders",
+        join_path=["orders.customer_id = public.customers.id"],
+    )
+    rs = JoinFilterRuleset(
+        table="customers", column="organization_uuid", value="7ef3",
+        joins=[rule],
+    )
+    assert rs.joins[0].target_table == "orders"
 
 
 # -- SessionPolicy -----------------------------------------------------------
@@ -590,8 +627,9 @@ def test_policy_with_join_ruleset():
 
 
 def test_policy_unknown_version_rejected():
+    rs = ColumnFilterRuleset(column="org", value="x")
     with pytest.raises(ValidationError):
-        SessionPolicy(version=2, ruleset=ColumnFilterRuleset(column="org", value="x"))
+        SessionPolicy(version=2, ruleset=rs)
 
 
 def test_policy_column_dict_with_kind():
@@ -637,15 +675,15 @@ def test_policy_kindless_join_dict_rejected():
 
 def test_policy_data_filters_rejected():
     """Hard break: the old data_filters= kwarg is gone (extra-forbid)."""
+    rs = ColumnFilterRuleset(column="org", value="x")
     with pytest.raises(ValidationError):
-        SessionPolicy(data_filters=[ColumnFilterRuleset(column="org", value="x")])
+        SessionPolicy(data_filters=[rs])
 
 
 def test_policy_extra_forbidden():
+    rs = ColumnFilterRuleset(column="org", value="x")
     with pytest.raises(ValidationError):
-        SessionPolicy(
-            ruleset=ColumnFilterRuleset(column="org", value="x"), extra_field=1
-        )
+        SessionPolicy(ruleset=rs, extra_field=1)
 
 
 def test_policy_is_frozen():

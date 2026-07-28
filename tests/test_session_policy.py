@@ -214,12 +214,13 @@ def test_none_presence_fails_closed_even_with_pass():
 
 def test_unknown_table_fails_closed():
     policy = _col_policy(column="org", value="x")
+    has_column = has_column_factory({})  # nothing known -> None
     with pytest.raises(ForcedFilterError):
         apply_session_policy(
             "SELECT * FROM orders",
             dialect="sqlite",
             policy=policy,
-            has_column=has_column_factory({}),
+            has_column=has_column,
         )
 
 
@@ -232,13 +233,9 @@ def test_unknown_table_fails_closed():
     ],
 )
 def test_non_select_root_fails_closed(sql):
+    policy = _col_policy(column="org", value="x")
     with pytest.raises(ForcedFilterError):
-        apply_session_policy(
-            sql,
-            dialect="sqlite",
-            policy=_col_policy(column="org", value="x"),
-            has_column=ALWAYS,
-        )
+        apply_session_policy(sql, dialect="sqlite", policy=policy, has_column=ALWAYS)
 
 
 def test_value_literal_is_injection_safe():
@@ -398,11 +395,12 @@ def test_whitelisted_table_passed_through():
 
 
 def test_unlisted_table_fails_closed():
+    policy = _jpolicy()
     with pytest.raises(ForcedFilterError) as exc:
         apply_session_policy(
             "SELECT * FROM secret_table",
             dialect="sqlite",
-            policy=_jpolicy(),
+            policy=policy,
             has_column=_boom_probe,
         )
     assert exc.value.table == "secret_table"
@@ -453,11 +451,12 @@ def test_user_sql_containing_rls_alias_still_isolated():
     collide across wraps."""
     # _rls_src is unlisted -> fails closed (proves it is treated as a real,
     # user table, not confused with the internal wrapper alias).
+    policy = _jpolicy()
     with pytest.raises(ForcedFilterError) as exc:
         apply_session_policy(
             "SELECT * FROM _rls_src",
             dialect="sqlite",
-            policy=_jpolicy(),
+            policy=policy,
             has_column=_boom_probe,
         )
     assert exc.value.table == "_rls_src"
@@ -513,6 +512,28 @@ def test_corrupted_ruleset_terminal_not_anchor_fails_closed():
     assert exc.value.column == "organization_uuid"
 
 
+def test_corrupted_join_path_valueerror_wrapped_as_forced_filter():
+    """A corrupt join rule whose target_table is no longer a path endpoint makes
+    oriented_hops() raise ValueError; the SQL layer wraps it as a fail-closed
+    ForcedFilterError rather than leaking a raw ValueError."""
+    good = SessionPolicy(ruleset=_join_ruleset())  # target orders -> customers
+    # Break the path so orders is no longer an endpoint (target_table unchanged);
+    # model_copy at each level skips validation.
+    bad_rule = good.ruleset.joins[0].model_copy(
+        update={"join_path": ("foo.a = customers.b",)}
+    )
+    bad_ruleset = good.ruleset.model_copy(update={"joins": (bad_rule,)})
+    bad_policy = good.model_copy(update={"ruleset": bad_ruleset})
+    with pytest.raises(ForcedFilterError) as exc:
+        apply_session_policy(
+            "SELECT * FROM orders",
+            dialect="sqlite",
+            policy=bad_policy,
+            has_column=_boom_probe,
+        )
+    assert exc.value.table == "orders"
+
+
 def test_forced_filter_error_has_no_rule_name():
     """DEV-1718: ForcedFilterError dropped the rule_name param/attribute."""
     with pytest.raises(TypeError):
@@ -555,11 +576,12 @@ def test_anchor_only_ruleset_unlisted_fails():
     ruleset = JoinFilterRuleset(
         table="customers", column="organization_uuid", value="orgA",
     )
+    policy = SessionPolicy(ruleset=ruleset)
     with pytest.raises(ForcedFilterError):
         apply_session_policy(
             "SELECT * FROM orders",
             dialect="sqlite",
-            policy=SessionPolicy(ruleset=ruleset),
+            policy=policy,
             has_column=_boom_probe,
         )
 

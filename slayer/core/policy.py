@@ -78,6 +78,22 @@ def _table_names_match(a: str, b: str) -> bool:
     return True
 
 
+def _reaches_anchor(endpoint: str, anchor: str) -> bool:
+    """Whether a join-path ``endpoint`` reaches the configured ``anchor`` AND is
+    qualified **at least as fully** as it.
+
+    The endpoint is emitted verbatim into the enforcement ``EXISTS``, so a
+    *qualified* anchor (``public.customers``) reached through a *bare* endpoint
+    (``customers``) would silently scope against the default-schema table — the
+    exact qualifier the author wrote on the anchor would be dropped. Requiring
+    the endpoint to carry every part the anchor states closes that footgun (a
+    bare anchor still matches a qualified endpoint — over-qualifying is safe).
+    """
+    return _table_names_match(endpoint, anchor) and len(
+        _table_parts(endpoint)
+    ) >= len(_table_parts(anchor))
+
+
 class ColumnFilterRuleset(BaseModel):
     """Force every physical table that has ``column`` to be filtered.
 
@@ -349,13 +365,16 @@ class JoinFilterRuleset(BaseModel):
         seen_targets: list[str] = []
         for rule in self.joins:
             oriented = rule.oriented_hops()  # target-first
-            # The non-target endpoint (terminal to_table) must be the anchor.
+            # The non-target endpoint (terminal to_table) must be the anchor,
+            # qualified at least as fully (so a qualified anchor is never
+            # reached via a bare, wrong-schema endpoint).
             terminal = oriented[-1].to_table
-            if not _table_names_match(terminal, master):
+            if not _reaches_anchor(terminal, master):
                 raise ValueError(
                     f"JoinFilterRule for target '{rule.target_table}': the "
                     f"join_path must reach the anchor table '{master}' at its "
-                    f"non-target endpoint (got '{terminal}')."
+                    f"non-target endpoint, qualified at least as fully as the "
+                    f"anchor (got '{terminal}')."
                 )
             # The anchor must appear EXACTLY ONCE in the oriented path, only as
             # the terminal to_table — never as an intermediate hop (Codex #3).

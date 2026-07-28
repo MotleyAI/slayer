@@ -98,9 +98,12 @@ def _scoped_table(table: exp.Table) -> ScopedTable:
     )
 
 
-def _build_predicate(column: str, value) -> exp.Expression:
-    """Unqualified ``column = value`` / ``column IN (...)`` predicate."""
-    col = exp.column(column)
+def _build_predicate(
+    column: str, value, *, table: Optional[str] = None
+) -> exp.Expression:
+    """``column = value`` / ``column IN (...)`` predicate, optionally qualified
+    by ``table``. Values always via ``exp.convert`` (injection-safe)."""
+    col = exp.column(column, table=table) if table else exp.column(column)
     if isinstance(value, tuple):
         return exp.In(this=col, expressions=[exp.convert(v) for v in value])
     return exp.EQ(this=col, expression=exp.convert(value))
@@ -191,15 +194,6 @@ def _apply_column_ruleset(
 # ---------------------------------------------------------------------------
 
 
-def _terminal_predicate(*, column: str, value, table_alias: str) -> exp.Expression:
-    """The tenant predicate on the anchor alias — scalar ``=`` or ``IN``, always
-    emitted, values via ``exp.convert`` (injection-safe)."""
-    col = exp.column(column, table=table_alias)
-    if isinstance(value, tuple):
-        return exp.In(this=col, expressions=[exp.convert(v) for v in value])
-    return exp.EQ(this=col, expression=exp.convert(value))
-
-
 def _build_exists(rule: JoinFilterRule, *, ruleset: JoinFilterRuleset) -> exp.Exists:
     """Build the correlated ``EXISTS`` body for one join rule.
 
@@ -209,7 +203,18 @@ def _build_exists(rule: JoinFilterRule, *, ruleset: JoinFilterRuleset) -> exp.Ex
     the terminal tenant predicate lives on the last hop's alias — which must be
     the anchor table. All identifiers are structural (dotted/quoted-safe).
     """
-    hops = rule.oriented_hops()
+    try:
+        hops = rule.oriented_hops()
+    except ValueError as exc:
+        # A corrupt rule (e.g. a model_copy that broke chaining or dropped
+        # target_table off the endpoints) must fail closed as a ForcedFilterError
+        # at the SQL boundary, not leak a raw ValueError.
+        raise ForcedFilterError(
+            f"Forced filter join path for '{rule.target_table}' is invalid "
+            "(non-chaining, or target_table is not an endpoint); failing closed.",
+            table=rule.target_table,
+            column=ruleset.column,
+        ) from exc
     if not _table_names_match(hops[-1].to_table, ruleset.table):
         # Defensive: a bad model_copy could break the anchor reachability the
         # ruleset validator enforces — fail closed rather than land the tenant
@@ -242,10 +247,8 @@ def _build_exists(rule: JoinFilterRule, *, ruleset: JoinFilterRuleset) -> exp.Ex
     )
     inner = inner.where(correlation)
     inner = inner.where(
-        _terminal_predicate(
-            column=ruleset.column,
-            value=ruleset.value,
-            table_alias=_hop_alias(len(hops) - 1),
+        _build_predicate(
+            ruleset.column, ruleset.value, table=_hop_alias(len(hops) - 1)
         )
     )
     return exp.Exists(this=inner)
