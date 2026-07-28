@@ -534,6 +534,34 @@ def test_corrupted_join_path_valueerror_wrapped_as_forced_filter():
     assert exc.value.table == "orders"
 
 
+def test_corrupted_qualified_anchor_bare_terminal_fails_closed():
+    """Defensive: a model_copy that drops a qualified anchor's terminal to a
+    bare, wrong-schema name fails closed at the SQL boundary via _reaches_anchor
+    (not merely _table_names_match, which would accept the bare terminal)."""
+    rule = JoinFilterRule(
+        target_table="public.orders",
+        join_path=["public.orders.customer_id = public.customers.id"],
+    )
+    good = SessionPolicy(
+        ruleset=JoinFilterRuleset(
+            table="public.customers", column="organization_uuid", value="orgA",
+            joins=[rule],
+        )
+    )
+    bad_rule = good.ruleset.joins[0].model_copy(
+        update={"join_path": ("public.orders.customer_id = customers.id",)}
+    )
+    bad_ruleset = good.ruleset.model_copy(update={"joins": (bad_rule,)})
+    bad_policy = good.model_copy(update={"ruleset": bad_ruleset})
+    with pytest.raises(ForcedFilterError):
+        apply_session_policy(
+            "SELECT * FROM public.orders",
+            dialect="postgres",
+            policy=bad_policy,
+            has_column=_boom_probe,
+        )
+
+
 def test_forced_filter_error_has_no_rule_name():
     """DEV-1718: ForcedFilterError dropped the rule_name param/attribute."""
     with pytest.raises(TypeError):

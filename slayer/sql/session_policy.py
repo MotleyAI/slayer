@@ -49,7 +49,7 @@ from slayer.core.policy import (
     JoinFilterRule,
     JoinFilterRuleset,
     SessionPolicy,
-    _table_names_match,
+    _reaches_anchor,
 )
 
 # Statement roots the rewrite is willing to operate on. Anything else
@@ -215,10 +215,11 @@ def _build_exists(rule: JoinFilterRule, *, ruleset: JoinFilterRuleset) -> exp.Ex
             table=rule.target_table,
             column=ruleset.column,
         ) from exc
-    if not _table_names_match(hops[-1].to_table, ruleset.table):
+    if not _reaches_anchor(hops[-1].to_table, ruleset.table):
         # Defensive: a bad model_copy could break the anchor reachability the
-        # ruleset validator enforces — fail closed rather than land the tenant
-        # predicate on a non-anchor table.
+        # ruleset validator enforces (including reducing a qualified anchor to a
+        # bare, wrong-schema terminal) — fail closed rather than land the tenant
+        # predicate on a non-anchor table. Mirrors the construction-time check.
         raise ForcedFilterError(
             f"Forced filter join path for '{rule.target_table}' does not reach "
             f"the anchor table '{ruleset.table}'; failing closed.",
