@@ -37,6 +37,39 @@ logger = logging.getLogger(__name__)
 # no time-column context needed.
 _SAFE_SAMPLE_AGGS = frozenset({"avg", "sum", "min", "max", "count", "count_distinct", "median"})
 
+# The one failure the Data Profile's count-only retry is designed to recover
+# from: the database cannot group / deduplicate one of the column types. Kept
+# deliberately narrow — every other failure (permission, connection, syntax,
+# validation) must keep its own cause rather than being relabeled as a type
+# problem, which would both mislead the caller and hide the real error.
+_UNSUPPORTED_GROUPING_SIGNATURES = (
+    "could not identify an equality operator",
+    "could not identify a comparison function",
+)
+# Postgres SQLSTATE 42883 (undefined_function) is what the missing equality /
+# comparison operator behind GROUP BY / DISTINCT actually raises.
+_UNSUPPORTED_GROUPING_SQLSTATES = frozenset({"42883"})
+
+
+def _is_unsupported_grouping_error(exc: BaseException) -> bool:
+    """True when ``exc`` says the database can't group/deduplicate a column type.
+
+    Checks the driver SQLSTATE first (precise) and falls back to the message
+    text. Anything not matched is treated as an unrelated failure, so it
+    propagates with its own cause instead of being retried and mislabeled.
+    """
+    for err in (exc, getattr(exc, "orig", None)):
+        if err is None:
+            continue
+        code = getattr(err, "sqlstate", None) or getattr(err, "pgcode", None)
+        if code in _UNSUPPORTED_GROUPING_SQLSTATES:
+            return True
+    text = str(exc).lower()
+    orig = getattr(exc, "orig", None)
+    if orig is not None:
+        text = f"{text} {str(orig).lower()}"
+    return any(sig in text for sig in _UNSUPPORTED_GROUPING_SIGNATURES)
+
 # Section-level budgeting for inspect_model output.
 # columns/measures/aggregations/joins fall back to a names-only CSV when the
 # caller drops the section from `sections`; samples/learnings are fully
@@ -1004,10 +1037,14 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         query_args = _build_sample_query_args(
             model=model, num_rows=num_rows, measure_types=measure_types,
         )
-        # A single column whose underlying DB type has no equality operator
-        # (point, json, xml — all coarsed to TEXT here, so undetectable up
-        # front) makes the grouped/DISTINCT profile fail. Retry once with a
-        # row-count-only profile so one exotic column can't sink the section.
+        # A column whose underlying DB type has no equality operator (point,
+        # json, xml — all coarsed to TEXT before opaque classification existed,
+        # so still undetectable on older models) makes the grouped/DISTINCT
+        # profile fail. Retry once with a row-count-only profile so one exotic
+        # column can't sink the section — but ONLY for that specific failure.
+        # Any other error (permission, connection, validation, syntax) must
+        # surface with its own cause instead of being relabeled as a type
+        # problem; the outer handler still degrades the section gracefully.
         note = ""
         try:
             try:
@@ -1015,14 +1052,21 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 sample_result = await engine.execute(
                     query=sample_query, data_source=model.data_source or None
                 )
-            except Exception:
+            except Exception as exc:
+                if not _is_unsupported_grouping_error(exc):
+                    raise
                 minimal_args = dict(query_args)
                 minimal_args["measures"] = [{"formula": "*:count"}]
                 minimal_args["dimensions"] = []
                 sample_query = SlayerQuery.model_validate(minimal_args)
-                sample_result = await engine.execute(
-                    query=sample_query, data_source=model.data_source or None
-                )
+                try:
+                    sample_result = await engine.execute(
+                        query=sample_query, data_source=model.data_source or None
+                    )
+                except Exception:
+                    # The reduced profile failed too — report the original
+                    # cause, not this second failure.
+                    raise exc
                 sample_reduced_reason = (
                     "at least one column's type does not support the "
                     "grouping/DISTINCT this profile uses"

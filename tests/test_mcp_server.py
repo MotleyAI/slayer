@@ -18,7 +18,10 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.inspect.model_render import _choose_sample_agg
+from slayer.inspect.model_render import (
+    _choose_sample_agg,
+    render_model_inspection,
+)
 from slayer.mcp.server import (
     _build_sample_query_args,
     _escape_md_cell,
@@ -3068,3 +3071,110 @@ class TestFormatTable:
 # see tests/test_help_seed.py.
 
 
+
+
+class TestDataProfileRetryScope:
+    """The Data Profile's count-only retry exists for exactly one failure: the
+    database cannot group/deduplicate a column type. Every other failure must
+    keep its own cause instead of being retried and relabeled as a type issue.
+
+    The renderer also issues dimension-less row-count / numeric-profiling
+    queries, so these fakes key off ``query.dimensions`` to hit only the full
+    profile, and the assertions are on outcomes rather than call counts.
+    """
+
+    @staticmethod
+    def _model() -> SlayerModel:
+        return SlayerModel(
+            name="profile_scope",
+            sql_table="t",
+            data_source="test",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="status", type=DataType.TEXT),
+            ],
+        )
+
+    class _CountResult:
+        sql = "SELECT COUNT(*) FROM t"
+        columns = ["profile_scope._count"]
+        data = [{"profile_scope._count": 7}]
+
+        def to_markdown(self) -> str:
+            return "| _count |\n|---|\n| 7 |"
+
+    async def _render(self, storage, engine) -> dict:
+        out = await render_model_inspection(
+            model=self._model(), storage=storage, engine=engine,
+            format="json", compact=False, sections=["samples"],
+        )
+        return json.loads(out)
+
+    async def test_unrelated_failure_is_not_relabeled_as_reduced(
+        self, storage: YAMLStorage
+    ) -> None:
+        outer = self
+
+        class _Engine:
+            async def get_column_types(self, **kwargs):
+                return {}
+
+            async def execute(self, *, query, **kwargs):
+                if query.dimensions:
+                    raise RuntimeError("permission denied for table t")
+                return outer._CountResult()
+
+        payload = await self._render(storage, _Engine())
+        # A permission failure must NOT masquerade as a type/grouping problem.
+        assert payload["sample_data_reduced"] is False
+        assert payload["sample_data_reduced_reason"] is None
+        assert "permission denied" in (payload["sample_data_error"] or "")
+
+    async def test_grouping_failure_retries_and_reports_reduced(
+        self, storage: YAMLStorage
+    ) -> None:
+        outer = self
+
+        class _Engine:
+            async def get_column_types(self, **kwargs):
+                return {}
+
+            async def execute(self, *, query, **kwargs):
+                if query.dimensions:
+                    raise RuntimeError(
+                        "could not identify an equality operator for type point"
+                    )
+                return outer._CountResult()
+
+        payload = await self._render(storage, _Engine())
+        assert payload["sample_data_reduced"] is True
+        assert "does not support" in payload["sample_data_reduced_reason"]
+        assert payload["sample_data_error"] is None
+
+    async def test_original_cause_survives_a_failing_retry(
+        self, storage: YAMLStorage
+    ) -> None:
+        """When the reduced profile also fails, report the first cause."""
+
+        class _Engine:
+            def __init__(self) -> None:
+                self.dimensioned_seen = False
+
+            async def get_column_types(self, **kwargs):
+                return {}
+
+            async def execute(self, *, query, **kwargs):
+                if query.dimensions:
+                    self.dimensioned_seen = True
+                    raise RuntimeError(
+                        "could not identify an equality operator for type point"
+                    )
+                if self.dimensioned_seen:
+                    # This is the count-only retry — fail it too.
+                    raise RuntimeError("connection closed unexpectedly")
+                raise RuntimeError("row count unavailable")
+
+        payload = await self._render(storage, _Engine())
+        assert "equality operator" in (payload["sample_data_error"] or "")
+        assert "connection closed" not in (payload["sample_data_error"] or "")
+        assert payload["sample_data_reduced"] is False
