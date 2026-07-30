@@ -700,12 +700,35 @@ class TestHostExtensibility:
         assert next(t for t in merged if t.id == "help.workflow").learning == "host flow"
         assert merged[-1].id == "help.motley.decks"
 
+    def test_merge_rejects_override_whose_id_differs_from_its_key(self) -> None:
+        """A mismatched id silently drops the topic it was meant to replace and
+        seeds a bogus one, so reject it rather than mis-serve help."""
+        base = load_help_topics()
+        bad = {"help.workflow": HelpTopic(id="help.workflows", learning="x", description="y")}
+        with pytest.raises(ValueError, match="must equal its key"):
+            merge_help_topics(base, override=bad)
+
+    def test_merge_rejects_duplicate_ids(self) -> None:
+        """Two topics with one id seed last-write-wins, losing a body silently."""
+        base = load_help_topics()
+        collision = HelpTopic(id="help.intro", learning="x", description="y")
+        with pytest.raises(ValueError, match="duplicate help topic ids"):
+            merge_help_topics(base, extra=[collision])
+
+        twins = [
+            HelpTopic(id="help.motley.x", learning="a", description="d"),
+            HelpTopic(id="help.motley.x", learning="b", description="d"),
+        ]
+        with pytest.raises(ValueError, match="duplicate help topic ids"):
+            merge_help_topics(base, extra=twins)
+
     def test_merge_rejects_override_of_unknown_topic(self) -> None:
         """Guards against a host silently carrying a dead override after the
         built-in is renamed or removed upstream."""
+        base = load_help_topics()
         with pytest.raises(ValueError, match="no built-in help topic"):
             merge_help_topics(
-                load_help_topics(),
+                base,
                 override={
                     "help.gone": HelpTopic(id="help.gone", learning="x", description="y"),
                 },

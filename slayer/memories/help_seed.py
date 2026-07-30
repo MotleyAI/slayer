@@ -20,6 +20,7 @@ point that lists the deep-dive topics.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from importlib.resources import files
 
@@ -148,8 +149,31 @@ def merge_help_topics(
             f"override targets no built-in help topic: {', '.join(unknown)}. "
             f"Known ids: {', '.join(topic.id for topic in base)}."
         )
+    # A value whose own id differs from its key replaces the built-in with a
+    # topic seeded under that other id — so the topic it was meant to replace
+    # silently stops being served (e.g. keyed help.workflow, id help.workflows
+    # removes help.workflow from the set entirely).
+    mismatched = sorted(
+        f"{key} -> {topic.id}" for key, topic in override.items() if topic.id != key
+    )
+    if mismatched:
+        raise ValueError(
+            f"override topic id must equal its key: {', '.join(mismatched)}."
+        )
     merged = [override.get(topic.id, topic) for topic in base]
     merged.extend(extra)
+    # Two topics sharing an id would seed last-write-wins, so one body is lost
+    # with no error. Usually an ``extra`` that collides with a built-in.
+    duplicates = sorted(
+        topic_id
+        for topic_id, count in Counter(topic.id for topic in merged).items()
+        if count > 1
+    )
+    if duplicates:
+        raise ValueError(
+            f"duplicate help topic ids after merge: {', '.join(duplicates)}. "
+            f"Namespace host-specific topics (e.g. 'help.motley.x')."
+        )
     return tuple(merged)
 
 
