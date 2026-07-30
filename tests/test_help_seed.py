@@ -667,14 +667,15 @@ class TestHostExtensibility:
         assert "SLayer" in blob
 
     def test_host_context_substitutes_tokens(self) -> None:
-        topics = load_help_topics(context={"product": "Motley", "query_tool": "run_query"})
+        topics = load_help_topics(context={"product": "Motley"})
         blob = "".join(t.learning + t.description for t in topics)
         assert "{{" not in blob
-        # The query tool's name reaches the rendered body...
-        queries = next(t for t in topics if t.id == "help.queries")
-        assert "`run_query` tool" in queries.learning
-        assert "`query` tool" not in queries.learning
-        # ...and code identifiers are never rewritten by the product token.
+        # The host's product name reaches a templatized body. (The topics a host
+        # is expected to override are not templatized, so they keep saying SLayer.)
+        joins = next(t for t in topics if t.id == "help.joins")
+        assert "Motley" in joins.learning
+        assert "SLayer" not in joins.learning
+        # Code identifiers are never rewritten by the product token.
         assert "SlayerQuery" in blob
 
     def test_unknown_placeholder_fails_loudly(self) -> None:

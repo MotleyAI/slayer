@@ -44,7 +44,7 @@ _DESCRIPTIONS: dict[str, str] = {
     "joins": "Reaching joined data via dotted paths and how joins auto-resolve.",
     "models": "What a model is: columns, measures, source modes, and model-level filters.",
     "extending": "Ad hoc columns/measures/joins via ModelExtension and saving queries as models.",
-    "workflow": "Recommended tool-chaining order for an agent: inspect -> search -> inspect -> {{query_tool}}.",
+    "workflow": "Recommended tool-chaining order for an agent: inspect -> search -> inspect -> query.",
 }
 
 
@@ -71,7 +71,6 @@ def _strip_numeric_prefix(stem: str) -> str:
 #: examples (``{"source_model": "orders"}``) and ``'$'`` currency symbols.
 DEFAULT_HELP_CONTEXT: dict[str, str] = {
     "product": "SLayer",
-    "query_tool": "query",
 }
 
 _PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
