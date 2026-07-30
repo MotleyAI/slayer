@@ -22,7 +22,12 @@ from slayer.engine.enriched import (
 from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import BigqueryDialect
-from slayer.sql.generator import SQLGenerator, _cte_name_from_alias, _validate_agg_param_value
+from slayer.sql.generator import (
+    SQLGenerator,
+    _cte_name_from_alias,
+    _validate_agg_param_value,
+    _wrap_cast_for_type,
+)
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -5736,6 +5741,71 @@ class TestCastEmissionColumn:
         # Exactly one CAST in the projection. Any double-wrap would produce
         # CAST(CAST(... AS ...) AS ...) — assert that pattern is absent.
         assert "CAST(CAST(" not in sql.upper()
+
+
+class TestCastEmissionOpaqueType:
+    """``CAST(x AS UNKNOWN)`` is not valid SQL in any dialect, so opaque types
+    are skipped by ``_wrap_cast_for_type`` exactly like TEXT/None."""
+
+    def test_unknown_returns_expression_unchanged(self) -> None:
+        expr = sqlglot.parse_one("json_extract(blob, '$.x')")
+        assert _wrap_cast_for_type(expr, DataType.UNKNOWN) is expr
+
+    def test_operable_type_still_casts(self) -> None:
+        expr = sqlglot.parse_one("json_extract(blob, '$.x')")
+        wrapped = _wrap_cast_for_type(expr, DataType.DOUBLE)
+        assert isinstance(wrapped, sqlglot.exp.Cast)
+
+    async def test_opaque_column_rejected_as_dimension(self) -> None:
+        """An opaque column has no equality operator, so grouping by it would
+        emit SQL the database refuses. Reject it up front with an actionable
+        message rather than letting a raw driver error surface."""
+        model = SlayerModel(
+            name="places",
+            sql_table="public.places",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(
+                    name="loc",
+                    sql="coalesce(loc, home_loc)",
+                    type=DataType.UNKNOWN,
+                    db_type="point",
+                ),
+            ],
+        )
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(source_model="places", dimensions=[ColumnRef(name="loc")])
+        with pytest.raises(ValueError, match="cannot be used as a dimension"):
+            await _generate(gen, query, model)
+
+    async def test_opaque_column_emits_no_cast_when_projected(self) -> None:
+        """The CAST guard still holds for a query that doesn't group by the
+        opaque column: no ``CAST(... AS UNKNOWN)`` may reach the SQL."""
+        model = SlayerModel(
+            name="places",
+            sql_table="public.places",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="city", sql="city", type=DataType.TEXT),
+                Column(
+                    name="loc",
+                    sql="coalesce(loc, home_loc)",
+                    type=DataType.UNKNOWN,
+                    db_type="point",
+                ),
+            ],
+        )
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="places",
+            measures=["*:count"],
+            dimensions=[ColumnRef(name="city")],
+        )
+        sql = await _generate(gen, query, model)
+        assert "UNKNOWN" not in sql.upper()
+        assert "CAST(" not in sql.upper()
 
 
 class TestCastEmissionMeasure:

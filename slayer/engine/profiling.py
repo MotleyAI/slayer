@@ -340,6 +340,11 @@ def _is_sample_cached(column: Column) -> bool:
     """
     if column.hidden or column.primary_key:
         return True
+    if column.type.is_opaque:
+        # Opaque columns are never profiled (DISTINCT / min / max fail on the
+        # underlying DB type), so report them as "cached" — same convention as
+        # hidden / PK columns — and keep callers from re-querying every read.
+        return True
     if column.type in _CATEGORICAL_TYPES:
         return column.sampled_values is not None
     return column.sampled is not None
@@ -430,15 +435,20 @@ async def profile_column(
 ) -> ColumnSample | None:
     """Return the :class:`ColumnSample` for ``column`` on ``model``.
 
-    Returns ``None`` for primary-key / hidden columns and when the
-    profile query fails or yields no data. Caller decides whether to
-    persist the ``None`` (clearing any stale value) or skip it.
+    Returns ``None`` for primary-key / hidden / opaque (``UNKNOWN``) columns
+    and when the profile query fails or yields no data. Caller decides whether
+    to persist the ``None`` (clearing any stale value) or skip it.
 
     DEV-1480: signature widened from ``Optional[str]`` to
     ``Optional[ColumnSample]`` so the structured ``sampled_values`` and
     ``distinct_count`` are returned alongside the legacy text.
     """
     if column.hidden or column.primary_key:
+        return None
+    if column.type.is_opaque:
+        # No equality operator / no orderable comparison on the underlying DB
+        # type — both the categorical top-values scan and the batched min/max
+        # query would raise. Skip sample-value profiling entirely.
         return None
     if column.type in _CATEGORICAL_TYPES:
         return await _profile_categorical_with_total(
@@ -629,7 +639,7 @@ async def ensure_column_sample_fresh(
     Returns the **input column unchanged** when:
 
     - ``_is_sample_cached(column)`` is True (cache hit; includes hidden /
-      primary-key columns by convention),
+      primary-key / opaque ``UNKNOWN`` columns by convention),
     - :func:`profile_column` returns ``None`` (e.g. transient query failure
       or no rows),
     - :func:`profile_column` raises (logged + swallowed),
