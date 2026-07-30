@@ -44,13 +44,15 @@ Inside a field, use a dict to name the result:
 ## Nesting
 
 Transforms (see `memory:help.transforms`) can wrap measures, arithmetic, or
-each other. Arbitrary nesting is allowed:
+each other, but they follow compatibility rules. In particular `change`,
+`change_pct`, and `time_shift` must wrap an aggregated measure directly; window
+transforms such as `cumsum` can wrap those (the reverse is rejected):
 
 ```json
 {
   "source_model": "orders",
   "measures": [
-    {"formula": "change(cumsum(revenue:sum))", "name": "cumsum_delta"},
+    {"formula": "cumsum(change(revenue:sum))", "name": "cumulative_change"},
     {"formula": "cumsum(revenue:sum / *:count)", "name": "running_aov"}
   ],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
@@ -97,7 +99,7 @@ dimension, a measure with `:agg`, or a transform expression. See
 ## Gotchas
 
 - Bare measure renames (`{"formula": "*:count", "name": "n"}`) can be
-  referenced by either `n` or `*:count` in `filters` (DEV-1443).
+  referenced by either `n` or `*:count` in `filters`.
 - Formulas validate measure names against the source model at query time.
   If you get "measure not found", call `inspect(reference="<model>", entity_type="model")`
   and check the actual measure list.
