@@ -1,7 +1,7 @@
 # Queries
 
 How the pieces of a `SlayerQuery` fit together. For individual field schemas,
-see the `query` tool's own arg documentation.
+see the `{{query_tool}}` tool's own arg documentation.
 
 ## Parts of a query
 

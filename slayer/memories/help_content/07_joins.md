@@ -1,6 +1,6 @@
 # Joins
 
-SLayer models relate to each other via **joins**. Only LEFT JOIN is supported
+{{product}} models relate to each other via **joins**. Only LEFT JOIN is supported
 — joins are used for enrichment, not set operations.
 
 ## Declaring joins
@@ -29,7 +29,7 @@ In **queries**, use dots:
 - Measure: `{"measures": ["customers.*:count"]}`
 - Cross-model transform: `{"measures": [{"formula": "cumsum(customers.score:avg)"}]}`
 
-SLayer walks the join graph via BFS and inserts the LEFT JOINs.
+{{product}} walks the join graph via BFS and inserts the LEFT JOINs.
 
 In **SQL snippets** (dimension `sql`, measure `sql`, model `filters`), use
 `__` instead of dots, because dots aren't valid SQL:
@@ -48,7 +48,7 @@ A dimension from a joined model is just another column to GROUP BY — no
 cardinality issue. A **measure** from a joined model is different: a LEFT JOIN
 can duplicate rows, so aggregating after the join would double-count.
 
-SLayer splits any query containing a cross-model measure: it evaluates that
+{{product}} splits any query containing a cross-model measure: it evaluates that
 measure in a scoped sub-query (same dimensions, scoped to the joined model),
 then LEFT-JOINs the result back on the shared dimensions.
 
@@ -62,7 +62,10 @@ Upshot:
 }
 ```
 
-gives exactly the same answer as:
+gives the same answer as the following — but only for customers that appear on
+at least one order. Because the first query is rooted at `orders` and enriches
+via LEFT JOIN, it omits customers with no orders; the `customers`-rooted query
+below includes them (with a zero count), so the row sets can differ:
 
 ```json
 {
