@@ -2120,6 +2120,54 @@ class TestColumnTypeLenientValidator:
         col = Column(name="x", type=DataType.INT)
         assert col.type == DataType.INT
 
+    def test_legacy_lowercase_unknown_maps_to_unknown(self) -> None:
+        col = Column(name="x", type="unknown")
+        assert col.type == DataType.UNKNOWN
+        assert col.type.is_opaque is True
+
+
+class TestOpaqueColumn:
+    """Opaque (``UNKNOWN``) columns are stored + displayed but never operated
+    on — the raw DB type rides along on ``db_type``."""
+
+    def test_db_type_defaults_to_none(self) -> None:
+        assert Column(name="x", type=DataType.TEXT).db_type is None
+
+    def test_db_type_round_trips(self) -> None:
+        col = Column(name="loc", type=DataType.UNKNOWN, db_type="point")
+        assert col.db_type == "point"
+        assert Column.model_validate(col.model_dump()).db_type == "point"
+
+    def test_allowed_aggregations_rejected_on_opaque_column(self) -> None:
+        # Built outside the raises block so only the SlayerModel construction
+        # can produce the expected failure.
+        opaque_col = Column(
+            name="loc",
+            type=DataType.UNKNOWN,
+            db_type="point",
+            allowed_aggregations=["count"],
+        )
+        with pytest.raises(ValidationError) as exc_info:
+            SlayerModel(
+                name="places",
+                sql_table="places",
+                data_source="ds",
+                columns=[opaque_col],
+            )
+        msg = str(exc_info.value)
+        assert "loc" in msg
+        assert "point" in msg
+        assert "not supported" in msg
+
+    def test_opaque_column_without_allowed_aggregations_is_valid(self) -> None:
+        model = SlayerModel(
+            name="places",
+            sql_table="places",
+            data_source="ds",
+            columns=[Column(name="loc", type=DataType.UNKNOWN, db_type="point")],
+        )
+        assert model.columns[0].type is DataType.UNKNOWN
+
 
 class TestModelMeasureType:
     """DEV-1361: ModelMeasure gains an optional ``type`` declaring the formula's

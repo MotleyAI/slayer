@@ -1,7 +1,7 @@
 # Filters
 
 Filters are formula strings. They go in the query's `filters` list and/or on
-a model's `filters` list. SLayer routes them to the right SQL stage
+a model's `filters` list. {{product}} routes them to the right SQL stage
 automatically — there is no explicit HAVING keyword.
 
 ## Operators
@@ -45,7 +45,7 @@ Multiple entries in the `filters` list are AND-ed:
 - Filter references a transform or computed field (e.g.
   `change(revenue:sum) > 0`) → **post-filter** on an outer wrapper.
 
-Inner and outer filters can mix in one query — SLayer splits them.
+Inner and outer filters can mix in one query — {{product}} splits them.
 
 ## Filtering on computed measures
 
@@ -85,9 +85,9 @@ canonical alias literally shadows a source column on the same model is
 also rejected (the colon-form filter would otherwise be ambiguous).
 Cross-model agg-ref filters with rename (`customers.revenue:sum >= 100`)
 are NOT yet auto-resolved in any form — neither the colon syntax nor the
-user alias resolves. As a workaround until DEV-1445 lands, restructure
-as a multi-stage `source_queries` model so the cross-model measure
-becomes local in the downstream stage.
+user alias resolves. As a workaround, restructure as a multi-stage
+`source_queries` model so the cross-model measure becomes local in the
+downstream stage.
 
 ## Filtered columns — CASE WHEN inside an aggregate
 
