@@ -3646,30 +3646,13 @@ class TestMeasureSourceSqlJoinInference:
         assert "customers__regions" not in join_aliases
         assert "regions" not in join_aliases
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1526 (sibling of DEV-1502 in cross-model space): a "
-            "cross-model aggregate (customers_v2.deep_pop:sum) whose "
-            "TARGET column's Column.sql is a joined-model ref "
-            "(regions.population, crossing the customers_v2 → regions "
-            "join) does not have that further join pulled into the "
-            "_cm_* CTE. The host-side collector added in DEV-1502 "
-            "explicitly skips source.path != () to avoid double-"
-            "emitting; the _cm_* CTE builder needs the symmetric fix. "
-            "File: cross_model_planner.py / "
-            "_render_cross_model_aggregate_cte_body at "
-            "slayer/sql/generator.py:5962. Auto-promotes when the CTE-"
-            "side collector lands."
-        ),
-    )
-    async def test_cross_model_target_column_sql_crosses_further_join_xfail(
+    async def test_cross_model_target_column_sql_crosses_further_join(
         self, storage
     ) -> None:
         """A cross-model aggregate ``customers_v2.deep_pop:sum`` where
         ``deep_pop`` lives on ``customers_v2`` with sql ``regions.population``
-        — the deeper customers_v2→regions join should appear inside the
-        ``_cm_*`` CTE body. Currently it doesn't.
+        — the deeper customers_v2→regions join must appear inside the
+        ``_cm_*`` CTE body (DEV-1526; promoted from strict-xfail).
         """
         # `deep_pop` on customers_v2 points at the further-joined regions.
         await storage.save_model(SlayerModel(
@@ -3745,6 +3728,515 @@ class TestMeasureSourceSqlJoinInference:
         assert "customers__regions.weight" in sql
         # And the broken form must not appear.
         assert "orders.region_weight" not in sql
+
+
+class TestCrossModelAggregateSourceSqlJoinInference:
+    """DEV-1526 (cross-model mirror of DEV-1502): a CROSS-MODEL aggregate
+    whose TARGET column's ``Column.sql`` crosses a FURTHER join must pull
+    the implied LEFT JOINs into the per-plan ``_cm_*`` CTE body — the
+    symmetric fix to the host-base collector, which explicitly skips
+    path-bearing (cross-model) sources.
+
+    Chain: ``orders_x → customers_v2 → regions → countries``. Derived
+    columns on ``customers_v2`` reference the further-joined ``regions`` /
+    ``countries`` via their own ``Column.sql``. Assertions are scoped to
+    the ``_cm_*`` CTE body via ``_extract_cte_body`` so an unrelated host
+    join or formatting coincidence can't produce a false pass.
+
+    NOTE: coverage here is deliberately scoped to ``AggregateKey.source``.
+    Derived refs arriving via parametric-aggregation kwargs / explicit
+    first-last time args are a separate mechanism (host-side DEV-1527);
+    a shared-grain derived TIME dimension crossing a further join is
+    tracked by DEV-1701 (strict-xfail below).
+    """
+
+    @pytest.fixture
+    async def storage(self, tmp_path):
+        """orders_x → customers_v2 → regions → countries chain.
+
+        ``customers_v2`` carries the derived columns whose ``Column.sql``
+        crosses the further ``regions`` / ``countries`` joins.
+        """
+        s = YAMLStorage(base_dir=str(tmp_path))
+        await s.save_datasource(DatasourceConfig(name="test", type="postgres"))
+        await s.save_model(SlayerModel(
+            name="countries", sql_table="countries", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="gdp", sql="gdp", type=DataType.DOUBLE),
+            ],
+        ))
+        await s.save_model(SlayerModel(
+            name="regions", sql_table="regions", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="population", sql="population", type=DataType.DOUBLE),
+                Column(name="weight", sql="weight", type=DataType.DOUBLE),
+                Column(name="props", sql="props", type=DataType.TEXT),
+                Column(name="country_id", sql="country_id", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="countries", join_pairs=[["country_id", "id"]])],
+        ))
+        return s
+
+    def _customers_v2(self, *, extra_columns=None, filters=None) -> SlayerModel:
+        cols = [
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+            Column(name="lifetime_value", sql="lifetime_value", type=DataType.DOUBLE),
+        ]
+        if extra_columns:
+            cols.extend(extra_columns)
+        return SlayerModel(
+            name="customers_v2", sql_table="customers", data_source="test",
+            columns=cols,
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+            filters=filters or [],
+        )
+
+    def _orders_x(self) -> SlayerModel:
+        return SlayerModel(
+            name="orders_x", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+            joins=[ModelJoin(target_model="customers_v2", join_pairs=[["customer_id", "id"]])],
+        )
+
+    async def _engine_with(self, storage, customers_v2) -> SlayerQueryEngine:
+        await storage.save_model(customers_v2)
+        await storage.save_model(self._orders_x())
+        return SlayerQueryEngine(storage=storage)
+
+    # ------------------------------------------------------------------
+    # Core discovery inside the _cm_* CTE
+    # ------------------------------------------------------------------
+
+    async def test_single_further_hop_source_sql(self, storage) -> None:
+        """``customers_v2.deep_pop:sum`` where ``deep_pop.sql =
+        'regions.population'`` — the ``regions`` join lands inside the
+        ``_cm_*`` CTE (canonical DEV-1526 case).
+        """
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "SUM(regions.population)" in cm_body, cm_body
+
+    async def test_multi_hop_further_join_source_sql(self, storage) -> None:
+        """A two-hop source ``regions__countries.gdp`` pulls BOTH the
+        ``regions`` and ``countries`` joins into the ``_cm_*`` CTE.
+        """
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_gdp", sql="regions__countries.gdp", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_gdp:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
+        assert "SUM(regions__countries.gdp)" in cm_body, cm_body
+
+    async def test_path_alias_source_sql(self, storage) -> None:
+        """A ``__``-path alias in the source column sql (single-hop
+        ``regions.name`` written with the region props path) triggers the
+        join. This pins the alias-form discovery distinct from a bare
+        joined ref.
+        """
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_country_name", sql="regions__countries.name",
+                   type=DataType.TEXT),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_country_name:count_distinct")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
+        assert "COUNT(DISTINCT regions__countries.name)" in cm_body, cm_body
+
+    async def test_mode_a_function_wrapping_source_sql(self, storage) -> None:
+        """A Mode-A SQL function wrapping the joined ref
+        (``json_extract(regions.props, '$.x')``) still triggers join
+        discovery inside the ``_cm_*`` CTE.
+        """
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="region_prop_x",
+                   sql="json_extract(regions.props, '$.x')", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.region_prop_x:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "regions.props" in cm_body, cm_body
+
+    async def test_sibling_derived_chain_source_sql(self, storage) -> None:
+        """``doubled_pop.sql = 'pop_helper * 2'`` and ``pop_helper.sql =
+        'regions.population'`` on the target — recursive sibling inlining
+        preserves the joined ref and the join lands in the ``_cm_*`` CTE.
+        """
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="pop_helper", sql="regions.population", type=DataType.DOUBLE),
+            Column(name="doubled_pop", sql="pop_helper * 2", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.doubled_pop:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "regions.population" in cm_body, cm_body
+
+    async def test_mixed_base_col_and_further_join_source_sql(self, storage) -> None:
+        """``deep_score.sql = 'lifetime_value + regions.population'`` — the
+        scanner ignores the target-local ``lifetime_value`` ref while still
+        pulling the ``regions`` join (Codex fold-in).
+        """
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_score", sql="lifetime_value + regions.population",
+                   type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_score:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        # The target-local operand keeps the target relation qualifier.
+        assert "customers_v2.lifetime_value" in cm_body, cm_body
+        assert "regions.population" in cm_body, cm_body
+        # No spurious extra hop.
+        assert "countries" not in cm_body, cm_body
+
+    # ------------------------------------------------------------------
+    # Dedup + co-existence with the CTE's own filters
+    # ------------------------------------------------------------------
+
+    async def test_dedup_source_and_target_model_filter_same_join(self, storage) -> None:
+        """When the target model filter AND the aggregate source both cross
+        ``regions``, the ``_cm_*`` CTE emits exactly one ``LEFT JOIN
+        regions``.
+        """
+        engine = await self._engine_with(storage, self._customers_v2(
+            extra_columns=[
+                Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+            ],
+            filters=["regions.name IS NOT NULL"],
+        ))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert cm_body.count("LEFT JOIN regions AS regions") == 1, cm_body
+        assert "SUM(regions.population)" in cm_body, cm_body
+
+    async def test_filter_and_source_cross_different_depths(self, storage) -> None:
+        """Target model filter crosses the shallow ``regions`` hop; the
+        source crosses the deeper ``regions__countries`` hop. Both joins
+        land, the shared ``regions`` hop emitted exactly once.
+        """
+        engine = await self._engine_with(storage, self._customers_v2(
+            extra_columns=[
+                Column(name="deep_gdp", sql="regions__countries.gdp",
+                       type=DataType.DOUBLE),
+            ],
+            filters=["regions.name IS NOT NULL"],
+        ))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_gdp:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert cm_body.count("LEFT JOIN regions AS regions") == 1, cm_body
+        assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
+        assert "SUM(regions__countries.gdp)" in cm_body, cm_body
+
+    async def test_composite_two_operand_each_cte_pulls_join(self, storage) -> None:
+        """``customers_v2.deep_pop:sum + customers_v2.deep_weight:sum`` —
+        each operand renders its own ``_cm_*`` CTE, and each independently
+        pulls the ``regions`` join.
+        """
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+            Column(name="deep_weight", sql="regions.weight", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(
+                formula="customers_v2.deep_pop:sum + customers_v2.deep_weight:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        # Two independent _cm_* CTEs; assert each body carries EXACTLY one
+        # regions join (scoped per-CTE rather than a brittle global count).
+        pop_body = _extract_cte_body(sql, r"_cm_\w*deep_pop\w*")
+        weight_body = _extract_cte_body(sql, r"_cm_\w*deep_weight\w*")
+        assert pop_body.count("LEFT JOIN regions AS regions") == 1, pop_body
+        assert weight_body.count("LEFT JOIN regions AS regions") == 1, weight_body
+        assert "SUM(regions.population)" in pop_body, pop_body
+        assert "SUM(regions.weight)" in weight_body, weight_body
+
+    async def test_first_last_source_join_in_ranked_subquery(self, storage) -> None:
+        """DEV-1526 positive first/last coverage: a cross-model FIRST/LAST
+        aggregate over a cross-join derived source must push the ``regions``
+        join into the ``_cm_*`` CTE's ROW_NUMBER-ranked subquery (the
+        ``cte_join_paths`` → ranked-subquery path). The outer-scope handle
+        bug is separately tracked by the DEV-1531 strict-xfail below.
+        """
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(
+                formula="customers_v2.deep_pop:last(orders_x.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        # The ranked (ROW_NUMBER) subquery is present and carries the join.
+        assert "ROW_NUMBER()" in cm_body, cm_body
+        normalized = _norm(cm_body)
+        inner_start = normalized.find("FROM (")
+        assert inner_start > 0, normalized
+        inner_body = normalized[inner_start:]
+        assert "LEFT JOIN regions AS regions" in inner_body, inner_body
+
+    # ------------------------------------------------------------------
+    # Non-regression / no-op sanity
+    # ------------------------------------------------------------------
+
+    async def test_bare_target_column_no_spurious_join_in_cte(self, storage) -> None:
+        """A cross-model aggregate over a bare target base column
+        (``customers_v2.region_id:count_distinct``) produces the ``_cm_*``
+        CTE but no spurious deeper join inside it.
+        """
+        engine = await self._engine_with(storage, self._customers_v2())
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.region_id:count_distinct")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "COUNT(DISTINCT customers_v2.region_id)" in cm_body, cm_body
+        assert "regions" not in cm_body, cm_body
+        assert "countries" not in cm_body, cm_body
+
+    async def test_deeper_join_only_in_cte_not_host_base(self, storage) -> None:
+        """The discovered ``regions`` join must appear ONLY inside the
+        ``_cm_*`` CTE, never in the host ``_base`` CTE (the host-side
+        collector correctly skips path-bearing sources). Segmented check
+        per Codex fold-in.
+        """
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        base_body = _extract_cte_body(sql, r"_base")
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        # Present in the CTE...
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        # ...and absent from the host base (no spurious host join).
+        assert "regions" not in base_body, base_body
+
+    # ------------------------------------------------------------------
+    # Tracking xfails for deferred sibling gaps
+    # ------------------------------------------------------------------
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "DEV-1531 (cross-model sibling): a cross-model FIRST/LAST "
+            "aggregate whose target column's Column.sql crosses a further "
+            "join has the regions join correctly pushed into the _cm_* "
+            "CTE's ranked subquery (DEV-1526), but the outer MAX(CASE WHEN "
+            "_last_rn = 1 THEN regions.population END) references "
+            "regions.population out of scope (only the target relation is "
+            "in scope outside the ranked subquery). Fix: materialise the "
+            "expanded source as a _val_<sid> projection inside the ranked "
+            "subquery and rewrite the outer body (cross-model analog of the "
+            "host DEV-1531 fix). Auto-promotes when that lands."
+        ),
+    )
+    async def test_cross_model_first_last_derived_source_out_of_scope_xfail(
+        self, storage
+    ) -> None:
+        """Cross-model FIRST/LAST over a cross-join derived source. Pins
+        the END STATE: the outer aggregate body must NOT reference the
+        out-of-scope path-qualified ref. Today it does, so this fails
+        (strict-xfail); it auto-promotes when the DEV-1531 cross-model
+        materialisation fix lands.
+        """
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(
+                formula="customers_v2.deep_pop:last(orders_x.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        # The ranked subquery (inner) legitimately references the join; the
+        # OUTER aggregate body must not. Segment on the ranked subquery
+        # boundary: everything before the inner ``FROM (`` is the outer
+        # select body.
+        normalized = _norm(cm_body)
+        inner_start = normalized.find("FROM (")
+        assert inner_start > 0, normalized
+        outer_body = normalized[:inner_start]
+        assert "regions.population" not in outer_body, (
+            f"DEV-1531 cross-model: outer aggregate body references the "
+            f"path-qualified ref out of scope:\n{outer_body}"
+        )
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "DEV-1701 (cross-model sibling of DEV-1526, different "
+            "mechanism): a SHARED-GRAIN derived TIME dimension on the "
+            "target path whose Column.sql crosses a further join is "
+            "expanded into the _cm_* CTE's SELECT/GROUP BY but its crossed "
+            "joins are not added to cte_join_paths, so the CTE can "
+            "reference an undefined alias. Fix: scan the expanded "
+            "shared-grain col_expr via _joined_paths_in_sql and merge into "
+            "cte_join_paths. Auto-promotes when that lands."
+        ),
+    )
+    async def test_shared_grain_derived_time_dim_crosses_join_xfail(
+        self, storage
+    ) -> None:
+        """A cross-model aggregate grouped by a derived TIME dimension on
+        the target whose Column.sql crosses a further join. The measure
+        SOURCE is a LOCAL target column (``lifetime_value``, crossing no
+        join) so ONLY the shared-grain time dimension crosses ``regions`` —
+        isolating the DEV-1701 mechanism from the DEV-1526 source-SQL fix.
+        The ``regions`` join must land in the ``_cm_*`` CTE — today it
+        doesn't (DEV-1701).
+        """
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            # A derived TIME column on the target crossing the regions join.
+            Column(name="region_event_at", sql="regions.created_at",
+                   type=DataType.TIMESTAMP),
+        ]))
+        # regions needs a created_at column for the derived time dim.
+        regions = await storage.get_model("regions", data_source="test")
+        regions.columns.append(
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP)
+        )
+        await storage.save_model(regions)
+        query = SlayerQuery(
+            source_model="orders_x",
+            # LOCAL target source — does NOT cross any join, so the DEV-1526
+            # source-SQL discovery contributes nothing here.
+            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="customers_v2.region_event_at"),
+                    granularity=TimeGranularity.MONTH,
+                ),
+            ],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+
+
+class TestColumnSqlKeyJoinPathsHelper:
+    """Direct unit coverage for the ``_column_sql_key_join_paths`` helper's
+    no-op contract (DEV-1526). Each early-return branch returns before the
+    helper touches ``bundle`` / ``_expand_derived_column_sql``, so ``bundle``
+    is irrelevant here and passed as ``None``.
+    """
+
+    @pytest.fixture
+    def gen(self) -> SQLGenerator:
+        return SQLGenerator(dialect="postgres")
+
+    @pytest.fixture
+    def model(self) -> SlayerModel:
+        return SlayerModel(
+            name="customers_v2", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+                # A column whose ``sql`` is None (bare base column).
+                Column(name="bare", sql=None, type=DataType.DOUBLE),
+            ],
+        )
+
+    def test_non_column_sql_key_source_returns_empty(self, gen, model) -> None:
+        """A bare ``ColumnKey`` (non-derived) source → no paths."""
+        from slayer.core.keys import ColumnKey
+
+        assert gen._column_sql_key_join_paths(
+            source=ColumnKey(path=(), leaf="deep_pop"), model=model,
+            relation="customers_v2", bundle=None,
+        ) == []
+
+    def test_star_key_source_returns_empty(self, gen, model) -> None:
+        """A ``StarKey`` (COUNT(*)) source → no paths."""
+        from slayer.core.keys import StarKey
+
+        assert gen._column_sql_key_join_paths(
+            source=StarKey(), model=model, relation="customers_v2", bundle=None,
+        ) == []
+
+    def test_path_bearing_source_returns_empty(self, gen, model) -> None:
+        """A path-bearing (cross-model) ``ColumnSqlKey`` → no paths (owned by
+        the deeper _cm_* CTE / caller reroots before calling)."""
+        from slayer.core.keys import ColumnSqlKey
+
+        assert gen._column_sql_key_join_paths(
+            source=ColumnSqlKey(path=("regions",), model="customers_v2",
+                                column_name="deep_pop"),
+            model=model, relation="customers_v2", bundle=None,
+        ) == []
+
+    def test_missing_column_source_returns_empty(self, gen, model) -> None:
+        """A ``ColumnSqlKey`` naming a column absent from the model → no paths."""
+        from slayer.core.keys import ColumnSqlKey
+
+        assert gen._column_sql_key_join_paths(
+            source=ColumnSqlKey(path=(), model="customers_v2",
+                                column_name="does_not_exist"),
+            model=model, relation="customers_v2", bundle=None,
+        ) == []
+
+    def test_sql_less_column_source_returns_empty(self, gen, model) -> None:
+        """A ``ColumnSqlKey`` naming a column whose ``sql`` is None → no paths."""
+        from slayer.core.keys import ColumnSqlKey
+
+        assert gen._column_sql_key_join_paths(
+            source=ColumnSqlKey(path=(), model="customers_v2", column_name="bare"),
+            model=model, relation="customers_v2", bundle=None,
+        ) == []
 
 
 class TestAggParamSanitization:
