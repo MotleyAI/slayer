@@ -1,13 +1,8 @@
-"""Integration tests for forced-filter RLS (DEV-1578 / DEV-1718) — end-to-end
-against a real SQLite database with two tenants.
+"""End-to-end forced-filter RLS tests against a real SQLite database with two tenants.
 
-Verifies that ``SlayerQueryEngine(storage, policy=...)`` silently scopes every
-query — base, joins, profiling/sample data, dry-run preview — to the
-configured tenant, that the column-presence probe is cached, that the
-``block`` / ``pass`` semantics of a ``ColumnFilterRuleset`` behave on a
-tenant-less (shared) table, and that a ``JoinFilterRuleset`` scopes the anchor
-directly, reaches other tables via explicit joins, passes whitelisted tables
-through, and fails closed on an unlisted table.
+Covers both rulesets: that every query shape is silently scoped to the configured
+tenant, the column-presence probe is cached, and a join ruleset fails closed on a table
+it does not list.
 
 Run with: poetry run pytest tests/integration/test_integration_rls.py -m integration
 """
@@ -43,8 +38,8 @@ ORG_B = "orgB"
 
 @pytest.fixture
 async def rls_storage(tmp_path):
-    """Two-tenant SQLite DB + YAML storage with orders / customers (both
-    org-scoped) and a tenant-less exchange_rates table."""
+    """Two-tenant SQLite DB with org-scoped orders/customers and a tenant-less
+    exchange_rates table."""
     db_path = tmp_path / "rls.db"
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
@@ -346,16 +341,14 @@ async def test_column_presence_is_cached(rls_storage, monkeypatch):
 
 
 # ===========================================================================
-# JoinFilterRuleset — end-to-end explicit-join scoping (DEV-1627 / DEV-1718)
+# JoinFilterRuleset — end-to-end explicit-join scoping
 # ===========================================================================
 
 
 @pytest.fixture
 async def rls_join_storage(tmp_path):
-    """Tenant column lives ONLY on ``customers``. ``orders`` (single-hop) and
-    ``line_items`` (multihop via orders) must reach it through an explicit
-    join stated in the policy. ``exchange_rates`` is tenant-less + untargeted.
-    """
+    """The tenant column lives only on ``customers``, so ``orders`` and ``line_items``
+    must reach it through explicit joins; ``exchange_rates`` is tenant-less."""
     db_path = tmp_path / "rls_join.db"
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
@@ -472,9 +465,8 @@ _ORDERS_HOP = "orders.customer_id = customers.id"
 
 
 def _join_policy(org=ORG_A, *, whitelist=()):
-    """Single-anchor join ruleset: the tenant column lives on ``customers``
-    (the anchor); orders (single-hop) and line_items (multihop) reach it via
-    explicit joins. ``whitelist`` names any pass-through shared tables."""
+    """Anchored on ``customers``, reaching orders (single-hop) and line_items
+    (multihop) via explicit joins; ``whitelist`` names pass-through tables."""
     return SessionPolicy(
         ruleset=JoinFilterRuleset(
             table="customers",

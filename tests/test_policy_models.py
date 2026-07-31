@@ -1,18 +1,5 @@
-"""Unit tests for the session-policy data model (DEV-1578 / DEV-1627 / DEV-1718).
-
-``SessionPolicy`` carries a single, required ``ruleset`` — one of two mutually
-exclusive kinds:
-
-* ``ColumnFilterRuleset`` — the broadcast column filter (mirrors the old single
-  ``ColumnFilterRule``).
-* ``JoinFilterRuleset`` — a single-anchor model: one ``table``+``column``+
-  ``value`` identifier, a list of ``JoinFilterRule`` reaching it, and a
-  ``whitelist`` of pass-through tables.
-
-These tests pin validation, immutability (``frozen`` + tuple fields),
-``extra="forbid"``, the explicit ``kind`` discriminator (no inference), the
-either-direction ``join_path`` endpoint rules, and the structural
-``JoinFilterRuleset`` invariants. There is no ``name`` attribute anywhere.
+"""Unit tests for the session-policy data model: validation, immutability, the
+explicit ``kind`` discriminator, and the structural ``JoinFilterRuleset`` invariants.
 """
 
 import pytest
@@ -88,7 +75,7 @@ def test_column_ruleset_extra_forbidden():
 
 
 def test_column_ruleset_name_field_removed():
-    """No ``name`` attribute anywhere (DEV-1718): passing it hits extra-forbid."""
+    """There is no ``name`` attribute anywhere, so passing one hits extra-forbid."""
     with pytest.raises(ValidationError):
         ColumnFilterRuleset(name="tenant", column="org", value="x")
 
@@ -280,8 +267,7 @@ def test_join_rule_target_first_accepted():
 
 
 def test_join_rule_master_first_accepted():
-    """Path written master-first (customers -> orders) — target is the END
-    endpoint. Accepted (DEV-1718: begin OR end with the master)."""
+    """A path may be written anchor-first, putting the target at the end."""
     rule = _join_rule(
         target_table="orders", join_path=["customers.id = orders.customer_id"]
     )
@@ -341,8 +327,7 @@ def test_oriented_hops_target_first_unchanged():
 
 
 def test_oriented_hops_master_first_reversed():
-    """A master-first path is reversed (list reversed + each hop's from/to
-    swapped) so it is target-first, terminal on the master endpoint."""
+    """An anchor-first path is reversed hop by hop so it ends up target-first."""
     rule = _join_rule(
         target_table="orders", join_path=["customers.id = orders.customer_id"]
     )
@@ -507,8 +492,7 @@ def test_ruleset_master_first_path_accepted():
 
 
 def test_ruleset_master_as_intermediate_rejected():
-    """Master appearing mid-path (not solely as the terminal) is rejected even
-    when the endpoints are {target, master} (Codex #3)."""
+    """The anchor mid-path is rejected even when the endpoints are {target, anchor}."""
     rule = JoinFilterRule(
         target_table="line_items",
         join_path=[
@@ -568,8 +552,8 @@ def test_ruleset_anchor_in_whitelist_rejected():
 
 
 def test_ruleset_qualified_anchor_requires_qualified_endpoint():
-    """A qualified anchor reached via a bare hop endpoint is rejected — the
-    anchor's schema would otherwise be dropped from the emitted SQL (Codex)."""
+    """A qualified anchor reached via a bare endpoint is rejected: its schema would
+    otherwise be dropped from the emitted SQL."""
     rule = JoinFilterRule(
         target_table="public.orders",
         join_path=["public.orders.customer_id = customers.id"],  # bare anchor endpoint
@@ -693,8 +677,7 @@ def test_policy_is_frozen():
 
 
 def test_join_only_policy_needs_no_column_backstop():
-    """The mandatory-block backstop is GONE (DEV-1718): a join ruleset with no
-    column rule is valid — the whitelist+error model subsumes it."""
+    """A join ruleset needs no column-rule backstop; the whitelist subsumes it."""
     policy = SessionPolicy(ruleset=_join_ruleset())
     assert isinstance(policy.ruleset, JoinFilterRuleset)
 

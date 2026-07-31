@@ -1,9 +1,5 @@
-"""Unit tests for SlayerClient forced-filter policy wiring (DEV-1578).
-
-A ``policy`` passed to ``SlayerClient`` is forwarded to the local
-``SlayerQueryEngine``. Because HTTP mode has no server-side policy support
-yet, passing ``policy`` without ``storage`` (i.e. HTTP mode) fails fast
-rather than silently ignoring the security control.
+"""Unit tests for SlayerClient policy wiring: a policy reaches the local engine, and
+HTTP mode (no storage) fails fast rather than silently dropping the security control.
 """
 
 import pytest

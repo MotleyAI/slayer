@@ -1,25 +1,9 @@
-"""Session-policy data model for forced-filter RLS (DEV-1578 / DEV-1627 / DEV-1718).
+"""Session-policy data model for forced-filter RLS.
 
-A ``SessionPolicy`` is immutable, agent-invisible engine state. It is set only
-at engine/client init and silently scopes every query by wrapping each
-physical-table reference in a filtered subquery (see
-``slayer/sql/session_policy.py``).
-
-A policy carries exactly one **required** ``ruleset``, one of two kinds:
-
-* ``ColumnFilterRuleset`` (DEV-1578) — "every physical table that has column
-  ``C`` is filtered to ``C = value`` / ``C IN (...)``". ``on_unapplicable``
-  governs a table confirmed to lack the column.
-* ``JoinFilterRuleset`` (DEV-1718) — a single-anchor model. One ``table`` +
-  ``column`` + ``value`` holds the tenant identifier; the anchor table is
-  filtered directly, other tables reach the identifier via an explicit
-  ``JoinFilterRule`` (correlated ``EXISTS`` semi-join), and a ``whitelist``
-  lists tables emitted unfiltered. Any physical table that is not the anchor,
-  not a join target, and not whitelisted fails closed.
-
-There is no "empty" ruleset: the no-filtering case is ``policy=None`` at the
-engine/client. ``ruleset`` being required means a bare ``SessionPolicy()``
-raises rather than silently constructing a no-op.
+A ``SessionPolicy`` is immutable, agent-invisible engine state carrying exactly
+one required ``ruleset``; the no-filtering case is ``policy=None`` at the
+engine/client, so a bare ``SessionPolicy()`` raises. The rewrite it drives lives
+in ``slayer/sql/session_policy.py``.
 """
 
 from __future__ import annotations
@@ -41,8 +25,7 @@ OnUnapplicable = Literal["block", "pass"]
 
 
 def _coerce_policy_value(v):
-    """Coerce a rule ``value``: list/tuple -> tuple (immutable) and rejected
-    when empty (a degenerate ``IN`` is never allowed); scalars pass through."""
+    """Freeze a list/tuple ``value`` into a tuple; a degenerate empty ``IN`` is rejected."""
     if isinstance(v, (list, tuple)):
         if len(v) == 0:
             raise ValueError("policy rule value list/tuple must be non-empty")
@@ -57,20 +40,13 @@ def _require_non_blank(v, info: ValidationInfo):
 
 
 def _table_parts(table: str) -> Tuple[str, ...]:
-    """Split a (possibly schema/catalog-qualified) physical table name into its
-    dotted parts, whitespace-trimmed."""
+    """Split a possibly qualified table name into whitespace-trimmed dotted parts."""
     return tuple(p.strip() for p in table.split("."))
 
 
 def _table_names_match(a: str, b: str) -> bool:
-    """Case-insensitive bare/qualified match between two physical table names,
-    for the policy-internal validators (endpoint / anchor / whitelist checks).
-
-    Compares the two names right-to-left over the number of parts they share,
-    so a bare name matches any schema/catalog and two qualified names must
-    agree on every stated qualifier. Symmetric — either side may be the bare
-    one (``customers`` matches ``public.customers`` and vice versa).
-    """
+    """Symmetric case-insensitive table match over the qualifier parts both names state,
+    so a bare name matches any schema and two qualified names must agree on every part."""
     ap, bp = _table_parts(a), _table_parts(b)
     for pa, pb in zip(reversed(ap), reversed(bp)):
         if pa.casefold() != pb.casefold():
@@ -79,15 +55,10 @@ def _table_names_match(a: str, b: str) -> bool:
 
 
 def _reaches_anchor(endpoint: str, anchor: str) -> bool:
-    """Whether a join-path ``endpoint`` reaches the configured ``anchor`` AND is
-    qualified **at least as fully** as it.
+    """Whether a join-path endpoint reaches ``anchor``, qualified at least as fully as it.
 
-    The endpoint is emitted verbatim into the enforcement ``EXISTS``, so a
-    *qualified* anchor (``public.customers``) reached through a *bare* endpoint
-    (``customers``) would silently scope against the default-schema table — the
-    exact qualifier the author wrote on the anchor would be dropped. Requiring
-    the endpoint to carry every part the anchor states closes that footgun (a
-    bare anchor still matches a qualified endpoint — over-qualifying is safe).
+    The endpoint is emitted verbatim, so a bare endpoint reaching a qualified anchor
+    would silently scope against the default-schema table instead.
     """
     return _table_names_match(endpoint, anchor) and len(
         _table_parts(endpoint)
@@ -95,15 +66,10 @@ def _reaches_anchor(endpoint: str, anchor: str) -> bool:
 
 
 class ColumnFilterRuleset(BaseModel):
-    """Force every physical table that has ``column`` to be filtered.
+    """Filter every physical table that has ``column``; a scalar emits ``=``, a tuple ``IN``.
 
-    ``value`` shape selects the operator: a scalar emits ``column = value``;
-    a non-empty list/tuple emits ``column IN (...)`` (an empty collection is
-    rejected at validation). ``on_unapplicable`` governs a table that
-    **confirms it lacks** ``column``: ``"block"`` (default) fails the whole
-    query; ``"pass"`` leaves that table unfiltered. A table whose column
-    presence cannot be confirmed always fails closed, regardless of
-    ``on_unapplicable``.
+    ``on_unapplicable`` governs a table that confirms it lacks the column. A table whose
+    column presence cannot be confirmed always fails closed regardless.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -125,13 +91,9 @@ class ColumnFilterRuleset(BaseModel):
 
 
 class JoinHop(BaseModel):
-    """One physical-name join hop: ``from_table.from_column`` ->
-    ``to_table.to_column``. Table fields may be schema/catalog-qualified
-    (``public.orders``). All four fields must be non-blank.
+    """One parsed join hop: ``from_table.from_column`` -> ``to_table.to_column``.
 
-    Internal only: callers author hops as strings (see :func:`_parse_hop`);
-    this is the parsed runtime representation and is not part of the public
-    API (excluded from ``__all__``, never serialized).
+    Internal only — callers author hops as strings (see :func:`_parse_hop`).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -148,16 +110,9 @@ class JoinHop(BaseModel):
 
 
 def _parse_hop(spec: str) -> JoinHop:
-    """Parse a hop string ``"from_table.from_column = to_table.to_column"`` into
-    an internal :class:`JoinHop`.
+    """Parse ``"from_table.from_column = to_table.to_column"`` into a :class:`JoinHop`.
 
-    Naive split: exactly one ``=``; each side is split on its **last** dot, so
-    the prefix is the (optionally schema/catalog-qualified) table kept verbatim
-    and the suffix is the column. Whitespace-tolerant. A column literally
-    containing a dot is not expressible (out of scope). Blank parts are rejected
-    by :class:`JoinHop`'s own validators. Raises ``ValueError`` on a malformed
-    spec (surfaces as a Pydantic ``ValidationError`` from the ``after``
-    validator that calls it).
+    Each side splits on its last dot, so a column containing a dot is not expressible.
     """
     if not isinstance(spec, str):
         raise ValueError(
@@ -190,17 +145,10 @@ def _parse_hop(spec: str) -> JoinHop:
 
 
 def _validate_hop_chain(*, hops: Tuple["JoinHop", ...]) -> None:
-    """Assert the parsed ``hops`` form an internally-consistent chain: non-empty
-    and each hop starts where the previous ended.
+    """Assert ``hops`` is non-empty and each hop starts where the previous one ended.
 
-    Physical table names compare case-insensitively — unquoted SQL identifiers
-    are case-insensitive on every supported backend. The endpoint checks (which
-    end is the target / master) live on the rule and ruleset validators, since
-    either endpoint may be the master (DEV-1718). Raises ``ValueError`` on any
-    violation. Runs both at construction and on every ``parsed_hops`` access, so
-    a rule reconstructed via ``model_copy(update=...)`` (which bypasses Pydantic
-    validation) can never feed a non-chaining path to SQL generation — it fails
-    closed instead.
+    Runs on every ``parsed_hops`` access, so a ``model_copy`` bypassing validation
+    still fails closed rather than reaching SQL generation.
     """
     if not hops:
         raise ValueError("JoinFilterRule.join_path must be non-empty")
@@ -226,17 +174,9 @@ def _reverse_hop(hop: JoinHop) -> JoinHop:
 class JoinFilterRule(BaseModel):
     """Scope ``target_table`` via an explicit join path to the ruleset's anchor.
 
-    ``join_path`` is a non-empty tuple of hop **strings** of the form
-    ``"from_table.from_column = to_table.to_column"`` (physical DB names,
-    tables optionally schema/catalog-qualified). The path's two endpoints are
-    ``target_table`` and the ruleset's anchor ``table``, in **either** written
-    order (target-first or master-first). ``column``/``value`` are not on the
-    rule — they live on the owning :class:`JoinFilterRuleset`.
-
-    Hops are parsed into internal :class:`JoinHop`s via :attr:`parsed_hops`
-    (derived fresh from ``join_path`` on each access — no cache); the public
-    ``join_path`` stays a tuple of the original strings and serializes
-    symmetrically. A bad path fails closed at SQL execution.
+    ``join_path`` holds hop strings (``"from_table.from_column = to_table.to_column"``,
+    physical names) whose two endpoints are ``target_table`` and the anchor, in either
+    written order. The tenant ``column``/``value`` live on the owning ruleset.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -246,11 +186,7 @@ class JoinFilterRule(BaseModel):
 
     @property
     def parsed_hops(self) -> Tuple[JoinHop, ...]:
-        """The ``join_path`` strings parsed into internal :class:`JoinHop`s and
-        chain-validated, derived fresh on each access (never stored/serialized,
-        so a ``model_copy`` that swaps ``join_path``/``target_table`` can never
-        go stale — it re-parses and re-validates, failing closed on a broken
-        copy)."""
+        """``join_path`` parsed and chain-validated, derived fresh so it can never go stale."""
         hops = tuple(_parse_hop(spec) for spec in self.join_path)
         _validate_hop_chain(hops=hops)
         return hops
@@ -261,13 +197,11 @@ class JoinFilterRule(BaseModel):
         return (hops[0].from_table, hops[-1].to_table)
 
     def oriented_hops(self) -> Tuple[JoinHop, ...]:
-        """``parsed_hops`` guaranteed **target-first** (first hop's from_table
-        matches ``target_table``), reversing the chain (list reversed + each
-        hop's endpoints swapped) when the path was authored master-first. So
-        the correlated-``EXISTS`` builder always finds the wrapped source table
-        at the start and the tenant column on the terminal ``to_table``. Raises
-        ``ValueError`` if ``target_table`` is not an endpoint (defensive — the
-        construction validator already enforces it)."""
+        """``parsed_hops`` normalized target-first, reversing a path authored anchor-first.
+
+        Lets the EXISTS builder always find the wrapped source at the start and the
+        tenant column on the terminal hop.
+        """
         hops = self.parsed_hops
         start, end = hops[0].from_table, hops[-1].to_table
         if _table_names_match(start, self.target_table):
@@ -288,8 +222,7 @@ class JoinFilterRule(BaseModel):
     @classmethod
     def _coerce_path(cls, v):
         if isinstance(v, str):
-            # A bare string would otherwise be iterated into a tuple of single
-            # characters — reject it; join_path is a list of hop strings.
+            # Would otherwise be iterated into a tuple of single characters.
             raise ValueError(
                 "JoinFilterRule.join_path must be a list of hop strings, not a "
                 "single string"
@@ -300,9 +233,8 @@ class JoinFilterRule(BaseModel):
 
     @model_validator(mode="after")
     def _validate_endpoints(self):
-        # Parse + chain-validate the hops, then require target_table to be one
-        # of the path's two endpoints (either order). The "non-target endpoint
-        # == anchor" check lives on the ruleset (which knows the anchor).
+        # The matching "non-target endpoint == anchor" check lives on the ruleset,
+        # which is what knows the anchor.
         hops = self.parsed_hops
         start, end = hops[0].from_table, hops[-1].to_table
         if not (
@@ -320,17 +252,13 @@ class JoinFilterRule(BaseModel):
 def _validate_join_rule_anchor(
     rule: JoinFilterRule, anchor: str
 ) -> Tuple[JoinHop, ...]:
-    """Validate one join rule's path against the ruleset ``anchor`` and return
-    its **target-first** oriented hops. Raises ``ValueError`` on any violation.
+    """Validate one join rule against the ruleset ``anchor``, returning target-first hops.
 
-    Single source of truth for the per-rule anchor invariants — shared by
-    :class:`JoinFilterRuleset` construction AND the SQL-boundary re-check in
-    ``slayer/sql/session_policy.py::_build_exists``, so a ``model_copy`` that
-    bypasses construction can never feed SQL generation a rule that satisfies a
-    weaker set of invariants (it fails closed instead). The cross-rule checks
+    Single source of truth for the per-rule anchor invariants, shared by ruleset
+    construction and the SQL boundary so both enforce the same set. Cross-rule checks
     (duplicate targets, whitelist overlaps) stay on the ruleset validator.
     """
-    oriented = rule.oriented_hops()  # target-first; raises if target not endpoint
+    oriented = rule.oriented_hops()
     terminal = oriented[-1].to_table
     if not _reaches_anchor(terminal, anchor):
         raise ValueError(
@@ -338,8 +266,7 @@ def _validate_join_rule_anchor(
             f"must reach the anchor table '{anchor}' at its non-target endpoint, "
             f"qualified at least as fully as the anchor (got '{terminal}')."
         )
-    # The anchor must appear EXACTLY ONCE in the oriented path, only as the
-    # terminal to_table — never as an intermediate hop (Codex #3).
+    # The anchor may not also appear as an intermediate hop.
     node_sequence = [oriented[0].from_table] + [h.to_table for h in oriented]
     if sum(1 for n in node_sequence if _table_names_match(n, anchor)) != 1:
         raise ValueError(
@@ -347,7 +274,6 @@ def _validate_join_rule_anchor(
             f"'{anchor}' must appear exactly once in the join path, only as the "
             "terminal endpoint (not as an intermediate hop)."
         )
-    # A join rule may not target the anchor (it is filtered directly).
     if _table_names_match(rule.target_table, anchor):
         raise ValueError(
             f"JoinFilterRule may not target the anchor table '{anchor}' "
@@ -357,13 +283,11 @@ def _validate_join_rule_anchor(
 
 
 class JoinFilterRuleset(BaseModel):
-    """Single-anchor join model (DEV-1718).
+    """Single-anchor join model: the tenant identifier lives on one ``table`` + ``column``.
 
-    The tenant identifier lives on ONE ``table`` + ``column`` (= ``value``).
-    The anchor table is filtered directly; each :class:`JoinFilterRule` target
-    is scoped via a correlated ``EXISTS`` semi-join to the anchor; ``whitelist``
-    tables are emitted unfiltered; any other physical table fails closed. Fully
-    structural — no column introspection.
+    The anchor is filtered directly, each :class:`JoinFilterRule` target is scoped via a
+    correlated ``EXISTS`` to it, ``whitelist`` tables are emitted unfiltered, and any
+    other physical table fails closed. Fully structural — no column introspection.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -403,16 +327,13 @@ class JoinFilterRuleset(BaseModel):
         master = self.table
         seen_targets: list[str] = []
         for rule in self.joins:
-            # Per-rule anchor invariants (shared with the SQL boundary).
             _validate_join_rule_anchor(rule, master)
-            # No two join rules may target the same table (one path per target).
             if any(_table_names_match(rule.target_table, t) for t in seen_targets):
                 raise ValueError(
                     f"Duplicate JoinFilterRule target '{rule.target_table}' "
                     "(one path per target)."
                 )
             seen_targets.append(rule.target_table)
-        # Whitelist may not overlap the anchor or any join target.
         for entry in self.whitelist:
             if _table_names_match(entry, master):
                 raise ValueError(
@@ -427,26 +348,20 @@ class JoinFilterRuleset(BaseModel):
         return self
 
 
-# The discriminated union over ruleset kinds — keyed on the explicit ``kind``
-# field. There is no inference: a kind-less dict fails to discriminate.
+# Keyed on the explicit ``kind`` field — no inference, so a kind-less dict fails
+# to discriminate.
 FilterRuleset = Annotated[
     Union[ColumnFilterRuleset, JoinFilterRuleset], Field(discriminator="kind")
 ]
 
 
 class SessionPolicy(BaseModel):
-    """Immutable, engine-global forced-filter configuration.
-
-    Carries a single **required** ``ruleset`` — the no-filtering case is
-    ``policy=None`` at the engine/client, so a bare ``SessionPolicy()`` raises
-    rather than constructing a silent no-op.
-    """
+    """Immutable, engine-global forced-filter configuration."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    # Only the v1 schema is understood. An unknown version must fail closed
-    # (raise) rather than be silently interpreted by the v1 rewrite path,
-    # since this object defines tenant-scoping behaviour.
+    # Pinned so an unknown schema version fails closed rather than being silently
+    # interpreted by the v1 rewrite path.
     version: Literal[1] = 1
     ruleset: FilterRuleset
 

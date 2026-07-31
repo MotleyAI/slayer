@@ -1,16 +1,8 @@
-"""Unit tests for the forced-filter SQL rewrite (DEV-1578 / DEV-1627 / DEV-1718).
+"""Unit tests for the forced-filter SQL rewrite.
 
-``apply_session_policy`` is a pure sqlglot transform: given final SQL, a
-dialect, a ``SessionPolicy``, and a ``has_column`` probe callback, it wraps
-every *physical* table reference according to the policy's ``ruleset``.
-
-* A ``ColumnFilterRuleset`` wraps every table that has the column in a filtered
-  ``SELECT * ... WHERE`` subquery (``has_column`` probed; ``block`` / ``pass`` /
-  fail-closed).
-* A ``JoinFilterRuleset`` classifies each physical table structurally (no
-  probe): the anchor table is wrapped directly, a join target via a correlated
-  ``EXISTS`` semi-join, a whitelisted table is passed through, and anything
-  else fails closed.
+``apply_session_policy`` wraps every physical table reference per the policy's ruleset:
+a column ruleset probes ``has_column`` and filters each table having it; a join ruleset
+classifies structurally into anchor / join target / whitelisted / fail-closed.
 """
 
 import sqlglot
@@ -446,9 +438,8 @@ def test_same_target_twice_each_gets_own_exists():
 
 
 def test_user_sql_containing_rls_alias_still_isolated():
-    """A user query that itself references a table literally named _rls_src is
-    wrapped in its own fresh subquery scope — the internal aliases don't leak /
-    collide across wraps."""
+    """A user query referencing a table literally named _rls_src still gets its own
+    fresh subquery scope, so the internal aliases never collide across wraps."""
     # _rls_src is unlisted -> fails closed (proves it is treated as a real,
     # user table, not confused with the internal wrapper alias).
     policy = _jpolicy()
@@ -463,10 +454,8 @@ def test_user_sql_containing_rls_alias_still_isolated():
 
 
 def test_target_named_like_internal_alias_no_collision():
-    """A join target physically named ``_rls_src`` (the internal wrapper base
-    alias) rewrites without collision: the correlated EXISTS emits
-    ``FROM _rls_src AS _rls_src`` and re-parses cleanly, still correlating the
-    base row to the anchor."""
+    """A join target physically named ``_rls_src`` emits ``FROM _rls_src AS _rls_src``,
+    which re-parses cleanly and still correlates the base row to the anchor."""
     ruleset = JoinFilterRuleset(
         table="customers",
         column="organization_uuid",
@@ -491,14 +480,11 @@ def test_target_named_like_internal_alias_no_collision():
 
 
 def test_corrupted_ruleset_terminal_not_anchor_fails_closed():
-    """Defensive terminal assertion: a ruleset corrupted via model_copy (which
-    bypasses the cross-field validator) so a join's oriented terminal no longer
-    reaches the anchor fails closed at SQL generation rather than landing the
-    tenant predicate on a non-anchor table."""
+    """A model_copy leaving a join's terminal short of the anchor fails closed at SQL
+    generation rather than landing the tenant predicate on a non-anchor table."""
     good = SessionPolicy(ruleset=_join_ruleset())  # anchor=customers
-    # Swap the anchor out from under the (unchanged) join path. Corrupting at the
-    # POLICY level via model_copy skips both the SessionPolicy and the nested
-    # JoinFilterRuleset validators that would otherwise reject this.
+    # Corrupting at the policy level skips both the SessionPolicy and the nested
+    # ruleset validators that would otherwise reject this.
     corrupted_ruleset = good.ruleset.model_copy(update={"table": "different_anchor"})
     bad_policy = good.model_copy(update={"ruleset": corrupted_ruleset})
     with pytest.raises(ForcedFilterError) as exc:
@@ -513,9 +499,8 @@ def test_corrupted_ruleset_terminal_not_anchor_fails_closed():
 
 
 def test_corrupted_join_path_valueerror_wrapped_as_forced_filter():
-    """A corrupt join rule whose target_table is no longer a path endpoint makes
-    oriented_hops() raise ValueError; the SQL layer wraps it as a fail-closed
-    ForcedFilterError rather than leaking a raw ValueError."""
+    """The ValueError from a target_table that is no longer a path endpoint surfaces
+    as a fail-closed ForcedFilterError, not a raw ValueError."""
     good = SessionPolicy(ruleset=_join_ruleset())  # target orders -> customers
     # Break the path so orders is no longer an endpoint (target_table unchanged);
     # model_copy at each level skips validation.
@@ -535,9 +520,8 @@ def test_corrupted_join_path_valueerror_wrapped_as_forced_filter():
 
 
 def test_corrupted_qualified_anchor_bare_terminal_fails_closed():
-    """Defensive: a model_copy that drops a qualified anchor's terminal to a
-    bare, wrong-schema name fails closed at the SQL boundary via _reaches_anchor
-    (not merely _table_names_match, which would accept the bare terminal)."""
+    """Dropping a qualified anchor's terminal to a bare name fails closed, since the
+    boundary check is _reaches_anchor rather than plain name matching."""
     rule = JoinFilterRule(
         target_table="public.orders",
         join_path=["public.orders.customer_id = public.customers.id"],
@@ -563,10 +547,8 @@ def test_corrupted_qualified_anchor_bare_terminal_fails_closed():
 
 
 def test_corrupted_anchor_as_intermediate_fails_closed():
-    """Defensive: a model_copy that makes the anchor appear as an intermediate
-    hop (while the terminal still reaches it) bypasses construction but fails
-    closed at the SQL boundary — _build_exists re-runs the full per-rule anchor
-    validation, not just reachability."""
+    """An anchor smuggled in as an intermediate hop fails closed at the SQL boundary,
+    because _build_exists re-runs the full per-rule validation, not just reachability."""
     good = SessionPolicy(ruleset=_join_ruleset())  # anchor customers, target orders
     # orders -> customers -> x -> customers: anchor 'customers' appears twice.
     bad_rule = good.ruleset.joins[0].model_copy(
@@ -590,7 +572,7 @@ def test_corrupted_anchor_as_intermediate_fails_closed():
 
 
 def test_forced_filter_error_has_no_rule_name():
-    """DEV-1718: ForcedFilterError dropped the rule_name param/attribute."""
+    """ForcedFilterError carries no rule_name param or attribute."""
     with pytest.raises(TypeError):
         ForcedFilterError("boom", rule_name="tenant")
     err = ForcedFilterError("boom", table="orders", column="org")

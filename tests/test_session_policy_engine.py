@@ -1,11 +1,6 @@
-"""Unit tests for the engine-side forced-filter wiring (DEV-1578 / DEV-1718).
-
-``SlayerQueryEngine._column_present`` is the ``has_column`` provider for the
-``ColumnFilterRuleset`` rewrite. ``_policy_has_join_rules`` /
-``_preflight_clickhouse_correlated`` / ``_clickhouse_correlated_guard`` gate the
-ClickHouse correlated-subquery version check for a ``JoinFilterRuleset`` that
-has join rules. These tests mock ``_safe_get_columns`` so no live schema is
-required (an empty sqlite file backs ``get_engine`` / ``sa.inspect``).
+"""Unit tests for the engine-side forced-filter wiring: the ``has_column`` provider and
+the ClickHouse correlated-subquery version gate. ``_safe_get_columns`` is mocked so no
+live schema is required.
 """
 
 import logging

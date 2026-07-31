@@ -1,21 +1,9 @@
-"""Forced-filter SQL rewrite for session-policy RLS (DEV-1578 / DEV-1627 / DEV-1718).
+"""Forced-filter SQL rewrite for session-policy RLS.
 
-``apply_session_policy`` is a pure sqlglot transform. Given final SQL and a
-``SessionPolicy``, it wraps every *physical* table reference according to the
-policy's single ``ruleset``.
-
-**Column ruleset** (``ColumnFilterRuleset``) wraps every table that has the
-tenant column in a filtered ``SELECT *`` subquery, preserving the alias::
-
-    FROM orders               -->  FROM (SELECT * FROM orders
-                                         WHERE organization_uuid = '7ef3') AS orders
-
-**Join ruleset** (``JoinFilterRuleset``) classifies each physical table
-structurally (no column introspection):
-
-* the anchor ``table`` is wrapped directly (``WHERE column = value``);
-* a ``JoinFilterRule.target_table`` is scoped via a correlated ``EXISTS``
-  semi-join to the anchor (cardinality-safe, ``LEFT JOIN``-preserving)::
+``apply_session_policy`` is a pure sqlglot transform wrapping every *physical* table
+reference in the final SQL per the policy's ``ruleset``. A column ruleset filters each
+table having the tenant column; a join ruleset filters the anchor directly and reaches
+it from other tables via a correlated ``EXISTS``::
 
     FROM orders  -->  FROM (SELECT * FROM orders AS _rls_src
                             WHERE EXISTS (
@@ -24,14 +12,9 @@ structurally (no column introspection):
                                 AND _rls_j0.organization_uuid = '7ef3'
                             )) AS orders
 
-* a table in the ``whitelist`` is emitted unchanged;
-* anything else fails closed (``ForcedFilterError``).
-
-Why the final-SQL layer: base tables, joins, every CTE, sql-mode raw tables,
-and query-backed stages all compile to physical-table ``FROM``s here, so one
-code path scopes every model type. Physical-vs-CTE classification is
-scope-aware (sqlglot ``traverse_scope``). Values are always ``exp.convert``
-literals and identifiers are built structurally (injection-safe).
+Rewriting at the final-SQL layer means base tables, joins, CTEs, sql-mode raw tables and
+query-backed stages all funnel through one code path. Values are always ``exp.convert``
+literals and identifiers are built structurally, so the rewrite is injection-safe.
 """
 
 from __future__ import annotations
@@ -52,15 +35,11 @@ from slayer.core.policy import (
     _validate_join_rule_anchor,
 )
 
-# Statement roots the rewrite is willing to operate on. Anything else
-# (INSERT / UPDATE / DELETE / MERGE / DDL / Command …) fails closed — the
-# forced filter must never silently pass an unrecognised statement through.
+# Any other statement root (INSERT / UPDATE / DDL / …) fails closed.
 _ALLOWED_ROOTS = (exp.Select, exp.SetOperation)
 
-# Deterministic internal aliases for the correlated-EXISTS rewrite. The inner
-# base table (the wrapped physical table) is ``_rls_src``; each join-path hop
-# target gets ``_rls_j{i}``. These live inside a fresh subquery scope per wrap,
-# so they never collide with the outer query or with a sibling wrap.
+# Internal aliases for the correlated-EXISTS rewrite. Each lives in a fresh subquery
+# scope per wrap, so they never collide with the outer query or a sibling wrap.
 _RLS_SRC = "_rls_src"
 
 
@@ -71,11 +50,8 @@ def _hop_alias(i: int) -> str:
 class ScopedTable(BaseModel):
     """A physical table reference's identity, as parsed from the SQL.
 
-    ``schema_name`` mirrors a single-dot/two-dot qualifier in the SQL
-    (``public.orders`` -> ``schema_name="public"``); ``catalog`` mirrors a
-    three-part name (``proj.dataset.tbl`` -> ``catalog="proj"``). The engine's
-    column-presence probe resolves the effective schema as ``schema_name`` or
-    the datasource default.
+    ``schema_name`` and ``catalog`` mirror the qualifiers the SQL actually states, so
+    both are ``None`` for a bare name; the engine's probe falls back to the datasource.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -101,8 +77,7 @@ def _scoped_table(table: exp.Table) -> ScopedTable:
 def _build_predicate(
     column: str, value, *, table: Optional[str] = None
 ) -> exp.Expression:
-    """``column = value`` / ``column IN (...)`` predicate, optionally qualified
-    by ``table``. Values always via ``exp.convert`` (injection-safe)."""
+    """``column = value`` / ``column IN (...)``, optionally qualified by ``table``."""
     col = exp.column(column, table=table) if table else exp.column(column)
     if isinstance(value, tuple):
         return exp.In(this=col, expressions=[exp.convert(v) for v in value])
@@ -110,8 +85,7 @@ def _build_predicate(
 
 
 def _physical_tables(ast: exp.Expression) -> list:
-    """Return the physical ``exp.Table`` nodes in ``ast`` (CTE/derived
-    references excluded), snapshotted before any mutation."""
+    """The physical ``exp.Table`` nodes in ``ast``, snapshotted before any mutation."""
     physical = []
     for scope in traverse_scope(ast):
         for table in scope.tables:
@@ -123,12 +97,10 @@ def _physical_tables(ast: exp.Expression) -> list:
 
 
 def _target_matches(scoped: ScopedTable, target_table: str) -> bool:
-    """Whether ``scoped`` is the table a policy entry (join target / anchor /
-    whitelist) names.
+    """Whether ``scoped`` is the table a policy entry names.
 
-    A bare target (``orders``) matches the table in any schema; a qualified
-    target (``public.orders`` / ``proj.dataset.orders``) matches only when the
-    parsed schema (and catalog, if given) match. Case-insensitive throughout.
+    A bare target matches the table in any schema; a qualified one matches only when
+    every qualifier it states matches. Case-insensitive throughout.
     """
     parsed = exp.to_table(target_table)
     if scoped.name.casefold() != parsed.name.casefold():
@@ -143,8 +115,7 @@ def _target_matches(scoped: ScopedTable, target_table: str) -> bool:
 
 
 def _wrap_table(table: exp.Table, predicates: list) -> None:
-    """Replace ``table`` in place with ``(SELECT * FROM <table> WHERE ...) AS
-    <original_alias>``."""
+    """Replace ``table`` in place with ``(SELECT * FROM <table> WHERE ...) AS <alias>``."""
     alias = table.alias_or_name
     bare = table.copy()
     bare.set("alias", None)
@@ -197,20 +168,14 @@ def _apply_column_ruleset(
 def _build_exists(rule: JoinFilterRule, *, ruleset: JoinFilterRuleset) -> exp.Exists:
     """Build the correlated ``EXISTS`` body for one join rule.
 
-    Uses the shared ``_validate_join_rule_anchor`` (the same per-rule invariants
-    the ``JoinFilterRuleset`` validator enforces) to get target-first oriented
-    hops: ``FROM`` is the first hop's ``to_table`` (alias ``_rls_j0``); each
-    later hop becomes an inner ``JOIN``; the first hop correlates to the
-    wrapper's inner base alias (``_rls_src``); the terminal tenant predicate
-    lives on the last hop's alias — the anchor table. All identifiers are
-    structural (dotted/quoted-safe).
+    Walks the target-first hops: the first hop's ``to_table`` is the ``FROM`` and
+    correlates back to the wrapper's ``_rls_src``, later hops become inner joins, and
+    the tenant predicate lands on the terminal hop — the anchor.
     """
     try:
-        # Re-validate against the anchor at the SQL boundary using the SAME
-        # helper as construction, so a model_copy that bypassed the ruleset
-        # validator (broken chaining, target not an endpoint, path not reaching
-        # the anchor, or the anchor appearing more than once) fails closed as a
-        # ForcedFilterError rather than emitting a mis-scoped EXISTS.
+        # Re-validated at the SQL boundary via the same helper construction uses, so a
+        # model_copy bypassing the ruleset validator fails closed here rather than
+        # emitting a mis-scoped EXISTS.
         hops = _validate_join_rule_anchor(rule, ruleset.table)
     except ValueError as exc:
         raise ForcedFilterError(
@@ -235,7 +200,6 @@ def _build_exists(rule: JoinFilterRule, *, ruleset: JoinFilterRuleset) -> exp.Ex
         )
         inner = inner.join(to_tbl, on=on, join_type="inner")
 
-    # First hop correlates the inner base table to the wrapped source row.
     correlation = exp.EQ(
         this=exp.column(hops[0].to_column, table=_hop_alias(0)),
         expression=exp.column(hops[0].from_column, table=_RLS_SRC),
@@ -252,8 +216,7 @@ def _build_exists(rule: JoinFilterRule, *, ruleset: JoinFilterRuleset) -> exp.Ex
 def _wrap_table_exists(
     table: exp.Table, rules: list, *, ruleset: JoinFilterRuleset
 ) -> None:
-    """Replace ``table`` in place with a correlated-EXISTS wrapper: one
-    ``EXISTS`` per targeting rule, AND-combined, preserving the outer alias."""
+    """Replace ``table`` in place with one AND-combined ``EXISTS`` per targeting rule."""
     alias = table.alias_or_name
     bare = table.copy()
     bare.set("alias", exp.TableAlias(this=exp.to_identifier(_RLS_SRC)))
@@ -268,9 +231,8 @@ def _wrap_table_exists(
 
 
 def _apply_join_ruleset(ast: exp.Expression, ruleset: JoinFilterRuleset) -> bool:
-    """Structurally scope every physical table under a join ruleset. Returns
-    whether at least one correlated ``EXISTS`` was emitted (drives the
-    ClickHouse setting/guard). Never probes column presence."""
+    """Structurally scope every physical table, returning whether any ``EXISTS`` was
+    emitted (which drives the ClickHouse guard). Never probes column presence."""
     emitted_correlated = False
     for table in _physical_tables(ast):
         scoped = _scoped_table(table)
@@ -304,15 +266,13 @@ _CH_CORRELATED_SETTING = "allow_experimental_correlated_subqueries"
 
 
 def _settings_holder(ast: exp.Expression) -> exp.Expression:
-    """Return the node carrying (or that should carry) this statement's
-    ClickHouse ``SETTINGS``. sqlglot parks a trailing ``SETTINGS`` on the last
-    branch ``SELECT`` of an unparenthesised ``UNION`` rather than on the
-    set-operation root, so honour that placement when it exists; otherwise use
-    the root (so appending never produces two ``SETTINGS`` clauses).
+    """The node carrying (or that should carry) this statement's ClickHouse ``SETTINGS``.
 
-    Only the set-operation's **own right spine** is followed — never a nested
-    subquery in a ``FROM`` clause, whose ``SETTINGS`` is local to that rowset
-    and must not receive the statement-level correlated-subquery flag."""
+    sqlglot parks a trailing ``SETTINGS`` on the last branch of an unparenthesised
+    ``UNION`` rather than the root, so honour that placement to avoid emitting two
+    clauses. Only the set-operation's own right spine is followed — a nested ``FROM``
+    subquery's ``SETTINGS`` is local to that rowset.
+    """
     if ast.args.get("settings"):
         return ast
     if isinstance(ast, exp.SetOperation):
@@ -325,10 +285,11 @@ def _settings_holder(ast: exp.Expression) -> exp.Expression:
 
 
 def _attach_ch_correlated_setting(ast: exp.Expression) -> None:
-    """Force ``allow_experimental_correlated_subqueries = 1`` onto the
-    statement's SETTINGS, preserving any other settings. Drops any prior entry
-    for this setting (any value, e.g. ``= 0``) so the correlated subquery is
-    never emitted with the setting left disabled."""
+    """Force ``allow_experimental_correlated_subqueries = 1``, preserving other settings.
+
+    Any prior entry for this setting is dropped so a caller-supplied ``= 0`` can't leave
+    the correlated subquery emitted with the setting disabled.
+    """
     holder = _settings_holder(ast)
     kept = [
         s
@@ -348,14 +309,10 @@ def apply_session_policy(
 ) -> str:
     """Wrap every physical-table ref per the policy's ``ruleset``.
 
-    ``has_column(scoped_table, column)`` returns ``True`` / ``False`` /
-    ``None`` (cannot confirm) and is consulted **only** for a
-    ``ColumnFilterRuleset``. ``on_correlated_emitted`` (if given) is invoked
-    once when at least one correlated ``EXISTS`` is emitted (any dialect) — the
-    engine uses it as the ClickHouse version guard. Raises
-    :class:`ForcedFilterError` on a fail-closed condition (unconfirmable column,
-    ``block`` on an absent column, an unlisted table under a join ruleset, or a
-    non-SELECT statement root).
+    ``has_column`` returns ``True``/``False``/``None`` (cannot confirm) and is consulted
+    only for a ``ColumnFilterRuleset``. ``on_correlated_emitted`` fires once if any
+    correlated ``EXISTS`` is emitted, on any dialect. Raises :class:`ForcedFilterError`
+    on any fail-closed condition.
     """
     ruleset = policy.ruleset
 
@@ -376,9 +333,7 @@ def apply_session_policy(
         if on_correlated_emitted is not None:
             on_correlated_emitted()
         if dialect == "clickhouse":
-            # Correlated subqueries are experimental on ClickHouse; enable the
-            # setting structurally, preserving any SETTINGS the statement
-            # already carries and forcing our value to 1.
+            # Correlated subqueries are experimental on ClickHouse.
             _attach_ch_correlated_setting(ast)
 
     return ast.sql(dialect=dialect)

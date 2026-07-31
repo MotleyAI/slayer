@@ -152,23 +152,10 @@ class IdCollisionError(SlayerError, ValueError):
 
 
 class ForcedFilterError(SlayerError):
-    """Raised by the session-policy forced-filter rewrite (DEV-1578 / DEV-1718).
+    """Raised when the session policy's ruleset cannot be safely applied to a query.
 
-    Fired when the configured ``ruleset`` cannot be safely applied to a
-    physical table referenced by a query:
-
-    - (``ColumnFilterRuleset``) the table **confirms it lacks** the tenant
-      column and ``on_unapplicable`` is ``"block"`` (the default), or the
-      column's presence **cannot be confirmed** (introspection error) — a
-      fail-closed security control that blocks regardless of
-      ``on_unapplicable``, or
-    - (``JoinFilterRuleset``) the table is neither the anchor, a join target,
-      nor whitelisted (an unlisted table fails closed), or
-    - the rewrite is asked to operate on a non-SELECT statement root.
-
-    Carries the offending ``table`` and ``column`` for diagnostics; either may
-    be ``None`` (e.g. ``column`` for the unlisted-table and statement-root
-    guards).
+    Carries the offending ``table`` and ``column`` for diagnostics; either may be
+    ``None`` (``column`` is, for the unlisted-table and statement-root guards).
     """
 
     def __init__(
