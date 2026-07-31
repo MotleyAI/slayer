@@ -68,11 +68,19 @@ def substitute_variables(filter_str: str, variables: dict[str, Any]) -> str:
                     f"Available variables: {sorted(variables.keys())}"
                 )
             value = variables[valid_name]
-            if not isinstance(value, (str, int, float)):
-                raise ValueError(
-                    f"Variable '{valid_name}' must be a string or number, got {type(value).__name__}"
-                )
-            return str(value)
+            # String values are single-quote-escaped (embedded ``'`` doubled)
+            # so a value like ``O'Brien`` yields ``O''Brien`` and can't break
+            # out of the surrounding quoted literal the author wrote
+            # (``status = '{v}'``). No outer quotes are added. Numbers pass
+            # through verbatim. Applies uniformly to Mode-A raw-SQL surfaces
+            # and query-level filters (DEV-1625).
+            if isinstance(value, str):
+                return value.replace("'", "''")
+            if isinstance(value, (int, float)):
+                return str(value)
+            raise ValueError(
+                f"Variable '{valid_name}' must be a string or number, got {type(value).__name__}"
+            )
         # Group 2: invalid variable name (matched {something} but name was invalid)
         bad_name = match.group(2)
         raise ValueError(
