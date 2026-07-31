@@ -774,3 +774,148 @@ async def test_integration_duckdb_cross_model_derived_columnsql(
     assert response.row_count == 2
     assert float(response.data[0]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
     assert float(response.data[1]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
+
+
+# ---------------------------------------------------------------------------
+# DEV-1531 — first/last over a derived source whose Column.sql crosses a join.
+# End-to-end value correctness: proves the materialised `_val_<n>` column
+# yields the right rows AND that the query no longer fails with
+# `no such column` (the pre-fix runtime failure).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def _dev1531_duckdb_storage(tmp_path_factory):
+    """orders -> customers -> regions chain with a cross-join derived column
+    on orders (``customers__regions.payment_amount``) plus a single-hop
+    derived column (``customers.balance``)."""
+    from slayer.core.models import ModelJoin
+
+    tmp_path = tmp_path_factory.mktemp("dev1531_duckdb")
+    db_path = tmp_path / "dev1531.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, payment_amount DECIMAL(10,2) NOT NULL)")
+    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, balance DECIMAL(10,2) NOT NULL)")
+    conn.execute("""
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            customer_id INTEGER,
+            amount DECIMAL(10,2) NOT NULL,
+            created_at TIMESTAMP NOT NULL
+        )
+    """)
+    conn.executemany("INSERT INTO regions VALUES (?, ?)", [(1, 10.0), (2, 20.0)])
+    conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [(1, 1, 100.0), (2, 2, 200.0)])
+    conn.executemany(
+        "INSERT INTO orders VALUES (?, ?, ?, ?)",
+        [
+            (1, 1, 100, "2024-01-01 10:00:00"),   # region 1 (pay 10), earliest
+            (2, 2, 200, "2024-03-01 10:00:00"),   # region 2 (pay 20), latest
+            (3, 1, 50, "2024-02-01 10:00:00"),    # region 1 (pay 10), middle
+        ],
+    )
+    conn.close()
+
+    storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+    run_sync(storage.save_datasource(DatasourceConfig(
+        name="testduckdb", type="duckdb", database=str(db_path),
+    )))
+    run_sync(storage.save_model(SlayerModel(
+        name="regions", sql_table="regions", data_source="testduckdb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="payment_amount", sql="payment_amount", type=DataType.DOUBLE),
+        ],
+    )))
+    run_sync(storage.save_model(SlayerModel(
+        name="customers", sql_table="customers", data_source="testduckdb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.INT),
+            Column(name="balance", sql="balance", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+    )))
+    run_sync(storage.save_model(SlayerModel(
+        name="orders", sql_table="orders", data_source="testduckdb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.INT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="region_payment", sql="customers__regions.payment_amount", type=DataType.DOUBLE),
+            Column(name="cust_balance", sql="customers.balance", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )))
+    return storage
+
+
+@pytest.fixture
+def dev1531_env(_dev1531_duckdb_storage):
+    return SlayerQueryEngine(storage=_dev1531_duckdb_storage)
+
+
+@pytest.mark.integration
+class TestDev1531CrossJoinFirstLast:
+    async def test_last_path_aliased_source_value(self, dev1531_env: SlayerQueryEngine) -> None:
+        # Latest order (2024-03-01) -> customer 2 -> region 2 -> payment 20.0.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+        )
+        result = await dev1531_env.execute(query=query)
+        assert float(result.data[0]["orders.region_payment_last_created_at"]) == pytest.approx(20.0)
+
+    async def test_first_path_aliased_source_value(self, dev1531_env: SlayerQueryEngine) -> None:
+        # Earliest order (2024-01-01) -> customer 1 -> region 1 -> payment 10.0.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:first(orders.created_at)")],
+        )
+        result = await dev1531_env.execute(query=query)
+        assert float(result.data[0]["orders.region_payment_first_created_at"]) == pytest.approx(10.0)
+
+    async def test_single_dot_source_value(self, dev1531_env: SlayerQueryEngine) -> None:
+        # Latest order -> customer 2 -> balance 200.0.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="cust_balance:last(orders.created_at)")],
+        )
+        result = await dev1531_env.execute(query=query)
+        assert float(result.data[0]["orders.cust_balance_last_created_at"]) == pytest.approx(200.0)
+
+    async def test_cross_join_last_coexists_with_regular_sum(self, dev1531_env: SlayerQueryEngine) -> None:
+        # region_payment:last -> 20.0; amount:sum -> 350.0 (100+200+50).
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_payment:last(orders.created_at)"),
+                ModelMeasure(formula="amount:sum"),
+            ],
+        )
+        result = await dev1531_env.execute(query=query)
+        row = result.data[0]
+        assert float(row["orders.region_payment_last_created_at"]) == pytest.approx(20.0)
+        assert float(row["orders.amount_sum"]) == pytest.approx(350.0)
+
+    async def test_having_on_cross_join_last(self, dev1531_env: SlayerQueryEngine) -> None:
+        # HAVING region_payment:last > 15 -> 20.0 passes -> one row.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+            filters=["region_payment:last(orders.created_at) > 15"],
+        )
+        result = await dev1531_env.execute(query=query)
+        assert result.row_count == 1
+        assert float(result.data[0]["orders.region_payment_last_created_at"]) == pytest.approx(20.0)
+
+    async def test_having_on_cross_join_last_excludes(self, dev1531_env: SlayerQueryEngine) -> None:
+        # HAVING region_payment:last > 25 -> 20.0 fails -> zero rows.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+            filters=["region_payment:last(orders.created_at) > 25"],
+        )
+        result = await dev1531_env.execute(query=query)
+        assert result.row_count == 0

@@ -147,6 +147,15 @@ class FirstLastRenderState(BaseModel):
     base callers leave this ``None`` and rely on ``aliases_by_slot_id``
     threaded through ``_build_where_having_from_planned`` instead."""
 
+    value_alias_by_key: Dict[Tuple[str, Optional[DataType]], str] = {}
+    """DEV-1531 — ``(expanded_source_sql, column_type)`` → ``_val_<n>`` for
+    every first/last aggregate whose source ``Column.sql`` crosses a join
+    and was therefore materialised as a column INSIDE the ranked subquery.
+    Threaded into ``_build_agg`` so a HAVING first/last references the
+    materialised ``source_relation._val_<n>`` column instead of the raw
+    cross-table-qualified expression (out of scope in the outer SELECT /
+    HAVING). Empty when no first/last value crosses a join."""
+
 
 def _iter_first_last_leaves(key) -> "list":  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union; each branch is the per-type recursion contract for surfacing first/last AggregateKey leaves. Extracting per-type helpers would scatter the contract.
     """DEV-1501 (Codex round 3): walk a composite ValueKey for first /
@@ -2456,8 +2465,17 @@ class SQLGenerator:
         default_time_col: Optional[str] = None,
         filtered_rn_map: Optional[dict[str, str]] = None,
         filtered_match_map: Optional[dict[str, str]] = None,
+        value_alias_by_key: Optional[dict] = None,
     ) -> tuple[exp.Expression, bool]:
-        """Build an aggregation expression from an AggRenderSpec."""
+        """Build an aggregation expression from an AggRenderSpec.
+
+        DEV-1531: ``value_alias_by_key`` maps ``(spec.sql, spec.column_type)``
+        → a ``_val_<n>`` column materialised INSIDE the ranked subquery for a
+        first/last whose source ``Column.sql`` crosses a join. When present,
+        the first/last ``THEN`` value references the bare materialised alias
+        (``source_relation._val_<n>``) instead of the cross-table-qualified
+        expression, which is out of scope in the outer SELECT / HAVING.
+        """
         agg_name = spec.aggregation
         if not agg_name:
             # Not an aggregation — raw expression
@@ -2475,12 +2493,31 @@ class SQLGenerator:
 
         # --- first/last: MAX(CASE WHEN _rn = 1 THEN col END) ---
         if agg_name in ("first", "last"):
-            col_expr = self._resolve_sql(
-                sql=spec.sql,
-                name=spec.name,
-                model_name=spec.model_name,
-                type=spec.column_type,
-            )
+            # DEV-1531: when the source value crosses a join it was
+            # materialised as a ``_val_<n>`` column inside the ranked
+            # subquery; the outer THEN branch references that bare alias
+            # (in scope via ``source_relation._val_<n>``) instead of the
+            # cross-table-qualified expression (out of scope outside the
+            # subquery).
+            materialised_alias = None
+            if value_alias_by_key is not None and spec.sql is not None:
+                materialised_alias = value_alias_by_key.get(
+                    (spec.sql, spec.column_type),
+                )
+            if materialised_alias is not None:
+                col_expr = self._resolve_sql(
+                    sql=materialised_alias,
+                    name=materialised_alias,
+                    model_name=spec.model_name,
+                    type=None,
+                )
+            else:
+                col_expr = self._resolve_sql(
+                    sql=spec.sql,
+                    name=spec.name,
+                    model_name=spec.model_name,
+                    type=spec.column_type,
+                )
             col = col_expr.sql(dialect=self.dialect)
             suffix = ""
             if rn_suffix_map is not None:
@@ -4290,6 +4327,67 @@ class SQLGenerator:
             filtered_match_map[m.alias] = match_alias
         return rn_exprs, filtered_rn_map, filtered_match_map
 
+    def _materialize_first_last_crossjoin_values(
+        self,
+        *,
+        synth_specs: List[AggRenderSpec],
+        source_relation: str,
+        source_model,
+        bundle,
+        reserved_names: Set[str],
+    ) -> Tuple[Dict[Tuple[str, Optional[DataType]], str], List[Tuple[str, exp.Expression]]]:
+        """DEV-1531 — materialise each first/last aggregate whose source
+        ``Column.sql`` crosses a join into a ``_val_<n>`` column projected
+        INSIDE the ranked subquery.
+
+        Returns ``(value_alias_by_key, projections)`` where
+        ``value_alias_by_key`` maps ``(expanded_source_sql, column_type)`` →
+        the ``_val_<n>`` alias, and ``projections`` is the list of
+        ``(alias, expr)`` pairs to append to the ranked subquery's
+        ``extra_projections``. Deduped by ``(sql, column_type)`` so specs
+        sharing an identical source value AND type share one column; a
+        differing ``column_type`` (different CAST) gets its own column.
+
+        Detection is precise: only specs whose ``sql`` yields a non-empty
+        ``_joined_paths_in_sql`` are materialised — bare same-table columns
+        (``amount``) and local-only derived expressions (``amount * 2``)
+        stay inline, unchanged. ``_val_<n>`` names colliding with a source
+        column (or an already-allocated alias) are skipped.
+        """
+        value_alias_by_key: Dict[Tuple[str, Optional[DataType]], str] = {}
+        projections: List[Tuple[str, exp.Expression]] = []
+        used: Set[str] = set(reserved_names)
+        counter = 0
+        for spec in synth_specs:
+            if spec.aggregation not in ("first", "last") or not spec.sql:
+                continue
+            cache_key = (spec.sql, spec.column_type)
+            if cache_key in value_alias_by_key:
+                continue
+            joined_paths = self._joined_paths_in_sql(
+                sql_expr=self._parse(spec.sql),
+                source_relation=source_relation,
+                source_model=source_model,
+                bundle=bundle,
+            )
+            if not joined_paths:
+                continue
+            while True:
+                alias = f"_val_{counter}"
+                counter += 1
+                if alias not in used:
+                    used.add(alias)
+                    break
+            materialised = self._resolve_sql(
+                sql=spec.sql,
+                name=spec.name,
+                model_name=source_relation,
+                type=spec.column_type,
+            )
+            projections.append((alias, materialised))
+            value_alias_by_key[cache_key] = alias
+        return value_alias_by_key, projections
+
     def _build_first_last_base_select(  # NOSONAR(S3776) — single conceptual unit: dimension/td/derived-dim classification pass + agg-spec synth + ranked-subquery wrap + outer SELECT/GROUP BY assembly. Splitting forces shared mutable state (partition_exprs / extra_projections / outer_ref_by_sid / synth_by_sid) across helpers without simplifying anything.
         self,
         *,
@@ -4525,6 +4623,29 @@ class SQLGenerator:
                     )
                 )
 
+        # DEV-1531: a first/last whose source ``Column.sql`` crosses a join
+        # would render ``MAX(CASE WHEN _rn = 1 THEN customers__regions.x END)``
+        # in the OUTER SELECT, where the joined table is out of scope (only
+        # the ranked-subquery alias ``source_relation`` is visible). Project
+        # each such value as a ``_val_<n>`` column inside the ranked subquery
+        # and rewrite the outer reference to the bare alias. Both single-key
+        # (``synth_by_sid``) and composite-operand first/last specs are
+        # covered; HAVING first/last are aux-promoted into ``synth_by_sid``
+        # already, so they share these projections + the value-alias map.
+        value_alias_by_key, value_projections = (
+            self._materialize_first_last_crossjoin_values(
+                synth_specs=(
+                    list(synth_by_sid.values())
+                    + list(composite_synth_by_key.values())
+                ),
+                source_relation=source_relation,
+                source_model=source_model,
+                bundle=bundle,
+                reserved_names={c.name for c in source_model.columns},
+            )
+        )
+        extra_projections.extend(value_projections)
+
         # WHERE goes inside the ranked subquery (raw-row filtering before
         # ranking). HAVING is recomputed and applied by the caller.
         # ``skip_filter_ids`` carries the cross-model-routed filter ids so
@@ -4597,6 +4718,7 @@ class SQLGenerator:
                         default_time_col=default_time_col_sql,
                         filtered_rn_map=filtered_rn_map,
                         filtered_match_map=filtered_match_map,
+                        value_alias_by_key=value_alias_by_key,
                     )
                 else:
                     # Composite aggregate (no single ``AggregateKey``).
@@ -4623,6 +4745,7 @@ class SQLGenerator:
                         filtered_rn_map=filtered_rn_map,
                         filtered_match_map=filtered_match_map,
                         composite_alias_by_key=composite_alias_by_key,
+                        value_alias_by_key=value_alias_by_key,
                     )
                 if is_agg:
                     agg_expr = _wrap_cast_for_type(agg_expr, slot.type)
@@ -4643,6 +4766,7 @@ class SQLGenerator:
             default_time_col_sql=default_time_col_sql,
             filtered_rn_map=dict(filtered_rn_map),
             filtered_match_map=dict(filtered_match_map),
+            value_alias_by_key=dict(value_alias_by_key),
         )
         return (
             base_select, aliases_by_slot_id, has_aggregation,
@@ -4662,6 +4786,7 @@ class SQLGenerator:
         filtered_rn_map: Optional[Dict[str, str]] = None,
         filtered_match_map: Optional[Dict[str, str]] = None,
         composite_alias_by_key: Optional[Dict[Any, str]] = None,
+        value_alias_by_key: Optional[Dict[Tuple[str, Optional[DataType]], str]] = None,
     ) -> "tuple[exp.Expression, bool]":
         """Render an AGGREGATE-phase composite key (``ArithmeticKey`` /
         ``ScalarCallKey`` of aggregates, e.g. ``expensenet:avg +
@@ -4720,6 +4845,7 @@ class SQLGenerator:
                 default_time_col=default_time_col,
                 filtered_rn_map=filtered_rn_map,
                 filtered_match_map=filtered_match_map,
+                value_alias_by_key=value_alias_by_key,
             )
             return agg_expr, is_agg
         if isinstance(key, ArithmeticKey):
@@ -4735,6 +4861,7 @@ class SQLGenerator:
                     filtered_rn_map=filtered_rn_map,
                     filtered_match_map=filtered_match_map,
                     composite_alias_by_key=composite_alias_by_key,
+                    value_alias_by_key=value_alias_by_key,
                 )
                 operands.append(e)
                 any_agg = any_agg or a
@@ -4753,6 +4880,7 @@ class SQLGenerator:
                         filtered_rn_map=filtered_rn_map,
                         filtered_match_map=filtered_match_map,
                         composite_alias_by_key=composite_alias_by_key,
+                        value_alias_by_key=value_alias_by_key,
                     )
                     args.append(e)
                     any_agg = any_agg or ag
@@ -9332,12 +9460,20 @@ class SQLGenerator:
             filtered_match_map = (
                 first_last_state.filtered_match_map if first_last_state else None
             )
+            # DEV-1531: a HAVING first/last whose source Column.sql crosses a
+            # join must reference the same materialised ``_val_<n>`` column the
+            # base SELECT projects (aux-promoted into the ranked subquery), not
+            # the raw cross-table qualifier (out of scope in the outer HAVING).
+            value_alias_by_key = (
+                first_last_state.value_alias_by_key if first_last_state else None
+            )
             agg_expr, _is_agg = self._build_agg(
                 synth,
                 rn_suffix_map=rn_suffix_map,
                 default_time_col=default_time_col,
                 filtered_rn_map=filtered_rn_map,
                 filtered_match_map=filtered_match_map,
+                value_alias_by_key=value_alias_by_key,
             )
             return agg_expr
 

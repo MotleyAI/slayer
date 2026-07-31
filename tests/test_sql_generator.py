@@ -3377,32 +3377,49 @@ class TestMeasureSourceSqlJoinInference:
         # Sibling recursive inlining preserves the path alias.
         assert "customers__regions.population" in sql
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1531: a LOCAL first/last aggregate whose SOURCE column "
-            "is a derived (ColumnSqlKey) column whose Column.sql crosses "
-            "a join emits invalid SQL at runtime — the inner ranked "
-            "subquery has the LEFT JOINs (DEV-1502 added them), but the "
-            "outer SELECT's MAX(CASE WHEN _last_rn = 1 THEN <expr> END) "
-            "still references the cross-table-qualified expression "
-            "(customers__regions.payment_amount) which is out of scope "
-            "outside the subquery (only the orders alias is). Pre-DEV-"
-            "1502 this also broke for plain dotted derived sources "
-            "(DEV-1410 territory). Fix lives in _build_first_last_base_"
-            "select at slayer/sql/generator.py:4247 — materialise the "
-            "expanded source expression inside the inner subquery as a "
-            "_val_<sid> alias and rewrite the outer body. Auto-promotes "
-            "when the materialisation fix lands."
-        ),
-    )
-    async def test_local_last_with_path_aliased_derived_source_xfail(
+    # ------------------------------------------------------------------
+    # DEV-1531: first/last SOURCE column whose Column.sql crosses a join.
+    # The ranked-subquery outer SELECT must reference a materialised
+    # ``_val_<n>`` column projected INSIDE the subquery, never the raw
+    # cross-table qualifier (out of scope outside the subquery).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _assert_ref_only_in_val(sql: str, ref: str) -> None:
+        """Assert ``ref`` (a cross-table-qualified column) appears ONLY as
+        the source of a materialised ``<ref> AS _val_<n>`` projection inside
+        the ranked subquery — i.e. it never leaks into an outer-scope
+        aggregate body / HAVING / composite where it would fail at runtime
+        with ``no such column``.
+        """
+        norm = _norm(sql)
+        # 1) At least one materialised projection exists...
+        first_proj = _re.search(rf"{_re.escape(ref)} AS _val_\d+", norm)
+        assert first_proj is not None, (
+            f"DEV-1531: expected a materialised `{ref} AS _val_<n>` "
+            f"projection inside the ranked subquery:\n{norm}"
+        )
+        # 2) ...and it sits INSIDE the ranked subquery (after a `FROM (`),
+        # never in the top-level SELECT/HAVING scope.
+        first_subquery = norm.find("FROM (")
+        assert first_subquery != -1 and first_proj.start() > first_subquery, (
+            f"DEV-1531: `_val` projection of `{ref}` is not inside the ranked "
+            f"subquery:\n{norm}"
+        )
+        # 3) Strip every `<ref> AS _val_<n>` projection; no bare `ref` may
+        # remain — any residual occurrence is an out-of-scope leak.
+        stripped = _re.sub(rf"{_re.escape(ref)} AS _val_\d+", "", norm)
+        assert ref not in stripped, (
+            f"DEV-1531: `{ref}` leaked outside the ranked subquery's _val "
+            f"projection (would fail with `no such column`):\n{norm}"
+        )
+
+    async def test_local_last_with_path_aliased_derived_source(
         self, engine: SlayerQueryEngine
     ) -> None:
-        """Tracks DEV-1531 — the first/last + cross-table derived source
-        runtime bug DEV-1502 unmasked. Uses ``execute`` (not dry-run) so
-        the actual ``no such column`` runtime failure surfaces, not just
-        the dry-run substring check.
+        """Promoted DEV-1531 tracking test: a LOCAL ``last`` over a derived
+        source whose ``Column.sql`` uses a ``__`` path alias materialises the
+        value inside the ranked subquery and references it as ``_val_<n>``.
         """
         model = self._orders_model(extra_columns=[
             Column(
@@ -3417,28 +3434,379 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        # Joins ARE pulled into the inner subquery via DEV-1502 — that
-        # part works. What's broken is the outer SELECT referencing the
-        # path-aliased ref out of scope. We pin the END STATE: the agg
-        # body must reference the path alias via a materialised inner-
-        # subquery projection (e.g. ``orders._val_<sid>``), not raw.
-        # Without the DEV-1531 fix, the dry-run still emits the raw
-        # ``customers__regions.payment_amount`` inside MAX(CASE...),
-        # so this assertion fails strict-xfail-style.
-        normalized = _norm(sql)
-        # The bug: outer MAX(...) references customers__regions.payment_amount.
-        # After the fix: the outer MAX should reference a materialised inner
-        # column (no cross-table qualifier inside the outer aggregate body).
-        outer_select_end = normalized.find("FROM (")
-        assert outer_select_end > 0, normalized
-        outer_select = normalized[:outer_select_end]
-        # End state we want: outer SELECT does NOT directly reference the
-        # path-aliased column (would be in scope only inside the subquery).
-        assert "customers__regions.payment_amount" not in outer_select, (
-            f"DEV-1531: outer SELECT references the path-aliased ref "
-            f"outside the ranked subquery's scope; would fail at runtime "
-            f"with `no such column`. Outer SELECT body:\n{outer_select}"
+        join_aliases = _join_aliases(sql)
+        assert "customers" in join_aliases
+        assert "customers__regions" in join_aliases
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        # Outer aggregate body references the materialised alias.
+        assert "THEN orders._val" in _norm(sql), sql
+
+    async def test_local_first_with_path_aliased_derived_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """``first`` (ASC ranking) mirror of the ``last`` case."""
+        model = self._orders_model(extra_columns=[
+            Column(
+                name="region_payment",
+                sql="customers__regions.payment_amount",
+                type=DataType.DOUBLE,
+            ),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:first(orders.created_at)")],
         )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        assert "_first_rn" in sql, sql
+
+    async def test_local_last_with_single_dot_derived_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """The pre-existing (DEV-1410-style) single-hop dotted form
+        ``customers.<col>`` — broken before DEV-1502 even reached it — is
+        also materialised. Uses a non-join-key customers column so the ref
+        cannot appear in an ON clause.
+        """
+        # Re-save customers with a non-join-key column so the single-hop
+        # dotted ref is not confused with a join predicate.
+        await engine.storage.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+                Column(name="balance", sql="balance", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        ))
+        model = self._orders_model(extra_columns=[
+            Column(
+                name="cust_balance",
+                sql="customers.balance",
+                type=DataType.DOUBLE,
+            ),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="cust_balance:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        assert "customers" in _join_aliases(sql)
+        self._assert_ref_only_in_val(sql, "customers.balance")
+
+    async def test_filtered_last_cross_join_value_materialized(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """A FILTERED first/last whose VALUE crosses a join materialises the
+        value into ``_val_<n>`` while the filter side keeps its dedicated
+        ranked/match-flag columns (a LOCAL filter, so only the value is the
+        cross-join part).
+        """
+        model = self._orders_model(extra_columns=[
+            Column(
+                name="region_payment",
+                sql="customers__regions.payment_amount",
+                type=DataType.DOUBLE,
+                filter="orders.amount > 100",
+            ),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        # Filtered ranking + match-flag machinery is still emitted, and the
+        # THEN branch references the materialised value.
+        assert "_last_rn_f0" in sql, sql
+        assert "_match_f0" in sql, sql
+        assert "THEN orders._val" in _norm(sql), sql
+
+    async def test_two_last_sharing_value_dedupe(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """Two distinct measures with the SAME expanded source SQL and type
+        dedupe onto ONE ``_val`` projection.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment_a", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+            Column(name="region_payment_b", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_payment_a:last(orders.created_at)"),
+                ModelMeasure(formula="region_payment_b:last(orders.created_at)"),
+            ],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        norm = _norm(sql)
+        assert norm.count(" AS _val") == 1, (
+            f"expected exactly one deduped _val projection:\n{sql}"
+        )
+        # Both measures are still projected AND both reference the shared alias.
+        val_alias = _re.search(r"AS (_val_\d+)", norm).group(1)
+        assert '"orders.region_payment_a_last_created_at"' in norm, sql
+        assert '"orders.region_payment_b_last_created_at"' in norm, sql
+        assert norm.count(f"THEN orders.{val_alias}") == 2, (
+            f"both last outputs must consume the same _val alias:\n{sql}"
+        )
+
+    async def test_same_sql_different_type_no_bad_dedupe(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """Two measures with identical expanded SQL text but DIFFERENT
+        ``column_type`` must NOT dedupe — the CAST differs, so each needs its
+        own ``_val`` projection (Codex type-safety finding). Uses a non-bare
+        derived expression so the CAST actually materialises.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(name="region_pay_d", sql="customers__regions.payment_amount * 2",
+                   type=DataType.DOUBLE),
+            Column(name="region_pay_i", sql="customers__regions.payment_amount * 2",
+                   type=DataType.INT),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_pay_d:last(orders.created_at)"),
+                ModelMeasure(formula="region_pay_i:last(orders.created_at)"),
+            ],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        norm = _norm(sql)
+        assert norm.count(" AS _val") == 2, (
+            f"same SQL, different type must not dedupe onto one _val:\n{sql}"
+        )
+        # The two projections must actually differ by CAST target type.
+        assert _re.search(r"AS DOUBLE PRECISION\) AS _val_\d+", norm), sql
+        assert _re.search(r"AS INT\) AS _val_\d+", norm), sql
+        # The path-aliased ref never appears in an outer-scope body.
+        outer = norm[:norm.find("FROM (")]
+        assert "customers__regions.payment_amount" not in outer, sql
+
+    async def test_composite_last_cross_join_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """An arithmetic composite wrapping a cross-join first/last
+        (``region_payment:last(created_at) + 1``) also materialises the
+        operand value.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at) + 1")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+
+    async def test_having_last_cross_join_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """A HAVING term referencing a projected cross-join first/last reuses
+        the SAME materialised ``_val`` (the HAVING clause is rewritten too).
+        """
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+            filters=["region_payment:last(orders.created_at) > 100"],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        norm = _norm(sql)
+        assert "HAVING" in norm, sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        # SELECT + HAVING share one _val projection.
+        assert norm.count(" AS _val") == 1, sql
+
+    async def test_having_only_distinct_time_cross_join_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """A HAVING-only first/last (NOT projected) over a cross-join source,
+        with a DISTINCT time column from the projected first/last, is
+        aux-promoted: it gets its own rn column (``_last_rn_2``) AND its value
+        is materialised — no silent mis-rank, no out-of-scope leak.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:last(orders.created_at)")],
+            filters=["region_payment:last(orders.updated_at) > 100"],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        assert "HAVING" in sql, sql
+        # Distinct time column ⇒ its own rn column exists (aux-promotion).
+        assert "_last_rn_2" in sql, sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+
+    async def test_nested_having_composite_cross_join_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """A composite HAVING term (``region_payment:last(created_at) + 1 >
+        100``) recurses through the composite render path and still rewrites
+        the operand value to ``_val`` (Codex nested-HAVING finding).
+        """
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:last(orders.created_at)")],
+            filters=["region_payment:last(orders.created_at) + 1 > 100"],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        assert "HAVING" in sql, sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+
+    async def test_order_by_cross_join_first_last_measure(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """ORDER BY on the measure references the OUTPUT ALIAS (already in
+        scope), and the projection value is still materialised.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)", name="rp")],
+            order=[OrderItem(column="rp", direction="desc")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        # ORDER BY specifically resolves via the OUTPUT alias, not a raw body.
+        norm = _norm(sql)
+        order_tail = norm[norm.rindex("ORDER BY"):]
+        assert '"orders.rp"' in order_tail, sql
+        assert "customers__regions.payment_amount" not in order_tail, sql
+
+    async def test_scalar_call_composite_cross_join_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """A scalar-call composite wrapping a cross-join first/last
+        (``coalesce(region_payment:last(created_at), 0)``) routes through
+        ``_render_aggregate_composite_expr``'s ScalarCallKey branch and still
+        materialises the operand value.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="coalesce(region_payment:last(orders.created_at), 0)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        assert "COALESCE" in sql.upper(), sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+
+    async def test_cumsum_wrapped_cross_join_first_last(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """A transform (``cumsum``) wrapping a cross-join first/last wraps the
+        ``base`` CTE; the materialisation inside that base CTE fixes it for
+        free.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="cumsum(region_payment:last(orders.created_at))")],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                ),
+            ],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+
+    async def test_val_alias_avoids_source_column_collision(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """A source column literally named ``_val_0`` must not collide with
+        the materialised alias — allocation skips reserved source names.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(name="_val_0", sql="amount", type=DataType.DOUBLE),
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        norm = _norm(sql)
+        # The materialised alias must skip the taken _val_0 and use _val_1,
+        # and the outer aggregate body must reference that same alias.
+        assert "customers__regions.payment_amount AS _val_0" not in norm, sql
+        assert "customers__regions.payment_amount AS _val_1" in norm, sql
+        assert "THEN orders._val_1" in norm, sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+
+    async def test_local_only_derived_first_last_no_val(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """A LOCAL-only derived source (``amount * 2``) does NOT cross a join,
+        so no ``_val`` materialisation happens — behaviour is unchanged.
+        """
+        model = self._orders_model(extra_columns=[
+            Column(name="double_amount", sql="amount * 2", type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="double_amount:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        assert "_val" not in sql, sql
+        assert _join_aliases(sql) == set(), sql
+
+    async def test_bare_source_first_last_no_val(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """A bare same-table source (``amount``) needs no materialisation."""
+        model = self._orders_model()
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        assert "_val" not in sql, sql
+        assert "THEN orders.amount" in _norm(sql), sql
 
     async def test_post_transform_wrapping_path_aliased_measure(
         self, engine: SlayerQueryEngine
