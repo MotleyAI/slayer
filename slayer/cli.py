@@ -620,6 +620,38 @@ examples:
     )
     _add_storage_arg(migrate_types_parser)
 
+    # ── joins (DEV-1688) ─────────────────────────────────────────────
+    joins_parser = subparsers.add_parser(
+        "joins",
+        help="Join maintenance (DEV-1688: detect-cardinality profiles join arity)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    joins_subparsers = joins_parser.add_subparsers(dest="joins_command")
+    detect_card_parser = joins_subparsers.add_parser(
+        "detect-cardinality",
+        help=(
+            "Full-scan each join's two sides and classify its cardinality "
+            "(one_to_one / one_to_many / many_to_one / many_to_many). "
+            "Report-only unless --persist."
+        ),
+    )
+    detect_card_parser.add_argument(
+        "--datasource", default=None,
+        help="Optional datasource filter; defaults to all datasources.",
+    )
+    detect_card_parser.add_argument(
+        "--model", default=None, help="Optional single model to profile.",
+    )
+    detect_card_parser.add_argument(
+        "--persist", action="store_true",
+        help="Write the detected cardinality back onto each join.",
+    )
+    detect_card_parser.add_argument(
+        "--format", default="text", choices=["text", "json"],
+        help="Output format.",
+    )
+    _add_storage_arg(detect_card_parser)
+
     # ── inspect (DEV-1588) ───────────────────────────────────────────
     inspect_parser = subparsers.add_parser(
         "inspect",
@@ -831,6 +863,8 @@ examples:
         _run_inspect(args=args, storage=_resolve_storage(args))
     elif args.command == "search":
         _run_search(args)
+    elif args.command == "joins":
+        _run_joins(args)
     elif args.command == "storage":
         _run_storage(args)
     else:
@@ -1392,6 +1426,58 @@ def _format_validate_models_output(entries) -> str:
         for r in entry.reasons:
             lines.append(f"    - {r.target}: {r.reason}")
     return "\n".join(lines)
+
+
+def _run_joins(args) -> None:
+    """Dispatch ``slayer joins [...]``."""
+    sub = getattr(args, "joins_command", None)
+    if sub == "detect-cardinality":
+        _run_joins_detect_cardinality(args)
+    else:
+        print("usage: slayer joins detect-cardinality [--datasource X] "
+              "[--model M] [--persist] [--format text|json]")
+        sys.exit(1)
+
+
+def _format_detect_cardinality_text(report) -> str:
+    if not report.findings:
+        return "No joins found."
+    lines: list[str] = []
+    for f in report.findings:
+        detected = f.detected.value if f.detected else "-"
+        stored = f.stored.value if f.stored else "-"
+        lines.append(
+            f"{f.model} -> {f.target_model}: detected={detected} "
+            f"stored={stored} verdict={f.verdict.value}"
+        )
+        for c in f.unique_contradictions:
+            lines.append(f"    ! {c}")
+        if f.note:
+            lines.append(f"    ({f.note})")
+    return "\n".join(lines)
+
+
+def _run_joins_detect_cardinality(args) -> None:
+    import json as _json
+
+    from slayer.engine.query_engine import SlayerQueryEngine
+
+    storage = _resolve_storage(args)
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        report = run_sync(engine.detect_join_cardinality(
+            data_source=getattr(args, "datasource", None),
+            model=getattr(args, "model", None),
+            persist=bool(getattr(args, "persist", False)),
+        ))
+    except Exception as exc:  # noqa: BLE001 — surface DB/introspection failures cleanly
+        print(f"detect-cardinality failed: {exc}")
+        sys.exit(1)
+
+    if getattr(args, "format", "text") == "json":
+        print(_json.dumps(report.model_dump(mode="json"), indent=2))
+    else:
+        print(_format_detect_cardinality_text(report))
 
 
 def _run_validate_models(args):

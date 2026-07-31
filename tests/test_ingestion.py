@@ -202,12 +202,12 @@ class TestGenerateJoinsDedup:
     def test_multiple_fks_to_same_target_preserved(self):
         """Two distinct FKs to the same target table should both produce joins."""
         inspector = MagicMock(spec=sa.engine.Inspector)
-        fk_rels = [
-            ("buyer_id", "users", "id"),
-            ("seller_id", "users", "id"),
+        fk_groups = [
+            ("users", [("buyer_id", "id")]),
+            ("users", [("seller_id", "id")]),
         ]
         with patch(
-            "slayer.engine.ingestion._get_fk_relationships", return_value=fk_rels,
+            "slayer.engine.ingestion._get_fk_constraint_groups", return_value=fk_groups,
         ):
             joins = _generate_joins(
                 inspector=inspector,
@@ -224,12 +224,12 @@ class TestGenerateJoinsDedup:
     def test_exact_duplicate_fk_deduplicated(self):
         """Identical FK pair to the same target should be deduplicated."""
         inspector = MagicMock(spec=sa.engine.Inspector)
-        fk_rels = [
-            ("buyer_id", "users", "id"),
-            ("buyer_id", "users", "id"),
+        fk_groups = [
+            ("users", [("buyer_id", "id")]),
+            ("users", [("buyer_id", "id")]),
         ]
         with patch(
-            "slayer.engine.ingestion._get_fk_relationships", return_value=fk_rels,
+            "slayer.engine.ingestion._get_fk_constraint_groups", return_value=fk_groups,
         ):
             joins = _generate_joins(
                 inspector=inspector,

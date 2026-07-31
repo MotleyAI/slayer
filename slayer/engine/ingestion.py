@@ -20,6 +20,10 @@ from pydantic import BaseModel, Field
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.engine.cardinality import (
+    infer_structural_cardinality,
+    is_key_set_unique,
+)
 from slayer.engine.introspect_utils import (  # noqa: F401  (re-exported for back-compat)
     _FLOAT_LIKE_INFO_SCHEMA_TYPES,
     _INFO_SCHEMA_TYPE_MAP,
@@ -329,39 +333,149 @@ def _compute_transitive_closure(graph: dict[str, set[str]], source: str) -> set[
 # ---------------------------------------------------------------------------
 
 
+def _get_fk_constraint_groups(
+    inspector: sa.engine.Inspector,
+    table_name: str,
+    schema: str | None,
+    table_set: set[str],
+) -> list[tuple[str, list[tuple[str, str]]]]:
+    """Group FK relationships by constraint (DEV-1688).
+
+    Returns ``[(referred_table, [(src_col, tgt_col), ...]), ...]`` — one entry
+    per FK constraint so a composite FK stays a single grouped join instead of
+    being shredded into one join per column.
+    """
+    fks = inspector.get_foreign_keys(table_name, schema=schema)
+    result: list[tuple[str, list[tuple[str, str]]]] = []
+    for fk in fks:
+        referred_table = fk["referred_table"]
+        if referred_table not in table_set or referred_table == table_name:
+            continue
+        pairs = list(zip(fk["constrained_columns"], fk["referred_columns"]))
+        if pairs:
+            result.append((referred_table, pairs))
+    return result
+
+
+def _get_unique_key_sets(
+    inspector: sa.engine.Inspector,
+    table_name: str,
+    schema: str | None,
+    sa_engine: sa.Engine | None = None,
+) -> list[list[str]]:
+    """All PK + UNIQUE key-sets for a table, as ``list[list[str]]`` (DEV-1688)."""
+    sets: list[list[str]] = []
+    try:
+        if sa_engine is not None:
+            pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, schema)
+        else:
+            pk = inspector.get_pk_constraint(table_name, schema=schema)
+    except Exception:
+        pk = {}
+    pk_cols = pk.get("constrained_columns") if isinstance(pk, dict) else None
+    if pk_cols:
+        sets.append(list(pk_cols))
+    try:
+        for uc in inspector.get_unique_constraints(table_name, schema=schema):
+            cols = uc.get("column_names") or []
+            if cols and all(cols):
+                sets.append(list(cols))
+    except Exception:
+        pass
+    try:
+        for idx in inspector.get_indexes(table_name, schema=schema):
+            if idx.get("unique"):
+                cols = [c for c in (idx.get("column_names") or []) if c]
+                if cols:
+                    sets.append(cols)
+    except Exception:
+        pass
+    return sets
+
+
+def _get_single_column_unique_names(
+    inspector: sa.engine.Inspector,
+    table_name: str,
+    schema: str | None,
+    *,
+    pk_cols: set[str],
+) -> set[str]:
+    """Names of columns that ALONE form a UNIQUE constraint / unique index.
+
+    PK columns are excluded — ``primary_key`` is the canonical marker and
+    ``unique`` is not redundantly stamped on them (DEV-1688).
+    """
+    names: set[str] = set()
+    try:
+        for uc in inspector.get_unique_constraints(table_name, schema=schema):
+            cols = uc.get("column_names") or []
+            if len(cols) == 1 and cols[0]:
+                names.add(cols[0])
+    except Exception:
+        pass
+    try:
+        for idx in inspector.get_indexes(table_name, schema=schema):
+            if idx.get("unique"):
+                cols = [c for c in (idx.get("column_names") or []) if c]
+                if len(cols) == 1:
+                    names.add(cols[0])
+    except Exception:
+        pass
+    return names - set(pk_cols)
+
+
 def _generate_joins(
     inspector: sa.engine.Inspector,
     source_table: str,
     referenced_tables: set[str],
     schema: str | None,
     table_set: set[str],
+    sa_engine: sa.Engine | None = None,
 ) -> list[ModelJoin]:
     """Generate direct ModelJoin objects from the source table's own FK relationships.
 
     Only emits joins for FKs defined on ``source_table`` itself — multi-hop
     reachability (e.g. orders → customers → regions) is resolved at query time
-    by walking the join graph through each intermediate model.
+    by walking the join graph through each intermediate model. Composite FKs
+    become a single grouped join (DEV-1688). Cardinality is inferred
+    structurally: FK target is verified unique from its constraints, so the
+    join defaults to ``many_to_one`` and upgrades to ``one_to_one`` when the
+    source key-set is itself unique.
     """
-    fk_rels = _get_fk_relationships(
+    groups = _get_fk_constraint_groups(
         inspector=inspector,
         table_name=source_table,
         schema=schema,
         table_set=table_set,
     )
+    source_uniques = _get_unique_key_sets(inspector, source_table, schema, sa_engine)
 
     joins = []
-    seen_signatures: set[tuple[str, str, str]] = set()
-    for src_col, ref_table, tgt_col in fk_rels:
+    seen_signatures: set[tuple] = set()
+    for ref_table, pairs in groups:
         if ref_table not in referenced_tables:
             continue
-        signature = (ref_table, src_col, tgt_col)
+        signature = (ref_table, tuple(pairs))
         if signature in seen_signatures:
             continue
         seen_signatures.add(signature)
+
+        source_cols = [s for s, _ in pairs]
+        target_cols = [t for _, t in pairs]
+        target_uniques = _get_unique_key_sets(inspector, ref_table, schema, sa_engine)
+        cardinality = infer_structural_cardinality(
+            source_unique=is_key_set_unique(
+                key_columns=source_cols, unique_key_sets=source_uniques
+            ),
+            target_verified_unique=is_key_set_unique(
+                key_columns=target_cols, unique_key_sets=target_uniques
+            ),
+        )
         joins.append(
             ModelJoin(
                 target_model=ref_table,
-                join_pairs=[[src_col, tgt_col]],
+                join_pairs=[[s, t] for s, t in pairs],
+                cardinality=cardinality,
             )
         )
 
@@ -521,6 +635,7 @@ def _columns_to_model(
     data_source: str,
     sql_table: str | None = None,
     joins: list[ModelJoin] | None = None,
+    unique_columns: set[str] | None = None,
 ) -> SlayerModel:
     """Generate a SlayerModel from introspected (column_name, DataType, is_pk, is_float) tuples.
 
@@ -529,6 +644,7 @@ def _columns_to_model(
     column, with format inferred from the column's data type.
     """
     cols: list[Column] = []
+    unique_set = unique_columns or set()
 
     _INT_FORMAT = NumberFormat(type=NumberFormatType.INTEGER)
     _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
@@ -556,6 +672,7 @@ def _columns_to_model(
                 sql=col_name,
                 type=data_type,
                 primary_key=is_pk,
+                unique=(col_name in unique_set),
                 format=fmt,
             )
         )
@@ -676,11 +793,16 @@ def introspect_table_to_model(
         sql_table=sql_table,
         columns=columns,
     )
+    pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, schema)
+    unique_columns = _get_single_column_unique_names(
+        inspector, table_name, schema, pk_cols=set(pk.get("constrained_columns", []))
+    )
     return _columns_to_model(
         name=model_name or table_name,
         columns=columns,
         data_source=data_source,
         sql_table=sql_table,
+        unique_columns=unique_columns,
     )
 
 
@@ -729,6 +851,12 @@ def ingest_datasource(
         referenced = set() if has_cycles else _compute_transitive_closure(fk_graph, table_name)
         sql_table = f"{schema}.{table_name}" if schema else table_name
 
+        table_pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, schema)
+        unique_columns = _get_single_column_unique_names(
+            inspector, table_name, schema,
+            pk_cols=set(table_pk.get("constrained_columns", [])),
+        )
+
         if referenced:
             # Build explicit joins and introspect columns
             model_joins = _generate_joins(
@@ -737,6 +865,7 @@ def ingest_datasource(
                 referenced_tables=referenced,
                 schema=schema,
                 table_set=table_set,
+                sa_engine=sa_engine,
             )
             columns = _introspect_query_columns_via_inspector(
                 sa_engine=sa_engine,
@@ -759,6 +888,7 @@ def ingest_datasource(
                 data_source=datasource.name,
                 sql_table=sql_table,
                 joins=model_joins,
+                unique_columns=unique_columns,
             )
         else:
             # Simple table — introspect directly
@@ -781,6 +911,7 @@ def ingest_datasource(
                 columns=columns,
                 data_source=datasource.name,
                 sql_table=sql_table,
+                unique_columns=unique_columns,
             )
 
         models.append(model)
@@ -868,15 +999,36 @@ def _merge_persisted_column_with_probe(
     return persisted_col.model_copy(update=updates), True
 
 
+def _join_sig(j: ModelJoin) -> tuple:
+    return (j.target_model, tuple(sorted((p[0], p[1]) for p in j.join_pairs)))
+
+
 def _merge_joins_strict(
     persisted: SlayerModel, fresh: SlayerModel,
-) -> tuple[list[ModelJoin], list[str]]:
+) -> tuple[list[ModelJoin], list[str], bool]:
     """Append joins whose signature isn't already present. Raises on the
     duplicate-target / different-pairs conflict so callers don't end up
-    with two joins pointing at the same target_model."""
+    with two joins pointing at the same target_model.
+
+    DEV-1688: a persisted join whose ``cardinality`` is ``None`` is filled
+    from the matching fresh join (additive — a user-set cardinality is never
+    overwritten). Returns a third ``metadata_changed`` flag so a metadata-only
+    fill still triggers a save.
+    """
     existing_join_sigs = _existing_join_signatures(persisted)
     existing_join_targets = {j.target_model for j in persisted.joins}
-    new_joins: list[ModelJoin] = list(persisted.joins)
+    fresh_by_sig = {_join_sig(j): j for j in fresh.joins}
+
+    metadata_changed = False
+    new_joins: list[ModelJoin] = []
+    for pj in persisted.joins:
+        fj = fresh_by_sig.get(_join_sig(pj))
+        if pj.cardinality is None and fj is not None and fj.cardinality is not None:
+            new_joins.append(pj.model_copy(update={"cardinality": fj.cardinality}))
+            metadata_changed = True
+        else:
+            new_joins.append(pj)
+
     new_join_targets: list[str] = []
     for j in fresh.joins:
         sig = (j.target_model, tuple(sorted((p[0], p[1]) for p in j.join_pairs)))
@@ -893,7 +1045,7 @@ def _merge_joins_strict(
             )
         new_joins.append(j)
         new_join_targets.append(j.target_model)
-    return new_joins, new_join_targets
+    return new_joins, new_join_targets, metadata_changed
 
 
 def _additive_merge_existing(
@@ -927,6 +1079,7 @@ def _additive_merge_existing(
 
     widened_column_names: list[str] = []
     merged_columns: list[Column] = []
+    metadata_changed = False
     for persisted_col in persisted.columns:
         merged_col, did_widen = _merge_persisted_column_with_probe(
             persisted_col=persisted_col,
@@ -934,6 +1087,11 @@ def _additive_merge_existing(
             model_name=persisted.name,
             sqlite_widen_enabled=sqlite_widen_enabled,
         )
+        # DEV-1688: set `unique` additively (never downgrade a user-set flag).
+        fresh_col = fresh_by_name.get(persisted_col.name)
+        if fresh_col is not None and fresh_col.unique and not merged_col.unique:
+            merged_col = merged_col.model_copy(update={"unique": True})
+            metadata_changed = True
         merged_columns.append(merged_col)
         if did_widen:
             widened_column_names.append(persisted_col.name)
@@ -945,9 +1103,13 @@ def _additive_merge_existing(
         merged_columns.append(fresh_col)
         new_column_names.append(fresh_col.name)
 
-    new_joins, new_join_targets = _merge_joins_strict(persisted, fresh)
+    new_joins, new_join_targets, joins_metadata_changed = _merge_joins_strict(
+        persisted, fresh
+    )
+    metadata_changed = metadata_changed or joins_metadata_changed
 
-    if not new_column_names and not new_join_targets and not widened_column_names:
+    if (not new_column_names and not new_join_targets
+            and not widened_column_names and not metadata_changed):
         return persisted, [], [], []
 
     merged = persisted.model_copy(
@@ -988,7 +1150,9 @@ async def _process_one_table(
         fresh=fresh,
         sqlite_widen_enabled=(datasource.type or "").lower() == "sqlite",
     )
-    if new_cols or new_joins or widened_cols:
+    # DEV-1688: `merged is persisted` iff nothing changed (incl. metadata-only
+    # cardinality/unique fills), so this also persists metadata-only updates.
+    if merged is not persisted:
         await storage.save_model(merged)
     return ModelAddition(
         model_name=table_name,

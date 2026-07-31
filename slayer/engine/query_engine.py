@@ -19,7 +19,15 @@ from pydantic import (
 import sqlalchemy as sa
 from sqlglot import exp
 
-from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
+from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType, JoinCardinality
+from slayer.engine.cardinality import (
+    CardinalityVerdict,
+    JoinCardinalityFinding,
+    JoinCardinalityReport,
+    SideStats,
+    classify_cardinality,
+    compute_verdict,
+)
 from slayer.core.errors import AmbiguousModelError, ForcedFilterError
 from slayer.core.policy import JoinFilterRule, SessionPolicy
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
@@ -2347,6 +2355,158 @@ class SlayerQueryEngine:
             residual=list(residual),
         )
 
+    async def detect_join_cardinality(
+        self,
+        *,
+        data_source: str | None = None,
+        model: str | None = None,
+        persist: bool = False,
+    ) -> JoinCardinalityReport:
+        """Profile each join's two sides and classify its cardinality (DEV-1688).
+
+        Full-scans non-null key rows vs distinct key-tuples on both sides. The
+        report EVIDENCES and RECOMMENDS — ``persist=False`` (default) never
+        writes; ``persist=True`` writes the detected value onto each matching
+        join. Data can hard-disprove a stored value (``CONTRADICTS_HARD``).
+        Only ``sql_table`` models with bare-column join keys are profiled —
+        every other shape is reported ``SKIPPED_UNSUPPORTED``.
+        """
+        ds_names = (
+            [data_source] if data_source
+            else await self.storage.list_datasources()
+        )
+        findings: list[JoinCardinalityFinding] = []
+        persist_map: dict[tuple[str, str], list[tuple]] = {}
+
+        for ds_name in ds_names:
+            all_models = await _all_models_in_datasource(self.storage, ds_name)
+            by_name = {m.name: m for m in all_models}
+            if model is not None:
+                scope = [by_name[model]] if model in by_name else []
+            else:
+                scope = all_models
+            if not scope:
+                continue
+            ds_cfg = await self.storage.get_datasource(ds_name)
+            if ds_cfg is None:
+                continue
+            sqlglot_name = dialect_for_ds_type(ds_cfg.type).sqlglot_name
+            client = SlayerSQLClient(datasource=ds_cfg)
+            try:
+                for m in scope:
+                    for join in m.joins:
+                        finding, detected = await self._detect_one_join(
+                            model=m, join=join, by_name=by_name,
+                            client=client, sqlglot_name=sqlglot_name,
+                            data_source=ds_name,
+                        )
+                        findings.append(finding)
+                        if detected is not None:
+                            persist_map.setdefault((ds_name, m.name), []).append(
+                                (_join_signature(join), detected)
+                            )
+            finally:
+                await client.aclose()
+
+        if persist:
+            for (ds_name, model_name), items in persist_map.items():
+                await self._persist_join_cardinality(
+                    data_source=ds_name, model_name=model_name, items=items,
+                )
+        return JoinCardinalityReport(findings=findings)
+
+    async def _detect_one_join(
+        self, *, model, join, by_name, client, sqlglot_name, data_source,
+    ) -> "tuple[JoinCardinalityFinding, JoinCardinality | None]":
+        pairs = [[p[0], p[1]] for p in join.join_pairs]
+        src_cols = [p[0] for p in join.join_pairs]
+        tgt_cols = [p[1] for p in join.join_pairs]
+        target = by_name.get(join.target_model)
+
+        note = _detection_skip_reason(
+            model=model, target=target, src_cols=src_cols, tgt_cols=tgt_cols,
+        )
+        if note is not None:
+            return JoinCardinalityFinding(
+                data_source=data_source, model=model.name,
+                target_model=join.target_model, join_pairs=pairs,
+                stored=join.cardinality, detected=None,
+                verdict=CardinalityVerdict.SKIPPED_UNSUPPORTED, note=note,
+            ), None
+
+        src_side = await self._side_stats(
+            client=client, table=model.sql_table,
+            key_cols=src_cols, sqlglot_name=sqlglot_name,
+        )
+        tgt_side = await self._side_stats(
+            client=client, table=target.sql_table,
+            key_cols=tgt_cols, sqlglot_name=sqlglot_name,
+        )
+        detected = classify_cardinality(
+            source_unique=src_side.observed_unique,
+            target_unique=tgt_side.observed_unique,
+        )
+        verdict = compute_verdict(
+            stored=join.cardinality, detected=detected,
+            source_observed_unique=src_side.observed_unique,
+            target_observed_unique=tgt_side.observed_unique,
+        )
+        contradictions = _unique_contradictions(
+            model=model, target=target, src_cols=src_cols, tgt_cols=tgt_cols,
+            src_side=src_side, tgt_side=tgt_side,
+        )
+        return JoinCardinalityFinding(
+            data_source=data_source, model=model.name,
+            target_model=join.target_model, join_pairs=pairs,
+            stored=join.cardinality, detected=detected,
+            source_side=src_side, target_side=tgt_side,
+            verdict=verdict, unique_contradictions=contradictions,
+        ), detected
+
+    async def _side_stats(
+        self, *, client, table, key_cols, sqlglot_name,
+    ) -> SideStats:
+        tbl = exp.to_table(table).sql(dialect=sqlglot_name, identify=True)
+        qcols = [
+            exp.to_identifier(c, quoted=True).sql(dialect=sqlglot_name)
+            for c in key_cols
+        ]
+        notnull = " AND ".join(f"{qc} IS NOT NULL" for qc in qcols)
+        keys = ", ".join(qcols)
+        row_rows = await client.execute(
+            sql=f"SELECT COUNT(*) AS c FROM {tbl} WHERE {notnull}"
+        )
+        dist_rows = await client.execute(
+            sql=f"SELECT COUNT(*) AS c FROM "
+                f"(SELECT DISTINCT {keys} FROM {tbl} WHERE {notnull}) d"
+        )
+        row_count = int(next(iter(row_rows[0].values())))
+        distinct_count = int(next(iter(dist_rows[0].values())))
+        return SideStats(
+            row_count=row_count,
+            distinct_count=distinct_count,
+            observed_unique=(row_count == distinct_count),
+        )
+
+    async def _persist_join_cardinality(
+        self, *, data_source, model_name, items,
+    ) -> None:
+        m = await self.storage.get_model(model_name, data_source=data_source)
+        if m is None:
+            return
+        sig_to_detected = dict(items)
+        changed = False
+        new_joins = []
+        for j in m.joins:
+            d = sig_to_detected.get(_join_signature(j))
+            if d is not None and j.cardinality != d:
+                new_joins.append(j.model_copy(update={"cardinality": d}))
+                changed = True
+            else:
+                new_joins.append(j)
+        if changed:
+            await self.storage.save_model(m.model_copy(update={"joins": new_joins}))
+
     async def validate_models(
         self, data_source: str | None = None
     ) -> "list[Any]":
@@ -3691,3 +3851,54 @@ class SlayerQueryEngine:
         Unknown / ``None`` / empty ds-types fall back to ``"postgres"``.
         """
         return dialect_for_ds_type(ds_type).sqlglot_name
+
+
+# ---------------------------------------------------------------------------
+# Join-cardinality detection helpers (DEV-1688)
+# ---------------------------------------------------------------------------
+
+
+def _join_signature(join) -> tuple:
+    """Stable identity for a join: (target_model, sorted key pairs)."""
+    return (join.target_model, tuple(sorted((p[0], p[1]) for p in join.join_pairs)))
+
+
+def _detection_skip_reason(*, model, target, src_cols, tgt_cols) -> str | None:
+    """Why a join can't be profiled (v1 scope = sql_table + bare-column keys)."""
+    if model.sql_table is None:
+        return (
+            f"model {model.name!r} is not table-backed (sql/query-backed); "
+            f"cardinality profiling supports sql_table models only"
+        )
+    if target is None or target.sql_table is None:
+        tn = target.name if target is not None else "?"
+        return f"join target {tn!r} is not a table-backed model; skipped"
+    for mdl, cols in ((model, src_cols), (target, tgt_cols)):
+        for c in cols:
+            col = next((x for x in mdl.columns if x.name == c), None)
+            if col is not None and col.sql is not None and col.sql.strip() != c:
+                return (
+                    f"join key {mdl.name}.{c!r} is a SQL expression; "
+                    f"cardinality profiling supports bare-column keys only"
+                )
+    return None
+
+
+def _unique_contradictions(
+    *, model, target, src_cols, tgt_cols, src_side, tgt_side,
+) -> list[str]:
+    """Single-column join keys declared unique/PK but observed to have dups."""
+    out: list[str] = []
+    for mdl, cols, side in (
+        (model, src_cols, src_side),
+        (target, tgt_cols, tgt_side),
+    ):
+        if len(cols) != 1 or side.observed_unique:
+            continue
+        c = cols[0]
+        col = next((x for x in mdl.columns if x.name == c), None)
+        if col is not None and (col.unique or col.primary_key):
+            out.append(
+                f"{mdl.name}.{c} is declared unique but the data has duplicates"
+            )
+    return out

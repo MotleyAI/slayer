@@ -1,0 +1,352 @@
+"""Opt-in data-profiling cardinality detection (DEV-1688).
+
+``engine.detect_join_cardinality`` full-scans each join's two sides (non-null
+key rows vs distinct key-tuples) and classifies the cardinality from observed
+uniqueness. It EVIDENCES and RECOMMENDS: ``persist=False`` (default) never
+writes — the report is the deliverable so a human/agent can decide. Data can
+DISPROVE a stored value with certainty (a duplicate is a counterexample); a
+hard disproof surfaces as ``CONTRADICTS_HARD``.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.engine.cardinality import CardinalityVerdict, JoinCardinalityReport
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.yaml_storage import YAMLStorage
+
+
+@pytest.fixture
+def workspace():
+    tmp = tempfile.TemporaryDirectory()
+    try:
+        yield Path(tmp.name)
+    finally:
+        tmp.cleanup()
+
+
+def _seed_db(db_path: str) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT);
+        CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER);
+        CREATE TABLE user_profiles (customer_id INTEGER PRIMARY KEY, bio TEXT);
+        CREATE TABLE carts (id INTEGER PRIMARY KEY);
+        CREATE TABLE cart_lines (id INTEGER PRIMARY KEY, cart_id INTEGER);
+        CREATE TABLE left_tbl (k INTEGER);
+        CREATE TABLE right_tbl (k INTEGER, label TEXT);
+        CREATE TABLE ck_parent (a INTEGER, b TEXT, PRIMARY KEY (a, b));
+        CREATE TABLE ck_child (a INTEGER, b TEXT);
+
+        INSERT INTO customers VALUES (1,'US'),(2,'EU'),(3,'AP');
+        -- customer_id has duplicates (1,1) and a NULL -> NOT unique.
+        INSERT INTO orders VALUES (1,1),(2,1),(3,2),(4,NULL);
+        -- customer_id unique -> one row per customer.
+        INSERT INTO user_profiles VALUES (1,'a'),(2,'b'),(3,'c');
+        INSERT INTO carts VALUES (1),(2);
+        -- cart_id has duplicates -> NOT unique.
+        INSERT INTO cart_lines VALUES (1,1),(2,1),(3,2);
+        INSERT INTO left_tbl VALUES (1),(1),(2);
+        INSERT INTO right_tbl VALUES (1,'x'),(1,'y'),(3,'z');
+        -- composite parent key is unique; child (a,b) has a dup + a NULL-key row.
+        INSERT INTO ck_parent VALUES (1,'x'),(1,'y'),(2,'x');
+        INSERT INTO ck_child VALUES (1,'x'),(1,'x'),(2,'x'),(1,NULL);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def _col(name: str, *, pk: bool = False, dtype: DataType = DataType.INT) -> Column:
+    return Column(name=name, sql=name, type=dtype, primary_key=pk)
+
+
+def _models() -> list[SlayerModel]:
+    def m(name, table, cols, joins=None):
+        return SlayerModel(
+            name=name, sql_table=table, data_source="ds", columns=cols, joins=joins or []
+        )
+
+    return [
+        m("customers", "customers", [_col("id", pk=True), _col("region", dtype=DataType.TEXT)]),
+        m(
+            "orders",
+            "orders",
+            [_col("id", pk=True), _col("customer_id")],
+            [ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        ),
+        m(
+            "user_profiles",
+            "user_profiles",
+            [_col("customer_id", pk=True), _col("bio", dtype=DataType.TEXT)],
+            [ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        ),
+        m("cart_lines", "cart_lines", [_col("id", pk=True), _col("cart_id")]),
+        m(
+            "carts",
+            "carts",
+            [_col("id", pk=True)],
+            [ModelJoin(target_model="cart_lines", join_pairs=[["id", "cart_id"]])],
+        ),
+        m("right_m", "right_tbl", [_col("k"), _col("label", dtype=DataType.TEXT)]),
+        m(
+            "left_m",
+            "left_tbl",
+            [_col("k")],
+            [ModelJoin(target_model="right_m", join_pairs=[["k", "k"]])],
+        ),
+        m("ck_parent", "ck_parent", [_col("a"), _col("b", dtype=DataType.TEXT)]),
+        m(
+            "ck_child",
+            "ck_child",
+            [_col("a"), _col("b", dtype=DataType.TEXT)],
+            [
+                ModelJoin(
+                    target_model="ck_parent",
+                    join_pairs=[["a", "a"], ["b", "b"]],
+                )
+            ],
+        ),
+    ]
+
+
+async def _build_engine(workspace: Path) -> tuple[SlayerQueryEngine, YAMLStorage, DatasourceConfig]:
+    db = str(workspace / "d.db")
+    _seed_db(db)
+    storage = YAMLStorage(base_dir=str(workspace / "storage"))
+    ds = DatasourceConfig(name="ds", type="sqlite", database=db)
+    await storage.save_datasource(ds)
+    for model in _models():
+        await storage.save_model(model)
+    return SlayerQueryEngine(storage=storage), storage, ds
+
+
+def _find(report: JoinCardinalityReport, model: str, target: str):
+    return next(
+        f for f in report.findings if f.model == model and f.target_model == target
+    )
+
+
+# ---------------------------------------------------------------------------
+# Classification from data
+# ---------------------------------------------------------------------------
+
+
+class TestClassification:
+    async def test_many_to_one(self, workspace: Path) -> None:
+        engine, _, _ = await _build_engine(workspace)
+        report = await engine.detect_join_cardinality(data_source="ds")
+        f = _find(report, "orders", "customers")
+        assert f.detected is JoinCardinality.MANY_TO_ONE
+        assert f.source_side.observed_unique is False
+        assert f.target_side.observed_unique is True
+
+    async def test_one_to_one(self, workspace: Path) -> None:
+        engine, _, _ = await _build_engine(workspace)
+        report = await engine.detect_join_cardinality(data_source="ds")
+        f = _find(report, "user_profiles", "customers")
+        assert f.detected is JoinCardinality.ONE_TO_ONE
+
+    async def test_one_to_many(self, workspace: Path) -> None:
+        engine, _, _ = await _build_engine(workspace)
+        report = await engine.detect_join_cardinality(data_source="ds")
+        f = _find(report, "carts", "cart_lines")
+        assert f.detected is JoinCardinality.ONE_TO_MANY
+
+    async def test_many_to_many(self, workspace: Path) -> None:
+        engine, _, _ = await _build_engine(workspace)
+        report = await engine.detect_join_cardinality(data_source="ds")
+        f = _find(report, "left_m", "right_m")
+        assert f.detected is JoinCardinality.MANY_TO_MANY
+
+    async def test_null_keys_excluded_from_population(self, workspace: Path) -> None:
+        # orders.customer_id has a NULL row; non-null population is 3 rows,
+        # 2 distinct -> not unique -> many_to_one still holds.
+        engine, _, _ = await _build_engine(workspace)
+        report = await engine.detect_join_cardinality(data_source="ds")
+        f = _find(report, "orders", "customers")
+        assert f.source_side.row_count == 3
+        assert f.source_side.distinct_count == 2
+
+    async def test_composite_key_many_to_one(self, workspace: Path) -> None:
+        engine, _, _ = await _build_engine(workspace)
+        report = await engine.detect_join_cardinality(data_source="ds")
+        f = _find(report, "ck_child", "ck_parent")
+        assert f.detected is JoinCardinality.MANY_TO_ONE
+
+    async def test_composite_key_null_row_excluded(self, workspace: Path) -> None:
+        # ck_child has 4 rows but one has a NULL in the (a,b) key -> the
+        # non-null population is 3 tuples, 2 distinct.
+        engine, _, _ = await _build_engine(workspace)
+        report = await engine.detect_join_cardinality(data_source="ds")
+        f = _find(report, "ck_child", "ck_parent")
+        assert f.source_side.row_count == 3
+        assert f.source_side.distinct_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Verdicts
+# ---------------------------------------------------------------------------
+
+
+class TestVerdicts:
+    async def test_fills_none_when_stored_absent(self, workspace: Path) -> None:
+        engine, _, _ = await _build_engine(workspace)
+        report = await engine.detect_join_cardinality(data_source="ds")
+        f = _find(report, "orders", "customers")
+        assert f.stored is None
+        assert f.verdict is CardinalityVerdict.FILLS_NONE
+
+    async def test_confirms_matching_stored(self, workspace: Path) -> None:
+        engine, storage, _ = await _build_engine(workspace)
+        orders = await storage.get_model("orders", data_source="ds")
+        orders.joins[0] = orders.joins[0].model_copy(
+            update={"cardinality": JoinCardinality.MANY_TO_ONE}
+        )
+        await storage.save_model(orders)
+
+        report = await engine.detect_join_cardinality(data_source="ds")
+        f = _find(report, "orders", "customers")
+        assert f.verdict is CardinalityVerdict.CONFIRMS
+
+    async def test_contradicts_hard_when_data_disproves(self, workspace: Path) -> None:
+        engine, storage, _ = await _build_engine(workspace)
+        # Store a wrong one_to_one: it claims the source side is unique, but
+        # orders.customer_id has duplicates -> data disproves it.
+        orders = await storage.get_model("orders", data_source="ds")
+        orders.joins[0] = orders.joins[0].model_copy(
+            update={"cardinality": JoinCardinality.ONE_TO_ONE}
+        )
+        await storage.save_model(orders)
+
+        report = await engine.detect_join_cardinality(data_source="ds")
+        f = _find(report, "orders", "customers")
+        assert f.detected is JoinCardinality.MANY_TO_ONE
+        assert f.verdict is CardinalityVerdict.CONTRADICTS_HARD
+
+    async def test_refines_when_change_is_not_a_hard_disproof(
+        self, workspace: Path
+    ) -> None:
+        engine, storage, _ = await _build_engine(workspace)
+        # Stored many_to_many claims the target side is non-unique. The data
+        # shows the target IS unique, but "no duplicates observed" does NOT
+        # disprove a non-uniqueness claim -> a soft REFINES, not a hard
+        # contradiction.
+        orders = await storage.get_model("orders", data_source="ds")
+        orders.joins[0] = orders.joins[0].model_copy(
+            update={"cardinality": JoinCardinality.MANY_TO_MANY}
+        )
+        await storage.save_model(orders)
+
+        report = await engine.detect_join_cardinality(data_source="ds", model="orders")
+        f = _find(report, "orders", "customers")
+        assert f.detected is JoinCardinality.MANY_TO_ONE
+        assert f.verdict is CardinalityVerdict.REFINES
+
+    async def test_skipped_unsupported_for_expression_join_key(
+        self, workspace: Path
+    ) -> None:
+        engine, storage, _ = await _build_engine(workspace)
+        # A join key backed by a non-bare SQL expression is out of scope for
+        # v1 profiling (can't DISTINCT a physical column).
+        expr = SlayerModel(
+            name="orders_expr",
+            sql_table="orders",
+            data_source="ds",
+            columns=[
+                _col("id", pk=True),
+                Column(name="ck", sql="customer_id + 0", type=DataType.INT),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["ck", "id"]])],
+        )
+        await storage.save_model(expr)
+
+        report = await engine.detect_join_cardinality(
+            data_source="ds", model="orders_expr"
+        )
+        f = _find(report, "orders_expr", "customers")
+        assert f.verdict is CardinalityVerdict.SKIPPED_UNSUPPORTED
+        assert f.detected is None
+        assert f.note
+
+    async def test_skipped_unsupported_for_sql_mode_model(
+        self, workspace: Path
+    ) -> None:
+        engine, storage, _ = await _build_engine(workspace)
+        # A sql-mode source model with a join is out of scope for v1 profiling.
+        raw = SlayerModel(
+            name="raw_orders",
+            sql="SELECT id, customer_id FROM orders",
+            data_source="ds",
+            columns=[_col("id", pk=True), _col("customer_id")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        await storage.save_model(raw)
+
+        report = await engine.detect_join_cardinality(data_source="ds", model="raw_orders")
+        f = _find(report, "raw_orders", "customers")
+        assert f.verdict is CardinalityVerdict.SKIPPED_UNSUPPORTED
+        assert f.detected is None
+        assert f.note  # explains why it was skipped
+
+
+# ---------------------------------------------------------------------------
+# Declared-unique contradictions (reported, never mutated)
+# ---------------------------------------------------------------------------
+
+
+class TestUniqueContradictions:
+    async def test_reports_declared_unique_with_dups(self, workspace: Path) -> None:
+        engine, storage, _ = await _build_engine(workspace)
+        # Declare orders.customer_id unique (wrong — it has duplicates).
+        orders = await storage.get_model("orders", data_source="ds")
+        cc = next(c for c in orders.columns if c.name == "customer_id")
+        idx = orders.columns.index(cc)
+        orders.columns[idx] = cc.model_copy(update={"unique": True})
+        await storage.save_model(orders)
+
+        report = await engine.detect_join_cardinality(data_source="ds", model="orders")
+        f = _find(report, "orders", "customers")
+        assert any("customer_id" in c for c in f.unique_contradictions)
+
+        # The declared flag is NOT mutated by detection.
+        reloaded = await storage.get_model("orders", data_source="ds")
+        assert next(c for c in reloaded.columns if c.name == "customer_id").unique is True
+
+
+# ---------------------------------------------------------------------------
+# Persistence (report-only default; opt-in write)
+# ---------------------------------------------------------------------------
+
+
+class TestPersistence:
+    async def test_persist_false_does_not_write(self, workspace: Path) -> None:
+        engine, storage, _ = await _build_engine(workspace)
+        await engine.detect_join_cardinality(data_source="ds", persist=False)
+        orders = await storage.get_model("orders", data_source="ds")
+        assert orders.joins[0].cardinality is None
+
+    async def test_persist_true_writes_detected_per_join(
+        self, workspace: Path
+    ) -> None:
+        engine, storage, _ = await _build_engine(workspace)
+        await engine.detect_join_cardinality(data_source="ds", persist=True)
+
+        orders = await storage.get_model("orders", data_source="ds")
+        assert orders.joins[0].cardinality is JoinCardinality.MANY_TO_ONE
+        # Correct per-(model, join) identity — a different join gets its own value.
+        profiles = await storage.get_model("user_profiles", data_source="ds")
+        assert profiles.joins[0].cardinality is JoinCardinality.ONE_TO_ONE
+
+    async def test_model_filter_scopes_scan(self, workspace: Path) -> None:
+        engine, _, _ = await _build_engine(workspace)
+        report = await engine.detect_join_cardinality(data_source="ds", model="orders")
+        assert {f.model for f in report.findings} == {"orders"}

@@ -44,7 +44,7 @@ import sqlglot.errors
 import sqlglot.expressions as exp
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import DataType, JoinType, TimeGranularity
+from slayer.core.enums import DataType, JoinCardinality, JoinType, TimeGranularity
 from slayer.core.models import ModelJoin, SlayerModel
 from slayer.core.query import (
     ColumnRef,
@@ -2920,8 +2920,25 @@ def _build_source_model_from_join(
             target_model=plan.target_table.name,
             join_pairs=[[plan.source_col, plan.target_col]],
             join_type=JoinType.LEFT,
+            cardinality=_dynamic_join_cardinality(plan),
         )],
     )
+
+
+def _dynamic_join_cardinality(plan: "_JoinPlan") -> JoinCardinality | None:
+    """A dynamic join is ``many_to_one`` only when the target column is a
+    PK/unique key on the target model — otherwise the arity is undetermined
+    (``None``). DEV-1688.
+    """
+    model_ref = plan.target_table.model_ref
+    if model_ref is None:
+        return None
+    for col in model_ref.columns:
+        if col.name.lower() == plan.target_col.lower():
+            if col.primary_key or col.unique:
+                return JoinCardinality.MANY_TO_ONE
+            return None
+    return None
 
 
 def _emit_join_warnings(plan: _JoinPlan, parent_name: str) -> None:
