@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from slayer.core.deprecation import module_getattr_for_aliases
+
 if TYPE_CHECKING:
     from slayer.engine.schema_drift import ToDeleteEntry  # noqa: F401
 
@@ -99,8 +101,9 @@ class SchemaDriftError(SlayerError):
         self.__cause__ = original
 
 
-class ColumnCycleError(SlayerError, ValueError):
-    """Raised when a derived ``Column.sql`` chain contains a cycle (DEV-1410).
+class DatasetFieldCycleError(SlayerError, ValueError):
+    """Raised when a derived ``DatasetField.sql`` chain contains a cycle
+    (DEV-1410; formerly ``ColumnCycleError``).
 
     Carries the cycle as an ordered list of ``(model_name, column_name)``
     tuples reflecting the recursion order in which the cycle was discovered.
@@ -131,3 +134,13 @@ class DistinctDimensionValuesError(SlayerError, ValueError):
     Multi-inherits ``ValueError`` so existing ``except ValueError``
     call sites continue to work unchanged.
     """
+
+
+# DEV-1607: ``ColumnCycleError`` is the deprecated alias of
+# ``DatasetFieldCycleError``.
+if TYPE_CHECKING:
+    ColumnCycleError = DatasetFieldCycleError
+
+__getattr__ = module_getattr_for_aliases(
+    globals(), {"ColumnCycleError": "DatasetFieldCycleError"}
+)

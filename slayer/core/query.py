@@ -9,12 +9,17 @@ from __future__ import annotations
 import datetime
 import logging
 import re
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, field_validator, model_validator
 
+from slayer.core.deprecation import (
+    apply_deprecated_key_aliases,
+    deprecated_alias_property,
+    module_getattr_for_aliases,
+)
 from slayer.core.enums import TimeGranularity
-from slayer.core.models import ModelMeasure
+from slayer.core.models import DatasetMetric
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
 
@@ -99,7 +104,7 @@ def extract_placeholder_names(query: "SlayerQuery") -> set:
     return found
 
 
-class ColumnRef(BaseModel):
+class DatasetFieldRef(BaseModel):
     """Reference to a dimension by name.
 
     Supports dotted paths for joined models: "status", "customers.name",
@@ -114,7 +119,7 @@ class ColumnRef(BaseModel):
     label: str | None = None
 
     @model_validator(mode="after")
-    def _parse_dotted_name(self) -> "ColumnRef":
+    def _parse_dotted_name(self) -> "DatasetFieldRef":
         """Parse dotted paths into model + leaf name.
 
         "customers.regions.name" → model="customers.regions", name="name"
@@ -148,13 +153,13 @@ class ColumnRef(BaseModel):
         return self.name
 
     @classmethod
-    def from_string(cls, s: str) -> ColumnRef:
-        """Create a ColumnRef from a string. Dots are parsed by the validator."""
+    def from_string(cls, s: str) -> DatasetFieldRef:
+        """Create a DatasetFieldRef from a string. Dots are parsed by the validator."""
         return cls(name=s)
 
 
 def _coerce_column_ref(v: Any) -> Any:
-    """Allow plain string where a ColumnRef is expected: "x" → {"name": "x"}."""
+    """Allow plain string where a DatasetFieldRef is expected: "x" → {"name": "x"}."""
     if isinstance(v, str):
         return {"name": v}
     return v
@@ -216,7 +221,7 @@ def _is_direction(value: Any) -> bool:
 
 
 class TimeDimension(BaseModel):
-    dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)]
+    dimension: Annotated[DatasetFieldRef, BeforeValidator(_coerce_column_ref)]
     granularity: TimeGranularity
     date_range: list[str] | None = None
     label: str | None = None
@@ -228,7 +233,7 @@ class OrderItem(BaseModel):
     # dropping the extra key.
     model_config = ConfigDict(extra="forbid")
 
-    column: Annotated[ColumnRef, BeforeValidator(_coerce_order_column)]
+    column: Annotated[DatasetFieldRef, BeforeValidator(_coerce_order_column)]
     direction: str = "asc"
     raw_formula: str | None = None
 
@@ -332,17 +337,36 @@ def _coerce_order(v: Any) -> Any:
     return result
 
 
-class ModelExtension(BaseModel):
-    """Extend an existing model with extra columns, measures, or joins.
+class DatasetExtension(BaseModel):
+    """Extend an existing dataset with extra fields, metrics, or relationships
+    (formerly ``ModelExtension``).
 
-    Used inline on a query to add computed columns (SQL expressions),
-    extra joins, or additional measure formulas without modifying the
-    stored model.
+    Used inline on a query to add computed fields (SQL expressions),
+    extra relationships, or additional metric expressions without modifying the
+    stored dataset.
     """
-    source_name: str                                # Model/query to extend
-    columns: list | None = None                  # Extra Column objects
-    measures: list[ModelMeasure] | None = None   # Extra ModelMeasure formulas
-    joins: list | None = None                    # Extra ModelJoin objects
+    source_name: str                                 # Dataset/query to extend
+    fields: list | None = None                       # Extra DatasetField objects
+    metrics: list[DatasetMetric] | None = None       # Extra DatasetMetric expressions
+    relationships: list | None = None                # Extra DatasetRelationship objects
+
+    # DEV-1607: deprecated aliases for the renamed collection fields.
+    columns = deprecated_alias_property("fields", "columns")
+    measures = deprecated_alias_property("metrics", "measures")
+    joins = deprecated_alias_property("relationships", "joins")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_deprecated_keys(cls, data: Any) -> Any:
+        return apply_deprecated_key_aliases(
+            data,
+            aliases={
+                "columns": "fields",
+                "measures": "metrics",
+                "joins": "relationships",
+            },
+            entity="DatasetExtension",
+        )
 
 
 def _get_source_model_name(source_model: object) -> str | None:
@@ -365,8 +389,8 @@ def _get_source_model_name(source_model: object) -> str | None:
     return None
 
 
-def _strip_column_ref(ref: ColumnRef, model_name: str) -> ColumnRef:
-    """Strip source model prefix from a ColumnRef.
+def _strip_column_ref(ref: DatasetFieldRef, model_name: str) -> DatasetFieldRef:
+    """Strip source model prefix from a DatasetFieldRef.
 
     "orders.status"          on model "orders" → model=None,  name="status"
     "orders.customers.name"  on model "orders" → model="customers", name="name"
@@ -398,14 +422,28 @@ class SlayerQuery(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    version: int = 3
+    version: int = 4
     name: str | None = None  # For referencing this query from other queries in a list
-    source_model: object  # str (model name), SlayerModel (inline), or ModelExtension
-    measures: Annotated[list[ModelMeasure] | None, BeforeValidator(_coerce_measures)] = None
+    source_dataset: object  # str (dataset name), SlayerDataset (inline), or DatasetExtension
+    metrics: Annotated[list[DatasetMetric] | None, BeforeValidator(_coerce_measures)] = None
+
+    # DEV-1607: deprecated aliases for the renamed fields.
+    source_model = deprecated_alias_property("source_dataset", "source_model")
+    measures = deprecated_alias_property("metrics", "measures")
 
     @model_validator(mode="before")
     @classmethod
     def _apply_schema_migrations(cls, data: Any) -> Any:
+        # Persisted dicts carry a ``version`` — run the migration chain (silent
+        # legacy-key rename). Version-less dicts are runtime constructions:
+        # treat as current (DEV-1607 version-gate) and accept deprecated keys
+        # with a DeprecationWarning.
+        if isinstance(data, dict) and "version" not in data:
+            return apply_deprecated_key_aliases(
+                data,
+                aliases={"source_model": "source_dataset", "measures": "metrics"},
+                entity="SlayerQuery",
+            )
         return _migrate_schema(entity="SlayerQuery", data=data)
 
     @field_validator("name")
@@ -420,7 +458,7 @@ class SlayerQuery(BaseModel):
             return v
         from slayer.core.models import _validate_model_name
         return _validate_model_name(v, "Query")
-    dimensions: Annotated[list[ColumnRef] | None, BeforeValidator(_coerce_dimensions)] = None
+    dimensions: Annotated[list[DatasetFieldRef] | None, BeforeValidator(_coerce_dimensions)] = None
     time_dimensions: list[TimeDimension] | None = None
     main_time_dimension: str | None = None  # Explicit time dimension for transforms (overrides auto-detection)
     filters: list[str] | None = None
@@ -481,8 +519,8 @@ class SlayerQuery(BaseModel):
             return
         from slayer.core.errors import DistinctDimensionValuesError
 
-        if self.measures:
-            n = len(self.measures)
+        if self.metrics:
+            n = len(self.metrics)
             raise DistinctDimensionValuesError(
                 f"distinct_dimension_values=False requires an empty `measures` "
                 f"field, but {n} measure(s) were supplied. Either remove the "
@@ -530,7 +568,7 @@ class SlayerQuery(BaseModel):
         querying source_model="orders"). This normalizes all references
         by removing the redundant prefix before any other processing.
         """
-        model_name = _get_source_model_name(self.source_model)
+        model_name = _get_source_model_name(self.source_dataset)
         if model_name is None:
             return self
 
@@ -584,10 +622,10 @@ class SlayerQuery(BaseModel):
                 updates["order"] = new_order
 
         # Measures (formula strings)
-        if self.measures:
+        if self.metrics:
             new_measures = []
             measures_changed = False
-            for f in self.measures:
+            for f in self.metrics:
                 new_formula = pattern.sub("", f.formula)
                 if new_formula != f.formula:
                     new_measures.append(f.model_copy(update={"formula": new_formula}))
@@ -620,3 +658,27 @@ class SlayerQuery(BaseModel):
             safe_name,
         )
         return self.model_copy(update=updates)
+
+
+# DEV-1607: OSI-aligned rename. Old class names resolve to their new class
+# object (with a DeprecationWarning) via PEP 562 module ``__getattr__``.
+_DEPRECATED_CLASS_ALIASES = {
+    "ColumnRef": "DatasetFieldRef",
+    "ModelExtension": "DatasetExtension",
+}
+
+__getattr__ = module_getattr_for_aliases(globals(), _DEPRECATED_CLASS_ALIASES)
+
+if TYPE_CHECKING:  # keep static analysers / IDEs aware of the deprecated names
+    ColumnRef = DatasetFieldRef
+    ModelExtension = DatasetExtension
+
+__all__ = [
+    "DatasetFieldRef",
+    "DatasetExtension",
+    "SlayerQuery",
+    "TimeDimension",
+    "OrderItem",
+    "substitute_variables",
+    "extract_placeholder_names",
+]

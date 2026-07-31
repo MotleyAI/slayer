@@ -3,7 +3,8 @@
 import logging
 import os
 import re
-from typing import Annotated, Any, Optional
+import warnings
+from typing import TYPE_CHECKING, Annotated, Any, Optional
 
 from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
 from sqlalchemy.engine import URL as _SA_URL
@@ -13,6 +14,11 @@ from slayer.core.enums import (
     DataType,
     JoinType,
     _coerce_legacy_datatype,
+)
+from slayer.core.deprecation import (
+    apply_deprecated_key_aliases,
+    deprecated_alias_property,
+    module_getattr_for_aliases,
 )
 from slayer.core.format import NumberFormat
 from slayer.core.formula import ALL_TRANSFORMS
@@ -151,14 +157,15 @@ def _fix_multidot_sql(sql: str, context: str) -> str:
     return result
 
 
-class Column(BaseModel):
-    """A row-level column on a model.
+class DatasetField(BaseModel):
+    """A row-level field on a dataset (OSI ``Field``; formerly ``Column``).
 
-    Carries the metadata needed to use the column either as a GROUP BY key
-    (a "dimension") or as the input to an aggregation (a "measure"). What it's
+    Carries the metadata needed to use the field either as a GROUP BY key
+    (a "dimension") or as the input to an aggregation (a "metric"). What it's
     used as is decided per-query, gated by data type and ``allowed_aggregations``.
 
-    Replaces v1 ``Dimension`` and ``Measure`` (which were merged in v2).
+    Replaces v1 ``Dimension`` and ``Measure`` (which were merged in v2), and the
+    v7 ``Column`` (renamed to align with OSI terminology in DEV-1607).
     """
     name: str
     sql: str | None = None
@@ -214,30 +221,37 @@ class Column(BaseModel):
         return v
 
 
-class ModelMeasure(BaseModel):
-    """A named formula on a model (or a query-level computed measure).
+class DatasetMetric(BaseModel):
+    """A named metric on a dataset (OSI ``Metric``; formerly ``ModelMeasure``).
 
-    A formula is a string that evaluates to an aggregated value: a column-with-
+    An expression is a string that evaluates to an aggregated value: a field-with-
     aggregation reference (``"revenue:sum"``), arithmetic over such references
     (``"revenue:sum / *:count"``), a transform call (``"cumsum(revenue:sum)"``),
-    or a bare reference to another ``ModelMeasure`` by name. See
+    or a bare reference to another ``DatasetMetric`` by name. See
     ``slayer/core/formula.py`` for full grammar.
 
-    Stored in ``SlayerModel.measures`` for reuse, and in ``SlayerQuery.measures``
+    Stored in ``SlayerDataset.metrics`` for reuse, and in ``SlayerQuery.metrics``
     for inline / query-specific definitions. The shape is identical in both
     contexts; the difference is scope.
     """
-    formula: str
+    expression: str
     name: str | None = None
     label: str | None = None
     description: str | None = None
     type: DataType | None = None
     meta: dict[str, Any] | None = None
 
+    # DEV-1607: ``formula`` is the deprecated alias of ``expression``.
+    formula = deprecated_alias_property("expression", "formula")
+
     @model_validator(mode="before")
     @classmethod
     def _coerce_legacy_type(cls, data: Any) -> Any:
-        # DEV-1361: ``type`` declares the formula's result data type for outer
+        # DEV-1607: accept the deprecated ``formula`` key (warns) as ``expression``.
+        data = apply_deprecated_key_aliases(
+            data, aliases={"formula": "expression"}, entity="DatasetMetric"
+        )
+        # DEV-1361: ``type`` declares the expression's result data type for outer
         # CAST emission at aggregation time. Legacy lowercase strings get
         # mapped to canonical values; pseudo-types drop to None.
         if isinstance(data, dict) and "type" in data:
@@ -269,21 +283,21 @@ class ModelMeasure(BaseModel):
             return v
         if v in ALL_TRANSFORMS:
             raise ValueError(
-                f"ModelMeasure name '{v}' is a reserved transform name. "
+                f"DatasetMetric name '{v}' is a reserved transform name. "
                 f"Reserved: {', '.join(sorted(ALL_TRANSFORMS))}"
             )
         return v
 
-    @field_validator("formula")
+    @field_validator("expression")
     @classmethod
     def _reject_raw_window_function(cls, v: str) -> str:
-        """DEV-1336: a measure formula containing raw ``OVER (...)`` SQL cannot
+        """DEV-1336: a metric expression containing raw ``OVER (...)`` SQL cannot
         be parsed by SLayer's formula grammar (Python AST rejects ``OVER`` as a
         keyword) and produces invalid SQL on every dialect if used as a filter.
         Reject at construction time with an actionable error.
         """
         if has_window_function(v):
-            raise ValueError(f"ModelMeasure formula '{v}' {WINDOW_IN_FILTER_ERROR}")
+            raise ValueError(f"DatasetMetric expression '{v}' {WINDOW_IN_FILTER_ERROR}")
         return v
 
     # DEV-1369: ModelMeasure formulas may legitimately contain ``__`` —
@@ -413,11 +427,24 @@ class SourceModelOrigin(BaseModel):
     agg_column_names: frozenset[str] = Field(default_factory=frozenset)
 
 
-class ModelJoin(BaseModel):
-    """A join relationship to another model."""
-    target_model: str                               # Name of the joined model
+class DatasetRelationship(BaseModel):
+    """A relationship (join) to another dataset (OSI ``Relationship``; formerly
+    ``ModelJoin``)."""
+    target_dataset: str                             # Name of the related dataset
     join_pairs: list[list[str]] = Field(...)        # [["source_dim", "target_dim"], ...]
     join_type: JoinType = JoinType.LEFT             # LEFT (default) or INNER
+
+    # DEV-1607: ``target_model`` is the deprecated alias of ``target_dataset``.
+    target_model = deprecated_alias_property("target_dataset", "target_model")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_deprecated_keys(cls, data: Any) -> Any:
+        return apply_deprecated_key_aliases(
+            data,
+            aliases={"target_model": "target_dataset"},
+            entity="DatasetRelationship",
+        )
 
     @field_validator("join_pairs")
     @classmethod
@@ -432,8 +459,8 @@ class ModelJoin(BaseModel):
         return v
 
 
-class SlayerModel(BaseModel):
-    version: int = 7
+class SlayerDataset(BaseModel):
+    version: int = 8
     name: str
     sql_table: str | None = None
     sql: str | None = None
@@ -443,13 +470,33 @@ class SlayerModel(BaseModel):
     query_variables: dict[str, Any] = Field(default_factory=dict)
     backing_query_sql: str | None = None
     data_source: str = ""
-    columns: list[Column] = Field(default_factory=list)
-    measures: list[ModelMeasure] = Field(default_factory=list)
+    fields: list[DatasetField] = Field(default_factory=list)
+    metrics: list[DatasetMetric] = Field(default_factory=list)
     aggregations: list[Aggregation] = Field(default_factory=list)
+
+    # DEV-1607: deprecated aliases for the renamed collection fields.
+    columns = deprecated_alias_property("fields", "columns")
+    measures = deprecated_alias_property("metrics", "measures")
 
     @model_validator(mode="before")
     @classmethod
     def _apply_schema_migrations(cls, data: Any) -> Any:
+        # A persisted dict carries a ``version`` — run the migration chain,
+        # which silently renames legacy keys (columns→fields, measures→metrics,
+        # joins→relationships, formula→expression, target_model→target_dataset).
+        # A version-less dict is a runtime construction: treat it as current
+        # (skip the legacy chain — DEV-1607 version-gate) and accept the
+        # deprecated collection keys with a DeprecationWarning.
+        if isinstance(data, dict) and "version" not in data:
+            return apply_deprecated_key_aliases(
+                data,
+                aliases={
+                    "columns": "fields",
+                    "measures": "metrics",
+                    "joins": "relationships",
+                },
+                entity="SlayerModel",
+            )
         return _migrate_schema(entity="SlayerModel", data=data)
 
     @field_validator("name")
@@ -483,7 +530,7 @@ class SlayerModel(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _require_data_source_unless_query_backed(self) -> "SlayerModel":
+    def _require_data_source_unless_query_backed(self) -> "SlayerDataset":
         # Table-backed models (sql_table / sql) must have data_source up
         # front — it's part of the v4 storage key. Query-backed models are
         # allowed to start with an empty data_source because
@@ -497,7 +544,8 @@ class SlayerModel(BaseModel):
                 f"model belongs to."
             )
         return self
-    joins: list[ModelJoin] = Field(default_factory=list)
+    relationships: list[DatasetRelationship] = Field(default_factory=list)
+    joins = deprecated_alias_property("relationships", "joins")  # DEV-1607 alias
     filters: list[str] = Field(default_factory=list)  # Model-level filters (always applied)
     default_time_dimension: str | None = None
     description: str | None = None
@@ -529,7 +577,7 @@ class SlayerModel(BaseModel):
         return rewritten
 
     @model_validator(mode="after")
-    def _validate_column_measure_disjoint(self) -> "SlayerModel":
+    def _validate_column_measure_disjoint(self) -> "SlayerDataset":
         """Names within ``columns`` and within ``measures`` must each be unique,
         and the two lists must not overlap.
 
@@ -537,20 +585,20 @@ class SlayerModel(BaseModel):
         the name in both lists; allowing duplicates within a list or collisions
         across lists would make resolution ambiguous.
         """
-        col_names_seq = [c.name for c in self.columns]
+        col_names_seq = [c.name for c in self.fields]
         col_dupes = sorted({n for n in col_names_seq if col_names_seq.count(n) > 1})
         if col_dupes:
             raise ValueError(
                 f"Model '{self.name}': duplicate column names: {col_dupes}. "
                 f"Each column name must be unique within a model."
             )
-        unnamed = [m.formula for m in self.measures if m.name is None]
+        unnamed = [m.expression for m in self.metrics if m.name is None]
         if unnamed:
             raise ValueError(
                 f"Model '{self.name}': every ModelMeasure in 'measures' must "
                 f"have a name. Unnamed formulas: {unnamed}."
             )
-        measure_names_seq = [m.name for m in self.measures if m.name is not None]
+        measure_names_seq = [m.name for m in self.metrics if m.name is not None]
         measure_dupes = sorted({n for n in measure_names_seq if measure_names_seq.count(n) > 1})
         if measure_dupes:
             raise ValueError(
@@ -569,7 +617,7 @@ class SlayerModel(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_allowed_aggregations(self) -> "SlayerModel":
+    def _validate_allowed_aggregations(self) -> "SlayerDataset":
         """Enforce the intersection contract on ``Column.allowed_aggregations``.
 
         A whitelist entry is accepted iff:
@@ -594,7 +642,7 @@ class SlayerModel(BaseModel):
 
         custom_agg_names = {a.name for a in self.aggregations}
         valid_names = BUILTIN_AGGREGATIONS | custom_agg_names
-        for c in self.columns:
+        for c in self.fields:
             if c.allowed_aggregations is None:
                 continue
             for agg_name in c.allowed_aggregations:
@@ -632,7 +680,7 @@ class SlayerModel(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_source_mode_exclusivity(self) -> "SlayerModel":
+    def _validate_source_mode_exclusivity(self) -> "SlayerDataset":
         """Exactly one of sql_table, sql, source_queries must be populated.
 
         Empty source_queries=[] is rejected with a specific message. None / 0
@@ -667,7 +715,7 @@ class SlayerModel(BaseModel):
     # return ``self``; the rule's "always returns same value" warning doesn't
     # apply to validator methods.
     @model_validator(mode="after")
-    def _validate_source_query_stages(self) -> "SlayerModel":
+    def _validate_source_query_stages(self) -> "SlayerDataset":
         """Validate stage-name rules on source_queries.
 
         - All non-final stages must have a non-empty name (so later stages
@@ -700,17 +748,35 @@ class SlayerModel(BaseModel):
             )
         return self
 
-    def get_column(self, name: str) -> Column | None:
-        for c in self.columns:
+    def get_field(self, name: str) -> "DatasetField | None":
+        for c in self.fields:
             if c.name == name:
                 return c
         return None
 
-    def get_measure(self, name: str) -> ModelMeasure | None:
-        for m in self.measures:
+    def get_column(self, name: str) -> "DatasetField | None":
+        """Deprecated alias of :meth:`get_field` (DEV-1607)."""
+        warnings.warn(
+            "'get_column' is deprecated; use 'get_field'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.get_field(name)
+
+    def get_metric(self, name: str) -> "DatasetMetric | None":
+        for m in self.metrics:
             if m.name == name:
                 return m
         return None
+
+    def get_measure(self, name: str) -> "DatasetMetric | None":
+        """Deprecated alias of :meth:`get_metric` (DEV-1607)."""
+        warnings.warn(
+            "'get_measure' is deprecated; use 'get_metric'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.get_metric(name)
 
     def get_aggregation(self, name: str) -> Aggregation | None:
         for a in self.aggregations:
@@ -853,3 +919,32 @@ def _resolve_env_string(value: str) -> str:
         return os.environ.get(var_name, match.group(0))
 
     return re.sub(r"\$\{(\w+)\}", replacer, value)
+
+
+# DEV-1607: OSI-aligned rename. Old class names resolve to their new class
+# object (with a DeprecationWarning) via PEP 562 module ``__getattr__``.
+_DEPRECATED_CLASS_ALIASES = {
+    "Column": "DatasetField",
+    "SlayerModel": "SlayerDataset",
+    "ModelMeasure": "DatasetMetric",
+    "ModelJoin": "DatasetRelationship",
+}
+
+__getattr__ = module_getattr_for_aliases(globals(), _DEPRECATED_CLASS_ALIASES)
+
+if TYPE_CHECKING:  # keep static analysers / IDEs aware of the deprecated names
+    Column = DatasetField
+    SlayerModel = SlayerDataset
+    ModelMeasure = DatasetMetric
+    ModelJoin = DatasetRelationship
+
+__all__ = [
+    "DatasetField",
+    "DatasetMetric",
+    "DatasetRelationship",
+    "SlayerDataset",
+    "Aggregation",
+    "AggregationParam",
+    "SourceModelOrigin",
+    "DatasourceConfig",
+]
