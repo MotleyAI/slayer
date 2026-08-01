@@ -72,6 +72,14 @@ ladybug = {version = ">=0.1", optional = true}
 # release with SQLAlchemy 2.x support (a hard repo dep).
 snowflake-connector-python = {version = ">=3.13", optional = true}
 snowflake-sqlalchemy = {version = ">=1.7", optional = true}
+# Redshift support. sqlalchemy-redshift has no hard DBAPI dependency of its
+# own — it lazily imports whichever driver the connection URL's scheme
+# selects. redshift-connector is AWS's actively-maintained driver (IAM auth,
+# Redshift Serverless, browser-based SSO); we default the `redshift` type to
+# it (see `DatasourceConfig.get_connection_string`) rather than the
+# psycopg2-only `redshift://` form.
+sqlalchemy-redshift = {version = ">=1.0", optional = true}
+redshift-connector = {version = ">=2.1", optional = true}
 
 [tool.poetry.extras]
 client = ["httpx", "pandas"]
@@ -81,11 +89,12 @@ clickhouse = ["clickhouse-sqlalchemy"]
 sqlserver = ["pyodbc"]
 snowflake = ["snowflake-connector-python", "snowflake-sqlalchemy"]
 bigquery = ["sqlalchemy-bigquery"]
+redshift = ["sqlalchemy-redshift", "redshift-connector"]
 dbt = ["dbt-core"]
 flight = ["pyarrow"]
 advanced_search = ["litellm", "numpy", "ladybug"]
 embedding_search = ["litellm", "numpy"]  # legacy alias for advanced_search without graph support
-all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "dbt-core", "pyarrow", "litellm", "numpy", "ladybug"]
+all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "sqlalchemy-redshift", "redshift-connector", "dbt-core", "pyarrow", "litellm", "numpy", "ladybug"]
 
 [project.scripts]
 slayer = "slayer.cli:main"

@@ -32,8 +32,20 @@ testcontainers suites.
 
 Unit tests for SQL generation; no live-instance verification.
 
-Redshift, Trino/Presto (Athena uses the Presto dialect), Databricks/Spark,
-Oracle.
+Trino/Presto (Athena uses the Presto dialect), Databricks/Spark, Oracle.
+
+**Redshift** is further along than the rest of this tier: `RedshiftDialect`
+(SQL generation) has been code-covered here for a while, and the connection
+layer — `driver_map["redshift"] = "redshift+redshift_connector"`, the
+`motley-slayer[redshift]` extra, and a live integration suite
+(`tests/integration/test_integration_redshift.py`, gated on `REDSHIFT_HOST` /
+`REDSHIFT_DATABASE` / `REDSHIFT_USER` / `REDSHIFT_PASSWORD`) — now exist too,
+unit-tested against the driver locally. It stays in Tier 2 rather than Tier 1
+because none of that has actually run against a live Redshift
+cluster/serverless endpoint yet — the `redshift-integration` CI job
+(`.github/workflows/ci.yml`) will exercise it the same skip-until-configured
+way Snowflake/BigQuery started, and this entry should move to Tier 1 once it
+passes there at least once.
 
 ## Aggregation support
 

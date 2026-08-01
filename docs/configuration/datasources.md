@@ -64,12 +64,12 @@ These databases are verified by integration tests and runnable Docker examples. 
 
 #### Additional support
 
-SQL generation is covered by unit tests, but not verified against live instances. Install the appropriate SQLAlchemy driver manually.
+SQL generation is covered by unit tests, but not verified against live instances.
 
 | Type | SQLAlchemy Driver | Install |
 |------|-------------------|---------|
 | `bigquery` | `sqlalchemy-bigquery` | `pip install sqlalchemy-bigquery` |
-| `redshift` | `sqlalchemy-redshift` + `redshift_connector` | `pip install sqlalchemy-redshift redshift-connector` |
+| `redshift` | `sqlalchemy-redshift` + `redshift-connector` | `pip install 'motley-slayer[redshift]'`. Connection-layer code is new and unit-tested but not yet run against a live cluster — see [Redshift](#redshift) below. |
 | `trino` / `presto` / `athena` | `trino` or `PyAthena` | `pip install trino` or `pip install PyAthena` |
 | `databricks` / `spark` | `databricks-sql-connector` | `pip install databricks-sql-connector` |
 | `oracle` | `oracledb` | `pip install oracledb` |
@@ -147,6 +147,51 @@ Statement-level timeout is enforced via
 
 !!! tip
     If your database isn't listed but is supported by sqlglot, it may already work — SLayer falls back to Postgres-style SQL by default. Try it and [open an issue](https://github.com/MotleyAI/slayer/issues) if you hit a problem.
+
+### Redshift
+
+```bash
+pip install 'motley-slayer[redshift]'
+```
+
+The extra pulls in `sqlalchemy-redshift` + `redshift-connector`. Structured
+`DatasourceConfig` fields (`host`, `port`, `database`, `username`, `password`)
+build a `redshift+redshift_connector://` URL by default:
+
+```yaml
+# datasources/rs.yaml
+name: rs
+type: redshift
+host: mycluster.abc123.us-east-1.redshift.amazonaws.com
+port: 5439
+database: dev
+username: YOUR_USER
+password: YOUR_PASSWORD
+```
+
+`redshift-connector` is AWS's actively-maintained driver — it supports IAM
+auth, Redshift Serverless, and browser-based SSO in addition to plain
+username/password. To use the classic psycopg2-based dialect instead (e.g.
+for parity with an existing psycopg2 connection pool), set `connection_string`
+directly rather than the structured fields:
+
+```yaml
+name: rs
+connection_string: "redshift+psycopg2://user:pass@host:5439/dev"
+```
+
+!!! warning "No native FK-based auto-ingestion join discovery (unverified)"
+    Redshift allows declaring (unenforced) `FOREIGN KEY` constraints, but
+    whether `sqlalchemy-redshift`'s Inspector surfaces them for auto-ingestion
+    to discover joins from — the way it does for Postgres / MySQL / SQLite /
+    Snowflake — has not been verified against a live cluster. Until confirmed,
+    treat Redshift like BigQuery/ClickHouse: define `joins:` manually in your
+    model YAML rather than relying on auto-discovery.
+
+!!! note "`APPROXIMATE COUNT(DISTINCT x)`"
+    Redshift's `count_distinct_approx` aggregation uses the keyword-prefix
+    form `APPROXIMATE COUNT(DISTINCT x)` rather than a native aggregate
+    function name (see [Aggregation support](../database-support.md)).
 
 ## Field Reference
 
