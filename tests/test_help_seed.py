@@ -32,7 +32,14 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.inspect.service import InspectService
-from slayer.memories.help_seed import HELP_TOPICS, seed_help_memories
+from slayer.memories.help_seed import (
+    DEFAULT_HELP_CONTEXT,
+    HELP_TOPICS,
+    HelpTopic,
+    load_help_topics,
+    merge_help_topics,
+    seed_help_memories,
+)
 from slayer.search.service import SearchService
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -645,4 +652,95 @@ class TestSeedGuard:
         assert calls == []
         # Opt-out really produced no seeding on the real store — not merely an
         # un-called spy.
+        assert await storage.get_memory_row("help.intro") is None
+
+
+class TestHostExtensibility:
+    """An embedding host composes SLayer's topics instead of forking the
+    markdown: substitutable tokens for naming, overrides for the bodies that
+    genuinely differ, extras for host-only topics."""
+
+    def test_default_context_renders_slayer_naming(self) -> None:
+        assert DEFAULT_HELP_CONTEXT["product"] == "SLayer"
+        blob = "".join(t.learning + t.description for t in HELP_TOPICS)
+        assert "{{" not in blob, "shipped content must render with the default context"
+        assert "SLayer" in blob
+
+    def test_host_context_substitutes_tokens(self) -> None:
+        topics = load_help_topics(context={"product": "Motley"})
+        blob = "".join(t.learning + t.description for t in topics)
+        assert "{{" not in blob
+        # The host's product name reaches a templatized body. (The topics a host
+        # is expected to override are not templatized, so they keep saying SLayer.)
+        joins = next(t for t in topics if t.id == "help.joins")
+        assert "Motley" in joins.learning
+        assert "SLayer" not in joins.learning
+        # Code identifiers are never rewritten by the product token.
+        assert "SlayerQuery" in blob
+
+    def test_unknown_placeholder_fails_loudly(self) -> None:
+        from slayer.memories import help_seed
+
+        with pytest.raises(KeyError, match="unknown placeholder"):
+            help_seed._render("see {{nope}} here", DEFAULT_HELP_CONTEXT)
+
+    def test_merge_overrides_in_place_and_appends_extras(self) -> None:
+        base = load_help_topics()
+        replacement = HelpTopic(
+            id="help.workflow", learning="host flow", description="host desc",
+        )
+        host_only = HelpTopic(
+            id="help.motley.decks", learning="decks", description="d",
+        )
+        merged = merge_help_topics(
+            base, override={"help.workflow": replacement}, extra=[host_only],
+        )
+        assert len(merged) == len(base) + 1
+        # Teaching order preserved; the override sits where the built-in was.
+        assert [t.id for t in merged][: len(base)] == [t.id for t in base]
+        assert next(t for t in merged if t.id == "help.workflow").learning == "host flow"
+        assert merged[-1].id == "help.motley.decks"
+
+    def test_merge_rejects_override_whose_id_differs_from_its_key(self) -> None:
+        """A mismatched id silently drops the topic it was meant to replace and
+        seeds a bogus one, so reject it rather than mis-serve help."""
+        base = load_help_topics()
+        bad = {"help.workflow": HelpTopic(id="help.workflows", learning="x", description="y")}
+        with pytest.raises(ValueError, match="must equal its key"):
+            merge_help_topics(base, override=bad)
+
+    def test_merge_rejects_duplicate_ids(self) -> None:
+        """Two topics with one id seed last-write-wins, losing a body silently."""
+        base = load_help_topics()
+        collision = HelpTopic(id="help.intro", learning="x", description="y")
+        with pytest.raises(ValueError, match="duplicate help topic ids"):
+            merge_help_topics(base, extra=[collision])
+
+        twins = [
+            HelpTopic(id="help.motley.x", learning="a", description="d"),
+            HelpTopic(id="help.motley.x", learning="b", description="d"),
+        ]
+        with pytest.raises(ValueError, match="duplicate help topic ids"):
+            merge_help_topics(base, extra=twins)
+
+    def test_merge_rejects_override_of_unknown_topic(self) -> None:
+        """Guards against a host silently carrying a dead override after the
+        built-in is renamed or removed upstream."""
+        base = load_help_topics()
+        with pytest.raises(ValueError, match="no built-in help topic"):
+            merge_help_topics(
+                base,
+                override={
+                    "help.gone": HelpTopic(id="help.gone", learning="x", description="y"),
+                },
+            )
+
+    @pytest.mark.asyncio
+    async def test_seed_accepts_an_explicit_topic_set(self, storage) -> None:
+        only = (HelpTopic(id="help.motley.solo", learning="body", description="d"),)
+        written = await seed_help_memories(storage, topics=only)
+        assert written == 1
+        row = await storage.get_memory_row("help.motley.solo")
+        assert row is not None and row.learning == "body"
+        # Built-ins were not seeded by that call.
         assert await storage.get_memory_row("help.intro") is None

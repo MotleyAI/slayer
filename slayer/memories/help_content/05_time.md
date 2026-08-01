@@ -1,6 +1,6 @@
 # Time
 
-Time is the most load-bearing dimension in most analytical queries. SLayer
+Time is the most load-bearing dimension in most analytical queries. {{product}}
 treats it specially in a few places.
 
 ## time_dimensions vs plain dimensions on the same column
@@ -39,7 +39,7 @@ first/last bucket may be partial) — use `whole_periods_only` for that.
 
 ## whole_periods_only
 
-When `true`, SLayer snaps the `date_range` to the granularity's bucket edges
+When `true`, {{product}} snaps the `date_range` to the granularity's bucket edges
 and drops the current incomplete bucket. Useful when a dashboard should not
 show "this month is half-done, the bar looks tiny":
 
@@ -67,7 +67,7 @@ Without any `time_dimensions` entry, transforms will error. Set
 
 ## The three meanings of "last" — don't mix them up
 
-SLayer has **three** distinct things named `last`:
+{{product}} has **three** distinct things named `last`:
 
 1. `:last(time_col)` — the **aggregation**. Per group, returns the value from
    the record with the latest `time_col`. See `memory:help.aggregations`.
@@ -89,8 +89,7 @@ bucket / filter. Pick the one that matches your question.
   "measures": [
     "revenue:sum",
     {"formula": "time_shift(revenue:sum, -1, 'year')", "name": "prev_year"},
-    {"formula": "revenue:sum / time_shift(revenue:sum, -1, 'year') - 1",
-     "name": "yoy_growth"}
+    {"formula": "change_pct(revenue:sum, -1, 'year')", "name": "yoy_growth"}
   ],
   "time_dimensions": [{
     "dimension": "created_at", "granularity": "month",
@@ -98,6 +97,12 @@ bucket / filter. Pick the one that matches your question.
   }]
 }
 ```
+
+`change_pct(revenue:sum, -1, 'year')` is the safe way to express YoY % growth: it
+desugars to the same prior-year `time_shift` ratio but guards the denominator
+(it returns `NULL` when the prior-year value is `0` or missing, instead of erroring).
+Writing the ratio by hand as `revenue:sum / time_shift(revenue:sum, -1, 'year') - 1`
+has no such guard.
 
 ## See also
 

@@ -1067,6 +1067,26 @@ def _declared_measures_from_query(
     declared: List[DeclaredMeasure] = []
     for d in (query.dimensions or []):
         full = d.full_name
+        dim_type = _type_for_dimension(
+            scope=scope, full_name=full, bundle=bundle,
+        )
+        # Grouping by an opaque column (``DataType.UNKNOWN`` — e.g. a PostGIS
+        # ``point`` or any type with no equality operator) emits SQL the
+        # database rejects, so fail here with an actionable message instead of
+        # surfacing a raw driver error. Projecting such a column is fine — only
+        # its use as a GROUP BY / DISTINCT key is refused. Checked on the
+        # declared type *before* ``bind_expr`` expands the column's ``sql``, so
+        # an opaque *derived* column is caught by its type rather than tripping
+        # the DEV-1410 cycle check first. PR #259 ("Unknown type") main-parity:
+        # the legacy guard lived in ``enrichment._resolve_dimensions``, which
+        # the typed pipeline bypasses.
+        if dim_type is not None and dim_type.is_opaque:
+            raise ValueError(
+                f"Column '{full}' cannot be used as a dimension: its type does "
+                f"not support the grouping this query requires. Define a derived "
+                f"column that extracts a comparable value instead, e.g. "
+                f"sql=\"payload->>'status'\" with type TEXT."
+            )
         bound = bind_expr(
             parsed=parse_expr(full, allow_dunder=flat_scope),
             scope=scope,
@@ -1075,9 +1095,6 @@ def _declared_measures_from_query(
         flat_name = _flatten_dotted(full)
         fmt, desc = _format_description_for_dimension(
             scope=scope, full_name=full,
-        )
-        dim_type = _type_for_dimension(
-            scope=scope, full_name=full, bundle=bundle,
         )
         declared.append(DeclaredMeasure(
             bound=bound,

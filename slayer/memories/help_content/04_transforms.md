@@ -154,10 +154,12 @@ dotted paths work too: `partition_by=customers.region`.
 
 Raw `OVER (...)` SQL inside a `ModelMeasure.formula` or filter string is
 rejected with an actionable error pointing at the rank-family / `first()` /
-`last()` / `lag()` / `lead()` transforms. For non-standard window expressions,
-define a `Column` whose `sql` is the window expression and filter on the
-column — SLayer auto-promotes the predicate to a post-aggregation outer
-`WHERE`.
+`last()` / `lag()` / `lead()` transforms. As an advanced escape hatch for a
+non-standard window expression, define a `Column` whose `sql` is that window
+expression and filter on the column — {{product}} auto-promotes the predicate to a
+post-aggregation outer `WHERE`. This is the one documented exception to the
+row-level `Column.sql` rule (see `memory:help.models`); prefer the built-in
+transforms whenever they cover the need.
 
 ## first() and last() — broadcast transforms
 

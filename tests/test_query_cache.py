@@ -26,7 +26,7 @@ import sqlalchemy
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.policy import ColumnFilterRule, SessionPolicy
+from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.cache import (
     CacheConfig,
@@ -809,7 +809,7 @@ class TestPolicyInteraction:
             cache_config=CacheConfig(refresh_keys=[("orders", "MAX(updated_at)")]),
         )
         engine.policy = SessionPolicy(
-            data_filters=[ColumnFilterRule(column="status", value="completed")]
+            ruleset=ColumnFilterRuleset(column="status", value="completed")
         )
         calls = _install_spy(monkeypatch)
         await engine.execute(_sum_query(), cache=True)

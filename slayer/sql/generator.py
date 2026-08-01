@@ -252,7 +252,9 @@ def _wrap_cast_for_type(expr: exp.Expression, dt: Optional[DataType]) -> exp.Exp
     Skipped when ``dt`` is ``None`` (no declared type) or ``DataType.TEXT``
     (cosmetic — SQL TEXT/VARCHAR roundtripping is already a no-op for our
     purposes and ``CAST(... AS TEXT)`` does not unwrap SQLite's
-    JSON-quoted-string return values anyway). Skipped when ``expr`` is a
+    JSON-quoted-string return values anyway). Also skipped when ``dt`` is
+    opaque (``DataType.UNKNOWN``) — there is no such SQL type, so
+    ``CAST(x AS UNKNOWN)`` is invalid in every dialect. Skipped when ``expr`` is a
     plain ``exp.Column`` (possibly qualified ``model.col``) — those are
     bare column references whose runtime type already matches the declared
     type by definition; wrapping them in CAST is dead noise and on SQLite
@@ -260,7 +262,7 @@ def _wrap_cast_for_type(expr: exp.Expression, dt: Optional[DataType]) -> exp.Exp
     to a year). Idempotent: if ``expr`` is already a CAST to the same
     target, return it unchanged.
     """
-    if dt is None or dt == DataType.TEXT:
+    if dt is None or dt == DataType.TEXT or dt.is_opaque:
         return expr
     if isinstance(expr, exp.Column):
         return expr

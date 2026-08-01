@@ -138,6 +138,15 @@ class Column(BaseModel):
     name: str
     sql: str | None = None
     type: DataType = DataType.TEXT
+    db_type: str | None = Field(
+        default=None,
+        description=(
+            "Raw database type string (e.g. 'point', 'jsonb'), retained when "
+            "the declared DataType loses information. Populated by ingestion "
+            "for UNKNOWN (opaque) columns; None for mapped types, where the "
+            "declared DataType already carries everything we need."
+        ),
+    )
     primary_key: bool = False
     description: str | None = None
     label: str | None = None
@@ -541,6 +550,9 @@ class SlayerModel(BaseModel):
 
         A whitelist entry is accepted iff:
 
+        0. **Opaque rule** — the column's type is not opaque. An opaque
+           (``UNKNOWN``) column cannot be aggregated at all, so declaring a
+           whitelist on one is always a mistake.
         1. It is a known aggregation name (built-in or custom on this model).
         2. **PK rule** — if the column is a primary key, the entry must be in
            ``PRIMARY_KEY_AGGREGATIONS`` (``count`` / ``count_distinct`` only),
@@ -564,6 +576,14 @@ class SlayerModel(BaseModel):
         for c in self.columns:
             if c.allowed_aggregations is None:
                 continue
+            if c.type.is_opaque:
+                db_type_note = f" (db_type={c.db_type!r})" if c.db_type else ""
+                raise ValueError(
+                    f"Column '{c.name}'{db_type_note}: allowed_aggregations "
+                    f"cannot be declared on a column of type {c.type} — "
+                    f"aggregations are not supported for that type. Remove "
+                    f"allowed_aggregations, or give the column an operable type."
+                )
             for agg_name in c.allowed_aggregations:
                 if agg_name not in valid_names:
                     raise ValueError(

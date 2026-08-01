@@ -1,17 +1,14 @@
-"""Unit tests for SlayerClient forced-filter policy wiring (DEV-1578).
-
-A ``policy`` passed to ``SlayerClient`` is forwarded to the local
-``SlayerQueryEngine``. Because HTTP mode has no server-side policy support
-yet, passing ``policy`` without ``storage`` (i.e. HTTP mode) fails fast
-rather than silently ignoring the security control.
+"""Unit tests for SlayerClient policy wiring: a policy reaches the local engine, and
+HTTP mode (no storage) fails fast rather than silently dropping the security control.
 """
 
 import pytest
 
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.policy import (
-    ColumnFilterRule,
+    ColumnFilterRuleset,
     JoinFilterRule,
+    JoinFilterRuleset,
     SessionPolicy,
 )
 from slayer.storage.yaml_storage import YAMLStorage
@@ -19,7 +16,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 def _policy():
     return SessionPolicy(
-        data_filters=[ColumnFilterRule(column="organization_uuid", value="7ef3")]
+        ruleset=ColumnFilterRuleset(column="organization_uuid", value="7ef3")
     )
 
 
@@ -54,17 +51,17 @@ def test_no_policy_local_mode_ok(tmp_path):
 
 def _join_policy():
     return SessionPolicy(
-        data_filters=[
-            # Mandatory block backstop (DEV-1627): a join-rule policy must
-            # carry at least one block column rule.
-            ColumnFilterRule(column="organization_uuid", value="7ef3"),
-            JoinFilterRule(
-                target_table="orders",
-                join_path=["orders.customer_id = customers.id"],
-                column="organization_uuid",
-                value="7ef3",
-            )
-        ]
+        ruleset=JoinFilterRuleset(
+            table="customers",
+            column="organization_uuid",
+            value="7ef3",
+            joins=[
+                JoinFilterRule(
+                    target_table="orders",
+                    join_path=["orders.customer_id = customers.id"],
+                )
+            ],
+        )
     )
 
 
