@@ -37,6 +37,7 @@ from slayer.engine.source_bundle import (
     synthetic_model_from_stage_schema,
 )
 from slayer.sql.dialects import SqlDialect, get_dialect
+from slayer.sql.scope_check import maybe_validate_scopes
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 
 
@@ -821,6 +822,13 @@ class SQLGenerator:
         # the outer projection (the outer stage's references to inner columns
         # must resolve to the same ``___``-form alias).
         sql = self._dialect.rewrite_emitted_sql(sql)
+        # DEV-1705: scope-closure validation on the final POST-mangle, pre-RLS
+        # output when SLAYER_VALIDATE_SCOPES is set (no-op otherwise). Post-mangle
+        # is where BigQuery/T-SQL dotted aliases become unambiguous ``___`` names
+        # (pre-mangle dotted refs parse as table.column and both false-flag and
+        # trigger BigQuery's TypeError). Mangling is a scope no-op for other
+        # dialects. RLS is applied downstream by the engine, so this is pre-RLS.
+        maybe_validate_scopes(sql, dialect=self.dialect)
         return sql
 
     def _apply_outer_projection_trim(
@@ -10128,7 +10136,10 @@ def generate_planned_stages(
         sql = generate_from_planned(
             planned_queries[0], bundle=bundle, dialect=dialect,
         )
-        return get_dialect(dialect).rewrite_emitted_sql(sql)
+        sql = get_dialect(dialect).rewrite_emitted_sql(sql)
+        # DEV-1705: validate the final POST-mangle, pre-RLS statement (env-gated).
+        maybe_validate_scopes(sql, dialect=dialect)
+        return sql
 
     schema_by_name = {
         p.stage_schema.relation_name: p.stage_schema
@@ -10185,7 +10196,11 @@ def generate_planned_stages(
     # the per-stage emits already mangled, so mangle once more here
     # (idempotent) to catch the root's own projection.
     sql = root_ast.sql(dialect=dialect, pretty=True)
-    return get_dialect(dialect).rewrite_emitted_sql(sql)
+    sql = get_dialect(dialect).rewrite_emitted_sql(sql)
+    # DEV-1705: validate the final POST-mangle, pre-RLS multi-stage root
+    # (env-gated). One validation per final terminal (single- vs multi-stage).
+    maybe_validate_scopes(sql, dialect=dialect)
+    return sql
 
 
 def _stage_rename_wrapper(*, planned, stage_sql, dialect):

@@ -22,7 +22,7 @@ columns) is preserved.
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 
 from tests._engine_helpers import _engine_generate, _where_text
@@ -202,27 +202,49 @@ class TestSqlModeRuntime:
     async def test_model_filter_with_double_underscore_join_path_enriches(self) -> None:
         # ``customers__regions.name`` is a ``__``-delimited join path —
         # parse_sql_predicate must preserve it as one column ref so the
-        # downstream join detection in _scan_filter_column_ref still
-        # recognises the path. This test exercises only the parse +
-        # enrichment path; the actual join resolution requires a richer
-        # fixture covered by the integration tier.
+        # downstream join detection in _scan_filter_column_ref recognises the
+        # path and pulls the two-hop ``m → customers → regions`` join chain.
+        # With a real join target the ``__``-alias resolves to a bound
+        # ``LEFT JOIN r AS customers__regions``, so the emitted SQL is
+        # scope-closed AND the ``__``-path survives into it.
+        regions = SlayerModel(
+            name="regions", sql_table="r", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+            ],
+        )
+        customers = SlayerModel(
+            name="customers", sql_table="c", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.INT),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        )
         model = SlayerModel(
             name="m",
             sql_table="t",
             data_source="test",
             filters=["customers__regions.name = 'EU'"],
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.INT),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         query = SlayerQuery(
             source_model="m",
             measures=[ModelMeasure(formula="*:count")],
         )
-        # No real join target on this minimal fixture, so the join
-        # walker resolves nothing — we just need the filter parse to
-        # not raise and the ``__``-path to survive into the emitted SQL.
-        sql = await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(
+            query=query, model=model, extra_models=[customers, regions],
+        )
         assert "customers__regions.name" in sql, (
             f"__-delimited join path dropped from emitted SQL:\n{sql}"
+        )
+        assert "AS customers__regions" in sql, (
+            f"__-path did not resolve to a bound join alias:\n{sql}"
         )
 
 
