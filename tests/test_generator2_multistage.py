@@ -380,8 +380,11 @@ async def test_multistage_tsql_root_emit_mangles_bracketed_aliases(harness):
     _, storage, _ = harness
     planned, bundle = await _two_stage_bundle_and_plan(storage)
     sql = generate_planned_stages(planned, bundle=bundle, dialect="tsql")
-    assert '"orders.' not in sql and '"stage1.' not in sql, (
-        f"multi-stage T-SQL SQL leaks ANSI-quoted dotted identifiers:\n{sql}"
+    assert '"orders.' not in sql, (
+        f"multi-stage T-SQL SQL leaks an ANSI-quoted dotted 'orders.' identifier:\n{sql}"
+    )
+    assert '"stage1.' not in sql, (
+        f"multi-stage T-SQL SQL leaks an ANSI-quoted dotted 'stage1.' identifier:\n{sql}"
     )
     # And no BRACKETED dotted identifier (the T-SQL quote form) survives — a
     # `[stage1.amount_sum]` would mean the mangle didn't fire on that alias.
@@ -391,3 +394,45 @@ async def test_multistage_tsql_root_emit_mangles_bracketed_aliases(harness):
             f"[{identifier}]:\n{sql}"
         )
     assert "___" in sql, f"multi-stage T-SQL mangling did not fire:\n{sql}"
+
+
+async def test_opaque_dim_grouped_in_downstream_stage_rejected(tmp_path):
+    """An opaque column projected raw in one stage and GROUPED in the next must
+    still be rejected — the opaque-dimension guard resolves the declared type
+    across the ``StageSchema`` boundary, not only at the ``ModelScope`` origin.
+
+    Regression for the downstream-grouping gap that allowing raw-row opaque
+    projection (``distinct_dimension_values=False``, DEV-1543) opened: stage 1
+    legally projects the opaque ``loc`` as a raw value, but the root stage groups
+    by it — which the database would reject (a ``point`` has no equality
+    operator), so generation must fail up front with an actionable message.
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_datasource(
+        DatasourceConfig(name="prod", type="sqlite", database=":memory:")
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="places",
+            sql_table="places",
+            data_source="prod",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="city", type=DataType.TEXT),
+                Column(name="loc", type=DataType.UNKNOWN, db_type="point"),
+            ],
+        )
+    )
+    stage1 = SlayerQuery(
+        name="s1",
+        source_model="places",
+        dimensions=["loc", "city"],
+        distinct_dimension_values=False,
+    )
+    root = SlayerQuery(
+        source_model="s1",
+        dimensions=["loc"],
+        measures=[{"formula": "city:count"}],
+    )
+    with pytest.raises(ValueError, match="cannot be used as a dimension"):
+        await _new_sql(storage=storage, stages=[stage1, root])

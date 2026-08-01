@@ -1024,6 +1024,62 @@ def _type_for_dimension(
     return col.type if col is not None else None
 
 
+def _opaque_dim_type(
+    *,
+    scope: Union[ModelScope, StageSchema],
+    full_name: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[DataType]:
+    """Declared type of a query dimension, for the opaque-grouping guard only.
+
+    Resolves BOTH a ``ModelScope`` origin (via ``_type_for_dimension``) AND a
+    downstream ``StageSchema`` (via its typed ``columns``). ``_type_for_dimension``
+    deliberately returns ``None`` for a StageSchema — that ``None`` is load-bearing
+    for downstream typing (``_query_as_model`` coercion) and must not change — so
+    the guard needs its own resolver to catch an opaque column projected in one
+    stage and grouped in the next.
+    """
+    if isinstance(scope, StageSchema):
+        col = scope.get(full_name)
+        return col.type if col is not None else None
+    return _type_for_dimension(scope=scope, full_name=full_name, bundle=bundle)
+
+
+def _reject_opaque_grouping_dim(
+    *,
+    query: SlayerQuery,
+    scope: Union[ModelScope, StageSchema],
+    full_name: str,
+    bundle: ResolvedSourceBundle,
+) -> None:
+    """Raise if ``full_name`` is an opaque dimension this query will GROUP BY.
+
+    Grouping by an opaque column (``DataType.UNKNOWN`` — e.g. a PostGIS ``point``
+    or any type with no equality operator) emits SQL the database rejects, so we
+    fail with an actionable message instead of a raw driver error. Only an
+    *actually grouped* dimension is refused: aggregating queries and dim-only
+    DISTINCT queries group, but raw-row mode (``distinct_dimension_values=False``
+    with no measures, DEV-1543) projects dimensions without a top-level GROUP BY,
+    so an opaque column is legal there — and a downstream stage that groups such a
+    projected value is still caught via the StageSchema (see ``_opaque_dim_type``).
+    Checked on the declared type *before* ``bind_expr`` expands the column's
+    ``sql``, so an opaque *derived* column is caught by its type rather than
+    tripping the DEV-1410 cycle check first. (PR #259 "Unknown type" main-parity:
+    the legacy guard lived in ``enrichment._resolve_dimensions``, which the typed
+    pipeline bypasses.)
+    """
+    if not (bool(query.measures) or query.distinct_dimension_values):
+        return
+    dim_type = _opaque_dim_type(scope=scope, full_name=full_name, bundle=bundle)
+    if dim_type is not None and dim_type.is_opaque:
+        raise ValueError(
+            f"Column '{full_name}' cannot be used as a dimension: its type does "
+            f"not support the GROUP BY / DISTINCT this query requires. Define a "
+            f"derived column that extracts a comparable value instead, e.g. "
+            f"sql=\"payload->>'status'\" with type TEXT."
+        )
+
+
 def _saved_model_measure_type(
     *, scope: Union[ModelScope, StageSchema], formula: str,
 ) -> Optional[DataType]:
@@ -1065,33 +1121,11 @@ def _declared_measures_from_query(
     # keep the P1 rejection.
     flat_scope = isinstance(scope, StageSchema)
     declared: List[DeclaredMeasure] = []
-    # An opaque dimension is only a problem when it becomes a GROUP BY / DISTINCT
-    # key. Aggregating queries and dim-only DISTINCT queries group; raw-row mode
-    # (``distinct_dimension_values=False`` with no measures, DEV-1543) projects
-    # dimensions without a top-level GROUP BY, so an opaque column is legal there.
-    dims_are_grouped = bool(query.measures) or query.distinct_dimension_values
     for d in (query.dimensions or []):
         full = d.full_name
-        dim_type = _type_for_dimension(
-            scope=scope, full_name=full, bundle=bundle,
+        _reject_opaque_grouping_dim(
+            query=query, scope=scope, full_name=full, bundle=bundle,
         )
-        # Grouping by an opaque column (``DataType.UNKNOWN`` — e.g. a PostGIS
-        # ``point`` or any type with no equality operator) emits SQL the database
-        # rejects, so fail with an actionable message instead of a raw driver
-        # error. Only refused when the dim is actually grouped (see
-        # ``dims_are_grouped``); a raw-row projection of an opaque column is
-        # legal. Checked on the declared type *before* ``bind_expr`` expands the
-        # column's ``sql``, so an opaque *derived* column is caught by its type
-        # rather than tripping the DEV-1410 cycle check first. PR #259 ("Unknown
-        # type") main-parity: the legacy guard lived in
-        # ``enrichment._resolve_dimensions``, which the typed pipeline bypasses.
-        if dims_are_grouped and dim_type is not None and dim_type.is_opaque:
-            raise ValueError(
-                f"Column '{full}' cannot be used as a dimension: its type does "
-                f"not support the GROUP BY / DISTINCT this query requires. Define "
-                f"a derived column that extracts a comparable value instead, e.g. "
-                f"sql=\"payload->>'status'\" with type TEXT."
-            )
         bound = bind_expr(
             parsed=parse_expr(full, allow_dunder=flat_scope),
             scope=scope,
@@ -1100,6 +1134,9 @@ def _declared_measures_from_query(
         flat_name = _flatten_dotted(full)
         fmt, desc = _format_description_for_dimension(
             scope=scope, full_name=full,
+        )
+        dim_type = _type_for_dimension(
+            scope=scope, full_name=full, bundle=bundle,
         )
         declared.append(DeclaredMeasure(
             bound=bound,
