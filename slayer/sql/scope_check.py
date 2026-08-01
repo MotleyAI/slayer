@@ -21,7 +21,10 @@ reference the session-policy transform (``slayer/sql/session_policy.py``)
 intentionally injects post-generation: a ``_rls_src``-qualified column inside a
 forced-filter ``EXISTS``. Dialect-aware via sqlglot.
 
-Intended to run on **pre-mangle, pre-RLS** generator output. Setting
+Intended to run on **post-mangle, pre-RLS** generator output (dialect alias
+mangling collapses BigQuery/T-SQL dotted aliases to ``___`` first — pre-mangle
+those dotted refs parse as ``table.column`` and both false-flag and trigger
+BigQuery's ``TypeError``; mangling is identity for other dialects). Setting
 ``SLAYER_VALIDATE_SCOPES=1`` makes the generator call ``maybe_validate_scopes``
 on every emitted statement (runtime debugging); the test harness enables it
 suite-wide.
@@ -42,9 +45,10 @@ from sqlglot.optimizer.scope import Scope, traverse_scope
 _RLS_SRC = "_rls_src"
 
 # sqlglot raises ``TypeError`` parsing some BigQuery inputs (dotted-alias
-# shapes). Validation runs pre-mangle so this is rare; when it happens for
-# BigQuery we record a bounded, reported skip rather than erroring. Residual
-# ownership: Stage 9 (DEV-1713). Any other dialect re-raises.
+# shapes). Validation runs post-mangle (dots already collapsed to ``___``) so
+# this is rare; when it happens for BigQuery we record a bounded, reported skip
+# rather than erroring. Residual ownership: Stage 9 (DEV-1713). Any other
+# dialect re-raises.
 _SQLGLOT_TYPEERROR_DIALECTS = frozenset({"bigquery"})
 
 _ENV_FLAG = "SLAYER_VALIDATE_SCOPES"

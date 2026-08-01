@@ -84,7 +84,7 @@ def _disable_embedding_channel_by_default(monkeypatch: pytest.MonkeyPatch) -> No
 def _enable_scope_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     """DEV-1705: validate scope-closure on every generated statement.
 
-    Sets ``SLAYER_VALIDATE_SCOPES=1`` so the generator's pre-mangle, pre-RLS
+    Sets ``SLAYER_VALIDATE_SCOPES=1`` so the generator's post-mangle, pre-RLS
     ``maybe_validate_scopes`` hook (``slayer/sql/scope_check.py``) runs for
     every emitted statement across the suite. A *provable* out-of-scope
     reference raises ``ScopeLeakError`` at generation time — turning

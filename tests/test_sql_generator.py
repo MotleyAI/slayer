@@ -3875,68 +3875,11 @@ class TestMeasureSourceSqlJoinInference:
         # Sibling recursive inlining preserves the path alias.
         assert "customers__regions.population" in sql
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1531: a LOCAL first/last aggregate whose SOURCE column "
-            "is a derived (ColumnSqlKey) column whose Column.sql crosses "
-            "a join emits invalid SQL at runtime — the inner ranked "
-            "subquery has the LEFT JOINs (DEV-1502 added them), but the "
-            "outer SELECT's MAX(CASE WHEN _last_rn = 1 THEN <expr> END) "
-            "still references the cross-table-qualified expression "
-            "(customers__regions.payment_amount) which is out of scope "
-            "outside the subquery (only the orders alias is). Pre-DEV-"
-            "1502 this also broke for plain dotted derived sources "
-            "(DEV-1410 territory). Fix lives in _build_first_last_base_"
-            "select at slayer/sql/generator.py:4247 — materialise the "
-            "expanded source expression inside the inner subquery as a "
-            "_val_<sid> alias and rewrite the outer body. Auto-promotes "
-            "when the materialisation fix lands."
-        ),
-    )
-    async def test_local_last_with_path_aliased_derived_source_xfail(
-        self, engine: SlayerQueryEngine
-    ) -> None:
-        """Tracks DEV-1531 — the first/last + cross-table derived source
-        runtime bug DEV-1502 unmasked. Uses ``execute`` (not dry-run) so
-        the actual ``no such column`` runtime failure surfaces, not just
-        the dry-run substring check.
-        """
-        model = self._orders_model(extra_columns=[
-            Column(
-                name="region_payment",
-                sql="customers__regions.payment_amount",
-                type=DataType.DOUBLE,
-            ),
-        ])
-        await engine.storage.save_model(model)
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
-        )
-        sql = (await engine.execute(query, dry_run=True)).sql
-        # Joins ARE pulled into the inner subquery via DEV-1502 — that
-        # part works. What's broken is the outer SELECT referencing the
-        # path-aliased ref out of scope. We pin the END STATE: the agg
-        # body must reference the path alias via a materialised inner-
-        # subquery projection (e.g. ``orders._val_<sid>``), not raw.
-        # Without the DEV-1531 fix, the dry-run still emits the raw
-        # ``customers__regions.payment_amount`` inside MAX(CASE...),
-        # so this assertion fails strict-xfail-style.
-        normalized = _norm(sql)
-        # The bug: outer MAX(...) references customers__regions.payment_amount.
-        # After the fix: the outer MAX should reference a materialised inner
-        # column (no cross-table qualifier inside the outer aggregate body).
-        outer_select_end = normalized.find("FROM (")
-        assert outer_select_end > 0, normalized
-        outer_select = normalized[:outer_select_end]
-        # End state we want: outer SELECT does NOT directly reference the
-        # path-aliased column (would be in scope only inside the subquery).
-        assert "customers__regions.payment_amount" not in outer_select, (
-            f"DEV-1531: outer SELECT references the path-aliased ref "
-            f"outside the ranked subquery's scope; would fail at runtime "
-            f"with `no such column`. Outer SELECT body:\n{outer_select}"
-        )
+    # DEV-1531 local first/last cross-join source materialisation is pinned by
+    # `test_local_last_with_path_aliased_derived_source` (in the DEV-1531 harvest
+    # block above, with the stronger `_assert_ref_only_in_val` assertion). The
+    # earlier tracking placeholder was consolidated into it (CodeRabbit, PR #264)
+    # so a single strict-xfail flips at Stage 5.
 
     async def test_post_transform_wrapping_path_aliased_measure(
         self, engine: SlayerQueryEngine
