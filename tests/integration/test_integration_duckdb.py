@@ -802,3 +802,276 @@ async def test_integration_duckdb_cross_model_derived_columnsql(
     assert response.row_count == 2
     assert float(response.data[0]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
     assert float(response.data[1]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
+
+
+# --------------------------------------------------------------------------- #
+# DEV-1531 harvest (Stage 1): executed-value coverage for first/last over a
+# cross-join derived source. Pinned strict-xfail to Stage 5 (DEV-1709) — until
+# the crossed value is materialised inside the ranked subquery, these queries
+# emit an out-of-scope `regions.payment_amount` ref and fail at execution.
+# --------------------------------------------------------------------------- #
+_DEV1531_STAGE5 = (
+    "DEV-1709 (Stage 5): DEV-1531 — first/last over a cross-join derived source "
+    "must materialise the crossed value inside the ranked subquery; today the "
+    "path-qualified ref leaks out of scope and fails at execution. Auto-promotes "
+    "at Stage 5."
+)
+
+
+@pytest.fixture(scope="module")
+def _dev1531_duckdb_storage(tmp_path_factory):
+    """orders → customers → regions chain with a cross-join derived column on
+    orders (``customers__regions.payment_amount``) plus a single-hop derived
+    column (``customers.balance``)."""
+    from slayer.core.models import ModelJoin
+
+    tmp_path = tmp_path_factory.mktemp("dev1531_duckdb")
+    db_path = tmp_path / "dev1531.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, payment_amount DECIMAL(10,2) NOT NULL)")
+    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, balance DECIMAL(10,2) NOT NULL)")
+    conn.execute("""
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            customer_id INTEGER,
+            amount DECIMAL(10,2) NOT NULL,
+            created_at TIMESTAMP NOT NULL
+        )
+    """)
+    conn.executemany("INSERT INTO regions VALUES (?, ?)", [(1, 10.0), (2, 20.0)])
+    conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [(1, 1, 100.0), (2, 2, 200.0)])
+    conn.executemany(
+        "INSERT INTO orders VALUES (?, ?, ?, ?)",
+        [
+            (1, 1, 100, "2024-01-01 10:00:00"),   # region 1 (pay 10), earliest
+            (2, 2, 200, "2024-03-01 10:00:00"),   # region 2 (pay 20), latest
+            (3, 1, 50, "2024-02-01 10:00:00"),    # region 1 (pay 10), middle
+        ],
+    )
+    conn.close()
+
+    storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+    run_sync(storage.save_datasource(DatasourceConfig(
+        name="testduckdb", type="duckdb", database=str(db_path),
+    )))
+    run_sync(storage.save_model(SlayerModel(
+        name="regions", sql_table="regions", data_source="testduckdb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="payment_amount", sql="payment_amount", type=DataType.DOUBLE),
+        ],
+    )))
+    run_sync(storage.save_model(SlayerModel(
+        name="customers", sql_table="customers", data_source="testduckdb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.INT),
+            Column(name="balance", sql="balance", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+    )))
+    run_sync(storage.save_model(SlayerModel(
+        name="orders", sql_table="orders", data_source="testduckdb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.INT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="region_payment", sql="customers__regions.payment_amount", type=DataType.DOUBLE),
+            Column(name="cust_balance", sql="customers.balance", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )))
+    return storage
+
+
+@pytest.fixture
+def dev1531_env(_dev1531_duckdb_storage):
+    return SlayerQueryEngine(storage=_dev1531_duckdb_storage)
+
+
+@pytest.mark.integration
+@pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
+class TestDev1531CrossJoinFirstLast:
+    async def test_last_path_aliased_source_value(self, dev1531_env: SlayerQueryEngine) -> None:
+        # Latest order (2024-03-01) → customer 2 → region 2 → payment 20.0.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+        )
+        result = await dev1531_env.execute(query=query)
+        assert float(result.data[0]["orders.region_payment_last_created_at"]) == pytest.approx(20.0)
+
+    async def test_first_path_aliased_source_value(self, dev1531_env: SlayerQueryEngine) -> None:
+        # Earliest order (2024-01-01) → customer 1 → region 1 → payment 10.0.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:first(orders.created_at)")],
+        )
+        result = await dev1531_env.execute(query=query)
+        assert float(result.data[0]["orders.region_payment_first_created_at"]) == pytest.approx(10.0)
+
+    async def test_single_dot_source_value(self, dev1531_env: SlayerQueryEngine) -> None:
+        # Latest order → customer 2 → balance 200.0.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="cust_balance:last(orders.created_at)")],
+        )
+        result = await dev1531_env.execute(query=query)
+        assert float(result.data[0]["orders.cust_balance_last_created_at"]) == pytest.approx(200.0)
+
+    async def test_cross_join_last_coexists_with_regular_sum(self, dev1531_env: SlayerQueryEngine) -> None:
+        # region_payment:last → 20.0; amount:sum → 350.0 (100+200+50).
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_payment:last(orders.created_at)"),
+                ModelMeasure(formula="amount:sum"),
+            ],
+        )
+        result = await dev1531_env.execute(query=query)
+        row = result.data[0]
+        assert float(row["orders.region_payment_last_created_at"]) == pytest.approx(20.0)
+        assert float(row["orders.amount_sum"]) == pytest.approx(350.0)
+
+    async def test_having_on_cross_join_last(self, dev1531_env: SlayerQueryEngine) -> None:
+        # HAVING region_payment:last > 15 → 20.0 passes → one row.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+            filters=["region_payment:last(orders.created_at) > 15"],
+        )
+        result = await dev1531_env.execute(query=query)
+        assert result.row_count == 1
+        assert float(result.data[0]["orders.region_payment_last_created_at"]) == pytest.approx(20.0)
+
+    async def test_having_on_cross_join_last_excludes(self, dev1531_env: SlayerQueryEngine) -> None:
+        # HAVING region_payment:last > 25 → 20.0 fails → zero rows.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+            filters=["region_payment:last(orders.created_at) > 25"],
+        )
+        result = await dev1531_env.execute(query=query)
+        assert result.row_count == 0
+
+
+# --------------------------------------------------------------------------- #
+# F1 / F4 semantic pins — executed-value coverage (decision 3A). These pin
+# CURRENT, intended behavior (Codex F1/F4 semantic decisions) and stay GREEN.
+#   F4: a scalar (no-dimension) cross-model aggregate is unaffected by a
+#       host-local filter — it sums over ALL target rows.
+#   F1: a 1:N crossing aggregate keeps multiply-per-match semantics.
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def _f1f4_duckdb_storage(tmp_path_factory):
+    """orders → customers chain. customer 3 has NO orders; customer 2 is
+    reached only via an UNPAID order — so a host `status='paid'` filter that
+    (wrongly) leaked into the target scalar would change the customer sum."""
+    from slayer.core.models import ModelJoin
+
+    tmp_path = tmp_path_factory.mktemp("f1f4_duckdb")
+    db_path = tmp_path / "f1f4.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, balance DECIMAL(10,2) NOT NULL)")
+    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, status TEXT, amount DECIMAL(10,2))")
+    conn.executemany("INSERT INTO customers VALUES (?, ?)", [(1, 100.0), (2, 200.0), (3, 400.0)])
+    conn.executemany(
+        "INSERT INTO orders VALUES (?, ?, ?, ?)",
+        [
+            (1, 1, "paid", 10.0),     # customer 1, paid
+            (2, 1, "paid", 20.0),     # customer 1, paid (1:N — two paid orders)
+            (3, 2, "unpaid", 30.0),   # customer 2, reached only via unpaid
+            # customer 3 (balance 400) has NO orders at all.
+        ],
+    )
+    conn.close()
+
+    storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+    run_sync(storage.save_datasource(DatasourceConfig(
+        name="f1f4duckdb", type="duckdb", database=str(db_path),
+    )))
+    run_sync(storage.save_model(SlayerModel(
+        name="customers", sql_table="customers", data_source="f1f4duckdb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="balance", sql="balance", type=DataType.DOUBLE),
+        ],
+    )))
+    run_sync(storage.save_model(SlayerModel(
+        name="orders", sql_table="orders", data_source="f1f4duckdb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.INT),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )))
+    return storage
+
+
+@pytest.fixture
+def f1f4_env(_f1f4_duckdb_storage):
+    return SlayerQueryEngine(storage=_f1f4_duckdb_storage)
+
+
+@pytest.mark.integration
+class TestF1F4SemanticValues:
+    async def test_f4_scalar_cross_model_agg_ignores_host_paid_filter(self, f1f4_env) -> None:
+        # F4: scalar customers.balance:sum sums ALL customers (100+200+400=700),
+        # regardless of the host-local status='paid' filter (which, if it
+        # leaked into the target-rooted CTE, would drop customer 3 [no orders]
+        # and customer 2 [reached only via an unpaid order]).
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="customers.balance:sum")],
+            filters=["status = 'paid'"],
+        )
+        result = await f1f4_env.execute(query=query)
+        assert float(result.data[0]["orders.customers.balance_sum"]) == pytest.approx(700.0)
+
+    async def test_f4_scalar_cross_model_agg_ignores_host_unpaid_filter(self, f1f4_env) -> None:
+        # F4, second host filter (status='unpaid') — still the full 700; the
+        # host filter never constrains the target-rooted scalar aggregate.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="customers.balance:sum")],
+            filters=["status = 'unpaid'"],
+        )
+        result = await f1f4_env.execute(query=query)
+        assert float(result.data[0]["orders.customers.balance_sum"]) == pytest.approx(700.0)
+
+    async def test_f4_scalar_cross_model_agg_no_matching_host_rows(self, f1f4_env) -> None:
+        # F4 "without matching host rows": a host filter matching NO orders
+        # empties the host base, so there is no host row to broadcast the
+        # target scalar onto — the query returns zero rows. The host filter
+        # never *reduced* the customer sum (it does not reach the target-rooted
+        # CTE); it only removed the host grain the scalar attaches to. Current,
+        # intended behavior — pinned contractually per the F4 decision.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="customers.balance:sum")],
+            filters=["status = 'nonexistent'"],
+        )
+        result = await f1f4_env.execute(query=query)
+        assert result.row_count == 0, result.data
+
+    async def test_cross_model_scalar_broadcasts_to_every_host_group(self, f1f4_env) -> None:
+        # A cross-model aggregate that shares no grain with the host dimension
+        # (customers.balance:sum by orders.status) is a scalar broadcast to
+        # every host group — each status shows the full 700. This pins current
+        # behavior and complements the F1 no-dedup SQL-shape pin in
+        # tests/test_carrier_scope_matrix.py::TestSemanticPinsSqlShape.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="customers.balance:sum")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        result = await f1f4_env.execute(query=query)
+        by_status = {
+            row["orders.status"]: float(row["orders.customers.balance_sum"])
+            for row in result.data
+        }
+        assert by_status["paid"] == pytest.approx(700.0), by_status
+        assert by_status["unpaid"] == pytest.approx(700.0), by_status

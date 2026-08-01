@@ -27,6 +27,26 @@ poetry run pytest tests/integration/test_integration.py
 poetry run pytest tests/test_mcp_server.py -v
 ```
 
+### Scope-closure validation
+
+The test suite validates every generated SQL statement for **scope closure** —
+that no SELECT scope references a table alias it does not bind, and no
+cross-scope reference names a column an inner scope does not project. This runs
+automatically under pytest (`SLAYER_VALIDATE_SCOPES=1` is set for the whole
+suite), so a scope leak fails at generation time.
+
+To enable the same check at runtime for debugging (e.g. when a generated query
+fails against a live database), set the environment variable:
+
+```bash
+SLAYER_VALIDATE_SCOPES=1 poetry run slayer serve
+```
+
+A provable out-of-scope reference raises `ScopeLeakError` from
+`slayer/sql/scope_check.py`. The validator is deliberately conservative (no
+false positives): unqualified references and physical-table column names are
+treated as unverifiable and never flagged.
+
 ## Linting
 
 ```bash

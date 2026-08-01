@@ -230,6 +230,30 @@ _XFAIL_WINDOWED = pytest.mark.xfail(
     ),
 )
 
+# DEV-1705 Stage-1 harvest reason strings (in-source strict-xfail pins; the
+# owning DEV-1703 stage auto-promotes each when its fix lands).
+_DEV1531_STAGE5 = (
+    "DEV-1709 (Stage 5): DEV-1531 — first/last over a cross-join derived source "
+    "must materialise the crossed value as a `_val_<n>` projection inside the "
+    "ranked subquery (Law-2). Today the path-qualified ref leaks into the outer "
+    "aggregate body. Auto-promotes when Stage 5 lands."
+)
+_DEV1526_STAGE4 = (
+    "DEV-1708 (Stage 4): DEV-1526 — a cross-model aggregate whose target "
+    "column's Column.sql crosses a FURTHER join must pull that LEFT JOIN into "
+    "the `_cm_*` CTE (Law-1 inside the CTE ScopeFrame). Auto-promotes at Stage 4."
+)
+_DEV1496_STAGE10 = (
+    "DEV-1714 (Stage 10): DEV-1496 — duration-windowed measures must emit a "
+    "`_wm_` range-join CTE and RAISE (not silently degrade) on unsupported "
+    "shapes. Today the window kwarg is dropped. Auto-promotes at Stage 10."
+)
+_DEV1474_STAGE7 = (
+    "DEV-1711 (Stage 7): DEV-1474 — cross-model partition in a time_shift CTE "
+    "(stage 7b.12) is not implemented on the typed pipeline. Reconstructed from "
+    "the issue (no committed worktree survived). Auto-promotes at Stage 7."
+)
+
 
 @pytest.fixture
 def orders_model() -> SlayerModel:
@@ -3467,6 +3491,249 @@ class TestMeasureSourceSqlJoinInference:
         return SlayerQueryEngine(storage=storage)
 
     # ------------------------------------------------------------------
+    # DEV-1531 harvest (Stage 1): first/last over a cross-join derived
+    # source must materialise the crossed value as a `_val_<n>` projection
+    # inside the ranked subquery instead of leaking the path-qualified ref
+    # into the outer aggregate body. Fix lands Stage 5 (DEV-1709 / Law-2 in
+    # the ranked subquery) — pinned strict-xfail until then. The two no-op
+    # negatives stay green (local/bare sources need no materialisation).
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _assert_ref_only_in_val(sql: str, ref: str) -> None:
+        """Assert ``ref`` (a cross-table-qualified column) appears ONLY as
+        the source of a materialised ``<ref> AS _val_<n>`` projection inside
+        the ranked subquery — i.e. it never leaks into an outer-scope
+        aggregate body / HAVING / composite where it would fail at runtime
+        with ``no such column``.
+        """
+        norm = _norm(sql)
+        first_proj = _re.search(rf"{_re.escape(ref)} AS _val_\d+", norm)
+        assert first_proj is not None, (
+            f"DEV-1531: expected a materialised `{ref} AS _val_<n>` "
+            f"projection inside the ranked subquery:\n{norm}"
+        )
+        first_subquery = norm.find("FROM (")
+        assert first_subquery != -1 and first_proj.start() > first_subquery, (
+            f"DEV-1531: `_val` projection of `{ref}` is not inside the ranked "
+            f"subquery:\n{norm}"
+        )
+        stripped = _re.sub(rf"{_re.escape(ref)} AS _val_\d+", "", norm)
+        assert ref not in stripped, (
+            f"DEV-1531: `{ref}` leaked outside the ranked subquery's _val "
+            f"projection (would fail with `no such column`):\n{norm}"
+        )
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
+    async def test_local_last_with_path_aliased_derived_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        join_aliases = _join_aliases(sql)
+        assert "customers" in join_aliases
+        assert "customers__regions" in join_aliases
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        assert "THEN orders._val" in _norm(sql), sql
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
+    async def test_local_last_with_single_dot_derived_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        await engine.storage.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+                Column(name="balance", sql="balance", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        ))
+        model = self._orders_model(extra_columns=[
+            Column(name="cust_balance", sql="customers.balance", type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="cust_balance:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        assert "customers" in _join_aliases(sql)
+        self._assert_ref_only_in_val(sql, "customers.balance")
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
+    async def test_filtered_last_cross_join_value_materialized(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE, filter="orders.amount > 100"),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        assert "_last_rn_f0" in sql, sql
+        assert "_match_f0" in sql, sql
+        assert "THEN orders._val" in _norm(sql), sql
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
+    async def test_two_last_sharing_value_dedupe(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment_a", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+            Column(name="region_payment_b", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_payment_a:last(orders.created_at)"),
+                ModelMeasure(formula="region_payment_b:last(orders.created_at)"),
+            ],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        norm = _norm(sql)
+        assert norm.count(" AS _val") == 1, (
+            f"expected exactly one deduped _val projection:\n{sql}"
+        )
+        val_alias = _re.search(r"AS (_val_\d+)", norm).group(1)
+        assert '"orders.region_payment_a_last_created_at"' in norm, sql
+        assert '"orders.region_payment_b_last_created_at"' in norm, sql
+        assert norm.count(f"THEN orders.{val_alias}") == 2, sql
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
+    async def test_same_sql_different_type_no_bad_dedupe(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        model = self._orders_model(extra_columns=[
+            Column(name="region_pay_d", sql="customers__regions.payment_amount * 2",
+                   type=DataType.DOUBLE),
+            Column(name="region_pay_i", sql="customers__regions.payment_amount * 2",
+                   type=DataType.INT),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_pay_d:last(orders.created_at)"),
+                ModelMeasure(formula="region_pay_i:last(orders.created_at)"),
+            ],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        norm = _norm(sql)
+        assert norm.count(" AS _val") == 2, (
+            f"same SQL, different type must not dedupe onto one _val:\n{sql}"
+        )
+        assert _re.search(r"AS DOUBLE PRECISION\) AS _val_\d+", norm), sql
+        assert _re.search(r"AS INT\) AS _val_\d+", norm), sql
+        outer = norm[:norm.find("FROM (")]
+        assert "customers__regions.payment_amount" not in outer, sql
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
+    async def test_composite_last_cross_join_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at) + 1")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
+    async def test_having_last_cross_join_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+            filters=["region_payment:last(orders.created_at) > 100"],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        norm = _norm(sql)
+        assert "HAVING" in norm, sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        assert norm.count(" AS _val") == 1, sql
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
+    async def test_val_alias_avoids_source_column_collision(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        model = self._orders_model(extra_columns=[
+            Column(name="_val_0", sql="amount", type=DataType.DOUBLE),
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        norm = _norm(sql)
+        assert "customers__regions.payment_amount AS _val_0" not in norm, sql
+        assert "customers__regions.payment_amount AS _val_1" in norm, sql
+        assert "THEN orders._val_1" in norm, sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+
+    async def test_local_only_derived_first_last_no_val(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """No-op negative (green): a LOCAL-only derived source (``amount * 2``)
+        crosses no join, so no ``_val`` materialisation happens."""
+        model = self._orders_model(extra_columns=[
+            Column(name="double_amount", sql="amount * 2", type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="double_amount:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        assert "_val" not in sql, sql
+        assert _join_aliases(sql) == set(), sql
+
+    async def test_bare_source_first_last_no_val(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """No-op negative (green): a bare same-table source needs no
+        materialisation."""
+        model = self._orders_model()
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        assert "_val" not in sql, sql
+        assert "THEN orders.amount" in _norm(sql), sql
+
+    # ------------------------------------------------------------------
     # Core path-alias discovery
     # ------------------------------------------------------------------
 
@@ -3608,68 +3875,11 @@ class TestMeasureSourceSqlJoinInference:
         # Sibling recursive inlining preserves the path alias.
         assert "customers__regions.population" in sql
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1531: a LOCAL first/last aggregate whose SOURCE column "
-            "is a derived (ColumnSqlKey) column whose Column.sql crosses "
-            "a join emits invalid SQL at runtime — the inner ranked "
-            "subquery has the LEFT JOINs (DEV-1502 added them), but the "
-            "outer SELECT's MAX(CASE WHEN _last_rn = 1 THEN <expr> END) "
-            "still references the cross-table-qualified expression "
-            "(customers__regions.payment_amount) which is out of scope "
-            "outside the subquery (only the orders alias is). Pre-DEV-"
-            "1502 this also broke for plain dotted derived sources "
-            "(DEV-1410 territory). Fix lives in _build_first_last_base_"
-            "select at slayer/sql/generator.py:4247 — materialise the "
-            "expanded source expression inside the inner subquery as a "
-            "_val_<sid> alias and rewrite the outer body. Auto-promotes "
-            "when the materialisation fix lands."
-        ),
-    )
-    async def test_local_last_with_path_aliased_derived_source_xfail(
-        self, engine: SlayerQueryEngine
-    ) -> None:
-        """Tracks DEV-1531 — the first/last + cross-table derived source
-        runtime bug DEV-1502 unmasked. Uses ``execute`` (not dry-run) so
-        the actual ``no such column`` runtime failure surfaces, not just
-        the dry-run substring check.
-        """
-        model = self._orders_model(extra_columns=[
-            Column(
-                name="region_payment",
-                sql="customers__regions.payment_amount",
-                type=DataType.DOUBLE,
-            ),
-        ])
-        await engine.storage.save_model(model)
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
-        )
-        sql = (await engine.execute(query, dry_run=True)).sql
-        # Joins ARE pulled into the inner subquery via DEV-1502 — that
-        # part works. What's broken is the outer SELECT referencing the
-        # path-aliased ref out of scope. We pin the END STATE: the agg
-        # body must reference the path alias via a materialised inner-
-        # subquery projection (e.g. ``orders._val_<sid>``), not raw.
-        # Without the DEV-1531 fix, the dry-run still emits the raw
-        # ``customers__regions.payment_amount`` inside MAX(CASE...),
-        # so this assertion fails strict-xfail-style.
-        normalized = _norm(sql)
-        # The bug: outer MAX(...) references customers__regions.payment_amount.
-        # After the fix: the outer MAX should reference a materialised inner
-        # column (no cross-table qualifier inside the outer aggregate body).
-        outer_select_end = normalized.find("FROM (")
-        assert outer_select_end > 0, normalized
-        outer_select = normalized[:outer_select_end]
-        # End state we want: outer SELECT does NOT directly reference the
-        # path-aliased column (would be in scope only inside the subquery).
-        assert "customers__regions.payment_amount" not in outer_select, (
-            f"DEV-1531: outer SELECT references the path-aliased ref "
-            f"outside the ranked subquery's scope; would fail at runtime "
-            f"with `no such column`. Outer SELECT body:\n{outer_select}"
-        )
+    # DEV-1531 local first/last cross-join source materialisation is pinned by
+    # `test_local_last_with_path_aliased_derived_source` (in the DEV-1531 harvest
+    # block above, with the stronger `_assert_ref_only_in_val` assertion). The
+    # earlier tracking placeholder was consolidated into it (CodeRabbit, PR #264)
+    # so a single strict-xfail flips at Stage 5.
 
     async def test_post_transform_wrapping_path_aliased_measure(
         self, engine: SlayerQueryEngine
@@ -11126,4 +11336,399 @@ class TestBigQueryAliasMangling:
             f"_apply_outer_projection_trim must run before rewrite_emitted_sql, "
             f"got call order: {call_order}"
         )
+
+
+class TestCrossModelAggregateSourceSqlJoinInference:
+    """DEV-1526 harvest (Stage 1): a CROSS-MODEL aggregate whose TARGET
+    column's ``Column.sql`` crosses a FURTHER join must pull the implied LEFT
+    JOINs into the per-plan ``_cm_*`` CTE body. The fix lands Stage 4 (Law-1
+    inside the CTE ScopeFrame); the discovery tests are pinned strict-xfail
+    until then. ``test_bare_target_column_no_spurious_join_in_cte`` stays green
+    (a bare cross-model aggregate already works). Chain:
+    ``orders_x → customers_v2 → regions → countries``.
+    """
+
+    @pytest.fixture
+    async def storage(self, tmp_path):
+        s = YAMLStorage(base_dir=str(tmp_path))
+        await s.save_datasource(DatasourceConfig(name="test", type="postgres"))
+        await s.save_model(SlayerModel(
+            name="countries", sql_table="countries", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="gdp", sql="gdp", type=DataType.DOUBLE),
+            ],
+        ))
+        await s.save_model(SlayerModel(
+            name="regions", sql_table="regions", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="population", sql="population", type=DataType.DOUBLE),
+                Column(name="weight", sql="weight", type=DataType.DOUBLE),
+                Column(name="props", sql="props", type=DataType.TEXT),
+                Column(name="country_id", sql="country_id", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="countries", join_pairs=[["country_id", "id"]])],
+        ))
+        return s
+
+    def _customers_v2(self, *, extra_columns=None, filters=None) -> SlayerModel:
+        cols = [
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+            Column(name="lifetime_value", sql="lifetime_value", type=DataType.DOUBLE),
+        ]
+        if extra_columns:
+            cols.extend(extra_columns)
+        return SlayerModel(
+            name="customers_v2", sql_table="customers", data_source="test",
+            columns=cols,
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+            filters=filters or [],
+        )
+
+    def _orders_x(self) -> SlayerModel:
+        return SlayerModel(
+            name="orders_x", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+            joins=[ModelJoin(target_model="customers_v2", join_pairs=[["customer_id", "id"]])],
+        )
+
+    async def _engine_with(self, storage, customers_v2) -> SlayerQueryEngine:
+        await storage.save_model(customers_v2)
+        await storage.save_model(self._orders_x())
+        return SlayerQueryEngine(storage=storage)
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
+    async def test_single_further_hop_source_sql(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "SUM(regions.population)" in cm_body, cm_body
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
+    async def test_multi_hop_further_join_source_sql(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_gdp", sql="regions__countries.gdp", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_gdp:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
+        assert "SUM(regions__countries.gdp)" in cm_body, cm_body
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
+    async def test_path_alias_source_sql(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_country_name", sql="regions__countries.name",
+                   type=DataType.TEXT),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_country_name:count_distinct")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
+        assert "COUNT(DISTINCT regions__countries.name)" in cm_body, cm_body
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
+    async def test_mode_a_function_wrapping_source_sql(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="region_prop_x",
+                   sql="json_extract(regions.props, '$.x')", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.region_prop_x:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "regions.props" in cm_body, cm_body
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
+    async def test_sibling_derived_chain_source_sql(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="pop_helper", sql="regions.population", type=DataType.DOUBLE),
+            Column(name="doubled_pop", sql="pop_helper * 2", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.doubled_pop:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "regions.population" in cm_body, cm_body
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
+    async def test_mixed_base_col_and_further_join_source_sql(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_score", sql="lifetime_value + regions.population",
+                   type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_score:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "customers_v2.lifetime_value" in cm_body, cm_body
+        assert "regions.population" in cm_body, cm_body
+        assert "countries" not in cm_body, cm_body
+
+    async def test_dedup_source_and_target_model_filter_same_join(self, storage) -> None:
+        # Green on my branch: the target model filter `regions.name IS NOT NULL`
+        # already pulls the `regions` join via the implemented filter-discovery
+        # path (DEV-1494), so the source ref resolves against it even before the
+        # DEV-1526 source-SQL fix. The pure source-only cases stay xfail above.
+        engine = await self._engine_with(storage, self._customers_v2(
+            extra_columns=[
+                Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+            ],
+            filters=["regions.name IS NOT NULL"],
+        ))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert cm_body.count("LEFT JOIN regions AS regions") == 1, cm_body
+        assert "SUM(regions.population)" in cm_body, cm_body
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
+    async def test_filter_and_source_cross_different_depths(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(
+            extra_columns=[
+                Column(name="deep_gdp", sql="regions__countries.gdp",
+                       type=DataType.DOUBLE),
+            ],
+            filters=["regions.name IS NOT NULL"],
+        ))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_gdp:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert cm_body.count("LEFT JOIN regions AS regions") == 1, cm_body
+        assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
+        assert "SUM(regions__countries.gdp)" in cm_body, cm_body
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
+    async def test_composite_two_operand_each_cte_pulls_join(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+            Column(name="deep_weight", sql="regions.weight", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(
+                formula="customers_v2.deep_pop:sum + customers_v2.deep_weight:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        pop_body = _extract_cte_body(sql, r"_cm_\w*deep_pop\w*")
+        weight_body = _extract_cte_body(sql, r"_cm_\w*deep_weight\w*")
+        assert pop_body.count("LEFT JOIN regions AS regions") == 1, pop_body
+        assert weight_body.count("LEFT JOIN regions AS regions") == 1, weight_body
+        assert "SUM(regions.population)" in pop_body, pop_body
+        assert "SUM(regions.weight)" in weight_body, weight_body
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
+    async def test_first_last_source_join_in_ranked_subquery(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(
+                formula="customers_v2.deep_pop:last(orders_x.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "ROW_NUMBER()" in cm_body, cm_body
+        normalized = _norm(cm_body)
+        inner_start = normalized.find("FROM (")
+        assert inner_start > 0, normalized
+        inner_body = normalized[inner_start:]
+        assert "LEFT JOIN regions AS regions" in inner_body, inner_body
+
+    async def test_bare_target_column_no_spurious_join_in_cte(self, storage) -> None:
+        """Green: a bare cross-model aggregate already works — the ``_cm_*``
+        CTE has no spurious deeper join."""
+        engine = await self._engine_with(storage, self._customers_v2())
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.region_id:count_distinct")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "COUNT(DISTINCT customers_v2.region_id)" in cm_body, cm_body
+        assert "regions" not in cm_body, cm_body
+        assert "countries" not in cm_body, cm_body
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
+    async def test_deeper_join_only_in_cte_not_host_base(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        base_body = _extract_cte_body(sql, r"_base")
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "regions" not in base_body, base_body
+
+
+class TestWindowedMeasureGuards:
+    """DEV-1496 harvest (Stage 1): windowed measures must emit a ``_wm_``
+    range-join CTE and RAISE loudly on shapes the primitive does not support,
+    rather than silently degrade to a plain grouped aggregate. Today the typed
+    pipeline drops ``window=`` silently, so every guard is pinned strict-xfail
+    to Stage 10 (DEV-1714). The composite/hidden/mixed guards are DEV-1504.
+    """
+
+    @pytest.fixture
+    def orders_model(self) -> SlayerModel:
+        return SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
+    async def test_windowed_non_sum_avg_raises(self, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:min(window='30d')", "name": "rev_w"}],
+        )
+        with pytest.raises(ValueError, match="only supported for sum and avg"):
+            await _engine_generate(query=query, model=orders_model)
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
+    async def test_windowed_no_time_dimension_raises(self, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[{"formula": "revenue:sum(window='30d')", "name": "rev_w"}],
+        )
+        with pytest.raises(ValueError, match="could not resolve its time dimension"):
+            await _engine_generate(query=query, model=orders_model)
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
+    async def test_windowed_cross_model_raises(self, tmp_path) -> None:
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+        await storage.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+        ))
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        await storage.save_model(orders)
+        engine = SlayerQueryEngine(storage=storage)
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "customers.revenue:sum(window='30d')", "name": "rev_w"}],
+        )
+        with pytest.raises(NotImplementedError, match="cross-model"):
+            await engine.execute(query, dry_run=True)
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
+    async def test_windowed_with_transform_raises(self, orders_model: SlayerModel) -> None:
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[
+                {"formula": "revenue:sum(window='90d')", "name": "rev_w"},
+                {"formula": "time_shift(revenue:sum, -1)", "name": "rev_prev"},
+            ],
+        )
+        with pytest.raises(NotImplementedError, match="transform"):
+            await _engine_generate(query=query, model=orders_model)
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
+    async def test_windowed_as_transform_input_raises(self, orders_model: SlayerModel) -> None:
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "cumsum(revenue:sum(window='90d'))", "name": "cum_w"}],
+        )
+        with pytest.raises(NotImplementedError, match="transform"):
+            await _engine_generate(query=query, model=orders_model)
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
+    async def test_windowed_in_arithmetic_raises(self, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d') / 2", "name": "half_w"}],
+        )
+        with pytest.raises(NotImplementedError, match="arithmetic|composite|scalar"):
+            await _engine_generate(query=query, model=orders_model)
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
+    async def test_windowed_filter_only_hidden_raises(self, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum", "name": "rev"}],
+            filters=["revenue:sum(window='90d') > 100"],
+        )
+        with pytest.raises(NotImplementedError, match="selected"):
+            await _engine_generate(query=query, model=orders_model)
+
+    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
+    async def test_windowed_mixed_aggregate_filter_raises(self, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
+            filters=["revenue:sum(window='90d') > 100 and revenue:sum > 50"],
+        )
+        with pytest.raises(NotImplementedError, match="mix"):
+            await _engine_generate(query=query, model=orders_model)
 
