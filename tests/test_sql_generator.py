@@ -9768,10 +9768,34 @@ class TestCastEmissionOpaqueType:
         sql = await _generate(gen, query, model)
         # No opaque cast reaches the SQL (the docstring's real intent). The typed
         # pipeline still legitimately emits CAST(COUNT(*) AS INT) for the count
-        # measure (DEV-1361/DEV-1484 — see TestCastEmissionMeasure), so assert on
-        # the absence of the UNKNOWN cast specifically, not on CAST( at all.
+        # measure (DEV-1361/DEV-1484 — see TestCastEmissionMeasure), so assert the
+        # absence of UNKNOWN entirely (which subsumes "no AS UNKNOWN cast") rather
+        # than banning CAST( altogether.
         assert "UNKNOWN" not in sql.upper()
-        assert "AS UNKNOWN" not in sql.upper()
+
+    async def test_opaque_column_allowed_as_raw_row_projection(self) -> None:
+        """Raw-row mode (``distinct_dimension_values=False``, no measures,
+        DEV-1543) emits no top-level GROUP BY, so projecting an opaque column
+        as a "dimension" is legal — only grouping is refused. Regression guard:
+        the opaque-dimension check must NOT fire when the query doesn't group."""
+        model = SlayerModel(
+            name="places",
+            sql_table="public.places",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="loc", type=DataType.UNKNOWN, db_type="point"),
+            ],
+        )
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="places",
+            dimensions=[ColumnRef(name="loc")],
+            distinct_dimension_values=False,
+        )
+        sql = await _generate(gen, query, model)
+        assert "GROUP BY" not in sql.upper()
+        assert "PLACES.LOC" in sql.upper()
 
 
 class TestCastEmissionMeasure:
