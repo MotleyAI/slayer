@@ -184,7 +184,8 @@ class TestDev1527KwargExpansion:
             measures=[ModelMeasure(formula="amount:weighted_avg(weight=quantity)")],
         )
         sql = await _engine_generate(query=query, model=_orders())
-        assert "SUM(" in sql and "NULLIF(" in sql
+        assert "SUM(" in sql
+        assert "NULLIF(" in sql
         assert "orders.quantity" in sql
 
     async def test_corr_other_param_renders_both_operands(self) -> None:
@@ -217,6 +218,30 @@ class TestDev1527KwargExpansion:
         assert "CORR(" in sql.upper()
         assert "customers__regions.weight" in sql          # expanded, not bare
         assert "orders.region_weight" not in sql            # not the broken form
+        assert "LEFT JOIN customers" in sql                 # join base-pulled
+
+    async def test_composite_crossing_kwarg_expands_each_operand(self) -> None:
+        # A crossing derived kwarg inside an AGGREGATE-phase COMPOSITE
+        # (``weighted_avg(weight=region_weight) + quantity:sum``) must expand the
+        # same way the direct form does. The composite render path threads the
+        # host scope's resolved_agg_kwargs down to each operand leaf, so the
+        # weight operand is the expanded joined ref — not the bare, non-existent
+        # ``orders.region_weight`` (Codex finding on the ROW-collector fold PR).
+        orders = _orders(extra=[
+            Column(name="region_weight", sql="customers__regions.weight",
+                   type=DataType.DOUBLE),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(
+                formula="amount:weighted_avg(weight=region_weight) + quantity:sum")],
+        )
+        sql = await _engine_generate(
+            query=query, model=orders, extra_models=[_customers(), _regions()],
+        )
+        assert "customers__regions.weight" in sql          # kwarg expanded
+        assert "orders.region_weight" not in sql           # not the broken bare form
+        assert "SUM(orders.quantity)" in sql               # sibling local operand intact
         assert "LEFT JOIN customers" in sql                 # join base-pulled
 
     async def test_custom_aggregation_str_param_override_substitutes(self) -> None:
@@ -281,4 +306,5 @@ class TestDev1527F1BasePull:
             query=query, model=orders, extra_models=[_customers(), _regions()],
         )
         assert "customers__regions.weight" in sql
-        assert "_cm_" not in sql and "_fm_" not in sql
+        assert "_cm_" not in sql
+        assert "_fm_" not in sql

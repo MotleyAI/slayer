@@ -30,14 +30,17 @@ class AliasAllocator(BaseModel):
 
     # External names the allocator must avoid (user columns, join aliases,
     # public projection aliases, model names).
-    _reserved: set[str] = PrivateAttr(default_factory=set)
+    # NOSONAR lines below: Pydantic v2 PrivateAttr idiom — the annotation is the
+    # attribute's runtime type after model init; the ``PrivateAttr(...)`` sentinel
+    # is replaced by Pydantic. S5890 can't model this and is a false positive.
+    _reserved: set[str] = PrivateAttr(default_factory=set)  # NOSONAR(S5890)
     # Names already handed out by this allocator.
-    _used: set[str] = PrivateAttr(default_factory=set)
+    _used: set[str] = PrivateAttr(default_factory=set)  # NOSONAR(S5890)
     # Monotonic ``_val_<n>`` cursor (never reset per scope, so sibling scopes
     # in one generation cannot mint the same ``_val_0``).
-    _val_seq: int = PrivateAttr(default=0)
+    _val_seq: int = PrivateAttr(default=0)  # NOSONAR(S5890)
     # Monotonic scope-id cursor.
-    _scope_seq: int = PrivateAttr(default=0)
+    _scope_seq: int = PrivateAttr(default=0)  # NOSONAR(S5890)
 
     def reserve(self, *names: str) -> None:
         """Mark ``names`` as taken so they are never allocated."""

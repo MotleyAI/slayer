@@ -139,9 +139,12 @@ class ScopeFrame(BaseModel):
             col = next(
                 (c for c in model.columns if c.name == ref.column_name), None,
             )
-            raw_sql = col.sql if (col is not None and col.sql) else (
-                col.name if col is not None else ref.column_name
-            )
+            if col is None:
+                raw_sql = ref.column_name
+            elif col.sql:
+                raw_sql = col.sql
+            else:
+                raw_sql = col.name
             expanded = expand_derived_refs_sync(
                 sql=raw_sql,
                 model=model,
@@ -177,7 +180,7 @@ class ScopeFrame(BaseModel):
         return sqlglot.parse_one(sql, dialect=self.dialect.sqlglot_name)
 
     # ---- Law 2 -------------------------------------------------------------
-    def may_inline(self, crossed_paths: List[Tuple[str, ...]]) -> bool:
+    def may_inline(self, crossed_paths: List[Tuple[str, ...]]) -> bool:  # NOSONAR(S1172) — crossed_paths is the documented v1 API seam; the Stage-N inlining optimisation reads it, hardcoded False until then.
         """Whether a crossing value may be inlined back into the consumer scope
         instead of materialised. Hardcoded ``False`` in v1 (the seam Stage-N+
         optimisation grows into)."""

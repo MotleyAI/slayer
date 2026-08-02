@@ -227,7 +227,8 @@ class TestTypedJoinKeyMixedCaseQuoted:
             query=query, model=orders, extra_models=[customers],
         )
         norm = " ".join(sql.split())
-        assert "LEFT JOIN" in norm and " ON " in norm
+        assert "LEFT JOIN" in norm
+        assert " ON " in norm
         # The mixed-case key is quoted on the target side of the ON; the lowercase
         # host key stays bare.
         assert 'customers."CustId"' in norm

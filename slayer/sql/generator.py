@@ -2805,7 +2805,7 @@ class SQLGenerator:
         agg_class = agg_class_map[agg_func]
         return agg_class(this=inner), True
 
-    def _build_formula_agg(self, spec: AggRenderSpec, agg_name: str) -> exp.Expression:
+    def _build_formula_agg(self, spec: AggRenderSpec, agg_name: str) -> exp.Expression:  # NOSONAR(S3776) — sequential dispatch over formula source (aggregation_def vs built-in) and per-kind ResolvedAggKwarg substitution (DEV-1527); one cohesive template-substitution contract.
         """Build SQL for formula-based aggregations (weighted_avg, custom)."""
         # Get formula: from aggregation_def or built-in
         formula = None
@@ -3875,7 +3875,7 @@ class SQLGenerator:
                 return False
         return True
 
-    def _resolve_agg_inputs_via_scope(
+    def _resolve_agg_inputs_via_scope(  # NOSONAR(S3776) — one cohesive Law-1 discovery pass: three ordered sub-passes (Column.filter → source → kwargs) over the local aggregates via small closures sharing scope/resolved. Extracting them would scatter the ordered-registration contract that keeps the base FROM byte-identical.
         self, *, base_render_order, slots_by_id, scope: ScopeFrame,
     ) -> "Dict[Any, Dict[str, ResolvedAggKwarg]]":
         """Resolve every LOCAL aggregate's join-crossing inputs through the host
@@ -4198,13 +4198,19 @@ class SQLGenerator:
                 if not isinstance(key, AggregateKey):
                     # AGGREGATE-phase composite (arithmetic / scalar-call of
                     # aggregates, e.g. ``expensenet:avg + benchmarkexp:avg``).
-                    # Render inline; cast the whole composite once.
+                    # Render inline; cast the whole composite once. DEV-1527:
+                    # thread the host scope's resolved column-ref kwargs so a
+                    # crossing derived kwarg inside a composite operand
+                    # (``amount:weighted_avg(weight=<derived>) + quantity:sum``)
+                    # embeds its expanded join-anchored expression instead of a
+                    # bare, non-existent name.
                     composite, any_agg = self._render_aggregate_composite_expr(
                         key=key,
                         slot=slot,
                         source_model=source_model,
                         source_relation=source_relation,
                         bundle=bundle,
+                        resolved_agg_kwargs=resolved_agg_kwargs,
                     )
                     if any_agg:
                         composite = _wrap_cast_for_type(composite, slot.type)
@@ -4930,6 +4936,14 @@ class SQLGenerator:
                         agg_key: spec.alias
                         for agg_key, spec in composite_synth_by_key.items()
                     }
+                    # DEV-1527/DEV-1476 (Stage-6 deferral): resolved_agg_kwargs is
+                    # intentionally NOT threaded here. This first/last ranked-
+                    # subquery path builds its own agg specs and does not receive
+                    # the host scope's column-ref kwarg map, so a crossing derived
+                    # kwarg (``weighted_avg(weight=<derived>)``) rendered in a
+                    # first/last query still collapses to a bare name. That gap is
+                    # pre-existing (first/last never supported derived kwargs) and
+                    # closes with first/last completion in Stage 6 — see DEV-1476.
                     agg_expr, is_agg = self._render_aggregate_composite_expr(
                         key=slot.key, slot=slot, source_model=source_model,
                         source_relation=source_relation,
@@ -4978,6 +4992,7 @@ class SQLGenerator:
         filtered_rn_map: Optional[Dict[str, str]] = None,
         filtered_match_map: Optional[Dict[str, str]] = None,
         composite_alias_by_key: Optional[Dict[Any, str]] = None,
+        resolved_agg_kwargs: "Optional[Dict[Any, Dict[str, ResolvedAggKwarg]]]" = None,
     ) -> "tuple[exp.Expression, bool]":
         """Render an AGGREGATE-phase composite key (``ArithmeticKey`` /
         ``ScalarCallKey`` of aggregates, e.g. ``expensenet:avg +
@@ -4988,6 +5003,14 @@ class SQLGenerator:
         cast — the caller casts the composite once). Returns ``(expr,
         contains_aggregate)``. Cross-model operand aggregates (non-empty
         ``source.path``) are not yet handled here — they need CTE routing.
+
+        DEV-1527 (composite local half): ``resolved_agg_kwargs`` is the host
+        scope's per-``AggregateKey`` column-ref kwarg map (``weight=<derived>`` /
+        ``other=<derived>``); each operand leaf looks up its own entry so a
+        crossing derived kwarg embeds its expanded, join-anchored expression
+        instead of collapsing to a bare (non-existent) name. Threaded only from
+        the non-first/last base path; the first/last ranked-subquery caller passes
+        ``None`` (that path's derived-kwarg support is deferred — see DEV-1476).
 
         DEV-1501 (Codex round 3): when the host base is built via the
         first/last ranked-subquery path, the caller threads the rn maps
@@ -5029,6 +5052,7 @@ class SQLGenerator:
                 slot=slot, key=key, source_model=source_model,
                 source_relation=source_relation, full_alias=op_alias,
                 bundle=bundle,
+                resolved_agg_kwargs=(resolved_agg_kwargs or {}).get(key),
             )
             agg_expr, is_agg = self._build_agg(
                 synth,
@@ -5051,6 +5075,7 @@ class SQLGenerator:
                     filtered_rn_map=filtered_rn_map,
                     filtered_match_map=filtered_match_map,
                     composite_alias_by_key=composite_alias_by_key,
+                    resolved_agg_kwargs=resolved_agg_kwargs,
                 )
                 operands.append(e)
                 any_agg = any_agg or a
@@ -5069,6 +5094,7 @@ class SQLGenerator:
                         filtered_rn_map=filtered_rn_map,
                         filtered_match_map=filtered_match_map,
                         composite_alias_by_key=composite_alias_by_key,
+                        resolved_agg_kwargs=resolved_agg_kwargs,
                     )
                     args.append(e)
                     any_agg = any_agg or ag
@@ -9982,7 +10008,7 @@ class SQLGenerator:
         return exp.Paren(this=node) if isinstance(node, exp.Binary) else node
 
     @staticmethod
-    def _build_arithmetic_for_filter(
+    def _build_arithmetic_for_filter(  # NOSONAR(S3776) — sequential per-operator dispatch (==/!= → EQ/NEQ, comparison, arithmetic) with DEV-1539 precedence paren-wrapping; each branch is the per-op emission contract.
         *, op: str, operands: list,
     ) -> exp.Expression:
         # DSL ``==``/``!=`` map to sqlglot EQ/NEQ; sqlglot then emits the
