@@ -3875,24 +3875,34 @@ class SQLGenerator:
                 return False
         return True
 
-    def _resolve_agg_kwargs_via_scope(
+    def _resolve_agg_inputs_via_scope(
         self, *, base_render_order, slots_by_id, scope: ScopeFrame,
     ) -> "Dict[Any, Dict[str, ResolvedAggKwarg]]":
-        """DEV-1527: resolve column-ref aggregation kwargs through the host
-        ``scope`` (Law 1) for every LOCAL aggregate in ``base_render_order``.
+        """Resolve every LOCAL aggregate's join-crossing inputs through the host
+        ``scope`` (Law 1) — ``scope.resolve`` anchors each ref and registers the
+        joins it crosses into ``scope.join_paths``, the side effect that
+        base-pulls the crossed LEFT JOIN.
 
-        For each ``ColumnKey`` / ``ColumnSqlKey`` kwarg value, ``scope.resolve``
-        anchors it (expanding a derived column's ``Column.sql``) and registers
-        the joins it crosses into ``scope.join_paths`` — the side effect that
-        base-pulls the crossed LEFT JOIN. Returns a map keyed by ``AggregateKey``
-        (frozen/hashable) → ``{kwarg_name: ResolvedAggKwarg(kind="expr")}`` for
-        ``_build_agg_render_spec_from_planned`` to embed. Scalar / string kwargs
-        are left out — the spec builder canonical-stringifies them as before.
+        Three ordered sub-passes over ``base_render_order`` preserve the pre-
+        resolver join-registration order (Column.filter → source → kwargs):
 
-        Cross-model aggregate sources (non-empty ``source.path``) are skipped:
-        their kwargs are owned by the per-plan ``_cm_*`` CTE (Stage 4 / DEV-1708);
-        the cross-model half of DEV-1527 closes there. Recurses into composite
-        AGGREGATE keys (``ArithmeticKey`` / ``ScalarCallKey``).
+        1. **``Column.filter`` predicates** (DEV-1494; replaces
+           ``_collect_column_filter_join_paths``). The Mode-A predicate is
+           dual-scanned via ``_filter_join_paths`` (raw + inline-expanded, so a
+           placeholder dotted ref that inlines to a constant still pulls its
+           join) and the paths registered into the scope.
+        2. **derived aggregate SOURCES** (``ColumnSqlKey`` whose ``Column.sql``
+           crosses a join — DEV-1502; replaces ``_collect_aggregate_source_
+           join_paths``). Discovery only; the render spec re-expands the source.
+        3. **column-ref KWARGS** (``weight=<col>`` / ``other=<col>`` — DEV-1527).
+           The resolved expression is returned, keyed by ``AggregateKey``
+           (frozen/hashable) → ``{kwarg_name: ResolvedAggKwarg(kind="expr")}``,
+           for ``_build_agg_render_spec_from_planned`` to embed. Scalar / string
+           kwargs are left out (the spec builder canonical-stringifies them).
+
+        Cross-model aggregates (non-empty ``source.path``) are skipped in every
+        sub-pass: their inputs are owned by the per-plan ``_cm_*`` CTE
+        (Stage 4 / DEV-1708). Recurses into composite AGGREGATE keys.
         """
         from slayer.core.keys import (
             AggregateKey,
@@ -3905,29 +3915,48 @@ class SQLGenerator:
 
         resolved: "Dict[Any, Dict[str, ResolvedAggKwarg]]" = {}
 
-        def _visit(key) -> None:
+        def _walk(key, fn) -> None:
             if isinstance(key, AggregateKey):
-                if getattr(key.source, "path", ()):
-                    return  # cross-model aggregate → owned by a _cm_* CTE (Stage 4)
-                kw: Dict[str, ResolvedAggKwarg] = {}
-                for kname, kval in key.kwargs:
-                    if isinstance(kval, (ColumnKey, ColumnSqlKey)):
-                        kw[kname] = ResolvedAggKwarg(
-                            kind="expr", value=scope.resolve(kval),
-                        )
-                if kw:
-                    resolved[key] = kw
+                if not getattr(key.source, "path", ()):
+                    fn(key)
             elif isinstance(key, ArithmeticKey):
                 for o in key.operands:
-                    _visit(o)
+                    _walk(o, fn)
             elif isinstance(key, ScalarCallKey):
                 for a in key.args:
-                    _visit(a)
+                    _walk(a, fn)
 
-        for sid in base_render_order:
-            slot = slots_by_id.get(sid)
-            if slot is not None and slot.phase == Phase.AGGREGATE:
-                _visit(slot.key)
+        def _for_each_local_agg(fn) -> None:
+            for sid in base_render_order:
+                slot = slots_by_id.get(sid)
+                if slot is not None and slot.phase == Phase.AGGREGATE:
+                    _walk(slot.key, fn)
+
+        def _resolve_column_filter(key) -> None:
+            cfk = key.column_filter_key
+            if cfk is None or not cfk.canonical_sql:
+                return
+            for p in self._filter_join_paths(
+                sql=cfk.canonical_sql, source_relation=scope.root_relation,
+                source_model=scope.root_model, bundle=scope.bundle,
+            ):
+                scope.join_paths.add(p)
+
+        def _resolve_source(key) -> None:
+            if isinstance(key.source, ColumnSqlKey):
+                scope.resolve(key.source)  # register-only; render re-expands
+
+        def _resolve_kwargs(key) -> None:
+            kw: Dict[str, ResolvedAggKwarg] = {}
+            for kname, kval in key.kwargs:
+                if isinstance(kval, (ColumnKey, ColumnSqlKey)):
+                    kw[kname] = ResolvedAggKwarg(kind="expr", value=scope.resolve(kval))
+            if kw:
+                resolved[key] = kw
+
+        _for_each_local_agg(_resolve_column_filter)
+        _for_each_local_agg(_resolve_source)
+        _for_each_local_agg(_resolve_kwargs)
         return resolved
 
     def _build_base_select_for_planned(  # NOSONAR(S3776) — join-path collection and derived-dim expansion are extracted to helpers; the residual is the one cohesive per-slot ROW/AGGREGATE projection + GROUP-BY assembly pass.
@@ -4000,42 +4029,18 @@ class SQLGenerator:
         ):
             if p not in needed_join_paths:
                 needed_join_paths.append(p)
-        # DEV-1494: a ``Column.filter`` on an aggregated measure becomes a
-        # CASE-WHEN wrapper; pull any join its predicate crosses (directly, or via
-        # a derived ref) into the FROM — including filtered aggregates nested in
-        # composite (arithmetic / scalar-call) AGGREGATE-phase keys.
-        for p in self._collect_column_filter_join_paths(
-            base_render_order=base_render_order, slots_by_id=slots_by_id,
-            source_relation=source_relation, source_model=source_model,
-            bundle=bundle,
-        ):
-            if p not in needed_join_paths:
-                needed_join_paths.append(p)
-        # DEV-1502: an AGGREGATE slot whose SOURCE is a derived
-        # (``ColumnSqlKey``) column whose ``Column.sql`` crosses a join
-        # (``customers__regions.population``) needs the same discovery the
-        # dimension path performs (DEV-1484). Symmetric with the filter case
-        # above; render-time expansion in ``_build_agg_render_spec_from_planned``
-        # already qualifies the body, so this pass only closes the join-discovery
-        # gap. Cross-model aggregate sources are skipped — they're owned by the
-        # per-plan ``_cm_*`` CTE (the symmetric in-CTE discovery gap is tracked
-        # separately).
-        for p in self._collect_aggregate_source_join_paths(
-            base_render_order=base_render_order, slots_by_id=slots_by_id,
-            source_relation=source_relation, source_model=source_model,
-            bundle=bundle,
-        ):
-            if p not in needed_join_paths:
-                needed_join_paths.append(p)
-        # DEV-1706 Stage 2 / DEV-1527: build the host ScopeFrame and resolve any
-        # column-ref aggregation kwargs (``weighted_avg(weight=<col>)``,
-        # ``corr(other=<col>)``, ...) through it. Each ``resolve`` anchors the
-        # ref and REGISTERS the joins it crosses into the scope (Law 1) so a
-        # derived kwarg whose ``Column.sql`` crosses a join base-pulls that LEFT
-        # JOIN into the host FROM — closing the local half of DEV-1527. The
-        # resolved expression is embedded verbatim (``kind="expr"``) into the
-        # render spec, replacing the ``agg_kwarg_canonical_str`` round-trip that
-        # collapsed a derived column to a bare (non-existent) name.
+        # DEV-1706 Stage 2: build the host ScopeFrame and resolve every LOCAL
+        # aggregate's join-crossing inputs through it (Law 1 — discovery is a
+        # side effect of the resolve). This subsumes the former
+        # ``_collect_column_filter_join_paths`` (DEV-1494 Column.filter) and
+        # ``_collect_aggregate_source_join_paths`` (DEV-1502 derived sources)
+        # passes and adds column-ref kwarg discovery (DEV-1527 —
+        # ``weighted_avg(weight=<col>)`` / ``corr(other=<col>)``), whose resolved
+        # expression is embedded verbatim (``kind="expr"``) into the render spec,
+        # replacing the ``agg_kwarg_canonical_str`` round-trip that collapsed a
+        # derived column to a bare (non-existent) name. The scope's ordered
+        # ``join_paths`` reproduce the collectors' first-seen order (Column.filter
+        # → source → kwargs), so the base FROM is byte-identical.
         # Stage 2's host base is a single scope with no projection boundary, so
         # the allocator mints no ``_val_`` names here; a local instance suffices.
         # The generation-wide allocator (D-E) arrives with the CTE scopes in
@@ -4049,7 +4054,7 @@ class SQLGenerator:
             dialect=self._dialect,
             allocator=host_allocator,
         )
-        resolved_agg_kwargs = self._resolve_agg_kwargs_via_scope(
+        resolved_agg_kwargs = self._resolve_agg_inputs_via_scope(
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
             scope=host_scope,
@@ -5179,9 +5184,9 @@ class SQLGenerator:
         # DEV-1503 (Codex round 2 #1) — composite projection slots whose
         # value-key tree walks an ISOLATED cross-model aggregate must NOT
         # render in ``_base``. Inline rendering pulls the filter-target
-        # joins back into the host CTE (``_collect_column_filter_join_paths``)
-        # and computes the formula against the host rowset — silently
-        # corrupting both aggregates when two filter-target INNER joins
+        # joins back into the host CTE (the host scope's Column.filter
+        # resolve pass) and computes the formula against the host rowset —
+        # silently corrupting both aggregates when two filter-target INNER joins
         # intersect to different rows. Route them to the outer combined
         # SELECT where the joined-back ``_cm_*`` columns resolve.
         #
@@ -8627,126 +8632,6 @@ class SQLGenerator:
         if rendered is not None and rendered != sql:
             _scan(rendered)
         return ordered
-
-    def _collect_column_filter_join_paths(  # NOSONAR(S3776) — one cohesive recursive walk of AGGREGATE composite keys (mirrors _render_aggregate_composite_expr) collecting Column.filter join paths.
-        self, *, base_render_order, slots_by_id, source_relation: str,
-        source_model, bundle,
-    ) -> List[Tuple[str, ...]]:
-        """Join paths needed by aggregation-time ``Column.filter`` CASE-WHEN
-        wrappers on LOCAL aggregate slots (DEV-1494).
-
-        Recurses into AGGREGATE-phase composite keys (``ArithmeticKey`` /
-        ``ScalarCallKey``) so a filtered aggregate nested inside e.g.
-        ``a:sum + b:sum`` — rendered by ``_render_aggregate_composite_expr`` —
-        discovers its crossed join exactly like a top-level aggregate. Cross-model
-        aggregate sources (non-empty ``source.path``) are excluded: their filter
-        joins belong in the per-plan ``_cm_*`` CTE (DEV-1503).
-        """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            Phase,
-            ScalarCallKey,
-        )
-
-        paths: List[Tuple[str, ...]] = []
-
-        def _visit(key) -> None:
-            if isinstance(key, AggregateKey):
-                if getattr(key.source, "path", ()):
-                    return
-                cfk = key.column_filter_key
-                if cfk is None or not cfk.canonical_sql:
-                    return
-                for p in self._filter_join_paths(
-                    sql=cfk.canonical_sql, source_relation=source_relation,
-                    source_model=source_model, bundle=bundle,
-                ):
-                    if p not in paths:
-                        paths.append(p)
-            elif isinstance(key, ArithmeticKey):
-                for operand in key.operands:
-                    _visit(operand)
-            elif isinstance(key, ScalarCallKey):
-                for arg in key.args:
-                    _visit(arg)
-
-        for sid in base_render_order:
-            slot = slots_by_id.get(sid)
-            if slot is not None and slot.phase == Phase.AGGREGATE:
-                _visit(slot.key)
-        return paths
-
-    def _collect_aggregate_source_join_paths(  # NOSONAR(S3776) — one cohesive recursive walk of AGGREGATE composite keys (mirrors _collect_column_filter_join_paths) collecting derived-source Column.sql join paths.
-        self, *, base_render_order, slots_by_id, source_relation: str,
-        source_model, bundle,
-    ) -> List[Tuple[str, ...]]:
-        """Join paths needed by LOCAL aggregate slots whose ``source`` is a
-        derived (``ColumnSqlKey``) column whose ``Column.sql`` crosses a
-        join (DEV-1502).
-
-        Symmetric to the dimension treatment (DEV-1484) and the
-        ``Column.filter`` treatment (DEV-1494): the aggregate body already
-        renders the path-aliased ref via ``_expand_derived_column_sql`` at
-        spec-build time; this pass closes the loop by pulling the implied
-        ``LEFT JOIN``s into the host base FROM.
-
-        Recurses into AGGREGATE-phase composite keys (``ArithmeticKey`` /
-        ``ScalarCallKey``) so a path-aliased source nested inside e.g.
-        ``a:sum + b:sum`` or ``coalesce(a:sum, 0)`` discovers its crossed
-        join. Cross-model aggregate sources (non-empty ``source.path``)
-        are skipped: their joins live in the per-plan ``_cm_*`` CTE; the
-        symmetric in-CTE discovery gap is tracked separately.
-        """
-        from slayer.core.keys import (
-            AggregateKey,
-            ArithmeticKey,
-            ColumnSqlKey,
-            Phase,
-            ScalarCallKey,
-        )
-
-        paths: List[Tuple[str, ...]] = []
-
-        def _visit(key) -> None:
-            if isinstance(key, AggregateKey):
-                source = key.source
-                if not isinstance(source, ColumnSqlKey):
-                    return
-                if source.path:
-                    return
-                col = next(
-                    (c for c in source_model.columns if c.name == source.column_name),
-                    None,
-                )
-                if col is None or col.sql is None:
-                    return
-                expanded = self._expand_derived_column_sql(
-                    source_model=source_model,
-                    source_relation=source_relation,
-                    column_name=source.column_name,
-                    bundle=bundle,
-                )
-                for p in self._joined_paths_in_sql(
-                    sql_expr=self._parse(expanded),
-                    source_relation=source_relation,
-                    source_model=source_model,
-                    bundle=bundle,
-                ):
-                    if p not in paths:
-                        paths.append(p)
-            elif isinstance(key, ArithmeticKey):
-                for operand in key.operands:
-                    _visit(operand)
-            elif isinstance(key, ScalarCallKey):
-                for arg in key.args:
-                    _visit(arg)
-
-        for sid in base_render_order:
-            slot = slots_by_id.get(sid)
-            if slot is not None and slot.phase == Phase.AGGREGATE:
-                _visit(slot.key)
-        return paths
 
     def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and collecting the joins they cross.
         self, *, base_render_order, slots_by_id, source_relation: str,
