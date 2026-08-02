@@ -7225,13 +7225,18 @@ class SQLGenerator:
                 if next_alias not in emitted_aliases:
                     join_on_parts = []
                     for src_col, tgt_col in join_def.join_pairs:
+                        # DEV-1645: the join keys are physical DB columns —
+                        # quote them when mixed-case (``merchantId``) via
+                        # ``_to_ident`` so a case-folding backend resolves them;
+                        # the table qualifiers are SLayer-internal aliases
+                        # (reserved names quote at emit via RESERVED_KEYWORDS).
                         join_on_parts.append(exp.EQ(
                             this=exp.Column(
-                                this=exp.to_identifier(src_col),
+                                this=self._to_ident(src_col),
                                 table=exp.to_identifier(current_alias),
                             ),
                             expression=exp.Column(
-                                this=exp.to_identifier(tgt_col),
+                                this=self._to_ident(tgt_col),
                                 table=exp.to_identifier(next_alias),
                             ),
                         ))

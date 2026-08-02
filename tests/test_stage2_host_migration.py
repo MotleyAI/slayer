@@ -147,3 +147,44 @@ class TestPlaceholderLimitOne:
         assert "LIMIT 1" in sql                       # placeholder collapses host to one row
         assert "amount > 100" in sql or "amount > 100" in sql.replace('"', "")
         assert_scope_closed(sql)
+
+
+class TestTypedJoinKeyMixedCaseQuoted:
+    async def test_mixed_case_join_key_quoted_in_typed_on_clause(self) -> None:
+        # DEV-1645 regression guard on the TYPED pipeline: ``_build_from_and_joins``
+        # builds the LEFT JOIN ON keys as AST (not via the legacy string-parse
+        # path), so a mixed-case physical join key (``CustId``) must be quoted
+        # there too — otherwise a case-folding backend resolves ``custid`` and
+        # the query fails at execution (only the Postgres integration suite,
+        # which runs the typed engine, caught this; the DEV-1645 unit test uses
+        # the legacy ``generate(enriched=)`` path and did not).
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="CustId", sql="CustId", type=DataType.DOUBLE, primary_key=True),
+                Column(name="balance", sql="balance", type=DataType.DOUBLE),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="cust_ref", sql="cust_ref", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["cust_ref", "CustId"]])],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="balance", model="customers")],
+            distinct_dimension_values=False,
+        )
+        sql = await _engine_generate(
+            query=query, model=orders, extra_models=[customers],
+        )
+        norm = " ".join(sql.split())
+        assert "LEFT JOIN" in norm and " ON " in norm
+        # The mixed-case key is quoted on the target side of the ON; the lowercase
+        # host key stays bare.
+        assert 'customers."CustId"' in norm
+        assert "orders.cust_ref" in norm
+        assert_scope_closed(sql)
