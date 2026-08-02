@@ -25,6 +25,7 @@ from slayer.engine.enriched import EnrichedMeasure
 # These imports drive the failing-test contract — neither exists yet.
 from slayer.sql.generator import (  # type: ignore[attr-defined]
     AggRenderSpec,
+    ResolvedAggKwarg,
     _agg_render_spec_from_enriched,
 )
 
@@ -164,7 +165,9 @@ class TestShimFieldMapping:
             column_type=DataType.DOUBLE,
         )
         spec = _agg_render_spec_from_enriched(em)
-        assert spec.agg_kwargs == {"p": "0.5"}
+        # DEV-1527: agg_kwargs are now a typed union; a bare-string kwarg coerces
+        # to ``ResolvedAggKwarg(kind="str", ...)`` via the before-validator.
+        assert spec.agg_kwargs == {"p": ResolvedAggKwarg(kind="str", value="0.5")}
 
     def test_custom_aggregation_def(self):
         agg_def = Aggregation(
@@ -187,7 +190,7 @@ class TestShimFieldMapping:
         )
         spec = _agg_render_spec_from_enriched(em)
         assert spec.aggregation_def is agg_def
-        assert spec.agg_kwargs == {"window": "6"}
+        assert spec.agg_kwargs == {"window": ResolvedAggKwarg(kind="str", value="6")}
 
     def test_stat_agg_with_other_kwarg(self):
         em = EnrichedMeasure(
@@ -201,7 +204,7 @@ class TestShimFieldMapping:
         )
         spec = _agg_render_spec_from_enriched(em)
         assert spec.aggregation == "corr"
-        assert spec.agg_kwargs == {"other": "quantity"}
+        assert spec.agg_kwargs == {"other": ResolvedAggKwarg(kind="str", value="quantity")}
 
     def test_non_aggregation_passthrough(self):
         # ``em.aggregation == ""`` is the bare-column non-aggregation

@@ -4144,22 +4144,11 @@ class TestMeasureSourceSqlJoinInference:
             f"expected JOIN to regions inside the _cm_* CTE; CTE body:\n{cm_body}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1527 (sibling of DEV-1502 in agg-param space): a "
-            "parametric aggregation kwarg whose value is a derived "
-            "column with a __-path alias in its Column.sql (e.g. "
-            "weighted_avg(weight=region_weight) where region_weight.sql "
-            "= 'customers__regions.weight') emits the bare model-"
-            "qualified ref (orders.region_weight, a non-existent column) "
-            "AND does not pull the customers / customers__regions joins. "
-            "Fix touches _resolve_agg_param, _validate_agg_param_value's "
-            "_SAFE_AGG_PARAM_RE allowlist, agg_kwarg_canonical_str, and "
-            "_build_agg_render_spec_from_planned. Auto-promotes when the "
-            "kwarg-expansion fix lands."
-        ),
-    )
+    # DEV-1706 Stage 2: PROMOTED — the DEV-1527 local half (a parametric
+    # aggregation kwarg whose value is a derived column crossing a join) is
+    # fixed by the resolve-at-spec-build typed-kwarg path (D-C/D-I). Kept the
+    # ``_xfail`` name so tests/test_carrier_scope_matrix.py's harvest manifest
+    # reference stays valid.
     async def test_agg_param_derived_column_path_alias_xfail(
         self, engine: SlayerQueryEngine
     ) -> None:
@@ -9343,12 +9332,12 @@ class TestIsolatedFilteredMeasureCTEs:
         # Filtered measure isolated into its own _cm_ CTE; the subquery FROM
         # for the host renders inside it.
         assert "_cm_" in sql and "loss_payment_amt" in sql
-        # Host's ``sql=...`` subquery body renders verbatim somewhere in the
-        # SQL — sqlglot may pretty-print across multiple lines, so check
-        # whitespace-tolerantly (the host SELECT body is ``SELECT * FROM
-        # Claim_Amount`` regardless of formatting).
+        # Host's ``sql=...`` subquery body renders inside the _cm_ CTE — sqlglot
+        # may pretty-print across multiple lines, so check whitespace-tolerantly.
+        # DEV-1645 (landed early in DEV-1706 Stage 2): the mixed-case physical
+        # table ``Claim_Amount`` is now quoted on emit (``FROM "Claim_Amount"``).
         sql_collapsed = _re.sub(r"\s+", " ", sql)
-        assert "SELECT * FROM Claim_Amount" in sql_collapsed, (
+        assert 'SELECT * FROM "Claim_Amount"' in sql_collapsed, (
             f"host subquery FROM should render inside the _cm_ CTE:\n{sql}"
         )
         _assert_valid_sql(sql)
@@ -10498,26 +10487,31 @@ class TestFilterOuterParenWrapDev1539:
         )
         sql = await _generate(generator, query, model)
         norm = _norm(sql)
-        # The LHS of `> 7` must be a parenthesised arithmetic expression.
-        # NB: this test path doesn't pass a ``resolve_model`` to
-        # ``enrich_query``, so derived-ref expansion (and therefore
-        # column qualification) is skipped — the inlined sql_expr is
-        # left textually as-written. The PAREN WRAP is independent of
-        # qualification, and that's what we're pinning.
-        # Single bounded unbounded quantifier (`[^)]+`) avoids the
-        # multi-quantifier-backtracking pattern Sonar's S5852 flags.
+        # The multi-term LHS of ``> 7`` must be enclosed so the comparator's
+        # precedence is unambiguous. The typed pipeline qualifies the refs and
+        # encloses the derived expression in its type CAST — ``CAST(m.a * 0.4
+        # + ... AS DOUBLE PRECISION) > 7`` — which is precedence-safe: the whole
+        # arithmetic sum binds to ``> 7``, not just the trailing term.
+        # Single bounded quantifier (`[^)]+`) avoids the S5852 backtracking shape.
         assert "WHERE" in norm
         where_clause = norm.split("WHERE", 1)[1]
-        m = _re.search(r"\( a \* 0\.4[^)]+\) > 7", where_clause)
+        m = _re.search(r"CAST\(\s*m\.a \* 0\.4[^)]+\)\s*>\s*7", where_clause)
         assert m is not None, (
-            f"Expected pattern `( a * 0.4 ... ) > 7` in normalised "
-            f"WHERE; got: {where_clause}"
-        )
-        # Negative: without the wrap, the trailing arithmetic term lands
-        # right next to ``> 7`` with no paren in between.
-        assert "* 0.2 > 7" not in where_clause, (
-            f"Pre-wrap shape `d * 0.2 > 7` should not survive the fix; "
+            f"Expected the multi-term derived LHS enclosed before `> 7`; "
             f"got: {where_clause}"
+        )
+        # All four weighted terms must survive inside the enclosed LHS — the
+        # single-quantifier regex alone would still match if a later term were
+        # dropped (CodeRabbit). Plain substring checks keep the S5852-safe shape.
+        for _term in ("m.a", "m.b", "m.c", "m.d"):
+            assert _term in m.group(0), (
+                f"Expected weighted term {_term} inside the enclosed LHS; "
+                f"got: {m.group(0)}"
+            )
+        # Negative: the trailing arithmetic term must NOT land bare next to
+        # ``> 7`` (the un-enclosed, precedence-broken shape).
+        assert "* 0.2 > 7" not in where_clause, (
+            f"Pre-wrap shape `d * 0.2 > 7` should not survive; got: {where_clause}"
         )
 
     async def test_filter_inlines_bare_column_no_parens(
@@ -11014,16 +11008,17 @@ class TestFilterOuterParenWrapDev1539:
         )
         sql = await _generate(generator, query, model)
         norm = _norm(sql)
-        # Body matches `(... <connector> ...)` allowing whitespace
-        # padding that sqlglot's pretty-printer injects inside the
-        # parens. Single bounded `[^)]+` quantifier — S5852-safe.
+        # The typed pipeline qualifies the refs and encloses the connector-rooted
+        # derived expression in its type CAST — ``CAST(m.archived AND m.deleted
+        # AS BOOLEAN)`` — so the surrounding ``IS NULL`` binds to the whole
+        # connector, not just the trailing operand. Single bounded quantifier.
         m = _re.search(
-            r"\(\s*archived\s+" + connector + r"\s+deleted\s*\)",
+            r"CAST\(\s*m\.archived\s+" + connector + r"\s+m\.deleted\s+AS BOOLEAN\)",
             norm,
             _re.IGNORECASE,
         )
         assert m is not None, (
-            f"{connector}-rooted Column.sql must be wrapped on inline; got:\n{norm}"
+            f"{connector}-rooted Column.sql must be enclosed on inline; got:\n{norm}"
         )
         # And the wrap really protects the IS NULL precedence —
         # the char before `IS NULL` must be `)`.
@@ -11064,10 +11059,14 @@ class TestFilterOuterParenWrapDev1539:
         )
         sql = await _generate(generator, query, model)
         norm = _norm(sql)
-        # Must wrap: WHERE (NOT archived) IS NULL
-        m = _re.search(r"\(\s*NOT\s+archived\s*\)\s+IS\s+NULL", norm, _re.IGNORECASE)
+        # The typed pipeline encloses the NOT-rooted derived expression in its
+        # type CAST: ``CAST(NOT m.archived AS BOOLEAN) IS NULL`` — the NOT binds
+        # inside the CAST, so ``IS NULL`` applies to the whole predicate.
+        m = _re.search(
+            r"CAST\(\s*NOT\s+m\.archived\s+AS BOOLEAN\)\s+IS\s+NULL", norm, _re.IGNORECASE,
+        )
         assert m is not None, (
-            f"NOT-predicate Column.sql must be wrapped on inline; got:\n{norm}"
+            f"NOT-predicate Column.sql must be enclosed on inline; got:\n{norm}"
         )
 
     async def test_filter_inlines_between_predicate_column_with_outer_parens(
@@ -11095,12 +11094,12 @@ class TestFilterOuterParenWrapDev1539:
         sql = await _generate(generator, query, model)
         norm = _norm(sql)
         m = _re.search(
-            r"\(\s*amount\s+BETWEEN\s+100\s+AND\s+500\s*\)\s+IS\s+NULL",
+            r"CAST\(\s*m\.amount\s+BETWEEN\s+100\s+AND\s+500\s+AS BOOLEAN\)\s+IS\s+NULL",
             norm,
             _re.IGNORECASE,
         )
         assert m is not None, (
-            f"BETWEEN-predicate Column.sql must be wrapped on inline; got:\n{norm}"
+            f"BETWEEN-predicate Column.sql must be enclosed on inline; got:\n{norm}"
         )
 
     async def test_filter_inlines_in_predicate_column_with_outer_parens(
@@ -11128,12 +11127,12 @@ class TestFilterOuterParenWrapDev1539:
         sql = await _generate(generator, query, model)
         norm = _norm(sql)
         m = _re.search(
-            r"\(\s*status\s+IN\s*\([^)]*\)\s*\)\s+IS\s+NULL",
+            r"CAST\(\s*m\.status\s+IN\s*\([^)]*\)\s+AS BOOLEAN\)\s+IS\s+NULL",
             norm,
             _re.IGNORECASE,
         )
         assert m is not None, (
-            f"IN-predicate Column.sql must be wrapped on inline; got:\n{norm}"
+            f"IN-predicate Column.sql must be enclosed on inline; got:\n{norm}"
         )
 
     def test_dotted_path_substitution_does_not_match_longer_path(self) -> None:
