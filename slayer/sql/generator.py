@@ -23,6 +23,7 @@ from slayer.core.enums import (
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.keys import reroot_aggregate_key
 from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.engine.column_expansion import (
@@ -4118,11 +4119,13 @@ class SQLGenerator:
 
         Returns ``None`` for non-first/last aggs and when ``key.args`` is
         empty or its first element is neither a ``ColumnKey`` nor a
-        ``ColumnSqlKey``. Cross-model paths on derived time args
-        (``ColumnSqlKey`` with non-empty ``path``) raise
-        ``NotImplementedError`` rather than silently emitting against the
-        wrong relation alias — that case is tracked alongside bug (c) of
-        the four-bug Stage B package in DEV-1476.
+        ``ColumnSqlKey``. A derived time arg (``ColumnSqlKey``) whose
+        ``path`` is non-empty AFTER the DEV-1707 cross-model reroot — i.e. a
+        column a hop PAST the target — raises ``NotImplementedError`` rather
+        than silently emitting against a relation the isolated CTE does not
+        join; that residual-hop case is tracked as DEV-1526 (Stage 4). The
+        analogous residual ``ColumnKey`` arg is caught loudly by the
+        scope-closure validator (``SLAYER_VALIDATE_SCOPES``) instead.
         """
         from slayer.core.keys import ColumnKey, ColumnSqlKey
 
@@ -4135,11 +4138,14 @@ class SQLGenerator:
             if isinstance(a, ColumnSqlKey):
                 if a.path:
                     raise NotImplementedError(
-                        f"Cross-model derived time column "
-                        f"(path={a.path!r}, column={a.column_name!r}) on "
-                        f"first/last positional arg is not yet supported "
-                        f"by the ranked-subquery builder; tracked as "
-                        f"DEV-1476."
+                        f"Derived time column with a residual join path "
+                        f"(path={a.path!r}, column={a.column_name!r}) on a "
+                        f"first/last positional arg is not yet supported by "
+                        f"the ranked-subquery builder: the isolated CTE does "
+                        f"not pull the residual join. Post-DEV-1707 the "
+                        f"cross-model reroot strips the target prefix, so this "
+                        f"fires only for a time arg a hop PAST the target; "
+                        f"tracked as DEV-1526 (Stage 4)."
                     )
                 col = next(
                     (c for c in source_model.columns if c.name == a.column_name),
@@ -5958,9 +5964,7 @@ class SQLGenerator:
         """
         from slayer.core.enums import TimeGranularity
         from slayer.core.keys import (
-            AggregateKey,
             ColumnKey,
-            ColumnSqlKey,
             Phase,
             TimeTruncKey,
         )
@@ -6073,51 +6077,20 @@ class SQLGenerator:
         # here with both source and ``other`` rooted at ``("customers",)``.
         # Stripping the prefix in lockstep means the synth helper's
         # path-validation invariant (``kwarg.path == source.path``) holds.
-        # Re-root the aggregate SOURCE and any column-valued kwargs to the
-        # target's local scope (path=()). Covers a derived (ColumnSqlKey)
-        # source like ``customers.net:sum`` — Codex: otherwise the
-        # host-rooted derived key renders against the wrong alias inside the
-        # CTE. StarKey ignores path (COUNT(*)), so leave it as-is.
-        _src = agg_slot.key.source
-        cross_model_path = getattr(_src, "path", ())
-        if isinstance(_src, ColumnKey):
-            local_source_key = ColumnKey(path=(), leaf=_src.leaf)
-        elif isinstance(_src, ColumnSqlKey):
-            local_source_key = ColumnSqlKey(
-                path=(), model=_src.model, column_name=_src.column_name,
-            )
-        else:
-            local_source_key = _src
-
-        def _reroot_kwarg(kval):
-            if isinstance(kval, ColumnKey) and kval.path == cross_model_path:
-                return ColumnKey(path=(), leaf=kval.leaf)
-            if isinstance(kval, ColumnSqlKey) and kval.path == cross_model_path:
-                return ColumnSqlKey(
-                    path=(), model=kval.model, column_name=kval.column_name,
-                )
-            return kval
-
-        local_kwargs = tuple(
-            (k, _reroot_kwarg(v)) for k, v in agg_slot.key.kwargs
-        )
-        # DEV-1476 bug (c): symmetric reroot of positional args. An explicit
-        # time arg ``customers.amount:last(customers.signup_at)`` arrives
-        # here with ``key.args=(ColumnKey(path=("customers",),
-        # leaf="signup_at"),)``. Without rerooting, ``_resolve_explicit_
-        # time_col`` qualifies the time column under the wrong alias inside
-        # the target-rooted CTE. ``_reroot_kwarg`` already does the right
-        # thing for ``ColumnKey`` / ``ColumnSqlKey``; reuse it.
-        local_args = tuple(
-            _reroot_kwarg(a) if isinstance(a, (ColumnKey, ColumnSqlKey)) else a
-            for a in agg_slot.key.args
-        )
-        local_agg_key = AggregateKey(
-            source=local_source_key,
-            agg=agg_slot.key.agg,
-            args=local_args,
-            kwargs=local_kwargs,
-            column_filter_key=agg_slot.key.column_filter_key,
+        # Re-root the aggregate SOURCE and ALL embedded refs (positional args
+        # AND column-valued kwargs) from the host's coordinate system into the
+        # target's local scope in one symmetric pass (DEV-1707). Covers a
+        # derived (ColumnSqlKey) source like ``customers.net:sum`` — otherwise
+        # the host-rooted derived key renders against the wrong alias inside
+        # the CTE — and the DEV-1476(c) explicit time arg
+        # ``customers.amount:last(customers.signup_at)``, whose positional arg
+        # must strip the host prefix in lockstep with the source so
+        # ``_resolve_explicit_time_col`` qualifies the time column under the
+        # target relation. ``column_filter_key`` rides through unchanged
+        # (owner-anchored, invariant under reroot).
+        cross_model_path = getattr(agg_slot.key.source, "path", ())
+        local_agg_key = reroot_aggregate_key(
+            agg_slot.key, target_path=cross_model_path,
         )
         # The local_agg_key was built from the target's own column.
         # column_filter_key (if set) carries the canonical filter SQL
@@ -6449,55 +6422,19 @@ class SQLGenerator:
         if isinstance(value_key, AggregateKey):
             # HAVING-route: render the aggregate against the target.
             # Reuse the synthesise helper with target_model as scope.
-            from slayer.core.keys import (
-                AggregateKey as _AggKey, ColumnSqlKey as _ColSqlKey,
-            )
-            # DEV-1501 (Codex round 9): mirror the projection-path
-            # rerooting (lines ~5685-5730) here. The routed AggregateKey
-            # carries args/kwargs still rooted at the cross-model path
+            # DEV-1501 (Codex round 9): the routed AggregateKey carries
+            # source / args / kwargs still rooted at the cross-model path
             # (``customers.regions.amount:last(customers.regions.opened_at)``
             # arrives with ``args=(ColumnKey(path=("customers","regions"),
-            # leaf="opened_at"),)``). Inside the target CTE scope those
-            # refs must qualify under the local relation, not the
-            # host-rooted ``__``-path alias — same fix the projection
-            # path applies via ``_reroot_kwarg``. Without this, the
-            # ranked subquery's ``ORDER BY`` qualifies the time column
-            # under a non-existent alias inside the CTE.
+            # leaf="opened_at"),)``). Inside the target CTE scope every ref
+            # must qualify under the local relation, not the host-rooted
+            # ``__``-path alias — the SAME symmetric reroot the projection
+            # path applies (DEV-1707). Without it, the ranked subquery's
+            # ``ORDER BY`` qualifies the time column under a non-existent
+            # alias inside the CTE.
             cross_model_path = getattr(value_key.source, "path", ())
-
-            def _reroot_having(kval):
-                if isinstance(kval, ColumnKey) and kval.path == cross_model_path:
-                    return ColumnKey(path=(), leaf=kval.leaf)
-                if isinstance(kval, _ColSqlKey) and kval.path == cross_model_path:
-                    return _ColSqlKey(
-                        path=(), model=kval.model,
-                        column_name=kval.column_name,
-                    )
-                return kval
-
-            if isinstance(value_key.source, ColumnKey):
-                local_source = ColumnKey(path=(), leaf=value_key.source.leaf)
-            elif isinstance(value_key.source, _ColSqlKey):
-                local_source = _ColSqlKey(
-                    path=(), model=value_key.source.model,
-                    column_name=value_key.source.column_name,
-                )
-            else:
-                local_source = value_key.source
-            local_args = tuple(
-                _reroot_having(a)
-                if isinstance(a, (ColumnKey, _ColSqlKey)) else a
-                for a in value_key.args
-            )
-            local_kwargs = tuple(
-                (k, _reroot_having(v)) for k, v in value_key.kwargs
-            )
-            local_agg = _AggKey(
-                source=local_source,
-                agg=value_key.agg,
-                args=local_args,
-                kwargs=local_kwargs,
-                column_filter_key=value_key.column_filter_key,
+            local_agg = reroot_aggregate_key(
+                value_key, target_path=cross_model_path,
             )
             from slayer.engine.planned import ValueSlot as _Slot
             tmp_slot = _Slot(

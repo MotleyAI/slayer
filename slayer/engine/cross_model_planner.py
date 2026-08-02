@@ -63,6 +63,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     ValueKey,
     column_path,
+    reroot_aggregate_key,
 )
 from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
@@ -917,53 +918,47 @@ def _filter_ref_paths(value_key: ValueKey) -> List[Tuple[str, ...]]:
     return paths
 
 
+def _render_ref_formula(ref) -> str:
+    """Render one already-rerooted embedded reference back into formula text.
+
+    Column-like refs dot-join their (residual) path with the leaf; scalars
+    fall through to ``_scalar_formula_literal``. Contains NO path-stripping
+    decisions — the reroot has already happened (DEV-1707).
+    """
+    if isinstance(ref, ColumnSqlKey):
+        return ".".join((*ref.path, ref.column_name))
+    if isinstance(ref, ColumnKey):
+        return ".".join((*ref.path, ref.leaf))
+    return _scalar_formula_literal(ref)
+
+
 def _local_agg_formula(key: AggregateKey) -> str:
     """Reconstruct the LOCAL colon-formula for a cross-model aggregate
     (``customers.revenue:sum`` -> ``revenue:sum``) so it can be re-planned
     against the target model as a plain local measure.
 
-    Column-valued kwargs (``corr(other=customers.region_id)``) are
-    re-rooted too: their join path is bound from the HOST, so the leading
-    agg-source (target) prefix is stripped to express the ref in the
-    target's local scope (``other=region_id``; a deeper hop keeps its
-    residual path, ``other=regions.code``). Dropping the path outright
-    would mis-bind or fail to bind the nested sub-query (CR review)."""
-    src = key.source
-    target_path = tuple(getattr(src, "path", ()))
+    Every embedded reference — source, positional args, and column-valued
+    kwargs — is re-anchored symmetrically via the unified
+    ``reroot_aggregate_key`` (DEV-1707), then rendered by the path-free
+    ``_render_ref_formula``. A kwarg / arg one hop past the target keeps its
+    residual path (``other=regions.code``); an exact match becomes local
+    (``other=region_id``). The public string contract is unchanged — the
+    strip logic simply no longer lives here.
+    """
+    local = reroot_aggregate_key(
+        key, target_path=tuple(getattr(key.source, "path", ())),
+    )
+    src = local.source
     if isinstance(src, StarKey):
         base = "*"
     elif isinstance(src, ColumnSqlKey):
-        base = src.column_name
+        base = ".".join((*src.path, src.column_name))
     else:  # ColumnKey
-        base = src.leaf
+        base = ".".join((*src.path, src.leaf))
 
-    def _reroot_col_kwarg(v) -> str:
-        leaf = v.leaf if isinstance(v, ColumnKey) else v.column_name
-        vpath = tuple(getattr(v, "path", ()))
-        # Strip the agg-source (target) prefix so the ref is target-local.
-        residual = (
-            vpath[len(target_path):]
-            if vpath[: len(target_path)] == target_path
-            else vpath
-        )
-        return ".".join((*residual, leaf))
-
-    formula = f"{base}:{key.agg}"
-    parts: List[str] = []
-    # Positional args may carry ColumnKey / ColumnSqlKey just like kwargs do
-    # (rerooting needs path-aware handling on both — CR review). Falling
-    # through to ``_scalar_formula_literal`` would emit Pydantic-repr noise
-    # for a column-valued positional arg, mis-binding the nested sub-query.
-    for a in key.args:
-        if isinstance(a, (ColumnKey, ColumnSqlKey)):
-            parts.append(_reroot_col_kwarg(a))
-        else:
-            parts.append(_scalar_formula_literal(a))
-    for k, v in key.kwargs:
-        if isinstance(v, (ColumnKey, ColumnSqlKey)):
-            parts.append(f"{k}={_reroot_col_kwarg(v)}")
-        else:
-            parts.append(f"{k}={_scalar_formula_literal(v)}")
+    formula = f"{base}:{local.agg}"
+    parts: List[str] = [_render_ref_formula(a) for a in local.args]
+    parts += [f"{k}={_render_ref_formula(v)}" for k, v in local.kwargs]
     if parts:
         formula += "(" + ", ".join(parts) + ")"
     return formula

@@ -442,6 +442,93 @@ class AggregateKey(_FrozenKey):
         )
 
 
+def _reroot_path_ref(ref, *, target_path: Tuple[str, ...]):
+    """Re-anchor a single embedded reference from the host coordinate system
+    into the target's local scope (DEV-1707).
+
+    Prefix-strip with residual: if ``ref`` carries a join ``path`` that starts
+    with ``target_path``, drop that prefix and keep the residual hops
+    (``("customers", "regions")`` under target ``("customers",)`` →
+    ``("regions",)``; an exact match → ``()``). A ``path`` that does NOT start
+    with ``target_path`` — or a value with no ``path`` at all (a scalar
+    ``Decimal`` / ``str`` / ``bool`` / ``None``) — is returned unchanged. The
+    strip applies uniformly to ``ColumnKey``, ``ColumnSqlKey``, and
+    ``StarKey``; the non-``path`` fields (``leaf`` / ``model`` /
+    ``column_name``) ride along untouched via ``model_copy``.
+    """
+    path = getattr(ref, "path", None)
+    if path is None:
+        return ref
+    path = tuple(path)
+    if path[: len(target_path)] != tuple(target_path):
+        return ref
+    residual = path[len(target_path):]
+    if residual == path:
+        return ref
+    return ref.model_copy(update={"path": residual})
+
+
+def reroot_aggregate_key(
+    key: "AggregateKey", *, target_path: Tuple[str, ...],
+) -> "AggregateKey":
+    """Re-anchor EVERY embedded reference of a cross-model ``AggregateKey``
+    from the host's coordinate system into its target's local scope
+    (DEV-1707 / DEV-1703 Stage 3).
+
+    When a cross-model aggregate (``customers.revenue:sum``,
+    ``customers.amount:last(customers.signup_at)``) is rendered inside its
+    target-rooted CTE, its ``source``, positional ``args``, keyword ``kwargs``
+    values, and — invariantly — its ``column_filter_key`` must all be
+    expressed relative to the target rather than the query root. This is the
+    single, symmetric replacement for the per-field strip logic that used to
+    live in ``slayer/engine/cross_model_planner.py`` (``_local_agg_formula`` /
+    ``_reroot_col_kwarg``) and ``slayer/sql/generator.py`` (the inline
+    ``_reroot_kwarg`` / ``local_args`` / ``_reroot_having`` blocks) with two
+    divergent semantics.
+
+    ``target_path`` is the join path of the aggregate's source (the hops from
+    the query root to the target model). Semantics — prefix-strip with
+    residual, applied uniformly (see ``_reroot_path_ref``):
+
+    * ``source``, each positional arg, and each kwarg VALUE whose ``path``
+      starts with ``target_path`` drops that prefix (exact match → local);
+    * a ref whose ``path`` does not start with ``target_path`` is left
+      unchanged — the function is TOTAL and never raises; a genuinely
+      mis-pathed ref surfaces at the downstream binder / kwarg-path validator
+      exactly as before;
+    * scalar args / kwargs pass through untouched; kwarg NAMES are preserved
+      (and the ``AggregateKey`` validator keeps them canonically sorted);
+    * ``target_path == ()`` is the identity (the filtered-local case, where
+      the source is already host-local — the empty prefix strips zero hops).
+
+    ``column_filter_key`` is copied UNCHANGED. Its ``canonical_sql`` and
+    ``referenced_join_paths`` are anchored at the OWNING MODEL of the source
+    column (stamped by ``slayer.engine.binding._resolve_column_filter_key``
+    via ``compute_column_filter_join_paths`` with ``anchor_model`` = that
+    owning model). Rerooting only changes how that owner is REACHED from the
+    query root; it never moves the owner, so the filter's owner-relative SQL
+    and paths are invariant under reroot. After rerooting a filtered
+    cross-model aggregate the source reads local (``path == ()``) while
+    ``referenced_join_paths`` stays non-empty — precisely the DEV-1503
+    filtered-local isolation trigger shape.
+    """
+    target_path = tuple(target_path)
+    if not target_path:
+        return key
+    return AggregateKey(
+        source=_reroot_path_ref(key.source, target_path=target_path),
+        agg=key.agg,
+        args=tuple(
+            _reroot_path_ref(a, target_path=target_path) for a in key.args
+        ),
+        kwargs=tuple(
+            (k, _reroot_path_ref(v, target_path=target_path))
+            for k, v in key.kwargs
+        ),
+        column_filter_key=key.column_filter_key,
+    )
+
+
 class TransformKey(_FrozenKey):
     """Identity for a transform slot (window / temporal operator over a value).
 
