@@ -515,18 +515,24 @@ def reroot_aggregate_key(
     target_path = tuple(target_path)
     if not target_path:
         return key
-    return AggregateKey(
-        source=_reroot_path_ref(key.source, target_path=target_path),
-        agg=key.agg,
-        args=tuple(
+    # Rebuild from the existing key so fields reroot does NOT own (``agg``,
+    # ``column_filter_key``, and any field added to ``AggregateKey`` later)
+    # ride through automatically rather than being silently dropped. Only
+    # ``source`` / ``args`` / ``kwargs`` carry rerootable paths. ``model_copy``
+    # skips the ``_canonicalize_kwargs`` validator, which is a no-op here:
+    # reroot preserves kwarg names and order, so the input's already-canonical
+    # sort is unchanged (pinned by
+    # ``test_kwargs_canonical_sort_preserved_after_reroot``).
+    return key.model_copy(update={
+        "source": _reroot_path_ref(key.source, target_path=target_path),
+        "args": tuple(
             _reroot_path_ref(a, target_path=target_path) for a in key.args
         ),
-        kwargs=tuple(
+        "kwargs": tuple(
             (k, _reroot_path_ref(v, target_path=target_path))
             for k, v in key.kwargs
         ),
-        column_filter_key=key.column_filter_key,
-    )
+    })
 
 
 class TransformKey(_FrozenKey):

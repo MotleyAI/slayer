@@ -567,10 +567,13 @@ def test_residual_columnsqlkey_time_arg_raises_dev1526() -> None:
             ),
         ),
     )
+    # Hoisted out of the ``pytest.raises`` block so the ONLY call that can
+    # raise inside it is the one under test (Sonar S5778).
+    source_model = _guard_source_model()
     with pytest.raises(NotImplementedError) as excinfo:
         gen._resolve_explicit_time_col(
             key=key,
-            source_model=_guard_source_model(),
+            source_model=source_model,
             source_relation="customers",
             bundle=None,
         )
