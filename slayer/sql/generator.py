@@ -2594,7 +2594,13 @@ class SQLGenerator:
         """
         if isinstance(value, ResolvedAggKwarg):
             if value.kind == "expr":
-                return value.value if isinstance(value.value, exp.Expression) \
+                # Return a COPY: the same ResolvedAggKwarg (keyed by AggregateKey)
+                # is embedded into more than one AST when a C13 slot with two
+                # declared aliases visits the same key twice in base_render_order.
+                # sqlglot re-parents a node on attach, so sharing the node would
+                # corrupt the first tree — mirror ScopeFrame.resolve's .copy()
+                # discipline (slayer/sql/scope.py).
+                return value.value.copy() if isinstance(value.value, exp.Expression) \
                     else self._parse(value.value)
             raw = value.value
         else:
@@ -3958,6 +3964,42 @@ class SQLGenerator:
         _for_each_local_agg(_resolve_source)
         _for_each_local_agg(_resolve_kwargs)
         return resolved
+
+    def _resolve_agg_kwargs_for_key(
+        self, *, key, source_model, source_relation: str, bundle,
+    ) -> "Optional[Dict[str, ResolvedAggKwarg]]":
+        """Resolve a single LOCAL aggregate's column-ref kwargs
+        (``weighted_avg(weight=<col>)`` / ``corr(other=<col>)``) through a fresh
+        host ``ScopeFrame`` → ``{name: ResolvedAggKwarg(kind="expr")}`` or ``None``.
+
+        The base SELECT uses the batch ``_resolve_agg_inputs_via_scope`` pass over
+        a shared host scope (which also registers the crossed joins). The HAVING
+        render path (``_render_value_key_for_filter``) has no such scope, so it
+        builds a throwaway one here purely to reproduce the SAME anchored kwarg
+        expression the SELECT emits — the crossed join is already base-pulled
+        (the HAVING aggregate is also a ``base_render_order`` slot), so the
+        throwaway scope's own ``join_paths`` are intentionally discarded.
+        """
+        from slayer.core.keys import ColumnKey, ColumnSqlKey
+
+        kwargs = getattr(key, "kwargs", None)
+        if bundle is None or not kwargs:
+            return None
+        allocator = AliasAllocator()
+        scope = ScopeFrame(
+            scope_id=allocator.next_scope_id(source_relation),
+            root_model=source_model,
+            root_relation=source_relation,
+            bundle=bundle,
+            dialect=self._dialect,
+            allocator=allocator,
+        )
+        resolved = {
+            kname: ResolvedAggKwarg(kind="expr", value=scope.resolve(kval))
+            for kname, kval in kwargs
+            if isinstance(kval, (ColumnKey, ColumnSqlKey))
+        }
+        return resolved or None
 
     def _build_base_select_for_planned(  # NOSONAR(S3776) — join-path collection and derived-dim expansion are extracted to helpers; the residual is the one cohesive per-slot ROW/AGGREGATE projection + GROUP-BY assembly pass.
         self,
@@ -9555,6 +9597,18 @@ class SQLGenerator:
                 and aliases_by_slot_id.get(slot.id)
             ):
                 having_full_alias = aliases_by_slot_id[slot.id][0]
+            # DEV-1527: resolve this local aggregate's column-ref kwargs
+            # (``weighted_avg(weight=<col>)`` / ``corr(other=<col>)``) through a
+            # host scope so a derived/crossing kwarg renders its expanded, join-
+            # anchored expression HERE too — matching the base SELECT — instead of
+            # collapsing to a bare, non-existent name. The crossed join is already
+            # base-pulled by ``_resolve_agg_inputs_via_scope`` (this HAVING
+            # aggregate is also a ``base_render_order`` slot), so the throwaway
+            # scope is used only to reproduce the same anchored expression.
+            having_kwargs = self._resolve_agg_kwargs_for_key(
+                key=key, source_model=source_model,
+                source_relation=source_relation, bundle=bundle,
+            )
             synth = self._build_agg_render_spec_from_planned(
                 slot=slot,
                 key=key,
@@ -9562,6 +9616,7 @@ class SQLGenerator:
                 source_relation=source_relation,
                 full_alias=having_full_alias,
                 bundle=bundle,
+                resolved_agg_kwargs=having_kwargs,
             )
             # DEV-1501: thread the rn suffix maps from the base SELECT
             # so a HAVING reference to a hidden first/last aggregate

@@ -242,7 +242,35 @@ class TestDev1527KwargExpansion:
         assert "customers__regions.weight" in sql          # kwarg expanded
         assert "orders.region_weight" not in sql           # not the broken bare form
         assert "SUM(orders.quantity)" in sql               # sibling local operand intact
-        assert "LEFT JOIN customers" in sql                 # join base-pulled
+        assert "LEFT JOIN customers" in sql                 # first hop base-pulled
+        # terminal hop too — a first-hop-only registration would still emit an
+        # unresolved customers__regions.weight (CodeRabbit).
+        assert "LEFT JOIN regions AS customers__regions" in sql
+
+    async def test_having_crossing_kwarg_expands(self) -> None:
+        # A HAVING clause on a local aggregate with a crossing derived kwarg must
+        # render the expanded, join-anchored kwarg (customers__regions.weight) in
+        # the HAVING too — matching the SELECT — not the bare, non-existent
+        # orders.region_weight (CodeRabbit: the HAVING render path also dropped
+        # resolved_agg_kwargs).
+        orders = _orders(extra=[
+            Column(name="region_weight", sql="customers__regions.weight",
+                   type=DataType.DOUBLE),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=["id"],
+            measures=[ModelMeasure(formula="amount:weighted_avg(weight=region_weight)")],
+            filters=["amount:weighted_avg(weight=region_weight) > 5"],
+        )
+        sql = await _engine_generate(
+            query=query, model=orders, extra_models=[_customers(), _regions()],
+        )
+        norm = _norm(sql)
+        assert "HAVING" in norm
+        having = norm.split("HAVING", 1)[1]
+        assert "customers__regions.weight" in having       # kwarg expanded in HAVING
+        assert "orders.region_weight" not in having        # not the broken bare form
 
     async def test_custom_aggregation_str_param_override_substitutes(self) -> None:
         # kind="str" template path through _build_formula_agg: a model-defined

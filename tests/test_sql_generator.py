@@ -10500,6 +10500,14 @@ class TestFilterOuterParenWrapDev1539:
             f"Expected the multi-term derived LHS enclosed before `> 7`; "
             f"got: {where_clause}"
         )
+        # All four weighted terms must survive inside the enclosed LHS — the
+        # single-quantifier regex alone would still match if a later term were
+        # dropped (CodeRabbit). Plain substring checks keep the S5852-safe shape.
+        for _term in ("m.a", "m.b", "m.c", "m.d"):
+            assert _term in m.group(0), (
+                f"Expected weighted term {_term} inside the enclosed LHS; "
+                f"got: {m.group(0)}"
+            )
         # Negative: the trailing arithmetic term must NOT land bare next to
         # ``> 7`` (the un-enclosed, precedence-broken shape).
         assert "* 0.2 > 7" not in where_clause, (

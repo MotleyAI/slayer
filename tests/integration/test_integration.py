@@ -3928,6 +3928,12 @@ async def test_dev1539_where_multiterm_filter_emits_outer_parens(composite_score
         f"Expected the multi-term derived LHS enclosed before `> 7`; "
         f"got:\n{dry.sql}"
     )
+    # All four weighted terms must survive inside the enclosed LHS (CodeRabbit) —
+    # plain substring checks keep the S5852-safe single-quantifier regex shape.
+    for _term in ("entities.a", "entities.b", "entities.c", "entities.d"):
+        assert _term in m.group(0), (
+            f"Expected weighted term {_term} inside the enclosed LHS; got:\n{dry.sql}"
+        )
 
 
 async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_score_env):

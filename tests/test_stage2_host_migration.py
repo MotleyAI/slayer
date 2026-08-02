@@ -185,12 +185,24 @@ class TestPlaceholderLimitOne:
             query=query, model=orders,
             extra_models=[_customers(), _regions(), shippers],
         )
-        norm = " ".join(sql.split()).replace('"', "")
-        assert "LIMIT 1" in norm                       # placeholder collapses host
-        # the crossing filter's LEFT JOIN is pulled into the placeholder FROM,
-        # and its predicate references the joined alias.
-        assert "LEFT JOIN shippers AS shippers" in norm
-        assert "shippers.code = 'X'" in norm
+        # Scope the assertions to the placeholder SELECT itself (the one-row
+        # ``_placeholder`` scan with LIMIT 1) so a regression that moves the join
+        # or predicate to another query block can't pass (CodeRabbit).
+        tree = sqlglot.parse_one(sql, dialect="postgres")
+        placeholder = next(
+            (
+                s for s in tree.find_all(exp.Select)
+                if s.args.get("limit") is not None
+                and any(p.alias_or_name == "_placeholder" for p in s.expressions)
+            ),
+            None,
+        )
+        assert placeholder is not None, f"no placeholder SELECT found in:\n{sql}"
+        ph = " ".join(placeholder.sql(dialect="postgres").split()).replace('"', "")
+        assert "LIMIT 1" in ph                          # placeholder collapses host
+        # the crossing filter's LEFT JOIN + predicate live in the SAME placeholder.
+        assert "LEFT JOIN shippers AS shippers" in ph
+        assert "shippers.code = 'X'" in ph
         assert_scope_closed(sql)
 
 
