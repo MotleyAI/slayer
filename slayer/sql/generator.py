@@ -3999,8 +3999,23 @@ class SQLGenerator:
             TimeTruncKey,
         )
 
-        # Walk row slots to collect every joined path so the FROM
-        # clause carries the needed LEFT JOINs in one pass.
+        # DEV-1706 Stage 2: the host base is a single scope; every join-crossing
+        # ref registers its path into ``host_scope.join_paths`` as a side effect
+        # of being resolved through the scope (Law 1 — discovery can never be
+        # forgotten). The four legacy join collectors are gone: their work is now
+        # the scope passes below, plus the dimension walk that still feeds
+        # first/last (Stage 5/6). The scope's ordered ``join_paths`` reproduce the
+        # collectors' first-seen registration order — derived dims → WHERE filters
+        # → Column.filter → source → kwargs — so the base FROM is byte-identical.
+        #
+        # Stage 2's host base has no projection boundary, so the allocator mints
+        # no ``_val_`` names here and a local instance suffices; the generation-
+        # wide allocator (D-E) arrives with the CTE scopes in Stage 4.
+        #
+        # Walk row slots for every joined DIMENSION path first (join-order
+        # position 1). This set is retained (not folded into the scope) because
+        # it also feeds first/last ranking (Stage 5/6); the scope's paths append
+        # after it below.
         needed_join_paths = self._collect_joined_paths_for_base(
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
@@ -4008,43 +4023,6 @@ class SQLGenerator:
             source_relation=source_relation,
             bundle=bundle,
         )
-        # Pre-expand derived (ColumnSqlKey) ROW + TIME dimensions: inline
-        # sibling/joined derived refs (DEV-1333 / DEV-1410) and pull any joins
-        # their SQL crosses into the FROM (appended to ``needed_join_paths``).
-        derived_expr_by_sid = self._expand_derived_row_dims(
-            base_render_order=base_render_order, slots_by_id=slots_by_id,
-            source_relation=source_relation, source_model=source_model,
-            bundle=bundle, needed_join_paths=needed_join_paths,
-        )
-        # WHERE-phase filters referencing joined columns (direct, derived, or
-        # Mode-A ``__`` paths) pull their joins into the FROM too. Filters
-        # routed to a cross-model ``_cm_*`` CTE (``skip_filter_ids``) are
-        # applied there, not on ``_base`` — pulling their join into ``_base``
-        # would add an unused (and, for one-to-many joins, cardinality-
-        # changing) LEFT JOIN.
-        for p in self._collect_filter_join_paths(
-            planned_query=planned_query, source_model=source_model,
-            source_relation=source_relation, bundle=bundle,
-            skip_filter_ids=skip_filter_ids,
-        ):
-            if p not in needed_join_paths:
-                needed_join_paths.append(p)
-        # DEV-1706 Stage 2: build the host ScopeFrame and resolve every LOCAL
-        # aggregate's join-crossing inputs through it (Law 1 — discovery is a
-        # side effect of the resolve). This subsumes the former
-        # ``_collect_column_filter_join_paths`` (DEV-1494 Column.filter) and
-        # ``_collect_aggregate_source_join_paths`` (DEV-1502 derived sources)
-        # passes and adds column-ref kwarg discovery (DEV-1527 —
-        # ``weighted_avg(weight=<col>)`` / ``corr(other=<col>)``), whose resolved
-        # expression is embedded verbatim (``kind="expr"``) into the render spec,
-        # replacing the ``agg_kwarg_canonical_str`` round-trip that collapsed a
-        # derived column to a bare (non-existent) name. The scope's ordered
-        # ``join_paths`` reproduce the collectors' first-seen order (Column.filter
-        # → source → kwargs), so the base FROM is byte-identical.
-        # Stage 2's host base is a single scope with no projection boundary, so
-        # the allocator mints no ``_val_`` names here; a local instance suffices.
-        # The generation-wide allocator (D-E) arrives with the CTE scopes in
-        # Stage 4.
         host_allocator = AliasAllocator()
         host_scope = ScopeFrame(
             scope_id=host_allocator.next_scope_id(source_relation),
@@ -4054,11 +4032,39 @@ class SQLGenerator:
             dialect=self._dialect,
             allocator=host_allocator,
         )
+        # Pre-expand derived (ColumnSqlKey) ROW + TIME dimensions: inline
+        # sibling/joined derived refs (DEV-1333 / DEV-1410) and register any
+        # joins their SQL crosses into the scope (position 2). Returns the
+        # expanded-expr-by-slot-id map the render branch reads.
+        derived_expr_by_sid = self._expand_derived_row_dims(
+            base_render_order=base_render_order, slots_by_id=slots_by_id,
+            source_relation=source_relation, source_model=source_model,
+            bundle=bundle, scope=host_scope,
+        )
+        # WHERE-phase filters referencing joined columns (direct, derived, or
+        # Mode-A ``__`` paths) register their joins into the scope too (position
+        # 3). Filters routed to a cross-model ``_cm_*`` CTE (``skip_filter_ids``)
+        # are applied there, not on ``_base`` — registering their join here would
+        # add an unused (and, for one-to-many joins, cardinality-changing) LEFT
+        # JOIN.
+        self._resolve_where_filter_joins_via_scope(
+            planned_query=planned_query, scope=host_scope,
+            skip_filter_ids=skip_filter_ids,
+        )
+        # Every LOCAL aggregate's join-crossing inputs resolve through the scope
+        # next: ``Column.filter`` (position 4; DEV-1494), derived aggregate SOURCE
+        # (position 5; DEV-1502), and column-ref KWARGS (position 6; DEV-1527 —
+        # ``weighted_avg(weight=<col>)`` / ``corr(other=<col>)``, whose resolved
+        # expression is embedded verbatim (``kind="expr"``) into the render spec,
+        # replacing the ``agg_kwarg_canonical_str`` round-trip that collapsed a
+        # derived column to a bare, non-existent name).
         resolved_agg_kwargs = self._resolve_agg_inputs_via_scope(
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
             scope=host_scope,
         )
+        # Merge the scope's registered paths (positions 2-6, in first-seen order)
+        # after the dimension paths (position 1) → byte-identical FROM.
         for p in host_scope.join_paths.as_list():
             if p not in needed_join_paths:
                 needed_join_paths.append(p)
@@ -5374,23 +5380,31 @@ class SQLGenerator:
                 # ``_base`` is empty and the combined query returns 0
                 # rows (correct host-filter semantics).
                 #
-                # Round 6 (Codex): walk the non-routed filters' join paths
-                # via ``_collect_filter_join_paths`` and pull them in via
+                # Round 6 (Codex): register the non-routed filters' join paths
+                # into a host ScopeFrame (Law 1 — same single resolver as the
+                # main host base, D-J) and pull them in via
                 # ``_build_from_and_joins`` — a filter like
                 # ``claim.claim_number = '...'`` references a joined alias
                 # that must be in scope; without the join, the WHERE
                 # references an undefined alias.
-                placeholder_join_paths = self._collect_filter_join_paths(
-                    planned_query=planned_query,
-                    source_model=source_model,
-                    source_relation=source_relation,
+                placeholder_allocator = AliasAllocator()
+                placeholder_scope = ScopeFrame(
+                    scope_id=placeholder_allocator.next_scope_id(source_relation),
+                    root_model=source_model,
+                    root_relation=source_relation,
                     bundle=bundle,
+                    dialect=self._dialect,
+                    allocator=placeholder_allocator,
+                )
+                self._resolve_where_filter_joins_via_scope(
+                    planned_query=planned_query,
+                    scope=placeholder_scope,
                     skip_filter_ids=routed_ids,
                 )
                 placeholder_from, placeholder_joins = self._build_from_and_joins(
                     source_model=source_model,
                     source_relation=source_relation,
-                    joined_paths=placeholder_join_paths,
+                    joined_paths=placeholder_scope.join_paths.as_list(),
                     bundle=bundle,
                 )
                 base_select = exp.Select().select(
@@ -8633,22 +8647,22 @@ class SQLGenerator:
             _scan(rendered)
         return ordered
 
-    def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and collecting the joins they cross.
+    def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and registering the joins they cross.
         self, *, base_render_order, slots_by_id, source_relation: str,
-        source_model, bundle, needed_join_paths: List[Tuple[str, ...]],
+        source_model, bundle, scope: ScopeFrame,
     ) -> Dict[str, exp.Expression]:
         """Pre-expand derived (``ColumnSqlKey``) ROW dimensions and derived TIME
         dimensions for the base SELECT: inline sibling/joined derived refs
-        (DEV-1333 / DEV-1410), append any joins their SQL crosses to
-        ``needed_join_paths`` (in place), and return the expanded-expr-by-slot-id
-        map the render branch reads from. Extracted from
-        ``_build_base_select_for_planned``.
+        (DEV-1333 / DEV-1410), register any joins their SQL crosses into
+        ``scope.join_paths`` (Law 1 — the join-discovery side effect), and return
+        the expanded-expr-by-slot-id map the render branch reads from. Extracted
+        from ``_build_base_select_for_planned``.
         """
         from slayer.core.keys import ColumnSqlKey, Phase, TimeTruncKey
 
         def _add(path: Tuple[str, ...]) -> None:
-            if path and path not in needed_join_paths:
-                needed_join_paths.append(path)
+            if path:
+                scope.join_paths.add(path)
 
         derived_expr_by_sid: Dict[str, exp.Expression] = {}
         for sid in base_render_order:
@@ -8890,12 +8904,16 @@ class SQLGenerator:
             bundle=bundle,
         )
 
-    def _collect_filter_join_paths(
-        self, *, planned_query, source_model, source_relation: str, bundle,
+    def _resolve_where_filter_joins_via_scope(
+        self, *, planned_query, scope: ScopeFrame,
         skip_filter_ids: Optional[Set[str]] = None,
-    ) -> List[Tuple[str, ...]]:
-        """Collect the join paths a query's WHERE-phase filters reference so
-        the FROM pulls them in.
+    ) -> None:
+        """Register into ``scope.join_paths`` the joins every WHERE-phase filter
+        references (Law 1 — discovery is a side effect of resolving the filter
+        through the scope). A 1:1 replacement for the former
+        ``_collect_filter_join_paths`` (wrap-and-reuse, D-G): it delegates to the
+        same ``_value_key_join_paths`` / ``_filter_join_paths`` sub-scanners in
+        the same ``filters_by_phase`` order, so the base FROM stays byte-identical.
 
         Covers three shapes:
         * typed joined column ref (``customers.regions.name == 'US'``) —
@@ -8905,27 +8923,23 @@ class SQLGenerator:
           ``ColumnSqlKey``, expanded then scanned;
         * Mode-A ``SlayerModel.filters`` text with a ``__`` join path
           (``customers__regions.name = 'EU'``) — parsed and scanned.
+
+        Filters routed to a per-plan ``_cm_*`` CTE (``skip_filter_ids``) are
+        applied there, not on the host base, so their joins are not registered
+        here.
         """
         from slayer.core.keys import Phase
-
-        seen: set = set()
-        ordered: List[Tuple[str, ...]] = []
-
-        def _merge(paths: List[Tuple[str, ...]]) -> None:
-            for p in paths:
-                if p not in seen:
-                    seen.add(p)
-                    ordered.append(p)
 
         skip = skip_filter_ids or set()
         for fp in planned_query.filters_by_phase:
             if fp.phase != Phase.ROW or fp.id in skip:
                 continue
             if fp.expression is not None:
-                _merge(self._value_key_join_paths(
-                    key=fp.expression.value_key, source_model=source_model,
-                    source_relation=source_relation, bundle=bundle,
-                ))
+                for p in self._value_key_join_paths(
+                    key=fp.expression.value_key, source_model=scope.root_model,
+                    source_relation=scope.root_relation, bundle=scope.bundle,
+                ):
+                    scope.join_paths.add(p)
             elif fp.text is not None:
                 # DEV-1450 #4b / DEV-1494: discover joins from BOTH the
                 # un-inlined text (a placeholder dotted ref like
@@ -8933,11 +8947,11 @@ class SQLGenerator:
                 # to a constant) AND the inline-expanded text (a bare/dotted
                 # DERIVED ref like ``is_eu`` surfaces the join its expansion
                 # crosses). See ``_filter_join_paths``.
-                _merge(self._filter_join_paths(
-                    sql=fp.text, source_relation=source_relation,
-                    source_model=source_model, bundle=bundle,
-                ))
-        return ordered
+                for p in self._filter_join_paths(
+                    sql=fp.text, source_relation=scope.root_relation,
+                    source_model=scope.root_model, bundle=scope.bundle,
+                ):
+                    scope.join_paths.add(p)
 
     def _value_key_join_paths(  # NOSONAR(S3776) — one cohesive recursive ValueKey-tree walk; complexity is the per-key-type dispatch.
         self, *, key, source_model, source_relation: str, bundle,
@@ -8946,9 +8960,10 @@ class SQLGenerator:
         DEV-1475): a direct ``ColumnKey.path``; a derived ``ColumnSqlKey``
         (local or joined — expanded then scanned for the joins its ``sql``
         crosses); and recursively through ``ArithmeticKey`` / ``ScalarCallKey`` /
-        ``BetweenKey`` / ``InKey`` operands. Extracted from
-        ``_collect_filter_join_paths``; ``_joined_paths_in_sql`` already emits
-        path prefixes, and ``ColumnKey.path`` prefixes are expanded here.
+        ``BetweenKey`` / ``InKey`` operands. Sub-scanner shared by
+        ``_resolve_where_filter_joins_via_scope``; ``_joined_paths_in_sql``
+        already emits path prefixes, and ``ColumnKey.path`` prefixes are
+        expanded here.
         """
         from slayer.core.keys import (
             ArithmeticKey,
@@ -9345,7 +9360,7 @@ class SQLGenerator:
                 # legacy `_build_where_and_having` at generator.py:2566.
                 # DEV-1450 #4b: a reference to a non-trivial derived column
                 # is inline-expanded (and pulls its crossed joins into the
-                # FROM via _collect_filter_join_paths).
+                # FROM via _resolve_where_filter_joins_via_scope).
                 target_parts.append(self._render_model_filter_sql(
                     sql=fp.text,
                     columns=fp.text_columns,
@@ -9464,7 +9479,7 @@ class SQLGenerator:
 
         Supports ``ColumnKey`` (local AND joined ``path != ()`` — emitted as
         ``<__path_alias>.<leaf>``; the join is pulled into the FROM by
-        ``_collect_filter_join_paths``), ``ColumnSqlKey`` (derived column —
+        ``_resolve_where_filter_joins_via_scope``), ``ColumnSqlKey`` (derived column —
         expanded inline, sibling/joined refs resolved), ``LiteralKey``,
         ``ArithmeticKey``, ``ScalarCallKey``, ``BetweenKey``, and a LOCAL
         ``AggregateKey`` (for HAVING — rendered as the bare aggregate
@@ -9555,7 +9570,7 @@ class SQLGenerator:
                 # Joined column ref (``customers.regions.name``) — emit the
                 # ``__``-canonical path alias (``customers__regions.name``).
                 # The join is pulled into the FROM by
-                # ``_collect_filter_join_paths``.
+                # ``_resolve_where_filter_joins_via_scope``.
                 return exp.Column(
                     this=exp.to_identifier(key.leaf),
                     table=exp.to_identifier("__".join(key.path)),
@@ -9581,7 +9596,7 @@ class SQLGenerator:
                 # Expand the column's ``sql`` rooted at the JOINED model,
                 # qualifying bare refs to the ``__``-canonical path alias; the
                 # join itself is pulled into the FROM by
-                # ``_collect_filter_join_paths`` (which adds ``key.path``).
+                # ``_resolve_where_filter_joins_via_scope`` (which adds ``key.path``).
                 joined_model = bundle.get_referenced_model(key.path[-1])
                 if joined_model is None:
                     raise ValueError(
@@ -9606,7 +9621,7 @@ class SQLGenerator:
                 )
             # Derived column (``Column.sql`` set) — expand inline, resolving
             # sibling / joined derived refs and pulling crossed joins into the
-            # FROM (via ``_collect_filter_join_paths``).
+            # FROM (via ``_resolve_where_filter_joins_via_scope``).
             expanded_sql = self._expand_derived_column_sql(
                 source_model=source_model,
                 source_relation=source_relation,

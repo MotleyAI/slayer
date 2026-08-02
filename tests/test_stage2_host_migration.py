@@ -148,6 +148,51 @@ class TestPlaceholderLimitOne:
         assert "amount > 100" in sql or "amount > 100" in sql.replace('"', "")
         assert_scope_closed(sql)
 
+    async def test_host_local_crossing_filter_pulls_join_into_placeholder(self) -> None:
+        # D-J placeholder join registration (Round 6 / Codex): the cross-model
+        # measure (customers.balance:sum) empties the host base, and a host-local
+        # ROW filter that CROSSES a *different* join (shippers.code = 'X' — not
+        # reachable from the customers CTE root, so not routed there) must pull
+        # its LEFT JOIN into the placeholder FROM through the SAME single resolver
+        # the main host base uses (_resolve_where_filter_joins_via_scope). Without
+        # the join, the placeholder WHERE references an unbound alias. LIMIT 1
+        # still collapses the host to a single row.
+        shippers = SlayerModel(
+            name="shippers", sql_table="shippers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="code", sql="code", type=DataType.TEXT),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="shipper_id", sql="shipper_id", type=DataType.DOUBLE),
+            ],
+            joins=[
+                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+                ModelJoin(target_model="shippers", join_pairs=[["shipper_id", "id"]]),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="customers.balance:sum")],
+            filters=["shippers.code = 'X'"],
+        )
+        sql = await _engine_generate(
+            query=query, model=orders,
+            extra_models=[_customers(), _regions(), shippers],
+        )
+        norm = " ".join(sql.split()).replace('"', "")
+        assert "LIMIT 1" in norm                       # placeholder collapses host
+        # the crossing filter's LEFT JOIN is pulled into the placeholder FROM,
+        # and its predicate references the joined alias.
+        assert "LEFT JOIN shippers AS shippers" in norm
+        assert "shippers.code = 'X'" in norm
+        assert_scope_closed(sql)
+
 
 class TestTypedJoinKeyMixedCaseQuoted:
     async def test_mixed_case_join_key_quoted_in_typed_on_clause(self) -> None:
