@@ -8,7 +8,7 @@ query engine's _enrich() step.
 import copy
 import logging
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple, Union
 
 import sqlglot
 from sqlglot import exp
@@ -20,7 +20,7 @@ from slayer.core.enums import (
     DataType,
     TimeGranularity,
 )
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from slayer.core.errors import AggregationNotAllowedError
 from slayer.core.models import Aggregation
@@ -37,8 +37,29 @@ from slayer.engine.source_bundle import (
     synthetic_model_from_stage_schema,
 )
 from slayer.sql.dialects import SqlDialect, get_dialect
+from slayer.sql.naming import AliasAllocator
+from slayer.sql.reserved_keywords import prequote_reserved_identifiers
+from slayer.sql.scope import ScopeFrame
 from slayer.sql.scope_check import maybe_validate_scopes
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
+
+
+class ResolvedAggKwarg(BaseModel):
+    """DEV-1706 — a resolved parametric-aggregation kwarg value (2-kind tag).
+
+    * ``kind="expr"`` — a trusted, scope-resolved sqlglot expression for a
+      column-ref kwarg (``ColumnKey`` / ``ColumnSqlKey``). Embedded directly;
+      the crossed join registered at spec-build (the DEV-1527 fix).
+    * ``kind="str"`` — the legacy canonical-string form (scalars via
+      ``agg_kwarg_canonical_str``, existing strings), consumed exactly as
+      before: ``_SAFE_AGG_PARAM_RE`` guard + ``_resolve_sql`` (percentile /
+      stat) or formula substitution (custom aggregations).
+    """
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    kind: Literal["expr", "str"]
+    value: Union[exp.Expression, str]
 
 
 class AggRenderSpec(BaseModel):
@@ -89,9 +110,31 @@ class AggRenderSpec(BaseModel):
     """Custom-aggregation definition (formula + params) for aggregations
     outside the built-in set. ``None`` for built-ins."""
 
-    agg_kwargs: Dict[str, str] = {}
-    """Query-time aggregation parameter overrides (already stringified via
-    ``agg_kwarg_canonical_str`` at spec-build time)."""
+    agg_kwargs: Dict[str, ResolvedAggKwarg] = {}
+    """Query-time aggregation parameter overrides as typed 2-kind values
+    (DEV-1706 D-I). Column-ref kwargs arrive as ``kind="expr"`` (scope-resolved
+    at spec-build); everything else as ``kind="str"``. A bare ``str`` value is
+    coerced to ``kind="str"`` by ``_coerce_agg_kwargs`` so the legacy
+    ``EnrichedMeasure`` shim and direct-construction call sites keep working."""
+
+    @field_validator("agg_kwargs", mode="before")
+    @classmethod
+    def _coerce_agg_kwargs(cls, v: Any) -> Any:
+        """Coerce bare ``str`` kwarg values to ``ResolvedAggKwarg(kind="str")``;
+        pass ``ResolvedAggKwarg`` through; leave anything else for Pydantic to
+        reject (``bool`` / ``None`` never reach here from spec-build — they raise
+        earlier in ``agg_kwarg_canonical_str``)."""
+        if not isinstance(v, dict):
+            return v
+        coerced: Dict[str, Any] = {}
+        for key, val in v.items():
+            if isinstance(val, (ResolvedAggKwarg, dict)):
+                coerced[key] = val
+            elif isinstance(val, str):
+                coerced[key] = ResolvedAggKwarg(kind="str", value=val)
+            else:
+                coerced[key] = val  # bool / None / other → Pydantic rejects
+        return coerced
 
     filter_sql: Optional[str] = None
     """Column-filter predicate (``Column.filter``) wired in at aggregation
@@ -682,6 +725,69 @@ class SQLGenerator:
         strategy object from the string sqlglot consumes (DEV-1716)."""
         return self._dialect.sqlglot_name
 
+    @staticmethod
+    def _maybe_quote_ident(ident: Optional[exp.Expression]) -> None:
+        """Set ``quoted=True`` in place on ``ident`` when it is an unquoted
+        ``Identifier`` containing an uppercase letter (DEV-1645). No-op
+        otherwise (None, already-quoted, all-lowercase, non-Identifier)."""
+        if (
+            isinstance(ident, exp.Identifier)
+            and not ident.quoted
+            and any(c.isupper() for c in ident.this)
+        ):
+            ident.set("quoted", True)
+
+    @staticmethod
+    def _quote_mixed_case_identifiers(node: exp.Expression) -> exp.Expression:
+        """DEV-1645: quote mixed-case DB identifiers so case-folding dialects
+        (Postgres/Redshift fold to lower; Snowflake/Oracle fold to upper) reach
+        the right physical object instead of silently folding to a non-existent
+        name.
+
+        Context-aware: quotes only the **column-name leaf** of a ``Column``
+        (``Column.this``) and the **physical-table name parts** of a ``Table``
+        (``this``/``db``/``catalog``). It deliberately does NOT quote table
+        aliases or the qualifier side of a column reference — those are
+        SLayer-internal aliases that fold consistently within a query and never
+        need quoting; quoting them would only churn output and (for uppercase
+        model names) diverge from string-built references. Function names parse
+        to ``Anonymous``/``Func`` and string literals to ``Literal``, so neither
+        is touched. Idempotent.
+
+        DEV-1706 note: this predates its owning stage. DEV-1645's ORDER-BY
+        policies land in Stage 8 (DEV-1712), but mixed-case *identifier*
+        quoting is a hard dependency of the DEV-1686 reserved-word fix landing
+        here — a reserved-model join key such as ``grant.merchantId`` must emit
+        ``"grant"."merchantId"`` to execute on a case-folding backend. Pulled
+        forward deliberately; the ORDER-BY half stays pinned for Stage 8.
+        """
+        if isinstance(node, exp.Column):
+            SQLGenerator._maybe_quote_ident(node.this)
+        elif isinstance(node, exp.Table):
+            SQLGenerator._maybe_quote_ident(node.this)
+            SQLGenerator._maybe_quote_ident(node.args.get("db"))
+            SQLGenerator._maybe_quote_ident(node.args.get("catalog"))
+        return node
+
+    def _to_ident(self, name: str) -> exp.Identifier:
+        """Build a column/table-name identifier, quoting it when mixed-case
+        (DEV-1645). Use for real DB column/table names — NOT for aliases or
+        qualifiers (those stay unquoted via plain ``exp.to_identifier``, and
+        reserved-word aliases quote at emit via ``RESERVED_KEYWORDS``)."""
+        ident = exp.to_identifier(name)
+        self._maybe_quote_ident(ident)
+        return ident
+
+    def _to_table(self, name: str, alias: Optional[str] = None) -> exp.Expression:
+        """Build a (possibly schema-qualified) table reference with mixed-case
+        physical-name parts quoted (DEV-1645). The ``alias`` is SLayer-internal
+        and stays unquoted (a reserved-word alias still quotes at emit through
+        ``RESERVED_KEYWORDS`` — DEV-1686)."""
+        table = exp.to_table(name).transform(self._quote_mixed_case_identifiers)
+        if alias is not None:
+            table.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))
+        return table
+
     def _parse(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
         """Parse ``sql`` via sqlglot, applying SLayer-specific AST rewrites.
 
@@ -702,6 +808,12 @@ class SQLGenerator:
         """
         d = dialect or self.dialect
         active = self._dialect if d == self.dialect else get_dialect(d)
+        # DEV-1686: quote any reserved-word qualifier/leaf (``grant.id`` →
+        # ``"grant".id``) before re-parsing a SLayer-built string, so a bare
+        # reserved word does not fail at parse time. No-op for ordinary SQL
+        # (only dot-adjacent reserved words are touched) and idempotent on
+        # already-quoted identifiers.
+        sql = prequote_reserved_identifiers(sql, dialect=d)
         tree = sqlglot.parse_one(sql, dialect=d)
         # DEV-1716: PARSE-dialect keyed AST rewrite (SQLite rewrites
         # JSONExtract to the function-call form — DEV-1331). Default identity.
@@ -710,6 +822,10 @@ class SQLGenerator:
         # lives inside ``_rewrite_log_aliases`` so unsupported dialects
         # (oracle; tsql for log2) keep the canonical 2-arg LOG form.
         tree = tree.transform(self._rewrite_log_aliases)
+        # DEV-1645: quote mixed-case column/table identifiers so case-folding
+        # dialects reach the right physical object (see the method docstring
+        # for the DEV-1706 pull-forward rationale).
+        tree = tree.transform(self._quote_mixed_case_identifiers)
         # DEV-1716: TARGET-dialect keyed AST rewrite (Postgres wraps the first
         # arg of a 2-arg ROUND in a numeric CAST — DEV-1576). Keyed to the
         # generator's target dialect, not the parse dialect.
@@ -748,6 +864,9 @@ class SQLGenerator:
         """
         d = dialect or self.dialect
         active = self._dialect if d == self.dialect else get_dialect(d)
+        # DEV-1686: quote reserved qualifiers/leaves before the re-parse (see
+        # ``_parse``). No-op for ordinary predicates; idempotent when quoted.
+        sql = prequote_reserved_identifiers(sql, dialect=d)
         wrapped = sqlglot.parse_one(f"SELECT 1 WHERE {sql}", dialect=d)
         where = wrapped.args.get("where")
         if where is None or where.this is None:  # pragma: no cover — defensive
@@ -756,6 +875,8 @@ class SQLGenerator:
             )
         tree = active.rewrite_parsed_ast(where.this)
         tree = tree.transform(self._rewrite_log_aliases)
+        # DEV-1645: mixed-case identifier quoting (see ``_parse``).
+        tree = tree.transform(self._quote_mixed_case_identifiers)
         return self._dialect.rewrite_target_ast(tree)
 
     def generate(
@@ -1024,7 +1145,11 @@ class SQLGenerator:
                         alias=exp.to_identifier(cm.source_model_name),
                     )
                 else:
-                    source_from = exp.to_table(cm.source_sql_table, alias=cm.source_model_name)
+                    # DEV-1686 reserved-word alias + DEV-1645 mixed-case
+                    # physical-name quoting, both via ``_to_table``.
+                    source_from = self._to_table(
+                        cm.source_sql_table, alias=cm.source_model_name,
+                    )
                 select = select.from_(source_from)
 
                 # JOIN target model
@@ -1034,7 +1159,9 @@ class SQLGenerator:
                         alias=exp.to_identifier(cm.target_model_name),
                     )
                 else:
-                    target_join = exp.to_table(cm.target_model_sql_table, alias=cm.target_model_name)
+                    target_join = self._to_table(
+                        cm.target_model_sql_table, alias=cm.target_model_name,
+                    )
                 join_on = exp.and_(*(
                     exp.EQ(
                         this=exp.Column(this=exp.to_identifier(src), table=exp.to_identifier(cm.source_model_name)),
@@ -1158,7 +1285,9 @@ class SQLGenerator:
                                 alias=exp.to_identifier(target_alias),
                             )
                         else:
-                            join_target = exp.to_table(target_table, alias=target_alias)
+                            join_target = self._to_table(
+                                target_table, alias=target_alias,
+                            )
                         join_on = self._parse(join_cond)
                         select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
@@ -1514,7 +1643,7 @@ class SQLGenerator:
                     alias=exp.to_identifier(target_alias),
                 )
             else:
-                join_target = exp.to_table(target_table, alias=target_alias)
+                join_target = self._to_table(target_table, alias=target_alias)
             join_on = self._parse(join_cond)
             select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
@@ -1617,8 +1746,10 @@ class SQLGenerator:
         for dim in enriched.dimensions:
             col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name, type=dim.type)
             if has_first_or_last:
-                # In ranked subquery, dimensions are already columns — reference directly
-                col_expr = exp.Column(this=exp.to_identifier(dim.name))
+                # In ranked subquery, dimensions are already columns — reference
+                # directly. DEV-1645: quote a mixed-case name so this outer
+                # reference matches the ranked subquery's ``model.*`` output.
+                col_expr = exp.Column(this=self._to_ident(dim.name))
             select_columns.append(col_expr.as_(dim.alias))
             group_by_columns.append(col_expr)
 
@@ -1738,7 +1869,7 @@ class SQLGenerator:
                         this=parsed_target, alias=exp.to_identifier(target_alias),
                     )
                 else:
-                    join_target = exp.to_table(target_table, alias=target_alias)
+                    join_target = self._to_table(target_table, alias=target_alias)
                 join_on = self._parse(join_cond)
                 select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
@@ -2227,7 +2358,10 @@ class SQLGenerator:
 
     def _build_from_clause(self, enriched: EnrichedQuery) -> exp.Expression:
         if enriched.sql_table:
-            return exp.to_table(enriched.sql_table, alias=enriched.model_name)
+            # DEV-1686: Identifier-node alias so a reserved-word source relation
+            # quotes on emit (``AS "order"``). DEV-1645: ``_to_table`` also quotes
+            # a mixed-case physical table name (``public.MyTable``).
+            return self._to_table(enriched.sql_table, alias=enriched.model_name)
         elif enriched.sql:
             parsed = self._parse(enriched.sql)
             return exp.Subquery(this=parsed, alias=exp.to_identifier(enriched.model_name))
@@ -2422,11 +2556,14 @@ class SQLGenerator:
         ``type``.
         """
         if sql is None:
-            return exp.Column(this=exp.to_identifier(name), table=exp.to_identifier(model_name))
+            # DEV-1645: quote the mixed-case column leaf; the model qualifier is
+            # a SLayer-internal alias and stays unquoted (reserved names quote
+            # at emit).
+            return exp.Column(this=self._to_ident(name), table=exp.to_identifier(model_name))
         # Bare column name → qualify with model name
         # Use isidentifier() to distinguish column names from literals (e.g. "1")
         if sql.isidentifier():
-            return exp.Column(this=exp.to_identifier(sql), table=exp.to_identifier(model_name))
+            return exp.Column(this=self._to_ident(sql), table=exp.to_identifier(model_name))
         return _wrap_cast_for_type(self._parse(sql), type)
 
     def _resolve_value_sql(self, spec: AggRenderSpec) -> str:
@@ -2442,6 +2579,27 @@ class SQLGenerator:
             model_name=spec.model_name,
             type=spec.column_type,
         ).sql(dialect=self.dialect)
+
+    def _agg_param_ast(
+        self, value: "ResolvedAggKwarg | str", *, model_name: str,
+    ) -> exp.Expression:
+        """Resolve a parametric-agg param value to a sqlglot AST.
+
+        DEV-1706 (D-I): a ``ResolvedAggKwarg`` with ``kind="expr"`` is a trusted,
+        scope-resolved expression embedded directly; ``kind="str"`` (and a plain
+        model-level default ``str``) resolve through ``_resolve_sql`` so bare
+        identifiers qualify under ``model_name`` — the pre-DEV-1706 behaviour.
+        ``_SAFE_AGG_PARAM_RE`` guarding of ``kind="str"`` query values is applied
+        by the callers before this point.
+        """
+        if isinstance(value, ResolvedAggKwarg):
+            if value.kind == "expr":
+                return value.value if isinstance(value.value, exp.Expression) \
+                    else self._parse(value.value)
+            raw = value.value
+        else:
+            raw = value
+        return self._resolve_sql(sql=raw, name=raw, model_name=model_name)
 
     def _resolve_agg_param(
         self,
@@ -2459,23 +2617,31 @@ class SQLGenerator:
         ``_build_stat_agg`` (``other=``); mirrors ``weighted_avg``'s
         ``weight=`` flow.
         """
-        raw: Optional[str] = None
+        value: "ResolvedAggKwarg | str | None" = None
         if name in spec.agg_kwargs:
-            raw = spec.agg_kwargs[name]
-            _validate_agg_param_value(raw, name, agg_name)
+            value = spec.agg_kwargs[name]
+            # Guard the untrusted string forms: a ``kind="str"`` wrapper OR a
+            # bare ``str`` (the legacy ``EnrichedMeasure`` adapter and model-level
+            # defaults reach here unwrapped). ``kind="expr"`` is a trusted,
+            # bind-time-resolved expression and is embedded verbatim.
+            if isinstance(value, ResolvedAggKwarg):
+                if value.kind == "str":
+                    _validate_agg_param_value(value.value, name, agg_name)
+            elif isinstance(value, str):
+                _validate_agg_param_value(value, name, agg_name)
         elif spec.aggregation_def:
             for param in spec.aggregation_def.params:
                 if param.name == name:
-                    raw = param.sql
+                    value = param.sql
                     break
-        if raw is None:
+        if value is None:
             raise ValueError(
                 f"Aggregation '{agg_name}' requires parameter '{name}'. "
                 f"Set it in the model's aggregation definition or at query time "
                 f"(e.g., 'measure:{agg_name}({name}=column)')."
             )
-        return self._resolve_sql(
-            sql=raw, name=raw, model_name=spec.model_name,
+        return self._agg_param_ast(
+            value, model_name=spec.model_name,
         ).sql(dialect=self.dialect)
 
     def _build_agg(
@@ -2660,9 +2826,12 @@ class SQLGenerator:
             param_defaults = {p.name: p.sql for p in spec.aggregation_def.params}
         params = {**param_defaults, **spec.agg_kwargs}
 
-        # Validate query-time parameter values to prevent SQL injection
+        # Validate query-time parameter values to prevent SQL injection. Only the
+        # untrusted ``kind="str"`` form is guarded; ``kind="expr"`` is a trusted,
+        # bind-time-resolved expression (DEV-1706 D-I).
         for pname, pval in spec.agg_kwargs.items():
-            _validate_agg_param_value(pval, pname, agg_name)
+            if isinstance(pval, ResolvedAggKwarg) and pval.kind == "str":
+                _validate_agg_param_value(pval.value, pname, agg_name)
 
         # Validate required params
         required = BUILTIN_AGGREGATION_REQUIRED_PARAMS.get(agg_name, [])
@@ -2685,8 +2854,8 @@ class SQLGenerator:
         col_expr = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
         substituted = formula.replace("{value}", col_expr)
         for param_name, param_val in params.items():
-            param_ast = self._resolve_sql(
-                sql=param_val, name=param_val, model_name=spec.model_name,
+            param_ast = self._agg_param_ast(
+                param_val, model_name=spec.model_name,
             )
             param_expr = param_ast.sql(dialect=self.dialect)
             if spec.filter_sql and not isinstance(param_ast, exp.Literal):
@@ -3706,6 +3875,61 @@ class SQLGenerator:
                 return False
         return True
 
+    def _resolve_agg_kwargs_via_scope(
+        self, *, base_render_order, slots_by_id, scope: ScopeFrame,
+    ) -> "Dict[Any, Dict[str, ResolvedAggKwarg]]":
+        """DEV-1527: resolve column-ref aggregation kwargs through the host
+        ``scope`` (Law 1) for every LOCAL aggregate in ``base_render_order``.
+
+        For each ``ColumnKey`` / ``ColumnSqlKey`` kwarg value, ``scope.resolve``
+        anchors it (expanding a derived column's ``Column.sql``) and registers
+        the joins it crosses into ``scope.join_paths`` — the side effect that
+        base-pulls the crossed LEFT JOIN. Returns a map keyed by ``AggregateKey``
+        (frozen/hashable) → ``{kwarg_name: ResolvedAggKwarg(kind="expr")}`` for
+        ``_build_agg_render_spec_from_planned`` to embed. Scalar / string kwargs
+        are left out — the spec builder canonical-stringifies them as before.
+
+        Cross-model aggregate sources (non-empty ``source.path``) are skipped:
+        their kwargs are owned by the per-plan ``_cm_*`` CTE (Stage 4 / DEV-1708);
+        the cross-model half of DEV-1527 closes there. Recurses into composite
+        AGGREGATE keys (``ArithmeticKey`` / ``ScalarCallKey``).
+        """
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            ColumnKey,
+            ColumnSqlKey,
+            Phase,
+            ScalarCallKey,
+        )
+
+        resolved: "Dict[Any, Dict[str, ResolvedAggKwarg]]" = {}
+
+        def _visit(key) -> None:
+            if isinstance(key, AggregateKey):
+                if getattr(key.source, "path", ()):
+                    return  # cross-model aggregate → owned by a _cm_* CTE (Stage 4)
+                kw: Dict[str, ResolvedAggKwarg] = {}
+                for kname, kval in key.kwargs:
+                    if isinstance(kval, (ColumnKey, ColumnSqlKey)):
+                        kw[kname] = ResolvedAggKwarg(
+                            kind="expr", value=scope.resolve(kval),
+                        )
+                if kw:
+                    resolved[key] = kw
+            elif isinstance(key, ArithmeticKey):
+                for o in key.operands:
+                    _visit(o)
+            elif isinstance(key, ScalarCallKey):
+                for a in key.args:
+                    _visit(a)
+
+        for sid in base_render_order:
+            slot = slots_by_id.get(sid)
+            if slot is not None and slot.phase == Phase.AGGREGATE:
+                _visit(slot.key)
+        return resolved
+
     def _build_base_select_for_planned(  # NOSONAR(S3776) — join-path collection and derived-dim expansion are extracted to helpers; the residual is the one cohesive per-slot ROW/AGGREGATE projection + GROUP-BY assembly pass.
         self,
         *,
@@ -3801,6 +4025,36 @@ class SQLGenerator:
             source_relation=source_relation, source_model=source_model,
             bundle=bundle,
         ):
+            if p not in needed_join_paths:
+                needed_join_paths.append(p)
+        # DEV-1706 Stage 2 / DEV-1527: build the host ScopeFrame and resolve any
+        # column-ref aggregation kwargs (``weighted_avg(weight=<col>)``,
+        # ``corr(other=<col>)``, ...) through it. Each ``resolve`` anchors the
+        # ref and REGISTERS the joins it crosses into the scope (Law 1) so a
+        # derived kwarg whose ``Column.sql`` crosses a join base-pulls that LEFT
+        # JOIN into the host FROM — closing the local half of DEV-1527. The
+        # resolved expression is embedded verbatim (``kind="expr"``) into the
+        # render spec, replacing the ``agg_kwarg_canonical_str`` round-trip that
+        # collapsed a derived column to a bare (non-existent) name.
+        # Stage 2's host base is a single scope with no projection boundary, so
+        # the allocator mints no ``_val_`` names here; a local instance suffices.
+        # The generation-wide allocator (D-E) arrives with the CTE scopes in
+        # Stage 4.
+        host_allocator = AliasAllocator()
+        host_scope = ScopeFrame(
+            scope_id=host_allocator.next_scope_id(source_relation),
+            root_model=source_model,
+            root_relation=source_relation,
+            bundle=bundle,
+            dialect=self._dialect,
+            allocator=host_allocator,
+        )
+        resolved_agg_kwargs = self._resolve_agg_kwargs_via_scope(
+            base_render_order=base_render_order,
+            slots_by_id=slots_by_id,
+            scope=host_scope,
+        )
+        for p in host_scope.join_paths.as_list():
             if p not in needed_join_paths:
                 needed_join_paths.append(p)
         from_clause, base_joins = self._build_from_and_joins(
@@ -3971,6 +4225,7 @@ class SQLGenerator:
                     source_relation=source_relation,
                     full_alias=full_alias,
                     bundle=bundle,
+                    resolved_agg_kwargs=resolved_agg_kwargs.get(key),
                 )
                 agg_expr, is_agg = self._build_agg(synth)
                 if is_agg:
@@ -6989,7 +7244,9 @@ class SQLGenerator:
                             alias=exp.to_identifier(next_alias),
                         )
                     else:
-                        join_expr = exp.to_table(target_table, alias=next_alias)
+                        # DEV-1686 reserved-word alias + DEV-1645 mixed-case
+                        # physical-name quoting: ``FROM "Order" AS "order"``.
+                        join_expr = self._to_table(target_table, alias=next_alias)
                     on_expr = (
                         exp.and_(*join_on_parts)
                         if len(join_on_parts) > 1
@@ -8596,7 +8853,9 @@ class SQLGenerator:
         source_relation: str,
     ) -> exp.Expression:
         if source_model.sql_table:
-            return exp.to_table(source_model.sql_table, alias=source_relation)
+            # DEV-1686 reserved-word alias + DEV-1645 mixed-case physical-name
+            # quoting via ``_to_table``.
+            return self._to_table(source_model.sql_table, alias=source_relation)
         if source_model.sql:
             return exp.Subquery(
                 this=self._parse(source_model.sql),
@@ -8943,6 +9202,7 @@ class SQLGenerator:
         source_relation: str,
         full_alias: str,
         bundle=None,
+        resolved_agg_kwargs: "Optional[Dict[str, ResolvedAggKwarg]]" = None,
     ) -> AggRenderSpec:
         """Build an ``AggRenderSpec`` from a planned aggregate slot so
         ``_build_agg`` / ``_resolve_sql`` / ``_wrap_cast_for_type`` emit
@@ -9045,15 +9305,18 @@ class SQLGenerator:
                 )
             else:
                 sql_text = col.sql if col.sql else col.name
-            # DEV-1450 stage 7b.13: stringify kwargs through the shared
-            # helper. ``AggRenderSpec.agg_kwargs`` is ``Dict[str, str]``
-            # and downstream ``_validate_agg_param_value`` rejects
-            # anything not matching ``_SAFE_AGG_PARAM_RE``; the helper
-            # emits identifiers / dotted identifiers / numeric literals
-            # that satisfy the regex, and rejects bool / None / unknown
-            # types at the boundary.
+            # DEV-1527: a column-ref kwarg (``weight=<col>`` / ``other=<col>``)
+            # that the pre-FROM scope pass resolved is embedded as a trusted
+            # ``kind="expr"`` expression (its join already base-pulled); every
+            # other kwarg (scalar / string / a column-ref on a path this call
+            # has no scope for — e.g. the cross-model CTE build) canonical-
+            # stringifies as before and coerces to ``kind="str"`` via the
+            # ``AggRenderSpec`` before-validator (guarded downstream by
+            # ``_validate_agg_param_value`` / ``_SAFE_AGG_PARAM_RE``).
+            resolved_kw = resolved_agg_kwargs or {}
             agg_kwargs_str = {
-                k: agg_kwarg_canonical_str(v) for k, v in key.kwargs
+                k: (resolved_kw[k] if k in resolved_kw else agg_kwarg_canonical_str(v))
+                for k, v in key.kwargs
             }
             # DEV-1450 stage 7b.12: propagate ``AggregateKey.column_filter_key``
             # into ``AggRenderSpec.filter_sql`` so ``_build_agg`` wraps the
@@ -9804,23 +10067,33 @@ class SQLGenerator:
         )
 
     @staticmethod
+    def _paren_if_binary(node: exp.Expression) -> exp.Expression:
+        """DEV-1539: wrap a multi-term operand in ``(...)`` when it is a
+        ``Binary`` (arithmetic ``a + b``, or an ``AND``/``OR`` connector) so a
+        surrounding comparator's precedence is explicit by inspection, not only
+        by SQL operator-precedence rules — ``(a + b) > 7``, not ``a + b > 7``.
+        Bare columns, literals, function calls, and already-enclosed forms
+        (``CAST(...)`` / ``Paren``) are not ``Binary`` and pass through."""
+        return exp.Paren(this=node) if isinstance(node, exp.Binary) else node
+
+    @staticmethod
     def _build_arithmetic_for_filter(
         *, op: str, operands: list,
     ) -> exp.Expression:
         # DSL ``==``/``!=`` map to sqlglot EQ/NEQ; sqlglot then emits the
-        # dialect-correct SQL operator (postgres ``=``/``!=``).
-        if op in ("==", "="):
-            return exp.EQ(this=operands[0], expression=operands[1])
-        if op in ("!=", "<>"):
-            return exp.NEQ(this=operands[0], expression=operands[1])
-        if op == "<":
-            return exp.LT(this=operands[0], expression=operands[1])
-        if op == "<=":
-            return exp.LTE(this=operands[0], expression=operands[1])
-        if op == ">":
-            return exp.GT(this=operands[0], expression=operands[1])
-        if op == ">=":
-            return exp.GTE(this=operands[0], expression=operands[1])
+        # dialect-correct SQL operator (postgres ``=``/``!=``). DEV-1539: a
+        # multi-term comparison operand is parenthesised so its precedence is
+        # explicit (``(a + b) > 7`` / ``x = (a OR b)``).
+        _cmp = {
+            "==": exp.EQ, "=": exp.EQ, "!=": exp.NEQ, "<>": exp.NEQ,
+            "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE,
+        }
+        cmp_cls = _cmp.get(op)
+        if cmp_cls is not None:
+            return cmp_cls(
+                this=SQLGenerator._paren_if_binary(operands[0]),
+                expression=SQLGenerator._paren_if_binary(operands[1]),
+            )
         if op == "+":
             # Unary plus is a no-op; legacy never emits it explicitly.
             if len(operands) == 1:

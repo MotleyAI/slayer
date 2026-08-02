@@ -55,8 +55,15 @@ from slayer.engine.planned import ValueSlot
 # tests instantiate the generator to invoke it (see ``_invoke`` below).
 from slayer.sql.generator import (  # type: ignore[attr-defined]
     AggRenderSpec,
+    ResolvedAggKwarg,
     SQLGenerator,
 )
+
+
+def _str_kwarg(value: str) -> ResolvedAggKwarg:
+    """DEV-1706: agg_kwargs values are now 2-kind tagged; a canonical-string
+    kwarg round-trips to ``kind="str"``."""
+    return ResolvedAggKwarg(kind="str", value=value)
 
 
 def _invoke(slot, key, *, source_model, source_relation, full_alias):
@@ -223,7 +230,7 @@ class TestAggRenderSpecConstruction:
         )
         assert spec.sql == "amount"
         assert spec.aggregation_def is agg_def
-        assert spec.agg_kwargs == {"p": "0.5"}
+        assert spec.agg_kwargs == {"p": _str_kwarg("0.5")}
         assert spec.filter_sql == "orders.status = 'paid'"
         assert spec.time_column == "orders.created_at"
         assert spec.type is DataType.DOUBLE
@@ -733,8 +740,8 @@ class TestBuilderCustomAggregation:
         assert spec.aggregation == "rolling_avg"
         assert spec.aggregation_def is not None
         assert spec.aggregation_def.name == "rolling_avg"
-        # Kwargs stringified via ``agg_kwarg_canonical_str``.
-        assert spec.agg_kwargs == {"window": "6"}
+        # Kwargs stringified via ``agg_kwarg_canonical_str`` → kind="str".
+        assert spec.agg_kwargs == {"window": _str_kwarg("6")}
 
     def test_unknown_aggregation_raises(self):
         key = AggregateKey(
@@ -839,7 +846,7 @@ class TestBuilderParametric:
             full_alias="orders.amount_percentile_p_0_5",
         )
         assert spec.aggregation == "percentile"
-        assert spec.agg_kwargs == {"p": "0.5"}
+        assert spec.agg_kwargs == {"p": _str_kwarg("0.5")}
         assert spec.sql == "amount"
 
     def test_stat_agg_with_other_kwarg(self):
@@ -865,9 +872,9 @@ class TestBuilderParametric:
         )
         assert spec.aggregation == "corr"
         # The ``other=`` column kwarg canonicalises to the qualified name
-        # (mirrors ``agg_kwarg_canonical_str`` for ColumnKey).
+        # (mirrors ``agg_kwarg_canonical_str`` for ColumnKey) → kind="str".
         assert "other" in spec.agg_kwargs
-        assert spec.agg_kwargs["other"] == "quantity"
+        assert spec.agg_kwargs["other"] == _str_kwarg("quantity")
 
 
 # ---------------------------------------------------------------------------
@@ -973,7 +980,7 @@ class TestBuilderCrossModelKwargPath:
             source_relation="customers",
             full_alias="customers.amount_weighted_avg",
         )
-        assert spec.agg_kwargs == {"weight": "quantity"}
+        assert spec.agg_kwargs == {"weight": _str_kwarg("quantity")}
 
 
 # ---------------------------------------------------------------------------
