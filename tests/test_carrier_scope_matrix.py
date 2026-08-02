@@ -37,8 +37,8 @@ point-fix worktrees, each pinned to the DEV-1703 stage that fixes it):
   |          | 2 green no-ops) & executed values      | test_integration_duckdb.py::TestDev1531CrossJoin... |       |
   | DEV-1496 | windowed-measure raise-don't-degrade   | tests/test_sql_generator.py::TestWindowedMeasure... | 10    |
   |          | guards (8)                             |                                                     |       |
-  | DEV-1527 | agg-kwarg derived path-alias           | pre-existing placeholder                            | 4     |
-  |          | (no committed worktree survived)       | test_agg_param_derived_column_path_alias_xfail      |       |
+  | DEV-1527 | agg-kwarg derived path-alias (LOCAL    | test_agg_param_derived_column_path_alias_xfail      | 2     |
+  |          | half; cross-model remainder = Stage 4) | (+ tests/test_dev1527_agg_kwargs.py)                |       |
   | DEV-1474 | cross-model partition in time_shift    | TestScopeDefectPins::                               | 7     |
   |          | (no committed worktree — reconstructed | test_time_shift_cross_model_partition (this file)   |       |
   |          | from the issue)                        |                                                     |       |

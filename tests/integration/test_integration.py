@@ -3919,14 +3919,21 @@ async def test_dev1539_where_multiterm_filter_emits_outer_parens(composite_score
     dry = await engine.execute(query, dry_run=True)
     assert dry.sql is not None
     norm = " ".join(dry.sql.split())
-    # The LHS of `> 7` must be a parenthesised arithmetic expression.
-    # Single bounded quantifier (`[^)]+`) avoids the multi-quantifier
-    # backtracking pattern flagged by Sonar's S5852.
-    m = re.search(r"\( entities\.a \* 0\.4[^)]+\) > 7", norm)
+    # The multi-term LHS of `> 7` must be enclosed so the comparator binds to
+    # the whole arithmetic sum. The typed pipeline qualifies the refs and
+    # encloses the derived expression in its type CAST — precedence-safe.
+    # Single bounded quantifier (`[^)]+`) avoids the S5852 backtracking shape.
+    m = re.search(r"CAST\(\s*entities\.a \* 0\.4[^)]+\)\s*>\s*7", norm)
     assert m is not None, (
-        f"Expected `( entities.a * 0.4 ... ) > 7` in emitted WHERE; "
+        f"Expected the multi-term derived LHS enclosed before `> 7`; "
         f"got:\n{dry.sql}"
     )
+    # All four weighted terms must survive inside the enclosed LHS (CodeRabbit) —
+    # plain substring checks keep the S5852-safe single-quantifier regex shape.
+    for _term in ("entities.a", "entities.b", "entities.c", "entities.d"):
+        assert _term in m.group(0), (
+            f"Expected weighted term {_term} inside the enclosed LHS; got:\n{dry.sql}"
+        )
 
 
 async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_score_env):
