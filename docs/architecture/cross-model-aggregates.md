@@ -63,6 +63,26 @@ goes through host-filter classification. `shared_grain_slots` is the set of host
 dimension/time-dimension slots reachable from the target, used to LEFT JOIN the
 CTE back without changing cardinality.
 
+### Rerooting the aggregate's embedded references (`reroot_aggregate_key`)
+
+When the forward `_cm_*` CTE (`_render_cross_model_cte`), its HAVING route, and
+the re-rooted-plan formula (`_local_agg_formula`) render a cross-model aggregate
+in its target scope, every reference embedded in the `AggregateKey` — the
+`source`, positional `args` (e.g. the `first`/`last` explicit time arg), keyword
+`kwargs` values (e.g. `weighted_avg(weight=…)`), and `column_filter_key` — must
+be re-anchored from the query root's coordinate system to the target's. This is
+one symmetric transform, `slayer.core.keys.reroot_aggregate_key(key, *,
+target_path)` (DEV-1707), which prefix-strips `target_path` off each ref's join
+path and keeps the residual (`('customers','regions')` under target
+`('customers',)` → `('regions',)`; an exact match → local). `column_filter_key`
+is owner-anchored (stamped against the model that owns the filtered column) and
+therefore invariant under reroot — it is carried through unchanged. A time arg
+left with a *residual* path after reroot (a hop past the target) is a
+[DEV-1526](https://linear.app/motley-ai/issue/DEV-1526) Stage-4 gap: the isolated
+CTE does not yet pull that deeper join, so `_resolve_explicit_time_col` raises
+for the derived-column case and the scope-closure validator catches the
+bare-column case.
+
 ## Strategy 2: re-rooting (the deviation)
 
 `IsolatedCteCrossModelPlanner` alone is insufficient. When the host query carries
