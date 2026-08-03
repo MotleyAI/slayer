@@ -61,6 +61,58 @@ def _escape_string_value(value: str, escape: Literal["sql", "python"]) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
 
 
+def _render_list_value(
+    name: str, value: "list | tuple", escape: Literal["sql", "python"]
+) -> str:
+    """Render a ``list``/``tuple`` variable value into an ``IN``-list body
+    (DEV-1730 multi-value pushdown).
+
+    The intended template shape is ``col IN ({var})`` — the author writes the
+    parentheses; this renders the comma-separated body only. Unlike a scalar
+    string (where the author writes the surrounding quotes), each string element
+    is **auto-quoted** here: a single placeholder can't carry per-element quotes,
+    so quoting has to happen at render time. Elements are escaped per the target
+    layer via :func:`_escape_string_value`, so DEV-1727's escaping composes.
+
+    - ``str`` element → auto-quoted + escaped (``O'Brien`` → ``'O''Brien'`` in
+      sql mode; ``'O\\'Brien'`` in python mode).
+    - ``int``/``float``/``bool`` element → bare via ``str()``; a non-finite float
+      element raises (it can never render a valid literal).
+    - ``escape="python"`` appends a **trailing comma** so the Mode-B Python-AST
+      parser always reads a tuple — ``x in ('A',)`` (1-tuple membership), never
+      ``x in ('A')`` (which parses as ``str`` containment).
+    - An **empty** list/tuple raises: ``IN ()`` is invalid SQL, and "no filter"
+      semantics belong to a sentinel default (see DEV-1730).
+    - ``None``, nested list/tuple, dict, or any other element type raises,
+      naming the variable.
+    """
+    if len(value) == 0:
+        raise ValueError(
+            f"Variable '{name}' cannot be an empty list; 'IN ()' is invalid SQL. "
+            f"For 'no filter' semantics, use a sentinel default (see DEV-1730)."
+        )
+    rendered: list[str] = []
+    for element in value:
+        if isinstance(element, str):
+            rendered.append("'" + _escape_string_value(value=element, escape=escape) + "'")
+        # bool is an int subclass and is accepted (renders True/False).
+        elif isinstance(element, (int, float)):
+            if isinstance(element, float) and not math.isfinite(element):
+                raise ValueError(
+                    f"Variable '{name}' list element must be finite, got {element!r}"
+                )
+            rendered.append(str(element))
+        else:
+            raise ValueError(
+                f"Variable '{name}' list element must be a string, number, or bool, "
+                f"got {type(element).__name__}"
+            )
+    joined = ", ".join(rendered)
+    # Mode-B (python) needs the trailing comma to force tuple parsing; Mode-A
+    # (sql) must NOT have it (``IN (1, 2,)`` is a syntax error in most dialects).
+    return f"{joined}," if escape == "python" else joined
+
+
 def _render_variable_value(
     name: str, value: Any, escape: Literal["sql", "python"]
 ) -> str:
@@ -68,8 +120,13 @@ def _render_variable_value(
 
     Strings are escaped for the target layer (see :func:`_escape_string_value`);
     numbers (including ``bool``) pass through via ``str()`` but non-finite floats
-    raise (they can never render a valid literal); anything else raises.
+    raise (they can never render a valid literal). A ``list``/``tuple`` renders
+    an ``IN``-list body (see :func:`_render_list_value`); anything else raises.
     """
+    # list/tuple first: an IN-list body (DEV-1730). Checked before str so the
+    # scalar path only ever sees a single value.
+    if isinstance(value, (list, tuple)):
+        return _render_list_value(name=name, value=value, escape=escape)
     if isinstance(value, str):
         return _escape_string_value(value=value, escape=escape)
     # bool is an int subclass and is accepted (renders True/False).
@@ -78,7 +135,8 @@ def _render_variable_value(
             raise ValueError(f"Variable '{name}' must be finite, got {value!r}")
         return str(value)
     raise ValueError(
-        f"Variable '{name}' must be a string or number, got {type(value).__name__}"
+        f"Variable '{name}' must be a string, number, or list/tuple, "
+        f"got {type(value).__name__}"
     )
 
 
@@ -87,7 +145,7 @@ def substitute_variables(
 ) -> str:
     """Substitute {variable} placeholders in a filter or raw-SQL string.
 
-    - {var_name} is replaced with the variable's value (str or number).
+    - {var_name} is replaced with the variable's value (str, number, or list).
     - {{ and }} are escaped to literal { and }.
     - Variable names must be alphanumeric + underscore.
     - Raises ValueError for undefined variables or invalid variable names.
@@ -98,12 +156,20 @@ def substitute_variables(
     Numbers (including ``bool``) pass through via ``str()``; non-finite floats
     (``nan``/``inf``) raise, since they can never render a valid literal.
 
+    A ``list``/``tuple`` value renders an ``IN``-list body (DEV-1730). The
+    template writes the parentheses (``col IN ({var})``) and each string element
+    is **auto-quoted** — the opposite of the scalar-string convention where the
+    author writes the quotes (``status = '{v}'``). See :func:`_render_list_value`.
+
     Example:
         substitute_variables("status = '{status_val}'", {"status_val": "active"}, escape="sql")
         → "status = 'active'"
 
         substitute_variables("amount > {min_amount}", {"min_amount": 100}, escape="sql")
         → "amount > 100"
+
+        substitute_variables("region IN ({regions})", {"regions": ["US", "CA"]}, escape="sql")
+        → "region IN ('US', 'CA')"
     """
     if escape not in ("sql", "python"):
         raise ValueError(

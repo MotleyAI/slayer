@@ -1016,12 +1016,28 @@ class TestSubstituteVariablesHardened:
                 filter_str="x = {v}", variables={"v": float("-inf")}, escape="python"
             )
 
-    def test_list_value_still_raises(self) -> None:
+    def test_dict_value_raises(self) -> None:
         from slayer.core.query import substitute_variables
 
-        with pytest.raises(ValueError, match="must be a string or number"):
+        # A dict is neither scalar nor list/tuple → terminal ValueError whose
+        # message now names list/tuple as an accepted shape (DEV-1730 lists).
+        with pytest.raises(
+            ValueError, match="must be a string, number, or list/tuple"
+        ):
             substitute_variables(
-                filter_str="x = '{v}'", variables={"v": [1, 2]}, escape="sql"
+                filter_str="x = '{v}'", variables={"v": {"a": 1}}, escape="sql"
+            )
+
+    def test_set_value_raises(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        # A set is unordered → deliberately NOT accepted (only list/tuple), and
+        # falls through to the same terminal message.
+        with pytest.raises(
+            ValueError, match="must be a string, number, or list/tuple"
+        ):
+            substitute_variables(
+                filter_str="x IN ({v})", variables={"v": {1, 2}}, escape="sql"
             )
 
     def test_escape_is_required_keyword_only(self) -> None:
@@ -1111,6 +1127,37 @@ class TestSubstituteHelperScope:
         )
         out = _substitute_model_sql_surfaces(model=model, variables={})
         assert out.get_column("j").sql == "json_extract(x, '$.a')"
+
+    def test_list_value_substituted_on_all_four_mode_a_surfaces(self) -> None:
+        """A single list variable rendered into each of the four Mode-A
+        surfaces — SlayerModel.sql, SlayerModel.filters, Column.sql,
+        Column.filter — proving every surface routes list values through
+        ``_render_variable_value`` (all comma-joined, auto-quoted, sql-escape)."""
+        from slayer.engine.query_engine import _substitute_model_sql_surfaces
+
+        model = SlayerModel(
+            name="m",
+            data_source="ds",
+            sql="SELECT * FROM t WHERE region IN ({regions})",
+            filters=["region IN ({regions})"],
+            columns=[
+                Column(name="in_flag", sql="region IN ({regions})", type=DataType.BOOLEAN),
+                Column(
+                    name="amt",
+                    sql="amount",
+                    filter="region IN ({regions})",
+                    type=DataType.DOUBLE,
+                ),
+            ],
+        )
+        out = _substitute_model_sql_surfaces(
+            model=model, variables={"regions": ["US", "CA"]}
+        )
+        rendered = "region IN ('US', 'CA')"
+        assert out.sql == f"SELECT * FROM t WHERE {rendered}"
+        assert out.filters == [rendered]
+        assert out.get_column("in_flag").sql == rendered
+        assert out.get_column("amt").filter == rendered
 
 
 # ---------------------------------------------------------------------------
@@ -1374,5 +1421,453 @@ class TestGetColumnTypesDefaults:
         try:
             types = await engine.get_column_types("orders")
             assert types == {}
+        finally:
+            tmp.cleanup()
+
+    async def test_list_default_probe_succeeds(self) -> None:
+        """DEV-1730: a Mode-A ``IN ({var})`` filter with a LIST default in
+        ``query_variables`` renders cleanly at the type-probe path, so the probe
+        returns real column types instead of the ``{}`` degradation."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="ds",
+            query_variables={"regions": ["US", "CA"]},
+            filters=["region IN ({regions})"],
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region", sql="region", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+        engine, tmp = await _engine_with(model)
+        try:
+            types = await engine.get_column_types("orders")
+            assert types.get("amount") == "number"
+            assert types.get("region") == "string"
+        finally:
+            tmp.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# 18. Unit: list/tuple variable rendering (DEV-1730 IN-list pushdown)
+# ---------------------------------------------------------------------------
+
+
+class TestListValueRenderingSql:
+    """``escape="sql"`` list rendering: comma-joined, strings auto-quoted and
+    single-quote-doubled, numbers/bools bare. Template shape is ``IN ({var})``
+    — the author writes the parens, NOT the per-element quotes."""
+
+    def test_sql_list_strings_auto_quoted(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        result = substitute_variables(
+            filter_str="region IN ({v})",
+            variables={"v": ["US", "CA"]},
+            escape="sql",
+        )
+        assert result == "region IN ('US', 'CA')"
+
+    def test_sql_list_embedded_quote_doubled(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        # Per-element the same sql escaping as scalars: ' → ''.
+        result = substitute_variables(
+            filter_str="name IN ({v})",
+            variables={"v": ["A", "O'Brien", 3]},
+            escape="sql",
+        )
+        assert result == "name IN ('A', 'O''Brien', 3)"
+
+    def test_sql_list_numbers_and_bools_bare(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        result = substitute_variables(
+            filter_str="x IN ({v})",
+            variables={"v": [1, 2.5, True, False]},
+            escape="sql",
+        )
+        assert result == "x IN (1, 2.5, True, False)"
+
+    def test_sql_single_element_list(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        result = substitute_variables(
+            filter_str="region IN ({v})",
+            variables={"v": ["EU"]},
+            escape="sql",
+        )
+        assert result == "region IN ('EU')"
+
+    def test_sql_tuple_accepted_same_as_list(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        from_list = substitute_variables(
+            filter_str="x IN ({v})", variables={"v": ["A", "B"]}, escape="sql"
+        )
+        from_tuple = substitute_variables(
+            filter_str="x IN ({v})", variables={"v": ("A", "B")}, escape="sql"
+        )
+        assert from_list == from_tuple == "x IN ('A', 'B')"
+
+    def test_sql_injection_element_stays_inside_literal(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        # A classic breakout attempt: the closing quote is doubled so the whole
+        # payload stays a single string literal inside the IN list.
+        result = substitute_variables(
+            filter_str="region IN ({v})",
+            variables={"v": ["x') OR ('1'='1"]},
+            escape="sql",
+        )
+        assert result == "region IN ('x'') OR (''1''=''1')"
+
+
+class TestListValueRenderingPython:
+    """``escape="python"`` list rendering: comma-joined WITH a trailing comma so
+    the Mode-B Python-AST parser always reads a tuple, never a bare string
+    (``x in ('A')`` is string membership; ``x in ('A',)`` is a 1-tuple)."""
+
+    def test_python_list_trailing_comma_single(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        result = substitute_variables(
+            filter_str="region in ({v})",
+            variables={"v": ["A"]},
+            escape="python",
+        )
+        assert result == "region in ('A',)"
+
+    def test_python_list_trailing_comma_multi(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        result = substitute_variables(
+            filter_str="region in ({v})",
+            variables={"v": ["A", "B"]},
+            escape="python",
+        )
+        assert result == "region in ('A', 'B',)"
+
+    def test_python_list_numbers_bare_trailing_comma(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        result = substitute_variables(
+            filter_str="x in ({v})",
+            variables={"v": [1, 2]},
+            escape="python",
+        )
+        assert result == "x in (1, 2,)"
+
+    @pytest.mark.parametrize("values", [["A"], ["A", "B"], ["O'Brien", "a\\b"]])
+    def test_python_list_ast_roundtrip_is_tuple(self, values: list) -> None:
+        # The substituted ``x in (...)`` must parse to an ast.Tuple (never a
+        # bare Constant) whose elements recover the ORIGINAL string values —
+        # so single-element lists work and quotes/backslashes round-trip.
+        import ast
+
+        from slayer.core.query import substitute_variables
+
+        substituted = substitute_variables(
+            filter_str="region in ({v})",
+            variables={"v": values},
+            escape="python",
+        )
+        expr = ast.parse(substituted, mode="eval")
+        compare = expr.body
+        assert isinstance(compare, ast.Compare)
+        rhs = compare.comparators[0]
+        assert isinstance(rhs, ast.Tuple)
+        recovered = [e.value for e in rhs.elts]
+        assert recovered == values
+
+    def test_python_tuple_accepted_same_as_list(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        from_list = substitute_variables(
+            filter_str="x in ({v})", variables={"v": ["A", "B"]}, escape="python"
+        )
+        from_tuple = substitute_variables(
+            filter_str="x in ({v})", variables={"v": ("A", "B")}, escape="python"
+        )
+        assert from_list == from_tuple == "x in ('A', 'B',)"
+
+
+class TestListValueRenderingErrors:
+    def test_empty_list_raises_naming_variable(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        # IN () is invalid SQL; the message names the variable, says "empty", and
+        # points at the sentinel-default idiom (DEV-1730) for "no filter".
+        with pytest.raises(ValueError, match="regions") as exc:
+            substitute_variables(
+                filter_str="region IN ({regions})",
+                variables={"regions": []},
+                escape="sql",
+            )
+        msg = str(exc.value).lower()
+        assert "empty" in msg
+        # The sentinel-default hint is a required contract (DEV-1730), pinned by
+        # a stable single-word fragment rather than the full sentence.
+        assert "sentinel" in msg
+
+    def test_empty_tuple_raises(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        with pytest.raises(ValueError, match="regions") as exc:
+            substitute_variables(
+                filter_str="region IN ({regions})",
+                variables={"regions": ()},
+                escape="python",
+            )
+        assert "empty" in str(exc.value).lower()
+
+    def test_nested_list_element_raises(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        # ``element`` in the match pins the PER-ELEMENT validation path (a valid
+        # list with one bad element), not the whole-value type rejection; and the
+        # variable name must appear so the author can locate it.
+        with pytest.raises(ValueError, match="element") as exc:
+            substitute_variables(
+                filter_str="region IN ({regions})",
+                variables={"regions": ["A", ["B", "C"]]},
+                escape="sql",
+            )
+        assert "regions" in str(exc.value)
+
+    def test_none_element_raises(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        with pytest.raises(ValueError, match="element") as exc:
+            substitute_variables(
+                filter_str="region IN ({regions})",
+                variables={"regions": ["A", None]},
+                escape="sql",
+            )
+        assert "regions" in str(exc.value)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_float_element_raises(self, bad: float) -> None:
+        from slayer.core.query import substitute_variables
+
+        with pytest.raises(ValueError, match="finite") as exc:
+            substitute_variables(
+                filter_str="x IN ({v})",
+                variables={"v": [1.0, bad]},
+                escape="sql",
+            )
+        assert "v" in str(exc.value)
+
+    def test_dict_element_raises(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        with pytest.raises(ValueError, match="element") as exc:
+            substitute_variables(
+                filter_str="region IN ({regions})",
+                variables={"regions": ["A", {"b": 1}]},
+                escape="python",
+            )
+        assert "regions" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# 19. End-to-end Mode-A: WHERE region IN ({regions}) with a list variable
+# ---------------------------------------------------------------------------
+
+
+class TestListModeAEndToEnd:
+    def _model(self, **kw) -> SlayerModel:
+        return SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="ds",
+            filters=["region IN ({regions})"],
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region", sql="region", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+            **kw,
+        )
+
+    async def test_runtime_list_filters_rows(self) -> None:
+        engine, tmp = await _engine_with(self._model())
+        try:
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                variables={"regions": ["US", "CA"]},
+            )
+            resp = await engine.execute(q)
+            # US=160, CA=300 → 460 (EU excluded).
+            assert _sum(resp, "orders.amount_sum") == 460.0
+        finally:
+            tmp.cleanup()
+
+    async def test_single_element_list(self) -> None:
+        engine, tmp = await _engine_with(self._model())
+        try:
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                variables={"regions": ["EU"]},
+            )
+            resp = await engine.execute(q)
+            assert _sum(resp, "orders.amount_sum") == 275.0
+        finally:
+            tmp.cleanup()
+
+    async def test_list_default_used_when_kwarg_absent(self) -> None:
+        engine, tmp = await _engine_with(
+            self._model(query_variables={"regions": ["EU", "CA"]})
+        )
+        try:
+            q = SlayerQuery(source_model="orders", measures=[{"formula": "amount:sum"}])
+            resp = await engine.execute(q)
+            # EU=275, CA=300 → 575.
+            assert _sum(resp, "orders.amount_sum") == 575.0
+        finally:
+            tmp.cleanup()
+
+    async def test_query_variables_list_overrides_model_default_list(self) -> None:
+        # Middle precedence layer: model_defaults < query.variables (no runtime).
+        engine, tmp = await _engine_with(
+            self._model(query_variables={"regions": ["EU", "CA"]})
+        )
+        try:
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                variables={"regions": ["US"]},
+            )
+            resp = await engine.execute(q)
+            # Query-level ['US'] wins over model default ['EU','CA'] → 160.
+            assert _sum(resp, "orders.amount_sum") == 160.0
+        finally:
+            tmp.cleanup()
+
+    async def test_runtime_list_overrides_default_list(self) -> None:
+        engine, tmp = await _engine_with(
+            self._model(query_variables={"regions": ["EU", "CA"]})
+        )
+        try:
+            q = SlayerQuery(source_model="orders", measures=[{"formula": "amount:sum"}])
+            resp = await engine.execute(q, variables={"regions": ["US"]})
+            # Runtime ['US'] wins over default ['EU','CA'] → 160.
+            assert _sum(resp, "orders.amount_sum") == 160.0
+        finally:
+            tmp.cleanup()
+
+    async def test_injection_element_matches_no_rows(self) -> None:
+        engine, tmp = await _engine_with(self._model())
+        try:
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                variables={"regions": ["x') OR ('1'='1"]},
+            )
+            resp = await engine.execute(q)
+            # The payload stays inside its literal, matching no region, so the
+            # aggregate is NULL — NOT the whole-table total (735) an escape
+            # would have produced.
+            assert resp.data[0]["orders.amount_sum"] is None
+        finally:
+            tmp.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# 20. End-to-end Mode-B: query filter "region in ({regions})" with a list
+# ---------------------------------------------------------------------------
+
+
+class TestListModeBEndToEnd:
+    def _model(self) -> SlayerModel:
+        return SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="ds",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region", sql="region", type=DataType.TEXT),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+
+    async def test_query_filter_list_in(self) -> None:
+        engine, tmp = await _engine_with(self._model())
+        try:
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                filters=["region in ({regions})"],
+                variables={"regions": ["US", "CA"]},
+            )
+            resp = await engine.execute(q)
+            assert _sum(resp, "orders.amount_sum") == 460.0  # US 160 + CA 300
+        finally:
+            tmp.cleanup()
+
+    async def test_query_filter_single_element_list(self) -> None:
+        engine, tmp = await _engine_with(self._model())
+        try:
+            # The trailing-comma render (('EU',)) is what keeps a 1-element list
+            # a tuple through the Python-AST parser rather than a bare string.
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                filters=["region in ({regions})"],
+                variables={"regions": ["EU"]},
+            )
+            resp = await engine.execute(q)
+            assert _sum(resp, "orders.amount_sum") == 275.0
+        finally:
+            tmp.cleanup()
+
+    async def test_query_filter_not_in_list(self) -> None:
+        engine, tmp = await _engine_with(self._model())
+        try:
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                filters=["region not in ({regions})"],
+                variables={"regions": ["US"]},
+            )
+            resp = await engine.execute(q)
+            # Everything except US(160) → EU 275 + CA 300 = 575.
+            assert _sum(resp, "orders.amount_sum") == 575.0
+        finally:
+            tmp.cleanup()
+
+    async def test_runtime_list_overrides_query_level_list(self) -> None:
+        # Mode-B filters read query.variables, which merges runtime kwarg over
+        # the query-level dict (runtime wins) — verify that merge with lists.
+        engine, tmp = await _engine_with(self._model())
+        try:
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                filters=["region in ({regions})"],
+                variables={"regions": ["EU", "CA"]},
+            )
+            resp = await engine.execute(q, variables={"regions": ["US"]})
+            assert _sum(resp, "orders.amount_sum") == 160.0  # runtime ['US'] wins
+        finally:
+            tmp.cleanup()
+
+    async def test_query_filter_list_escaping_matches_only_its_row(self) -> None:
+        # Mode-B escaping through the real parse+compile+SQLite pipeline: a
+        # quote-bearing element must round-trip so it matches only its own row.
+        engine, tmp = await _engine_with(self._model())
+        try:
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                filters=["status in ({statuses})"],
+                variables={"statuses": ["O'Brien"]},
+            )
+            resp = await engine.execute(q)
+            assert _sum(resp, "orders.amount_sum") == 10.0  # row 6 only
         finally:
             tmp.cleanup()
