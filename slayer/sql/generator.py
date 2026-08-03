@@ -3952,6 +3952,11 @@ class SQLGenerator:
            (frozen/hashable) → ``{kwarg_name: ResolvedAggKwarg(kind="expr")}``,
            for ``_build_agg_render_spec_from_planned`` to embed. Scalar / string
            kwargs are left out (the spec builder canonical-stringifies them).
+        4. **first/last explicit TIME ARGS** (``amount:last(customers.signup_at)``
+           — DEV-1710). Discovery only; the ranked subquery's ORDER BY re-renders
+           the arg via ``_resolve_explicit_time_col``. Replaces the legacy
+           ``_collect_joined_paths_for_base`` AGGREGATE arm. A path-bearing
+           derived (``ColumnSqlKey``) arg — the DEV-1526 residual — is skipped.
 
         Cross-model aggregates (non-empty ``source.path``) are skipped in every
         sub-pass: their inputs are owned by the per-plan ``_cm_*`` CTE
@@ -4007,9 +4012,28 @@ class SQLGenerator:
             if kw:
                 resolved[key] = kw
 
+        def _resolve_first_last_time_arg(key) -> None:
+            # DEV-1710 Stage 6 — a first/last explicit ranking-time arg
+            # (``amount:last(customers.signup_at)``) crosses a join exactly like
+            # a source / kwarg does; resolving it through the scope registers
+            # that join (Law 1), so the ranked subquery's ORDER BY ref is in the
+            # base FROM. Replaces the legacy ``_collect_joined_paths_for_base``
+            # AGGREGATE arm. Register-only: the render spec re-resolves via
+            # ``_resolve_explicit_time_col``.
+            arg = self._explicit_time_arg_of(key)
+            if arg is None:
+                return
+            # A path-bearing derived (ColumnSqlKey) arg is a hop PAST the target
+            # (the DEV-1526 residual the render seam raises on) — skip it here;
+            # anchoring against ``source_relation`` would register a bogus join.
+            if isinstance(arg, ColumnSqlKey) and arg.path:
+                return
+            scope.resolve(arg)
+
         _for_each_local_agg(_resolve_column_filter)
         _for_each_local_agg(_resolve_source)
         _for_each_local_agg(_resolve_kwargs)
+        _for_each_local_agg(_resolve_first_last_time_arg)
         return resolved
 
     def _resolve_agg_kwargs_for_key(
@@ -4091,26 +4115,22 @@ class SQLGenerator:
         # DEV-1706 Stage 2: the host base is a single scope; every join-crossing
         # ref registers its path into ``host_scope.join_paths`` as a side effect
         # of being resolved through the scope (Law 1 — discovery can never be
-        # forgotten). The four legacy join collectors are gone: their work is now
-        # the scope passes below, plus the dimension walk that still feeds
-        # first/last (Stage 5/6). The scope's ordered ``join_paths`` reproduce the
+        # forgotten). The legacy join collectors are gone: their work is now the
+        # scope passes below. The scope's ordered ``join_paths`` reproduce the
         # collectors' first-seen registration order — derived dims → WHERE filters
-        # → Column.filter → source → kwargs — so the base FROM is byte-identical.
+        # → Column.filter → source → kwargs → first/last time args — so the base
+        # FROM is byte-identical.
         #
         # Stage 2's host base has no projection boundary, so the allocator mints
         # no ``_val_`` names here and a local instance suffices; the generation-
         # wide allocator (D-E) arrives with the CTE scopes in Stage 4.
         #
         # Walk row slots for every joined DIMENSION path first (join-order
-        # position 1). This set is retained (not folded into the scope) because
-        # it also feeds first/last ranking (Stage 5/6); the scope's paths append
-        # after it below.
+        # position 1); the scope's paths (derived dims, filters, aggregate
+        # inputs, and — DEV-1710 Stage 6 — first/last time args) append after it.
         needed_join_paths = self._collect_joined_paths_for_base(
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
-            source_model=source_model,
-            source_relation=source_relation,
-            bundle=bundle,
         )
         # DEV-1708 (D-E): share the generation-wide allocator so host-base and
         # per-plan ``_cm_*`` CTE ``_val_<n>`` names are globally unique.
@@ -4144,17 +4164,18 @@ class SQLGenerator:
         )
         # Every LOCAL aggregate's join-crossing inputs resolve through the scope
         # next: ``Column.filter`` (position 4; DEV-1494), derived aggregate SOURCE
-        # (position 5; DEV-1502), and column-ref KWARGS (position 6; DEV-1527 —
+        # (position 5; DEV-1502), column-ref KWARGS (position 6; DEV-1527 —
         # ``weighted_avg(weight=<col>)`` / ``corr(other=<col>)``, whose resolved
         # expression is embedded verbatim (``kind="expr"``) into the render spec,
         # replacing the ``agg_kwarg_canonical_str`` round-trip that collapsed a
-        # derived column to a bare, non-existent name).
+        # derived column to a bare, non-existent name), and first/last explicit
+        # TIME ARGS (position 7; DEV-1710 — ``amount:last(customers.signup_at)``).
         resolved_agg_kwargs = self._resolve_agg_inputs_via_scope(
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
             scope=host_scope,
         )
-        # Merge the scope's registered paths (positions 2-6, in first-seen order)
+        # Merge the scope's registered paths (positions 2-7, in first-seen order)
         # after the dimension paths (position 1) → byte-identical FROM.
         for p in host_scope.join_paths.as_list():
             if p not in needed_join_paths:
@@ -4455,7 +4476,29 @@ class SQLGenerator:
             return f"{source_relation}.{source_model.default_time_dimension}"
         return None
 
-    def _resolve_explicit_time_col(  # NOSONAR(S3776) — sequential isinstance dispatch over ColumnKey (bare ref → ``__``-joined path alias) and ColumnSqlKey (derived column → bare-ident-qualify vs complex-emit-verbatim). Extracting the per-shape branches would scatter the time-arg resolution contract; each branch is one decision.
+    @staticmethod
+    def _explicit_time_arg_of(key):
+        """The explicit positional ranking-time arg of a ``first`` / ``last``
+        aggregate, or ``None``.
+
+        The SINGLE arg-selection contract shared by the three sites that must
+        never disagree on WHICH positional arg is the time column (DEV-1710 /
+        Codex F1): the raise-gate in ``_build_first_last_base_select``, the
+        join-discovery pass in ``_resolve_agg_inputs_via_scope``, and the render
+        seam ``_resolve_explicit_time_col``. Returns the FIRST positional arg
+        iff it is a ``ColumnKey`` / ``ColumnSqlKey``; ``None`` for a
+        non-first/last agg, empty args, or a first positional arg of any other
+        type (first/last never takes a leading non-column positional).
+        """
+        from slayer.core.keys import ColumnKey, ColumnSqlKey
+
+        if key.agg not in ("first", "last"):
+            return None
+        for a in key.args:
+            return a if isinstance(a, (ColumnKey, ColumnSqlKey)) else None
+        return None
+
+    def _resolve_explicit_time_col(
         self,
         *,
         key,
@@ -4468,21 +4511,21 @@ class SQLGenerator:
         ranked subquery.
 
         Handles both bare-column refs (``ColumnKey`` —
-        ``amount:last(created_at)``) and derived-column refs
-        (``ColumnSqlKey`` — ``amount:last(net_amount_date)`` where
-        ``net_amount_date`` has a non-trivial ``Column.sql``). For derived
-        columns the column's ``Column.sql`` is materialised through
-        ``_expand_derived_column_sql`` (when ``bundle`` is available) so
-        inner bare refs qualify to ``source_relation`` and joined refs to
-        their ``__``-path alias — a complex expression like
-        ``date(created_at)`` can't go ambiguous against a same-named column
-        on a joined table inside the ranked subquery. Without a ``bundle``
-        it falls back to bare-ident qualification / verbatim emit.
+        ``amount:last(created_at)``) and derived-column refs (``ColumnSqlKey``
+        — ``amount:last(net_amount_date)`` where ``net_amount_date`` has a
+        non-trivial ``Column.sql``). DEV-1710 Stage 6: when a ``bundle`` is
+        available the arg is anchored through a ``ScopeFrame`` (Law 1) — the
+        same resolver the host base / kwargs passes use — so a bare joined ref
+        qualifies to its ``__``-path alias, a derived expression's inner bare
+        refs qualify to ``source_relation`` (never ambiguous against a
+        same-named joined column), and reserved-word relations are quoted
+        (DEV-1686). Without a ``bundle`` (the render-spec unit path) it falls
+        back to bare-ident qualification / verbatim emit.
 
-        Returns ``None`` for non-first/last aggs and when ``key.args`` is
-        empty or its first element is neither a ``ColumnKey`` nor a
-        ``ColumnSqlKey``. A derived time arg (``ColumnSqlKey``) whose
-        ``path`` is non-empty AFTER the DEV-1707 cross-model reroot — i.e. a
+        Returns ``None`` for non-first/last aggs and when ``key.args`` is empty
+        or its first element is neither a ``ColumnKey`` nor a ``ColumnSqlKey``
+        (see ``_explicit_time_arg_of``). A derived time arg (``ColumnSqlKey``)
+        whose ``path`` is non-empty AFTER the DEV-1707 cross-model reroot — a
         column a hop PAST the target — raises ``NotImplementedError`` rather
         than silently emitting against a relation the isolated CTE does not
         join; that residual-hop case is tracked as DEV-1526 (Stage 4). The
@@ -4491,56 +4534,60 @@ class SQLGenerator:
         """
         from slayer.core.keys import ColumnKey, ColumnSqlKey
 
-        if key.agg not in ("first", "last"):
+        arg = self._explicit_time_arg_of(key)
+        if arg is None:
             return None
-        for a in key.args:
-            if isinstance(a, ColumnKey):
-                relation = "__".join(a.path) if a.path else source_relation
-                return f"{relation}.{a.leaf}"
-            if isinstance(a, ColumnSqlKey):
-                if a.path:
-                    raise NotImplementedError(
-                        f"Derived time column with a residual join path "
-                        f"(path={a.path!r}, column={a.column_name!r}) on a "
-                        f"first/last positional arg is not yet supported by "
-                        f"the ranked-subquery builder: the isolated CTE does "
-                        f"not pull the residual join. Post-DEV-1707 the "
-                        f"cross-model reroot strips the target prefix, so this "
-                        f"fires only for a time arg a hop PAST the target; "
-                        f"tracked as DEV-1526 (Stage 4)."
-                    )
-                col = next(
-                    (c for c in source_model.columns if c.name == a.column_name),
-                    None,
+        if isinstance(arg, ColumnSqlKey) and arg.path:
+            raise NotImplementedError(
+                f"Derived time column with a residual join path "
+                f"(path={arg.path!r}, column={arg.column_name!r}) on a "
+                f"first/last positional arg is not yet supported by "
+                f"the ranked-subquery builder: the isolated CTE does "
+                f"not pull the residual join. Post-DEV-1707 the "
+                f"cross-model reroot strips the target prefix, so this "
+                f"fires only for a time arg a hop PAST the target; "
+                f"tracked as DEV-1526 (Stage 4)."
+            )
+        # Validate a derived arg's existence up front so the not-found case is a
+        # clear error rather than the resolver silently anchoring the bare name.
+        col = None
+        if isinstance(arg, ColumnSqlKey):
+            col = next(
+                (c for c in source_model.columns if c.name == arg.column_name),
+                None,
+            )
+            if col is None:
+                raise ValueError(
+                    f"Derived time column {arg.column_name!r} (positional "
+                    f"arg of {key.agg!r}) not found on model "
+                    f"{source_model.name!r}."
                 )
-                if col is None:
-                    raise ValueError(
-                        f"Derived time column {a.column_name!r} (positional "
-                        f"arg of {key.agg!r}) not found on model "
-                        f"{source_model.name!r}."
-                    )
-                if bundle is not None:
-                    # Qualify inner bare refs against ``source_relation`` (and
-                    # joined refs to their ``__``-path alias) so a complex
-                    # derived time expression can't bind to the wrong table
-                    # inside the ranked subquery's joins — same expansion the
-                    # aggregate-source path uses.
-                    return self._expand_derived_column_sql(
-                        source_model=source_model,
-                        source_relation=source_relation,
-                        column_name=a.column_name,
-                        bundle=bundle,
-                    )
-                # No bundle (defensive): bare-ident qualify, else emit verbatim.
-                col_sql = col.sql if col.sql else col.name
-                if col_sql.isidentifier():
-                    return f"{source_relation}.{col_sql}"
-                return self._parse(col_sql).sql(dialect=self.dialect)
-            # Unrecognised positional arg type — leave time_column unset and
-            # let _build_ranked_subquery_from_planned fall back to the
-            # query's default ranking column.
-            break
-        return None
+        if bundle is not None:
+            # Law 1 — anchor the arg through a throwaway host-rooted scope. Its
+            # ``join_paths`` are discarded (discovery is owned by the base
+            # aggregate-input pass, which registers the same join); this call is
+            # purely to reproduce the SAME anchored SQL the ORDER BY needs. Same
+            # throwaway-frame pattern as ``_resolve_agg_kwargs_for_key``.
+            allocator = AliasAllocator()
+            scope = ScopeFrame(
+                scope_id=allocator.next_scope_id(source_relation),
+                root_model=source_model,
+                root_relation=source_relation,
+                bundle=bundle,
+                dialect=self._dialect,
+                allocator=allocator,
+            )
+            return scope.resolve(arg).sql(dialect=self.dialect)
+        # No bundle (defensive; the render-spec unit path): bare ColumnKey
+        # qualifies to its ``__``-path alias / source relation, a derived
+        # bare-ident qualifies to the source relation, else emit verbatim.
+        if isinstance(arg, ColumnKey):
+            relation = "__".join(arg.path) if arg.path else source_relation
+            return f"{relation}.{arg.leaf}"
+        col_sql = col.sql if col.sql else col.name
+        if col_sql.isidentifier():
+            return f"{source_relation}.{col_sql}"
+        return self._parse(col_sql).sql(dialect=self.dialect)
 
     def _build_ranked_subquery_from_planned(  # NOSONAR(S3776) — Group 2 already factored the per-spec ROW_NUMBER passes into _build_unfiltered_rn_columns / _build_filtered_rn_columns; what's left is exp.Select / from / joins / where assembly that has to live in one place.
         self,
@@ -4779,13 +4826,11 @@ class SQLGenerator:
                 else:
                     fl_keys = _iter_first_last_leaves(key)
                 for fl in fl_keys:
-                    # An explicit time arg is the first ColumnKey /
-                    # ColumnSqlKey in ``key.args``.
-                    has_explicit = any(
-                        isinstance(a, (ColumnKey, ColumnSqlKey))
-                        for a in fl.args
-                    )
-                    if not has_explicit:
+                    # Whether this leaf carries an explicit ranking-time arg is
+                    # the shared ``_explicit_time_arg_of`` contract — the SAME
+                    # selection the render seam uses, so the gate and the render
+                    # can never disagree (DEV-1710 / Codex F1).
+                    if self._explicit_time_arg_of(fl) is None:
                         needs_default = True
                         break
             if needs_default:
@@ -7429,36 +7474,24 @@ class SQLGenerator:
             alias = slot.declared_name
         return f"{source_relation}.{alias}"
 
-    def _collect_joined_paths_for_base(  # NOSONAR(S3776) — sequential per-slot dispatch over ROW (ColumnKey / TimeTruncKey path) vs AGGREGATE (top-level AggregateKey first/last + composite first/last leaves; ColumnKey args qualify directly, ColumnSqlKey args expand-and-scan through the derived sql). Each branch is the per-slot join-discovery contract; extracting per-shape helpers would scatter the contract.
+    def _collect_joined_paths_for_base(
         self,
         *,
         base_render_order: List[str],
         slots_by_id: Dict[str, Any],
-        source_model=None,
-        source_relation: Optional[str] = None,
-        bundle=None,
     ) -> List[Tuple[str, ...]]:
-        """Walk ROW slots in render order to collect unique joined paths.
+        """Walk ROW slots in render order to collect unique joined DIMENSION
+        paths needed for projection / GROUP BY.
 
-        Only paths needed for projection / GROUP BY surface here. Cross-
-        model aggregate slots are NEVER walked — their joins live in
-        ``CrossModelAggregatePlan.join_chain`` and are rendered inside
-        the per-plan ``_cm_*`` CTE.
-
-        Local ``first`` / ``last`` AGGREGATE slots additionally contribute
-        any joined path named by an explicit ranking-time arg
-        (``amount:last(stores.opened_at)``) — the ranked subquery's
-        ``ORDER BY`` references that column, so the join must be in scope.
-        Derived (``ColumnSqlKey``) time args (``amount:last(net_amount_date)``
-        where ``net_amount_date.sql`` references ``customers.signed_up_at``)
-        are expanded through ``_expand_derived_column_sql`` and then scanned
-        with ``_joined_paths_in_sql`` so their crossed joins also land in the
-        FROM — requires ``source_model`` / ``source_relation`` / ``bundle``
-        (the existing ROW-derived expand path uses the same triple).
+        Cross-model aggregate slots are NEVER walked — their joins live in
+        ``CrossModelAggregatePlan.join_chain`` and render inside the per-plan
+        ``_cm_*`` CTE. Local ``first`` / ``last`` explicit-time-arg joins are no
+        longer collected here either: DEV-1710 Stage 6 moved that discovery into
+        ``_resolve_agg_inputs_via_scope`` (sub-pass 4), where anchoring the arg
+        through the host ``ScopeFrame`` registers its crossed join as a Law-1
+        side effect (bare, derived, and multi-hop args alike).
         """
-        from slayer.core.keys import (
-            AggregateKey, ColumnKey, ColumnSqlKey, Phase, TimeTruncKey,
-        )
+        from slayer.core.keys import ColumnKey, Phase, TimeTruncKey
 
         seen: set = set()
         ordered: List[Tuple[str, ...]] = []
@@ -7479,57 +7512,6 @@ class SQLGenerator:
                     _add(key.path)
                 elif isinstance(key, TimeTruncKey):
                     _add(key.column.path)
-            elif slot.phase == Phase.AGGREGATE:
-                # DEV-1501 (Codex round 5): walk top-level AggregateKey
-                # slots AND first/last leaves inside composite slots
-                # (ArithmeticKey / ScalarCallKey). A composite operand
-                # ``amount:last(stores.opened_at) + 1`` orders the ranked
-                # subquery by ``stores.opened_at`` and requires the
-                # ``stores`` join to be in scope.
-                fl_keys: list = []
-                if (
-                    isinstance(key, AggregateKey)
-                    and key.agg in ("first", "last")
-                    and not getattr(key.source, "path", ())
-                ):
-                    fl_keys = [key]
-                elif not isinstance(key, AggregateKey):
-                    fl_keys = _iter_first_last_leaves(key)
-                for fl in fl_keys:
-                    for a in fl.args:
-                        if isinstance(a, ColumnKey):
-                            _add(a.path)
-                        elif (
-                            # DEV-1501 (Codex round 8): a derived time arg
-                            # (``amount:last(net_amount_date)``) is expanded
-                            # against the source relation inside the ranked
-                            # subquery's ``ORDER BY``; any joined ref the
-                            # expansion introduces (``customers.signed_up_at``)
-                            # must pull its join into ``_base``. Without
-                            # ``bundle`` (defensive entry point), skip — the
-                            # ranked subquery falls back to verbatim emit and
-                            # the missing join would surface as broken SQL at
-                            # runtime, but no upstream caller hits this path
-                            # without a bundle.
-                            isinstance(a, ColumnSqlKey)
-                            and not a.path
-                            and source_model is not None
-                            and source_relation is not None
-                            and bundle is not None
-                        ):
-                            expanded = self._expand_derived_column_sql(
-                                source_model=source_model,
-                                source_relation=source_relation,
-                                column_name=a.column_name,
-                                bundle=bundle,
-                            )
-                            for p in self._joined_paths_in_sql(
-                                sql_expr=self._parse(expanded),
-                                source_relation=source_relation,
-                                source_model=source_model,
-                                bundle=bundle,
-                            ):
-                                _add(p)
         return ordered
 
     def _build_from_and_joins(
