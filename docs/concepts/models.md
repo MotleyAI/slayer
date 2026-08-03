@@ -385,14 +385,16 @@ Querying this model with `variables={"floor": 100}` renders `WHERE amount >= 100
 Rules:
 
 - **Same precedence** as everywhere else (runtime kwarg > stage > outer query > `model.query_variables`), and the same `{{`/`}}` literal-brace escaping.
-- **Raise on missing.** An unresolved `{var}` (with no default in `query_variables`) raises — a parameterized model is meant to fail without its value, not silently render a neutral predicate.
+- **Raise on missing — once any variable is in play.** As soon as at least one variable is supplied (a `query_variables` default, or a caller/stage/runtime value), every `{var}` placeholder must resolve or execution raises `Undefined variable` — a parameterized model is meant to fail without its value, not silently render a neutral predicate.
+- **Variable-free executions treat braces as literals.** When there is *no* variable in play at all (no `query_variables` and no caller variables), the four surfaces are left untouched: a raw brace literal (e.g. a Postgres array `'{1,2,3}'`) survives verbatim, and a placeholder-shaped token like `'{status}'` is emitted as-is rather than raising. This is the deliberate contract that lets brace-bearing SQL coexist with the feature. If a model *does* use variables, escape any literal braces as `{{`/`}}`.
 - **String escaping is Mode-A-aware.** Write the surrounding quotes yourself (`WHERE region = '{region}'`); a string value's embedded single quotes are doubled so it stays inside that literal. Numbers (including booleans) insert verbatim; non-finite floats are rejected.
-- **Variable-free models are never touched**, so a raw brace literal (e.g. a Postgres array `'{1,2,3}'`) in a model that declares no variables survives verbatim. If a model *does* use variables, escape any literal braces as `{{`/`}}`.
 - **`inspect` / `inspect_model` show the literal template** (`{floor}`), not a rendered value.
 
 **Scope (DEV-1625):** substitution currently applies to the **direct source model** of a query. Nested `source_queries` stages, query-backed direct sources, join-target models, and cross-model-target models are the deferred follow-up ([DEV-1678](https://linear.app/motley-ai/issue/DEV-1678)). A `{var}` in one of those lineages is left untouched (and surfaces as an error on the stray placeholder) until that lands.
 
-**Known limitation:** a string value containing a backslash does not round-trip through every backend (notably SQLite, whose driver does not unescape backslashes) — this is a pre-existing dialect quirk, independent of variable substitution.
+**Trusted input.** Substituted values are treated as trusted, not attacker-controlled. The Mode-A escaping doubles single quotes so a value stays inside the quoted literal you wrote, but it is deliberately *not* dialect-aware: on a backend where a backslash escapes the following quote (e.g. **MySQL** with default settings), a value containing a backslash immediately before a quote could still break out of the literal. Do not feed untrusted end-user input through `variables`; fuller dialect-aware escaping / bound parameters is tracked as a follow-up.
+
+**Known limitation:** a string value containing a backslash also does not round-trip through every backend (notably SQLite, whose driver does not unescape backslashes) — a pre-existing dialect quirk, independent of variable substitution.
 
 ### Variable precedence
 

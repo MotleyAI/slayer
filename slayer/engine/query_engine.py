@@ -153,6 +153,22 @@ def _substitute_model_sql_surfaces(
     return model.model_copy(update=model_updates)
 
 
+def _render_probe_model(model: SlayerModel) -> SlayerModel:
+    """Substitute a template model's OWN ``query_variables`` defaults into its
+    Mode-A surfaces for type-probing (DEV-1625).
+
+    Defaults only — the probe has no caller variables and must honour the
+    no-dummy-fill decision. A rendered virtual model (``source_model_origin``
+    set) is returned unchanged. An undefaulted ``{var}`` raises here and is
+    caught by the probe's graceful-``{}`` handler in ``get_column_types``.
+    """
+    if model.source_model_origin is None and model.query_variables:
+        return _substitute_model_sql_surfaces(
+            model=model, variables=model.query_variables
+        )
+    return model
+
+
 def _apply_placeholder_fill(
     query: SlayerQuery, effective: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1122,17 +1138,12 @@ class SlayerQueryEngine:
         probe_query = self._build_type_probe_query(model=model)
         try:
             # DEV-1625: a template source model's Mode-A {var} surfaces must be
-            # rendered before probe SQL is generated. Use the model's OWN
-            # query_variables defaults only — the probe has no caller variables
-            # and must honour the no-dummy-fill decision. An undefaulted {var}
-            # raises here and degrades to {} via the surrounding except (same as
-            # an unresolvable probe), so partially-defaulted models stay safe.
-            probe_model = model
-            if model.source_model_origin is None and model.query_variables:
-                probe_model = _substitute_model_sql_surfaces(
-                    model=model, variables=model.query_variables
-                )
-            enriched = await self._enrich(query=probe_query, model=probe_model)
+            # rendered (from its own query_variables defaults) before probe SQL
+            # is generated; an undefaulted {var} raises here and degrades to {}
+            # via the surrounding except, so partially-defaulted models stay safe.
+            enriched = await self._enrich(
+                query=probe_query, model=_render_probe_model(model)
+            )
             dialect = self._dialect_for_type(datasource.type)
             generator = SQLGenerator(dialect=dialect)
             # DEV-1444: type probing is a user-visible call site; pin

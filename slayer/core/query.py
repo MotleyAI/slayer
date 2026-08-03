@@ -61,6 +61,27 @@ def _escape_string_value(value: str, escape: Literal["sql", "python"]) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
 
 
+def _render_variable_value(
+    name: str, value: Any, escape: Literal["sql", "python"]
+) -> str:
+    """Render a single resolved variable value into substitution text.
+
+    Strings are escaped for the target layer (see :func:`_escape_string_value`);
+    numbers (including ``bool``) pass through via ``str()`` but non-finite floats
+    raise (they can never render a valid literal); anything else raises.
+    """
+    if isinstance(value, str):
+        return _escape_string_value(value, escape)
+    # bool is an int subclass and is accepted (renders True/False).
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f"Variable '{name}' must be finite, got {value!r}")
+        return str(value)
+    raise ValueError(
+        f"Variable '{name}' must be a string or number, got {type(value).__name__}"
+    )
+
+
 def substitute_variables(
     filter_str: str, variables: dict[str, Any], *, escape: Literal["sql", "python"]
 ) -> str:
@@ -103,19 +124,7 @@ def substitute_variables(
                     f"Undefined variable '{valid_name}' in filter: {filter_str!r}. "
                     f"Available variables: {sorted(variables.keys())}"
                 )
-            value = variables[valid_name]
-            if isinstance(value, str):
-                return _escape_string_value(value, escape)
-            # bool is an int subclass and is accepted (renders True/False).
-            if isinstance(value, (int, float)):
-                if isinstance(value, float) and not math.isfinite(value):
-                    raise ValueError(
-                        f"Variable '{valid_name}' must be finite, got {value!r}"
-                    )
-                return str(value)
-            raise ValueError(
-                f"Variable '{valid_name}' must be a string or number, got {type(value).__name__}"
-            )
+            return _render_variable_value(valid_name, variables[valid_name], escape)
         # Group 2: invalid variable name (matched {something} but name was invalid)
         bad_name = match.group(2)
         raise ValueError(

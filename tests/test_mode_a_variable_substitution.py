@@ -551,6 +551,39 @@ class TestBraceLiterals:
         finally:
             tmp.cleanup()
 
+    async def test_placeholder_shaped_literal_in_variable_free_model_not_raised(
+        self,
+    ) -> None:
+        """Empty-map contract (DEV-1625): raise-on-missing applies only once a
+        variable is in play. A model with an {identifier}-shaped placeholder in
+        a string literal but NO variables anywhere (no query_variables, no
+        caller vars) treats it as a literal — it is NOT substituted and does NOT
+        raise 'Undefined variable'. `status = '{status}'` matches no seeded row,
+        so SUM is NULL; the point is that it executes cleanly (literal), and a
+        subsequent query that DOES supply a variable would raise on a missing
+        one (covered by TestMissingVariable)."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="ds",
+            filters=["status = '{status}'"],
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+        engine, tmp = await _engine_with(model)
+        try:
+            resp = await engine.execute(
+                SlayerQuery(source_model="orders", measures=[{"formula": "amount:sum"}])
+            )
+            # No raise (literal, not a missing-variable error); no row has the
+            # literal status '{status}', so the aggregate is NULL.
+            assert resp.data[0]["orders.amount_sum"] is None
+        finally:
+            tmp.cleanup()
+
     async def test_escaped_braces_render_single_alongside_var(self) -> None:
         """{{tag}} escapes to a literal {tag} while {floor} substitutes."""
         model = SlayerModel(
@@ -757,10 +790,13 @@ class TestDeferredScope:
                 measures=[{"formula": "customers.scaled:sum"}],
                 variables={"mult": 2},
             )
-            # The failure must be about the stray, unsubstituted {mult}
-            # (emitted as a bare `mult` column ref), not an unrelated setup
-            # error — pins that the join-target var truly was not substituted.
-            with pytest.raises(Exception, match="mult"):
+            # The failure must be about the stray, unsubstituted {mult}: it is
+            # emitted as a bare `mult` column ref, so the DB errors with
+            # "no such column: customers.mult" (a DB error, NOT a substitution
+            # ValueError — precisely because the join-target var was not
+            # substituted). The \bmult\b word boundary keeps an unrelated error
+            # mentioning "multiple"/"multi-stage" from satisfying the pin.
+            with pytest.raises(Exception, match=r"\bmult\b"):
                 await engine.execute(q)
         finally:
             tmp.cleanup()
@@ -1202,15 +1238,15 @@ class TestModelImmutabilityAcrossExecutes:
             assert _sum(r_eu, "orders.amount_sum") == 275.0
             assert _sum(r_ca, "orders.amount_sum") == 300.0
             # A failed substitution must not partially mutate either — pin that
-            # a subsequent missing-var call raises cleanly.
+            # a subsequent missing-var call raises cleanly. Build the query
+            # outside the block so only execute() can throw inside it.
+            missing_var_q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                variables={"other": "x"},
+            )
             with pytest.raises(ValueError, match="Undefined variable 'region'"):
-                await engine.execute(
-                    SlayerQuery(
-                        source_model="orders",
-                        measures=[{"formula": "amount:sum"}],
-                        variables={"other": "x"},
-                    )
-                )
+                await engine.execute(missing_var_q)
             # The stored model is untouched — reloading shows the template.
             reloaded = await engine.storage.get_model("orders")
             assert reloaded.filters == ["region = '{region}'"]
