@@ -3952,8 +3952,13 @@ class SQLGenerator:
         3. **column-ref KWARGS** (``weight=<col>`` / ``other=<col>`` — DEV-1527).
            The resolved expression is returned, keyed by ``AggregateKey``
            (frozen/hashable) → ``{kwarg_name: ResolvedAggKwarg(kind="expr")}``,
-           for ``_build_agg_render_spec_from_planned`` to embed. Scalar / string
+           for ``_build_agg_render_spec_from_planned`` to embed. Scalar
            kwargs are left out (the spec builder canonical-stringifies them).
+        3b. **template-fragment KWARGS** (DEV-1709): user-supplied string
+           kwargs and non-overridden model-default ``AggregationParam.sql``
+           fragments are scanned for crossed paths (register-only) — the
+           fragment text substitutes verbatim into the aggregation template,
+           so its joins must be in the FROM.
         4. **first/last explicit TIME ARGS** (``amount:last(customers.signup_at)``
            — DEV-1710). Discovery only; the ranked subquery's ORDER BY re-renders
            the arg via ``_resolve_explicit_time_col``. Replaces the legacy
@@ -4014,6 +4019,35 @@ class SQLGenerator:
             if kw:
                 resolved[key] = kw
 
+        def _resolve_fragment_kwargs(key) -> None:
+            # DEV-1709 (PR #271 Codex review): template-fragment kwargs —
+            # user-supplied str values and non-overridden model-default
+            # ``AggregationParam.sql`` fragments — are substituted into the
+            # aggregation template as qualified SQL text, so their crossed
+            # joins must register exactly like ``Column.filter`` predicates
+            # do (the widened Law-3 trigger isolates on them, and the CTE
+            # sub-render lands here). Scanned with the same
+            # ``_filter_join_paths`` pipeline; unparseable fragments
+            # contribute nothing.
+            fragments = [v for _, v in key.kwargs if isinstance(v, str)]
+            agg_def = next(
+                (a for a in (scope.root_model.aggregations or [])
+                 if a.name == key.agg),
+                None,
+            )
+            if agg_def is not None:
+                overridden = {name for name, _ in key.kwargs}
+                fragments.extend(
+                    p.sql for p in (agg_def.params or [])
+                    if p.name not in overridden and p.sql
+                )
+            for frag in fragments:
+                for p in self._filter_join_paths(
+                    sql=frag, source_relation=scope.root_relation,
+                    source_model=scope.root_model, bundle=scope.bundle,
+                ):
+                    scope.join_paths.add(p)
+
         def _resolve_first_last_time_arg(key) -> None:
             # DEV-1710 Stage 6 — a first/last explicit ranking-time arg
             # (``amount:last(customers.signup_at)``) crosses a join exactly like
@@ -4035,6 +4069,7 @@ class SQLGenerator:
         _for_each_local_agg(_resolve_column_filter)
         _for_each_local_agg(_resolve_source)
         _for_each_local_agg(_resolve_kwargs)
+        _for_each_local_agg(_resolve_fragment_kwargs)
         _for_each_local_agg(_resolve_first_last_time_arg)
         return resolved
 

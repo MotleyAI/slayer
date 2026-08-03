@@ -274,7 +274,8 @@ class TestDev1527KwargExpansion:
         assert "orders.region_weight" not in sql
         # The aggregate filter lands in the outer WHERE on the CTE column.
         outer = sql[sql.rfind("\n)") + 2:]
-        assert "WHERE" in outer and "> 5" in outer, sql
+        assert "WHERE" in outer, sql
+        assert "> 5" in outer, sql
 
     async def test_custom_aggregation_str_param_override_substitutes(self) -> None:
         # kind="str" template path through _build_formula_agg: a model-defined

@@ -959,13 +959,14 @@ class TestBuilderCrossModelKwargPath:
             public_name="amount_weighted_avg",
             slot_type=DataType.DOUBLE,
         )
+        orders = _orders_model()
         with pytest.raises(
             AggregationNotAllowedError, match=r"kwarg .* references ColumnKey",
         ):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=_orders_model(),
+                source_model=orders,
                 source_relation="orders",
                 full_alias="orders.amount_weighted_avg",
             )

@@ -4263,7 +4263,9 @@ class TestDev1709WidenedIsolationShapes:
         )
 
     @staticmethod
-    def _orders_model(*, extra_columns=None, default_time_dimension=None) -> SlayerModel:
+    def _orders_model(
+        *, extra_columns=None, default_time_dimension=None, aggregations=None,
+    ) -> SlayerModel:
         cols = [
             Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
             Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
@@ -4278,6 +4280,7 @@ class TestDev1709WidenedIsolationShapes:
                 target_model="customers", join_pairs=[["customer_id", "id"]],
             )],
             default_time_dimension=default_time_dimension,
+            aggregations=aggregations or [],
         )
 
     async def _sql(self, query: SlayerQuery, orders: SlayerModel) -> str:
@@ -4370,6 +4373,58 @@ class TestDev1709WidenedIsolationShapes:
         cm_body = _extract_cte_body(sql, r"_cm_\w+")
         assert "customers.signup_at" in cm_body, sql
         assert "LEFT JOIN customers" in cm_body, sql
+
+    async def test_user_template_fragment_kwarg_renders_join_in_cte(self) -> None:
+        """A crossing USER template-fragment kwarg
+        (``scale='customers__regions.weight'``) isolates AND the CTE
+        sub-render registers the fragment's joins — the fragment renders
+        qualified, so the LEFT JOINs must live inside the CTE body
+        (PR #271 Codex review: fragments triggered isolation but their
+        joins were never registered in the sub-render)."""
+        orders = self._orders_model(aggregations=[
+            Aggregation(
+                name="scaled_sum", formula="SUM({value}) / {scale}",
+                params=[AggregationParam(name="scale", sql="1")],
+            ),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(
+                formula="amount:scaled_sum(scale='customers__regions.weight')",
+            )],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers AS customers" in cm_body, sql
+        assert "LEFT JOIN regions AS customers__regions" in cm_body, sql
+        assert "customers__regions.weight" in cm_body, sql
+        host_part = sql.replace(cm_body, "")
+        assert "LEFT JOIN" not in host_part, sql
+
+    async def test_model_default_fragment_kwarg_renders_join_in_cte(self) -> None:
+        """Same for a crossing MODEL-DEFAULT ``AggregationParam.sql``
+        fragment — no user kwarg at all."""
+        orders = self._orders_model(aggregations=[
+            Aggregation(
+                name="wscaled_sum", formula="SUM({value} * {w})",
+                params=[AggregationParam(
+                    name="w", sql="customers__regions.weight",
+                )],
+            ),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:wscaled_sum")],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers AS customers" in cm_body, sql
+        assert "LEFT JOIN regions AS customers__regions" in cm_body, sql
+        assert "customers__regions.weight" in cm_body, sql
+        host_part = sql.replace(cm_body, "")
+        assert "LEFT JOIN" not in host_part, sql
 
     async def test_pathed_host_row_filter_inherited_into_cte(self) -> None:
         """F4 (Codex plan-review F5): a host ROW filter whose expression
