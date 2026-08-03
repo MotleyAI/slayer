@@ -71,7 +71,7 @@ def _render_variable_value(
     raise (they can never render a valid literal); anything else raises.
     """
     if isinstance(value, str):
-        return _escape_string_value(value, escape)
+        return _escape_string_value(value=value, escape=escape)
     # bool is an int subclass and is accepted (renders True/False).
     if isinstance(value, (int, float)):
         if isinstance(value, float) and not math.isfinite(value):
@@ -124,7 +124,9 @@ def substitute_variables(
                     f"Undefined variable '{valid_name}' in filter: {filter_str!r}. "
                     f"Available variables: {sorted(variables.keys())}"
                 )
-            return _render_variable_value(valid_name, variables[valid_name], escape)
+            return _render_variable_value(
+                name=valid_name, value=variables[valid_name], escape=escape
+            )
         # Group 2: invalid variable name (matched {something} but name was invalid)
         bad_name = match.group(2)
         raise ValueError(
