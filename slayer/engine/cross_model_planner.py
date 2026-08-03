@@ -69,6 +69,9 @@ from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
+from slayer.engine.aggregate_input_paths import (
+    compute_aggregate_input_join_paths,
+)
 from slayer.engine.binding import (
     bind_expr,
     bind_filter,
@@ -770,19 +773,32 @@ class IsolatedCteCrossModelPlanner:
             Callable[[SlayerQuery, ResolvedSourceBundle], PlannedQuery]
         ],
     ) -> CrossModelAggregatePlan:
-        """Validate the filtered-local trigger preconditions and dispatch
+        """Validate the host-rooted trigger preconditions and dispatch
         into ``_plan_filtered_local`` — the aggregate is on a HOST column
-        but its ``Column.filter`` crosses a join, so a host-rooted nested
-        sub-plan owns the aggregation and the host base LEFT JOINs back.
+        but at least one of its inputs crosses a join (``Column.filter``
+        per DEV-1503; source ``Column.sql`` / positional args / kwargs per
+        DEV-1709), so a host-rooted nested sub-plan owns the aggregation
+        and the host base LEFT JOINs back.
         """
         agg_source = aggregate_key.source
         cfk = aggregate_key.column_filter_key
-        if cfk is None or not cfk.referenced_join_paths:
+        has_crossing_filter = cfk is not None and bool(
+            cfk.referenced_join_paths,
+        )
+        has_crossing_input = has_crossing_filter or bool(
+            compute_aggregate_input_join_paths(
+                key=aggregate_key,
+                anchor_model=host_model,
+                anchor_relation=host_model.name,
+                bundle=bundle,
+            ),
+        )
+        if not has_crossing_input:
             raise ValueError(
-                f"AggregateKey on {agg_source!r} has empty source.path "
-                f"AND no cross-model column_filter_key — this is a plain "
-                f"local aggregate. The cross-model planner should not "
-                f"have been invoked."
+                f"AggregateKey on {agg_source!r} has empty source.path, "
+                f"no cross-model column_filter_key, AND no other crossing "
+                f"input — this is a plain local aggregate. The cross-model "
+                f"planner should not have been invoked."
             )
         if subplan_builder is None or host_query is None:
             # The DEV-1503 strategy requires a sub-plan builder + the host

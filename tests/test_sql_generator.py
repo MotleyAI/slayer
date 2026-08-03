@@ -14,6 +14,8 @@ from slayer.core.models import Aggregation, AggregationParam, Column, Datasource
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.engine.stage_planner import plan_query
 from slayer.sql.dialects import BigqueryDialect
 from slayer.sql.generator import (
     AggRenderSpec,
@@ -212,12 +214,9 @@ _XFAIL_WINDOWED = pytest.mark.xfail(
 
 # DEV-1705 Stage-1 harvest reason strings (in-source strict-xfail pins; the
 # owning DEV-1703 stage auto-promotes each when its fix lands).
-_DEV1531_STAGE5 = (
-    "DEV-1709 (Stage 5): DEV-1531 — first/last over a cross-join derived source "
-    "must materialise the crossed value as a `_val_<n>` projection inside the "
-    "ranked subquery (Law-2). Today the path-qualified ref leaks into the outer "
-    "aggregate body. Auto-promotes when Stage 5 lands."
-)
+# DEV-1531 (first/last over a cross-join derived source) landed in DEV-1709
+# Stage 5; its pinned strict-xfails were promoted to plain tests asserting
+# the host-rooted isolated-CTE shape.
 # DEV-1526 (cross-model aggregate source crossing a further join) landed in
 # DEV-1708 Stage 4; its pinned strict-xfails were promoted to plain tests.
 _DEV1496_STAGE10 = (
@@ -3409,11 +3408,14 @@ class TestPathAliasJoinInference:
 
 
 class TestMeasureSourceSqlJoinInference:
-    """DEV-1502: an AGGREGATE slot whose source ``Column.sql`` contains
-    a ``__``-delimited join-path alias (or a sibling derived ref whose
-    own sql does) must pull the implied LEFT JOINs into the host base
-    FROM — symmetric to the dimension/time-dimension treatment
-    (DEV-1484) and the ``Column.filter`` treatment (DEV-1494).
+    """DEV-1502 → DEV-1709 (Stage 5): an AGGREGATE slot whose source
+    ``Column.sql`` contains a ``__``-delimited join-path alias (or a
+    sibling derived ref whose own sql does) ISOLATES into a host-rooted
+    ``_cm_*`` CTE that pulls the implied LEFT JOINs inside its own scope
+    (widened Law-3 trigger, D1) — so a measure-pulled join can never
+    multiply the host rows seen by sibling measures. Row-level carriers
+    (dimensions / WHERE filters) keep base-pulling their joins into the
+    host ``_base`` (DEV-1484 / DEV-1494 — Law-1 territory).
     """
 
     @pytest.fixture
@@ -3467,12 +3469,13 @@ class TestMeasureSourceSqlJoinInference:
         return SlayerQueryEngine(storage=storage)
 
     # ------------------------------------------------------------------
-    # DEV-1531 harvest (Stage 1): first/last over a cross-join derived
-    # source must materialise the crossed value as a `_val_<n>` projection
-    # inside the ranked subquery instead of leaking the path-qualified ref
-    # into the outer aggregate body. Fix lands Stage 5 (DEV-1709 / Law-2 in
-    # the ranked subquery) — pinned strict-xfail until then. The two no-op
-    # negatives stay green (local/bare sources need no materialisation).
+    # DEV-1531 (landed Stage 5 / DEV-1709): a first/last over a cross-join
+    # derived source ISOLATES into a host-rooted `_cm_*` CTE (widened
+    # Law-3 trigger, D1); inside that CTE the crossed value is
+    # materialised as a `_val_<n>` projection in the ranked subquery
+    # (Law-2) instead of leaking the path-qualified ref into the outer
+    # aggregate body. The two no-op negatives stay green (local/bare
+    # sources need neither isolation nor materialisation).
     # ------------------------------------------------------------------
     @staticmethod
     def _assert_ref_only_in_val(sql: str, ref: str) -> None:
@@ -3499,7 +3502,6 @@ class TestMeasureSourceSqlJoinInference:
             f"projection (would fail with `no such column`):\n{norm}"
         )
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
     async def test_local_last_with_path_aliased_derived_source(
         self, engine: SlayerQueryEngine
     ) -> None:
@@ -3513,13 +3515,16 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
+        # Widened Law-3 (D1): the crossing source isolates host-rooted.
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers" in cm_body, cm_body
+        assert "customers__regions" in cm_body, cm_body
+        # The joins live ONLY inside the CTE — never in the host scope.
+        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
         self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
         assert "THEN orders._val" in _norm(sql), sql
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
     async def test_local_last_with_single_dot_derived_source(
         self, engine: SlayerQueryEngine
     ) -> None:
@@ -3541,10 +3546,11 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="cust_balance:last(orders.created_at)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        assert "customers" in _join_aliases(sql)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        assert "LEFT JOIN customers" in _extract_cte_body(sql, r"_cm_\w+"), sql
+        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
         self._assert_ref_only_in_val(sql, "customers.balance")
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
     async def test_filtered_last_cross_join_value_materialized(
         self, engine: SlayerQueryEngine
     ) -> None:
@@ -3558,15 +3564,21 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
         self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
         assert "_last_rn_f0" in sql, sql
         assert "_match_f0" in sql, sql
         assert "THEN orders._val" in _norm(sql), sql
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
     async def test_two_last_sharing_value_dedupe(
         self, engine: SlayerQueryEngine
     ) -> None:
+        """Two measures over the SAME crossing sql but DISTINCT derived
+        columns intern to distinct ``AggregateKey``s (identity carries the
+        column name), so each isolates into its OWN host-rooted CTE with
+        its own ``_val`` materialisation — per-slot isolation, no CTE
+        merging (DEV-1709 interview decision; merging is DEV-1688 /
+        ``may_inline`` territory). Dedupe is therefore per-CTE."""
         model = self._orders_model(extra_columns=[
             Column(name="region_payment_a", sql="customers__regions.payment_amount",
                    type=DataType.DOUBLE),
@@ -3584,15 +3596,23 @@ class TestMeasureSourceSqlJoinInference:
         sql = (await engine.execute(query, dry_run=True)).sql
         self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
         norm = _norm(sql)
-        assert norm.count(" AS _val") == 1, (
-            f"expected exactly one deduped _val projection:\n{sql}"
+        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        assert len(cm_cte_names) == 2, (
+            f"expected one host-rooted CTE per distinct crossing aggregate; "
+            f"got {cm_cte_names}:\n{sql}"
         )
-        val_alias = _re.search(r"AS (_val_\d+)", norm).group(1)
+        # One _val materialisation per CTE, each consumed exactly once
+        # within its own scope (sibling CTEs are self-contained statements
+        # with scope-local ``_val`` numbering).
+        assert norm.count(" AS _val") == 2, sql
+        for cte_name in cm_cte_names:
+            body = _extract_cte_body(sql, _re.escape(cte_name))
+            body_norm = _norm(body)
+            assert body_norm.count(" AS _val") == 1, sql
+            assert body_norm.count("THEN orders._val") == 1, sql
         assert '"orders.region_payment_a_last_created_at"' in norm, sql
         assert '"orders.region_payment_b_last_created_at"' in norm, sql
-        assert norm.count(f"THEN orders.{val_alias}") == 2, sql
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
     async def test_same_sql_different_type_no_bad_dedupe(
         self, engine: SlayerQueryEngine
     ) -> None:
@@ -3617,10 +3637,11 @@ class TestMeasureSourceSqlJoinInference:
         )
         assert _re.search(r"AS DOUBLE PRECISION\) AS _val_\d+", norm), sql
         assert _re.search(r"AS INT\) AS _val_\d+", norm), sql
-        outer = norm[:norm.find("FROM (")]
+        # The raw crossing ref must never surface in the combined outer
+        # SELECT (after the last CTE closes) — only the CTE output columns.
+        outer = sql[sql.rfind("\n)") + 2:]
         assert "customers__regions.payment_amount" not in outer, sql
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
     async def test_composite_last_cross_join_source(
         self, engine: SlayerQueryEngine
     ) -> None:
@@ -3634,12 +3655,23 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="region_payment:last(orders.created_at) + 1")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
+        # Composite lowering (F3): the crossing first/last LEAF isolates;
+        # the `+ 1` composite renders in the combined SELECT via the CTE's
+        # projected alias.
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
         self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        outer = sql[sql.rfind("\n)") + 2:]
+        assert "+ 1" in outer, (
+            f"composite must render in the combined outer SELECT:\n{sql}"
+        )
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
     async def test_having_last_cross_join_source(
         self, engine: SlayerQueryEngine
     ) -> None:
+        """An aggregate-phase query filter referencing the isolated
+        first/last routes to the OUTER WHERE on the combined SELECT
+        (DEV-1503 rule; HAVING-into-the-CTE would surface host rows as
+        NULL instead of dropping them)."""
         model = self._orders_model(extra_columns=[
             Column(name="region_payment", sql="customers__regions.payment_amount",
                    type=DataType.DOUBLE),
@@ -3652,11 +3684,17 @@ class TestMeasureSourceSqlJoinInference:
         )
         sql = (await engine.execute(query, dry_run=True)).sql
         norm = _norm(sql)
-        assert "HAVING" in norm, sql
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
         self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
         assert norm.count(" AS _val") == 1, sql
+        # Routed to the combined SELECT's WHERE — never HAVING.
+        assert "HAVING" not in norm, sql
+        outer = sql[sql.rfind("\n)") + 2:]
+        assert "> 100" in outer, (
+            f"aggregate filter must land in the combined outer WHERE:\n{sql}"
+        )
+        assert "WHERE" in outer, sql
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1531_STAGE5)
     async def test_val_alias_avoids_source_column_collision(
         self, engine: SlayerQueryEngine
     ) -> None:
@@ -3672,9 +3710,15 @@ class TestMeasureSourceSqlJoinInference:
         )
         sql = (await engine.execute(query, dry_run=True)).sql
         norm = _norm(sql)
-        assert "customers__regions.payment_amount AS _val_0" not in norm, sql
-        assert "customers__regions.payment_amount AS _val_1" in norm, sql
-        assert "THEN orders._val_1" in norm, sql
+        # The model's real `_val_0` column must not be shadowed: whatever
+        # alias the allocator picks for the materialisation, it is never
+        # `_val_0`, and the outer aggregate references the allocated one.
+        allocated = _re.findall(r"AS (_val_\d+)", norm)
+        assert allocated, f"expected a _val materialisation:\n{sql}"
+        assert "_val_0" not in allocated, (
+            f"allocator must skip the model's own `_val_0` column:\n{sql}"
+        )
+        assert f"THEN orders.{allocated[0]}" in norm, sql
         self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
 
     async def test_local_only_derived_first_last_no_val(
@@ -3692,6 +3736,7 @@ class TestMeasureSourceSqlJoinInference:
         )
         sql = (await engine.execute(query, dry_run=True)).sql
         assert "_val" not in sql, sql
+        assert "_cm_" not in sql, sql
         assert _join_aliases(sql) == set(), sql
 
     async def test_bare_source_first_last_no_val(
@@ -3707,6 +3752,7 @@ class TestMeasureSourceSqlJoinInference:
         )
         sql = (await engine.execute(query, dry_run=True)).sql
         assert "_val" not in sql, sql
+        assert "_cm_" not in sql, sql
         assert "THEN orders.amount" in _norm(sql), sql
 
     # ------------------------------------------------------------------
@@ -3717,8 +3763,8 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """A single-hop ``customers.region_id`` alias in the measure source
-        SQL surfaces the ``customers`` join. The multi-hop case is the
-        existing tracking test; this pins the single-hop edge.
+        SQL isolates host-rooted; the ``customers`` join lives inside the
+        ``_cm_*`` CTE only.
         """
         model = self._orders_model(extra_columns=[
             Column(
@@ -3733,11 +3779,13 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="customer_region_count:count_distinct")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        # `customers__regions` is NOT needed here (single hop).
-        assert "customers__regions" not in join_aliases
-        assert "COUNT(DISTINCT customers.region_id)" in sql
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers" in cm_body, sql
+        assert "COUNT(DISTINCT customers.region_id)" in cm_body, sql
+        # The join lives ONLY inside the CTE; no deeper hop is pulled.
+        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
+        assert "customers__regions" not in _join_aliases(sql)
 
     async def test_composite_arithmetic_path_aliased_measure(
         self, engine: SlayerQueryEngine
@@ -3760,11 +3808,20 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="region_pop_sum:sum + amount:sum")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
-        assert "SUM(customers__regions.population)" in sql
+        # F3 composite lowering: the crossing leaf isolates into its own
+        # host-rooted CTE; the local leaf stays in the base; the `+`
+        # composite renders only in the combined SELECT.
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "SUM(customers__regions.population)" in cm_body, sql
+        assert "LEFT JOIN customers" in cm_body, sql
+        assert "SUM(orders.amount)" not in cm_body, sql
         assert "SUM(orders.amount)" in sql
+        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
+        outer = sql[sql.rfind("\n)") + 2:]
+        assert "+" in outer, (
+            f"composite must render in the combined outer SELECT:\n{sql}"
+        )
 
     async def test_composite_scalar_call_path_aliased_measure(
         self, engine: SlayerQueryEngine
@@ -3786,10 +3843,14 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="coalesce(region_pop_sum:sum, 0)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
-        assert "SUM(customers__regions.population)" in sql
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "SUM(customers__regions.population)" in cm_body, sql
+        assert "LEFT JOIN customers" in cm_body, sql
+        outer = sql[sql.rfind("\n)") + 2:]
+        assert "COALESCE" in outer.upper(), (
+            f"scalar-call composite must render in the combined outer SELECT:\n{sql}"
+        )
 
     async def test_mode_a_function_wrapping_path_alias_in_column_sql(
         self, engine: SlayerQueryEngine
@@ -3812,12 +3873,12 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="region_prop_x:sum")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers" in cm_body, sql
         # The aggregate body wraps the JSON-extract call, qualified to
         # the path alias (the bare alias `region_prop_x` would fail).
-        assert "customers__regions.props" in sql
+        assert "customers__regions.props" in cm_body, sql
 
     async def test_sibling_derived_chain_to_path_alias(
         self, engine: SlayerQueryEngine
@@ -3845,11 +3906,11 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="doubled_pop:sum")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers" in cm_body, sql
         # Sibling recursive inlining preserves the path alias.
-        assert "customers__regions.population" in sql
+        assert "customers__regions.population" in cm_body, sql
 
     # DEV-1531 local first/last cross-join source materialisation is pinned by
     # `test_local_last_with_path_aliased_derived_source` (in the DEV-1531 harvest
@@ -3884,22 +3945,24 @@ class TestMeasureSourceSqlJoinInference:
             ],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
-        # The inner aggregate is rendered in _base; cumsum wraps it in a
-        # step CTE. Either way the path-aliased ref must reach the
-        # emitted SQL via the base CTE.
-        assert "customers__regions.population" in sql
+        # The inner crossing aggregate isolates host-rooted; cumsum wraps
+        # the combined output. The path-aliased ref lives ONLY inside the
+        # `_cm_*` CTE body.
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "customers__regions.population" in cm_body, sql
+        assert "LEFT JOIN customers" in cm_body, sql
+        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
+        assert "OVER" in sql, f"cumsum window must survive isolation:\n{sql}"
 
     async def test_multiple_aggregate_sources_sharing_join_dedupe(
         self, engine: SlayerQueryEngine
     ) -> None:
-        """Two distinct AGGREGATE slots whose sources cross the SAME
-        ``customers__regions`` path must produce exactly one LEFT JOIN
-        for each hop. Exercises the new collector's own dedupe (the
-        wiring's ``if p not in needed_join_paths`` guard).
-        """
+        """Two DISTINCT crossing aggregates isolate into two separate
+        host-rooted CTEs (per-AggregateKey-slot isolation), each pulling
+        its own scope-local join set — so each hop's LEFT JOIN appears
+        exactly once PER CTE and never in the host scope. Cross-CTE join
+        sharing is optimizer territory (DEV-1688 / ``may_inline``)."""
         model = self._orders_model(extra_columns=[
             Column(
                 name="region_pop_sum",
@@ -3921,8 +3984,13 @@ class TestMeasureSourceSqlJoinInference:
             ],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
-        assert sql.count("LEFT JOIN regions AS customers__regions") == 1, sql
+        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        assert len(cm_cte_names) == 2, (
+            f"expected one host-rooted CTE per crossing aggregate; "
+            f"got {cm_cte_names}:\n{sql}"
+        )
+        assert sql.count("LEFT JOIN customers AS customers") == 2, sql
+        assert sql.count("LEFT JOIN regions AS customers__regions") == 2, sql
         assert "SUM(customers__regions.population)" in sql
         assert "SUM(customers__regions.weight)" in sql
 
@@ -3933,9 +4001,11 @@ class TestMeasureSourceSqlJoinInference:
     async def test_dim_and_measure_sharing_join_emits_join_once(
         self, engine: SlayerQueryEngine
     ) -> None:
-        """When a dimension AND a measure both pull in the same join,
-        ``_build_from_and_joins`` must emit it exactly once (the
-        ``emitted_aliases`` guard handles dedupe).
+        """A joined DIMENSION base-pulls its join into the host scope
+        (Law 1); the crossing MEASURE isolates with its own scope-local
+        join set (Law 3). Each scope emits its joins exactly once: the
+        ``customers`` hop appears once in the host and once inside the
+        CTE; the deeper ``customers__regions`` hop only inside the CTE.
         """
         model = self._orders_model(extra_columns=[
             Column(
@@ -3951,20 +4021,24 @@ class TestMeasureSourceSqlJoinInference:
             dimensions=[ColumnRef(name="customers.region_id")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        # Count occurrences of LEFT JOIN customers AS customers (single hop).
-        cust_joins = sql.count("LEFT JOIN customers AS customers")
-        assert cust_joins == 1, f"customers join not deduped:\n{sql}"
-        # And LEFT JOIN regions AS customers__regions appears exactly once.
-        reg_joins = sql.count("LEFT JOIN regions AS customers__regions")
-        assert reg_joins == 1, f"customers__regions join not deduped:\n{sql}"
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert cm_body.count("LEFT JOIN customers AS customers") == 1, sql
+        assert cm_body.count("LEFT JOIN regions AS customers__regions") == 1, sql
+        # Host scope: exactly one customers join (the dimension's), and
+        # never the deeper hop.
+        host_part = sql.replace(cm_body, "")
+        assert host_part.count("LEFT JOIN customers AS customers") == 1, sql
+        assert host_part.count("LEFT JOIN regions AS customers__regions") == 0, sql
 
     async def test_filter_and_source_cross_different_joins(
         self, engine: SlayerQueryEngine
     ) -> None:
         """Filter crosses the shallow join (customers) and source crosses
-        the deeper join (customers__regions). DEV-1494 alone would pull
-        only customers; DEV-1502 must pull customers__regions. The
-        shared customers join is emitted exactly once.
+        the deeper join (customers__regions): both are crossing INPUTS of
+        the same aggregate, so ONE host-rooted CTE owns both joins; the
+        shared customers hop is emitted exactly once inside it, and the
+        host scope stays join-free.
         """
         model = self._orders_model(extra_columns=[
             Column(
@@ -3983,20 +4057,20 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="region_pop_sum:sum")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
-        # customers join is emitted exactly once even though both DEV-1494
-        # (filter) and DEV-1502 (source) discovered it.
-        cust_joins = sql.count("LEFT JOIN customers AS customers")
-        assert cust_joins == 1
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        # customers join is emitted exactly once (inside the CTE) even
+        # though both the filter and the source discovered it.
+        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
+        assert cm_body.count("LEFT JOIN customers AS customers") == 1, sql
+        assert "customers__regions" in cm_body, sql
         # The filter CASE-WHEN references the customers hop. sqlglot
         # may canonicalise ``IS NOT NULL`` to ``NOT ... IS NULL``, so
         # check structurally rather than for an exact text form.
-        assert "CASE WHEN" in sql
-        assert "customers.region_id" in sql
+        assert "CASE WHEN" in cm_body, sql
+        assert "customers.region_id" in cm_body, sql
         # The aggregate body references the deeper path-aliased ref.
-        assert "customers__regions.population" in sql
+        assert "customers__regions.population" in cm_body, sql
 
     async def test_no_path_alias_no_extra_join(
         self, engine: SlayerQueryEngine
@@ -4013,6 +4087,7 @@ class TestMeasureSourceSqlJoinInference:
         sql = (await engine.execute(query, dry_run=True)).sql
         join_aliases = _join_aliases(sql)
         assert join_aliases == set(), f"unexpected joins: {join_aliases}\n{sql}"
+        assert "_cm_" not in sql, f"local aggregate must not isolate:\n{sql}"
 
     # ------------------------------------------------------------------
     # Defensive scope skip + tracking xfails for follow-up tickets
@@ -4103,11 +4178,11 @@ class TestMeasureSourceSqlJoinInference:
             f"expected JOIN to regions inside the _cm_* CTE; CTE body:\n{cm_body}"
         )
 
-    # DEV-1706 Stage 2: PROMOTED — the DEV-1527 local half (a parametric
-    # aggregation kwarg whose value is a derived column crossing a join) is
-    # fixed by the resolve-at-spec-build typed-kwarg path (D-C/D-I). Kept the
-    # ``_xfail`` name so tests/test_carrier_scope_matrix.py's harvest manifest
-    # reference stays valid.
+    # DEV-1706 Stage 2 promoted the DEV-1527 local half (typed kwargs);
+    # DEV-1709 Stage 5 widens it to ISOLATION — a crossing derived kwarg
+    # now routes the whole aggregate into a host-rooted CTE. Kept the
+    # ``_xfail`` name so tests/test_carrier_scope_matrix.py's harvest
+    # manifest reference stays valid.
     async def test_agg_param_derived_column_path_alias_xfail(
         self, engine: SlayerQueryEngine
     ) -> None:
@@ -4127,13 +4202,382 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="amount:weighted_avg(weight=region_weight)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
-        # The kwarg should resolve to the EXPANDED sql, not the bare ident.
-        assert "customers__regions.weight" in sql
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers" in cm_body, sql
+        # The kwarg resolves to the EXPANDED sql inside the CTE, not the
+        # bare ident.
+        assert "customers__regions.weight" in cm_body, sql
         # And the broken form must not appear.
         assert "orders.region_weight" not in sql
+
+
+class TestDev1709WidenedIsolationShapes:
+    """DEV-1709 (Stage 5) — generator shapes for the widened Law-3 trigger:
+    co-occurrence with a local first/last (DEV-1702-B1), crossing explicit
+    time args (D2 / DEV-1501 shape update), F4 host-filter inheritance
+    into host-rooted CTEs, and the deferred implicit-time pin."""
+
+    @staticmethod
+    def _regions_model() -> SlayerModel:
+        return SlayerModel(
+            name="regions", sql_table="regions", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="population", sql="population", type=DataType.DOUBLE),
+                Column(name="weight", sql="weight", type=DataType.DOUBLE),
+            ],
+        )
+
+    @staticmethod
+    def _customers_model() -> SlayerModel:
+        return SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+                Column(name="signup_at", sql="signup_at", type=DataType.TIMESTAMP),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        )
+
+    @staticmethod
+    def _orders_model(
+        *, extra_columns=None, default_time_dimension=None, aggregations=None,
+    ) -> SlayerModel:
+        cols = [
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        ]
+        cols.extend(extra_columns or [])
+        return SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=cols,
+            joins=[ModelJoin(
+                target_model="customers", join_pairs=[["customer_id", "id"]],
+            )],
+            default_time_dimension=default_time_dimension,
+            aggregations=aggregations or [],
+        )
+
+    async def _sql(self, query: SlayerQuery, orders: SlayerModel) -> str:
+        return await _engine_generate(
+            query=query, model=orders,
+            extra_models=[self._customers_model(), self._regions_model()],
+        )
+
+    async def test_crossing_sum_coexists_with_local_last(self) -> None:
+        """DEV-1702-B1: a regular crossing aggregate next to a local
+        first/last isolates — it never renders in the ranked outer scope."""
+        orders = self._orders_model(extra_columns=[
+            Column(name="region_pop_sum", sql="customers__regions.population",
+                   type=DataType.DOUBLE),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_pop_sum:sum"),
+                ModelMeasure(formula="amount:last(orders.created_at)"),
+            ],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "SUM(customers__regions.population)" in cm_body, sql
+        # The crossing ref never appears outside the CTE (the ranked host
+        # scope only carries the local first/last).
+        host_part = sql.replace(cm_body, "")
+        assert "customers__regions.population" not in host_part, sql
+        assert "THEN orders.amount" in _norm(host_part), sql
+        assert "LEFT JOIN" not in host_part, (
+            f"host ranked scope must stay join-free:\n{host_part}"
+        )
+
+    async def test_crossing_kwarg_coexists_with_local_last(self) -> None:
+        """A crossing KWARG next to a local first/last isolates the
+        parametric aggregate the same way (Codex plan-review F4 fold-in:
+        kwarg expressions must never leak into the ranked outer scope)."""
+        orders = self._orders_model(extra_columns=[
+            Column(name="region_weight", sql="customers__regions.weight",
+                   type=DataType.DOUBLE),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="amount:weighted_avg(weight=region_weight)"),
+                ModelMeasure(formula="amount:last(orders.created_at)"),
+            ],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "customers__regions.weight" in cm_body, sql
+        host_part = sql.replace(cm_body, "")
+        assert "customers__regions.weight" not in host_part, sql
+        assert "LEFT JOIN" not in host_part, (
+            f"host ranked scope must stay join-free:\n{host_part}"
+        )
+
+    async def test_local_source_crossing_time_arg_isolates(self) -> None:
+        """D2: ``amount:last(customers.signup_at)`` — a local source with a
+        crossing explicit time arg isolates; the arg's join and ORDER BY
+        ref live inside the CTE's ranked subquery (DEV-1501 shape update)."""
+        orders = self._orders_model()
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:last(customers.signup_at)")],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "customers.signup_at" in cm_body, sql
+        assert "LEFT JOIN customers" in cm_body, sql
+        host_part = sql.replace(cm_body, "")
+        assert "customers.signup_at" not in host_part, sql
+        assert "LEFT JOIN" not in host_part, sql
+
+    async def test_derived_crossing_time_arg_isolates(self) -> None:
+        orders = self._orders_model(extra_columns=[
+            Column(name="cross_time", sql="customers.signup_at",
+                   type=DataType.TIMESTAMP),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:last(cross_time)")],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "customers.signup_at" in cm_body, sql
+        assert "LEFT JOIN customers" in cm_body, sql
+
+    async def test_user_template_fragment_kwarg_renders_join_in_cte(self) -> None:
+        """A crossing USER template-fragment kwarg
+        (``scale='customers__regions.weight'``) isolates AND the CTE
+        sub-render registers the fragment's joins — the fragment renders
+        qualified, so the LEFT JOINs must live inside the CTE body
+        (PR #271 Codex review: fragments triggered isolation but their
+        joins were never registered in the sub-render)."""
+        orders = self._orders_model(aggregations=[
+            Aggregation(
+                name="scaled_sum", formula="SUM({value}) / {scale}",
+                params=[AggregationParam(name="scale", sql="1")],
+            ),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(
+                formula="amount:scaled_sum(scale='customers__regions.weight')",
+            )],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers AS customers" in cm_body, sql
+        assert "LEFT JOIN regions AS customers__regions" in cm_body, sql
+        assert "customers__regions.weight" in cm_body, sql
+        host_part = sql.replace(cm_body, "")
+        assert "LEFT JOIN" not in host_part, sql
+
+    async def test_model_default_fragment_kwarg_renders_join_in_cte(self) -> None:
+        """Same for a crossing MODEL-DEFAULT ``AggregationParam.sql``
+        fragment — no user kwarg at all."""
+        orders = self._orders_model(aggregations=[
+            Aggregation(
+                name="wscaled_sum", formula="SUM({value} * {w})",
+                params=[AggregationParam(
+                    name="w", sql="customers__regions.weight",
+                )],
+            ),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:wscaled_sum")],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers AS customers" in cm_body, sql
+        assert "LEFT JOIN regions AS customers__regions" in cm_body, sql
+        assert "customers__regions.weight" in cm_body, sql
+        host_part = sql.replace(cm_body, "")
+        assert "LEFT JOIN" not in host_part, sql
+
+    async def test_pathed_host_row_filter_inherited_into_cte(self) -> None:
+        """F4 (Codex plan-review F5): a host ROW filter whose expression
+        crosses a join constrains the host-rooted scope — it renders in
+        BOTH the host base WHERE and the isolation CTE's scope, each with
+        its own join registration."""
+        orders = self._orders_model(extra_columns=[
+            Column(name="region_pop_sum", sql="customers__regions.population",
+                   type=DataType.DOUBLE),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_pop_sum:sum"),
+                ModelMeasure(formula="amount:sum"),
+            ],
+            filters=["customers.region_id > 0"],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "customers.region_id > 0" in cm_body, (
+            f"host ROW filter must be inherited into the host-rooted CTE:\n{sql}"
+        )
+        host_part = sql.replace(cm_body, "")
+        assert "customers.region_id > 0" in host_part, (
+            f"host ROW filter must still constrain the host base:\n{sql}"
+        )
+
+    async def test_order_only_crossing_aggregate_isolates(self) -> None:
+        """F3, hidden ORDER-only consumer: a crossing aggregate referenced
+        ONLY by ORDER BY (colon-form ``OrderItem``) still isolates as a
+        hidden slot; the ORDER BY reads the joined-back CTE column and the
+        crossing ref never leaves the CTE.
+
+        (A composite ORDER-only consumer is not constructible from the
+        query surface — ``OrderItem.column`` accepts single colon-form
+        refs only; composite lowering for filter-only and projected
+        consumers is pinned by the sibling tests.)"""
+        orders = self._orders_model(extra_columns=[
+            Column(name="region_pop_sum", sql="customers__regions.population",
+                   type=DataType.DOUBLE),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:sum")],
+            dimensions=[ColumnRef(name="customer_id")],
+            order=[OrderItem(column="region_pop_sum:sum", direction="desc")],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "customers__regions.population" in cm_body, sql
+        host_part = sql.replace(cm_body, "")
+        assert "customers__regions.population" not in host_part, sql
+        assert "ORDER BY" in sql, sql
+
+    async def test_filter_only_composite_with_crossing_leaf(self) -> None:
+        """F3, filter-only consumer: a composite referenced only by an
+        aggregate-phase filter lowers the same way — crossing leaf
+        isolates, the comparison lands in the combined outer WHERE (never
+        HAVING), local operand promoted into ``_base``."""
+        orders = self._orders_model(extra_columns=[
+            Column(name="region_pop_sum", sql="customers__regions.population",
+                   type=DataType.DOUBLE),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:sum")],
+            filters=["region_pop_sum:sum + amount:sum > 100"],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "customers__regions.population" in cm_body, sql
+        host_part = sql.replace(cm_body, "")
+        assert "customers__regions.population" not in host_part, sql
+        assert "HAVING" not in _norm(sql), sql
+        outer = sql[sql.rfind("\n)") + 2:]
+        assert "> 100" in outer, (
+            f"composite aggregate filter must land in the combined outer "
+            f"WHERE:\n{sql}"
+        )
+
+    async def test_standalone_law2_same_sql_different_type_one_scope(self) -> None:
+        """Standalone Law-2 contract for the path that runs INSIDE a
+        host-rooted CTE (Codex test-review #1): with isolation disabled —
+        exactly how the recursive sub-plan is built — two same-sql,
+        different-CAST-type crossing first/lasts share ONE ranked subquery
+        and must materialise two DISTINCT ``(sql, type)``-keyed ``_val``s."""
+        orders = self._orders_model(extra_columns=[
+            Column(name="region_pay_d", sql="customers__regions.population * 2",
+                   type=DataType.DOUBLE),
+            Column(name="region_pay_i", sql="customers__regions.population * 2",
+                   type=DataType.INT),
+        ])
+        bundle = ResolvedSourceBundle(
+            source_model=orders,
+            referenced_models=[self._customers_model(), self._regions_model()],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_pay_d:last(orders.created_at)"),
+                ModelMeasure(formula="region_pay_i:last(orders.created_at)"),
+            ],
+        )
+        planned = plan_query(
+            query=query, bundle=bundle, disable_host_rooted_isolation=True,
+        )
+        gen = SQLGenerator(dialect="postgres")
+        sql = gen.generate_from_planned(planned, bundle=bundle)
+        norm = _norm(sql)
+        assert norm.count(" AS _val") == 2, (
+            f"same SQL, different type must materialise two _vals in ONE "
+            f"ranked scope:\n{sql}"
+        )
+        assert _re.search(r"AS DOUBLE PRECISION\) AS _val_\d+", norm), sql
+        assert _re.search(r"AS INT\) AS _val_\d+", norm), sql
+        for val_alias in _re.findall(r"AS (_val_\d+)", norm):
+            assert f"THEN orders.{val_alias}" in norm, sql
+
+    async def test_standalone_law2_crossing_kwarg_materialized(self) -> None:
+        """Standalone Law-2 for a crossing KWARG expression (Codex
+        test-review #2): forced through the ranked path (co-occurring
+        local last) with isolation disabled, the kwarg's expanded
+        expression must materialise as its own ``_val`` inside the ranked
+        subquery and be consumed via the bare alias in the outer aggregate
+        body — never referenced out of scope."""
+        orders = self._orders_model(extra_columns=[
+            Column(name="region_weight", sql="customers__regions.weight",
+                   type=DataType.DOUBLE),
+        ])
+        bundle = ResolvedSourceBundle(
+            source_model=orders,
+            referenced_models=[self._customers_model(), self._regions_model()],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="amount:weighted_avg(weight=region_weight)"),
+                ModelMeasure(formula="amount:last(orders.created_at)"),
+            ],
+        )
+        planned = plan_query(
+            query=query, bundle=bundle, disable_host_rooted_isolation=True,
+        )
+        gen = SQLGenerator(dialect="postgres")
+        sql = gen.generate_from_planned(planned, bundle=bundle)
+        TestMeasureSourceSqlJoinInference._assert_ref_only_in_val(
+            sql, "customers__regions.weight",
+        )
+
+    @pytest.mark.xfail(strict=True, reason=(
+        "DEV-1729: an IMPLICITLY-resolved crossing time column (model "
+        "default_time_dimension pointing at a derived column whose "
+        "Column.sql crosses a join) does not yet trigger Law-3 isolation — "
+        "D2 covers explicit args only (DEV-1709 interview decision 3). "
+        "Auto-promotes when DEV-1729 lands."
+    ))
+    async def test_implicit_crossing_default_time_isolates_xfail(self) -> None:
+        orders = self._orders_model(
+            extra_columns=[
+                Column(name="cross_time", sql="customers.signup_at",
+                       type=DataType.TIMESTAMP),
+            ],
+            default_time_dimension="cross_time",
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:last")],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
 
 
 class TestAggParamSanitization:

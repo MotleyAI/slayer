@@ -53,6 +53,9 @@ from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, TimeDimension
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
+from slayer.engine.aggregate_input_paths import (
+    compute_aggregate_input_join_paths,
+)
 from slayer.engine.binding import (
     BoundExpr as BinderBoundExpr,
     BoundFilter,
@@ -216,7 +219,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     scope: Optional[Union[ModelScope, StageSchema]] = None,
     cross_model_planner: Optional[CrossModelPlanner] = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
-    disable_dev1503_isolation: bool = False,
+    disable_host_rooted_isolation: bool = False,
 ) -> PlannedQuery:
     """Compile one ``SlayerQuery`` into a typed ``PlannedQuery``.
 
@@ -225,13 +228,16 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     ``stage_schemas`` is a name → StageSchema map used by
     ``plan_stages`` to wire multi-stage references.
 
-    ``disable_dev1503_isolation`` (DEV-1503) suppresses the trigger that
-    isolates cross-model-FILTERED local measures into a per-measure CTE.
+    ``disable_host_rooted_isolation`` (DEV-1503; renamed and widened by
+    DEV-1709) suppresses the HOST-ROOTED half of the Law-3 trigger — the
+    isolation of a LOCAL aggregate whose ``Column.filter`` or any other
+    input (source ``Column.sql``, positional args, kwargs) crosses a join.
+    It never affects target-rooted isolation (``source.path`` non-empty).
     Threaded through ``subplan_builder`` whenever a cross-model strategy
     recurses for a host-rooted (or target-rooted) nested sub-plan, so the
-    sub-plan's same filtered measure is rendered inline (not infinitely
+    sub-plan's same crossing measure is rendered inline (not infinitely
     re-isolated) and so re-rooting of a genuine cross-model aggregate
-    doesn't redundantly DEV-1503-isolate the target's own filter joins.
+    doesn't redundantly isolate the target's own filter joins.
     """
     stage_schemas = stage_schemas or {}
     cross_model_planner = (
@@ -613,19 +619,37 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         if not isinstance(key, AggregateKey):
             continue
         agg_path = getattr(key.source, "path", ())
-        # DEV-1503 — extended trigger predicate. Invoke the cross-model planner
-        # when the aggregate's source carries a non-empty join path (cross-
-        # model aggregate, existing behaviour) OR when the aggregate's
-        # ``column_filter_key`` references a non-anchor join path (cross-
-        # model-FILTERED local measure — the new filtered-local isolation
-        # case). The typed ``referenced_join_paths`` field is computed at
-        # binder time by ``compute_column_filter_join_paths``.
-        has_cross_model_filter = (
-            not disable_dev1503_isolation
-            and key.column_filter_key is not None
+        # DEV-1503 / DEV-1709 — Law-3 trigger predicate. Invoke the
+        # cross-model planner when the aggregate's source carries a
+        # non-empty join path (target-rooted, existing behaviour) OR when
+        # ANY other input of a LOCAL aggregate crosses a join (host-rooted
+        # isolation): ``Column.filter`` (typed ``referenced_join_paths``
+        # from binder time — DEV-1503), source ``Column.sql``, positional
+        # args incl. the explicit first/last time arg, kwargs (column
+        # refs, user template fragments, and non-overridden model-default
+        # ``AggregationParam`` fragments) — DEV-1709's widened trigger,
+        # computed plan-time by ``compute_aggregate_input_join_paths``.
+        has_crossing_filter = (
+            key.column_filter_key is not None
             and bool(key.column_filter_key.referenced_join_paths)
         )
-        if not agg_path and not has_cross_model_filter:
+        has_crossing_input = (
+            not disable_host_rooted_isolation
+            and not agg_path
+            and (
+                has_crossing_filter
+                or bool(compute_aggregate_input_join_paths(
+                    key=key,
+                    anchor_model=bundle.source_model,
+                    anchor_relation=(
+                        bundle.source_model.name
+                        if bundle.source_model is not None else ""
+                    ),
+                    bundle=bundle,
+                ))
+            )
+        )
+        if not agg_path and not has_crossing_input:
             continue
         # DEV-1450 #2: re-rooting (C1) is owned by the strategy. We hand it
         # the host query, the public projection, and a sub-plan builder so it
@@ -635,12 +659,14 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         # same ``plan_query`` recursion the post-hoc pass used, injected here
         # so cross_model_planner.py needn't import stage_planner.
         #
-        # DEV-1503 — the subplan_builder ALWAYS suppresses DEV-1503 isolation:
-        # for filtered-local isolation, the host-rooted sub-plan contains the
-        # same filtered measure and would otherwise recurse infinitely; for
-        # the existing cross-model re-rooting case, the sub-plan's target-
-        # rooted local aggregate would redundantly DEV-1503-isolate its own
-        # filter joins (already handled by the surrounding cross-model CTE).
+        # DEV-1503 / DEV-1709 — the subplan_builder ALWAYS suppresses
+        # host-rooted isolation: the host-rooted sub-plan contains the same
+        # crossing measure and would otherwise recurse infinitely; for the
+        # existing cross-model re-rooting case, the sub-plan's target-rooted
+        # local aggregate would redundantly isolate its own crossing inputs
+        # (already handled by the surrounding cross-model CTE). Inside the
+        # sub-plan, crossing inputs render INLINE (base-pull) — legal there
+        # because the CTE is the aggregate's own scope.
         reroot_enabled = (
             isinstance(scope, ModelScope) and scope.source_model is not None
         )
@@ -659,7 +685,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             subplan_builder=(
                 (lambda q, b: plan_query(
                     query=q, bundle=b, cross_model_planner=cross_model_planner,
-                    disable_dev1503_isolation=True,
+                    disable_host_rooted_isolation=True,
                 ))
                 if reroot_enabled else None
             ),

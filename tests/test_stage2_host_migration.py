@@ -17,6 +17,8 @@ AFTER it — they are the behavior-preservation gate, not feature tests.
 
 from __future__ import annotations
 
+import re
+
 import sqlglot
 from sqlglot import exp
 
@@ -37,6 +39,24 @@ def _ordered_join_aliases(sql: str, *, dialect: str = "postgres") -> list[str]:
         if isinstance(target, exp.Table):
             out.append(target.alias_or_name)
     return out
+
+
+def _cte_body(sql: str, name_pattern: str) -> str:
+    """Extract one CTE body by ``<name> AS (`` + balanced-paren walk (mirror
+    of tests/test_sql_generator.py::_extract_cte_body)."""
+    m = re.search(rf"({name_pattern})\s+AS\s*\(", sql)
+    assert m, f"No CTE matching {name_pattern!r} in:\n{sql}"
+    start = sql.index("(", m.start()) + 1
+    depth, i = 1, start
+    while i < len(sql):
+        if sql[i] == "(":
+            depth += 1
+        elif sql[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return sql[start:i]
+        i += 1
+    raise AssertionError(f"Unbalanced parens in:\n{sql}")
 
 
 def _regions() -> SlayerModel:
@@ -76,12 +96,14 @@ class TestJoinOrderParity:
     async def test_diamond_mixed_carriers_emit_deterministic_join_order(self) -> None:
         # A DIAMOND (orders → customers → regions AND orders → warehouses →
         # regions) reaches ``regions`` via two distinct path aliases
-        # (customers__regions vs warehouses__regions). Carriers stay in the HOST
-        # BASE (no DEV-1503 isolation): a joined dim (customers), a multi-hop WHERE
-        # filter (customers→regions), and a derived agg SOURCE crossing the
-        # warehouses branch. First-seen registration order across categories —
-        # dims → WHERE filters → agg sources — must be reproduced byte-for-byte:
-        # customers, customers__regions, warehouses, warehouses__regions.
+        # (customers__regions vs warehouses__regions). DEV-1709: the derived
+        # agg SOURCE crossing the warehouses branch now ISOLATES host-rooted;
+        # the row-level carriers (joined dim + multi-hop WHERE filter) stay in
+        # the host ``_base``. Deterministic first-seen join order applies PER
+        # SCOPE: the base emits customers, customers__regions; the isolation
+        # CTE (which inherits the host dims + ROW filter and adds the agg
+        # source) emits customers, customers__regions, warehouses,
+        # warehouses__regions.
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
@@ -107,14 +129,17 @@ class TestJoinOrderParity:
             query=query, model=orders,
             extra_models=[_customers(), _warehouses(), _regions()],
         )
-        assert "_cm_" not in sql  # stayed in the host base
-        order = _ordered_join_aliases(sql)
-        # Each alias appears exactly once; every prefix precedes its extension;
-        # the diamond's two paths to ``regions`` keep distinct aliases.
-        assert order == [
+        assert "_cm_" in sql, f"crossing agg source must isolate:\n{sql}"
+        # Each alias appears exactly once per scope; every prefix precedes its
+        # extension; the diamond's two paths to ``regions`` keep distinct
+        # aliases.
+        cm_order = _ordered_join_aliases(_cte_body(sql, r"_cm_\w+"))
+        assert cm_order == [
             "customers", "customers__regions",
             "warehouses", "warehouses__regions",
         ]
+        base_order = _ordered_join_aliases(_cte_body(sql, r"_base"))
+        assert base_order == ["customers", "customers__regions"]
         assert_scope_closed(sql)
 
 
