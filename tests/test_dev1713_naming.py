@@ -266,12 +266,17 @@ class TestJoinedDimensionDottedKeys:
         DERIVED dimension. ``build_response_metadata`` drops any attribute
         whose result key is absent from the SQL projection, so a labeled
         derived joined dim surfaces in ``attributes.dimensions`` under the
-        DOTTED key iff both producers agree on the dotted form."""
+        DOTTED key iff both producers agree on the dotted form.
+
+        Measures stay host-local: a plain derived joined dim used as
+        cross-model shared grain deliberately raises (DEV-1708, user-approved;
+        full support = DEV-1495), so pairing ``customers.rev_x2`` with a
+        cross-model measure is not a legal query on this fixture."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.rev_x2")],  # labeled -> surfaces
             measures=[
-                ModelMeasure(formula="customers.revenue:sum"),  # labeled -> surfaces
+                ModelMeasure(formula="amount:sum"),
                 ModelMeasure(formula="*:count", name="n"),
             ],
         )
@@ -286,49 +291,86 @@ class TestJoinedDimensionDottedKeys:
         assert attr_keys <= set(resp.columns), (attr_keys, resp.columns)
 
     async def test_all_slot_types_generator_and_response_agree(self, engine) -> None:
-        """Codex F6 (per slot-key type): a single query exercising local
-        ColumnKey dim, joined ColumnKey dim, joined ColumnSqlKey (derived)
-        dim, joined TimeTruncKey, local aggregate, cross-model aggregate, and
-        star-count. The generator's SQL aliases (``_full_alias_for_slot``) and
-        response_meta's keys (``_slot_result_keys``) — the two independent
-        producers the shared decomposition helper unifies — must agree on the
-        dotted form for every one."""
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=[
-                ColumnRef(name="customer_id"),          # local ColumnKey
-                ColumnRef(name="customers.region_id"),   # joined ColumnKey
-                ColumnRef(name="customers.rev_x2"),      # joined ColumnSqlKey (derived)
-            ],
-            time_dimensions=[
-                TimeDimension(                            # joined TimeTruncKey
-                    dimension=ColumnRef(name="customers.signup_at"),
-                    granularity=TimeGranularity.MONTH,
-                )
-            ],
-            measures=[
-                ModelMeasure(formula="amount:sum"),          # local aggregate
-                ModelMeasure(formula="customers.revenue:sum"),  # cross-model aggregate
-                ModelMeasure(formula="*:count", name="n"),   # star-count
-            ],
+        """Codex F6 (per slot-key type): local ColumnKey dim, joined ColumnKey
+        dim, joined ColumnSqlKey (derived) dim, joined TimeTruncKey, local
+        aggregate, cross-model aggregate, and star-count. The generator's SQL
+        aliases (``_full_alias_for_slot``) and response_meta's keys
+        (``_slot_result_keys``) — the two independent producers the shared
+        decomposition helper unifies — must agree on the dotted form for every
+        one.
+
+        Two queries, not one: a plain derived joined dim used as cross-model
+        shared grain deliberately raises (DEV-1708, user-approved; full
+        support = DEV-1495), and on this single-chain fixture every
+        cross-model measure's target path runs through ``customers`` — so the
+        derived dim and the cross-model aggregate cannot share a query."""
+
+        async def _check(query: SlayerQuery, expected: set) -> None:
+            resp = await engine.execute(query, dry_run=True)
+            # response_meta side (resp.columns) — every key dotted, none flattened.
+            assert set(resp.columns) == expected, resp.columns
+            # generator side (SQL projection) — must match response_meta exactly.
+            sql_cols = set(_outer_select_columns(resp.sql, dialect="sqlite"))
+            assert sql_cols == expected, sql_cols
+            # No ``__``-flattened joined key leaked from either producer.
+            assert not any("__" in c for c in resp.columns), resp.columns
+
+        await _check(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[
+                    ColumnRef(name="customer_id"),          # local ColumnKey
+                    ColumnRef(name="customers.region_id"),   # joined ColumnKey
+                    ColumnRef(name="customers.rev_x2"),      # joined ColumnSqlKey (derived)
+                ],
+                time_dimensions=[
+                    TimeDimension(                            # joined TimeTruncKey
+                        dimension=ColumnRef(name="customers.signup_at"),
+                        granularity=TimeGranularity.MONTH,
+                    )
+                ],
+                measures=[
+                    ModelMeasure(formula="amount:sum"),        # local aggregate
+                    ModelMeasure(formula="*:count", name="n"),  # star-count
+                ],
+            ),
+            {
+                "orders.customer_id",
+                "orders.customers.region_id",
+                "orders.customers.rev_x2",
+                "orders.customers.signup_at",
+                "orders.amount_sum",
+                "orders.n",
+            },
         )
-        resp = await engine.execute(query, dry_run=True)
-        expected = {
-            "orders.customer_id",
-            "orders.customers.region_id",
-            "orders.customers.rev_x2",
-            "orders.customers.signup_at",
-            "orders.amount_sum",
-            "orders.customers.revenue_sum",
-            "orders.n",
-        }
-        # response_meta side (resp.columns) — every key dotted, none flattened.
-        assert set(resp.columns) == expected, resp.columns
-        # generator side (SQL projection) — must match response_meta exactly.
-        sql_cols = set(_outer_select_columns(resp.sql, dialect="sqlite"))
-        assert sql_cols == expected, sql_cols
-        # No ``__``-flattened joined key leaked from either producer.
-        assert not any("__" in c for c in resp.columns), resp.columns
+        await _check(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[
+                    ColumnRef(name="customer_id"),          # local ColumnKey
+                    ColumnRef(name="customers.region_id"),   # joined ColumnKey
+                ],
+                time_dimensions=[
+                    TimeDimension(                            # joined TimeTruncKey
+                        dimension=ColumnRef(name="customers.signup_at"),
+                        granularity=TimeGranularity.MONTH,
+                    )
+                ],
+                measures=[
+                    ModelMeasure(formula="amount:sum"),          # local aggregate
+                    ModelMeasure(formula="customers.revenue:sum"),  # cross-model aggregate
+                    ModelMeasure(formula="*:count", name="n"),   # star-count
+                ],
+            ),
+            {
+                "orders.customer_id",
+                "orders.customers.region_id",
+                "orders.customers.signup_at",
+                "orders.amount_sum",
+                "orders.customers.revenue_sum",
+                "orders.n",
+            },
+        )
 
     async def test_result_key_contract_quartet(self, engine) -> None:
         """The acceptance quartet in one query: local measure, star-count,

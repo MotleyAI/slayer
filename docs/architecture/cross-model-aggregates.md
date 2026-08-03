@@ -211,6 +211,45 @@ public projection trims them out.
 aggregated column renders as `SUM(CASE WHEN <filter> THEN <col> END)`. See
 [SQL generation](sql-generation.md).
 
+### The forward CTE is a `ScopeFrame` (DEV-1708, DEV-1703 Stage 4)
+
+`_render_cross_model_cte` builds one `ScopeFrame` rooted at the target relation
+and routes **every** expression it renders — the rerooted aggregate source,
+positional args, column-ref kwargs, `Column.filter`, shared-grain dimensions,
+target-model filters, and routed host WHERE/HAVING filters — through
+`resolve()` (Law 1). Each `resolve` anchors the ref at the target and registers
+the joins it crosses into the CTE's single ordered `join_paths` set, from which
+the CTE `FROM` is built. Discovery can no longer be forgotten per carrier: a
+cross-model aggregate whose target column's `Column.sql` crosses a *further*
+join (`customers.deep_pop:sum` where `deep_pop` is `regions.population`) now
+pulls that `LEFT JOIN regions` into the `_cm_*` CTE, and a parametric-agg
+column-ref kwarg naming a derived target column expands through the scope
+instead of emitting a bare, non-existent column. Routed WHERE/HAVING filters
+register their joins in a **pre-pass** that walks the full `ValueKey` tree
+(nested arithmetic/boolean/IN operands + aggregate leaves' source/args/kwargs/
+`column_filter`) before the `FROM` is built, so a HAVING — rendered later, once
+the ranked-subquery rank columns exist — still contributes its joins.
+
+**First/last value materialization (Law 2).** When the CTE wraps its rows in a
+`ROW_NUMBER`-ranked subquery and the first/last **source value** crosses a join,
+the crossing value is materialized as a `_val_<n>` projection *inside* the
+subquery and the outer `MAX(CASE WHEN _last_rn = 1 THEN _val_<n> END)` references
+the alias — a raw crossing ref there is bound only inside the subquery. A HAVING
+on the same aggregate binds the same alias. `generate_from_planned` installs one
+generation-wide `AliasAllocator` (save/restore) so inline forward CTEs and the
+host base never collide on `_val_<n>`.
+
+### Null-safe grain join-back
+
+The combined-SELECT `LEFT JOIN _cm_* ON` grain equality uses a dialect-aware
+null-safe predicate (`SqlDialect.build_null_safe_eq`): `IS NOT DISTINCT FROM`
+on Postgres/DuckDB/Snowflake/BigQuery/Trino/Presto/Databricks/Spark/ClickHouse,
+`<=>` on MySQL, bare `IS` on SQLite (the native form needs SQLite ≥3.39), and
+the expanded `a = b OR (a IS NULL AND b IS NULL)` on T-SQL/Oracle/Redshift. A
+plain `=` would yield `NULL` for `NULL = NULL`, so a NULL dimension value or a
+nullable truncated time grain would drop its joined-back aggregate; the
+null-safe form retains it.
+
 ## Known limitations (documented, not blocking)
 
 - A host-local filter on a **no-dimension** cross-model-agg query is applied
@@ -225,8 +264,18 @@ aggregated column renders as `SUM(CASE WHEN <filter> THEN <col> END)`. See
   collision bug; the new path keeps the suffix. This violates **P10** for this
   one combination and is tested structurally, not by parity. See
   [the deviations list](index.md#deviations-from-the-plan).
-- `weighted_avg(weight=qty)` / `corr(other=qty)` cross-model semantics (a
-  host-local weight column evaluated inside the target CTE) are not supported.
+- A cross-model parametric-agg kwarg naming a **target** column
+  (`customers.revenue:weighted_avg(weight=customers.qty)`) is supported and
+  expands through the CTE `ScopeFrame` (DEV-1708). The kwarg must be
+  **relation-qualified** — a bare `weight=qty` resolves against the host by DSL
+  rule and raises at bind time. A *host-local* weight column evaluated inside
+  the target CTE remains unsupported.
+- A **plain derived (non-time) dimension** used as cross-model shared grain
+  raises `NotImplementedError` (DEV-1708, user-approved) — the host aliases it
+  flattened (`customers__deep_pop`) while the CTE join-back expects the dotted
+  form (DEV-1495-b1). Pull the dimension to the host base, use a base column, or
+  wrap it in a time dimension. A time-truncated derived grain **is** supported.
+  Full support tracked in DEV-1495 (Stage 8/9).
 
 ## Design rationale
 
