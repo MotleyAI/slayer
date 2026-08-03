@@ -71,6 +71,9 @@ nav:
       - dbt MetricFlow Import:
           - examples/11_dbt_metricflow/dbt_metricflow.md
           - Notebook: examples/11_dbt_metricflow/dbt_metricflow_nb.ipynb
+      - Variable Substitution:
+          - examples/12_variable_substitution/variable_substitution.md
+          - Notebook: examples/12_variable_substitution/variable_substitution_nb.ipynb
       - Schema Drift (worked example): examples/schema-drift.md
   - Configuration:
       - Datasources: configuration/datasources.md
