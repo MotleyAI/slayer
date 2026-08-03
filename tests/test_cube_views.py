@@ -169,6 +169,23 @@ def test_view_includes_star_takes_all_members():
     assert ov.get_measure("count") is not None
 
 
+def test_view_include_entry_without_name_reported():
+    # An includes entry with no valid `name` (Cube requires one) — e.g.
+    # `{"alias": ...}` or `{}` — is a parse error, not silently dropped or
+    # reported with a confusing member=None. Valid siblings still convert.
+    view = CubeView(name="ov", cubes=[
+        CubeViewCubeRef(join_path="orders",
+                        includes=[{"alias": "s"}, {}, "status"]),
+    ])
+    project = CubeProject(cubes=_orders_customers_cubes(), views=[view])
+    models, report = _convert(project)
+    assert models["ov"].get_column("status") is not None
+    parse_errors = [i for i in report.issues
+                    if i.category == CubeIssueCategory.PARSE_ERROR]
+    assert len(parse_errors) == 2  # one for {"alias": ...}, one for {}
+    assert all(i.member is None for i in parse_errors)
+
+
 def test_view_disconnected_members_reported():
     cubes = _orders_customers_cubes()
     cubes.append(CubeCube(name="weather", sql_table="public.weather",
