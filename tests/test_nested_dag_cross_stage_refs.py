@@ -1355,11 +1355,13 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
             # SPLIT reference qualified by the s1 stage rowset, single-identifier
             # leaf — never a bare `customers` table, never a composite token.
             col = order_cols[0]
-            assert col.table == "s1" and col.name == "customers__revenue_sum", (
+            split_msg = (
                 f"ORDER BY must be the split reference "
                 f"s1.customers__revenue_sum, got '{col.table}.{col.name}'.\n"
                 f"SQL:\n{sql}"
             )
+            assert col.table == "s1", split_msg
+            assert col.name == "customers__revenue_sum", split_msg
         finally:
             tmp.cleanup()
 

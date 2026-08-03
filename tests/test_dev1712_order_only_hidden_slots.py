@@ -30,6 +30,7 @@ from __future__ import annotations
 import re
 import sqlite3
 
+import pydantic
 import pytest
 import sqlglot
 from sqlglot import exp
@@ -219,10 +220,10 @@ class TestUngroupedRowColumnSplit:
         table, name = cols[0]
         # SPLIT reference: qualified by the base table, leaf is a single
         # identifier — NOT the composite ``"orders.created_at"`` token.
-        assert table == "orders" and name == "created_at" and "." not in name, (
-            f"ORDER BY must be the SPLIT reference orders.created_at, got "
-            f"'{table}.{name}'.\nSQL:\n{sql}"
-        )
+        split_msg = f"ORDER BY must be the SPLIT reference orders.created_at, got '{table}.{name}'.\nSQL:\n{sql}"
+        assert table == "orders", split_msg
+        assert name == "created_at", split_msg
+        assert "." not in name, split_msg
         assert '"orders.created_at"' not in sql, f"composite token leaked.\nSQL:\n{sql}"
 
     async def test_ungrouped_mixed_case_row_column_split_quoted(self, engine) -> None:
@@ -240,10 +241,9 @@ class TestUngroupedRowColumnSplit:
         cols = _outer_order_by_columns(sql)
         assert cols, f"no ORDER BY column found.\nSQL:\n{sql}"
         table, name = cols[0]
-        assert table == "orders" and name == "ActivityTs", (
-            f"ORDER BY must be the split reference orders.\"ActivityTs\", got "
-            f"'{table}.{name}'.\nSQL:\n{sql}"
-        )
+        mc_msg = f"ORDER BY must be the split reference orders.\"ActivityTs\", got '{table}.{name}'.\nSQL:\n{sql}"
+        assert table == "orders", mc_msg
+        assert name == "ActivityTs", mc_msg
 
     async def test_split_key_preserves_asc_and_limit(self, engine) -> None:
         query = SlayerQuery(
@@ -315,6 +315,48 @@ class TestJoinedRowColumnRejected:
         )
         with pytest.raises(UnresolvableOrderColumnError):
             await _sql(engine, query)
+
+    async def test_joined_order_ref_colliding_local_leaf_raises(self, tmp_path) -> None:
+        """A joined order ref whose LEAF collides with a local declared
+        dimension (``owners.status`` vs a local ``status``) must NOT silently
+        bind to the local column and sort by the wrong field — it is a joined
+        ref and is rejected (Codex / DEV-1712)."""
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        await storage.save_datasource(
+            DatasourceConfig(name="test", type="sqlite", database=":memory:")
+        )
+        await storage.save_model(SlayerModel(
+            name="owners", sql_table="owners", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+            ],
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="owner_id", sql="owner_id", type=DataType.INT),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="owners", join_pairs=[["owner_id", "id"]])],
+        ))
+        engine = SlayerQueryEngine(storage=storage)
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],  # local status
+            measures=[ModelMeasure(formula="*:count")],
+            order=[OrderItem(column="owners.status", direction="desc")],  # joined
+        )
+        with pytest.raises(UnresolvableOrderColumnError):
+            resp = await engine.execute(query, dry_run=True)
+            # If it did not raise, it must at least NOT have silently sorted by
+            # the local column (which would be the bug).
+            assert "owners" in (resp.sql or ""), (
+                f"joined order ref silently bound to the local column.\n"
+                f"SQL:\n{resp.sql}"
+            )
 
 
 # ===========================================================================
@@ -644,7 +686,8 @@ class TestPartitionByGuard:
         with pytest.raises(ValueError) as ei:
             await _sql(engine, query)
         msg = str(ei.value)
-        assert "partition_by" in msg and "customer_id" in msg
+        assert "partition_by" in msg
+        assert "customer_id" in msg
         assert "rank" in msg.lower(), f"error should name the transform: {msg}"
         assert "status" in msg, "error should list available dimensions"
 
@@ -693,7 +736,7 @@ class TestTransformOrderDeferred:
         ``OrderItem.column`` — Pydantic rejects it before it ever reaches the
         engine. Pins the boundary so DEV-1733 knows the entry point that must
         change to support it."""
-        with pytest.raises(Exception):
+        with pytest.raises(pydantic.ValidationError):
             OrderItem(column="amount:sum / id:count", direction="desc")
 
     @pytest.mark.xfail(

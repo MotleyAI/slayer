@@ -392,9 +392,26 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         bound_filter_texts.append(f)
 
     order_specs = []
+    _order_host_name = (
+        scope.source_model.name
+        if isinstance(scope, ModelScope) and scope.source_model is not None
+        else None
+    )
     for o in (query.order or []):
         col_name = o.column.name
         full_name = o.column.full_name
+        # An order ref qualified with a FOREIGN model (``owners.status`` when
+        # the host is ``orders``) must not resolve to a same-named local column
+        # via the bare-leaf shortcut — otherwise a joined sort key silently
+        # binds to the local column and sorts by the wrong field (Codex). The
+        # bare-name lookups below apply only to unqualified refs or refs
+        # qualified with the host itself; a foreign-qualified ref falls through
+        # to the dotted/flattened/`bind_expr` paths, where a truly-joined ref
+        # is then rejected by the plan-time order validation.
+        _order_qualifier = getattr(o.column, "model", None)
+        _order_host_local = (
+            _order_qualifier is None or _order_qualifier == _order_host_name
+        )
         # Prefer declared-measure alias resolution over model-scope
         # binding (DEV-1450 stage 7b.8 — gap fix): aggregate canonical
         # aliases like ``amount_sum`` are not columns on the model, so
@@ -409,7 +426,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         # fall back to binding the preserved colon/path ``raw_formula``
         # so the order key interns onto the same cross-model aggregate
         # slot (P2/P4) rather than raising.
-        if col_name in declared_alias_to_bound:
+        if _order_host_local and col_name in declared_alias_to_bound:
             bo = declared_alias_to_bound[col_name]
         elif full_name in declared_alias_to_bound:
             bo = declared_alias_to_bound[full_name]
@@ -420,7 +437,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             # written in dotted form must intern onto that same declared
             # slot rather than binding the raw column as a fresh slot.
             bo = declared_alias_to_bound[_flatten_dotted(full_name)]
-        elif f"_{col_name}" in declared_alias_to_bound:
+        elif _order_host_local and f"_{col_name}" in declared_alias_to_bound:
             # ``*:count`` surfaces as the alias ``_count`` (the ``*`` is
             # dropped, the leading ``_`` kept as a marker); users naturally
             # order by the bare ``count``. Mirror the legacy
@@ -602,7 +619,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         return frozenset(new_pks)
 
     def _rw(vk: ValueKey) -> ValueKey:
-        return rewrite_rank_partition_keys(vk, _validate_partition_keys)
+        return rewrite_rank_partition_keys(vk, rewrite_fn=_validate_partition_keys)
 
     declared_measures = [
         DeclaredMeasure(
@@ -617,14 +634,15 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         )
         for dm in declared_measures
     ]
-    bound_filters = [
-        BoundFilter(
-            value_key=(_bf_vk := _rw(bf.value_key)),
+    _rewritten_filters = []
+    for bf in bound_filters:
+        bf_vk = _rw(bf.value_key)
+        _rewritten_filters.append(BoundFilter(
+            value_key=bf_vk,
             phase=bf.phase,
-            referenced_keys=tuple(walk_value_keys(_bf_vk)),
-        )
-        for bf in bound_filters
-    ]
+            referenced_keys=tuple(walk_value_keys(bf_vk)),
+        ))
+    bound_filters = _rewritten_filters
     order_specs = [
         OrderSpec(
             bound=BinderBoundExpr(value_key=_rw(spec.bound.value_key)),
