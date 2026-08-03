@@ -1072,17 +1072,87 @@ async def test_ensure_fresh_swallows_persist_failure_returns_refreshed(
 
 
 @pytest.mark.asyncio
-async def test_ensure_fresh_skips_numeric_temporal(
-    sqlite_setup, monkeypatch,
+async def test_ensure_fresh_refreshes_uncached_numeric_temporal(
+    sqlite_setup,
 ) -> None:
-    """Numeric/temporal columns are out of scope for the helper. inspect_model
-    handles them via the batched min/max path. The helper returns the input
-    column unchanged regardless of cache state."""
+    """DEV-1615: an UNCACHED numeric/temporal column IS back-filled by the
+    helper (the prior categorical-only early-return is removed). ``inspect``
+    and ``search`` both rely on this so a column that slipped through ingest
+    unsampled gets its min/max range filled on read."""
     engine, storage = sqlite_setup
     model = await storage.get_model("orders", data_source="ds")
     col = model.get_column("amount")  # DOUBLE
     assert col is not None
-    col.sampled = None  # stale numeric
+    assert col.sampled is None  # uncached numeric
+
+    result = await ensure_column_sample_fresh(
+        model=model, column=col, engine=engine, storage=storage,
+    )
+    # A materially-refreshed model_copy (NOT the input) with the min/max range.
+    assert result is not col
+    assert result.sampled is not None
+    assert ".." in result.sampled
+    # Numeric columns carry no structured list / distinct_count.
+    assert result.sampled_values is None
+    assert result.distinct_count is None
+    # Persisted for later reads.
+    reloaded = await storage.get_model("orders", data_source="ds")
+    assert reloaded.get_column("amount").sampled is not None
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_refreshes_uncached_temporal(tmp_path) -> None:
+    """DEV-1615: a DATE/TIMESTAMP column is back-filled too (min/max range) —
+    not just DOUBLE. Self-contained so it exercises the helper's temporal
+    branch directly at the unit level."""
+    db_file = str(tmp_path / "t.db")
+    conn = sqlite3.connect(db_file)
+    conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, ts DATE)")
+    conn.executemany(
+        "INSERT INTO events VALUES (?, ?)",
+        [(1, "2024-01-01"), (2, "2024-06-30")],
+    )
+    conn.commit()
+    conn.close()
+    storage = resolve_storage(str(tmp_path / "st"))
+    await storage.save_datasource(
+        DatasourceConfig(name="ds", type="sqlite", database=db_file)
+    )
+    await storage.save_model(SlayerModel(
+        name="events", sql_table="events", data_source="ds",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="ts", type=DataType.DATE),
+        ],
+    ))
+    engine = SlayerQueryEngine(storage=storage)
+    model = await storage.get_model("events", data_source="ds")
+    col = model.get_column("ts")
+    assert col is not None
+    assert col.sampled is None  # uncached temporal
+
+    result = await ensure_column_sample_fresh(
+        model=model, column=col, engine=engine, storage=storage,
+    )
+    assert result is not col
+    assert result.sampled is not None
+    assert ".." in result.sampled
+    reloaded = await storage.get_model("events", data_source="ds")
+    assert reloaded.get_column("ts").sampled is not None
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_cached_numeric_short_circuits(
+    sqlite_setup, monkeypatch,
+) -> None:
+    """DEV-1615: an already-cached numeric column still short-circuits at the
+    ``_is_sample_cached`` check — removing the early-return must NOT add a
+    profile query to the common already-profiled case."""
+    engine, storage = sqlite_setup
+    model = await storage.get_model("orders", data_source="ds")
+    col = model.get_column("amount")  # DOUBLE
+    assert col is not None
+    col.sampled = "5.0 .. 99.99"  # cached numeric
 
     profile_calls = {"n": 0}
 
@@ -1097,7 +1167,7 @@ async def test_ensure_fresh_skips_numeric_temporal(
     )
     assert result is col
     assert profile_calls["n"] == 0, (
-        "numeric/temporal columns must not trigger the helper's profile call"
+        "a cached numeric column must short-circuit before profile_column"
     )
 
 

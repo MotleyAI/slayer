@@ -20,6 +20,9 @@ Two dialects were promoted out of this file to their own Tier 1 modules:
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
+from sqlglot import exp
 
 from slayer.sql.dialects.base import SqlDialect
 
@@ -32,6 +35,15 @@ class RedshiftDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = False
 
+    def build_approx_count_distinct(
+        self,
+        col_sql: str,
+        *,
+        parse: Callable[[str], exp.Expression],
+    ) -> exp.Expression:
+        """Redshift: ``APPROXIMATE COUNT(DISTINCT x)`` (keyword prefix)."""
+        return parse(f"APPROXIMATE COUNT(DISTINCT {col_sql})")
+
 
 class TrinoDialect(SqlDialect):
     sqlglot_name: str = "trino"
@@ -40,6 +52,15 @@ class TrinoDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+
+    def build_approx_count_distinct(
+        self,
+        col_sql: str,
+        *,
+        parse: Callable[[str], exp.Expression],
+    ) -> exp.Expression:
+        """Trino: native ``approx_distinct(x)`` aggregate."""
+        return parse(f"approx_distinct({col_sql})")
 
 
 class PrestoDialect(SqlDialect):
@@ -51,6 +72,15 @@ class PrestoDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
 
+    def build_approx_count_distinct(
+        self,
+        col_sql: str,
+        *,
+        parse: Callable[[str], exp.Expression],
+    ) -> exp.Expression:
+        """Presto: native ``approx_distinct(x)`` aggregate."""
+        return parse(f"approx_distinct({col_sql})")
+
 
 class DatabricksDialect(SqlDialect):
     sqlglot_name: str = "databricks"
@@ -60,6 +90,15 @@ class DatabricksDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = True
 
+    def build_approx_count_distinct(
+        self,
+        col_sql: str,
+        *,
+        parse: Callable[[str], exp.Expression],
+    ) -> exp.Expression:
+        """Databricks: native ``approx_count_distinct(x)`` aggregate."""
+        return parse(f"approx_count_distinct({col_sql})")
+
 
 class SparkDialect(SqlDialect):
     sqlglot_name: str = "spark"
@@ -68,6 +107,15 @@ class SparkDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+
+    def build_approx_count_distinct(
+        self,
+        col_sql: str,
+        *,
+        parse: Callable[[str], exp.Expression],
+    ) -> exp.Expression:
+        """Spark: native ``approx_count_distinct(x)`` aggregate."""
+        return parse(f"approx_count_distinct({col_sql})")
 
 
 class OracleDialect(SqlDialect):
@@ -79,3 +127,17 @@ class OracleDialect(SqlDialect):
     # the canonical 2-arg LOG(base, x) form.
     log10_native: bool = False
     log2_native: bool = False
+
+    def build_approx_count_distinct(
+        self,
+        col_sql: str,
+        *,
+        parse: Callable[[str], exp.Expression],
+    ) -> exp.Expression:
+        """Oracle: native ``APPROX_COUNT_DISTINCT(x)`` aggregate.
+
+        Built as an ``exp.Anonymous`` because sqlglot's Oracle dialect
+        re-emits a parsed ``APPROX_COUNT_DISTINCT`` as ``APPROX_DISTINCT``
+        (its Presto-family canonical form), which is not an Oracle function.
+        """
+        return exp.Anonymous(this="APPROX_COUNT_DISTINCT", expressions=[parse(col_sql)])

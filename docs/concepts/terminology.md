@@ -14,7 +14,7 @@ Key terms used throughout SLayer documentation and code.
 
 **Measure (named formula)** — A saved formula stored on a model (`SlayerModel.measures: List[ModelMeasure]`). Shape `{formula, name, label, description}` — same as a query's inline `measures` entry. Queries reference saved measures by bare name in any formula context (`{"formula": "aov"}`).
 
-**Aggregation** — How a column is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. Custom aggregations can be defined at model level. Applied at query time via colon syntax: `revenue:sum`, `*:count`, `price:weighted_avg(weight=quantity)`, `price:corr(other=quantity)`.
+**Aggregation** — How a column is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. Custom aggregations can be defined at model level. Applied at query time via colon syntax: `revenue:sum`, `*:count`, `price:weighted_avg(weight=quantity)`, `price:corr(other=quantity)`.
 
 **Join** — A LEFT JOIN relationship between two models. Defined by a target model name and join key pairs (from the model's own foreign keys). Each model only stores direct joins — multi-hop paths like `customers.regions.name` are resolved at query time by walking each intermediate model's own joins.
 

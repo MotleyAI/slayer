@@ -205,6 +205,77 @@ def build_catalog(
     return FacadeCatalog(catalog_name=CATALOG_NAME, schemas=schemas)
 
 
+DEFAULT_PG_SCHEMA = "public"
+
+
+def build_catalog_grouped_by_schema(
+    *,
+    models_by_datasource: dict[str, list[SlayerModel]],
+    schema_by_datasource: dict[str, str] | None = None,
+    datasource_priority: list[str] | None = None,
+    default_schema: str = DEFAULT_PG_SCHEMA,
+    bfs_depth: int = DEFAULT_BFS_DEPTH,
+) -> FacadeCatalog:
+    """Build a catalog spanning many datasources, grouped into Postgres schemas.
+
+    Each datasource's tables are built independently (so join BFS stays scoped
+    to one datasource — merging never fabricates cross-datasource joins), then
+    re-grouped into ``FacadeSchema``s named by each datasource's
+    ``schema_by_datasource`` entry (default ``"public"``). When two datasources
+    map to the same schema and share a model name, ``datasource_priority``
+    decides the winner (earlier = higher priority); the loser is shadowed (a
+    Postgres schema can only expose one table of a given name) and logged.
+    """
+    schema_by_datasource = schema_by_datasource or {}
+    priority = datasource_priority or []
+
+    def _priority_index(datasource: str) -> int:
+        try:
+            return priority.index(datasource)
+        except ValueError:
+            return len(priority)
+
+    # Per-datasource build keeps join scoping correct (one FacadeSchema each).
+    per_datasource = build_catalog(
+        models_by_datasource=models_by_datasource, bfs_depth=bfs_depth,
+    )
+
+    # target schema -> table name -> (priority_index, datasource, table)
+    grouped: dict[str, dict[str, tuple[int, str, FacadeTable]]] = {}
+    for source_schema in per_datasource.schemas:
+        datasource = source_schema.name
+        target = schema_by_datasource.get(datasource, default_schema)
+        bucket = grouped.setdefault(target, {})
+        for table in source_schema.tables:
+            incoming = (_priority_index(datasource), datasource, table)
+            existing = bucket.get(table.name)
+            if existing is None or incoming[0] < existing[0]:
+                if existing is not None:
+                    logger.warning(
+                        "Facade catalog: model %r exists in both datasource %r "
+                        "and %r under schema %r; keeping %r (higher priority), "
+                        "shadowing %r. Set distinct postgres_schema to expose "
+                        "both.",
+                        table.name, existing[1], datasource, target,
+                        datasource, existing[1],
+                    )
+                bucket[table.name] = incoming
+            elif existing is not None:
+                logger.warning(
+                    "Facade catalog: model %r exists in both datasource %r and "
+                    "%r under schema %r; keeping %r (higher priority), shadowing "
+                    "%r. Set distinct postgres_schema to expose both.",
+                    table.name, existing[1], datasource, target,
+                    existing[1], datasource,
+                )
+
+    schemas = [
+        FacadeSchema(name=name, tables=[entry[2] for entry in bucket.values()])
+        for name, bucket in grouped.items()
+    ]
+    return FacadeCatalog(catalog_name=CATALOG_NAME, schemas=schemas)
+
+
 def _column_types_supported(*, model: SlayerModel) -> bool:
     """Reject the whole model if any non-hidden column has a Column.type
     outside the six base types (§12 gotcha #7). DataType is a StrEnum so the

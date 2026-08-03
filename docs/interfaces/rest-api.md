@@ -157,7 +157,7 @@ Response:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `reference` | str | Canonical id (`mydb.orders.amount`), bare name, join path (`orders.customers.region` → resolved to the owning model), or `memory:<id>`. Normalised via the shared resolver; the normalised id is echoed in the result. |
+| `reference` | str \| array[str] | Canonical id (`mydb.orders.amount`), bare name, join path (`orders.customers.region` → resolved to the owning model), or `memory:<id>`. Normalised via the shared resolver; the normalised id is echoed in the result. **A list is a homogeneous-kind batch** (DEV-1612): one `entity_type` for every id; `result` is one block per id in input order (a `## <canonical>` header per block in markdown, a JSON-array string under `format="json"`). Per-id resolution errors are isolated. An empty list returns HTTP 400; a non-string member returns HTTP 422. |
 | `entity_type` | str | **Required.** One of `datasource`, `model`, `column`, `measure`, `aggregation`, `memory`. Disambiguates the 3-part canonical collision (a name shared by, e.g., a column and an aggregation) and asserts the kind — a mismatch returns HTTP 400. |
 | `compact` | bool | Default `true`. Description-only for column / measure / aggregation / datasource / memory; a cheap schema **skeleton** (column / measure / aggregation names + join targets, zero DB calls) for `model`. `false` returns the full render, and a per-model skeleton for each visible model for `datasource`. |
 | `format` | str | `"markdown"` (default) or `"json"`. |

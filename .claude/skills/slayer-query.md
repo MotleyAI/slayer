@@ -46,7 +46,7 @@ Each entry in `measures` is either a bare formula string or a `{"formula": ..., 
 ]
 ```
 
-Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. Two-column `corr`/`covar_samp`/`covar_pop` take the second column as a named param: `price:corr(other=quantity)`. `sum` and `avg` accept an optional trailing-window: `revenue:sum(window='30d')`.
+Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. `count_distinct_approx` is dialect-aware (native approximate-distinct where available, exact `COUNT(DISTINCT)` fallback otherwise). Two-column `corr`/`covar_samp`/`covar_pop` take the second column as a named param: `price:corr(other=quantity)`. `sum` and `avg` accept an optional trailing-window: `revenue:sum(window='30d')`.
 
 `*:count` is always available — no column definition needed. `col:count` counts non-nulls.
 
@@ -74,7 +74,7 @@ Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes unde
 
 **Top-N filtering**: use `"rank(<measure>) <= N"` (e.g. `"rank(revenue:sum) <= 10"`) — dialect-portable and auto-promoted to a post-filter on the outer query. Raw `OVER (...)` SQL inside a filter or `ModelMeasure.formula` is rejected with an actionable error. Filtering on a `Column` whose `sql` contains a window function is also rejected (DEV-1369): use `rank()` / `dense_rank()` / `percent_rank()` / `ntile(n=<N>)` for top-N, or factor the windowed expression into an earlier stage of a multi-stage `source_queries` model.
 
-**Variable substitution**: `{var}` placeholders in filter strings are substituted from the query's `variables` dict (or per-model defaults). Use `{{`/`}}` for literal braces.
+**Variable substitution**: `{var}` placeholders in filter strings are substituted from the query's `variables` dict (or per-model defaults). Use `{{`/`}}` for literal braces. Write the surrounding quotes yourself (`status = '{status}'`); string values are auto-escaped so an embedded quote stays inside the literal. Numbers (incl. bool) insert verbatim; non-finite floats are rejected; undefined vars raise. The same `{var}` mechanism also fills the raw-SQL (Mode A) surfaces of the query's direct source model — `SlayerModel.sql`, `SlayerModel.filters`, `Column.sql`, `Column.filter` (DEV-1625). See slayer-models skill for details.
 
 ## Executing
 

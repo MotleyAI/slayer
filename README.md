@@ -9,7 +9,15 @@
 [![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/egWxMctHCA)
 
-**SLayer** is a semantic layer that lets AI agents query your database, manage data models, and learn from the data.
+**SLayer** is a lightweight semantic layer and query engine.
+
+Describe queries as measures, dimensions, and filters; SLayer generates and runs the SQL across any database, for any surface: AI agents, dashboards, notebooks. Python-embeddable or standalone (CLI, MCP, API server).
+
+### What you can do with SLayer
+
+- **If you're building a Python app that queries databases you don't control** — point SLayer at them and query semantically. It generates and translates SQL across Postgres, MySQL, Snowflake, BigQuery, and more. Import the library and use it in-process.
+- **If you want your internal users to self-serve analytics** — model your metrics once and let anyone (or their AI agents, over MCP) ask questions, with answers grounded in your definitions and business context instead of the LLM's guesses.
+- **If you ship analytics inside your product** — turn agent-generated query specs into safe, executed SQL, with row-level security so each user sees only what they're allowed to.
 
 > If you find SLayer useful, a ⭐ helps others discover it!
 > Questions, ideas, or feedback? [Join our Discord](https://discord.gg/egWxMctHCA).
@@ -18,16 +26,16 @@
 
 ## How it works
 
-SLayer sits between your database and AI agents (or internal tools, dashboards, scripts). It allows to:
+SLayer sits between your databases and whatever consumes the data — AI agents, internal tools, dashboards, scripts. It lets you:
 
-- Auto-create data models from the database schema (warm start)
-- Query using a [structured API](https://motley-slayer.readthedocs.io/en/latest/concepts/queries/) of measures, dimensions, and filters
-- Edit models at runtime or create new ones and use them immediately
-- Specify the desired aggregations [at query time, not in the models](https://motley-slayer.readthedocs.io/en/latest/examples/07_aggregations/aggregations/)
-- Save and retrieve natural-language memories about the data and queries
-- Run itself in-process, as a Python module or serverless via CLI
+- Auto-generate data models from your database schema (warm start)
+- Query through a [structured API](https://motley-slayer.readthedocs.io/en/latest/concepts/queries/) of measures, dimensions, and filters
+- Choose aggregations [at query time, not in the models](https://motley-slayer.readthedocs.io/en/latest/examples/07_aggregations/aggregations/)
+- Create or edit models at runtime and use them immediately — by hand, from your app, or by an agent
+- Save and retrieve natural-language memories about your data and queries
+- Run in-process as a Python library, or standalone via CLI, MCP, or API server
 
-SLayer naturally evolves when the agent uses it. For example, if a query requires a new measure, the agent will update the models and will use it in other contexts.
+Because models are editable at runtime, your semantic layer can grow with use: when a query needs a new measure, you (or an agent) add it once and reuse it everywhere.
 
 SLayer compiles queries into the correct SQL for your database, handling joins, aggregations, time-based calculations, and dialect differences. Its DSL is very expressive, [supporting](https://motley-slayer.readthedocs.io/en/latest/examples/04_time/time/) queries like _"month-on-month % increase in total revenue, compared to the previous year"_, [queries-as-models](https://motley-slayer.readthedocs.io/en/latest/examples/06_multistage_queries/multistage_queries/) and much more.
 
@@ -58,7 +66,7 @@ claude mcp add slayer_demo -- slayer mcp --demo
 ```
 
 ### Using your own data
-Set up your datasource, substituting the correct database, username, hostname, and db_name. 
+Set up your datasource, substituting the correct database, username, hostname, and db_name.
 
 ```bash
 slayer datasources create 'postgresql://user:${DB_PASSWORD}@hostname/db_name'

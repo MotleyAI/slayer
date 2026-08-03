@@ -202,6 +202,10 @@ class QueryResult(TranslatorResult):
     facade_table: FacadeTable
     schema_name: str
     projection_types: "list[DataType | None]"
+    # Datasource the engine should execute against, resolved from the FROM
+    # (and any joined) table's model. ``None`` for catalogs whose models carry
+    # no datasource; the facade falls back to its connection datasource.
+    data_source: str | None = None
 
     @property
     def flight_table(self) -> FacadeTable:
@@ -224,10 +228,47 @@ class TranslationError(Exception):
 
 READ_ONLY_MESSAGE = "SLayer wire facade is read-only"
 SELECT_STAR_MESSAGE = (
-    "SELECT * not supported; project specific metric or dimension names. "
-    "Use 'SELECT * FROM INFORMATION_SCHEMA.METRICS WHERE table_name=...' "
-    "to discover available names."
+    "SELECT * with aggregates is not supported; project specific metric or "
+    "dimension names. Use 'SELECT * FROM INFORMATION_SCHEMA.METRICS "
+    "WHERE table_name=...' to discover available names."
 )
+
+
+def _is_browse_mode_select(parsed: exp.Select, proj_exprs: list[exp.Expression]) -> bool:
+    """``SELECT * FROM t`` browse-mode predicate: no GROUP BY, no HAVING,
+    no aggregate function anywhere in the projection list (incl. COUNT(*),
+    SUM/AVG/MIN/MAX, etc.). When this holds, ``*`` expands to every
+    non-hidden column of ``t``; otherwise it stays rejected so the
+    user-facing 'project specific names' hint fires for the cases where
+    it's actually useful."""
+    if parsed.args.get("group") is not None:
+        return False
+    if parsed.args.get("having") is not None:
+        return False
+    return not any(
+        isinstance(n, exp.AggFunc)
+        for proj in proj_exprs
+        for n in proj.walk()
+    )
+
+
+def _expand_select_star(
+    proj_exprs: list[exp.Expression], table: "FacadeTable",
+) -> list[exp.Expression]:
+    """Replace each top-level ``exp.Star`` with a sequence of column
+    references — one per non-hidden column on ``table`` — preserving the
+    relative order of any non-Star projections. Used by browse-mode
+    ``SELECT *`` only (see ``_is_browse_mode_select``)."""
+    column_names = [d.name for d in table.dimensions]
+    out: list[exp.Expression] = []
+    for expr in proj_exprs:
+        if isinstance(expr, exp.Star):
+            out.extend(
+                exp.Column(this=exp.to_identifier(n)) for n in column_names
+            )
+        else:
+            out.append(expr)
+    return out
 # DEV-1493: aggregating over a saved measure or a non-column expression needs
 # a multi-stage rewrite, out of scope for the current facade aggregate mapping.
 AGG_OVER_MEASURE_MESSAGE = (
@@ -914,7 +955,16 @@ def _resolve_qualified_table(
     # real ``public`` schema exists in the catalog (e.g. when the catalog
     # is keyed by the actual datasource name), accept ``public`` as a
     # synonym so Metabase's ``"public"."orders"`` keeps working.
-    if schema_str.lower() == "public":
+    #
+    # Only fall back when the catalog presents a single schema — the
+    # "no user-customized postgres_schema anywhere" case where mapping
+    # ``public`` is unambiguous. With multiple schemas present (custom
+    # postgres_schema in use), ``public.<table>`` would silently cross
+    # schema isolation; reject with "Unknown schema" instead. Real BI
+    # clients address tables via the actual schema name (read from
+    # pg_namespace); this only ever bites hand-written SQL that
+    # hard-codes ``public``.
+    if schema_str.lower() == "public" and len(catalog.schemas) == 1:
         return _resolve_bare_table(table_name=table_name, catalog=catalog)
     raise TranslationError(f"Unknown schema: {schema_str!r}")
 
@@ -932,6 +982,34 @@ def _resolve_bare_table(
             f"{candidates}"
         )
     return matches[0]
+
+
+def _resolve_query_datasource(
+    *, table: FacadeTable, join_plan: "_JoinPlan | None",
+) -> str | None:
+    """Datasource the engine should execute the query against, or raise.
+
+    SLayer cannot execute a query spanning datasources, so when the FROM table
+    and an explicitly joined table resolve to different datasources we reject
+    with a clear message instead of letting the engine fail opaquely. Catalog
+    BFS joins are scoped per datasource, so only explicit cross-schema JOINs
+    can trigger this.
+    """
+    sources: set[str] = set()
+    if table.model_ref is not None and table.model_ref.data_source:
+        sources.add(table.model_ref.data_source)
+    if (
+        join_plan is not None
+        and join_plan.target_table.model_ref is not None
+        and join_plan.target_table.model_ref.data_source
+    ):
+        sources.add(join_plan.target_table.model_ref.data_source)
+    if len(sources) > 1:
+        raise TranslationError(
+            "cross-datasource queries are not supported (referenced "
+            f"datasources: {sorted(sources)})"
+        )
+    return next(iter(sources), None)
 
 
 def _resolve_table(
@@ -2200,6 +2278,7 @@ def translate(
         "CatalogSqlExecutorProtocol | Callable[[], CatalogSqlExecutorProtocol] | None"
     ) = None,
     allow_column_cast: bool = True,
+    expand_star_in_browse_mode: bool = False,
 ) -> TranslatorResult:
     """Translate a SQL string into a TranslatorResult.
 
@@ -2208,6 +2287,14 @@ def translate(
     injects a datasource-aware one). ``catalog_sql_executor`` routes
     catalog SQL through an in-memory DuckDB (the Postgres facade does
     this; Flight passes ``None`` and falls back to ``match_info_schema``).
+
+    ``expand_star_in_browse_mode``: when True, a ``SELECT *`` with no
+    GROUP BY / HAVING / aggregate expands to every non-hidden column
+    of the table (pg-facade convenience for interactive psql sessions).
+    When False (default — Flight's contract), ``SELECT *`` always
+    raises, since Flight's clients (dbt-SL JDBC, Tableau, etc.) project
+    explicit metric/dim names by construction and a bare ``*`` from
+    them almost always indicates a query-builder bug worth surfacing.
 
     Raises ``TranslationError`` on user-visible failures.
     """
@@ -2273,6 +2360,7 @@ def translate(
     # Step 5 / 6 — SLayer-table translation.
     return _translate_slayer_select(
         parsed, catalog, allow_column_cast=allow_column_cast,
+        expand_star_in_browse_mode=expand_star_in_browse_mode,
     )
 
 
@@ -2869,6 +2957,7 @@ def _build_item_index(items: list[_ProjectionItem]) -> dict[str, _ProjectionItem
 def _translate_slayer_select(
     parsed: exp.Select, catalog: FacadeCatalog,
     *, allow_column_cast: bool = True,
+    expand_star_in_browse_mode: bool = False,
 ) -> QueryResult:
     from_clause = parsed.args.get("from_")
     if from_clause is None:
@@ -2879,10 +2968,18 @@ def _translate_slayer_select(
     schema_name, table = _resolve_table(from_clause, catalog)
 
     proj_exprs = parsed.args.get("expressions") or []
-    # Reject SELECT * before catalog lookup so we get the named error
-    # instead of "Unknown projection item '*'".
+    # SELECT * handling. When ``expand_star_in_browse_mode`` is set (pg-facade
+    # only — see translate's docstring), a ``SELECT *`` with no GROUP BY /
+    # HAVING / aggregate in the projection list expands to every non-hidden
+    # column of the table. Flight's clients project explicit names by
+    # construction, so it leaves the flag default-False and ``*`` always
+    # raises there. Mixed ``*`` + aggregate cases always reject (the
+    # explicit "project specific names" hint is more useful guidance).
     if any(isinstance(e, exp.Star) for e in proj_exprs):
-        raise TranslationError(SELECT_STAR_MESSAGE)
+        if expand_star_in_browse_mode and _is_browse_mode_select(parsed, proj_exprs):
+            proj_exprs = _expand_select_star(proj_exprs, table)
+        else:
+            raise TranslationError(SELECT_STAR_MESSAGE)
 
     # DEV-1558 B5: every helper that resolves a column ref needs the same
     # ``(schema, table)`` prefix-strip context as ``_resolve_projection``.
@@ -2895,6 +2992,7 @@ def _translate_slayer_select(
         parent_table=table,
         catalog=catalog,
     )
+    data_source = _resolve_query_datasource(table=table, join_plan=join_plan)
     overlays = _prepare_join_overlays(join_plan, table.name)
 
     items = _resolve_projection(
@@ -2957,4 +3055,5 @@ def _translate_slayer_select(
         facade_table=table,
         schema_name=schema_name,
         projection_types=plan.projection_types,
+        data_source=data_source,
     )

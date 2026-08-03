@@ -2255,6 +2255,11 @@ class SQLGenerator:
             # going through the BUILTIN_AGGREGATION_FORMULAS path.
             if agg_name == "percentile":
                 return self._build_percentile(measure), True
+            # DEV-1595: approximate-distinct is dialect-aware (native function
+            # where the backend has one, exact COUNT(DISTINCT) fallback where
+            # it does not), so it routes to its own dialect-dispatching builder.
+            if agg_name == "count_distinct_approx":
+                return self._build_approx_count_distinct(measure), True
             # Statistical aggregates also dispatch to a dedicated builder so
             # the SQLite-UDF / native-function / NotImplementedError split
             # mirrors _build_median.
@@ -2368,6 +2373,20 @@ class SQLGenerator:
     def _build_median(self, inner: exp.Expression) -> exp.Expression:
         """Build a median aggregation expression. Dispatches to the dialect."""
         return self._dialect.build_median(inner=inner, parse=self._parse)
+
+    def _build_approx_count_distinct(self, measure: "EnrichedMeasure") -> exp.Expression:
+        """Build a dialect-aware approximate-distinct aggregation (DEV-1595).
+
+        Resolves the value column (qualified under ``measure.model_name``) and,
+        when the measure carries a row-level filter, wraps it in
+        ``CASE WHEN filter THEN col END`` — composing with the metric-filter
+        push-down (Part 3.4) exactly as ``count_distinct`` does. Dispatches to
+        the dialect's ``build_approx_count_distinct``: the native function
+        (DuckDB / ClickHouse / BigQuery / …) or the exact ``COUNT(DISTINCT)``
+        fallback (Postgres / SQLite / MySQL).
+        """
+        col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
+        return self._dialect.build_approx_count_distinct(col_expr, parse=self._parse)
 
     def _build_percentile(self, measure: "EnrichedMeasure") -> exp.Expression:
         """Build a PERCENTILE_CONT(p) aggregation expression (dialect-dependent).

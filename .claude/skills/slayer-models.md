@@ -43,7 +43,7 @@ measures:
     formula: "amount:sum / *:count"
 ```
 
-Aggregation is specified at query time with **colon syntax**: `"amount:sum"`, `"amount:avg"`, `"*:count"`. A bare-name reference like `{"formula": "aov"}` resolves to the saved `ModelMeasure` formula on the model. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. The two-column ones (`corr`, `covar_samp`, `covar_pop`) take the second column as a named param: `price:corr(other=quantity)`.
+Aggregation is specified at query time with **colon syntax**: `"amount:sum"`, `"amount:avg"`, `"*:count"`. A bare-name reference like `{"formula": "aov"}` resolves to the saved `ModelMeasure` formula on the model. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. `count_distinct_approx` is dialect-aware (native approximate-distinct where available, exact `COUNT(DISTINCT)` fallback otherwise). The two-column ones (`corr`, `covar_samp`, `covar_pop`) take the second column as a named param: `price:corr(other=quantity)`.
 
 ## Data Types
 
@@ -87,6 +87,8 @@ Saved query-backed models support two access patterns:
 - **Use as source_model**: `{"source_model": "monthly_revenue", ...}` treats the saved result as a model in another query.
 
 Variable precedence (highest first): runtime kwarg > stage `.variables` > outer query `.variables` > `model.query_variables`.
+
+**Variables in model SQL (DEV-1625)**: the same `{var}` mechanism also substitutes into a model's **raw-SQL (Mode A) surfaces** — `SlayerModel.sql`, `SlayerModel.filters`, `Column.sql`, `Column.filter` — for a query's **direct source model** (the primitive for parameterizing hand-written SQL, e.g. Cube `FILTER_PARAMS`). Same precedence and `{{`/`}}` escaping. Contract: **raise-on-missing once any variable is in play** (a `query_variables` default or a caller value); a **fully variable-free execution leaves braces as literals** so raw brace literals like `'{1,2,3}'` survive untouched. String values are Mode-A-escaped (write the quotes yourself: `WHERE region = '{region}'`; trusted input — not dialect-aware, so avoid untrusted values on backslash-escaping backends like MySQL); `inspect_model` shows the literal `{var}` template. Nested `source_queries` stages, query-backed direct sources, join targets, and cross-model targets are deferred (DEV-1678) — a `{var}` there stays literal and errors on the stray placeholder.
 
 You **cannot** supply `columns` or `backing_query_sql` when saving a query-backed model — they're engine-managed cache; the save path rejects them. Caches refresh **only on save paths**: `engine.save_model()` and `create_model_from_query(save=True)`. `engine.execute()` never writes to storage — even on stale or empty caches.
 

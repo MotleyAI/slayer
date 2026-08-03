@@ -21,7 +21,10 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
-from slayer.facade.catalog import FacadeCatalog, build_catalog
+from slayer.facade.catalog import (
+    FacadeCatalog,
+    build_catalog_grouped_by_schema,
+)
 from slayer.facade.catalog_sql import CatalogSqlExecutor, executor_for
 from slayer.facade.translator import (
     NoOpResult,
@@ -54,7 +57,9 @@ def _demo_catalog() -> FacadeCatalog:
             Column(name="email", type=DataType.TEXT, description="Customer email"),
         ],
     )
-    return build_catalog(models_by_datasource={"jaffle": [orders, customers]})
+    return build_catalog_grouped_by_schema(
+        models_by_datasource={"jaffle": [orders, customers]}
+    )
 
 
 def _seven_table_demo_catalog() -> FacadeCatalog:
@@ -68,7 +73,9 @@ def _seven_table_demo_catalog() -> FacadeCatalog:
         for tn in ("customers", "orders", "products", "stores", "supplies",
                    "items", "tweets")
     ]
-    return build_catalog(models_by_datasource={"jaffle": models})
+    return build_catalog_grouped_by_schema(
+        models_by_datasource={"jaffle": models}
+    )
 
 
 def _executor(catalog: FacadeCatalog) -> CatalogSqlExecutor:
@@ -215,7 +222,9 @@ def test_corpus_select_current_catalog_routes_to_probe() -> None:
     # name (`jaffle`) surfaces verbatim.
     result = _translate("select current_catalog", _demo_catalog())
     assert isinstance(result, ProbeResult)
-    assert result.batch.rows == [{"current_catalog": "jaffle"}]
+    # Datasource "jaffle" folds under schema "public" (the default), which is
+    # the logical-database name the probe surfaces.
+    assert result.batch.rows == [{"current_catalog": "public"}]
 
 
 # --- catalog SQL via the executor ------------------------------------------
@@ -241,8 +250,8 @@ def test_corpus_07_get_schemas_pgjdbc() -> None:
     # not pg_catalog. So both rows surface.
     schemas = {r["TABLE_SCHEM"] for r in result.batch.rows}
     assert "public" in schemas
-    # current_database() rewritten to the datasource name.
-    assert all(r["TABLE_CATALOG"] == "jaffle" for r in result.batch.rows)
+    # current_database() rewritten to the logical-database name ("public").
+    assert all(r["TABLE_CATALOG"] == "public" for r in result.batch.rows)
 
 
 def test_corpus_08_table_privileges_cte_raw_keyword_aliases() -> None:
@@ -451,8 +460,8 @@ def test_corpus_13_pgjdbc_get_columns_smoke() -> None:
     assert len(rows) > 0
     # adsrc is the pg_get_expr stub → NULL.
     assert all(r["adsrc"] is None for r in rows)
-    # current_database rewritten to datasource.
-    assert all(r["current_database"] == "jaffle" for r in rows)
+    # current_database rewritten to the logical-database name ("public").
+    assert all(r["current_database"] == "public" for r in rows)
     # description from pg_description flowing through LEFT JOIN.
     descs = {r["description"] for r in rows if r["attname"] == "total"}
     assert "Order total" in descs

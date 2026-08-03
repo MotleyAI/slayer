@@ -38,7 +38,10 @@ Oracle.
 ## Aggregation support
 
 Most aggregations (`sum`, `avg`, `min`, `max`, `count`, `count_distinct`,
-`first`, `last`, `weighted_avg`) work on every supported database.
+`count_distinct_approx`, `first`, `last`, `weighted_avg`) work on every
+supported database. `count_distinct_approx` is dialect-aware (see
+[below](#count_distinct_approx-by-dialect)) but always available — it falls
+back to an exact `COUNT(DISTINCT)` where there's no native function.
 `median`, `percentile`, the variance/stddev family (`stddev_samp`,
 `stddev_pop`, `var_samp`, `var_pop`), and the paired statistics
 (`corr`, `covar_samp`, `covar_pop`) need dialect-specific handling
@@ -54,6 +57,23 @@ because no standard syntax works everywhere:
 | MySQL | **no** | **no** | yes | **no** | No native `MEDIAN`/`PERCENTILE_CONT`/`CORR`/`COVAR_*` and no Python-UDF mechanism — SLayer raises `NotImplementedError` for those. `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP` are native on MySQL. Use MariaDB or compute the unsupported aggregations client-side. |
 | SQL Server (T-SQL) | **no** | **no** | yes | yes (decomposed) | `MEDIAN` doesn't exist and T-SQL's `PERCENTILE_CONT` is window-only (no `WITHIN GROUP` aggregate form) — SLayer raises `NotImplementedError`. Native `STDEV`/`STDEVP`/`VAR`/`VARP` (slayer renames the canonical `STDDEV_*`/`VAR_*` names at emit time). `CORR`/`COVAR_*` use the same variance-decomposition formula as MySQL (`cov(x,y) = (var(x+y) − var(x) − var(y)) / 2`, `corr = cov / (stddev(x) · stddev(y))`). |
 | BigQuery | **no** | **no** | yes | yes | BigQuery has no `MEDIAN` aggregate, and its `PERCENTILE_CONT` is analytic-only (no `WITHIN GROUP` syntax) — the base class emit `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` fails at runtime. If you need percentile on BigQuery, define a custom `Aggregation` using `APPROX_QUANTILES(x, 100)[OFFSET(N)]`. Native `STDDEV_SAMP`/`STDDEV_POP`/`VAR_SAMP`/`VAR_POP`/`CORR`/`COVAR_SAMP`/`COVAR_POP` (sqlglot may emit `VARIANCE` for `var_samp`). |
+
+### `count_distinct_approx` by dialect
+
+`count_distinct_approx` emits each database's native approximate-distinct
+function where one exists, and falls back to an **exact** `COUNT(DISTINCT)`
+where it does not. The fallback is exact (more accurate, never approximate),
+so results are always at least as precise as requested. The per-dialect
+mapping lives in `SqlDialect.build_approx_count_distinct`.
+
+| Engine | Emitted SQL |
+|---|---|
+| DuckDB / Spark / Databricks | `approx_count_distinct(x)` |
+| ClickHouse | `uniq(x)` |
+| BigQuery / Snowflake / SQL Server (T-SQL) / Oracle | `APPROX_COUNT_DISTINCT(x)` |
+| Trino / Presto | `approx_distinct(x)` |
+| Redshift | `APPROXIMATE COUNT(DISTINCT x)` |
+| Postgres / SQLite / MySQL | `COUNT(DISTINCT x)` (exact fallback) |
 
 ### SQLite caveats
 

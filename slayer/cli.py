@@ -572,13 +572,18 @@ examples:
     # ── inspect (DEV-1588) ───────────────────────────────────────────
     inspect_parser = subparsers.add_parser(
         "inspect",
-        help="Inspect exactly one entity by reference and kind (DEV-1588)",
+        help=(
+            "Inspect one entity by reference and kind, or several of the same "
+            "kind at once (pass multiple references) (DEV-1588, DEV-1612)"
+        ),
     )
     inspect_parser.add_argument(
         "reference",
+        nargs="+",
         help=(
-            "Entity reference: canonical id (mydb.orders.amount), bare "
-            "name, join path, or memory:<id>."
+            "Entity reference(s): canonical id (mydb.orders.amount), bare "
+            "name, join path, or memory:<id>. Pass two or more for a "
+            "homogeneous-kind batch (one --type for all)."
         ),
     )
     inspect_parser.add_argument(
@@ -804,9 +809,15 @@ def _run_inspect(*, args, storage) -> None:
     service = InspectService(
         storage=storage, engine=SlayerQueryEngine(storage=storage),
     )
+    # argparse ``nargs="+"`` always yields a list; map a single positional back
+    # to a bare str so single-id output stays byte-for-byte (DEV-1612). A direct
+    # str (older callers / tests) is passed through unchanged.
+    reference = args.reference
+    if isinstance(reference, list) and len(reference) == 1:
+        reference = reference[0]
     try:
         out = run_sync(service.inspect(
-            reference=args.reference,
+            reference=reference,
             entity_type=args.entity_type,
             compact=args.compact,
             format=args.format,
@@ -1412,8 +1423,8 @@ def _run_import_dbt(args):
         sys.exit(1)
 
     sa_engine = None
+    ds = run_sync(storage.get_datasource(args.datasource))
     if include_hidden:
-        ds = run_sync(storage.get_datasource(args.datasource))
         if ds is None:
             storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
             print(
@@ -1424,11 +1435,16 @@ def _run_import_dbt(args):
         from slayer.sql import engine_factory
         sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
 
+    # DEV-1595: pass the datasource dialect (best-effort) so the converter can
+    # emit percentile/median caveats for dialects that lack them (MySQL/T-SQL).
+    target_dialect = ds.type if ds is not None else None
+
     converter = DbtToSlayerConverter(
         project=project,
         data_source=args.datasource,
         sa_engine=sa_engine,
         include_hidden_models=include_hidden,
+        target_dialect=target_dialect,
     )
     result = converter.convert()
     # Cached engine — engine_factory owns its lifecycle; don't dispose.
@@ -1444,19 +1460,16 @@ def _run_import_dbt(args):
             f"({len(model.columns)} columns, {len(model.measures)} measures)"
         )
 
-    for u in result.unconverted_metrics:
-        context = u.model_name or u.metric_name or "general"
-        print(f"  UNCONVERTED [{context}]: {u.message}")
-
-    for w in result.warnings:
-        context = w.model_name or w.metric_name or "general"
-        print(f"  WARNING [{context}]: {w.message}")
+    # DEV-1595: grouped, category-keyed conversion report + a severity tally.
+    if result.unconverted_metrics or result.warnings:
+        print("\nConversion report:")
+        print(result.render_report())
 
     visible_count = len(result.models) - hidden_count
+    unconverted, dropped = result.tally()
     print(
         f"\nDone: {visible_count} models, {hidden_count} hidden, "
-        f"{len(result.unconverted_metrics)} unconverted metrics, "
-        f"{len(result.warnings)} warnings"
+        f"{unconverted} unconverted, {dropped} dropped"
     )
 
 

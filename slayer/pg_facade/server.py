@@ -15,8 +15,8 @@ import os
 import ssl
 import sys
 
-from slayer.pg_facade.auth import validate_bind_address, validate_tls_pair
-from slayer.pg_facade.connection import PgConnection
+from slayer.pg_facade.auth import Authenticator, validate_bind_address, validate_tls_pair
+from slayer.pg_facade.connection import EngineFactory, PgConnection, StorageProvider
 
 logger = logging.getLogger(__name__)
 
@@ -27,17 +27,44 @@ async def serve(
     *,
     host: str,
     port: int,
-    engine,
-    storage,
+    engine=None,
+    storage=None,
     token: str | None = None,
+    authenticator: Authenticator | None = None,
+    storage_provider: StorageProvider | None = None,
+    engine_factory: EngineFactory | None = None,
     tls_ctx: ssl.SSLContext | None = None,
+    catalog_extra_relations=None,
 ) -> None:
-    """Bind and serve forever. Validates the bind/token combination first."""
-    validate_bind_address(host=host, token=token)
+    """Bind and serve forever. Validates the bind/token combination first.
+
+    Supply either a static ``engine`` + ``storage``, or a ``storage_provider``
+    that resolves a per-connection (e.g. tenant-scoped) storage from the
+    authenticated principal.
+
+    ``catalog_extra_relations``: optional iterable of
+    ``slayer.facade.catalog_sql.CatalogRelation`` that extends or overrides
+    the default ``pg_catalog`` / ``information_schema`` tables. Embedders
+    (e.g. Storyline) use this to project real per-tenant data into
+    ``pg_roles`` / ``pg_database`` / add new tables. Override is by table
+    name; new tables are appended.
+    """
+    # A custom authenticator that prompts for a password counts as auth, so the
+    # non-loopback-requires-a-secret rule is satisfied even without a token.
+    # When an authenticator is supplied, ``PgConnection`` ignores ``token``
+    # entirely — so the bind guard must check the auth mechanism that will
+    # ACTUALLY be enforced, not a stale token that would never be consulted.
+    authenticated = authenticator is not None and authenticator.requires_password
+    effective_token = None if authenticator is not None else token
+    validate_bind_address(host=host, token=effective_token, authenticated=authenticated)
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         conn = PgConnection(
-            reader, writer, engine=engine, storage=storage, token=token, tls_ctx=tls_ctx,
+            reader, writer, engine=engine, storage=storage,
+            token=token, authenticator=authenticator,
+            storage_provider=storage_provider, engine_factory=engine_factory,
+            tls_ctx=tls_ctx,
+            catalog_extra_relations=catalog_extra_relations,
         )
         try:
             await conn.run()

@@ -29,6 +29,7 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
     extract_placeholder_names,
+    substitute_variables,
 )
 from slayer.engine.enriched import (
     CrossModelMeasure,
@@ -112,6 +113,60 @@ def _merge_query_variables(
     invoking this helper.
     """
     return {**(outer or {}), **(stage or {}), **(runtime or {})}
+
+
+def _substitute_model_sql_surfaces(
+    *, model: SlayerModel, variables: dict[str, Any]
+) -> SlayerModel:
+    """Return a copy of ``model`` with ``{var}`` substituted into the four
+    Mode-A (raw-SQL) surfaces: ``SlayerModel.sql``, ``SlayerModel.filters``,
+    ``Column.sql``, and ``Column.filter`` (DEV-1625).
+
+    No-op copy when ``variables`` is empty — so a model that uses no variables
+    is never touched and raw brace literals (e.g. Postgres arrays ``'{1,2,3}'``)
+    survive verbatim. Uses the hardened :func:`substitute_variables`
+    (raise-on-missing, string single-quote escaping). Never mutates the input
+    model — it may be a shared cached object. Only these four surfaces change;
+    Mode-B surfaces (``ModelMeasure.formula`` etc.) are copied through as-is.
+    """
+    if not variables:
+        return model
+
+    def _sub(text: str) -> str:
+        # Mode-A surfaces are parsed by sqlglot → escape string values SQL-style.
+        return substitute_variables(filter_str=text, variables=variables, escape="sql")
+
+    new_columns = []
+    for col in model.columns:
+        updates: dict[str, Any] = {}
+        if col.sql is not None:
+            updates["sql"] = _sub(col.sql)
+        if col.filter is not None:
+            updates["filter"] = _sub(col.filter)
+        new_columns.append(col.model_copy(update=updates) if updates else col)
+
+    model_updates: dict[str, Any] = {"columns": new_columns}
+    if model.sql is not None:
+        model_updates["sql"] = _sub(model.sql)
+    if model.filters:
+        model_updates["filters"] = [_sub(f) for f in model.filters]
+    return model.model_copy(update=model_updates)
+
+
+def _render_probe_model(model: SlayerModel) -> SlayerModel:
+    """Substitute a template model's OWN ``query_variables`` defaults into its
+    Mode-A surfaces for type-probing (DEV-1625).
+
+    Defaults only — the probe has no caller variables and must honour the
+    no-dummy-fill decision. A rendered virtual model (``source_model_origin``
+    set) is returned unchanged. An undefaulted ``{var}`` raises here and is
+    caught by the probe's graceful-``{}`` handler in ``get_column_types``.
+    """
+    if model.source_model_origin is None and model.query_variables:
+        return _substitute_model_sql_surfaces(
+            model=model, variables=model.query_variables
+        )
+    return model
 
 
 def _apply_placeholder_fill(
@@ -727,6 +782,22 @@ class SlayerQueryEngine:
 
         datasource = await self._resolve_datasource(model=model)
 
+        # DEV-1625: substitute {var} into the direct source model's Mode-A
+        # raw-SQL surfaces (sql / filters / Column.sql / Column.filter) before
+        # enrichment, so the substituted body is what sqlglot parses AND what
+        # cross-model re-rooting (which reuses this same ``model`` object) sees.
+        # Guarded to template models — a rendered virtual model
+        # (``source_model_origin`` set, from a query-backed source) is skipped;
+        # its stages / join targets / cross-model targets are DEV-1678 scope.
+        # ``query.variables`` already merges runtime > stage > outer; the
+        # model's own defaults are the lowest layer.
+        if model.source_model_origin is None:
+            effective_vars = {**(model.query_variables or {}), **(query.variables or {})}
+            if effective_vars:
+                model = _substitute_model_sql_surfaces(
+                    model=model, variables=effective_vars
+                )
+
         # Enrich: SlayerQuery + model → EnrichedQuery
         enriched = await self._enrich(query=query, model=model, named_queries=named_queries)
 
@@ -1066,7 +1137,13 @@ class SlayerQueryEngine:
 
         probe_query = self._build_type_probe_query(model=model)
         try:
-            enriched = await self._enrich(query=probe_query, model=model)
+            # DEV-1625: a template source model's Mode-A {var} surfaces must be
+            # rendered (from its own query_variables defaults) before probe SQL
+            # is generated; an undefaulted {var} raises here and degrades to {}
+            # via the surrounding except, so partially-defaulted models stay safe.
+            enriched = await self._enrich(
+                query=probe_query, model=_render_probe_model(model)
+            )
             dialect = self._dialect_for_type(datasource.type)
             generator = SQLGenerator(dialect=dialect)
             # DEV-1444: type probing is a user-visible call site; pin
