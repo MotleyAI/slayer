@@ -529,6 +529,97 @@ def _classify_subplan_filters(
     return sub_filter_texts or None
 
 
+def derived_shared_grain_not_implemented(column_name: str) -> NotImplementedError:
+    """DEV-1708: the single source of the "plain derived dimension used as
+    cross-model shared grain is not yet supported" error, shared by the planner
+    (which raises it) and the SQL generator's grain-loop defensive backstop, so
+    the two never drift. Full support is tracked in DEV-1495 (Stage 8/9)."""
+    return NotImplementedError(
+        f"DEV-1708: a plain derived (non-time) dimension ({column_name!r}) used "
+        f"as cross-model shared grain is not yet rendered — its host alias is "
+        f"flattened while the CTE join-back expects the dotted form "
+        f"(DEV-1495-b1). Pull the dimension to the host base, use a base column, "
+        f"or wrap it in a time dimension. Full support tracked in DEV-1495."
+    )
+
+
+def _route_host_filters(
+    *,
+    host_filters: List[HostFilterRouting],
+    host_slots: List[ValueSlot],
+    target_path: Tuple[str, ...],
+    host_model: SlayerModel,
+    terminal_model: SlayerModel,
+) -> Tuple[
+    List[BoundFilterId], List[BoundFilterId], List[BoundFilterId],
+    List[UnreachableFilterDroppedWarning],
+]:
+    """Classify each host filter via the ``inherited_filter_policy`` decision
+    table (``classify_host_filter``) into ``(applied, where_ids, having_ids,
+    dropped)`` — extracted from ``IsolatedCteCrossModelPlanner.plan`` (DEV-1708)
+    to keep that method focused. ``DROP_HOST_LOCAL`` / ``STAY_AT_HOST_POST`` are
+    neither propagated nor warned."""
+    applied: List[BoundFilterId] = []
+    where_ids: List[BoundFilterId] = []
+    having_ids: List[BoundFilterId] = []
+    dropped: List[UnreachableFilterDroppedWarning] = []
+    for hf in host_filters:
+        route = classify_host_filter(
+            host_filter=hf,
+            host_slots=host_slots,
+            target_path=target_path,
+            host_model_name=host_model.name,
+        )
+        if route is FilterRoute.PROPAGATE_WHERE:
+            where_ids.append(hf.filter_id)
+            applied.append(hf.filter_id)
+        elif route is FilterRoute.PROPAGATE_HAVING:
+            having_ids.append(hf.filter_id)
+            applied.append(hf.filter_id)
+        elif route is FilterRoute.DROP_UNREACHABLE:
+            dropped.append(UnreachableFilterDroppedWarning(
+                filter_text=hf.text or hf.filter_id,
+                reason=(
+                    f"filter {hf.filter_id!r} references slot(s) outside "
+                    f"the join path to {terminal_model.name!r}; "
+                    f"unreachable filters are dropped."
+                ),
+            ))
+    return applied, where_ids, having_ids, dropped
+
+
+def _compute_shared_grain_slots(  # NOSONAR(S3776) — one cohesive classification pass over host ROW slots (ColumnKey / TimeTruncKey / derived ColumnSqlKey), each carrying its own path-prefix rule; splitting the three branches into per-kind helpers scatters the single shared-grain contract without simplifying it.
+    *, host_slots: List[ValueSlot], target_path: Tuple[str, ...],
+) -> List[SlotId]:
+    """Host ROW slots (dimensions / time-dimensions) whose path lies on the
+    target's join chain flow through as the cross-model CTE's shared grain
+    (extracted from ``IsolatedCteCrossModelPlanner.plan`` — DEV-1708). Cross-
+    branch and aggregate/transform slots do not.
+
+    A projected, path-bearing **plain derived** (``ColumnSqlKey``) dimension on
+    the target path raises ``derived_shared_grain_not_implemented`` (user-
+    approved): the host aliases it flattened while the CTE join-back expects the
+    dotted form (DEV-1495-b1), and silently excluding it would CROSS-JOIN-
+    broadcast the global aggregate across groups. ``not s.hidden`` keeps a
+    filter-only derived ref (a hidden slot) unaffected; ``path == ()`` (a
+    host-local derived dim) broadcasts by design.
+    """
+    shared_grain: List[SlotId] = []
+    for s in host_slots:
+        if isinstance(s.key, ColumnKey):
+            p = s.key.path
+            if not p or p == target_path[: len(p)]:
+                shared_grain.append(s.id)
+        elif isinstance(s.key, TimeTruncKey):
+            td_path = column_path(s.key.column)
+            if not td_path or td_path == target_path[: len(td_path)]:
+                shared_grain.append(s.id)
+        elif isinstance(s.key, ColumnSqlKey) and s.key.path and not s.hidden:
+            if s.key.path == target_path[: len(s.key.path)]:
+                raise derived_shared_grain_not_implemented(s.key.column_name)
+    return shared_grain
+
+
 class IsolatedCteCrossModelPlanner:
     """Default impl — one CTE per (target_model, shared_grain) tuple.
 
@@ -596,80 +687,22 @@ class IsolatedCteCrossModelPlanner:
                 ))
 
         target_path = path
-        applied: List[BoundFilterId] = []
-        where_ids: List[BoundFilterId] = []
-        having_ids: List[BoundFilterId] = []
-        dropped: List[UnreachableFilterDroppedWarning] = []
-        for hf in host_filters:
-            route = classify_host_filter(
-                host_filter=hf,
-                host_slots=host_slots,
-                target_path=target_path,
-                host_model_name=host_model.name,
-            )
-            if route is FilterRoute.PROPAGATE_WHERE:
-                where_ids.append(hf.filter_id)
-                applied.append(hf.filter_id)
-            elif route is FilterRoute.PROPAGATE_HAVING:
-                having_ids.append(hf.filter_id)
-                applied.append(hf.filter_id)
-            elif route is FilterRoute.DROP_UNREACHABLE:
-                dropped.append(UnreachableFilterDroppedWarning(
-                    filter_text=hf.text or hf.filter_id,
-                    reason=(
-                        f"filter {hf.filter_id!r} references slot(s) outside "
-                        f"the join path to {terminal_model.name!r}; "
-                        f"unreachable filters are dropped."
-                    ),
-                ))
-            # DROP_HOST_LOCAL and STAY_AT_HOST_POST: not propagated, not warned.
+        applied, where_ids, having_ids, dropped = _route_host_filters(
+            host_filters=host_filters,
+            host_slots=host_slots,
+            target_path=target_path,
+            host_model=host_model,
+            terminal_model=terminal_model,
+        )
 
         target_model_filters = list(terminal_model.filters or [])
 
-        # Shared grain: local ROW slots on host (dimensions) flow through.
-        # Cross-branch ROW slots and aggregate / transform slots do not.
-        # DEV-1450 stage 7b.12: ``TimeTruncKey`` slots count as grain
-        # candidates too — a joined TD (``customers.created_at`` MONTH)
-        # whose column path lies on the target's join chain is shared
-        # between the host base and the cross-model CTE, so legacy
-        # ``LEFT JOIN`` on the truncated alias replaces the global
-        # ``CROSS JOIN``.
-        shared_grain: List[SlotId] = []
-        for s in host_slots:
-            if isinstance(s.key, ColumnKey):
-                p = s.key.path
-                if not p or p == target_path[: len(p)]:
-                    shared_grain.append(s.id)
-            elif isinstance(s.key, TimeTruncKey):
-                td_path = column_path(s.key.column)
-                if not td_path or td_path == target_path[: len(td_path)]:
-                    shared_grain.append(s.id)
-            elif (
-                isinstance(s.key, ColumnSqlKey)
-                and s.key.path
-                and not s.hidden
-            ):
-                # DEV-1708 (user-approved): a PLAIN derived (non-time) dimension
-                # PROJECTED on the target path would need to participate as
-                # cross-model shared grain, but the host aliases it flattened
-                # (``customers_v2__deep_pop``) while the CTE join-back expects the
-                # dotted form (DEV-1495-b1). Silently excluding it (the pre-Stage-4
-                # behaviour) CROSS-JOIN-broadcasts the GLOBAL aggregate across
-                # groups — wrong per-group values. Raise loudly instead; full
-                # support rides with DEV-1495 (Stage 8/9). Guards: ``not s.hidden``
-                # so a derived column appearing only as a FILTER operand (a hidden
-                # slot) is unaffected; a host-local derived dim (``path == ()``)
-                # is unaffected too — it broadcasts by design.
-                if s.key.path == target_path[: len(s.key.path)]:
-                    raise NotImplementedError(
-                        f"DEV-1708: a plain derived (non-time) dimension "
-                        f"({s.key.column_name!r}) used as cross-model shared "
-                        f"grain is not yet rendered — its host alias is "
-                        f"flattened while the CTE join-back expects the dotted "
-                        f"form (DEV-1495-b1). Pull the dimension to the host "
-                        f"base, use a base column, or wrap it in a time "
-                        f"dimension. Full support tracked in DEV-1495."
-                    )
+        # Shared grain: host ROW dimensions / time-dimensions on the target's
+        # join chain flow through (a plain derived one on the target path
+        # raises — DEV-1708). Extracted to keep this method focused.
+        shared_grain = _compute_shared_grain_slots(
+            host_slots=host_slots, target_path=target_path,
+        )
 
         first_hop = join_chain[0]
         first_hop_target = (
