@@ -50,6 +50,7 @@ from slayer.engine.enriched import (
     EnrichedTimeDimension,
     EnrichedTransform,
 )
+from slayer.sql.naming import flat_name
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
@@ -1176,8 +1177,9 @@ async def enrich_query(
     # prefix (``model_name_str.`` portion) and converts remaining dots
     # to ``__``.
     def _alias_to_short_local(alias: str) -> str:
-        stripped = alias.split(".", 1)[-1] if "." in alias else alias
-        return stripped.replace(".", "__")
+        # DEV-1713: delegates to the naming module's single flatten owner.
+        strip = alias.split(".", 1)[0] if "." in alias else None
+        return flat_name(alias, strip_relation=strip)
 
     _occupied_aliases: dict[str, str] = {}
     _occupied_shorts: dict[str, str] = {}

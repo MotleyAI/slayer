@@ -23,11 +23,14 @@ forced-filter ``EXISTS``. Dialect-aware via sqlglot.
 
 Intended to run on **post-mangle, pre-RLS** generator output (dialect alias
 mangling collapses BigQuery/T-SQL dotted aliases to ``___`` first — pre-mangle
-those dotted refs parse as ``table.column`` and both false-flag and trigger
-BigQuery's ``TypeError``; mangling is identity for other dialects). Setting
-``SLAYER_VALIDATE_SCOPES=1`` makes the generator call ``maybe_validate_scopes``
-on every emitted statement (runtime debugging); the test harness enables it
-suite-wide.
+those dotted refs parse as ``table.column`` and would false-flag; mangling is
+identity for other dialects). DEV-1713 finalised the BigQuery naming/mangling,
+which closed the last dotted-alias shape that made sqlglot raise ``TypeError``
+parsing BigQuery output — the prior ``_SQLGLOT_TYPEERROR_DIALECTS`` carve-out is
+therefore removed, and BigQuery output is now fully validated like every other
+dialect. Setting ``SLAYER_VALIDATE_SCOPES=1`` makes the generator call
+``maybe_validate_scopes`` on every emitted statement (runtime debugging); the
+test harness enables it suite-wide.
 """
 
 from __future__ import annotations
@@ -40,16 +43,11 @@ from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
+from slayer.sql.naming import assert_unique_cte_names
+
 # The session-policy transform's correlated-EXISTS source alias (see
 # ``session_policy._RLS_SRC``); the only legal correlated ref in post-RLS SQL.
 _RLS_SRC = "_rls_src"
-
-# sqlglot raises ``TypeError`` parsing some BigQuery inputs (dotted-alias
-# shapes). Validation runs post-mangle (dots already collapsed to ``___``) so
-# this is rare; when it happens for BigQuery we record a bounded, reported skip
-# rather than erroring. Residual ownership: Stage 9 (DEV-1713). Any other
-# dialect re-raises.
-_SQLGLOT_TYPEERROR_DIALECTS = frozenset({"bigquery"})
 
 _ENV_FLAG = "SLAYER_VALIDATE_SCOPES"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
@@ -86,15 +84,7 @@ def check_scope_closed(
 ) -> ScopeCheckResult:
     """Analyse ``sql`` and return a :class:`ScopeCheckResult` (never raises for
     a leak — inspect ``.leaks``). Parsing is dialect-aware."""
-    try:
-        ast = sqlglot.parse_one(sql, dialect=dialect)
-    except TypeError as exc:
-        if dialect in _SQLGLOT_TYPEERROR_DIALECTS:
-            return ScopeCheckResult(
-                closed=True, skipped=True,
-                skip_reason=f"sqlglot TypeError parsing {dialect}: {exc}",
-            )
-        raise
+    ast = sqlglot.parse_one(sql, dialect=dialect)
     if ast is None:
         return ScopeCheckResult(closed=True, skipped=True, skip_reason="empty parse")
 
@@ -121,14 +111,19 @@ def assert_scope_closed(
 
 
 def maybe_validate_scopes(sql: str, *, dialect: str = "postgres") -> None:
-    """Run :func:`assert_scope_closed` iff ``SLAYER_VALIDATE_SCOPES`` is truthy.
+    """Validate the emitted ``sql`` iff ``SLAYER_VALIDATE_SCOPES`` is truthy.
 
-    The env flag is read on every call so the test harness (and runtime
-    debugging) can toggle it after import.
+    Runs two checks on the final generator output: scope closure
+    (:func:`assert_scope_closed`) and, as the DEV-1692 belt, per-``WITH``-scope
+    CTE-name uniqueness (:func:`slayer.sql.naming.assert_unique_cte_names`). The
+    env flag is read on every call so the test harness (autouse) and runtime
+    debugging can toggle it after import; production pays nothing.
     """
     value = os.environ.get(_ENV_FLAG)
     if value is not None and value.strip().lower() in _TRUTHY:
         assert_scope_closed(sql, dialect=dialect)
+        # DEV-1692 belt: per-WITH-scope CTE-name uniqueness on the final output.
+        assert_unique_cte_names(sql, dialect=dialect)
 
 
 # --------------------------------------------------------------------------- #
