@@ -54,6 +54,7 @@ from slayer.core.keys import (
     column_path,
     normalize_scalar,
 )
+from slayer.core.formula import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
 from slayer.engine.binding import BoundExpr, BoundFilter
 from slayer.engine.planned import SlotId, ValueSlot
@@ -395,6 +396,63 @@ def lower_sugar_transforms(key: ValueKey) -> ValueKey:
         # carries no sugar to lower; only the LHS column can host a
         # rewritable transform. Rebuild only if the column changed.
         new_col = lower_sugar_transforms(key.column)
+        if new_col is key.column:
+            return key
+        return InKey(column=new_col, values=key.values, negated=key.negated)
+    return key
+
+
+def rewrite_rank_partition_keys(key: ValueKey, rewrite_fn) -> ValueKey:
+    """Walk ``key``; for every rank-family ``TransformKey`` carrying an
+    explicit ``partition_by`` (non-empty ``partition_keys``), replace those
+    keys with ``rewrite_fn(transform_key)`` (DEV-1497).
+
+    ``rewrite_fn`` receives the whole ``TransformKey`` and returns a new
+    ``frozenset`` of partition keys — validating that each resolves to a query
+    dimension / time-dimension and rewriting a time-dimension source column to
+    its ``TimeTruncKey`` bucket. It may raise ``ValueError`` for a partition
+    column that is not a query dimension.
+
+    Identity-preserving (mirrors :func:`lower_sugar_transforms`): parents are
+    rebuilt only where a child changed, so this runs BEFORE interning without
+    churning unrelated slots. Reaches rank transforms nested in composite
+    measures (``ArithmeticKey`` / ``ScalarCallKey``) and in filter predicates
+    (comparisons are ``ArithmeticKey``).
+    """
+    if isinstance(key, TransformKey):
+        new_input = rewrite_rank_partition_keys(key.input, rewrite_fn)
+        updates: dict = {}
+        if new_input is not key.input:
+            updates["input"] = new_input
+        if key.op in RANK_FAMILY_TRANSFORMS and key.partition_keys:
+            new_pk = rewrite_fn(key)
+            if new_pk != key.partition_keys:
+                updates["partition_keys"] = new_pk
+        return key.model_copy(update=updates) if updates else key
+    if isinstance(key, ArithmeticKey):
+        new_ops = tuple(rewrite_rank_partition_keys(op, rewrite_fn) for op in key.operands)
+        if all(a is b for a, b in zip(new_ops, key.operands)):
+            return key
+        return ArithmeticKey(op=key.op, operands=new_ops)
+    if isinstance(key, ScalarCallKey):
+        new_args = tuple(
+            rewrite_rank_partition_keys(a, rewrite_fn)
+            if isinstance(a, _SLOTTABLE_KIND + (ArithmeticKey, ScalarCallKey, BetweenKey))
+            else a
+            for a in key.args
+        )
+        if all(a is b for a, b in zip(new_args, key.args)):
+            return key
+        return ScalarCallKey(name=key.name, args=new_args)
+    if isinstance(key, BetweenKey):
+        new_col = rewrite_rank_partition_keys(key.column, rewrite_fn)
+        new_low = rewrite_rank_partition_keys(key.low, rewrite_fn)
+        new_high = rewrite_rank_partition_keys(key.high, rewrite_fn)
+        if new_col is key.column and new_low is key.low and new_high is key.high:
+            return key
+        return BetweenKey(column=new_col, low=new_low, high=new_high)
+    if isinstance(key, InKey):
+        new_col = rewrite_rank_partition_keys(key.column, rewrite_fn)
         if new_col is key.column:
             return key
         return InKey(column=new_col, values=key.values, negated=key.negated)

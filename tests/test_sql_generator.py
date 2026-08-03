@@ -2073,15 +2073,6 @@ class TestRankFamilyTransforms:
             in _norm(sql)
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1497: the typed pipeline does not validate that a rank "
-            "partition_by column is a query dimension — it silently adds it "
-            "to the base GROUP BY (changing result grain) instead of raising. "
-            "Auto-promotes when the validation is restored."
-        ),
-    )
     async def test_partition_by_must_be_a_query_dimension(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
@@ -7181,11 +7172,12 @@ class TestDev1501BroadTriggerAndGuards:
     async def test_hidden_row_order_target_raises_nyi(
         self, generator: SQLGenerator
     ) -> None:
-        """ORDER BY a non-projected ROW column (e.g. ``customer_id``) is
-        not a supported shape and must raise NotImplementedError — both
-        today and after Change 2. Guards against broad ``include_order=
-        True`` accidentally materialising hidden row slots and silently
-        changing GROUP BY grain.
+        """ORDER BY a non-projected ROW column (e.g. ``customer_id``) in an
+        aggregated query is refused. DEV-1712 (Stage 8) replaced the earlier
+        ``NotImplementedError`` with a clear plan-time ``ValueError`` (the
+        column is not in the GROUP BY; add it to dimensions or order by an
+        aggregate of it) — the query is still rejected, never silently
+        grain-widened.
         """
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
@@ -7203,8 +7195,9 @@ class TestDev1501BroadTriggerAndGuards:
                 dimensions=[ColumnRef(name="status")],
                 order=[OrderItem(column="customer_id", direction="asc")],
             )
-            with pytest.raises(NotImplementedError):
+            with pytest.raises(ValueError) as ei:
                 await engine.execute(query, dry_run=True)
+            assert "customer_id" in str(ei.value)
 
     async def test_hidden_simple_aggregate_in_having(
         self, generator: SQLGenerator
