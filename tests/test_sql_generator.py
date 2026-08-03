@@ -98,9 +98,6 @@ def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:
     )
 
 
-_SQLGLOT_TYPEERROR_DIALECTS = {"bigquery"}
-
-
 def _outer_order_terms(sql: str, dialect: str = "postgres") -> list[tuple[str, str]]:
     """Return each ORDER BY term from the OUTERMOST SELECT as
     ``(expression_sql, direction)`` pairs where direction is ``"asc"`` or
@@ -182,17 +179,20 @@ def _outer_from_node(sql: str, dialect: str = "postgres"):
 
 
 def _assert_valid_sql(sql: str, dialect: str = "postgres"):
-    """Assert generated SQL is structurally valid (parses, no nested WITH)."""
+    """Assert generated SQL is structurally valid (parses, no nested WITH).
+
+    DEV-1713 removed the BigQuery ``TypeError`` carve-out (finalised naming/
+    mangling no longer emits the dotted-alias shapes sqlglot choked on), so a
+    ``TypeError`` here is a real failure for every dialect.
+    """
     try:
         statements = sqlglot.parse(sql, dialect=dialect)
         assert statements, f"SQL failed to parse:\n{sql}"
         assert len(statements) == 1, f"Expected 1 SQL statement, got {len(statements)}:\n{sql}"
     except TypeError as exc:
-        if dialect not in _SQLGLOT_TYPEERROR_DIALECTS:
-            raise AssertionError(
-                f"sqlglot TypeError while validating {dialect} SQL:\n{sql}"
-            ) from exc
-        return  # Known sqlglot limitation for this dialect
+        raise AssertionError(
+            f"sqlglot TypeError while validating {dialect} SQL:\n{sql}"
+        ) from exc
     # No nested WITH — only one WITH keyword allowed at the start of a line
     with_lines = [line for line in sql.split("\n") if line.strip().upper().startswith("WITH ")]
     assert len(with_lines) <= 1, f"Nested WITH clauses detected:\n{sql}"
@@ -2432,15 +2432,14 @@ class TestMultiDialectGeneration:
     # T-SQL excluded: it now emits DATEADD via the dialect strategy, covered by
     # tests/dialects/test_multi_dialect_generation.py::test_calendar_time_shift
     # (DEV-1716).
+    # DEV-1713: BigQuery is no longer excluded — the sqlglot round-trip
+    # TypeError on the calendar time_shift INTERVAL construct that the prior
+    # ``_SQLGLOT_TYPEERROR_DIALECTS`` carve-out worked around no longer
+    # reproduces (upstream sqlglot / DEV-1716 dialect routing), so BigQuery
+    # generator output is now validated like every other dialect.
     @pytest.mark.parametrize("dialect", [d for d in ALL_DIALECTS if d != "tsql"])
     async def test_calendar_time_shift(self, dialect: str, orders_model: SlayerModel) -> None:
         """Calendar-based time_shift should produce dialect-appropriate date arithmetic in shifted CTE."""
-        if dialect == "bigquery":
-            pytest.skip(
-                "sqlglot's BigQuery parser raises TypeError round-tripping the "
-                "calendar time_shift INTERVAL construct (sqlglot limitation; "
-                "BigQuery is Tier-2). Same carve-out as _SQLGLOT_TYPEERROR_DIALECTS."
-            )
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",

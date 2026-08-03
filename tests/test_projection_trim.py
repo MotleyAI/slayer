@@ -693,15 +693,6 @@ class TestEdgeCases:
             f"SQL:\n{sql}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1495 (Bug 1): a cross-model DIMENSION projects under the "
-            "flattened ``__`` key (``orders.customers__revenue``) instead of "
-            "the dotted form (``orders.customers.revenue``) that cross-model "
-            "MEASURES and CLAUDE.md use. Auto-promotes when DEV-1495 is fixed."
-        ),
-    )
     async def test_cross_model_dotted_dimension_projection(
         self, orders_customers_engine,
     ) -> None:

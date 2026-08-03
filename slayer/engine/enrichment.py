@@ -50,6 +50,7 @@ from slayer.engine.enriched import (
     EnrichedTimeDimension,
     EnrichedTransform,
 )
+from slayer.sql.naming import flat_name
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
@@ -1147,8 +1148,9 @@ async def enrich_query(
                 # _query_as_model derives the downstream short from
                 # _alias_to_short(cm.alias) for unrenamed cross-model:
                 # the source-model prefix is stripped, then dots are
-                # converted to ``__``. Mirror that here.
-                short = f"{hop}.{cm_leaf}".replace(".", "__")
+                # converted to ``__``. Mirror that here via the naming
+                # module's single flatten owner (DEV-1713).
+                short = flat_name(f"{hop}.{cm_leaf}")
         else:
             if renamed:
                 public = f"{model_name_str}.{qf.name}"
@@ -1176,8 +1178,9 @@ async def enrich_query(
     # prefix (``model_name_str.`` portion) and converts remaining dots
     # to ``__``.
     def _alias_to_short_local(alias: str) -> str:
-        stripped = alias.split(".", 1)[-1] if "." in alias else alias
-        return stripped.replace(".", "__")
+        # DEV-1713: delegates to the naming module's single flatten owner.
+        strip = alias.split(".", 1)[0] if "." in alias else None
+        return flat_name(alias, strip_relation=strip)
 
     _occupied_aliases: dict[str, str] = {}
     _occupied_shorts: dict[str, str] = {}
@@ -1480,7 +1483,8 @@ async def enrich_query(
                                 if qfield.name and qfield.name != canonical_name:
                                     em.name = qfield.name
                                 else:
-                                    em.name = canonical_name.replace(".", "__")
+                                    # DEV-1713: single flatten owner.
+                                    em.name = flat_name(canonical_name)
                                 em.alias = target_alias
                                 break
                         known_aliases[target_name] = target_alias
