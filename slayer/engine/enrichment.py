@@ -1148,8 +1148,9 @@ async def enrich_query(
                 # _query_as_model derives the downstream short from
                 # _alias_to_short(cm.alias) for unrenamed cross-model:
                 # the source-model prefix is stripped, then dots are
-                # converted to ``__``. Mirror that here.
-                short = f"{hop}.{cm_leaf}".replace(".", "__")
+                # converted to ``__``. Mirror that here via the naming
+                # module's single flatten owner (DEV-1713).
+                short = flat_name(f"{hop}.{cm_leaf}")
         else:
             if renamed:
                 public = f"{model_name_str}.{qf.name}"
@@ -1482,7 +1483,8 @@ async def enrich_query(
                                 if qfield.name and qfield.name != canonical_name:
                                     em.name = qfield.name
                                 else:
-                                    em.name = canonical_name.replace(".", "__")
+                                    # DEV-1713: single flatten owner.
+                                    em.name = flat_name(canonical_name)
                                 em.alias = target_alias
                                 break
                         known_aliases[target_name] = target_alias

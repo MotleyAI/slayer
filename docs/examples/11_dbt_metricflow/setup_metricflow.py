@@ -24,6 +24,7 @@ Returns from :func:`ensure_metricflow_demo`: ``(client, db_path, result)``.
 import logging
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import List
 
@@ -61,6 +62,48 @@ class MetricFlowDemoError(RuntimeError):
     genuine conversion bug."""
 
 
+# Substrings (matched case-insensitively against git's stderr) that mark a fetch
+# failure as a transient network/server hiccup — a 5xx/429 from GitHub, DNS, or a
+# dropped connection — rather than a deterministic error (bad SHA, auth). These
+# are worth retrying, and worth skipping (not failing) the integration test on.
+_TRANSIENT_GIT_SIGNATURES = (
+    "the requested url returned error: 500",
+    "the requested url returned error: 502",
+    "the requested url returned error: 503",
+    "the requested url returned error: 504",
+    "the requested url returned error: 429",
+    "error: 429",
+    "could not resolve host",
+    "failed to connect",
+    "connection reset",
+    "connection timed out",
+    "timed out",
+    "empty reply from server",
+    "recv failure",
+    "send failure",
+    "gnutls_handshake",
+    "ssl_read",
+    "early eof",
+    "rpc failed",
+    "remote end hung up",
+    "unexpectedly closed",
+)
+
+# Retry knobs for the shallow fetch. Small, bounded backoff: enough to ride out a
+# brief GitHub blip without slowing CI when the very first attempt succeeds.
+_FETCH_RETRIES = 3
+_FETCH_BACKOFF_SECONDS = 2.0
+
+
+def _is_transient_git_error(text: str) -> bool:
+    """True if ``text`` (a git stderr string) looks like a transient network or
+    server failure rather than a deterministic one. Used both to decide whether a
+    failed fetch is worth retrying and whether the integration test should skip
+    instead of fail."""
+    lowered = text.lower()
+    return any(sig in lowered for sig in _TRANSIENT_GIT_SIGNATURES)
+
+
 def _git(*args: str, cwd: Path) -> str:
     """Run a git command, returning stripped stdout. Raises on failure."""
     result = subprocess.run(
@@ -71,6 +114,28 @@ def _git(*args: str, cwd: Path) -> str:
         check=True,
     )
     return result.stdout.strip()
+
+
+def _fetch_pinned_commit(tmp: Path) -> None:
+    """Shallow-fetch the pinned SHA into ``tmp``, retrying on transient network
+    errors (GitHub 5xx/429, DNS, dropped connections). Deterministic failures
+    (bad SHA, missing ``git``) raise on the first attempt."""
+    for attempt in range(1, _FETCH_RETRIES + 1):
+        try:
+            _git("fetch", "--depth", "1", "origin", DBT_PIN_SHA, cwd=tmp)
+            return
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr or ""
+            if attempt < _FETCH_RETRIES and _is_transient_git_error(stderr):
+                logger.warning(
+                    "Transient git fetch failure (attempt %d/%d), retrying: %s",
+                    attempt,
+                    _FETCH_RETRIES,
+                    stderr.strip(),
+                )
+                time.sleep(_FETCH_BACKOFF_SECONDS * attempt)
+                continue
+            raise
 
 
 def _checkout_is_valid(checkout: Path) -> bool:
@@ -110,10 +175,11 @@ def clone_dbt_project() -> Path:
 
     try:
         # Shallow-fetch the exact pinned commit. GitHub allows fetching an
-        # unadvertised SHA, so we never depend on the branch tip.
+        # unadvertised SHA, so we never depend on the branch tip. The fetch is
+        # retried on transient network failures (GitHub 5xx/429, DNS, resets).
         _git("init", "-q", cwd=tmp)
         _git("remote", "add", "origin", DBT_REPO_URL, cwd=tmp)
-        _git("fetch", "--depth", "1", "origin", DBT_PIN_SHA, cwd=tmp)
+        _fetch_pinned_commit(tmp)
         _git("checkout", "-q", "FETCH_HEAD", cwd=tmp)
         head = _git("rev-parse", "HEAD", cwd=tmp)
         if head != DBT_PIN_SHA:

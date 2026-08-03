@@ -382,6 +382,76 @@ class TestMaterialization:
 
 
 # --------------------------------------------------------------------------- #
+# DEV-1711 Stage 7 — path'd ColumnSqlKey (derived column ON a joined model).
+# The shifted-CTE partition/time resolver hands ``resolve`` a ColumnSqlKey whose
+# ``path`` is non-empty (e.g. ``stores.tier`` where ``tier = upper(name)`` is
+# derived on the joined ``stores`` model). ``_anchor`` must expand it rooted at
+# the ``__``-path alias (``is_root=False``) and register the join chain — today
+# it ignores ``path`` and mis-anchors at the host relation.
+# --------------------------------------------------------------------------- #
+class TestResolvePathedColumnSqlKey:
+    @staticmethod
+    def _customers_with_tier():
+        # ``tier = upper(balance)`` — a LOCAL derived column on the joined
+        # customers model (its inner ref stays on customers).
+        return SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+                Column(name="balance", sql="balance", type=DataType.DOUBLE),
+                Column(name="tier", sql="upper(balance)", type=DataType.TEXT),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        )
+
+    def test_single_hop_derived_anchors_at_path_alias(self) -> None:
+        scope = _scope(_orders(), self._customers_with_tier(), _regions())
+        expr = scope.resolve(
+            ColumnSqlKey(path=("customers",), model="customers", column_name="tier"))
+        rendered = expr.sql(dialect="postgres")
+        # The derived column is EXPANDED (the ``upper(...)`` wrapper is preserved,
+        # not dropped to the bare column) AND its inner ref qualifies under the
+        # JOINED alias, not the host — ``UPPER(customers.balance)``, never
+        # ``UPPER(orders.balance)``.
+        assert "UPPER(customers.balance)" in rendered, rendered
+        assert "orders.balance" not in rendered, rendered
+        # The join it lives behind is registered (Law 1).
+        assert scope.join_paths.as_list() == [("customers",)]
+
+    def test_single_hop_derived_registers_only_its_join(self) -> None:
+        scope = _scope(_orders(), self._customers_with_tier(), _regions())
+        scope.resolve(
+            ColumnSqlKey(path=("customers",), model="customers", column_name="tier"))
+        # ``regions`` is NOT referenced by ``tier`` — only the ``customers`` hop
+        # is pulled.
+        assert ("customers", "regions") not in scope.join_paths.as_list()
+
+    def test_joined_derived_crossing_further_join_registers_prefixes(self) -> None:
+        # A derived column on the joined model whose sql crosses a FURTHER join
+        # (``deep = regions.population`` on customers) anchors the further ref at
+        # the full ``customers__regions`` path (DEV-1701 shape) and registers
+        # both prefixes.
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+                Column(name="deep", sql="regions.population", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        )
+        scope = _scope(_orders(), customers, _regions())
+        expr = scope.resolve(
+            ColumnSqlKey(path=("customers",), model="customers", column_name="deep"))
+        rendered = expr.sql(dialect="postgres")
+        assert "customers__regions.population" in rendered, rendered
+        assert scope.join_paths.as_list() == [
+            ("customers",), ("customers", "regions"),
+        ]
+
+
+# --------------------------------------------------------------------------- #
 # Cached-expr ownership (Codex M1 / D-L).
 # --------------------------------------------------------------------------- #
 class TestResolveOwnership:

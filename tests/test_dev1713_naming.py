@@ -268,10 +268,11 @@ class TestJoinedDimensionDottedKeys:
         derived joined dim surfaces in ``attributes.dimensions`` under the
         DOTTED key iff both producers agree on the dotted form.
 
-        Measures stay host-local: a plain derived joined dim used as
-        cross-model shared grain deliberately raises (DEV-1708, user-approved;
-        full support = DEV-1495), so pairing ``customers.rev_x2`` with a
-        cross-model measure is not a legal query on this fixture."""
+        Uses only LOCAL measures: a derived joined dim combined with a
+        cross-model measure is a separate, deliberately-deferred case (DEV-1708
+        raises ``NotImplementedError`` for a derived dim used as a cross-model
+        shared grain — full support tracked in DEV-1495-b1). The naming
+        agreement this test pins needs no cross-model measure."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.rev_x2")],  # labeled -> surfaces
@@ -651,6 +652,45 @@ class TestTimeShiftCteDecollision:
         )
         shifted = [c for c in all_ctes if c.startswith("shifted_")]
         assert len(shifted) == 3, f"expected 3 shifted CTEs, got {shifted}\n{sql}"
+
+    async def test_hidden_time_shift_alias_avoids_user_column(self) -> None:
+        """Codex (PR #269): the hidden time_shift alias placeholder
+        (``_time_shift_inner``) must not shadow a real user measure literally
+        named ``_time_shift_inner`` — the transform allocator reserves the
+        projected aliases, so the hidden one is bumped to a distinct name and
+        the arithmetic reads its own shift, not the user column."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            default_time_dimension="created_at",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            )],
+            measures=[
+                # A user measure whose name collides with the hidden placeholder.
+                ModelMeasure(formula="revenue:sum", name="_time_shift_inner"),
+                ModelMeasure(
+                    formula="revenue:sum - time_shift(revenue:sum, -1, 'month')",
+                    name="growth",
+                ),
+            ],
+        )
+        sql = await _engine_generate(query=query, model=model)
+        cols = _outer_select_columns(sql, dialect="postgres")
+        # The user measure keeps its own key.
+        assert "orders._time_shift_inner" in cols, cols
+        # The hidden shift alias was bumped off the user's name, not collided.
+        assert "orders._time_shift_inner_2" in sql, sql
 
     async def test_two_consecutive_periods_unique_ctes(self) -> None:
         """DEV-1692 (sibling of time_shift): two arithmetic-wrapped
