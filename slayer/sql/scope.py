@@ -145,13 +145,26 @@ class ScopeFrame(BaseModel):
                 raw_sql = col.sql
             else:
                 raw_sql = col.name
+            # DEV-1711: a derived column ON a JOINED model (``path`` non-empty,
+            # e.g. ``stores.tier`` where ``tier`` lives on the joined ``stores``)
+            # must anchor at the ``__``-path alias with ``is_root=False`` so a
+            # bare inner ref (``name``) qualifies to ``stores.name`` — and a
+            # further-joined inner ref (``regions.population``) to the full
+            # ``stores__regions`` path (the DEV-1701 shape). A local derived
+            # column (empty path) keeps anchoring at the scope root.
+            if ref.path:
+                alias_path = "__".join(ref.path)
+                is_root = False
+            else:
+                alias_path = self.root_relation
+                is_root = True
             expanded = expand_derived_refs_sync(
                 sql=raw_sql,
                 model=model,
-                alias_path=self.root_relation,
+                alias_path=alias_path,
                 resolve_model=self.bundle.get_referenced_model,
                 dialect=self.dialect.sqlglot_name,
-                is_root=True,
+                is_root=is_root,
             )
             return self._parse(expanded or raw_sql)
         if isinstance(ref, str):

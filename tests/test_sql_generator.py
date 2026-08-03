@@ -244,13 +244,6 @@ _DEV1496_STAGE10 = (
     "`_wm_` range-join CTE and RAISE (not silently degrade) on unsupported "
     "shapes. Today the window kwarg is dropped. Auto-promotes at Stage 10."
 )
-_DEV1474_STAGE7 = (
-    "DEV-1711 (Stage 7): DEV-1474 — cross-model partition in a time_shift CTE "
-    "(stage 7b.12) is not implemented on the typed pipeline. Reconstructed from "
-    "the issue (no committed worktree survived). Auto-promotes at Stage 7."
-)
-
-
 @pytest.fixture
 def orders_model() -> SlayerModel:
     return SlayerModel(
