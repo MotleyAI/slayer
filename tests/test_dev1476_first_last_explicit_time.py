@@ -1242,9 +1242,12 @@ async def test_e2e_local_derived_crossing_time_arg() -> None:
 
 
 async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
-    """Codex F6 dedup: when a dimension AND a time arg both cross the same join,
-    the join is emitted exactly once (dimension pass registers it first; the
-    time-arg pass dedups against it).
+    """Codex F6 dedup, updated for DEV-1709 (Stage 5): the crossing time
+    arg isolates the aggregate into a host-rooted ``_cm_*`` CTE, so the
+    ``customers`` join now appears once PER SCOPE — once in the host base
+    (the dimension's row-level pull) and once inside the CTE (the time
+    arg's pull, deduped against the CTE's own dimension pull) — never
+    twice within one scope.
     """
     engine = await _multi_hop_engine()
     resp = await engine.execute(SlayerQuery(
@@ -1253,5 +1256,11 @@ async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
         measures=[{"formula": "amount:last(customers.signup_at)"}],
     ))
     assert resp.data, resp.sql
+    assert "_cm_" in resp.sql, (
+        f"crossing time arg must isolate (DEV-1709):\n{resp.sql}"
+    )
     joins = re.findall(r"JOIN\s+customers\b", resp.sql, re.I)
-    assert len(joins) == 1, f"expected one customers join, got {len(joins)}:\n{resp.sql}"
+    assert len(joins) == 2, (
+        f"expected one customers join per scope (host base + isolation "
+        f"CTE), got {len(joins)}:\n{resp.sql}"
+    )
