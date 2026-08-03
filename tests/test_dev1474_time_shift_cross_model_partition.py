@@ -449,7 +449,8 @@ class TestShiftedCteJoinedFilter:
         # the column appearing somewhere) — the re-aggregation runs over the same
         # filtered population as _base.
         where = _shifted_where(sql)
-        assert "stores.name" in where and "'North'" in where, where
+        assert "stores.name" in where, where
+        assert "'North'" in where, where
         assert_scope_closed(sql)
 
     async def test_model_filter_mode_a_crossing_join_lifts_guard(self) -> None:
@@ -472,7 +473,8 @@ class TestShiftedCteJoinedFilter:
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         where = _shifted_where(sql)
-        assert "stores.name" in where and "IS NOT NULL" in where.upper(), where
+        assert "stores.name" in where, where
+        assert "IS NOT NULL" in where.upper(), where
         assert_scope_closed(sql)
 
 

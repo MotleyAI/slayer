@@ -428,6 +428,9 @@ _SQL_COL_SEP = ",\n    "
 # duplicated across CTE / window emission sites (Sonar S1192).
 _SQL_WITH = "WITH "
 _SQL_PARTITION_BY = "PARTITION BY "
+# Two-space-indented ``SELECT`` head for hand-assembled CTE bodies (shifted /
+# consecutive-periods pairs), extracted so the literal isn't duplicated (S1192).
+_SQL_SELECT_HEAD = "SELECT\n  "
 
 # Matches safe aggregation parameter values: identifiers, qualified names, numeric literals.
 _SAFE_AGG_PARAM_RE = re.compile(
@@ -8332,56 +8335,81 @@ class SQLGenerator:
         DEV-1711: a ROW filter referencing a JOINED column
         (``stores.name = 'North'``) is now supported — the shifted CTE is a
         real ``ScopeFrame`` whose FROM pulls the join, so the guard that used
-        to raise on joined refs is gone. The returned ``crossed_paths`` list
-        (quote-tolerant dual scan, the DEV-1494 contract) is registered into
-        the caller's shifted scope so the LEFT JOIN the filter needs is
-        emitted. Filters over the same join set the base already applies keep
-        population parity between ``_base`` and the shifted CTE.
+        to raise on joined refs is gone. The returned ``crossed_paths`` list is
+        registered into the caller's shifted scope so the LEFT JOIN the filter
+        needs is emitted. Filters over the same join set the base already
+        applies keep population parity between ``_base`` and the shifted CTE.
         """
-        from slayer.core.keys import BetweenKey, Phase
+        from slayer.core.keys import Phase
 
         out: List[str] = []
         crossed_paths: List[Tuple[str, ...]] = []
-
-        def _collect_paths(sql_text: str) -> None:
-            for p in self._filter_join_paths(
-                sql=sql_text, source_relation=source_relation,
-                source_model=source_model, bundle=bundle,
-            ):
-                if p not in crossed_paths:
-                    crossed_paths.append(p)
-
         for fp in planned_query.filters_by_phase:
             if fp.phase != Phase.ROW:
                 continue
-            if fp.expression is not None:
-                if isinstance(fp.expression.value_key, BetweenKey):
-                    # date_range filter — omit from inner shifted CTE.
-                    continue
-                rendered = self._render_value_key_for_filter(
-                    key=fp.expression.value_key,
-                    source_relation=source_relation,
-                    source_model=source_model,
-                    bundle=bundle,
-                )
-                if isinstance(rendered, (exp.And, exp.Or)):
-                    rendered = exp.Paren(this=rendered)
-                part = rendered.sql(dialect=self.dialect)
-                out.append(part)
-                _collect_paths(part)
-            elif fp.text is not None:
-                qualified = self._render_model_filter_sql(
-                    sql=fp.text,
-                    columns=fp.text_columns,
-                    source_model=source_model,
-                    source_relation=source_relation,
-                    bundle=bundle,
-                )
-                out.append(qualified)
-                _collect_paths(qualified)
+            rendered = self._shifted_where_part(
+                fp=fp, source_relation=source_relation,
+                source_model=source_model, bundle=bundle,
+            )
+            if rendered is None:
+                continue
+            part, paths = rendered
+            out.append(part)
+            for p in paths:
+                if p not in crossed_paths:
+                    crossed_paths.append(p)
         return out, crossed_paths
 
-    def _emit_time_shift_ctes_for_planned(
+    def _shifted_where_part(
+        self, *, fp, source_relation: str, source_model, bundle,
+    ) -> "Optional[Tuple[str, List[Tuple[str, ...]]]]":
+        """Render one ROW-phase filter for the shifted CTE, returning its SQL
+        plus the join paths it crosses — or ``None`` to omit it (a
+        ``BetweenKey`` date_range filter, per the 7b.3c invariant).
+
+        The join paths are collected per carrier kind (CodeRabbit): a TYPED
+        filter is scanned STRUCTURALLY on its already-rendered AST via
+        ``_joined_paths_in_sql`` — the expression is fully qualified/expanded,
+        so its crossed joins are visible directly and there is no text
+        round-trip that could silently swallow a parse failure. A Mode-A
+        ``text`` filter has only its string form, so it keeps the
+        ``_filter_join_paths`` dual raw + inline-expanded scan (the DEV-1494
+        contract that surfaces a derived ref's expansion joins).
+        """
+        from slayer.core.keys import BetweenKey
+
+        if fp.expression is not None:
+            if isinstance(fp.expression.value_key, BetweenKey):
+                return None  # date_range filter — omit from inner shifted CTE.
+            rendered = self._render_value_key_for_filter(
+                key=fp.expression.value_key,
+                source_relation=source_relation,
+                source_model=source_model,
+                bundle=bundle,
+            )
+            if isinstance(rendered, (exp.And, exp.Or)):
+                rendered = exp.Paren(this=rendered)
+            paths = self._joined_paths_in_sql(
+                sql_expr=rendered, source_relation=source_relation,
+                source_model=source_model, bundle=bundle,
+            )
+            return rendered.sql(dialect=self.dialect), paths
+        if fp.text is not None:
+            qualified = self._render_model_filter_sql(
+                sql=fp.text,
+                columns=fp.text_columns,
+                source_model=source_model,
+                source_relation=source_relation,
+                bundle=bundle,
+            )
+            paths = self._filter_join_paths(
+                sql=qualified, source_relation=source_relation,
+                source_model=source_model, bundle=bundle,
+            )
+            return qualified, paths
+        return None
+
+    def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — single conceptual unit for one time_shift slot: partition/time resolution through the shifted ScopeFrame + shifted-CTE body assembly + sjoin grain join-back, all sharing tightly-coupled per-slot state (time_alias / input_alias / partition_specs / shifted_cte_name / carry aliases). Splitting forces that cross-cutting state through many-argument helpers without simplifying anything — same shape as the NOSONAR'd sibling _render_cross_model_cte.
         self,
         *,
         slot,
@@ -8720,7 +8748,7 @@ class SQLGenerator:
                 f"ON {on_expr.sql(dialect=self.dialect)}"
             )
 
-        shifted_sql_parts = ["SELECT\n  " + ",\n  ".join(shifted_select_parts)]
+        shifted_sql_parts = [_SQL_SELECT_HEAD + ",\n  ".join(shifted_select_parts)]
         shifted_sql_parts.extend(from_parts)
         if shifted_where_parts:
             shifted_sql_parts.append(
@@ -8942,7 +8970,7 @@ class SQLGenerator:
         )
         cp_reset_cte_name = f"cp_reset_{slot_alias}"
         cp_reset_sql = (
-            "SELECT\n  " + carry_select
+            _SQL_SELECT_HEAD + carry_select
             + ",\n  " + reset_window_sql
             + f"\nFROM {prev_cte}"
         )
@@ -8973,7 +9001,7 @@ class SQLGenerator:
         )
         cp_value_cte_name = f"cp_value_{slot_alias}"
         cp_value_sql = (
-            "SELECT\n  " + carry_select
+            _SQL_SELECT_HEAD + carry_select
             + ",\n  " + value_outer_case
             + f"\nFROM {cp_reset_cte_name}"
         )
