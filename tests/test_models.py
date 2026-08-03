@@ -1643,12 +1643,16 @@ class TestMeasureFilter:
 
 
 class TestSubstituteVariables:
+    # DEV-1625 made ``escape`` a required keyword-only argument. These legacy
+    # generic tests use ``escape="python"`` (the Mode-B query-filter lineage);
+    # none of the values here contain quotes/backslashes so both modes agree.
     def test_string_variable(self) -> None:
         from slayer.core.query import substitute_variables
 
         result = substitute_variables(
             filter_str="status = '{status_val}'",
             variables={"status_val": "active"},
+            escape="python",
         )
         assert result == "status = 'active'"
 
@@ -1658,6 +1662,7 @@ class TestSubstituteVariables:
         result = substitute_variables(
             filter_str="amount > {min_amount}",
             variables={"min_amount": 100},
+            escape="python",
         )
         assert result == "amount > 100"
 
@@ -1667,6 +1672,7 @@ class TestSubstituteVariables:
         result = substitute_variables(
             filter_str="rate < {max_rate}",
             variables={"max_rate": 0.05},
+            escape="python",
         )
         assert result == "rate < 0.05"
 
@@ -1676,6 +1682,7 @@ class TestSubstituteVariables:
         result = substitute_variables(
             filter_str="status = '{status}' AND amount > {min}",
             variables={"status": "completed", "min": 50},
+            escape="python",
         )
         assert result == "status = 'completed' AND amount > 50"
 
@@ -1685,6 +1692,7 @@ class TestSubstituteVariables:
         result = substitute_variables(
             filter_str="name LIKE '{{prefix}}%' AND status = '{val}'",
             variables={"val": "ok"},
+            escape="python",
         )
         assert result == "name LIKE '{prefix}%' AND status = 'ok'"
 
@@ -1695,6 +1703,7 @@ class TestSubstituteVariables:
             substitute_variables(
                 filter_str="status = '{missing}'",
                 variables={},
+                escape="python",
             )
 
     def test_invalid_variable_name_raises(self) -> None:
@@ -1704,6 +1713,7 @@ class TestSubstituteVariables:
             substitute_variables(
                 filter_str="status = '{bad-name}'",
                 variables={"bad-name": "x"},
+                escape="python",
             )
 
     def test_invalid_type_raises(self) -> None:
@@ -1713,6 +1723,7 @@ class TestSubstituteVariables:
             substitute_variables(
                 filter_str="status = '{val}'",
                 variables={"val": [1, 2, 3]},
+                escape="python",
             )
 
     def test_no_variables_no_change(self) -> None:
@@ -1721,6 +1732,7 @@ class TestSubstituteVariables:
         result = substitute_variables(
             filter_str="status = 'active'",
             variables={},
+            escape="python",
         )
         assert result == "status = 'active'"
 
