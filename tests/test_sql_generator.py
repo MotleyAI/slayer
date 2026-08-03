@@ -238,11 +238,8 @@ _DEV1531_STAGE5 = (
     "ranked subquery (Law-2). Today the path-qualified ref leaks into the outer "
     "aggregate body. Auto-promotes when Stage 5 lands."
 )
-_DEV1526_STAGE4 = (
-    "DEV-1708 (Stage 4): DEV-1526 — a cross-model aggregate whose target "
-    "column's Column.sql crosses a FURTHER join must pull that LEFT JOIN into "
-    "the `_cm_*` CTE (Law-1 inside the CTE ScopeFrame). Auto-promotes at Stage 4."
-)
+# DEV-1526 (cross-model aggregate source crossing a further join) landed in
+# DEV-1708 Stage 4; its pinned strict-xfails were promoted to plain tests.
 _DEV1496_STAGE10 = (
     "DEV-1714 (Stage 10): DEV-1496 — duration-windowed measures must emit a "
     "`_wm_` range-join CTE and RAISE (not silently degrade) on unsupported "
@@ -4087,23 +4084,6 @@ class TestMeasureSourceSqlJoinInference:
         assert "customers__regions" not in join_aliases
         assert "regions" not in join_aliases
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1526 (sibling of DEV-1502 in cross-model space): a "
-            "cross-model aggregate (customers_v2.deep_pop:sum) whose "
-            "TARGET column's Column.sql is a joined-model ref "
-            "(regions.population, crossing the customers_v2 → regions "
-            "join) does not have that further join pulled into the "
-            "_cm_* CTE. The host-side collector added in DEV-1502 "
-            "explicitly skips source.path != () to avoid double-"
-            "emitting; the _cm_* CTE builder needs the symmetric fix. "
-            "File: cross_model_planner.py / "
-            "_render_cross_model_aggregate_cte_body at "
-            "slayer/sql/generator.py:5962. Auto-promotes when the CTE-"
-            "side collector lands."
-        ),
-    )
     async def test_cross_model_target_column_sql_crosses_further_join_xfail(
         self, storage
     ) -> None:
@@ -11405,7 +11385,6 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         await storage.save_model(self._orders_x())
         return SlayerQueryEngine(storage=storage)
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
     async def test_single_further_hop_source_sql(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
             Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
@@ -11419,7 +11398,6 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "LEFT JOIN regions AS regions" in cm_body, cm_body
         assert "SUM(regions.population)" in cm_body, cm_body
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
     async def test_multi_hop_further_join_source_sql(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
             Column(name="deep_gdp", sql="regions__countries.gdp", type=DataType.DOUBLE),
@@ -11434,7 +11412,6 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
         assert "SUM(regions__countries.gdp)" in cm_body, cm_body
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
     async def test_path_alias_source_sql(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
             Column(name="deep_country_name", sql="regions__countries.name",
@@ -11450,7 +11427,6 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
         assert "COUNT(DISTINCT regions__countries.name)" in cm_body, cm_body
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
     async def test_mode_a_function_wrapping_source_sql(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
             Column(name="region_prop_x",
@@ -11465,7 +11441,6 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "LEFT JOIN regions AS regions" in cm_body, cm_body
         assert "regions.props" in cm_body, cm_body
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
     async def test_sibling_derived_chain_source_sql(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
             Column(name="pop_helper", sql="regions.population", type=DataType.DOUBLE),
@@ -11480,7 +11455,6 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "LEFT JOIN regions AS regions" in cm_body, cm_body
         assert "regions.population" in cm_body, cm_body
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
     async def test_mixed_base_col_and_further_join_source_sql(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
             Column(name="deep_score", sql="lifetime_value + regions.population",
@@ -11517,7 +11491,6 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert cm_body.count("LEFT JOIN regions AS regions") == 1, cm_body
         assert "SUM(regions.population)" in cm_body, cm_body
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
     async def test_filter_and_source_cross_different_depths(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(
             extra_columns=[
@@ -11536,7 +11509,6 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
         assert "SUM(regions__countries.gdp)" in cm_body, cm_body
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
     async def test_composite_two_operand_each_cte_pulls_join(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
             Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
@@ -11555,7 +11527,6 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "SUM(regions.population)" in pop_body, pop_body
         assert "SUM(regions.weight)" in weight_body, weight_body
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
     async def test_first_last_source_join_in_ranked_subquery(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
             Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
@@ -11588,7 +11559,6 @@ class TestCrossModelAggregateSourceSqlJoinInference:
         assert "regions" not in cm_body, cm_body
         assert "countries" not in cm_body, cm_body
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1526_STAGE4)
     async def test_deeper_join_only_in_cte_not_host_base(self, storage) -> None:
         engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
             Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),

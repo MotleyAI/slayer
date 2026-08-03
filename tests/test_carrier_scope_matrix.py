@@ -374,14 +374,6 @@ class TestScopeDefectPins:
         sql = await _gen(query, _orders())
         assert "_wm_" in sql  # intended Stage-10 windowed CTE scope
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1708 (Stage 4): a cross-model aggregate whose target column's "
-            "Column.sql crosses a FURTHER join does not pull that join into the "
-            "_cm_ CTE (DEV-1526). Auto-promotes when Stage 4 lands."
-        ),
-    )
     async def test_cross_model_source_crosses_further_join(self) -> None:
         customers = _customers(extra=[
             Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
