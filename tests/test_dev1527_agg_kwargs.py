@@ -27,6 +27,7 @@ test_agg_param_derived_column_path_alias_xfail``.
 
 from __future__ import annotations
 
+import re
 
 import pytest
 from pydantic import ValidationError
@@ -248,11 +249,11 @@ class TestDev1527KwargExpansion:
         assert "LEFT JOIN regions AS customers__regions" in sql
 
     async def test_having_crossing_kwarg_expands(self) -> None:
-        # A HAVING clause on a local aggregate with a crossing derived kwarg must
-        # render the expanded, join-anchored kwarg (customers__regions.weight) in
-        # the HAVING too — matching the SELECT — not the bare, non-existent
-        # orders.region_weight (CodeRabbit: the HAVING render path also dropped
-        # resolved_agg_kwargs).
+        # DEV-1709: the crossing-kwarg aggregate isolates, so the aggregate
+        # filter routes to the combined outer WHERE against the CTE's output
+        # column (DEV-1503 rule) — never HAVING. The expanded, join-anchored
+        # kwarg (customers__regions.weight) renders inside the CTE; the bare
+        # non-existent orders.region_weight never appears.
         orders = _orders(extra=[
             Column(name="region_weight", sql="customers__regions.weight",
                    type=DataType.DOUBLE),
@@ -267,10 +268,13 @@ class TestDev1527KwargExpansion:
             query=query, model=orders, extra_models=[_customers(), _regions()],
         )
         norm = _norm(sql)
-        assert "HAVING" in norm
-        having = norm.split("HAVING", 1)[1]
-        assert "customers__regions.weight" in having       # kwarg expanded in HAVING
-        assert "orders.region_weight" not in having        # not the broken bare form
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        assert "HAVING" not in norm, sql
+        assert "customers__regions.weight" in _extract_cm_body(sql), sql
+        assert "orders.region_weight" not in sql
+        # The aggregate filter lands in the outer WHERE on the CTE column.
+        outer = sql[sql.rfind("\n)") + 2:]
+        assert "WHERE" in outer and "> 5" in outer, sql
 
     async def test_custom_aggregation_str_param_override_substitutes(self) -> None:
         # kind="str" template path through _build_formula_agg: a model-defined
@@ -291,13 +295,34 @@ class TestDev1527KwargExpansion:
 
 
 # --------------------------------------------------------------------------- #
-# F1 (Codex M6) — a crossing kwarg base-pulls its join (multiply-per-match),
-# it is NOT isolated in a CTE (isolation is Stage 5). SQL-shape pin; executed
+# F1 — a crossing kwarg ISOLATES the aggregate into a host-rooted CTE
+# (DEV-1709 Stage 5, widened Law-3 trigger); inside that CTE the kwarg's
+# join base-pulls with multiply-per-match semantics (F1 decision — 1:N
+# semantics unchanged, only the scope moved). SQL-shape pin; executed
 # multiply-per-match values live in tests/integration/test_integration_duckdb.py.
 # --------------------------------------------------------------------------- #
+def _extract_cm_body(sql: str) -> str:
+    """First `_cm_*` CTE body, balanced-paren walk (mirrors the helper in
+    tests/test_sql_generator.py)."""
+    m = re.search(r"_cm_\w+\s+AS\s*\(", sql)
+    assert m, f"No _cm_ CTE in:\n{sql}"
+    start = sql.index("(", m.start()) + 1
+    depth, i = 1, start
+    while i < len(sql):
+        if sql[i] == "(":
+            depth += 1
+        elif sql[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return sql[start:i]
+        i += 1
+    raise AssertionError(f"Unbalanced parens in:\n{sql}")
+
+
 class TestDev1527F1BasePull:
     async def test_crossing_kwarg_pulls_plain_left_join_not_isolated(self) -> None:
         # 1:N: one order → many line_items. ``li_weight`` crosses that join.
+        # DEV-1709: the aggregate isolates; the join lives INSIDE its CTE.
         orders = _orders(
             extra=[Column(name="li_weight", sql="line_items.qty", type=DataType.DOUBLE)],
             joins_extra=[ModelJoin(
@@ -310,18 +335,21 @@ class TestDev1527F1BasePull:
         sql = await _engine_generate(
             query=query, model=orders, extra_models=[_line_items()],
         )
-        norm = _norm(sql)
-        assert "LEFT JOIN line_items" in sql
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cm_body(sql)
+        norm = _norm(cm_body)
+        assert "LEFT JOIN line_items" in cm_body
         # The crossing kwarg must be the weighted-avg WEIGHT operand, not merely
         # present: weighted_avg = SUM({value} * {weight}) / NULLIF(SUM({weight}),0).
         assert "* line_items.qty" in norm                     # in the value*weight product
         assert "NULLIF(SUM(line_items.qty)" in norm           # in the normaliser
-        # Stage 2 base-pulls, does NOT isolate — no cross-model / filtered CTE.
-        assert "_cm_" not in sql
-        assert "_fm_" not in sql
+        # The join never leaks into the host scope.
+        host_part = sql.replace(cm_body, "")
+        assert "LEFT JOIN line_items" not in host_part, sql
 
     async def test_ndotn_control_regionweight_still_base_pull(self) -> None:
-        # N:1 control (region_weight): also base-pulls; still no isolation.
+        # N:1 control (region_weight): isolates identically — the trigger is
+        # structural (any crossing input), not cardinality-driven.
         orders = _orders(extra=[
             Column(name="region_weight", sql="customers__regions.weight",
                    type=DataType.DOUBLE),
@@ -333,6 +361,5 @@ class TestDev1527F1BasePull:
         sql = await _engine_generate(
             query=query, model=orders, extra_models=[_customers(), _regions()],
         )
-        assert "customers__regions.weight" in sql
-        assert "_cm_" not in sql
-        assert "_fm_" not in sql
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        assert "customers__regions.weight" in _extract_cm_body(sql), sql

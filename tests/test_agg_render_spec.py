@@ -883,9 +883,12 @@ class TestBuilderParametric:
 
 
 class TestBuilderCrossModelKwargPath:
-    def test_kwarg_columnkey_path_mismatch_raises(self):
-        # Aggregate value column is local; kwarg ColumnKey carries a join
-        # path — that's a meaningless cross-model kwarg and must reject.
+    def test_local_source_pathed_kwarg_accepted(self):
+        # DEV-1709: a LOCAL aggregate with a structurally-crossing kwarg is
+        # now a supported crossing INPUT — the widened Law-3 trigger
+        # isolates the aggregate host-rooted, and inside that CTE's
+        # sub-render the kwarg resolves through the host scope. The spec
+        # builder therefore no longer rejects it.
         key = AggregateKey(
             source=ColumnKey(path=(), leaf="amount"),
             agg="weighted_avg",
@@ -899,21 +902,17 @@ class TestBuilderCrossModelKwargPath:
             public_name="amount_weighted_avg",
             slot_type=DataType.DOUBLE,
         )
-        with pytest.raises(AggregationNotAllowedError, match=r"kwarg .* references ColumnKey"):
-            _invoke(
-                slot=slot,
-                key=key,
-                source_model=_orders_model(),
-                source_relation="orders",
-                full_alias="orders.amount_weighted_avg",
-            )
+        spec = _invoke(
+            slot=slot,
+            key=key,
+            source_model=_orders_model(),
+            source_relation="orders",
+            full_alias="orders.amount_weighted_avg",
+        )
+        assert spec is not None
 
-    def test_kwarg_columnsqlkey_path_mismatch_raises(self):
-        # CodeRabbit fold-in: a ColumnSqlKey kwarg with a non-empty path
-        # against a local source must reject the same way ColumnKey does.
-        # Previously the isinstance check only matched ColumnKey, so a
-        # ColumnSqlKey kwarg slipped past and would have bound the
-        # derived expression against the wrong relation.
+    def test_local_source_pathed_columnsqlkey_kwarg_accepted(self):
+        # Same DEV-1709 relaxation for the ColumnSqlKey kwarg kind.
         key = AggregateKey(
             source=ColumnKey(path=(), leaf="amount"),
             agg="weighted_avg",
@@ -934,9 +933,34 @@ class TestBuilderCrossModelKwargPath:
             public_name="amount_weighted_avg",
             slot_type=DataType.DOUBLE,
         )
+        spec = _invoke(
+            slot=slot,
+            key=key,
+            source_model=_orders_model(),
+            source_relation="orders",
+            full_alias="orders.amount_weighted_avg",
+        )
+        assert spec is not None
+
+    def test_cross_model_source_kwarg_path_mismatch_still_raises(self):
+        # The gate survives for CROSS-MODEL aggregates: after reroot
+        # prefix-stripping, a kwarg on a DIFFERENT branch than the source
+        # would bind against the wrong model — still a hard error.
+        key = AggregateKey(
+            source=ColumnKey(path=("customers",), leaf="amount"),
+            agg="weighted_avg",
+            kwargs=(
+                ("weight", ColumnKey(path=("warehouses",), leaf="quantity")),
+            ),
+        )
+        slot = _slot(
+            key,
+            declared_name="amount_weighted_avg",
+            public_name="amount_weighted_avg",
+            slot_type=DataType.DOUBLE,
+        )
         with pytest.raises(
-            AggregationNotAllowedError,
-            match=r"kwarg .* references ColumnSqlKey",
+            AggregationNotAllowedError, match=r"kwarg .* references ColumnKey",
         ):
             _invoke(
                 slot=slot,

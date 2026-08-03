@@ -153,14 +153,20 @@ call chain just before `_build_from_and_joins`:
 
 All three collectors restrict to **local** aggregate sources (empty
 `AggregateKey.source.path`); cross-model aggregates own their own join
-discovery inside the per-plan `_cm_*` CTE for the `Column.filter` side
-(DEV-1494 / DEV-1503). The symmetric source-`Column.sql` discovery inside
-the `_cm_*` CTE is a known gap (DEV-1526) — a cross-model aggregate whose
-target column's `Column.sql` crosses a further join does not yet have that
-join pulled into the CTE FROM. All three host-side collectors feed the
-shared `needed_join_paths` list, so repeated paths surfaced by different
-sources dedupe naturally via `_build_from_and_joins`'s `emitted_aliases`
-guard.
+discovery inside the per-plan `_cm_*` CTE — for the `Column.filter` side
+(DEV-1494 / DEV-1503) and, since Stage 4 (DEV-1708 closed DEV-1526), for a
+target column's `Column.sql` that crosses a further join. All three
+host-side collectors feed the shared `needed_join_paths` list, so repeated
+paths surfaced by different sources dedupe naturally via
+`_build_from_and_joins`'s `emitted_aliases` guard.
+
+Since Stage 5 (DEV-1709, widened Law-3 trigger), a LOCAL aggregate with
+any crossing input — source `Column.sql`, `Column.filter`, positional
+args, kwargs — never renders in the top-level host base at all: it
+isolates into a host-rooted `_cm_*` CTE, and the discovery above runs
+inside that CTE's sub-render (see
+[cross-model-aggregates.md](cross-model-aggregates.md#strategy-3-host-rooted-isolation--any-crossing-input-dev-1503-widened-by-dev-1709)).
+The host base only ever contains purely-local aggregates.
 
 ## Result-key contract (P10)
 

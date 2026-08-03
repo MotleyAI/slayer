@@ -195,12 +195,14 @@ class FirstLastRenderState(BaseModel):
     threaded through ``_build_where_having_from_planned`` instead."""
 
     value_alias_by_sql: Dict[str, str] = {}
-    """DEV-1708 Law 2: expanded-source-SQL → ``_val_<n>`` materialisation alias
-    for a first/last whose SOURCE crosses a join. The projected aggregate
-    materialises the crossing value inside the ranked subquery; a HAVING
-    referencing the same aggregate must bind to the SAME alias (not re-emit the
-    raw crossing ref, which is out of scope in the CTE's outer SELECT). Empty
-    when the source is local."""
+    """DEV-1708 Law 2: RESOLVED value text → ``_val_<n>`` materialisation alias
+    for an aggregate whose SOURCE crosses a join. Keyed by the resolved
+    (qualified + ``Column.type`` inner-CAST) value emission — DEV-1709 — so
+    same-sql-different-type aggregates map to distinct materialisations. The
+    projected aggregate materialises the crossing value inside the ranked
+    subquery; a HAVING referencing the same aggregate must bind to the SAME
+    alias (not re-emit the raw crossing ref, which is out of scope in the
+    outer SELECT). Empty when every source is local."""
 
 
 def _iter_first_last_leaves(key) -> "list":  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union; each branch is the per-type recursion contract for surfacing first/last AggregateKey leaves. Extracting per-type helpers would scatter the contract.
@@ -4939,6 +4941,13 @@ class SQLGenerator:
                 # ``base_render_order``; the aggregate value is identical
                 # across visits so synthesise once per sid, keyed by the
                 # first alias.
+                #
+                # DEV-1709 (closes the DEV-1527/DEV-1476 first/last kwarg
+                # deferral): column-ref kwargs are resolved here so the
+                # spec embeds the expanded, join-anchored expression; a
+                # CROSSING kwarg expression is then Law-2-materialised in
+                # the pass below (the outer aggregate body may only
+                # reference the ranked subquery's projections).
                 if sid not in synth_by_sid:
                     synth_by_sid[sid] = (
                         self._build_agg_render_spec_from_planned(
@@ -4946,6 +4955,10 @@ class SQLGenerator:
                             source_relation=source_relation,
                             full_alias=full_alias,
                             bundle=bundle,
+                            resolved_agg_kwargs=self._resolve_agg_kwargs_for_key(
+                                key=slot.key, source_model=source_model,
+                                source_relation=source_relation, bundle=bundle,
+                            ),
                         )
                     )
 
@@ -4961,6 +4974,7 @@ class SQLGenerator:
         # inlined inside the composite render). Keyed by the AggregateKey
         # itself so two composites sharing the same operand dedupe.
         composite_synth_by_key: Dict[Any, "EnrichedMeasure"] = {}
+        composite_resolved_kwargs: Dict[Any, Dict[str, ResolvedAggKwarg]] = {}
         for sid in base_render_order:
             slot = slots_by_id[sid]
             if slot.phase != Phase.AGGREGATE:
@@ -4987,6 +5001,107 @@ class SQLGenerator:
                         bundle=bundle,
                     )
                 )
+                leaf_kw = self._resolve_agg_kwargs_for_key(
+                    key=agg_leaf, source_model=source_model,
+                    source_relation=source_relation, bundle=bundle,
+                )
+                if leaf_kw:
+                    composite_resolved_kwargs[agg_leaf] = leaf_kw
+
+        # DEV-1709 / DEV-1531 — Law 2 in the ranked subquery. The subquery
+        # re-exports only ``source_relation.*`` + rank / ``_td`` / ``_dim``
+        # columns, so ANY crossing expression the OUTER SELECT consumes —
+        # an aggregate SOURCE sql or a column-ref KWARG value — must be
+        # materialised as a ``_val_<n>`` projection inside the subquery and
+        # the outer consumer rewritten to the bare alias. Applies to
+        # first/last AND regular aggregates alike (DEV-1702-B1). After the
+        # widened Law-3 trigger, crossing inputs reach this path only
+        # inside a host-rooted isolation CTE's sub-render (where inline
+        # joins are legal but the ranked-scope boundary still applies) or
+        # under ``disable_host_rooted_isolation``.
+        #
+        # The materialised projection is the RESOLVED value — qualified,
+        # with the ``Column.type`` inner CAST for non-bare expressions
+        # (``_resolve_value_sql``'s rule) — so the outer aggregate consumes
+        # exactly the value the inline path would have aggregated
+        # (``SUM(CAST(x * 2 AS INT))`` semantics preserved). Dedupe is by
+        # that resolved text: same sql + different type differ by the CAST
+        # and never collapse onto one ``_val``; bare refs are type-agnostic
+        # (no CAST) and sharing IS correct.
+        allocator = self._gen_allocator or AliasAllocator()
+        allocator.reserve(*[c.name for c in source_model.columns])
+        value_alias_by_sql: Dict[str, str] = {}
+
+        def _materialize_if_crossing(
+            spec: "AggRenderSpec",
+        ) -> Optional[str]:
+            if not spec.sql:
+                return None
+            value_expr = self._resolve_sql(
+                sql=spec.sql, name=spec.name,
+                model_name=spec.model_name, type=spec.column_type,
+            )
+            resolved_key = value_expr.sql(dialect=self.dialect)
+            if resolved_key in value_alias_by_sql:
+                return value_alias_by_sql[resolved_key]
+            if not self._joined_paths_in_sql(
+                sql_expr=value_expr, source_relation=source_relation,
+                source_model=source_model, bundle=bundle,
+            ):
+                return None
+            val_alias = allocator.allocate_val()
+            extra_projections.append((val_alias, value_expr))
+            value_alias_by_sql[resolved_key] = val_alias
+            return val_alias
+
+        def _materialize_spec_kwargs(
+            kw: "Optional[Dict[str, ResolvedAggKwarg]]",
+        ) -> "Optional[Dict[str, ResolvedAggKwarg]]":
+            """Rewrite crossing ``kind="expr"`` kwarg values to their
+            materialised ``_val`` aliases; local values pass through."""
+            if not kw:
+                return kw
+            new_kw: Dict[str, ResolvedAggKwarg] = {}
+            for name, rk in kw.items():
+                if rk.kind == "expr" and self._joined_paths_in_sql(
+                    sql_expr=rk.value, source_relation=source_relation,
+                    source_model=source_model, bundle=bundle,
+                ):
+                    kw_sql = rk.value.sql(dialect=self.dialect)
+                    val_alias = value_alias_by_sql.get(kw_sql)
+                    if val_alias is None:
+                        val_alias = allocator.allocate_val()
+                        extra_projections.append((val_alias, rk.value))
+                        value_alias_by_sql[kw_sql] = val_alias
+                    new_kw[name] = ResolvedAggKwarg(
+                        kind="expr",
+                        value=exp.column(val_alias, table=source_relation),
+                    )
+                else:
+                    new_kw[name] = rk
+            return new_kw
+
+        outer_synth_by_sid: Dict[str, "EnrichedMeasure"] = {}
+        for sid, spec in synth_by_sid.items():
+            updates: Dict[str, Any] = {}
+            src_alias = _materialize_if_crossing(spec)
+            if src_alias is not None:
+                updates["sql"] = src_alias
+            new_kw = _materialize_spec_kwargs(spec.agg_kwargs)
+            if new_kw is not spec.agg_kwargs:
+                updates["agg_kwargs"] = new_kw
+            outer_synth_by_sid[sid] = (
+                spec.model_copy(update=updates) if updates else spec
+            )
+        for leaf_key, spec in composite_synth_by_key.items():
+            # Composite leaves re-synthesise inside the pass-2 composite
+            # render; registering their crossing sql here lets that render
+            # swap in the alias via ``value_alias_by_sql``.
+            _materialize_if_crossing(spec)
+            leaf_kw = composite_resolved_kwargs.get(leaf_key)
+            new_leaf_kw = _materialize_spec_kwargs(leaf_kw)
+            if new_leaf_kw is not leaf_kw and new_leaf_kw is not None:
+                composite_resolved_kwargs[leaf_key] = new_leaf_kw
 
         # WHERE goes inside the ranked subquery (raw-row filtering before
         # ranking). HAVING is recomputed and applied by the caller.
@@ -5054,8 +5169,12 @@ class SQLGenerator:
                 aliases_by_slot_id.setdefault(sid, []).append(full_alias)
             elif slot.phase == Phase.AGGREGATE:
                 if sid in synth_by_sid:
+                    # DEV-1709: the OUTER aggregate consumes the Law-2
+                    # rewritten spec (crossing source / kwarg expressions
+                    # swapped for their ``_val`` aliases); the ranked
+                    # subquery consumed the originals.
                     agg_expr, is_agg = self._build_agg(
-                        synth_by_sid[sid],
+                        outer_synth_by_sid[sid],
                         rn_suffix_map=rn_suffix_map,
                         default_time_col=default_time_col_sql,
                         filtered_rn_map=filtered_rn_map,
@@ -5077,14 +5196,12 @@ class SQLGenerator:
                         agg_key: spec.alias
                         for agg_key, spec in composite_synth_by_key.items()
                     }
-                    # DEV-1527/DEV-1476 (Stage-6 deferral): resolved_agg_kwargs is
-                    # intentionally NOT threaded here. This first/last ranked-
-                    # subquery path builds its own agg specs and does not receive
-                    # the host scope's column-ref kwarg map, so a crossing derived
-                    # kwarg (``weighted_avg(weight=<derived>)``) rendered in a
-                    # first/last query still collapses to a bare name. That gap is
-                    # pre-existing (first/last never supported derived kwargs) and
-                    # closes with first/last completion in Stage 6 — see DEV-1476.
+                    # DEV-1709 (closes the DEV-1527/DEV-1476 first/last kwarg
+                    # deferral): thread the per-leaf resolved kwargs (crossing
+                    # values already Law-2-rewritten to their ``_val`` aliases)
+                    # and the source-value alias map so composite leaves bind
+                    # to the ranked subquery's projections instead of leaking
+                    # crossing refs into the outer scope.
                     agg_expr, is_agg = self._render_aggregate_composite_expr(
                         key=slot.key, slot=slot, source_model=source_model,
                         source_relation=source_relation,
@@ -5094,6 +5211,8 @@ class SQLGenerator:
                         filtered_rn_map=filtered_rn_map,
                         filtered_match_map=filtered_match_map,
                         composite_alias_by_key=composite_alias_by_key,
+                        resolved_agg_kwargs=composite_resolved_kwargs,
+                        value_alias_by_sql=value_alias_by_sql,
                     )
                 if is_agg:
                     agg_expr = _wrap_cast_for_type(agg_expr, slot.type)
@@ -5114,6 +5233,9 @@ class SQLGenerator:
             default_time_col_sql=default_time_col_sql,
             filtered_rn_map=dict(filtered_rn_map),
             filtered_match_map=dict(filtered_match_map),
+            # DEV-1709: HAVING re-synths of a crossing-source aggregate bind
+            # to the materialised alias instead of the raw crossing ref.
+            value_alias_by_sql=dict(value_alias_by_sql),
         )
         return (
             base_select, aliases_by_slot_id, has_aggregation,
@@ -5134,6 +5256,7 @@ class SQLGenerator:
         filtered_match_map: Optional[Dict[str, str]] = None,
         composite_alias_by_key: Optional[Dict[Any, str]] = None,
         resolved_agg_kwargs: "Optional[Dict[Any, Dict[str, ResolvedAggKwarg]]]" = None,
+        value_alias_by_sql: Optional[Dict[str, str]] = None,
     ) -> "tuple[exp.Expression, bool]":
         """Render an AGGREGATE-phase composite key (``ArithmeticKey`` /
         ``ScalarCallKey`` of aggregates, e.g. ``expensenet:avg +
@@ -5195,6 +5318,19 @@ class SQLGenerator:
                 bundle=bundle,
                 resolved_agg_kwargs=(resolved_agg_kwargs or {}).get(key),
             )
+            # DEV-1709 Law 2: inside the first/last ranked path, a crossing
+            # composite-leaf SOURCE was materialised as a ``_val_<n>``
+            # projection in the ranked subquery — rebind the re-synthesised
+            # leaf to that alias (keyed by the RESOLVED value text, so
+            # same-sql-different-type leaves bind to their own casts) so
+            # the outer composite never references the crossing expression
+            # out of scope.
+            if value_alias_by_sql and synth.sql is not None:
+                resolved_key = self._resolve_value_sql(synth)
+                if resolved_key in value_alias_by_sql:
+                    synth = synth.model_copy(
+                        update={"sql": value_alias_by_sql[resolved_key]},
+                    )
             agg_expr, is_agg = self._build_agg(
                 synth,
                 rn_suffix_map=rn_suffix_map,
@@ -5217,6 +5353,7 @@ class SQLGenerator:
                     filtered_match_map=filtered_match_map,
                     composite_alias_by_key=composite_alias_by_key,
                     resolved_agg_kwargs=resolved_agg_kwargs,
+                    value_alias_by_sql=value_alias_by_sql,
                 )
                 operands.append(e)
                 any_agg = any_agg or a
@@ -5236,6 +5373,7 @@ class SQLGenerator:
                         filtered_match_map=filtered_match_map,
                         composite_alias_by_key=composite_alias_by_key,
                         resolved_agg_kwargs=resolved_agg_kwargs,
+                        value_alias_by_sql=value_alias_by_sql,
                     )
                     args.append(e)
                     any_agg = any_agg or ag
@@ -6786,7 +6924,17 @@ class SQLGenerator:
             outer_synth = synth
             extra_projections: List[Tuple[str, exp.Expression]] = []
             if synth.sql:
-                value_expr = self._parse(synth.sql)
+                # DEV-1709: materialise the RESOLVED value (qualified +
+                # ``Column.type`` inner CAST for non-bare expressions) and
+                # key the alias map by that resolved text — mirrors the
+                # host-path materialisation in
+                # ``_build_first_last_base_select`` so typed non-bare
+                # sources keep ``MAX(CASE ... THEN CAST(x AS t) END)``
+                # semantics inside the CTE too.
+                value_expr = self._resolve_sql(
+                    sql=synth.sql, name=synth.name,
+                    model_name=synth.model_name, type=synth.column_type,
+                )
                 if self._joined_paths_in_sql(
                     sql_expr=value_expr, source_relation=target_relation,
                     source_model=target_model, bundle=bundle,
@@ -6796,7 +6944,9 @@ class SQLGenerator:
                     outer_synth = synth.model_copy(update={"sql": val_alias})
                     # A HAVING on this same aggregate must reference the alias,
                     # not the raw crossing ref (out of scope in the outer SELECT).
-                    cte_value_alias_by_sql[synth.sql] = val_alias
+                    cte_value_alias_by_sql[
+                        value_expr.sql(dialect=self.dialect)
+                    ] = val_alias
             ranked_from, rn_suffix_map, filtered_rn_map, filtered_match_map = (
                 self._build_ranked_subquery_from_planned(
                     source_relation=target_relation,
@@ -7138,14 +7288,15 @@ class SQLGenerator:
             # subquery, the HAVING aggregate must bind to that SAME alias — the
             # outer ``MAX(CASE WHEN _last_rn = 1 THEN <raw crossing ref> END)``
             # would otherwise reference a table bound only inside the subquery.
-            if (
-                first_last_state is not None
-                and synth.sql
-                and synth.sql in first_last_state.value_alias_by_sql
-            ):
-                synth = synth.model_copy(update={
-                    "sql": first_last_state.value_alias_by_sql[synth.sql],
-                })
+            # DEV-1709: the alias map is keyed by the RESOLVED value text
+            # (qualified + typed inner CAST) so same-sql-different-type
+            # aggregates bind to their own materialisations.
+            if first_last_state is not None and synth.sql:
+                resolved_key = self._resolve_value_sql(synth)
+                if resolved_key in first_last_state.value_alias_by_sql:
+                    synth = synth.model_copy(update={
+                        "sql": first_last_state.value_alias_by_sql[resolved_key],
+                    })
             # Thread the cross-model CTE's rn maps so the HAVING
             # aggregate uses the same ``_first_rn`` / ``_last_rn{suffix}``
             # / ``_last_rn_fN`` column the CTE SELECT projects.
@@ -9412,20 +9563,27 @@ class SQLGenerator:
         source,
         src_leaf: str,
     ) -> None:
-        """Reject kwarg column refs whose join path disagrees with the
-        aggregate source path.
+        """Reject CROSS-MODEL aggregates' kwarg column refs whose join path
+        disagrees with the aggregate source path.
 
-        A kwarg path that doesn't match the aggregate source path would
-        silently bind the kwarg to a different model (host vs joined
-        target) than the aggregate value column — meaningless SQL
-        semantically. Caller-side cross-model rerooting strips the
-        matching prefix from source AND kwargs before reaching this
-        point; any residual mismatch surfaces here. Both bare-column
+        For a target-rooted aggregate, a kwarg path that doesn't match the
+        source path after reroot prefix-stripping would silently bind the
+        kwarg to a different model than the aggregate value column —
+        meaningless SQL semantically; any residual mismatch surfaces here.
+
+        DEV-1709: LOCAL aggregates (``source.path == ()``) are exempt — a
+        structurally-crossing kwarg (``weighted_avg(weight=customers.w)``)
+        is now a supported crossing INPUT: the widened Law-3 trigger
+        isolates the aggregate host-rooted, and inside that CTE's
+        sub-render the kwarg resolves through the host scope (join
+        registration + path-aliased emission). Both bare-column
         (``ColumnKey``) and derived-column (``ColumnSqlKey``) kwarg
         refs go through this gate (CodeRabbit fold-in on PR #144).
         """
         from slayer.core.keys import ColumnKey, ColumnSqlKey
 
+        if not source.path:
+            return
         for kname, kval in key.kwargs:
             if isinstance(kval, (ColumnKey, ColumnSqlKey)) and kval.path != source.path:
                 raise AggregationNotAllowedError(
