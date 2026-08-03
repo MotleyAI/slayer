@@ -7899,7 +7899,7 @@ class SQLGenerator:
                 out.append(qualified)
         return out
 
-    def _emit_time_shift_ctes_for_planned(
+    def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — one cohesive per-slot time_shift CTE-pair emission: validate key → build the offset/trunc time expr → partition specs → aggregate-synth vs column passthrough for the shifted CTE → unique alias + collision-safe CTE names → sjoin build (carry-forward + time/partition equalities) → downstream alias registration. Each block shares slots_by_id / aliases maps / cte_allocator state; extracting helpers would scatter that contract without simplifying it (same rationale as the sibling emitters' NOSONAR).
         self,
         *,
         slot,
@@ -8362,11 +8362,16 @@ class SQLGenerator:
             if alias is not None:
                 partition_aliases.append(alias)
 
-        slot_alias = (
-            slot.public_aliases[0]
-            if slot.public_aliases
-            else slot.declared_name
-        )
+        # DEV-1692: a HIDDEN inner consecutive_periods slot's declared_name
+        # (``_consecutive_periods_inner``) is NOT unique across sibling slots —
+        # two would collide on ``full_slot_alias`` / ``cp_reset_alias`` and
+        # collapse downstream, the same failure mode fixed for time_shift.
+        # Allocate a unique internal alias for the hidden case; USER aliases
+        # (already unique) are left untouched.
+        if slot.public_aliases:
+            slot_alias = slot.public_aliases[0]
+        else:
+            slot_alias = cte_allocator.allocate_cte(slot.declared_name)
         full_slot_alias = f"{source_relation}.{slot_alias}"
         cp_reset_alias = f"_cp_reset_{full_slot_alias}"
 

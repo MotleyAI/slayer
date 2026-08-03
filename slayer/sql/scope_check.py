@@ -121,9 +121,9 @@ def maybe_validate_scopes(sql: str, *, dialect: str = "postgres") -> None:
     """
     value = os.environ.get(_ENV_FLAG)
     if value is not None and value.strip().lower() in _TRUTHY:
-        assert_scope_closed(sql, dialect=dialect)
+        assert_scope_closed(sql=sql, dialect=dialect)
         # DEV-1692 belt: per-WITH-scope CTE-name uniqueness on the final output.
-        assert_unique_cte_names(sql, dialect=dialect)
+        assert_unique_cte_names(sql=sql, dialect=dialect)
 
 
 # --------------------------------------------------------------------------- #

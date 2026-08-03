@@ -547,10 +547,12 @@ class TestBareNamedMeasureResultKey:
         namespace, guarded at model validation. This is why the bare-named-
         measure fix can never make a measure name shadow a selected dim of
         the same name: such a pair cannot exist on one model."""
+        # Build the colliding measure outside the raises block so only the
+        # model-construction call can throw (Sonar S5778 — one throwing
+        # invocation per exception assertion).
+        colliding = ModelMeasure(name="status", formula="revenue:sum")
         with pytest.raises(ValueError, match="name collision"):
-            _orders_named_model(
-                measures=[ModelMeasure(name="status", formula="revenue:sum")]
-            )
+            _orders_named_model(measures=[colliding])
 
 
 # ---------------------------------------------------------------------------
@@ -607,3 +609,43 @@ class TestTimeShiftCteDecollision:
         )
         shifted = [c for c in all_ctes if c.startswith("shifted_")]
         assert len(shifted) == 3, f"expected 3 shifted CTEs, got {shifted}\n{sql}"
+
+    async def test_two_consecutive_periods_unique_ctes(self) -> None:
+        """DEV-1692 (sibling of time_shift): two arithmetic-wrapped
+        consecutive_periods measures are hidden inner slots that share the
+        placeholder ``_consecutive_periods_inner`` — their cp_reset/cp_value
+        CTEs and value aliases must be de-collided, exactly like time_shift."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            default_time_dimension="created_at",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+                Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            )],
+            measures=[
+                ModelMeasure(formula="consecutive_periods(revenue:sum > 0) + 1",
+                             name="rev_streak"),
+                ModelMeasure(formula="consecutive_periods(quantity:sum > 0) + 1",
+                             name="qty_streak"),
+            ],
+        )
+        sql = await _engine_generate(query=query, model=model)
+        all_ctes = re.findall(r'(?:WITH|,)\s*"?(\w+)"?\s+AS\s*\(', sql)
+        assert len(all_ctes) == len(set(all_ctes)), (
+            f"duplicate CTE names: {all_ctes}\n{sql}"
+        )
+        assert len([c for c in all_ctes if c.startswith("cp_reset_")]) == 2, sql
+        assert len([c for c in all_ctes if c.startswith("cp_value_")]) == 2, sql
