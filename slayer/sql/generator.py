@@ -41,6 +41,7 @@ from slayer.engine.source_bundle import (
 from slayer.sql.dialects import SqlDialect, get_dialect
 from slayer.sql.naming import (
     AliasAllocator,
+    dialect_folds_case,
     flat_name,
     maybe_quote_ident,
     quote_mixed_case_identifiers,
@@ -751,6 +752,15 @@ class SQLGenerator:
         ``self._dialect.sqlglot_name``. Mutating it would desync the
         strategy object from the string sqlglot consumes (DEV-1716)."""
         return self._dialect.sqlglot_name
+
+    def _new_allocator(self) -> AliasAllocator:
+        """Build an ``AliasAllocator`` carrying this generator's dialect
+        case-folding policy (DEV-1726): on case-folding dialects the
+        ``_taken`` comparison folds, so minted CTE / materialisation names can
+        never collide after the backend folds them. The ONLY construction
+        site in this module — pinned by test_dev1726_cte_case_folding — so a
+        new allocation path cannot silently lose dialect awareness."""
+        return AliasAllocator(folds_case=dialect_folds_case(self.dialect))
 
     @staticmethod
     def _maybe_quote_ident(ident: Optional[exp.Expression]) -> None:
@@ -1927,7 +1937,7 @@ class SQLGenerator:
         # deterministic CTE name is RESERVED; the ``shifted_`` / ``sjoin_``
         # families are ALLOCATED around them (reserve-not-rename keeps the
         # recompute-at-reference CTE families collision-free too — Codex F3).
-        cte_allocator = AliasAllocator()
+        cte_allocator = self._new_allocator()
         cte_allocator.reserve(*(name for name, _ in ctes), *base_aliases)
 
         # All transforms go into a unified layering loop. Each iteration tries
@@ -3123,7 +3133,7 @@ class SQLGenerator:
         own allocator, with the parent's restored afterwards.
         """
         prev_allocator = getattr(self, "_gen_allocator", None)
-        self._gen_allocator = AliasAllocator()
+        self._gen_allocator = self._new_allocator()
         try:
             return self._generate_from_planned_impl(
                 planned_query, bundle=bundle,
@@ -3330,7 +3340,7 @@ class SQLGenerator:
         # ``sjoin_`` pairs would otherwise share a name (duplicate WITH). Every
         # CTE name is reserved/allocated through this one allocator so the
         # ``step`` / ``shifted_`` / ``sjoin_`` / ``cp_`` families never collide.
-        cte_allocator = AliasAllocator()
+        cte_allocator = self._new_allocator()
         cte_allocator.reserve(*(name for name, _ in ctes))
         # "Pick one" map for transform-input / time-key / partition-key /
         # order-entry / POST-filter lookups. Initialised from the first
@@ -4070,7 +4080,7 @@ class SQLGenerator:
         kwargs = getattr(key, "kwargs", None)
         if bundle is None or not kwargs:
             return None
-        allocator = AliasAllocator()
+        allocator = self._new_allocator()
         scope = ScopeFrame(
             scope_id=allocator.next_scope_id(source_relation),
             root_model=source_model,
@@ -4148,7 +4158,7 @@ class SQLGenerator:
         )
         # DEV-1708 (D-E): share the generation-wide allocator so host-base and
         # per-plan ``_cm_*`` CTE ``_val_<n>`` names are globally unique.
-        host_allocator = self._gen_allocator or AliasAllocator()
+        host_allocator = self._gen_allocator or self._new_allocator()
         host_scope = ScopeFrame(
             scope_id=host_allocator.next_scope_id(source_relation),
             root_model=source_model,
@@ -4582,7 +4592,7 @@ class SQLGenerator:
             # aggregate-input pass, which registers the same join); this call is
             # purely to reproduce the SAME anchored SQL the ORDER BY needs. Same
             # throwaway-frame pattern as ``_resolve_agg_kwargs_for_key``.
-            allocator = AliasAllocator()
+            allocator = self._new_allocator()
             scope = ScopeFrame(
                 scope_id=allocator.next_scope_id(source_relation),
                 root_model=source_model,
@@ -5568,7 +5578,7 @@ class SQLGenerator:
                 # ``claim.claim_number = '...'`` references a joined alias
                 # that must be in scope; without the join, the WHERE
                 # references an undefined alias.
-                placeholder_allocator = AliasAllocator()
+                placeholder_allocator = self._new_allocator()
                 placeholder_scope = ScopeFrame(
                     scope_id=placeholder_allocator.next_scope_id(source_relation),
                     root_model=source_model,
@@ -6598,7 +6608,7 @@ class SQLGenerator:
         # ``_add_cte_join_paths`` closure + per-carrier collectors). The scope
         # shares the generation-wide allocator so ``_val_<n>`` materialisation
         # names (Law 2, below) are unique across the host base and every CTE.
-        cte_allocator = self._gen_allocator or AliasAllocator()
+        cte_allocator = self._gen_allocator or self._new_allocator()
         cte_scope = ScopeFrame(
             scope_id=cte_allocator.next_scope_id(target_relation),
             root_model=target_model,
