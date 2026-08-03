@@ -1075,10 +1075,14 @@ class TestResolveExplicitTimeColViaResolver:
             source=ColumnKey(leaf="amount"), agg="last",
             args=(ColumnSqlKey(path=(), model="orders", column_name="not_a_real_col"),),
         )
+        # Hoist the generator + bundle out so the ONLY call that can raise inside
+        # ``pytest.raises`` is the one under test (Sonar S5778).
+        gen = self._gen()
+        bundle = _u_bundle(orders)
         with pytest.raises(ValueError, match="Derived time column 'not_a_real_col'"):
-            self._gen()._resolve_explicit_time_col(
+            gen._resolve_explicit_time_col(
                 key=key, source_model=orders, source_relation="orders",
-                bundle=_u_bundle(orders),
+                bundle=bundle,
             )
 
     def test_path_bearing_columnsqlkey_raises_dev1526_with_bundle(self) -> None:
@@ -1090,10 +1094,14 @@ class TestResolveExplicitTimeColViaResolver:
             source=ColumnKey(leaf="amount"), agg="last",
             args=(ColumnSqlKey(path=("regions",), model="regions", column_name="opened_day"),),
         )
+        # Hoist the generator + bundle out so the ONLY call that can raise inside
+        # ``pytest.raises`` is the one under test (Sonar S5778).
+        gen = self._gen()
+        bundle = _u_bundle(orders)
         with pytest.raises(NotImplementedError, match="DEV-1526"):
-            self._gen()._resolve_explicit_time_col(
+            gen._resolve_explicit_time_col(
                 key=key, source_model=orders, source_relation="orders",
-                bundle=_u_bundle(orders),
+                bundle=bundle,
             )
 
 
