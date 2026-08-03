@@ -51,18 +51,20 @@ def _ensure_jaffle_db():
 # Map: notebook path relative to EXAMPLES_DIR → Linear issue + reason.
 # Re-enable a notebook by removing its entry once the cited issue lands.
 _KNOWN_FAILING_NOTEBOOKS = {
-    "04_time/time_nb.ipynb": (
-        "DEV-1474: cross-model partition in time_shift CTEs not yet "
-        "implemented in the typed pipeline. The QoQ-by-store cell "
-        "(``change(order_total:sum)`` with ``dimensions=['stores.name']``) "
-        "hits ``stage 7b.12``."
-    ),
+    # DEV-1474 (cross-model partition in time_shift CTEs) landed in DEV-1711
+    # Stage 7 — the 04_time QoQ-by-store cell now runs, so that notebook is
+    # un-skipped. 09_lightning_talk stays skipped for a DIFFERENT, downstream
+    # reason: its hero cell issues ONE query with TWO time_shift transforms
+    # (change_pct + an explicit time_shift), which collide on the CTE name
+    # `shifted__time_shift_inner` — the DEV-1692 de-collision gap owned by
+    # Stage 9 (same gap as the 13_osi_import notebooks below).
     "09_lightning_talk/lightning_talk_nb.ipynb": (
-        "DEV-1474: cross-model partition in time_shift CTEs not yet "
-        "implemented in the typed pipeline. The hero query "
-        "(``change_pct(order_total:sum)`` with "
-        "``dimensions=['stores.name']``) hits the same ``stage 7b.12`` "
-        "deferred path as the 04_time notebook."
+        "DEV-1713: DEV-1692 duplicate time_shift CTE name "
+        "(`Duplicate CTE name \"shifted__time_shift_inner\"`) — the hero query "
+        "combines change_pct(order_total:sum) with an explicit "
+        "time_shift(order_total:sum, -1, 'month') in one query, so two shifted "
+        "CTEs are emitted under the same name. DEV-1474's cross-model partition "
+        "(the Stage-7 blocker) is fixed; this is the Stage-9 collision gap."
     ),
     # DEV-1704 Stage-0 parity gaps surfaced by the integration notebook run.
     "12_query_cache/query_cache_nb.ipynb": (

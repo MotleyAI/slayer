@@ -3336,11 +3336,13 @@ class SQLGenerator:
         # the same WHERE minus BetweenKey date_range filters). Built
         # once outside the loop since the source filters don't change
         # across layers.
-        shifted_where_parts = self._build_shifted_cte_where_parts(
-            planned_query=planned_query,
-            source_relation=source_relation,
-            source_model=source_model,
-            bundle=bundle,
+        shifted_where_parts, shifted_where_join_paths = (
+            self._build_shifted_cte_where_parts(
+                planned_query=planned_query,
+                source_relation=source_relation,
+                source_model=source_model,
+                bundle=bundle,
+            )
         )
         while pending_layers:
             ready_window: list = []
@@ -3424,6 +3426,7 @@ class SQLGenerator:
                         source_model=source_model,
                         source_relation=source_relation,
                         shifted_where_parts=shifted_where_parts,
+                        shifted_where_join_paths=shifted_where_join_paths,
                         planned_query=planned_query,
                         bundle=bundle,
                     )
@@ -8127,9 +8130,9 @@ class SQLGenerator:
         source_relation: str,
         source_model,
         bundle,
-    ) -> List[str]:
+    ) -> Tuple[List[str], List[Tuple[str, ...]]]:
         """Build the WHERE clauses for the shifted CTE that re-aggregates
-        the source relation.
+        the source relation, plus the join paths those clauses cross.
 
         7b.3c invariant: ``BetweenKey`` filters (those derived from
         ``TimeDimension.date_range``) MUST be omitted from the shifted
@@ -8139,28 +8142,29 @@ class SQLGenerator:
         shifted aggregation runs over the same row population.
         AGGREGATE / POST phase filters never apply to the shifted CTE
         (they're outer-projection concerns).
+
+        DEV-1711: a ROW filter referencing a JOINED column
+        (``stores.name = 'North'``) is now supported — the shifted CTE is a
+        real ``ScopeFrame`` whose FROM pulls the join, so the guard that used
+        to raise on joined refs is gone. The returned ``crossed_paths`` list
+        (quote-tolerant dual scan, the DEV-1494 contract) is registered into
+        the caller's shifted scope so the LEFT JOIN the filter needs is
+        emitted. Filters over the same join set the base already applies keep
+        population parity between ``_base`` and the shifted CTE.
         """
         from slayer.core.keys import BetweenKey, Phase
 
-        def _guard_no_joined_refs(rendered_part: exp.Expression, *, fid) -> None:
-            # The shifted CTE re-aggregates the bare source (no joins), so a
-            # ROW filter referencing a joined column cannot be applied here.
-            # This combination (time_shift + joined-column filter) is deferred
-            # — raise loudly rather than emit SQL that references an unjoined
-            # alias.
-            for c in rendered_part.find_all(exp.Column):
-                tbl = c.args.get("table")
-                if tbl is not None and tbl.name not in (
-                    source_relation, source_model.name,
-                ):
-                    raise NotImplementedError(
-                        f"DEV-1450: time_shift combined with a ROW filter on "
-                        f"a joined column ({tbl.name}.{c.name}) is not yet "
-                        f"supported (the shifted CTE carries no joins). "
-                        f"filter id={fid!r}."
-                    )
-
         out: List[str] = []
+        crossed_paths: List[Tuple[str, ...]] = []
+
+        def _collect_paths(sql_text: str) -> None:
+            for p in self._filter_join_paths(
+                sql=sql_text, source_relation=source_relation,
+                source_model=source_model, bundle=bundle,
+            ):
+                if p not in crossed_paths:
+                    crossed_paths.append(p)
+
         for fp in planned_query.filters_by_phase:
             if fp.phase != Phase.ROW:
                 continue
@@ -8176,8 +8180,9 @@ class SQLGenerator:
                 )
                 if isinstance(rendered, (exp.And, exp.Or)):
                     rendered = exp.Paren(this=rendered)
-                _guard_no_joined_refs(rendered, fid=fp.id)
-                out.append(rendered.sql(dialect=self.dialect))
+                part = rendered.sql(dialect=self.dialect)
+                out.append(part)
+                _collect_paths(part)
             elif fp.text is not None:
                 qualified = self._render_model_filter_sql(
                     sql=fp.text,
@@ -8186,9 +8191,9 @@ class SQLGenerator:
                     source_relation=source_relation,
                     bundle=bundle,
                 )
-                _guard_no_joined_refs(self._parse(qualified), fid=fp.id)
                 out.append(qualified)
-        return out
+                _collect_paths(qualified)
+        return out, crossed_paths
 
     def _emit_time_shift_ctes_for_planned(
         self,
@@ -8202,6 +8207,7 @@ class SQLGenerator:
         source_model,
         source_relation: str,
         shifted_where_parts: List[str],
+        shifted_where_join_paths: List[Tuple[str, ...]],
         planned_query,
         bundle,
     ) -> None:
@@ -8222,6 +8228,19 @@ class SQLGenerator:
         * **partition_keys**: DEV-1450 C6 — explicit ``partition_by`` on
           ``change`` / ``time_shift`` threads through as additional
           equality keys in the LEFT JOIN (not just query dimensions).
+
+        DEV-1711 (Stage 7): the shifted CTE is a ``ScopeFrame`` (Laws 1 & 2).
+        Every partition key and the shift-axis time expression enters through
+        ``scope.resolve`` — anchoring the ref AND registering the join it
+        crosses in one call — so the shifted CTE's FROM (built from
+        ``scope.join_paths``) pulls exactly the LEFT JOINs the shifted
+        projection references. This makes CROSS-MODEL partitions (``stores.
+        name``), DERIVED dim partitions (local ``upper(status)`` or joined
+        ``stores.tier``), SECONDARY time-dimension partitions, and joined-column
+        ROW filters all work, and removes the joinless-CTE guards. The sjoin
+        grain join-back (time axis + every partition) is dialect-aware
+        null-safe (Codex F2) so NULL dim / NULL time-bucket groups keep their
+        shifted value instead of silently dropping.
         """
         from slayer.core.enums import TimeGranularity
         from slayer.core.keys import (
@@ -8301,19 +8320,59 @@ class SQLGenerator:
             )
         input_alias = available_alias_by_slot_id[input_sid]
 
+        # DEV-1711 (Law 1): the shifted CTE is a ScopeFrame. Every partition
+        # key and the shift-axis time expression enters through ``resolve``,
+        # which anchors the ref AND registers the join it crosses. The FROM
+        # (built below from ``shifted_scope.join_paths``) then pulls exactly
+        # those LEFT JOINs — a cross-model / derived / secondary-time partition
+        # can never reference an unjoined table. The scope shares the
+        # generation-wide allocator so any ``_val_<n>`` names stay unique
+        # across the base and every CTE.
+        shifted_allocator = self._gen_allocator or AliasAllocator()
+        shifted_scope = ScopeFrame(
+            scope_id=shifted_allocator.next_scope_id(source_relation),
+            root_model=source_model,
+            root_relation=source_relation,
+            bundle=bundle,
+            dialect=self._dialect,
+            allocator=shifted_allocator,
+        )
+
         # 3. partition_keys (DEV-1450 C6) + auto-include query dimensions.
         #
         # Legacy auto-joins on EVERY query dimension regardless of
         # partition_by (``_generate_with_computed:1559``). Without this,
         # ``time_shift(amount:sum, periods=-1)`` with ``status`` in
         # ``dimensions`` would broadcast the prior-period total across
-        # every status value. The typed pipeline mirrors this: explicit
-        # ``partition_keys`` may add MORE columns (DEV-1450 C6), but
-        # query dimensions are always included.
+        # every status value. The typed pipeline mirrors this AND extends it
+        # (DEV-1711): the sjoin grain is EVERY projected dimension — joined
+        # ``ColumnKey``, derived ``ColumnSqlKey``, and SECONDARY ``TimeTruncKey``
+        # (a second time dim, distinct from the shift axis) — plus any explicit
+        # ``partition_keys`` (C6). The shift axis itself is the time-join
+        # column, excluded by slot id.
         from slayer.core.keys import Phase as _Phase
         partition_specs: list[tuple[str, str, exp.Expression]] = []
-        # entries: (slot_id, full_alias, raw_column_expr_for_group_by)
+        # entries: (slot_id, base_alias, resolved_expr_for_select_and_group_by)
         seen_partition_sids: set = set()
+
+        def _resolve_partition_expr(pk_obj) -> exp.Expression:
+            # A SECONDARY time dimension renders as DATE_TRUNC over its resolved
+            # (possibly joined / derived) raw column; a plain / derived column
+            # renders as its resolved expression. ``resolve`` registers the
+            # crossed join in both cases (Law 1).
+            if isinstance(pk_obj, TimeTruncKey):
+                raw = shifted_scope.resolve(pk_obj.column)
+                return self._build_date_trunc(
+                    col_expr=raw,
+                    granularity=TimeGranularity(pk_obj.granularity),
+                )
+            if isinstance(pk_obj, (ColumnKey, ColumnSqlKey)):
+                return shifted_scope.resolve(pk_obj)
+            raise NotImplementedError(
+                f"time_shift partition on {type(pk_obj).__name__} is not "
+                f"supported (only column / derived-column / time-dimension "
+                f"partitions render in the shifted CTE). slot id={slot.id!r}.",
+            )
 
         def _add_partition(pk_obj, *, where: str) -> None:
             pk_sid = slot_id_by_key.get(pk_obj)
@@ -8322,43 +8381,46 @@ class SQLGenerator:
                     f"time_shift {where} not materialised: "
                     f"slot id={slot.id!r}, key={pk_obj!r}.",
                 )
-            if pk_sid in seen_partition_sids:
+            # The shift axis is the time-join column, never a partition pair.
+            if pk_sid == time_sid or pk_sid in seen_partition_sids:
                 return
             pk_alias = available_alias_by_slot_id[pk_sid]
-            if isinstance(pk_obj, ColumnKey):
-                if pk_obj.path != ():
-                    raise NotImplementedError(
-                        f"DEV-1450 stage 7b.12: cross-model partition "
-                        f"(path={pk_obj.path!r}) deferred to the "
-                        f"cross-model slice (slot id={slot.id!r}).",
-                    )
-                col_expr = self._dim_column_expr_from_planned(
-                    source_model=source_model,
-                    source_relation=source_relation,
-                    leaf=pk_obj.leaf,
-                )
-            else:
-                raise NotImplementedError(
-                    f"DEV-1450 stage 7b.11: partition on "
-                    f"{type(pk_obj).__name__} not supported (only "
-                    f"ColumnKey leaves render in the shifted CTE).",
-                )
-            partition_specs.append((pk_sid, pk_alias, col_expr))
+            partition_specs.append((pk_sid, pk_alias, _resolve_partition_expr(pk_obj)))
             seen_partition_sids.add(pk_sid)
 
-        # Auto-include query-dimension ColumnKey row slots (NOT TimeTruncKey;
-        # the time-key is already the time-join axis).
+        # Auto-include EVERY projected row dimension (column, derived column, or
+        # secondary time dimension); the shift axis is skipped by slot id above.
         for sid in planned_query.projection:
             dim_slot = slots_by_id.get(sid)
             if dim_slot is None or dim_slot.phase != _Phase.ROW:
                 continue
-            if not isinstance(dim_slot.key, ColumnKey):
+            if not isinstance(dim_slot.key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
                 continue
             _add_partition(dim_slot.key, where="query dimension")
 
-        # Explicit partition_keys (DEV-1450 C6) may add more.
+        # Explicit partition_keys (DEV-1450 C6) may add more (deduped by slot id
+        # against the auto-included dims — see the DEV-1711 dedup test).
         for pk in sorted(key.partition_keys, key=lambda k: repr(k)):
             _add_partition(pk, where="partition_key")
+
+        # DEV-1711 defensive completeness: a LOCAL aggregate whose source /
+        # column-filter / kwargs cross a join is isolated upstream (Stage 5) and
+        # would have raised 7b.15e before reaching a time_shift CTE, so these
+        # registrations are provably no-ops today — but routing them through the
+        # scope keeps Law 1 total (no render path skips join discovery).
+        if isinstance(inner_key, AggregateKey):
+            if isinstance(inner_key.source, ColumnSqlKey):
+                shifted_scope.resolve(inner_key.source)
+            for _kname, _kval in inner_key.kwargs:
+                if isinstance(_kval, (ColumnKey, ColumnSqlKey)):
+                    shifted_scope.resolve(_kval)
+            if inner_key.column_filter_key is not None:
+                for _p in self._filter_join_paths(
+                    sql=inner_key.column_filter_key.canonical_sql,
+                    source_relation=source_relation,
+                    source_model=source_model, bundle=bundle,
+                ):
+                    shifted_scope.join_paths.add(_p)
 
         # Build the shifted time-column expression. Calendar offset is
         # ``-periods`` units in the SHIFT granularity (periods=-1 -> +1 unit).
@@ -8374,15 +8436,12 @@ class SQLGenerator:
             str(shift_gran_raw) if shift_gran_raw is not None
             else time_key.granularity
         )
-        # DEV-1450 #4a: a derived (ColumnSqlKey) time column yields its
-        # EXPANDED expression here; the calendar offset and DATE_TRUNC apply
-        # over that expression exactly as over a bare column.
-        raw_time_col_expr = self._raw_time_col_expr_for_planned(
-            time_column=time_key.column,
-            source_model=source_model,
-            source_relation=source_relation,
-            bundle=bundle,
-        )
+        # DEV-1450 #4a / DEV-1711: the shift-axis raw time expression resolves
+        # through the SAME scope (Law 1) — a derived (ColumnSqlKey) time column
+        # yields its EXPANDED expression, and a JOINED time axis (``stores.
+        # opened_at``) registers its join so the shifted FROM binds it. The
+        # calendar offset and DATE_TRUNC then apply over that expression.
+        raw_time_col_expr = shifted_scope.resolve(time_key.column)
         shifted_raw_expr = self._build_time_offset_expr(
             col_expr=raw_time_col_expr,
             offset=-periods,
@@ -8437,26 +8496,46 @@ class SQLGenerator:
                 f'{agg_expr.sql(dialect=self.dialect)} AS {self._quote_ident(input_alias)}',
             )
         else:
-            # Row-level column input (not aggregated). Pass-through.
-            col_expr = self._dim_column_expr_from_planned(
-                source_model=source_model,
-                source_relation=source_relation,
-                leaf=inner_key.leaf,
-            )
+            # Row-level column input (not aggregated). Resolve through the scope
+            # so a joined / derived input registers its join and anchors
+            # correctly (Law 1), same as every other ref in this CTE.
+            col_expr = shifted_scope.resolve(inner_key)
             shifted_select_parts.append(
                 f'{col_expr.sql(dialect=self.dialect)} AS {self._quote_ident(input_alias)}',
             )
             shifted_group_by.append(col_expr.sql(dialect=self.dialect))
 
-        from_clause = self._build_from_clause_from_planned(
-            source_model=source_model, source_relation=source_relation,
-        )
-        from_sql = from_clause.sql(dialect=self.dialect)
+        # DEV-1711: register the join paths the shifted WHERE filters cross
+        # (computed once by ``_build_shifted_cte_where_parts``) so a joined-column
+        # ROW filter (``stores.name = 'North'``) pulls its LEFT JOIN into this
+        # CTE. Then build the FROM from the scope's full registered set — a
+        # crossed join can never be forgotten because discovery is a side effect
+        # of resolving each ref above.
+        for _p in shifted_where_join_paths:
+            shifted_scope.join_paths.add(_p)
+        shifted_join_paths = shifted_scope.join_paths.as_list()
+        if shifted_join_paths:
+            from_clause, shifted_joins = self._build_from_and_joins(
+                source_model=source_model,
+                source_relation=source_relation,
+                joined_paths=shifted_join_paths,
+                bundle=bundle,
+            )
+        else:
+            from_clause = self._build_from_clause_from_planned(
+                source_model=source_model, source_relation=source_relation,
+            )
+            shifted_joins = []
 
-        shifted_sql_parts = [
-            "SELECT\n  " + ",\n  ".join(shifted_select_parts),
-            f"FROM {from_sql}",
-        ]
+        from_parts = [f"FROM {from_clause.sql(dialect=self.dialect)}"]
+        for join_expr, on_expr, join_type in shifted_joins:
+            from_parts.append(
+                f"{join_type} JOIN {join_expr.sql(dialect=self.dialect)} "
+                f"ON {on_expr.sql(dialect=self.dialect)}"
+            )
+
+        shifted_sql_parts = ["SELECT\n  " + ",\n  ".join(shifted_select_parts)]
+        shifted_sql_parts.extend(from_parts)
         if shifted_where_parts:
             shifted_sql_parts.append(
                 "WHERE " + _SQL_AND_JOINER.join(shifted_where_parts),
@@ -8498,14 +8577,20 @@ class SQLGenerator:
                 f'{shifted_cte_name}.{self._quote_ident(input_alias)} AS {self._quote_ident(full_slot_alias)}',
             )
 
-        # JOIN conditions: time equality + every partition equality.
-        join_conds = [
-            f'{prev_cte}.{self._quote_ident(time_alias)} = {shifted_cte_name}.{self._quote_ident(time_alias)}',
-        ]
-        for _, pk_alias, _ in partition_specs:
-            join_conds.append(
-                f'{prev_cte}.{self._quote_ident(pk_alias)} = {shifted_cte_name}.{self._quote_ident(pk_alias)}',
+        # JOIN conditions: time equality + every partition equality, all
+        # dialect-aware NULL-SAFE (DEV-1711 / Codex F2). The sjoin is a grain
+        # join-back — a NULL dimension value (e.g. a LEFT-joined ``stores.name``
+        # with no matching store) or a NULL time bucket must match its own group
+        # instead of silently dropping to a NULL shifted value under plain ``=``.
+        def _grain_eq(a: str) -> str:
+            return self._null_safe_join_pair_sql(
+                left_sql=f'{prev_cte}.{self._quote_ident(a)}',
+                right_sql=f'{shifted_cte_name}.{self._quote_ident(a)}',
             )
+
+        join_conds = [_grain_eq(time_alias)]
+        for _, pk_alias, _ in partition_specs:
+            join_conds.append(_grain_eq(pk_alias))
 
         sjoin_sql = (
             "SELECT " + ", ".join(sjoin_select_parts)
