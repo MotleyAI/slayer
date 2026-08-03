@@ -84,6 +84,7 @@ from slayer.sql.client import SlayerSQLClient
 from slayer.sql.engine_factory import _runtime_fingerprint
 from slayer.sql.dialects import dialect_for_ds_type, get_dialect
 from slayer.sql.generator import SQLGenerator, generate_planned_stages
+from slayer.sql.naming import flat_name
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
@@ -3257,10 +3258,11 @@ class SlayerQueryEngine:
             'orders.customers.regions.name' → 'customers__regions__name'
             'orders.count'                  → 'count'
             """
-            # Strip source model prefix
-            stripped = alias.split(".", 1)[-1] if "." in alias else alias
-            # Replace remaining dots with __ to encode the original join path
-            return stripped.replace(".", "__")
+            # DEV-1713: the strip-source-prefix + ``__`` flatten is owned by
+            # the naming module (single owner). The first path segment is the
+            # source-model prefix to strip.
+            strip = alias.split(".", 1)[0] if "." in alias else None
+            return flat_name(alias, strip_relation=strip)
 
         # (inner_alias, short_name, data_type, label, description, format)
         column_map = []

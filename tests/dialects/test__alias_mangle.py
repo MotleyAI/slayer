@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.sql.dialects._alias_mangle import (
+from slayer.sql.naming import (
     _ALIAS_SEP,
     decode_alias,
     encode_alias,

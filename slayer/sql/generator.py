@@ -39,7 +39,14 @@ from slayer.engine.source_bundle import (
     synthetic_model_from_stage_schema,
 )
 from slayer.sql.dialects import SqlDialect, get_dialect
-from slayer.sql.naming import AliasAllocator
+from slayer.sql.naming import (
+    AliasAllocator,
+    flat_name,
+    maybe_quote_ident,
+    quote_mixed_case_identifiers,
+    result_key,
+    result_key_from_alias,
+)
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.scope import ScopeFrame
 from slayer.sql.scope_check import maybe_validate_scopes
@@ -595,8 +602,12 @@ def _cte_name_from_alias(prefix: str, alias: str) -> str:
     with aliases that already contain underscores. E.g.:
     - ``orders.revenue_sum``  -> ``_fm_orders__revenue_sum``
     - ``orders_v2.revenue_sum`` -> ``_fm_orders_v2__revenue_sum``
+
+    DEV-1713: the ``.`` -> ``__`` flatten delegates to
+    :func:`slayer.sql.naming.flat_name` (single owner); this adds only the
+    non-identifier-character sanitisation on top.
     """
-    sanitized = alias.replace(".", "__")
+    sanitized = flat_name(alias)
     sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", sanitized)
     return prefix + sanitized
 
@@ -748,47 +759,20 @@ class SQLGenerator:
 
     @staticmethod
     def _maybe_quote_ident(ident: Optional[exp.Expression]) -> None:
-        """Set ``quoted=True`` in place on ``ident`` when it is an unquoted
-        ``Identifier`` containing an uppercase letter (DEV-1645). No-op
-        otherwise (None, already-quoted, all-lowercase, non-Identifier)."""
-        if (
-            isinstance(ident, exp.Identifier)
-            and not ident.quoted
-            and any(c.isupper() for c in ident.this)
-        ):
-            ident.set("quoted", True)
+        """Thin delegator to :func:`slayer.sql.naming.maybe_quote_ident`
+        (DEV-1713 D-b: the mixed-case quoting policy is owned by the naming
+        module). Kept as a method so existing ``gen._maybe_quote_ident`` call
+        sites / tests are unchanged."""
+        maybe_quote_ident(ident)
 
     @staticmethod
     def _quote_mixed_case_identifiers(node: exp.Expression) -> exp.Expression:
-        """DEV-1645: quote mixed-case DB identifiers so case-folding dialects
-        (Postgres/Redshift fold to lower; Snowflake/Oracle fold to upper) reach
-        the right physical object instead of silently folding to a non-existent
-        name.
-
-        Context-aware: quotes only the **column-name leaf** of a ``Column``
-        (``Column.this``) and the **physical-table name parts** of a ``Table``
-        (``this``/``db``/``catalog``). It deliberately does NOT quote table
-        aliases or the qualifier side of a column reference — those are
-        SLayer-internal aliases that fold consistently within a query and never
-        need quoting; quoting them would only churn output and (for uppercase
-        model names) diverge from string-built references. Function names parse
-        to ``Anonymous``/``Func`` and string literals to ``Literal``, so neither
-        is touched. Idempotent.
-
-        DEV-1706 note: this predates its owning stage. DEV-1645's ORDER-BY
-        policies land in Stage 8 (DEV-1712), but mixed-case *identifier*
-        quoting is a hard dependency of the DEV-1686 reserved-word fix landing
-        here — a reserved-model join key such as ``grant.merchantId`` must emit
-        ``"grant"."merchantId"`` to execute on a case-folding backend. Pulled
-        forward deliberately; the ORDER-BY half stays pinned for Stage 8.
-        """
-        if isinstance(node, exp.Column):
-            SQLGenerator._maybe_quote_ident(node.this)
-        elif isinstance(node, exp.Table):
-            SQLGenerator._maybe_quote_ident(node.this)
-            SQLGenerator._maybe_quote_ident(node.args.get("db"))
-            SQLGenerator._maybe_quote_ident(node.args.get("catalog"))
-        return node
+        """Thin delegator to
+        :func:`slayer.sql.naming.quote_mixed_case_identifiers` (DEV-1713 D-b).
+        Kept as a method so ``tree.transform(gen._quote_mixed_case_identifiers)``
+        call sites / tests are unchanged. See the naming module for the policy
+        (DEV-1645 mixed-case quoting; DEV-1686 reserved-word dependency)."""
+        return quote_mixed_case_identifiers(node)
 
     def _to_ident(self, name: str) -> exp.Identifier:
         """Build a column/table-name identifier, quoting it when mixed-case
@@ -1940,6 +1924,17 @@ class SQLGenerator:
             ctes = [("base", base_sql)]
         available_aliases = set(base_aliases)  # Aliases available in the current layer
 
+        # DEV-1692: a per-generation collision-safe allocator for the transform
+        # layer's CTE names. The hoisted transform placeholder name (``t.name``,
+        # e.g. ``time_shift_inner``) restarts per formula, so two arithmetic-
+        # wrapped time_shifts would both mint ``shifted__time_shift_inner`` — a
+        # duplicate WITH name that silently shadows the first. Every existing /
+        # deterministic CTE name is RESERVED; the ``shifted_`` / ``sjoin_``
+        # families are ALLOCATED around them (reserve-not-rename keeps the
+        # recompute-at-reference CTE families collision-free too — Codex F3).
+        cte_allocator = AliasAllocator()
+        cte_allocator.reserve(*(name for name, _ in ctes), *base_aliases)
+
         # All transforms go into a unified layering loop. Each iteration tries
         # to resolve transforms whose inputs are available. Self-join transforms
         # (time_shift, change, change_pct) get their own CTE with a LEFT JOIN.
@@ -2002,7 +1997,7 @@ class SQLGenerator:
 
             # Emit window layer CTE if anything was added
             if added_this_layer:
-                layer_name = f"step{layer_num}"
+                layer_name = cte_allocator.allocate_cte(f"step{layer_num}")
                 layer_select = "SELECT\n    " + _SQL_COL_SEP.join(layer_parts)
                 ctes.append((layer_name, f"{layer_select}\nFROM {prev_cte}"))
                 available_aliases.update(added_this_layer)
@@ -2013,7 +2008,10 @@ class SQLGenerator:
             for t in deferred_self_joins:
                 src_cte = ctes[-1][0]
 
-                shift_name = f"shifted_{t.name}"
+                # DEV-1692: allocate collision-free CTE names (the local vars
+                # are used at both definition and every reference below, so a
+                # renamed name stays internally consistent).
+                shift_name = cte_allocator.allocate_cte(f"shifted_{t.name}")
                 shifted_sql = self._generate_shifted_base(
                     enriched=enriched, transform=t,
                 )
@@ -2035,7 +2033,7 @@ class SQLGenerator:
                 join_cols = ", ".join(
                     f'{src_cte}.{self._quote_ident(a)}' for a in sorted(available_aliases)
                 )
-                join_layer = f"sjoin_{t.name}"
+                join_layer = cte_allocator.allocate_cte(f"sjoin_{t.name}")
                 join_sql = (
                     f"SELECT {join_cols}, {col_sql} AS {self._quote_ident(t.alias)}\n"
                     f"FROM {src_cte}\n"
@@ -2058,6 +2056,12 @@ class SQLGenerator:
                 )
                 ctes.extend(reset_layer)
                 ctes.extend(value_layer)
+                # DEV-1692: reserve these deterministic names so a later
+                # ``shifted_`` / ``sjoin_`` allocation can never collide.
+                cte_allocator.reserve(
+                    *(name for name, _ in reset_layer),
+                    *(name for name, _ in value_layer),
+                )
                 available_aliases.add(t.alias)
                 added_this_layer.append(t.alias)
 
@@ -3325,6 +3329,25 @@ class SQLGenerator:
         # 7b.10 — transform layers present. Build the CTE chain.
         base_cte_sql = base_select.sql(dialect=self.dialect, pretty=True)
         ctes: list[tuple[str, str]] = [("base", base_cte_sql)]
+        # DEV-1692: collision-safe CTE-name allocator for the whole transform
+        # chain. The hoisted time_shift slot alias (``_time_shift_inner``)
+        # repeats across arithmetic-wrapped shifts, so two ``shifted_`` /
+        # ``sjoin_`` pairs would otherwise share a name (duplicate WITH). Every
+        # CTE name is reserved/allocated through this one allocator so the
+        # ``step`` / ``shifted_`` / ``sjoin_`` / ``cp_`` families never collide.
+        cte_allocator = AliasAllocator()
+        cte_allocator.reserve(*(name for name, _ in ctes))
+        # Codex (PR #269): also reserve every already-projected column alias's
+        # BARE form so a hidden transform alias minted below
+        # (``_time_shift_inner`` / ``_consecutive_periods_inner``) can never
+        # shadow a real user column of that name — mirrors the legacy path
+        # seeding ``base_aliases`` into its allocator.
+        _alias_prefix = f"{source_relation}."
+        cte_allocator.reserve(*(
+            a[len(_alias_prefix):] if a.startswith(_alias_prefix) else a
+            for aliases in aliases_by_slot_id.values()
+            for a in aliases
+        ))
         # "Pick one" map for transform-input / time-key / partition-key /
         # order-entry / POST-filter lookups. Initialised from the first
         # alias of every materialised slot.
@@ -3377,7 +3400,7 @@ class SQLGenerator:
             # --- Window batch (one step CTE per Kahn batch) ----------
             if ready_window:
                 step_num += 1
-                step_name = f"step{step_num}"
+                step_name = cte_allocator.allocate_cte(f"step{step_num}")
                 prev_cte = ctes[-1][0]
                 carry_aliases_sorted = sorted(
                     a for aliases in aliases_by_slot_id.values() for a in aliases
@@ -3424,6 +3447,7 @@ class SQLGenerator:
                     self._emit_time_shift_ctes_for_planned(
                         slot=slot,
                         ctes=ctes,
+                        cte_allocator=cte_allocator,
                         slots_by_id=slots_by_id,
                         slot_id_by_key=slot_id_by_key,
                         available_alias_by_slot_id=available_alias_by_slot_id,
@@ -3442,6 +3466,7 @@ class SQLGenerator:
                     self._emit_consecutive_periods_ctes_for_planned(
                         slot=slot,
                         ctes=ctes,
+                        cte_allocator=cte_allocator,
                         slots_by_id=slots_by_id,
                         slot_id_by_key=slot_id_by_key,
                         available_alias_by_slot_id=available_alias_by_slot_id,
@@ -7629,16 +7654,24 @@ class SQLGenerator:
         ``_pick_alias_for_planned_slot`` for C13 multi-alias slots) or
         the planner's canonical ``declared_name``.
 
-        DEV-1450 stage 7b.12: joined ROW slots (``ColumnKey.path != ()``
-        / ``TimeTruncKey.column.path != ()``) emit the FULL dotted
+        DEV-1450 stage 7b.12: joined ROW slots emit the FULL dotted
         result-key form (``orders.customers.region_id``), preserving
         the result-key contract (P10). The planner's flat
         ``declared_name`` is the DEV-1449 / C4 downstream-stage binding
         name and remains untouched on the slot for stage-2 references;
         only the public SQL alias differs.
+
+        DEV-1713 (D3 / DEV-1495 bug 1): the ROW branch covers all three
+        row key shapes — ``ColumnKey``, ``ColumnSqlKey`` (a joined DERIVED
+        column, which previously fell through to the flat ``declared_name``
+        and surfaced as ``orders.customers__revenue``), and ``TimeTruncKey``
+        over either. All route through :func:`slayer.sql.naming.result_key`,
+        the single owner of the dotted form; response_meta mirrors this
+        via the same builder so the two producers cannot drift.
         """
         from slayer.core.keys import (
             ColumnKey,
+            ColumnSqlKey,
             Phase,
             TimeTruncKey,
             column_leaf,
@@ -7651,20 +7684,27 @@ class SQLGenerator:
             leaf: Optional[str] = None
             if isinstance(key, ColumnKey):
                 path, leaf = key.path, key.leaf
+            elif isinstance(key, ColumnSqlKey):
+                # DEV-1713: a joined derived column's leaf is its column_name.
+                path, leaf = key.path, key.column_name
             elif isinstance(key, TimeTruncKey):
                 # DEV-1450 #4a: a derived TD's leaf is its column_name, so the
                 # public result-key shape matches the base-column TD.
                 path, leaf = column_path(key.column), column_leaf(key.column)
             if path and leaf is not None:
-                return f"{source_relation}." + ".".join(path) + f".{leaf}"
-        # Local + AGGREGATE / POST slots: existing alias selection.
+                return result_key(
+                    source_relation=source_relation, path=path, leaf=leaf,
+                )
+        # Local + AGGREGATE / POST slots: existing alias selection. The alias
+        # may embed hop dots (a cross-model measure alias such as
+        # ``customers.revenue_sum``), so use the canonical-alias builder.
         if slot.public_aliases:
             alias = self._pick_alias_for_planned_slot(
                 slot=slot, alias_index=alias_index,
             )
         else:
             alias = slot.declared_name
-        return f"{source_relation}.{alias}"
+        return result_key_from_alias(source_relation=source_relation, alias=alias)
 
     def _collect_joined_paths_for_base(
         self,
@@ -8409,11 +8449,12 @@ class SQLGenerator:
             return qualified, paths
         return None
 
-    def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — single conceptual unit for one time_shift slot: partition/time resolution through the shifted ScopeFrame + shifted-CTE body assembly + sjoin grain join-back, all sharing tightly-coupled per-slot state (time_alias / input_alias / partition_specs / shifted_cte_name / carry aliases). Splitting forces that cross-cutting state through many-argument helpers without simplifying anything — same shape as the NOSONAR'd sibling _render_cross_model_cte.
+    def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — single conceptual unit for one time_shift slot: partition/time resolution through the shifted ScopeFrame + shifted-CTE body assembly + collision-safe CTE naming (cte_allocator) + sjoin grain join-back, all sharing tightly-coupled per-slot state (time_alias / input_alias / partition_specs / shifted_cte_name / carry aliases). Splitting forces that cross-cutting state through many-argument helpers without simplifying anything — same shape as the NOSONAR'd sibling _render_cross_model_cte.
         self,
         *,
         slot,
         ctes: list,
+        cte_allocator: AliasAllocator,
         slots_by_id: Dict[str, Any],
         slot_id_by_key: Dict[Any, str],
         available_alias_by_slot_id: Dict[str, str],
@@ -8765,10 +8806,20 @@ class SQLGenerator:
         # slot with multiple ``public_aliases``; the sjoin CTE projects
         # the shifted measure under EACH alias so the outer SELECT
         # carries both.
-        slot_aliases: List[str] = list(slot.public_aliases) or [slot.declared_name]
+        # DEV-1692: a HIDDEN inner time_shift slot's declared_name
+        # (``_time_shift_inner``) is NOT unique across sibling shifts with
+        # different offsets — two would project + resolve downstream under the
+        # same column, silently collapsing ``growth_2m`` onto ``growth_1m``'s
+        # shift. Allocate a unique internal alias for the hidden case; USER
+        # aliases (public_aliases, already unique) are left untouched.
+        if slot.public_aliases:
+            slot_aliases: List[str] = list(slot.public_aliases)
+        else:
+            slot_aliases = [cte_allocator.allocate_cte(slot.declared_name)]
         cte_name_alias = slot_aliases[0]
-        shifted_cte_name = f"shifted_{cte_name_alias}"
-        sjoin_cte_name = f"sjoin_{cte_name_alias}"
+        # DEV-1692: allocate collision-free CTE names too.
+        shifted_cte_name = cte_allocator.allocate_cte(f"shifted_{cte_name_alias}")
+        sjoin_cte_name = cte_allocator.allocate_cte(f"sjoin_{cte_name_alias}")
 
         ctes.append((shifted_cte_name, shifted_sql))
 
@@ -8796,11 +8847,25 @@ class SQLGenerator:
         # join-back — a NULL dimension value (e.g. a LEFT-joined ``stores.name``
         # with no matching store) or a NULL time bucket must match its own group
         # instead of silently dropping to a NULL shifted value under plain ``=``.
+        #
+        # The predicate is built from AST nodes DIRECTLY — not via
+        # ``_null_safe_join_pair_sql``'s string round-trip — because a dotted
+        # public alias (``orders.created_at``) re-parses on BigQuery/T-SQL as a
+        # multi-part reference and the DEV-1713 alias mangling then corrupts it
+        # (``base.`orders.created_at``` → ``base___orders`.`created_at```). The
+        # alias as a single ``quoted=True`` identifier matches the SELECT parts'
+        # ``_quote_ident`` output byte-for-byte on every dialect and survives the
+        # post-generation mangling intact.
         def _grain_eq(a: str) -> str:
-            return self._null_safe_join_pair_sql(
-                left_sql=f'{prev_cte}.{self._quote_ident(a)}',
-                right_sql=f'{shifted_cte_name}.{self._quote_ident(a)}',
+            left = exp.Column(
+                this=exp.to_identifier(a, quoted=True),
+                table=exp.to_identifier(prev_cte),
             )
+            right = exp.Column(
+                this=exp.to_identifier(a, quoted=True),
+                table=exp.to_identifier(shifted_cte_name),
+            )
+            return self._dialect.build_null_safe_eq(left, right).sql(dialect=self.dialect)
 
         join_conds = [_grain_eq(time_alias)]
         for _, pk_alias, _ in partition_specs:
@@ -8822,11 +8887,12 @@ class SQLGenerator:
         # ``available_alias_by_slot_id`` is "pick one" — first alias wins.
         available_alias_by_slot_id.setdefault(slot.id, slot_full_aliases[0])
 
-    def _emit_consecutive_periods_ctes_for_planned(
+    def _emit_consecutive_periods_ctes_for_planned(  # NOSONAR(S3776) — one cohesive per-slot consecutive_periods emission: predicate-shape decision, unique hidden alias plus collision-safe reset and value CTE names, the reset-group window layer, then the count-within-group window layer. Each block shares the slot registry and alias maps and cte_allocator; extracting helpers would scatter that contract without simplifying it.
         self,
         *,
         slot,
         ctes: list,
+        cte_allocator: AliasAllocator,
         slots_by_id: Dict[str, Any],
         slot_id_by_key: Dict[Any, str],
         available_alias_by_slot_id: Dict[str, str],
@@ -8940,11 +9006,16 @@ class SQLGenerator:
             if alias is not None:
                 partition_aliases.append(alias)
 
-        slot_alias = (
-            slot.public_aliases[0]
-            if slot.public_aliases
-            else slot.declared_name
-        )
+        # DEV-1692: a HIDDEN inner consecutive_periods slot's declared_name
+        # (``_consecutive_periods_inner``) is NOT unique across sibling slots —
+        # two would collide on ``full_slot_alias`` / ``cp_reset_alias`` and
+        # collapse downstream, the same failure mode fixed for time_shift.
+        # Allocate a unique internal alias for the hidden case; USER aliases
+        # (already unique) are left untouched.
+        if slot.public_aliases:
+            slot_alias = slot.public_aliases[0]
+        else:
+            slot_alias = cte_allocator.allocate_cte(slot.declared_name)
         full_slot_alias = f"{source_relation}.{slot_alias}"
         cp_reset_alias = f"_cp_reset_{full_slot_alias}"
 
@@ -8968,7 +9039,7 @@ class SQLGenerator:
             f'SUM(CASE WHEN {pred_in_case} THEN 0 ELSE 1 END) '
             f'OVER ({over_reset}) AS {self._quote_ident(cp_reset_alias)}'
         )
-        cp_reset_cte_name = f"cp_reset_{slot_alias}"
+        cp_reset_cte_name = cte_allocator.allocate_cte(f"cp_reset_{slot_alias}")
         cp_reset_sql = (
             _SQL_SELECT_HEAD + carry_select
             + ",\n  " + reset_window_sql
@@ -8999,7 +9070,7 @@ class SQLGenerator:
             f'THEN {value_inner_window_sql} ELSE 0 END '
             f'AS {self._quote_ident(full_slot_alias)}'
         )
-        cp_value_cte_name = f"cp_value_{slot_alias}"
+        cp_value_cte_name = cte_allocator.allocate_cte(f"cp_value_{slot_alias}")
         cp_value_sql = (
             _SQL_SELECT_HEAD + carry_select
             + ",\n  " + value_outer_case
@@ -10861,13 +10932,14 @@ class SQLGenerator:
                     f"{type(slot.key).__name__}) not materialised in "
                     f"the local-only SELECT. Deferred to a later slice."
                 )
-            if slot.public_aliases:
-                alias = slot.public_aliases[0]
-            elif slot.public_name:
-                alias = slot.public_name
-            else:
-                alias = slot.declared_name
-            full_alias = f"{source_relation}.{alias}"
+            # DEV-1713: resolve to the SAME full alias the projection emits —
+            # a joined ROW dimension projects under the DOTTED result key
+            # (``orders.customers.regions.name``), so the ORDER BY must match
+            # it, not the flat ``declared_name`` (``customers__regions__name``),
+            # which would name a column the SELECT never projects.
+            full_alias = self._full_alias_for_slot(
+                slot=slot, source_relation=source_relation, alias_index={},
+            )
             order_col = exp.Column(
                 this=exp.to_identifier(full_alias, quoted=True),
             )

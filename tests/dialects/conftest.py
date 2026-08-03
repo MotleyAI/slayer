@@ -28,21 +28,21 @@ def _norm(s: str) -> str:
     return " ".join(s.split())
 
 
-_SQLGLOT_TYPEERROR_DIALECTS = {"bigquery"}
-
-
 def _assert_valid_sql(sql: str, dialect: str = "postgres") -> None:
-    """Assert generated SQL is structurally valid (parses, no nested WITH)."""
+    """Assert generated SQL is structurally valid (parses, no nested WITH).
+
+    DEV-1713 removed the BigQuery ``TypeError`` carve-out (finalised naming/
+    mangling no longer emits the dotted-alias shapes sqlglot choked on), so a
+    ``TypeError`` here is a real failure for every dialect.
+    """
     try:
         statements = sqlglot.parse(sql, dialect=dialect)
         assert statements, f"SQL failed to parse:\n{sql}"
         assert len(statements) == 1, f"Expected 1 SQL statement, got {len(statements)}:\n{sql}"
     except TypeError as exc:
-        if dialect not in _SQLGLOT_TYPEERROR_DIALECTS:
-            raise AssertionError(
-                f"sqlglot TypeError while validating {dialect} SQL:\n{sql}"
-            ) from exc
-        return  # Known sqlglot limitation for this dialect
+        raise AssertionError(
+            f"sqlglot TypeError while validating {dialect} SQL:\n{sql}"
+        ) from exc
     # No nested WITH — only one WITH keyword allowed at the start of a line
     with_lines = [line for line in sql.split("\n") if line.strip().upper().startswith("WITH ")]
     assert len(with_lines) <= 1, f"Nested WITH clauses detected:\n{sql}"

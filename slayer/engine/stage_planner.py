@@ -95,6 +95,7 @@ from slayer.engine.source_bundle import (
     synthetic_model_from_stage_schema,
 )
 from slayer.engine.syntax import parse_expr, parse_filter_expr
+from slayer.sql.naming import flat_name
 from slayer.sql.sql_expr import has_window_function
 from slayer.sql.sql_predicate import parse_sql_predicate
 
@@ -1135,6 +1136,29 @@ def _saved_model_measure_type(
     return saved.type if saved is not None else None
 
 
+def _bare_saved_measure_name(
+    *, scope: Union[ModelScope, StageSchema], formula: str,
+) -> Optional[str]:
+    """The saved ``ModelMeasure.name`` when the query formula is a BARE
+    reference to one (DEV-1713 / DEV-1495 bare-named-measure aliasing).
+
+    ``expand_model_measures`` rewrites ``rev_total`` to the saved measure's
+    underlying formula AST, so without this the measure would surface under
+    the formula-derived canonical (``revenue_sum``) instead of the name the
+    user referenced (``rev_total``). Fires ONLY for a bare identifier matching
+    a ``ModelMeasure.name`` on the source model — the same gate as
+    :func:`_saved_model_measure_type`; qualified / arithmetic / colon-suffix
+    formulas fall through (name-preservation is scoped to the bare form).
+    """
+    if not isinstance(scope, ModelScope) or scope.source_model is None:
+        return None
+    bare = formula.strip()
+    if not bare.isidentifier():
+        return None
+    saved = scope.source_model.get_measure(bare)
+    return saved.name if saved is not None else None
+
+
 def _declared_measures_from_query(
     *,
     query: SlayerQuery,
@@ -1210,8 +1234,13 @@ def _declared_measures_from_query(
         # (DEV-1446) still holds — ``lower_sugar_transforms`` keeps the
         # inner ``AggregateKey`` instance unchanged.
         canonical = _canonical_alias_for_formula(formula, bound=bound)
-        declared_name = explicit_name or canonical
-        public_name = explicit_name or canonical
+        # DEV-1713: a bare reference to a saved ModelMeasure surfaces under the
+        # measure NAME, not the formula-derived canonical. Explicit query
+        # ``name`` still wins; the saved name is an implicit ``name``.
+        saved_name = _bare_saved_measure_name(scope=scope, formula=formula)
+        alias_name = explicit_name or saved_name
+        declared_name = alias_name or canonical
+        public_name = alias_name or canonical
         fmt, desc = _format_description_for_measure_formula(
             scope=scope, bound=bound,
         )
@@ -1235,7 +1264,10 @@ def _declared_measures_from_query(
             declared_name=declared_name,
             public_name=public_name,
             label=m.label,
-            canonical_alias=canonical if explicit_name else None,
+            # DEV-1443: keep the canonical alias whenever the surfaced name
+            # differs from it (explicit ``name`` OR an implicit saved-measure
+            # name) so a colon-form filter / ORDER BY still resolves.
+            canonical_alias=canonical if alias_name else None,
             type=m_type,
             format=fmt,
             description=desc,
@@ -1297,7 +1329,8 @@ def _topo_sort(queries: List[SlayerQuery]) -> List[SlayerQuery]:
 
 
 def _flatten_dotted(name: str) -> str:
-    return name.replace(".", "__")
+    # DEV-1713: the ``__``-flatten is owned by the naming module.
+    return flat_name(name)
 
 
 def _canonical_alias_for_formula(

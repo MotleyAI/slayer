@@ -34,7 +34,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.sql.dialects._alias_mangle import decode_alias, encode_alias
+from slayer.sql.naming import decode_alias, encode_alias
 from slayer.sql.dialects.base import SqlDialect, _build_covar_decomposition
 
 
@@ -357,8 +357,7 @@ class TsqlDialect(SqlDialect):
         dotted alias shape.
 
         Uses the same bijection as ``BigqueryDialect`` (shared encode in
-        ``slayer.sql.dialects._alias_mangle``); only the regex anchor
-        differs.
+        ``slayer.sql.naming``); only the regex anchor differs.
         """
         return _TSQL_DOTTED_ALIAS_RE.sub(
             lambda m: f"[{encode_alias(m.group(1))}]", sql

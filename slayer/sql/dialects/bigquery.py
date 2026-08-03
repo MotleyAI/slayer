@@ -18,9 +18,8 @@ Per DEV-1542's "every dialect quirk lives behind a hook on
 ``rewrite_emitted_sql`` / ``decode_result_keys`` hooks on the base class
 have identity defaults; only ``BigqueryDialect`` (and ``TsqlDialect``,
 DEV-1571) override them today. The shared encode/decode bijection lives
-in :mod:`slayer.sql.dialects._alias_mangle` and is reused by both
-dialects — only the regex anchor (backticks here, brackets in T-SQL)
-differs.
+in :mod:`slayer.sql.naming` (DEV-1713) and is reused by both dialects —
+only the regex anchor (backticks here, brackets in T-SQL) differs.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ import sqlalchemy as sa
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.sql.dialects._alias_mangle import decode_alias, encode_alias
+from slayer.sql.naming import decode_alias, encode_alias
 from slayer.sql.dialects.base import SqlDialect
 
 if TYPE_CHECKING:

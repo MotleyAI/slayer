@@ -400,32 +400,27 @@ class TestBestEffortLimitations:
 
 
 # --------------------------------------------------------------------------- #
-# BigQuery parse carve-out: bounded + reported (Codex #7 / J2=A). Residual owned
-# by Stage 9 (DEV-1713).
+# BigQuery parse carve-out REMOVED (DEV-1713 Stage 9). Finalised BigQuery
+# naming/mangling collapses dotted aliases to ``___`` before validation, so
+# sqlglot no longer raises ``TypeError`` on real BigQuery output — the
+# ``_SQLGLOT_TYPEERROR_DIALECTS`` skip-set is gone and every dialect (BigQuery
+# included) is now validated with no special case. These tests pin that closure:
+# a parse ``TypeError`` propagates for EVERY dialect (no dialect is exempt).
 # --------------------------------------------------------------------------- #
-class TestBigQueryParseCarveOut:
-    def test_bigquery_typeerror_is_skipped_not_raised(self, monkeypatch) -> None:
+class TestBigQueryParseCarveOutRemoved:
+    @pytest.mark.parametrize("dialect", ["bigquery", "tsql", "postgres"])
+    def test_typeerror_propagates_for_every_dialect(
+        self, monkeypatch, dialect: str,
+    ) -> None:
         import slayer.sql.scope_check as sc
 
         def _boom(*_args, **_kwargs):
-            raise TypeError("sqlglot bigquery quirk")
+            raise TypeError("sqlglot quirk")
 
         monkeypatch.setattr(sc.sqlglot, "parse_one", _boom)
-        result = check_scope_closed("SELECT 1", dialect="bigquery")
-        assert result.skipped is True
-        assert result.closed is True  # skipped ⇒ not a leak
-        # assert_scope_closed must also swallow it (no raise) for bigquery.
-        assert_scope_closed("SELECT 1", dialect="bigquery")
-
-    def test_typeerror_propagates_for_non_carveout_dialect(self, monkeypatch) -> None:
-        import slayer.sql.scope_check as sc
-
-        def _boom(*_args, **_kwargs):
-            raise TypeError("unexpected")
-
-        monkeypatch.setattr(sc.sqlglot, "parse_one", _boom)
+        # No dialect is carved out any more — a real parse TypeError surfaces.
         with pytest.raises(TypeError):
-            check_scope_closed("SELECT 1", dialect="postgres")
+            check_scope_closed("SELECT 1", dialect=dialect)
 
 
 # --------------------------------------------------------------------------- #

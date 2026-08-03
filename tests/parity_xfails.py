@@ -22,10 +22,6 @@ PARITY_XFAILS: dict[str, str] = {
     # fix (a reserved-model join key such as ``grant.merchantId`` must emit
     # ``"grant"."merchantId"``). Those pins were removed here; the DEV-1645
     # ORDER-BY *placement* policies above remain for Stage 8 (DEV-1712).
-    'tests/test_named_measures.py::TestBareNamedMeasureAliasing::test_select_alias_uses_measure_name': "DEV-1713 (Stage 9): bare named-measure SELECT-alias naming.",
-    'tests/test_named_measures.py::TestBareNamedMeasureAliasing::test_order_by_resolves_against_measure_name': "DEV-1713 (Stage 9): bare named-measure SELECT-alias naming.",
-    'tests/test_sql_generator.py::TestFields::test_multiple_time_shifts_in_arithmetic_unique_ctes': "DEV-1713 (Stage 9): DEV-1692 duplicate time_shift CTE de-collision.",
-    'tests/integration/test_integration.py::test_multiple_time_shifts_in_one_query': "DEV-1713 (Stage 9): DEV-1692 duplicate time_shift CTE de-collision.",
     # Flavor-B mixed-case identifier execution — landed in DEV-1706 Stage 2
     # (see the note above); un-pinned. Flavor-A ORDER-BY stays for Stage 8.
     'tests/integration/test_integration_postgres.py::TestDev1645ValidPostgres::test_flavor_a_orderby_nonprojected_column_executes': "DEV-1712 (Stage 8): DEV-1645 ORDER BY unprojected column policy.",
