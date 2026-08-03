@@ -6830,7 +6830,7 @@ class SQLGenerator:
         cte_sql = cte_select.sql(dialect=self.dialect, pretty=True)
         return cte_sql, shared_grain_aliases
 
-    def _register_routed_filter_joins(
+    def _register_routed_filter_joins(  # NOSONAR(S3776) — a cohesive recursive ValueKey tree-walk dispatcher (the heavy AggregateKey arm is already extracted to _register_agg_key_joins); the remaining branches are the closed-union dispatch contract, mirroring the sibling walkers _value_key_join_paths / _collect_base_aux_slot_ids in this file.
         self,
         *,
         planned_query,

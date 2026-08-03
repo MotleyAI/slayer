@@ -588,7 +588,7 @@ def _route_host_filters(
     return applied, where_ids, having_ids, dropped
 
 
-def _compute_shared_grain_slots(
+def _compute_shared_grain_slots(  # NOSONAR(S3776) — one cohesive classification pass over host ROW slots (ColumnKey / TimeTruncKey / derived ColumnSqlKey), each carrying its own path-prefix rule; splitting the three branches into per-kind helpers scatters the single shared-grain contract without simplifying it.
     *, host_slots: List[ValueSlot], target_path: Tuple[str, ...],
 ) -> List[SlotId]:
     """Host ROW slots (dimensions / time-dimensions) whose path lies on the
