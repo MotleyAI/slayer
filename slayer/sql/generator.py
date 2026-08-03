@@ -32,6 +32,7 @@ from slayer.engine.column_expansion import (
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
+from slayer.engine.cross_model_planner import derived_shared_grain_not_implemented
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
 from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
@@ -6452,14 +6453,12 @@ class SQLGenerator:
                 # aggregate across groups (wrong per-group values), raise loudly.
                 # A TimeTrunc-wrapped derived grain IS supported (below).
                 if not isinstance(key, TimeTruncKey):
-                    raise NotImplementedError(
-                        f"DEV-1708: a plain derived (non-time) dimension "
-                        f"({grain_column.column_name!r}) used as cross-model "
-                        f"shared grain is not yet rendered — its host alias is "
-                        f"flattened while the CTE join-back expects the dotted "
-                        f"form (DEV-1495-b1). Pull the dimension to the host "
-                        f"base, use a base column, or wrap it in a time "
-                        f"dimension. Full support tracked in DEV-1495."
+                    # Defensive backstop — the planner raises this first (a
+                    # plain derived shared-grain slot never reaches the emitted
+                    # ``shared_grain_slots``); shares the planner's message so
+                    # the two can't drift (DEV-1708).
+                    raise derived_shared_grain_not_implemented(
+                        grain_column.column_name,
                     )
                 expanded_grain_sql = self._expand_derived_column_sql(
                     source_model=target_model,
@@ -6687,6 +6686,7 @@ class SQLGenerator:
             target_model=target_model,
             bundle=bundle,
             scope=cte_scope,
+            target_path=target_path,
         )
         cte_where = self._collect_routed_filters(
             planned_query=planned_query,
@@ -6839,6 +6839,7 @@ class SQLGenerator:
         target_model,
         bundle,
         scope: ScopeFrame,
+        target_path: Tuple[str, ...],
     ) -> None:
         """DEV-1708 / Codex F4 — register the joins crossed by every routed
         WHERE/HAVING filter into ``scope.join_paths``, walking the FULL
@@ -6855,9 +6856,11 @@ class SQLGenerator:
         from slayer.core.keys import (
             AggregateKey,
             ArithmeticKey,
+            BetweenKey,
             ColumnKey,
             ColumnSqlKey,
             InKey,
+            ScalarCallKey,
         )
 
         if not filter_ids:
@@ -6866,38 +6869,64 @@ class SQLGenerator:
 
         def _walk(vk) -> None:
             if isinstance(vk, (ColumnKey, ColumnSqlKey)):
-                # Reroot a path-qualified leaf into the target's local scope
-                # (strip the cross-model prefix) before resolving, so the join
-                # it crosses is expressed relative to the CTE root.
-                local = _reroot_path_ref(vk, target_path=vk.path) if vk.path else vk
+                # Reroot a path-qualified leaf into the target's local scope by
+                # stripping the CTE's ``target_path`` prefix (NOT the ref's own
+                # path — a ref one hop past the target keeps its residual so the
+                # deeper join still registers), then resolve.
+                local = (
+                    _reroot_path_ref(vk, target_path=target_path)
+                    if vk.path else vk
+                )
                 scope.resolve(local)
             elif isinstance(vk, AggregateKey):
-                cross_model_path = getattr(vk.source, "path", ())
-                local_agg = reroot_aggregate_key(vk, target_path=cross_model_path)
-                if isinstance(local_agg.source, ColumnSqlKey):
-                    scope.resolve(local_agg.source)
-                for a in local_agg.args:
-                    if isinstance(a, (ColumnKey, ColumnSqlKey)):
-                        scope.resolve(a)
-                for _k, v in local_agg.kwargs:
-                    if isinstance(v, (ColumnKey, ColumnSqlKey)):
-                        scope.resolve(v)
-                cfk = local_agg.column_filter_key
-                if cfk is not None and cfk.canonical_sql:
-                    for p in self._filter_join_paths(
-                        sql=cfk.canonical_sql, source_relation=target_relation,
-                        source_model=target_model, bundle=bundle,
-                    ):
-                        scope.join_paths.add(p)
+                self._register_agg_key_joins(
+                    agg_key=vk, scope=scope, target_relation=target_relation,
+                    target_model=target_model, bundle=bundle,
+                )
             elif isinstance(vk, ArithmeticKey):
                 for op in vk.operands:
                     _walk(op)
+            elif isinstance(vk, ScalarCallKey):
+                for a in vk.args:
+                    _walk(a)
+            elif isinstance(vk, BetweenKey):
+                _walk(vk.column)
+                _walk(vk.low)
+                _walk(vk.high)
             elif isinstance(vk, InKey):
                 _walk(vk.column)
 
         for fp in planned_query.filters_by_phase:
             if fp.id in wanted and fp.expression is not None:
                 _walk(fp.expression.value_key)
+
+    def _register_agg_key_joins(
+        self, *, agg_key, scope: ScopeFrame, target_relation: str,
+        target_model, bundle,
+    ) -> None:
+        """Register the joins an aggregate leaf crosses (source + positional
+        args + column-ref kwargs + ``column_filter``) into ``scope.join_paths``
+        — the ``AggregateKey`` arm of ``_register_routed_filter_joins``'s tree
+        walk, extracted so the walker stays a thin dispatcher (DEV-1708)."""
+        from slayer.core.keys import ColumnKey, ColumnSqlKey
+
+        cross_model_path = getattr(agg_key.source, "path", ())
+        local_agg = reroot_aggregate_key(agg_key, target_path=cross_model_path)
+        if isinstance(local_agg.source, ColumnSqlKey):
+            scope.resolve(local_agg.source)
+        for a in local_agg.args:
+            if isinstance(a, (ColumnKey, ColumnSqlKey)):
+                scope.resolve(a)
+        for _k, v in local_agg.kwargs:
+            if isinstance(v, (ColumnKey, ColumnSqlKey)):
+                scope.resolve(v)
+        cfk = local_agg.column_filter_key
+        if cfk is not None and cfk.canonical_sql:
+            for p in self._filter_join_paths(
+                sql=cfk.canonical_sql, source_relation=target_relation,
+                source_model=target_model, bundle=bundle,
+            ):
+                scope.join_paths.add(p)
 
     def _collect_routed_filters(
         self,
@@ -6965,10 +6994,12 @@ class SQLGenerator:
         from slayer.core.keys import (
             AggregateKey,
             ArithmeticKey,
+            BetweenKey,
             ColumnKey,
             ColumnSqlKey,
             InKey,
             LiteralKey,
+            ScalarCallKey,
         )
 
         if isinstance(value_key, ColumnSqlKey):
@@ -7108,6 +7139,48 @@ class SQLGenerator:
                 for op_key in value_key.operands
             ]
             return self._build_arith_or_cmp_ast(op=op, operands=rendered_operands)
+        if isinstance(value_key, ScalarCallKey):
+            # DEV-1708 (Codex): a routed filter wrapping a target ref in a scalar
+            # call (``abs(customers.deep_pop) > 5``) — render each arg in the
+            # target scope (a derived arg expands + pulls its join) and rebuild
+            # the call, mirroring the local filter-render path's ScalarCallKey
+            # branch (``like`` → ``exp.Like``; else ``func(NAME, *args)`` through
+            # the dialect rewrite). Without this the key falls through to the
+            # scalar fallback and emits its repr as a bogus string literal.
+            rendered_args = [
+                self._render_filter_value_key_in_target_scope(
+                    value_key=a,
+                    target_relation=target_relation,
+                    target_model=target_model,
+                    planned_query=planned_query,
+                    bundle=bundle,
+                    first_last_state=first_last_state,
+                )
+                for a in value_key.args
+            ]
+            if value_key.name == "like":
+                return exp.Like(this=rendered_args[0], expression=rendered_args[1])
+            return self._finalize_scalar_call(
+                exp.func(value_key.name.upper(), *rendered_args),
+            )
+        if isinstance(value_key, BetweenKey):
+            # DEV-1708: a routed ``date_range``-derived BETWEEN over a target
+            # (possibly crossing) column — render each operand in the target
+            # scope, mirroring the local filter path's ``exp.Between``.
+            def _render(k):
+                return self._render_filter_value_key_in_target_scope(
+                    value_key=k,
+                    target_relation=target_relation,
+                    target_model=target_model,
+                    planned_query=planned_query,
+                    bundle=bundle,
+                    first_last_state=first_last_state,
+                )
+            return exp.Between(
+                this=_render(value_key.column),
+                low=_render(value_key.low),
+                high=_render(value_key.high),
+            )
         if isinstance(value_key, InKey):
             # DEV-1475: cross-model IN filter — render the LHS column
             # rooted at the CTE's target relation (so a bare ``name`` on

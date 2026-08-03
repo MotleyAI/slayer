@@ -63,6 +63,15 @@ def _norm(s: str) -> str:
     return " ".join(s.split())
 
 
+def _split_at_ranked_subquery(norm: str) -> "tuple[str, str]":
+    """Split a normalized CTE body into ``(outer, inner)`` at the ranked
+    subquery's ``FROM (``. Asserts the marker exists so a shape change (no
+    ranked subquery) fails loudly instead of silently slicing at ``-1``."""
+    at = norm.find("FROM (")
+    assert at != -1, f"no ranked subquery (FROM () in:\n{norm}"
+    return norm[:at], norm[at:]
+
+
 def _joinback_on_predicate(sql: str, *, dialect: str = "postgres") -> str:
     """Return the rendered ON predicate of the combined SELECT's
     ``LEFT JOIN _cm_* ON ...`` grain join-back (the null-safe target)."""
@@ -385,13 +394,12 @@ class TestDev1702B2ForwardMaterialization:
         norm = _norm(cm_body)
         # Ranked subquery present, pulls the further join inside it.
         assert "ROW_NUMBER()" in norm, norm
-        inner = norm[norm.find("FROM ("):]
+        outer, inner = _split_at_ranked_subquery(norm)
         assert "LEFT JOIN regions AS regions" in inner, inner
         # Law 2: value materialised as _val_N inside the subquery; the outer
         # MAX(...) references the alias (optionally relation-qualified against
         # the ranked subquery alias), not the crossing ref.
         assert _re.search(r"regions\.population AS _val_\d+", inner), inner
-        outer = norm[: norm.find("FROM (")]
         assert _re.search(
             r"MAX\(CASE WHEN _last_rn = 1 THEN (?:\w+\.)?_val_\d+", outer), outer
         assert "regions.population" not in outer, outer
@@ -411,11 +419,12 @@ class TestDev1702B2ForwardMaterialization:
         assert_scope_closed(sql)
         cm_body = _extract_cte_body(sql, r"_cm_\w+")
         norm = _norm(cm_body)
-        inner = norm[norm.find("FROM ("):]
+        _outer, inner = _split_at_ranked_subquery(norm)
         # The time arg's crossed join is registered inside the ranked subquery,
         # and the ORDER BY ranks on the anchored expression.
         assert "LEFT JOIN regions AS regions" in inner, inner
-        assert "ORDER BY" in inner and "regions.opened_at" in inner, inner
+        assert "ORDER BY" in inner, inner
+        assert "regions.opened_at" in inner, inner
 
     async def test_forward_last_crossing_value_and_filter(self) -> None:
         """Codex F3: a forward first/last whose source sql crosses one join AND
@@ -438,8 +447,7 @@ class TestDev1702B2ForwardMaterialization:
         assert_scope_closed(sql)
         cm_body = _extract_cte_body(sql, r"_cm_\w+")
         norm = _norm(cm_body)
-        inner = norm[norm.find("FROM ("):]
-        outer = norm[: norm.find("FROM (")]
+        outer, inner = _split_at_ranked_subquery(norm)
         # BOTH the value's join (regions) and the filter's deeper join
         # (regions → countries) resolve inside the ranked subquery.
         assert "LEFT JOIN regions AS regions" in inner, inner
@@ -520,6 +528,24 @@ class TestRoutedFilterDerivedCrossing:
         cm_body = _extract_cte_body(sql, r"_cm_\w+")
         assert "LEFT JOIN regions AS regions" in cm_body, cm_body
         assert "regions.population > 5" in _norm(cm_body), cm_body
+
+    async def test_scalar_call_wrapped_crossing_filter_pulls_join(self) -> None:
+        """Codex F4 follow-up: a routed filter wrapping a crossing derived column
+        in a scalar call (``abs(customers_v2.deep_pop) > 5``) must expand the arg,
+        emit a real ``ABS(regions.population)`` predicate, and pull the join —
+        not fall through to a stringified-key literal."""
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
+            filters=["abs(customers_v2.deep_pop) > 5"],
+        )
+        sql = await _gen(query)
+        assert_scope_closed(sql)
+        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "ABS(regions.population) > 5" in cm_body, cm_body
+        # The broken stringified-key literal must not appear.
+        assert "ColumnSqlKey" not in cm_body, cm_body
 
 
 # =========================================================================== #
@@ -776,44 +802,44 @@ def _seed_sqlite(db_path: str) -> None:
 
 @pytest.fixture
 async def sqlite_engine() -> AsyncIterator[SlayerQueryEngine]:
-    d = tempfile.mkdtemp()
-    db_path = os.path.join(d, "t.db")
-    _seed_sqlite(db_path)
-    storage = YAMLStorage(base_dir=os.path.join(d, "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name="test", type="sqlite", database=db_path)
-    )
-    # SQLite-shaped models (no schema qualifier).
-    await storage.save_model(SlayerModel(
-        name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="population", type=DataType.DOUBLE),
-        ],
-    ))
-    await storage.save_model(SlayerModel(
-        name="customers_v2", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="lifetime_value", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
-        ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
-    ))
-    await storage.save_model(SlayerModel(
-        name="orders_x", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-        ],
-        joins=[ModelJoin(target_model="customers_v2", join_pairs=[["customer_id", "id"]])],
-    ))
-    yield SlayerQueryEngine(storage=storage)
+    with tempfile.TemporaryDirectory() as d:
+        db_path = os.path.join(d, "t.db")
+        _seed_sqlite(db_path)
+        storage = YAMLStorage(base_dir=os.path.join(d, "store"))
+        await storage.save_datasource(
+            DatasourceConfig(name="test", type="sqlite", database=db_path)
+        )
+        # SQLite-shaped models (no schema qualifier).
+        await storage.save_model(SlayerModel(
+            name="regions", sql_table="regions", data_source="test",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="name", type=DataType.TEXT),
+                Column(name="population", type=DataType.DOUBLE),
+            ],
+        ))
+        await storage.save_model(SlayerModel(
+            name="customers_v2", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="region_id", type=DataType.INT),
+                Column(name="lifetime_value", type=DataType.DOUBLE),
+                Column(name="status", type=DataType.TEXT),
+                Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders_x", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="customer_id", type=DataType.INT),
+                Column(name="amount", type=DataType.DOUBLE),
+                Column(name="status", type=DataType.TEXT),
+            ],
+            joins=[ModelJoin(target_model="customers_v2", join_pairs=[["customer_id", "id"]])],
+        ))
+        yield SlayerQueryEngine(storage=storage)
 
 
 class TestNullSafeJoinBackExecution:
