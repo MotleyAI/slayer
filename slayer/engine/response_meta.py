@@ -43,6 +43,7 @@ from slayer.core.models import Column, SlayerModel
 from slayer.engine.planned import PlannedQuery, ValueSlot
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
+from slayer.sql.naming import result_key, result_key_from_alias
 
 
 # ---------------------------------------------------------------------------
@@ -130,23 +131,37 @@ def _model_for_path(
 def _slot_result_keys(*, slot: ValueSlot, source_relation: str) -> List[str]:
     """The public result-key alias(es) for ``slot``.
 
-    Mirrors ``SQLGenerator._full_alias_for_slot``: joined ROW slots emit the
-    full dotted path (``orders.customers.region``); everything else uses the
-    slot's public alias(es) — multiple for a C13 multi-name interned slot —
-    prefixed by the stage's source relation.
+    Mirrors ``SQLGenerator._full_alias_for_slot`` via the SAME naming builders
+    (``slayer.sql.naming.result_key`` / ``result_key_from_alias``) so the SQL
+    alias and the response result key cannot drift. Joined ROW slots — base
+    ``ColumnKey``, derived ``ColumnSqlKey`` (DEV-1713 D3 / DEV-1495 bug 1), and
+    ``TimeTruncKey`` over either — emit the full dotted path
+    (``orders.customers.region``); everything else uses the slot's public
+    alias(es) — multiple for a C13 multi-name interned slot.
     """
     key = slot.key
     if slot.phase == Phase.ROW:
         if isinstance(key, ColumnKey) and key.path:
-            return [f"{source_relation}." + ".".join(key.path) + f".{key.leaf}"]
+            return [result_key(
+                source_relation=source_relation, path=key.path, leaf=key.leaf,
+            )]
+        if isinstance(key, ColumnSqlKey) and key.path:
+            return [result_key(
+                source_relation=source_relation,
+                path=key.path,
+                leaf=key.column_name,
+            )]
         if isinstance(key, TimeTruncKey) and column_path(key.column):
-            return [
-                f"{source_relation}."
-                + ".".join(column_path(key.column))
-                + f".{column_leaf(key.column)}"
-            ]
+            return [result_key(
+                source_relation=source_relation,
+                path=column_path(key.column),
+                leaf=column_leaf(key.column),
+            )]
     aliases = slot.public_aliases or [slot.declared_name]
-    return [f"{source_relation}.{a}" for a in aliases]
+    return [
+        result_key_from_alias(source_relation=source_relation, alias=a)
+        for a in aliases
+    ]
 
 
 def _column_for_row_slot(

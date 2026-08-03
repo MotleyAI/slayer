@@ -20,6 +20,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.sql.dialects import get_dialect
+from slayer.sql.naming import flat_name
 
 
 def build_flat_rename_wrapper(
@@ -49,7 +50,6 @@ def build_flat_rename_wrapper(
     """
     inner_alias = "_stage_inner"
     body = sqlglot.parse_one(stage_sql, dialect=dialect)
-    prefix = f"{source_relation}."
     select = exp.Select()
     produced: List[str] = []
     raw_names = body.named_selects
@@ -66,10 +66,9 @@ def build_flat_rename_wrapper(
         else []
     )
     for out_name, canonical in zip(raw_names, canonical_names):
-        remainder = (
-            canonical[len(prefix):] if canonical.startswith(prefix) else canonical
-        )
-        flat = remainder.replace(".", "__")
+        # DEV-1713: strip the source-relation prefix + ``__``-flatten via the
+        # naming module's single owner.
+        flat = flat_name(canonical, strip_relation=source_relation)
         produced.append(flat)
         src = exp.Column(
             this=exp.to_identifier(out_name, quoted=True),
