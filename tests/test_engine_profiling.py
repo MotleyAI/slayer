@@ -369,26 +369,30 @@ async def test_overflow_stores_top_50_by_frequency(overflow_setup) -> None:
 
 
 @pytest.mark.asyncio
-async def test_overflow_distinct_count_is_true_total(overflow_setup) -> None:
-    """``distinct_count`` reflects the column's full cardinality, not 50."""
+async def test_overflow_distinct_count_is_unknown(overflow_setup) -> None:
+    """On overflow we no longer fire a second count_distinct scan — the
+    exact total is unknown (``distinct_count=None``), but the top-50 list
+    is retained so the column is still cached."""
     engine, storage = overflow_setup
     model = await storage.get_model("hi_card", data_source="ds")
     col = model.get_column("name")
     sample = await profile_column(model=model, column=col, engine=engine)
     assert sample is not None
-    assert sample.distinct_count == 60
+    assert sample.distinct_count is None
+    assert sample.sampled_values is not None
+    assert len(sample.sampled_values) == 50
 
 
 @pytest.mark.asyncio
-async def test_overflow_text_includes_top_20_and_total(overflow_setup) -> None:
-    """Text format: ``", ".join(top_20) + " ... (60 distinct)"``."""
+async def test_overflow_text_includes_top_20_and_marker(overflow_setup) -> None:
+    """Text format on overflow: ``", ".join(top_20) + " ... (50+ distinct)"``."""
     engine, storage = overflow_setup
     model = await storage.get_model("hi_card", data_source="ds")
     col = model.get_column("name")
     sample = await profile_column(model=model, column=col, engine=engine)
     assert sample is not None
     assert sample.sampled is not None
-    assert sample.sampled.endswith("(60 distinct)")
+    assert sample.sampled.endswith("(50+ distinct)")
     # First 20 by frequency present in the text — top 10 commons + 10 rares.
     for i in range(10):
         assert f"common_{i:02d}" in sample.sampled
@@ -431,8 +435,9 @@ async def test_overflow_classification_unaffected_by_one_null_row() -> None:
         col = model.get_column("label")
         sample = await profile_column(model=model, column=col, engine=engine)
         assert sample is not None
-        # Exactly 51 non-null distinct → overflow.
-        assert sample.distinct_count == 51
+        # 51 non-null distinct → overflow. Exact total not computed (single
+        # scan), top-50 retained.
+        assert sample.distinct_count is None
         assert sample.sampled_values is not None
         assert len(sample.sampled_values) == 50
 
@@ -523,7 +528,7 @@ async def test_tiebreak_deterministic_at_limit_boundary() -> None:
         col = model.get_column("label")
         sample = await profile_column(model=model, column=col, engine=engine)
         assert sample is not None
-        assert sample.distinct_count == 60
+        assert sample.distinct_count is None  # overflow → exact total not computed
         assert sample.sampled_values is not None
         # Alphabetical asc tie-break at the LIMIT cutoff → first 50 by value.
         # Note: this can only be produced by SQL-side ORDER BY label ASC.
@@ -584,103 +589,6 @@ async def test_values_with_commas_preserved_in_structured_list() -> None:
         assert sorted(sample.sampled_values) == sorted(comma_values)
         # Naive comma-split of the text would give 6 fragments, not 3 — that's
         # why downstream consumers must use ``sampled_values``.
-
-
-# ---------------------------------------------------------------------------
-# allowed_aggregations / Column.filter on the source column must not break
-# the overflow count_distinct second query.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_overflow_with_allowed_aggregations_whitelist_omitting_count_distinct() -> None:
-    """Column with ``allowed_aggregations=["count"]`` (no count_distinct) →
-    overflow profile still succeeds because the second query uses a transient
-    ModelExtension column that bypasses the whitelist."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_file = f"{tmpdir}/data.db"
-        conn = sqlite3.connect(db_file)
-        conn.execute("CREATE TABLE locked (id INTEGER PRIMARY KEY, label TEXT)")
-        rows = [(i + 1, f"v_{i:03d}") for i in range(60)]
-        conn.executemany("INSERT INTO locked VALUES (?, ?)", rows)
-        conn.commit()
-        conn.close()
-
-        storage_dir = f"{tmpdir}/storage"
-        storage = resolve_storage(storage_dir)
-        await storage.save_datasource(DatasourceConfig(
-            name="ds", type="sqlite", database=db_file,
-        ))
-        await storage.save_model(SlayerModel(
-            name="locked",
-            sql_table="locked",
-            data_source="ds",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                # Whitelist explicitly omits ``count_distinct``.
-                Column(
-                    name="label", type=DataType.TEXT,
-                    allowed_aggregations=["count"],
-                ),
-            ],
-        ))
-        engine = SlayerQueryEngine(storage=storage)
-
-        model = await storage.get_model("locked", data_source="ds")
-        col = model.get_column("label")
-        sample = await profile_column(model=model, column=col, engine=engine)
-        # Profile must complete and surface the true total.
-        assert sample is not None
-        assert sample.distinct_count == 60
-
-
-@pytest.mark.asyncio
-async def test_overflow_with_column_filter_bypassed_by_model_extension() -> None:
-    """Column.filter applies a CASE-WHEN at aggregation time. The overflow
-    ``count_distinct`` second query must bypass it via ModelExtension so the
-    persisted ``distinct_count`` reflects the column's RAW cardinality, not
-    the post-filter subset.
-
-    Test setup: 60 distinct values, ``Column.filter`` restricts to the first
-    10. If the implementation routes count_distinct through the source column
-    (not via ModelExtension), the filter would reduce the count to 10 instead
-    of 60.
-    """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_file = f"{tmpdir}/data.db"
-        conn = sqlite3.connect(db_file)
-        conn.execute("CREATE TABLE filt (id INTEGER PRIMARY KEY, label TEXT)")
-        rows = [(i + 1, f"v_{i:03d}") for i in range(60)]
-        conn.executemany("INSERT INTO filt VALUES (?, ?)", rows)
-        conn.commit()
-        conn.close()
-
-        storage_dir = f"{tmpdir}/storage"
-        storage = resolve_storage(storage_dir)
-        await storage.save_datasource(DatasourceConfig(
-            name="ds", type="sqlite", database=db_file,
-        ))
-        await storage.save_model(SlayerModel(
-            name="filt",
-            sql_table="filt",
-            data_source="ds",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(
-                    name="label", type=DataType.TEXT,
-                    filter="label LIKE 'v_00%'",  # matches first 10 values only
-                ),
-            ],
-        ))
-        engine = SlayerQueryEngine(storage=storage)
-
-        model = await storage.get_model("filt", data_source="ds")
-        col = model.get_column("label")
-        sample = await profile_column(model=model, column=col, engine=engine)
-        # ModelExtension bypass: count_distinct on the raw column ignores the
-        # CASE-WHEN filter. distinct_count is the full 60, not 10.
-        assert sample is not None
-        assert sample.distinct_count == 60
 
 
 # ---------------------------------------------------------------------------

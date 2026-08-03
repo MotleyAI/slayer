@@ -2,5 +2,5 @@
 # Only the committed models/ snapshot is portable across machines.
 datasources/
 embeddings.db
-memories.yaml
-memories.yaml.lock
+memories/
+memories.lock

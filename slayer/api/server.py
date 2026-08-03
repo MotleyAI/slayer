@@ -20,6 +20,7 @@ from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.service import InspectService
+from slayer.memories.help_seed import seed_help_memories
 from slayer.memories.service import MemoryService
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
@@ -109,6 +110,13 @@ class ValidateModelsRequest(BaseModel):
     data_source: str | None = None
 
 
+class RecommendRootModelRequest(BaseModel):
+    """Body for ``POST /recommend-root-model``."""
+    items: list[str]
+    data_source: str | None = None
+    root_hint: str | None = None
+
+
 class DatasourcePriorityRequest(BaseModel):
     """Body for ``PUT /datasources/priority``. A request model — rather
     than a raw ``Dict[str, List[str]]`` — so OpenAPI advertises the exact
@@ -178,7 +186,9 @@ class InspectRequest(BaseModel):
 
     # DEV-1612: a list is a homogeneous-kind batch (one ``entity_type`` for
     # every id). A single str keeps single-id behaviour byte-for-byte.
-    reference: str | list[str]
+    # DEV-1667: ``None`` / omitted (or ``[]``) renders the whole collection at
+    # ``entity_type`` (model / datasource only).
+    reference: str | list[str] | None = None
     entity_type: str
     compact: bool = True
     format: str = "markdown"
@@ -200,10 +210,16 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     *,
     ingest_on_startup: bool = False,
 ) -> FastAPI:
+    from slayer.async_utils import run_sync
+
+    # DEV-1658: seed conceptual-help memories once here; the embedded MCP
+    # server below is created with _seed_help=False so the pass never fires
+    # twice (mirrors the ingest_on_startup single-orchestration rule).
+    run_sync(seed_help_memories(storage=storage))
+
     if ingest_on_startup:
         import sys
 
-        from slayer.async_utils import run_sync
         from slayer.engine.ingestion import ingest_all_datasources_idempotent
 
         run_sync(
@@ -216,7 +232,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     # does NOT receive `ingest_on_startup` — orchestration happens once,
     # above, so calling `create_app(ingest_on_startup=True)` doesn't fire
     # the orchestrator twice.
-    mcp = create_mcp_server(storage=storage)
+    mcp = create_mcp_server(storage=storage, _seed_help=False)
     mcp_app = mcp.sse_app()
     app.mount("/mcp", mcp_app)
 
@@ -502,14 +518,20 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
         # Mask credentials
         data = ds.model_dump(exclude_none=True)
-        for secret_field in ("password", "connection_string"):
+        for secret_field in ("password", "connection_string", "credentials_json"):
             if secret_field in data:
                 data[secret_field] = "***"
         return data
 
-    @app.post("/datasources")
+    @app.post(
+        "/datasources",
+        responses={400: {"description": "Name conflicts with an existing datasource (differs only by case)."}},
+    )
     async def create_datasource(datasource: DatasourceConfig) -> dict[str, str]:
-        await storage.save_datasource(datasource)
+        try:
+            await storage.save_datasource(datasource)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         return {"status": "created", "name": datasource.name}
 
     @app.delete("/datasources/{name}")
@@ -559,6 +581,26 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 ),
             )
         return [e.model_dump(mode="json") for e in entries]
+
+    @app.post(
+        "/recommend-root-model",
+        responses={400: {"description": "Unresolvable / wrong-kind / cross-datasource items."}},
+    )
+    async def recommend_root_model_endpoint(
+        request: RecommendRootModelRequest,
+    ) -> dict[str, Any]:
+        """Recommend the query ``source_model`` (root) for a set of
+        ``model.column`` / ``model.metric`` items, plus each item's
+        join-qualified path from that root. Read-only."""
+        engine = SlayerQueryEngine(storage=storage)
+        try:
+            rec = await engine.recommend_root_model(
+                request.items, data_source=request.data_source,
+                root_hint=request.root_hint,
+            )
+        except (ValueError, SlayerError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return rec.model_dump(mode="json")
 
     @app.post(
         "/ingest",

@@ -134,32 +134,35 @@ Memories are free-form notes the agent saves against canonical entity strings (`
 | `cypher_filter` | str | Graph pre-filter applied to all three channels. Full openCypher when `advanced_search` is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges; read-only — `CREATE`, `MERGE`, `DELETE`, `SET`, `REMOVE`, `DROP`, `CALL` are rejected). Without the extra, only the naive form `MATCH (n:Label1:Label2…) RETURN n.id AS id` is accepted as a label/kind filter; richer Cypher raises with an install hint. |
 | `max_results` | int | Cap applied **after** RRF fusion and the `cypher_filter` allowlist. Default `10`. |
 
-`SearchResponse.results` is a flat list of `SearchHit { kind, id, score, text, matched_entities, query }`. `kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `forget_memory`); `hit.query is not None` marks a saved example query. Column hits embed the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded) plus a `Distinct count: N` line on overflow; stale column profiles are refreshed lazily inside `search()`.
+`SearchResponse.results` is a flat list of `SearchHit { kind, id, score, text, matched_entities, query }`. `kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `forget_memory`); `hit.query is not None` marks a saved example query. Column hits embed the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded; overflow columns are marked `50+ distinct` in the text snapshot); stale column profiles are refreshed lazily inside `search()`.
 
 **`save_memory(learning, linked_entities, id=None)`** — `linked_entities` accepts canonical entity strings (strict resolution; `memory:<id>` valid for cross-memory refs) **or** an inline `SlayerQuery` dict (the entities are auto-extracted and the query is persisted on the memory). Optional `id` pins a user-controlled canonical memory id; forbidden charset: `:`, `/`, `?`, `#`, whitespace, ASCII control. Omit `id` to let the allocator assign the next int-shaped id (`max(int-shaped id) + 1`). Duplicate id → unconditional upsert; `created_at` preserved.
 
 **`forget_memory(id)`** — removes the memory, drops the matching embedding row, and strips every `memory:<id>` ref to it from every other memory's `entities` list (exact-match only — `memory:42` does not strip `memory:421`).
 
-### Conceptual Help
+### Conceptual help (help memories)
 
-| Tool | Description |
-|------|-------------|
-| `help` | Return SLayer concept explanations that complement the schema-focused tool docstrings. Call without arguments for the intro; pass `topic="..."` for a deep dive. The tool description lists every available topic — no exploratory call needed. |
+SLayer's conceptual help is not a tool — it ships as a predefined set of **help
+memories** seeded into storage on server startup. Read the entry point with
+`inspect(reference="memory:help.intro", entity_type="memory")`; it lists the
+deep-dive topics, each of which you inspect the same way. `search(question="…")`
+also surfaces the relevant topic. The server instructions point new agents at
+`memory:help.intro`.
 
-Available topics and what they cover (content lives in `slayer/help/topics/*.md`, discovered dynamically):
+Available topics and what they cover (content lives in `slayer/memories/help_content/*.md`, seeded as `memory:help.<topic>`):
 
-| Topic | Covers |
-|-------|--------|
-| `queries` | Anatomy of a [query](../concepts/queries.md); evaluation order; dimensions vs [time dimensions](../concepts/queries.md#timedimension) on the same column; `main_time_dimension` disambiguation |
-| `formulas` | The [formula mini-language](../concepts/formulas.md) shared by `measures` and `filters`; colon syntax; arithmetic; nesting |
-| `aggregations` | Built-in and [custom aggregations](../examples/07_aggregations/aggregations.md); `first`/`last` time-column resolution; `allowed_aggregations` |
-| `transforms` | `cumsum`, `time_shift`, `change`, `lag`, the rank family (`rank`/`percent_rank`/`dense_rank`/`ntile`, optional `partition_by=`), `last()` — trade-offs and nesting ([time post](../examples/04_time/time.md)) |
-| `time` | Granularities, `date_range`, `whole_periods_only`, the three meanings of "last" |
-| `filters` | Operators; auto-routing to HAVING / post-filter; filtered measures; [model-level filters](../concepts/models.md#model-filters) |
-| `joins` | Dot syntax and the `__` alias convention; cross-model measures and diamond joins ([joins post](../examples/05_joins/joins.md), [joined measures](../examples/05_joined_measures/joined_measures.md)) |
-| `models` | Source modes (`sql_table`, `sql`, `source_queries`); query-backed models, `query_variables`, cached `backing_query_sql`; result column naming; `default_time_dimension`; hidden models ([models ref](../concepts/models.md)) |
-| `extending` | `ModelExtension`, query lists, `create_model_from_query` (with `variables=`), run-by-name via `query` tool ([multistage post](../examples/06_multistage_queries/multistage_queries.md)) |
-| `workflow` | Tool-chaining playbook, query-iteration tips, common-error decoder |
+| Topic id | Covers |
+|----------|--------|
+| `memory:help.queries` | Anatomy of a [query](../concepts/queries.md); evaluation order; dimensions vs [time dimensions](../concepts/queries.md#timedimension) on the same column; `main_time_dimension` disambiguation |
+| `memory:help.formulas` | The [formula mini-language](../concepts/formulas.md) shared by `measures` and `filters`; colon syntax; arithmetic; nesting |
+| `memory:help.aggregations` | Built-in and [custom aggregations](../examples/07_aggregations/aggregations.md); `first`/`last` time-column resolution; `allowed_aggregations` |
+| `memory:help.transforms` | `cumsum`, `time_shift`, `change`, `lag`, the rank family (`rank`/`percent_rank`/`dense_rank`/`ntile`, optional `partition_by=`), `last()` — trade-offs and nesting ([time post](../examples/04_time/time.md)) |
+| `memory:help.time` | Granularities, `date_range`, `whole_periods_only`, the three meanings of "last" |
+| `memory:help.filters` | Operators; auto-routing to HAVING / post-filter; filtered measures; [model-level filters](../concepts/models.md#model-filters) |
+| `memory:help.joins` | Dot syntax and the `__` alias convention; cross-model measures and diamond joins ([joins post](../examples/05_joins/joins.md), [joined measures](../examples/05_joined_measures/joined_measures.md)) |
+| `memory:help.models` | Source modes (`sql_table`, `sql`, `source_queries`); query-backed models, `query_variables`, cached `backing_query_sql`; result column naming; `default_time_dimension`; hidden models ([models ref](../concepts/models.md)) |
+| `memory:help.extending` | `ModelExtension`, query lists, `create_model_from_query` (with `variables=`), run-by-name via `query` tool ([multistage post](../examples/06_multistage_queries/multistage_queries.md)) |
+| `memory:help.workflow` | Tool-chaining playbook, query-iteration tips, common-error decoder |
 
 ## Typical Agent Workflows
 

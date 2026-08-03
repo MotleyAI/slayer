@@ -22,7 +22,12 @@ from slayer.engine.enriched import (
 from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import BigqueryDialect
-from slayer.sql.generator import SQLGenerator, _cte_name_from_alias, _validate_agg_param_value
+from slayer.sql.generator import (
+    SQLGenerator,
+    _cte_name_from_alias,
+    _validate_agg_param_value,
+    _wrap_cast_for_type,
+)
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -1325,6 +1330,175 @@ class TestFields:
         assert "INTERVAL" in sql
         assert "MONTH" in sql
         assert "shifted_" in sql
+
+    async def test_multiple_time_shifts_in_arithmetic_unique_ctes(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: two arithmetic-wrapped time_shifts must not share a CTE name.
+
+        The `_t{n}` placeholder counter restarts per formula, so both measures
+        used to flatten as `_t0` — emitting `shifted__t0` twice (a duplicate-CTE
+        parser error) and silently aliasing the second shift onto the first.
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -2, 'month')", name="growth_2m"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+
+        ctes = _re.findall(r'(?:WITH|,)\s*"?(\w+)"?\s+AS\s*\(', sql)
+        assert len(ctes) == len(set(ctes)), f"duplicate CTE names: {ctes}"
+        assert len([c for c in ctes if c.startswith("shifted_")]) == 2
+
+    async def test_multiple_time_shifts_resolve_to_distinct_aliases(
+        self, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: each shift keeps its own offset — no silent alias sharing.
+
+        Guards the corruption the duplicate name masked: both expressions
+        previously resolved to `orders._t0`, so `growth_2m` would have read
+        `growth`'s -1 month shift.
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -2, 'month')", name="growth_2m"),
+            ],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+
+        shifts = [t for t in enriched.transforms if t.transform == "time_shift"]
+        assert len({t.alias for t in shifts}) == len(shifts)
+        assert {t.offset for t in shifts} == {-1, -2}
+
+        by_name = {e.name: e.sql for e in enriched.expressions}
+        assert by_name["growth"] != by_name["growth_2m"]
+
+    async def test_hidden_transform_name_avoids_user_measure_collision(
+        self, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: a hoisted transform must not land on a user measure's name.
+
+        Hidden names are built from the owning measure's field_name, so a user
+        measure literally named `_t0_growth` would otherwise claim the same
+        alias as the shift hoisted out of `growth` — the self-join CTE projects
+        both under that name and the shift silently resolves to the user's
+        measure (valid SQL, wrong numbers).
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+                ModelMeasure(formula="revenue:sum * 2", name="_t0_growth"),
+            ],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+
+        transform_aliases = {t.alias for t in enriched.transforms}
+        expression_aliases = {e.alias for e in enriched.expressions}
+        assert not (transform_aliases & expression_aliases)
+
+        # `growth` must reference the hoisted shift, not the user's measure.
+        growth_sql = next(e.sql for e in enriched.expressions if e.name == "growth")
+        assert "orders._t0_growth" not in growth_sql.replace("orders._t0_growth_2", "")
+
+    async def test_hidden_transform_name_avoids_dimension_collision(
+        self, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: dimensions alias as `<model>.<name>` too, so they're reserved.
+
+        A dimension named `_t0_growth` otherwise claims the same alias as the
+        shift hoisted out of `growth`, and the measure silently computes
+        `revenue - <dimension>` instead of the period difference.
+        """
+        orders_model.default_time_dimension = "created_at"
+        orders_model.columns.append(
+            Column(name="_t0_growth", sql="customer_id", type=DataType.DOUBLE)
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="_t0_growth")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+            ],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+
+        dim_aliases = {d.alias for d in enriched.dimensions} | {
+            td.alias for td in enriched.time_dimensions
+        }
+        transform_aliases = {t.alias for t in enriched.transforms}
+        assert not (dim_aliases & transform_aliases)
+
+    async def test_dev_1692_repro_shape(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: the reported four-measure period-over-period shape.
+
+        `growth_pct` alone carries two time_shift calls, so uniquification has
+        to hold within a single formula as well as across measures.
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum", name="total_revenue"),
+                ModelMeasure(formula="time_shift(revenue:sum, -1, 'month')", name="prev_revenue"),
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+                ModelMeasure(
+                    formula=(
+                        "(revenue:sum - time_shift(revenue:sum, -1, 'month')) "
+                        "/ time_shift(revenue:sum, -1, 'month')"
+                    ),
+                    name="growth_pct",
+                ),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+
+        ctes = _re.findall(r'(?:WITH|,)\s*"?(\w+)"?\s+AS\s*\(', sql)
+        assert len(ctes) == len(set(ctes)), f"duplicate CTE names: {ctes}"
 
     async def test_nested_self_join_raises(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Nesting self-join transforms (e.g., change(time_shift(x))) should raise."""
@@ -5567,6 +5741,71 @@ class TestCastEmissionColumn:
         # Exactly one CAST in the projection. Any double-wrap would produce
         # CAST(CAST(... AS ...) AS ...) — assert that pattern is absent.
         assert "CAST(CAST(" not in sql.upper()
+
+
+class TestCastEmissionOpaqueType:
+    """``CAST(x AS UNKNOWN)`` is not valid SQL in any dialect, so opaque types
+    are skipped by ``_wrap_cast_for_type`` exactly like TEXT/None."""
+
+    def test_unknown_returns_expression_unchanged(self) -> None:
+        expr = sqlglot.parse_one("json_extract(blob, '$.x')")
+        assert _wrap_cast_for_type(expr, DataType.UNKNOWN) is expr
+
+    def test_operable_type_still_casts(self) -> None:
+        expr = sqlglot.parse_one("json_extract(blob, '$.x')")
+        wrapped = _wrap_cast_for_type(expr, DataType.DOUBLE)
+        assert isinstance(wrapped, sqlglot.exp.Cast)
+
+    async def test_opaque_column_rejected_as_dimension(self) -> None:
+        """An opaque column has no equality operator, so grouping by it would
+        emit SQL the database refuses. Reject it up front with an actionable
+        message rather than letting a raw driver error surface."""
+        model = SlayerModel(
+            name="places",
+            sql_table="public.places",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(
+                    name="loc",
+                    sql="coalesce(loc, home_loc)",
+                    type=DataType.UNKNOWN,
+                    db_type="point",
+                ),
+            ],
+        )
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(source_model="places", dimensions=[ColumnRef(name="loc")])
+        with pytest.raises(ValueError, match="cannot be used as a dimension"):
+            await _generate(gen, query, model)
+
+    async def test_opaque_column_emits_no_cast_when_projected(self) -> None:
+        """The CAST guard still holds for a query that doesn't group by the
+        opaque column: no ``CAST(... AS UNKNOWN)`` may reach the SQL."""
+        model = SlayerModel(
+            name="places",
+            sql_table="public.places",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="city", sql="city", type=DataType.TEXT),
+                Column(
+                    name="loc",
+                    sql="coalesce(loc, home_loc)",
+                    type=DataType.UNKNOWN,
+                    db_type="point",
+                ),
+            ],
+        )
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="places",
+            measures=["*:count"],
+            dimensions=[ColumnRef(name="city")],
+        )
+        sql = await _generate(gen, query, model)
+        assert "UNKNOWN" not in sql.upper()
+        assert "CAST(" not in sql.upper()
 
 
 class TestCastEmissionMeasure:

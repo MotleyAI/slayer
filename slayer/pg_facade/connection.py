@@ -18,6 +18,7 @@ import asyncio
 import logging
 import re
 import struct
+import time
 from collections.abc import Awaitable, Callable, Iterable
 
 import sqlglot
@@ -28,6 +29,7 @@ from sqlglot.optimizer.scope import traverse_scope
 
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
+from slayer.engine import timing
 from slayer.facade.catalog import (
     FacadeCatalog,
     build_catalog_grouped_by_schema,
@@ -69,6 +71,24 @@ logger = logging.getLogger(__name__)
 _BACKEND_PID = 1
 _BACKEND_SECRET = 0
 _PARAM_PLACEHOLDER = re.compile(r"\$(\d+)")
+
+# Strips characteristics off a statement-initial ``BEGIN`` / ``START
+# TRANSACTION`` (``READ ONLY``, ``ISOLATION LEVEL …``, ``DEFERRABLE`` …) so the
+# sqlglot-based simple-query splitter — which rejects those forms — can still
+# parse the statement list. Anchored to statement start (^ or after ``;``) so a
+# ``begin`` column reference elsewhere is never touched. The stripped statement
+# stays a plain transaction-open, handled as a no-op downstream (DEV-1594).
+_TX_OPEN_STRIP_RE = re.compile(
+    r"(?P<lead>^|;)(?P<ws>\s*)"
+    r"(?P<verb>BEGIN(?:\s+WORK|\s+TRANSACTION)?|START\s+TRANSACTION)\b[^;]*",
+    re.IGNORECASE,
+)
+
+
+def _strip_tx_open_characteristics(sql: str) -> str:
+    return _TX_OPEN_STRIP_RE.sub(
+        lambda m: f"{m.group('lead')}{m.group('ws')}{m.group('verb')}", sql
+    )
 # The default schema the facade advertises (matches pg_namespace /
 # current_schema). Datasources without an explicit ``postgres_schema`` land here.
 PUBLIC_SCHEMA = "public"
@@ -146,6 +166,7 @@ class PgConnection:
         engine_factory: "EngineFactory | None" = None,
         tls_ctx=None,
         catalog_extra_relations=None,
+        catalog_ttl_seconds: float | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -182,6 +203,14 @@ class PgConnection:
         # datasource — execution routes per query (see ``QueryResult.data_source``).
         self._database: str = DEFAULT_DATABASE
         self._catalog: FacadeCatalog | None = None
+        # On-demand catalog refresh: when a TTL is set, an idle connection
+        # re-checks storage at most once per window and rebuilds the catalog
+        # only if the cheap ``graph_fingerprint`` actually moved (see
+        # ``_maybe_refresh_catalog``). ``None`` keeps the catalog static for
+        # the connection's lifetime (the historical behavior).
+        self._catalog_ttl_seconds: float | None = catalog_ttl_seconds
+        self._catalog_checked_at: float = 0.0
+        self._catalog_fingerprint: str | None = None
         self._statements: dict[str, _PreparedStatement] = {}
         self._portals: dict[str, _Portal] = {}
         # Lazily-built (schema, table, column) -> DataType lookup, used by the
@@ -214,6 +243,8 @@ class PgConnection:
                 return
             await self._resolve_scope(startup.parameters.get("database"))
             self._catalog = await self._build_catalog()
+            self._catalog_checked_at = time.monotonic()
+            self._catalog_fingerprint = await self._read_fingerprint()
             await self._send_startup_complete()
             await self._main_loop()
         except _Done:
@@ -403,6 +434,66 @@ class PgConnection:
             default_schema=PUBLIC_SCHEMA,
         )
 
+    async def _read_fingerprint(self) -> str | None:
+        """Cheap storage staleness token, or ``None`` when unavailable.
+
+        Only consulted when a catalog TTL is configured. ``OSError`` (e.g. a
+        file backend caught mid-write) is treated as "unknown" so the next
+        check forces a rebuild, matching the search-graph convention.
+        """
+        if self._catalog_ttl_seconds is None:
+            return None
+        try:
+            return await self._storage.graph_fingerprint()
+        except OSError:
+            return None
+
+    async def _maybe_refresh_catalog(self) -> None:
+        """On-demand, TTL-throttled, change-gated catalog rebuild.
+
+        Called at statement entry. Rebuilds the per-connection catalog only
+        when (a) a TTL is configured, (b) the connection is idle — never
+        mid-transaction, to avoid a catalog shift inside a txn, (c) the TTL
+        window has elapsed since the last check, and (d) the storage
+        fingerprint has actually changed. When nothing changed the cost is a
+        single ``graph_fingerprint`` read per window. Backends that don't
+        implement a real fingerprint report a constant, so they never rebuild
+        and behave exactly as before.
+
+        Best-effort: a transient storage failure during the fingerprint read
+        or the rebuild must not propagate out of ``_run_statement`` and tear
+        down the client connection. On failure we keep the existing (possibly
+        stale) catalog and retry on the next TTL window.
+        """
+        if self._catalog_ttl_seconds is None or self._catalog is None:
+            return
+        if self._tx_state != proto.TX_IDLE:
+            return
+        now = time.monotonic()
+        if now - self._catalog_checked_at < self._catalog_ttl_seconds:
+            return
+        # Stamp the check time up front so a failing refresh retries no sooner
+        # than the next window rather than hammering storage every statement.
+        self._catalog_checked_at = now
+        try:
+            fingerprint = await self._read_fingerprint()
+            if fingerprint is not None and fingerprint == self._catalog_fingerprint:
+                return
+            # Build into a local and swap only on success, so a failed rebuild
+            # never leaves the connection with a half-built or ``None`` catalog.
+            catalog = await self._build_catalog()
+        # Refresh is best-effort: keep the old catalog on any storage failure.
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "pg facade: catalog refresh failed; keeping current catalog",
+                exc_info=True,
+            )
+            return
+        self._catalog = catalog
+        self._catalog_fingerprint = fingerprint
+        # Derived from the catalog; drop it so it rebuilds against the new one.
+        self._column_type_index = None
+
     async def _send_startup_complete(self) -> None:
         for name, value in parameter_status_defaults():
             self._writer.write(proto.encode_parameter_status(name, value))
@@ -490,12 +581,24 @@ class PgConnection:
         try:
             statements = [s for s in sqlglot.parse(sql, dialect="postgres") if s is not None]
         except sqlglot.errors.ParseError as exc:
-            await self._send_error(
-                code=proto.SQLSTATE_SYNTAX_ERROR, message=f"SQL parse error: {exc}",
-            )
-            self._fail_tx()
-            await self._send_ready()
-            return
+            # BI tools (Metabase) wrap reads in ``BEGIN READ ONLY`` etc., which
+            # sqlglot can't parse. Strip the transaction characteristics and
+            # retry once before surfacing a syntax error.
+            stripped = _strip_tx_open_characteristics(sql)
+            try:
+                statements = [
+                    s for s in sqlglot.parse(stripped, dialect="postgres") if s is not None
+                ] if stripped != sql else None
+            except sqlglot.errors.ParseError:
+                statements = None
+            if statements is None:
+                logger.warning("pg facade: cannot parse simple query %r: %s", sql, exc)
+                await self._send_error(
+                    code=proto.SQLSTATE_SYNTAX_ERROR, message=f"SQL parse error: {exc}",
+                )
+                self._fail_tx()
+                await self._send_ready()
+                return
         if not statements:
             self._writer.write(proto.encode_empty_query_response())
             await self._send_ready()
@@ -613,6 +716,12 @@ class PgConnection:
         )
 
     async def _handle_describe(self, msg: proto.DescribeMessage) -> None:
+        # Refresh here too, not just at Execute: Describe advertises the
+        # RowDescription, and it stamps the TTL check so the following Execute
+        # stays in the same window and won't shift the catalog underneath it —
+        # otherwise a mid-window edit could make the rows disagree with the
+        # already-sent RowDescription.
+        await self._maybe_refresh_catalog()
         if msg.kind == "S":
             stmt = self._statements.get(msg.name)
             if stmt is None:
@@ -663,10 +772,12 @@ class PgConnection:
         try:
             try:
                 result = self._translate(describe_sql)
-            except TranslationError:
+            except TranslationError as exc:
                 # Describe must not raise to the wire here; the subsequent
                 # Execute surfaces the error. Report NoData so the client
-                # can proceed.
+                # can proceed. Log it (debug) so the silent Describe path is
+                # still greppable when a client swallows the later error.
+                logger.debug("pg facade: cannot describe %r: %s", describe_sql, exc)
                 self._writer.write(proto.encode_no_data())
                 return
         finally:
@@ -772,6 +883,10 @@ class PgConnection:
         self, sql: str, *, result_formats: list[int] | None, send_row_description: bool,
     ) -> bool:
         """Translate + respond. Returns False if an error was sent."""
+        # Refresh the catalog before translating so an idle connection picks
+        # up model/schema edits within the TTL window (no-op when disabled or
+        # mid-transaction).
+        await self._maybe_refresh_catalog()
         try:
             result = self._translate(sql)
         except TranslationError as exc:
@@ -849,11 +964,13 @@ class PgConnection:
             # passing it to the engine.
             if result.data_source is None:
                 raise ValueError("could not resolve a datasource for the query")
-            response = await self._engine.execute(
-                query=result.query, data_source=result.data_source,
-            )
+            with timing.open_query_profile():
+                response = await self._engine.execute(
+                    query=result.query, data_source=result.data_source,
+                )
         except Exception as exc:  # noqa: BLE001 — surface any engine error to the client
-            await self._send_error(code=proto.SQLSTATE_INTERNAL_ERROR, message=str(exc))
+            code, message = _engine_error_fields(exc)
+            await self._send_error(code=code, message=message)
             self._fail_tx()
             return False
         mapping = result.column_name_mapping
@@ -1389,6 +1506,32 @@ def _command_tag(command_tag: str | None) -> str:
     if command_tag is None:
         return "SELECT 0"
     return command_tag
+
+
+def _engine_error_fields(exc: BaseException) -> tuple[str, str]:
+    """Extract a Postgres SQLSTATE + terse message from an engine execution error.
+
+    SQLAlchemy wraps the driver error (asyncpg/psycopg) in a ``DBAPIError``
+    whose ``.orig`` carries the real ``sqlstate`` and the bare server message.
+    Surfacing those lets a client see e.g. ``permission denied for table Item``
+    (42501) instead of the full ``(sqlalchemy...) <class ...>: ... [SQL: ...]``
+    Python repr. Walks ``.orig`` / ``__cause__`` / ``__context__`` and returns
+    the first driver error exposing a 5-char SQLSTATE; falls back to XX000 plus
+    ``str(exc)`` when none is found.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException | None] = [exc]
+    while stack:
+        cur = stack.pop()
+        if cur is None or id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        code = getattr(cur, "sqlstate", None) or getattr(cur, "pgcode", None)
+        if isinstance(code, str) and len(code) == 5:
+            message = getattr(cur, "message", None) or str(cur)
+            return code, message
+        stack.extend([getattr(cur, "orig", None), cur.__cause__, cur.__context__])
+    return proto.SQLSTATE_INTERNAL_ERROR, str(exc)
 
 
 def _sqlstate_for(exc: TranslationError) -> str:

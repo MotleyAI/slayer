@@ -27,8 +27,6 @@ from slayer.engine.introspect_utils import (  # noqa: F401  (re-exported for bac
     _parse_info_schema_is_float,
     _safe_get_columns,
 )
-from slayer.engine.profiling import refresh_all_table_backed_sampled
-from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.core.errors import AmbiguousModelError, EntityResolutionError
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.memories.resolver import (
@@ -49,6 +47,39 @@ logger = logging.getLogger(__name__)
 # Module-level dedup set for unrecognized SA type warnings (see
 # _sa_type_to_data_type). Keyed by upper-cased class name.
 _logged_unmapped_sa_types: set[str] = set()
+
+# Database types with no usable equality operator — grouping, DISTINCT or
+# aggregating them fails at the database ("could not identify an equality
+# operator for type point"). These map to ``DataType.UNKNOWN``: stored and
+# displayed, never operated on. To query inside one, define a derived Column
+# whose ``sql`` is a dialect-specific expression — e.g.
+# ``Column(name="status", sql="payload->>'status'", type=TEXT)`` — which is
+# emitted into the generated SQL and groups/filters like any other column.
+#
+# Deliberately a small allow-list of known-bad types rather than "everything
+# unrecognized": comparable-but-unmapped types (uuid, jsonb, bytea, arrays,
+# inet, citext, ...) are common and must keep working as TEXT. Marking one of
+# those opaque would tell an agent that a perfectly groupable column is
+# unusable — a worse failure than the query-time error opacity exists to
+# prevent, which the Data Profile fallback already degrades gracefully.
+# Membership verified against the Postgres catalog: a type is groupable iff it
+# has a *default* btree/hash operator class (that is exactly what GROUP BY and
+# DISTINCT require) —
+#   SELECT EXISTS (SELECT 1 FROM pg_opclass oc JOIN pg_am am ON am.oid = oc.opcmethod
+#                  WHERE oc.opcintype = t.oid AND am.amname IN ('btree','hash')
+#                    AND oc.opcdefault)
+# Note ``tsvector`` / ``tsquery`` ARE groupable and must not be listed here,
+# and ``jsonb`` is groupable while ``json`` is not.
+_OPAQUE_SA_TYPE_NAMES = frozenset({
+    "JSON",  # ``jsonb`` is groupable and deliberately absent
+    "XML",
+    "TXID_SNAPSHOT",
+    # Geometric / spatial — none have a default btree/hash opclass
+    "POINT", "LINE", "LSEG", "BOX", "PATH", "POLYGON", "CIRCLE",
+    "GEOMETRY", "GEOGRAPHY", "RASTER",
+    # Range types
+    "INT4RANGE", "INT8RANGE", "NUMRANGE", "TSRANGE", "TSTZRANGE", "DATERANGE",
+})
 
 # Map SQLAlchemy types to SLayer DataTypes.
 # DEV-1361: integer family → INT, floating family → DOUBLE, NUMERIC/DECIMAL
@@ -189,6 +220,10 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
         return DataType.TEXT
     type_name = type(sa_type).__name__.upper()
     type_str = str(sa_type).split("(")[0].upper().strip()
+    # Types with no equality operator are opaque: querying them fails at the
+    # database, so declare that explicitly instead of pretending they're TEXT.
+    if type_name in _OPAQUE_SA_TYPE_NAMES or type_str in _OPAQUE_SA_TYPE_NAMES:
+        return DataType.UNKNOWN
     # DEV-1361: NUMERIC/DECIMAL with scale=0 are integer-shaped → INT.
     # Anything float-like (scale>0 or unknown) → DOUBLE.
     if type_name in _NUMERIC_DECIMAL_TYPES or type_str in _NUMERIC_DECIMAL_TYPES:
@@ -201,11 +236,32 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
         _logged_unmapped_sa_types.add(type_name)
         logger.warning(
             "Unrecognized SQLAlchemy type %r (str=%r); falling back to "
-            "DataType.TEXT. Consider adding to _SA_TYPE_MAP.",
+            "DataType.TEXT. Most unmapped types (uuid, jsonb, bytea, arrays) "
+            "are comparable and work as TEXT; add genuinely non-comparable "
+            "ones to _OPAQUE_SA_TYPE_NAMES and the rest to _SA_TYPE_MAP.",
             type_name,
             str(sa_type),
         )
     return DataType.TEXT
+
+
+def _raw_db_type_str(sa_type: sa.types.TypeEngine) -> str | None:
+    """Best-effort raw database type string for ``Column.db_type``.
+
+    ``str(sa_type)`` renders the dialect-level spelling (``"point"``,
+    ``"jsonb"``, ``"geometry(Point,4326)"``). Some third-party types raise
+    when compiled without a dialect, so fall back to the SA class name and
+    finally to ``None`` — ``db_type`` is metadata, never worth aborting an
+    ingest over.
+    """
+    try:
+        text = str(sa_type).strip()
+    except Exception:
+        text = ""
+    if text:
+        return text
+    name = type(sa_type).__name__
+    return name or None
 
 
 def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
@@ -449,7 +505,12 @@ def _introspect_query_columns_via_inspector(
 ) -> list[tuple]:
     """Introspect columns from a rollup query or plain table.
 
-    Returns list of (column_name, DataType, is_primary_key, is_float) tuples.
+    Returns list of ``(column_name, DataType, is_primary_key, is_float,
+    db_type)`` tuples. ``db_type`` is the raw database type string and is only
+    populated when ``DataType`` came out opaque (``UNKNOWN``) — for mapped
+    types the declared ``DataType`` already carries everything, so leaving it
+    ``None`` keeps stored models and golden tests clean.
+
     For rollup queries, uses per-table inspector data since LIMIT 0
     type inference can be unreliable across databases.
     """
@@ -463,14 +524,17 @@ def _introspect_query_columns_via_inspector(
     for col in columns:
         col_name = col["name"]
         col_type = col["type"]
+        db_type: str | None = None
         if isinstance(col_type, DataType):
             data_type = col_type
             is_float = col.get("is_float", False)
         else:
             data_type = _sa_type_to_data_type(col_type)
             is_float = _sa_type_is_float(col_type)
+            if data_type.is_opaque:
+                db_type = _raw_db_type_str(col_type)
         is_pk = col_name in pk_columns
-        results.append((col_name, data_type, is_pk, is_float))
+        results.append((col_name, data_type, is_pk, is_float, db_type))
 
     # Build list of (ref_table, dotted_path) from joins — supports diamond joins
     # where the same table appears via multiple paths
@@ -500,14 +564,17 @@ def _introspect_query_columns_via_inspector(
                 continue
             alias = f"{path}.{col['name']}"
             col_type = col["type"]
+            ref_db_type: str | None = None
             if isinstance(col_type, DataType):
                 data_type = col_type
                 is_float = col.get("is_float", False)
             else:
                 data_type = _sa_type_to_data_type(col_type)
                 is_float = _sa_type_is_float(col_type)
+                if data_type.is_opaque:
+                    ref_db_type = _raw_db_type_str(col_type)
             is_pk = col["name"] in ref_pk_cols
-            results.append((alias, data_type, is_pk, is_float))
+            results.append((alias, data_type, is_pk, is_float, ref_db_type))
 
     return results
 
@@ -524,18 +591,20 @@ def _columns_to_model(
     sql_table: str | None = None,
     joins: list[ModelJoin] | None = None,
 ) -> SlayerModel:
-    """Generate a SlayerModel from introspected (column_name, DataType, is_pk, is_float) tuples.
+    """Generate a SlayerModel from introspected ``(column_name, DataType,
+    is_pk, is_float, db_type)`` tuples.
 
     In v2 every Column is potentially both a dimension and a measure — what it's
     used as is decided per query. This function emits one Column per non-joined
-    column, with format inferred from the column's data type.
+    column, with format inferred from the column's data type. ``db_type`` is
+    carried through verbatim (set only for opaque ``UNKNOWN`` columns).
     """
     cols: list[Column] = []
 
     _INT_FORMAT = NumberFormat(type=NumberFormatType.INTEGER)
     _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
 
-    for col_name, data_type, is_pk, is_float in columns:
+    for col_name, data_type, is_pk, is_float, db_type in columns:
         # Skip joined columns — they live on the target model and are
         # resolved via the join graph at query time.
         if "." in col_name:
@@ -557,6 +626,7 @@ def _columns_to_model(
                 name=column_name,
                 sql=col_name,
                 type=data_type,
+                db_type=db_type,
                 primary_key=is_pk,
                 format=fmt,
             )
@@ -579,7 +649,7 @@ def _sqlite_probe_integer_columns(
 ) -> list[tuple]:
     """DEV-1538: per-column SQLite affinity probe.
 
-    Walks the tuples ``(col_name, DataType, is_pk, is_float)`` produced by
+    Walks the tuples ``(col_name, DataType, is_pk, is_float, db_type)`` produced by
     :func:`_introspect_query_columns_via_inspector` and, for every base
     column (alias without ``.``) that the SA inspector reported as
     :class:`DataType.INT`, runs
@@ -605,9 +675,9 @@ def _sqlite_probe_integer_columns(
     schema, table = _parse_qualified_sql_table(sql_table)
     out: list[tuple] = []
     with sa_engine.connect() as conn:
-        for col_name, data_type, is_pk, is_float in columns:
+        for col_name, data_type, is_pk, is_float, db_type in columns:
             if data_type is not DataType.INT or "." in col_name:
-                out.append((col_name, data_type, is_pk, is_float))
+                out.append((col_name, data_type, is_pk, is_float, db_type))
                 continue
             try:
                 verdict = probe_sqlite_integer_column(
@@ -629,10 +699,10 @@ def _sqlite_probe_integer_columns(
                 )
                 verdict = None
             if verdict is None or verdict is DataType.INT:
-                out.append((col_name, data_type, is_pk, is_float))
+                out.append((col_name, data_type, is_pk, is_float, db_type))
                 continue
             new_is_float = verdict is DataType.DOUBLE
-            out.append((col_name, verdict, is_pk, new_is_float))
+            out.append((col_name, verdict, is_pk, new_is_float, db_type))
     return out
 
 
@@ -1109,25 +1179,14 @@ async def ingest_datasource_idempotent(
         datasource=datasource, models=scoped_models
     )
 
-    # DEV-1375: refresh persisted Column.sampled values for every
-    # table-backed model in this datasource. Best-effort: per-column
-    # failures are accumulated as IngestionError entries; an unexpected
-    # raise is also caught so ingestion's idempotent contract holds.
-    refresh_engine = SlayerQueryEngine(storage=storage)
-    try:
-        refresh_errors = await refresh_all_table_backed_sampled(
-            engine=refresh_engine,
-            storage=storage,
-            data_source=datasource.name,
-        )
-    except Exception as exc:
-        refresh_errors = [f"{datasource.name}: {exc}"]
-    for err in refresh_errors:
-        errors.append(IngestionError(
-            model_name=err.split(".", 1)[0] if "." in err else "",
-            data_source=datasource.name,
-            error=f"sample-value refresh: {err}",
-        ))
+    # Column sample-value profiling is NOT run at ingest time — it fires a
+    # per-column full-table scan and, on a wide datasource (dozens of tables
+    # × ~10 columns each), would run hundreds of full scans and dominate
+    # ingest wall-clock. Samples are instead refreshed on demand on a cache
+    # miss by the async ``ensure_column_sample_fresh`` helper, invoked from
+    # the read paths that surface samples — ``inspect_model``, the ``inspect``
+    # point-lookup, and ``search()``. Use ``slayer search refresh-samples``
+    # to warm the cache explicitly.
 
     # DEV-1386: refresh persisted embeddings for the datasource doc plus
     # every visible model + its visible children. Best-effort: per-entity

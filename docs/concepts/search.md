@@ -393,24 +393,26 @@ sample-value fields:
 
 - `Column.sampled` — a formatted text snapshot. For categorical columns,
   the top-20 most-common values comma-joined; for high-cardinality
-  categoricals (> 50 distinct), the top-20 plus a `... (N distinct)`
-  suffix carrying the true total. For numeric / temporal columns, the
-  `min .. max` range.
+  categoricals (> 50 distinct), the top-20 plus a `... (50+ distinct)`
+  overflow marker (the exact total is not computed — one scan only). For
+  numeric / temporal columns, the `min .. max` range.
 - `Column.sampled_values` (DEV-1480) — the structured top-50-by-frequency
   list for categorical columns. Stays `None` for numeric / temporal
   columns. Consumers comparing predicate literals against actual stored
   values should read this field directly — text-split on `sampled` is
   ambiguous for values that themselves contain commas
   (e.g. `"R$ 1,000–3,000"`).
-- `Column.distinct_count` (DEV-1480) — the true total cardinality at
-  profile time. Set for every profiled categorical column (computed via a
-  secondary `count_distinct` query when overflow is detected so the count
-  is exact, not capped). Stays `None` for numeric / temporal columns.
+- `Column.distinct_count` (DEV-1480) — the exact distinct count when the
+  column has ≤ 50 distinct values. On overflow (> 50 distinct) it is
+  `None`: profiling uses a **single** full-table scan for the top-50 by
+  frequency and does not fire a second `count_distinct` scan for the exact
+  total. Also `None` for numeric / temporal columns.
 
-All three are populated:
+Profiling is **not** run at ingest time — a per-column full-table scan
+would dominate ingest wall-clock on wide datasources. Samples are
+populated **lazily, on the first `inspect` of a column** (synchronous,
+per-column), and additionally:
 
-- on every `slayer ingest` / `ingest_datasource_models` MCP call /
-  `POST /ingest` for every table-backed model in the touched datasource;
 - on `slayer search refresh-samples [--data-source X] [--model M ...]`;
 - on `edit_model` (column edits → that column; model-level filter / sql /
   source-query body change → every column);
@@ -448,8 +450,7 @@ prefers the structured `sampled_values` list (full top-50) over the
 Column: warehouse.orders.status
 Type: TEXT
 Description: Order status.
-Sample values: ["paid", "refunded", "cancelled", "pending", …]  ← JSON-encoded, all 50
-Distinct count: 12345        ← only when distinct_count > len(sampled_values)
+Sample values: ["paid", "refunded", "cancelled", "pending", …]  ← JSON-encoded, top 50
 ```
 
 The list is rendered as a JSON array (not comma-joined) so values that
@@ -460,10 +461,10 @@ place; comma-joining it back to a flat string would re-introduce the
 exact ambiguity it was meant to solve.
 
 When `sampled_values` is `None` (numeric / temporal columns, or legacy
-v6 data, or rare overflow-with-failed-count_distinct rows), the renderer
-falls back to the persisted `sampled` text — which already carries the
-`... (N distinct)` suffix for the legacy overflow case, so no extra
-`Distinct count` line is emitted. An empty `sampled_values=[]` list is
+v6 data), the renderer falls back to the persisted `sampled` text. For
+overflow categorical columns `sampled_values` is populated (top-50) and
+the text carries a `... (50+ distinct)` marker; `distinct_count` stays
+`None`, so no `Distinct count` line is emitted. An empty `sampled_values=[]` list is
 authoritative-empty: the line is skipped entirely (no fallback to stale
 `sampled`).
 

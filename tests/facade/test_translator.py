@@ -112,6 +112,12 @@ def test_info_schema_returns_info_schema_result(dialect) -> None:
     [
         ("BEGIN", "BEGIN"),
         ("START TRANSACTION", "START TRANSACTION"),
+        # Characteristic forms sqlglot can't parse — BI tools (Metabase) wrap
+        # reads in these; the facade recognises them pre-parse (DEV-1594).
+        ("BEGIN READ ONLY", "BEGIN"),
+        ("BEGIN TRANSACTION READ ONLY", "BEGIN"),
+        ("START TRANSACTION READ ONLY", "START TRANSACTION"),
+        ("START TRANSACTION ISOLATION LEVEL SERIALIZABLE", "START TRANSACTION"),
         ("COMMIT", "COMMIT"),
         ("ROLLBACK", "ROLLBACK"),
         ("SET timezone = 'UTC'", "SET"),
@@ -132,6 +138,38 @@ def test_show_statement_is_noop_with_tag(dialect) -> None:
     result = translate(sql="SHOW search_path", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, NoOpResult)
     assert result.command_tag == "SHOW"
+
+
+def test_transaction_open_shim_does_not_over_match() -> None:
+    from slayer.facade.translator import _classify_transaction_open
+
+    # Not transaction-opens: a word merely starting with "begin", and real SQL.
+    assert _classify_transaction_open("BEGINNER") is None
+    assert _classify_transaction_open("SELECT * FROM begin_events") is None
+    assert _classify_transaction_open("COMMIT") is None
+    # A ``BEGIN`` followed by a second statement is NOT a transaction-open.
+    assert _classify_transaction_open("BEGIN; SELECT 1") is None
+    assert _classify_transaction_open("START TRANSACTION READ ONLY; SELECT 1") is None
+
+
+def test_transaction_open_regex_is_linear_on_pathological_input() -> None:
+    """ReDoS guard (PR #221): the tx-open regexes previously backtracked
+    O(n²) on a long whitespace run before a mid-string ``;`` — a crafted
+    client string could stall the asyncio loop. The possessive quantifier
+    makes matching linear; assert a large pathological input classifies
+    fast (well under a timeout the old regex would have blown)."""
+    import time
+
+    from slayer.facade.translator import _classify_transaction_open
+
+    evil = "BEGIN" + " " * 200_000 + ";" + "x" * 5
+    start = time.perf_counter()
+    result = _classify_transaction_open(evil)
+    elapsed = time.perf_counter() - start
+    assert result is None  # not a valid single tx-open (junk after ;)
+    # Linear matching finishes in milliseconds; the old O(n²) form took
+    # tens of seconds at this size. Generous bound to avoid CI flakiness.
+    assert elapsed < 1.0, f"tx-open regex too slow ({elapsed:.2f}s) — ReDoS regression"
 
 
 def test_command_fallback_warning_suppressed_during_translate(dialect, caplog) -> None:
@@ -958,9 +996,47 @@ def test_where_aggregate_alias_match_is_case_sensitive(dialect) -> None:
     filters = result.query.filters or []
     # Did NOT route through the colon-form path…
     assert "*:count > 1" not in filters
-    # …and DID fall through to the verbatim branch, preserving "Count".
+    # …and DID fall through to the verbatim branch. The column is emitted
+    # UN-quoted (``Count``, not ``"Count"``) so the Mode B DSL reads it as a
+    # column reference rather than a string literal — case still preserved.
     assert len(filters) == 1
-    assert '"Count"' in filters[0]
+    assert "Count > 1" in filters[0]
+    assert '"Count"' not in filters[0]
+
+
+def test_double_quoted_column_in_where_becomes_column_not_string_literal(dialect) -> None:
+    """Regression: a double-quoted column identifier in a WHERE filter must
+    emit UN-quoted into ``SlayerQuery.filters``. ``filters`` is Mode B
+    (Python-AST DSL) where ``"status"`` is a STRING LITERAL identical to
+    ``'status'`` — not a column ref. The quoted form silently rewrote
+    ``WHERE "status" = 'x'`` into the constant-vs-constant comparison
+    ``'status' = 'x'``, matching NO rows (silent data loss)."""
+    result = translate(
+        sql='SELECT status, COUNT(*) FROM orders WHERE "status" = \'paid\' GROUP BY status',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    filters = result.query.filters or []
+    assert len(filters) == 1
+    # Emitted as a bare column, NOT a double-quoted string-literal lookalike.
+    assert filters[0] == "status = 'paid'"
+    # The Mode B DSL must read ``status`` as a column, not a literal.
+    from slayer.core.formula import parse_filter
+    assert parse_filter(filters[0]).columns == ["status"]
+
+
+def test_double_quoted_qualified_column_in_where_unquotes(dialect) -> None:
+    """Schema/table-qualified double-quoted columns also un-quote:
+    ``"public"."orders"."status"`` → ``status``."""
+    result = translate(
+        sql='SELECT status, COUNT(*) FROM "public"."orders" '
+            'WHERE "public"."orders"."status" = \'paid\' GROUP BY status',
+        catalog=_catalog(), dialect=dialect,
+    )
+    assert isinstance(result, QueryResult)
+    filters = result.query.filters or []
+    assert len(filters) == 1
+    assert filters[0] == "status = 'paid'"
 
 
 def test_having_aggregate_alias_against_non_literal_raises(dialect) -> None:

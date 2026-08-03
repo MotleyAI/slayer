@@ -109,6 +109,21 @@ slayer import-dbt ./my_dbt_project --datasource my_postgres --include-hidden-mod
 | `dbt_project_path` | Yes | Path to the dbt project root (or a models directory) |
 | `--datasource` | Yes | SLayer datasource name for the imported models |
 | `--include-hidden-models` | No | Also import regular dbt models (those not wrapped by a `semantic_model`) as hidden SLayer models via SQL introspection. Requires the `dbt` extra (`pip install 'motley-slayer[dbt]'`). See [dbt Import](../dbt/dbt_import.md#regular-dbt-models-hidden-import). |
+
+### `slayer import-osi`
+
+Import OSI (Open Semantic Interchange) configs into SLayer. See [Importing OSI configs](../osi/osi_import.md).
+
+```bash
+slayer import-osi ./osi_configs --datasource my_postgres
+slayer import-osi ./model.yaml --datasource my_postgres --dialect SNOWFLAKE
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `osi_path` | Yes | Path to an OSI file or directory (`.yaml`/`.yml`/`.json`) |
+| `--datasource` | Yes | SLayer datasource name (must be reachable — column types come from live introspection) |
+| `--dialect` | No | OSI expression dialect to read (default `ANSI_SQL`); falls back to another SQL dialect when the requested one is absent |
 | `--storage` | No | Storage path |
 
 ### `slayer models`
@@ -157,7 +172,7 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 | `-y`, `--yes` | No | Overwrite existing datasource / colliding models without prompting |
 | `--storage` | No | Storage path |
 
-The demo path generates a DuckDB at `<storage>/demo/jaffle_shop.duckdb` and is idempotent — re-running reuses the existing file. `duckdb` and `jafgen` are core dependencies of `motley-slayer`, so the demo works after a single `pip install motley-slayer` with no extras needed.
+The demo path generates a DuckDB at `<storage>/demo/jaffle_shop.duckdb` and is idempotent — re-running reuses the existing file. Ingested demo models are enriched with curated column labels/descriptions, currency and percent formats, saved measures (e.g. `orders.total_revenue`, `orders.avg_order_value`, `orders.effective_tax_rate`), and a `weighted_avg` custom-aggregation example on `orders`. The enrichment is additive-only: labels/descriptions are filled only where unset and existing measures are never overwritten, so user edits survive re-runs. `duckdb` and `jafgen` are core dependencies of `motley-slayer`, so the demo works after a single `pip install motley-slayer` with no extras needed.
 
 If a datasource with the same name already exists, or (with `--ingest`) any generated model name collides with a stored model, SLayer prompts for confirmation. Use `--yes` for non-interactive use.
 
@@ -168,6 +183,10 @@ memories (use `slayer search` for an entity *in context*). Pass **two or more**
 references to inspect several entities of the **same kind** in one call
 (DEV-1612): the output is one `## <canonical>` block per reference, in input
 order (a JSON array under `--format json`), with per-reference error isolation.
+**Omit the reference entirely** (DEV-1667) to list the whole **collection** at
+`--type` — supported for `model` and `datasource` only. `--type model` lists all
+models grouped by datasource (a terse one line per model by default; `--no-compact`
+gives the full per-model tables); `--type datasource` lists all datasources.
 
 ```bash
 slayer inspect jaffle_shop.orders --type model
@@ -176,11 +195,13 @@ slayer inspect jaffle_shop.orders.customers.region --type column --no-compact  #
 slayer inspect memory:42 --type memory --no-compact
 slayer inspect jaffle_shop.orders --type model --format json
 slayer inspect jaffle_shop.orders.order_total jaffle_shop.orders.order_id --type column --no-compact  # batch
+slayer inspect --type model         # collection: all models, grouped by datasource
+slayer inspect --type datasource    # collection: all datasources
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `reference` | Yes | One or more entity references: canonical id, bare name, join path (resolved to the owning model), or `memory:<id>`. Two or more → a same-kind batch. |
+| `reference` | No | Zero or more entity references: canonical id, bare name, join path (resolved to the owning model), or `memory:<id>`. Two or more → a same-kind batch. **Omit entirely** to list the whole collection at `--type` (`model` or `datasource` only). |
 | `--type` | Yes | Entity kind: `datasource`, `model`, `column`, `measure`, `aggregation`, or `memory`. Disambiguates same-named entities and asserts the kind. |
 | `--no-compact` | No | Return the full render. The compact default is description-only for column/measure/aggregation/datasource/memory, and a cheap **schema skeleton** (column/measure/aggregation names + join targets, zero DB calls) for `--type model`; `--no-compact` on a datasource renders a per-model skeleton for each visible model. |
 | `--format` | No | `markdown` (default) or `json`. |
@@ -231,7 +252,7 @@ slayer search --question "lifetime spend" --format json
 | `--max-results N` | `10` | Cap applied after RRF fusion and the `cypher_filter` allowlist. |
 | `--format` | `text` | `text` (newline-grouped human output) or `json` (full `SearchResponse`). |
 
-Each result row prints `kind`, `id`, `score`, and a one-line preview of `text`. Memory hits with `query is not None` are saved example queries; column hits include the structured `sampled_values` snapshot (top 50 by frequency) and a `Distinct count: N` line when cardinality overflows. Unresolved input entities surface as warnings rather than errors.
+In `text` mode each result row prints only `kind`, `id`, `score`, and a one-line preview of the hit's `text`. The full column snapshot — the top-50 `sampled_values`, JSON-encoded inside the hit's `text` — is returned in full only under `--format json`; columns with more than 50 distinct values surface only that top 50, with no exact total. (The `50+ distinct` overflow marker is a property of `Column.sampled` and shows in `slayer inspect` / `inspect_model` output, not in search results.) Memory hits with `query is not None` are saved example queries. Unresolved input entities surface as warnings rather than errors.
 
 ### `slayer search refresh-samples`
 

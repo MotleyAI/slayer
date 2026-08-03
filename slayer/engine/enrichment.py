@@ -50,11 +50,20 @@ from slayer.engine.enriched import (
     EnrichedTimeDimension,
     EnrichedTransform,
 )
+from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
-_TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
+# DEV-1686: quote-tolerant so join-path discovery matches a reserved qualifier
+# that RESERVED_KEYWORDS emits quoted in expanded derived-column SQL. Tolerates
+# every dialect's identifier quote char — ANSI ``"grant"``, MySQL/BigQuery
+# `` `grant` ``, T-SQL ``[grant]`` — as well as bare refs and ``__``-path
+# aliases (strict superset of the old bare ``word.word`` form). group(1) is
+# still the unquoted qualifier name.
+_TABLE_COL_RE = re.compile(
+    r'(?<![\w"`\]])["`\[]?([a-zA-Z_]\w*)["`\]]?\.["`\[]?([a-zA-Z_]\w*)["`\]]?'
+)
 def _strip_string_literal(value: str) -> str:
     """Strip one layer of single/double quotes from a query parameter value."""
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
@@ -146,6 +155,18 @@ async def _collect_reachable_agg_names(
                         queue.append(target_model_obj)
 
     return frozenset(names) if names else None
+
+
+def _public_field_name(qfield: Any) -> str:
+    """The public name a query measure surfaces under.
+
+    An explicit ``name`` wins; otherwise the formula is mangled into an
+    identifier. Shared by the main measure loop and the reserved-name set
+    that hidden-transform allocation checks against, so the two can't drift.
+    """
+    return qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace(
+        "*", ""
+    )
 
 
 async def enrich_query(
@@ -587,6 +608,36 @@ async def enrich_query(
                 )
         return resolved
 
+    # DEV-1692: names for transforms hoisted out of an arithmetic formula are
+    # derived from the owning measure's field_name, which keeps them distinct
+    # from one another — but nothing stops a user from *also* selecting a
+    # measure or dimension literally named ``_t0_growth``. Both would then
+    # claim the alias ``<model>._t0_growth``: the self-join CTE projects two
+    # columns under that name and the hoisted reference silently resolves to
+    # the user's column (no error, wrong numbers). Allocate against every
+    # projected name instead of trusting field_name uniqueness on its own.
+    # Dimensions and time dimensions alias as ``<model>.<name>`` just like
+    # hoisted transforms do, so they are reserved by bare name too.
+    _reserved_public_names: set[str] = (
+        {_public_field_name(qf) for qf in (query.measures or [])}
+        | {d.name for d in dimensions}
+        | {td.name for td in time_dimensions}
+    )
+    _hidden_names: set[str] = set()
+
+    def _allocate_hidden_name(preferred: str) -> str:
+        candidate = preferred
+        suffix = 2
+        while (
+            candidate in _reserved_public_names
+            or candidate in _hidden_names
+            or candidate in known_aliases
+        ):
+            candidate = f"{preferred}_{suffix}"
+            suffix += 1
+        _hidden_names.add(candidate)
+        return candidate
+
     def _add_transform(
         name: str,
         transform: str,
@@ -873,13 +924,42 @@ async def enrich_query(
         elif isinstance(spec, MixedArithmeticField):
             for mname in spec.measure_names:
                 await _ensure_measure_from_spec(mname, spec.agg_refs)
+            # DEV-1692: the ``_t{n}`` placeholder counter restarts on every
+            # formula parse, so two measures that each wrap a transform in
+            # arithmetic would both flatten under the name ``_t0`` — colliding
+            # on the self-join CTE names (``shifted__t0``) and, worse, on the
+            # expression alias, silently making the second measure read the
+            # first one's value. Qualify with the owning measure's field_name
+            # and run it through _allocate_hidden_name so the result can't
+            # collide with a user measure that happens to share the shape.
+            placeholder_aliases: list[tuple[str, str]] = []
             for placeholder, sub_transform in spec.sub_transforms:
-                await _flatten_spec(sub_transform, placeholder)
+                hidden_name = _allocate_hidden_name(f"{placeholder}_{field_name}")
+                sub_alias = await _flatten_spec(
+                    spec=sub_transform, field_name=hidden_name
+                )
+                placeholder_aliases.append((placeholder, sub_alias))
+            # Bind the placeholders just long enough for _resolve_sql to rewrite
+            # this formula's references, then restore. A user measure may itself
+            # be named `_t0`, so a shadowed binding is put back rather than
+            # dropped.
+            shadowed: list[tuple[str, str | None]] = [
+                (placeholder, known_aliases.get(placeholder))
+                for placeholder, _ in placeholder_aliases
+            ]
+            for placeholder, sub_alias in placeholder_aliases:
+                known_aliases[placeholder] = sub_alias
+            resolved_sql = _resolve_sql(spec.sql)
+            for placeholder, prior in shadowed:
+                if prior is None:
+                    del known_aliases[placeholder]
+                else:
+                    known_aliases[placeholder] = prior
             alias = f"{model_name_str}.{field_name}"
             enriched_expressions.append(
                 EnrichedExpression(
                     name=field_name,
-                    sql=_resolve_sql(spec.sql),
+                    sql=resolved_sql,
                     alias=alias,
                 )
             )
@@ -1259,9 +1339,7 @@ async def enrich_query(
                 f"ORDER BY would otherwise bind to the source column "
                 f"instead of the renamed aggregate."
             )
-        field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace(
-            "*", ""
-        )
+        field_name = _public_field_name(qfield)
 
         if isinstance(spec, AggregatedMeasureRef):
             # New colon syntax: "revenue:sum", "*:count", etc.
@@ -2067,6 +2145,19 @@ async def _resolve_dimensions(
                     resolve_dimension_via_joins=resolve_dimension_via_joins,
                 )
             )
+        # Grouping by an opaque column emits SQL the database rejects (no
+        # equality operator), so fail here with an actionable message instead
+        # of surfacing a raw driver error. Projecting such a column is fine —
+        # only its use as a GROUP BY / DISTINCT key is refused.
+        if dim_def is not None and dim_def.type.is_opaque:
+            db_type = getattr(dim_def, "db_type", None)
+            described = f" (database type {db_type!r})" if db_type else ""
+            raise ValueError(
+                f"Column '{dim_ref.full_name}'{described} cannot be used as a "
+                f"dimension: its type does not support the grouping this query "
+                f"requires. Define a derived column that extracts a comparable "
+                f"value instead, e.g. sql=\"payload->>'status'\" with type TEXT."
+            )
         expanded_sql = await _maybe_expand(
             sql=dim_def.sql if dim_def else None,
             terminal_model=terminal_model,
@@ -2307,7 +2398,13 @@ def _collect_paths_from_local_column_chain(
     next_visited = (*visited, key)
 
     try:
-        parsed = sqlglot.parse_one(sql, dialect=dialect)
+        # DEV-1686: quote bare reserved-word qualifiers/leaves (a derived
+        # column referencing a reserved joined model, e.g. ``grant.amount``)
+        # so join-path discovery finds the ref instead of silently falling
+        # back to a ref-less ``Command`` parse (which would drop the JOIN).
+        parsed = sqlglot.parse_one(
+            prequote_reserved_identifiers(sql=sql, dialect=dialect), dialect=dialect
+        )
     except Exception:
         _scan_sql_table_refs(sql=sql, model_name=model.name, paths=paths)
         return
@@ -2894,7 +2991,11 @@ def _filter_inline_needs_paren_wrap(*, sql: str, dialect: str) -> bool:
     (errs on the side of correctness over noise).
     """
     try:
-        tree = sqlglot.parse_one(sql, dialect=dialect)
+        # DEV-1686: prequote reserved qualifiers so a filter over a reserved
+        # joined model classifies correctly instead of conservatively wrapping.
+        tree = sqlglot.parse_one(
+            prequote_reserved_identifiers(sql=sql, dialect=dialect), dialect=dialect
+        )
     except Exception:  # noqa: BLE001 — sqlglot raises a variety of error types
         return True
     if isinstance(tree, _COMPOUND_FILTER_INLINE_TYPES):

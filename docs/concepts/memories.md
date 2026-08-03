@@ -77,7 +77,10 @@ int-shaped id (`"1"`, `"2"`, ...). Supply a string for a stable
 user-controlled id (`"kb.policy.42"`) — useful for knowledge-base
 ingestion pipelines. Charset excludes `:`, `/`, `?`, `#`, whitespace,
 and ASCII control characters. Duplicate id → unconditional **upsert**,
-`created_at` preserved.
+`created_at` preserved. In the default YAML storage, an id that differs
+only by letter case from an existing one (`X` vs `x`) raises
+`IdCollisionError` — ids are filenames there, and case variants collide
+on macOS / Windows.
 
 `description` is optional (≤ 500 chars). When set, `search(compact=True)`
 and `inspect_model(compact=True)` surface this short preview instead of
@@ -173,8 +176,12 @@ For retrieval, see [`search`](search.md) (MCP `search`, REST `POST
 
 ## Storage layout
 
-YAML uses a single `memories.yaml` file alongside the model and
-datasource folders. SQLite uses a `memories` table plus a
+YAML stores one Markdown file per memory at `memories/<id>.md` — YAML
+frontmatter for the structured fields (`description`, `entities`,
+`query`, `created_at`, `version`) and the Markdown body as the
+`learning`. The id is the filename (not repeated in the frontmatter).
+A legacy flat `memories.yaml` is migrated into per-file `.md` on first
+open (and then deleted). SQLite uses a `memories` table plus a
 `memory_entities` index table for the entity-overlap filter.
 
 IDs are non-empty strings (DEV-1428). The auto-allocator walks

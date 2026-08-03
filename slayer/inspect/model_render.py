@@ -37,6 +37,39 @@ logger = logging.getLogger(__name__)
 # no time-column context needed.
 _SAFE_SAMPLE_AGGS = frozenset({"avg", "sum", "min", "max", "count", "count_distinct", "median"})
 
+# The one failure the Data Profile's count-only retry is designed to recover
+# from: the database cannot group / deduplicate one of the column types. Kept
+# deliberately narrow — every other failure (permission, connection, syntax,
+# validation) must keep its own cause rather than being relabeled as a type
+# problem, which would both mislead the caller and hide the real error.
+_UNSUPPORTED_GROUPING_SIGNATURES = (
+    "could not identify an equality operator",
+    "could not identify a comparison function",
+)
+# Postgres SQLSTATE 42883 (undefined_function) is what the missing equality /
+# comparison operator behind GROUP BY / DISTINCT actually raises.
+_UNSUPPORTED_GROUPING_SQLSTATES = frozenset({"42883"})
+
+
+def _is_unsupported_grouping_error(exc: BaseException) -> bool:
+    """True when ``exc`` says the database can't group/deduplicate a column type.
+
+    Checks the driver SQLSTATE first (precise) and falls back to the message
+    text. Anything not matched is treated as an unrelated failure, so it
+    propagates with its own cause instead of being retried and mislabeled.
+    """
+    for err in (exc, getattr(exc, "orig", None)):
+        if err is None:
+            continue
+        code = getattr(err, "sqlstate", None) or getattr(err, "pgcode", None)
+        if code in _UNSUPPORTED_GROUPING_SQLSTATES:
+            return True
+    text = str(exc).lower()
+    orig = getattr(exc, "orig", None)
+    if orig is not None:
+        text = f"{text} {str(orig).lower()}"
+    return any(sig in text for sig in _UNSUPPORTED_GROUPING_SIGNATURES)
+
 # Section-level budgeting for inspect_model output.
 # columns/measures/aggregations/joins fall back to a names-only CSV when the
 # caller drops the section from `sections`; samples/learnings are fully
@@ -225,6 +258,19 @@ def _markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
     return "\n".join([header, sep] + body)
 
 
+def _render_column_type(column: Column) -> str:
+    """Render the ``type`` cell of the Columns table.
+
+    Opaque (``UNKNOWN``) columns are still shown — SLayer stores and displays
+    them — but annotated with their raw database type and a marker saying they
+    can't be queried, so an agent doesn't try to group or aggregate on them.
+    """
+    if not column.type.is_opaque:
+        return str(column.type)
+    detail = column.db_type or "unrecognized DB type"
+    return f"{column.type} ({detail}; not queryable)"
+
+
 def _choose_sample_dims(
     model: SlayerModel,
 ) -> tuple[list[dict[str, str]], set]:
@@ -236,7 +282,8 @@ def _choose_sample_dims(
     for c in model.columns:
         if c.hidden or c.primary_key:
             continue
-        # DEV-1361: TEXT/BOOLEAN are the categorical-shaped types.
+        # DEV-1361: TEXT/BOOLEAN are the categorical-shaped types. This filter
+        # also excludes opaque (UNKNOWN) columns, which cannot be GROUP BY'd.
         if c.type not in (DataType.TEXT, DataType.BOOLEAN):
             continue
         dims.append({"name": c.name})
@@ -260,7 +307,12 @@ def _choose_sample_agg(
     - Otherwise (``avg`` permitted): prefer ``avg`` for numeric columns, else
       ``count_distinct`` (type inferred from ``measure_types`` — the lowercase
       ``engine.get_column_types`` contract — or the column's own ``type``).
+    - Opaque (``UNKNOWN``) columns are always skipped: the DB has no equality
+      operator for their underlying type, so ``count_distinct``/``min``/``max``
+      would fail and take the whole Data Profile query down with them.
     """
+    if column.type.is_opaque:
+        return None
     allowed = column.allowed_aggregations
     if allowed is not None and "avg" not in allowed:
         if not allowed:
@@ -859,7 +911,7 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 sampled_cell = measure_profile.get(c.name)
             col_rows.append({
                 "name": c.name,
-                "type": str(c.type),
+                "type": _render_column_type(c),
                 "primary_key": "yes" if c.primary_key else "",
                 "sql": c.sql if c.sql else c.name,
                 "allowed_aggregations": aggs,
@@ -977,15 +1029,49 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
     sample_sql: str | None = None
     sample_data: dict[str, Any] | None = None
     sample_error: str | None = None
+    # Set when the profile fell back to a row count so JSON callers can tell a
+    # reduced profile from a complete one (the markdown note is not machine
+    # readable).
+    sample_reduced_reason: str | None = None
     if engine is not None and "samples" in included_set:
         query_args = _build_sample_query_args(
             model=model, num_rows=num_rows, measure_types=measure_types,
         )
+        # A column whose underlying DB type has no equality operator (point,
+        # json, xml — all coarsed to TEXT before opaque classification existed,
+        # so still undetectable on older models) makes the grouped/DISTINCT
+        # profile fail. Retry once with a row-count-only profile so one exotic
+        # column can't sink the section — but ONLY for that specific failure.
+        # Any other error (permission, connection, validation, syntax) must
+        # surface with its own cause instead of being relabeled as a type
+        # problem; the outer handler still degrades the section gracefully.
+        note = ""
         try:
-            sample_query = SlayerQuery.model_validate(query_args)
-            sample_result = await engine.execute(
-                query=sample_query, data_source=model.data_source or None
-            )
+            try:
+                sample_query = SlayerQuery.model_validate(query_args)
+                sample_result = await engine.execute(
+                    query=sample_query, data_source=model.data_source or None
+                )
+            except Exception as exc:
+                if not _is_unsupported_grouping_error(exc):
+                    raise
+                minimal_args = dict(query_args)
+                minimal_args["measures"] = [{"formula": "*:count"}]
+                minimal_args["dimensions"] = []
+                sample_query = SlayerQuery.model_validate(minimal_args)
+                try:
+                    sample_result = await engine.execute(
+                        query=sample_query, data_source=model.data_source or None
+                    )
+                except Exception:
+                    # The reduced profile failed too — report the original
+                    # cause, not this second failure.
+                    raise exc
+                sample_reduced_reason = (
+                    "at least one column's type does not support the "
+                    "grouping/DISTINCT this profile uses"
+                )
+                note = f"\n\n_Reduced to a row count: {sample_reduced_reason}._"
             sample_sql = sample_result.sql
             cols, data = _strip_model_prefix(
                 columns=sample_result.columns,
@@ -995,10 +1081,10 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             sample_data = {"columns": cols, "rows": data}
             sample_result.columns = cols
             sample_result.data = data
-            sample_section = f"## Sample Data\n\n{sample_result.to_markdown()}"
+            sample_section = f"## Data Profile\n\n{sample_result.to_markdown()}{note}"
             if show_sql and sample_sql:
                 sample_section = (
-                    f"## Sample Data SQL\n\n```sql\n{sample_sql}\n```\n\n"
+                    f"## Data Profile SQL\n\n```sql\n{sample_sql}\n```\n\n"
                     + sample_section
                 )
             out_sections.append(sample_section)
@@ -1008,10 +1094,10 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
             else:
                 err = str(e)
             sample_error = err
-            sample_section = f"## Sample Data\n\n_Error fetching sample data: {err}_"
+            sample_section = f"## Data Profile\n\n_Error fetching data profile: {err}_"
             if show_sql and sample_sql:
                 sample_section = (
-                    f"## Sample Data SQL\n\n```sql\n{sample_sql}\n```\n\n"
+                    f"## Data Profile SQL\n\n```sql\n{sample_sql}\n```\n\n"
                     + sample_section
                 )
             out_sections.append(sample_section)
@@ -1103,6 +1189,12 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
                 col_payloads.append({
                     "name": c.name,
                     "type": str(c.type),
+                    # Opaque columns only: the raw DB type plus an explicit
+                    # not-queryable marker (see _render_column_type).
+                    **(
+                        {"db_type": c.db_type, "queryable": False}
+                        if c.type.is_opaque else {}
+                    ),
                     "primary_key": c.primary_key,
                     **({"sql": c.sql} if show_sql else {}),
                     "allowed_aggregations": c.allowed_aggregations,
@@ -1176,6 +1268,8 @@ async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of 
         if "samples" in included_set:
             payload["sample_data"] = sample_data
             payload["sample_data_error"] = sample_error
+            payload["sample_data_reduced"] = sample_reduced_reason is not None
+            payload["sample_data_reduced_reason"] = sample_reduced_reason
             if show_sql and sample_sql:
                 payload["sample_sql"] = sample_sql
 

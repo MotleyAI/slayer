@@ -8,18 +8,28 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  label: Item ID
   hidden: false
 - name: order_id
   sql: order_id
   type: TEXT
   primary_key: false
+  description: Order this line belongs to.
+  label: Order
   hidden: false
 - name: sku
   sql: sku
   type: TEXT
   primary_key: false
+  description: Product sold on this line.
+  label: Product
   hidden: false
-measures: []
+measures:
+- formula: id:count
+  name: units_sold
+  label: Units Sold
+  description: Number of item units sold.
+  type: INT
 aggregations: []
 joins:
 - target_model: orders
@@ -33,4 +43,5 @@ joins:
     - sku
   join_type: left
 filters: []
+description: "Order line items \u2014 one row per unit sold on an order."
 hidden: false

@@ -27,6 +27,7 @@ from slayer.engine.profiling import (
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.service import InspectService
+from slayer.memories.help_seed import seed_help_memories
 from slayer.search.service import SearchService
 from slayer.storage import migrations as _mig
 from slayer.storage.base import default_storage_path
@@ -111,7 +112,12 @@ common workflows:
   slayer serve --storage slayer.db
   slayer ingest --datasource my_pg --storage slayer.db
 
-docs: https://motley-slayer.readthedocs.io/
+conceptual help:
+  # SLayer's concepts ship as help memories — read them with inspect:
+  slayer inspect memory:help.intro --type memory
+  slayer search --question "how do transforms work"
+
+docs: https://docs.motley.ai/slayer/
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -306,6 +312,48 @@ examples:
     )
     _add_storage_arg(validate_parser)
 
+    # ── recommend-root-model ──────────────────────────────────────────
+    recommend_parser = subparsers.add_parser(
+        "recommend-root-model",
+        help="Recommend a query root model + join paths for a set of items",
+        epilog="""\
+examples:
+  slayer recommend-root-model orders.revenue customers.name
+  slayer recommend-root-model customers.name products.category --data-source my_pg
+  slayer recommend-root-model orders.revenue:sum regions.name --format json
+  slayer recommend-root-model customers.name products.category --root-hint orders
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    recommend_parser.add_argument(
+        "items",
+        nargs="+",
+        help="model.column / model.metric items (aggregation suffixes allowed)",
+    )
+    recommend_parser.add_argument(
+        "--data-source",
+        dest="data_source",
+        default=None,
+        help="Datasource scope. If omitted, names resolve via the priority list.",
+    )
+    recommend_parser.add_argument(
+        "--root-hint",
+        dest="root_hint",
+        default=None,
+        help=(
+            "Intended root model (bare name or '<data_source>.<model>'). "
+            "Honored when it reaches every item; otherwise the auto-pick is "
+            "used and a warning explains why."
+        ),
+    )
+    recommend_parser.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text).",
+    )
+    _add_storage_arg(recommend_parser)
+
     # ── import-dbt ────────────────────────────────────────────────────
     import_dbt_parser = subparsers.add_parser(
         "import-dbt",
@@ -329,6 +377,26 @@ examples:
         ),
     )
     _add_storage_arg(import_dbt_parser)
+
+    # ── import-osi ────────────────────────────────────────────────────
+    import_osi_parser = subparsers.add_parser(
+        "import-osi",
+        help="Import OSI (Open Semantic Interchange) configs into SLayer models",
+        epilog="""\
+examples:
+  slayer import-osi ./osi_configs --datasource my_postgres
+  slayer import-osi ./model.yaml --datasource my_pg --dialect SNOWFLAKE
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    import_osi_parser.add_argument("osi_path", help="Path to an OSI file or directory (YAML/JSON)")
+    import_osi_parser.add_argument("--datasource", required=True, help="SLayer datasource name for the imported models")
+    import_osi_parser.add_argument(
+        "--dialect", default="ANSI_SQL",
+        help="OSI expression dialect to read (default: ANSI_SQL). Falls back to "
+             "another SQL dialect when the requested one is absent.",
+    )
+    _add_storage_arg(import_osi_parser)
 
     # ── models ────────────────────────────────────────────────────────
     models_parser = subparsers.add_parser(
@@ -562,11 +630,12 @@ examples:
     )
     inspect_parser.add_argument(
         "reference",
-        nargs="+",
+        nargs="*",
         help=(
             "Entity reference(s): canonical id (mydb.orders.amount), bare "
             "name, join path, or memory:<id>. Pass two or more for a "
-            "homogeneous-kind batch (one --type for all)."
+            "homogeneous-kind batch (one --type for all). Omit entirely to "
+            "list the whole collection at --type (model / datasource only)."
         ),
     )
     inspect_parser.add_argument(
@@ -724,27 +793,9 @@ examples:
         help="Model name(s) to refresh (repeatable; default: all in scope).",
     )
 
-    # ── help ──────────────────────────────────────────────────────────
-    from slayer.help import TOPIC_SUMMARY_LINE
-
-    help_parser = subparsers.add_parser(
-        "help",
-        help="Show conceptual help on SLayer (concepts, query composition, transforms, joins, workflow)",
-        epilog=(
-            f"{TOPIC_SUMMARY_LINE}\n\n"
-            "examples:\n"
-            "  slayer help                  # intro\n"
-            "  slayer help queries          # deep dive on a topic\n"
-            "  slayer help transforms\n"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    help_parser.add_argument(
-        "topic",
-        nargs="?",
-        default=None,
-        help="Topic name (optional). If omitted, prints the intro.",
-    )
+    # DEV-1658: the standalone `slayer help` subcommand is removed. SLayer's
+    # concepts ship as help memories — read them with
+    # `slayer inspect memory:help.intro --type memory` (see the epilog above).
 
     args = parser.parse_args()
 
@@ -764,8 +815,12 @@ examples:
         _run_ingest(args)
     elif args.command == "validate-models":
         _run_validate_models(args)
+    elif args.command == "recommend-root-model":
+        _run_recommend_root_model(args)
     elif args.command == "import-dbt":
         _run_import_dbt(args)
+    elif args.command == "import-osi":
+        _run_import_osi(args)
     elif args.command == "models":
         _run_models(args)
     elif args.command == "datasources":
@@ -778,8 +833,6 @@ examples:
         _run_search(args)
     elif args.command == "storage":
         _run_storage(args)
-    elif args.command == "help":
-        _run_help(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -787,15 +840,22 @@ examples:
 
 def _run_inspect(*, args, storage) -> None:
     """Run ``slayer inspect`` — a single-entity point-lookup (DEV-1588)."""
+    # DEV-1658: ensure the help.* memories exist so `inspect memory:help.intro`
+    # works on a fresh store (idempotent / warm no-op).
+    run_sync(seed_help_memories(storage=storage))
     service = InspectService(
         storage=storage, engine=SlayerQueryEngine(storage=storage),
     )
-    # argparse ``nargs="+"`` always yields a list; map a single positional back
+    # argparse ``nargs="*"`` always yields a list; map zero positionals to
+    # ``None`` (the collection sentinel, DEV-1667) and a single positional back
     # to a bare str so single-id output stays byte-for-byte (DEV-1612). A direct
     # str (older callers / tests) is passed through unchanged.
     reference = args.reference
-    if isinstance(reference, list) and len(reference) == 1:
-        reference = reference[0]
+    if isinstance(reference, list):
+        if len(reference) == 0:
+            reference = None
+        elif len(reference) == 1:
+            reference = reference[0]
     try:
         out = run_sync(service.inspect(
             reference=reference,
@@ -921,6 +981,9 @@ def _print_search_response_text(response) -> None:
 def _run_search_query(args, storage) -> None:
     """``slayer search [...]`` — call the SearchService and emit JSON or
     pretty text."""
+    # DEV-1658: seed help.* memories so concept searches surface them on a
+    # fresh store. Only on the query path — NOT `search refresh-samples`.
+    run_sync(seed_help_memories(storage=storage))
     service = SearchService(storage=storage)
     query_input = _load_query_arg(args.query) if args.query else None
     try:
@@ -1106,12 +1169,6 @@ async def _load_raw_model_dict(storage, data_source: str, name: str) -> dict | N
         raw = await _asyncio.to_thread(storage._get_model_sync, data_source, name)
         return _json.loads(raw) if raw else None
     return None
-
-
-def _run_help(args):
-    from slayer.help import render_help
-
-    print(render_help(topic=args.topic))
 
 
 def _parse_cli_variables(args) -> dict:
@@ -1387,6 +1444,28 @@ def _run_validate_models(args):
     print("\n✓ no remaining drift")
 
 
+def _run_recommend_root_model(args):
+    import json as _json
+
+    from slayer.core.recommend import render_recommendation_markdown
+    from slayer.engine.query_engine import SlayerQueryEngine
+
+    storage = _resolve_storage(args)
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        rec = engine.recommend_root_model_sync(
+            args.items, data_source=args.data_source,
+            root_hint=getattr(args, "root_hint", None),
+        )
+    except Exception as exc:  # noqa: BLE001 — surface resolution/validation errors cleanly
+        print(f"recommend-root-model failed: {exc}")
+        sys.exit(1)
+    if args.format == "json":
+        print(_json.dumps(rec.model_dump(mode="json"), indent=2))
+    else:
+        print(render_recommendation_markdown(rec))
+
+
 def _run_import_dbt(args):
 
     from slayer.dbt.converter import DbtToSlayerConverter
@@ -1450,6 +1529,62 @@ def _run_import_dbt(args):
     unconverted, dropped = result.tally()
     print(
         f"\nDone: {visible_count} models, {hidden_count} hidden, "
+        f"{unconverted} unconverted, {dropped} dropped"
+    )
+
+
+def _run_import_osi(args):
+    from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
+    from slayer.osi.parser import parse_osi_path
+    from slayer.sql import engine_factory
+
+    storage = _resolve_storage(args)
+    try:
+        documents = parse_osi_path(args.osi_path)
+    except FileNotFoundError as exc:
+        print(str(exc))
+        sys.exit(1)
+    if not documents:
+        print(f"No OSI documents found in {args.osi_path}")
+        sys.exit(1)
+
+    ds = run_sync(storage.get_datasource(args.datasource))
+    if ds is None:
+        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+        print(
+            f"Datasource '{args.datasource}' not found in {storage_path}; "
+            "a reachable datasource is required (types come from live introspection)."
+        )
+        sys.exit(1)
+
+    sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
+    converter = OsiToSlayerConverter(
+        documents=documents,
+        data_source=args.datasource,
+        sa_engine=sa_engine,
+        dialect=args.dialect,
+        target_dialect=ds.type,
+    )
+    try:
+        result = converter.convert()
+    except OsiConversionError as exc:
+        print(str(exc))
+        sys.exit(1)
+
+    for model in result.models:
+        run_sync(storage.save_model(model))
+        print(
+            f"Imported model: {model.name} "
+            f"({len(model.columns)} columns, {len(model.measures)} measures)"
+        )
+
+    if result.unconverted_metrics or result.warnings:
+        print("\nConversion report:")
+        print(result.render_report())
+
+    unconverted, dropped = result.tally()
+    print(
+        f"\nDone: {len(result.models)} models, "
         f"{unconverted} unconverted, {dropped} dropped"
     )
 
@@ -1531,10 +1666,9 @@ def _run_datasources(args):
             print(f"Datasource '{args.name}' not found.")
             sys.exit(1)
         data = ds.model_dump(mode="json", exclude_none=True)
-        if "password" in data:
-            data["password"] = "********"
-        if "connection_string" in data:
-            data["connection_string"] = "********"
+        for secret_field in ("password", "connection_string", "credentials_json"):
+            if secret_field in data:
+                data[secret_field] = "********"
         print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
 
     elif args.datasources_command == "create":
@@ -1671,7 +1805,11 @@ def _persist_ingested_models(models, storage, *, assume_yes: bool, pre_save=None
     for model in models:
         if pre_save is not None:
             pre_save(model)
-        run_sync(storage.save_model(model))
+        try:
+            run_sync(storage.save_model(model))
+        except ValueError as e:
+            print(f"Skipped {model.name}: {e}")
+            continue
         print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
 
 
@@ -1705,7 +1843,11 @@ def _run_datasources_create(args, storage):
         print("Aborted.")
         sys.exit(1)
 
-    run_sync(storage.save_datasource(ds))
+    try:
+        run_sync(storage.save_datasource(ds))
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     print(f"Created datasource '{ds.name}' ({ds.type}).")
 
     if not args.ingest:
@@ -1773,7 +1915,11 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
         print("Aborted.")
         sys.exit(1)
 
-    run_sync(storage.save_datasource(ds))
+    try:
+        run_sync(storage.save_datasource(ds))
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     print(f"Created datasource '{ds.name}' (duckdb).")
 
     if not args.ingest:

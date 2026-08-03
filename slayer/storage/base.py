@@ -6,9 +6,13 @@ import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
-from slayer.core.errors import AmbiguousModelError, MemoryNotFoundError
+from slayer.core.errors import (
+    AmbiguousModelError,
+    IdCollisionError,
+    MemoryNotFoundError,
+)
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
@@ -113,6 +117,26 @@ def _entity_matches_cascade(
     return entry.startswith(f"{canonical_id}.")
 
 
+def _fs_equivalence_key(value: str) -> str:
+    """Key under which two ids collide on a case-insensitive filesystem."""
+    return value.casefold()
+
+
+def _find_case_colliding_id(
+    candidate: str, existing: Iterable[str],
+) -> str | None:
+    """Return an existing id that casefold-equals ``candidate`` but is
+    spelled differently, or ``None``. An exact match never counts
+    (upserts); a collider is reported even alongside an exact match so a
+    legacy store holding both spellings surfaces the pair.
+    """
+    key = _fs_equivalence_key(candidate)
+    for entry in existing:
+        if entry != candidate and _fs_equivalence_key(entry) == key:
+            return entry
+    return None
+
+
 def _validate_path_component(value: str, *, kind: str) -> None:
     """Reject strings that could traverse out of the storage tree or
     collide with canonical-id namespace boundaries.
@@ -167,6 +191,12 @@ class StorageBackend(ABC):
     across backends.
     """
 
+    #: Backends whose ids become filenames (YAML) set this to True: saves
+    #: then reject ids differing only by case, which would alias to the
+    #: same file on case-insensitive filesystems. Wrappers copy it from
+    #: the inner backend.
+    _ids_collide_as_filenames = False
+
     # ---- model CRUD (composite key) ----------------------------------------
 
     async def save_model(
@@ -174,21 +204,50 @@ class StorageBackend(ABC):
     ) -> None:
         """Persist a model.
 
-        Runs save-time validation (currently DEV-1410 derived-column cycle
-        detection) and then delegates to the backend-specific
-        :meth:`_save_model_impl`. The ``_validate=False`` escape hatch is
-        for trusted internal callers — currently only the migration
-        write-back in :meth:`_migrate_and_refine_on_load` — that must
-        persist legacy data which may not pass current invariants.
+        Runs save-time validation (case-collision rejection for
+        filename-backed stores, then derived-column cycle detection) and
+        delegates to the backend-specific :meth:`_save_model_impl`. The
+        ``_validate=False`` escape hatch is for trusted internal callers —
+        currently only the migration write-back in
+        :meth:`_migrate_and_refine_on_load` — that must persist legacy
+        data which may not pass current invariants.
 
         Validation rules live in this base class so every backend gets
         them uniformly without duplication; concrete backends must NOT
         override this method.
         """
         if _validate:
+            if self._ids_collide_as_filenames:
+                await self._check_model_identity_collision(model)
             from slayer.engine.column_dependency import validate_no_column_cycles
             await validate_no_column_cycles(model=model, storage=self)
         await self._save_model_impl(model)
+
+    async def _check_model_identity_collision(self, model: SlayerModel) -> None:
+        """Reject a model whose ``data_source`` or ``name`` differs only
+        by case from an existing one — both are filename components in
+        the YAML backend."""
+        identities = await self._list_all_model_identities()
+        known_ds = {ds for ds, _ in identities}
+        known_ds.update(await self.list_datasources())
+        collide = _find_case_colliding_id(
+            candidate=model.data_source, existing=known_ds,
+        )
+        if collide is not None:
+            raise IdCollisionError(
+                kind="datasource", new_id=model.data_source, existing_id=collide,
+            )
+        names_in_ds = [n for ds, n in identities if ds == model.data_source]
+        collide = _find_case_colliding_id(
+            candidate=model.name, existing=names_in_ds,
+        )
+        if collide is not None:
+            raise IdCollisionError(
+                kind="model",
+                new_id=model.name,
+                existing_id=collide,
+                data_source=model.data_source,
+            )
 
     @abstractmethod
     async def _save_model_impl(self, model: SlayerModel) -> None:
@@ -393,7 +452,23 @@ class StorageBackend(ABC):
     # ---- datasource CRUD ---------------------------------------------------
 
     @abstractmethod
-    async def save_datasource(self, datasource: DatasourceConfig) -> None: ...
+    async def save_datasource(self, datasource: DatasourceConfig) -> None:
+        """Persist a datasource config (upsert by exact name).
+        Filename-backed implementations should call
+        :meth:`check_datasource_id_collision` before writing."""
+
+    async def check_datasource_id_collision(self, name: str) -> None:
+        """Raise :class:`IdCollisionError` when ``name`` differs only by
+        case from an existing datasource name or a saved model's
+        ``data_source``. Public so backends can call it from
+        ``save_datasource``."""
+        existing = set(await self.list_datasources())
+        existing.update(ds for ds, _ in await self._list_all_model_identities())
+        collide = _find_case_colliding_id(candidate=name, existing=existing)
+        if collide is not None:
+            raise IdCollisionError(
+                kind="datasource", new_id=name, existing_id=collide,
+            )
 
     @abstractmethod
     async def get_datasource(self, name: str) -> DatasourceConfig | None: ...
@@ -605,7 +680,9 @@ class StorageBackend(ABC):
         * ``id=None`` → allocator picks the next int-shaped id (``str``).
         * ``id="some-string"`` → user-supplied; rejected on bad charset
           or empty. Duplicate id → unconditional upsert; ``created_at``
-          of the original row is preserved.
+          of the original row is preserved. On filename-backed (YAML)
+          storage an id differing only by case from an existing one
+          raises :class:`IdCollisionError`.
 
         DEV-1549: ``description`` is an optional compact preview shown
         by ``search(compact=True)`` and ``inspect_model(compact=True)``.
@@ -613,6 +690,13 @@ class StorageBackend(ABC):
         """
         if id is not None:
             _validate_memory_id_charset(id)
+            if self._ids_collide_as_filenames:
+                ids = [m.id for m in await self._list_memories_rows(entities=None)]
+                collide = _find_case_colliding_id(candidate=id, existing=ids)
+                if collide is not None:
+                    raise IdCollisionError(
+                        kind="memory", new_id=id, existing_id=collide,
+                    )
             existing = await self._get_memory_row(id)
             assigned_id = id
             preserved_created_at = (

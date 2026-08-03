@@ -174,7 +174,7 @@ Each per-datasource pass refreshes embeddings for the datasource doc,
 every visible model + its visible children, **and every memory whose
 canonical entities are rooted at the datasource** (DEV-1416). A stale
 `embeddings.db` (created without an `OPENAI_API_KEY`, or after a manual
-`memories.yaml` edit) is therefore repaired by the next
+`memories/<id>.md` edit) is therefore repaired by the next
 `--ingest-on-startup` with no extra step. Per-memory embed failures
 surface as `IngestionError(model_name="memory:<id>", …)` in the
 result's `errors` list.
@@ -276,13 +276,15 @@ Ingest-on-startup: N/M datasources ingested (K failed: name1, name2)
 - **Existing `sql_table`-mode model** → append new columns and joins from the live schema. Existing columns and joins are **never** mutated — `description`, `label`, `format`, `meta`, and `allowed_aggregations` are preserved verbatim.
 - **Existing `sql`-mode or query-backed model with the matching name** → skipped silently; those are user-authored.
 
+With the default YAML storage, two live tables whose quoted names differ only by letter case (`"Orders"` vs `orders`) cannot both be persisted — model names collide as filenames on macOS / Windows, so the save is rejected (`IdCollisionError`). The first table wins; the second surfaces as a per-model entry in `IdempotentIngestResult.errors` (or a per-model message on the CLI / MCP paths) without aborting the rest of the ingest. SQLite storage persists both.
+
 After the additive pass, `validate_models` runs against the in-scope models and the result is merged into the response (`IdempotentIngestResult.to_delete`). Type-bucket drift on existing columns surfaces there — apply via `slayer validate-models --force-clean`, then re-ingest to pick up the new live type. See [Schema Drift](schema-drift.md) for the full diff / cascade contract.
 
 ### Search side effects
 
 After validation, every ingest also refreshes the search corpus for the touched datasource:
 
-- **Sample values** (`Column.sampled`) — re-profiled for every non-hidden, non-PK column on every table-backed model in the datasource. The cached snapshot is consumed by the tantivy search index and by `inspect_model`. See [Search](search.md#sample-value-cache).
+- **Sample values** (`Column.sampled`) — **not** re-profiled at ingest. A per-column full-table scan would dominate ingest wall-clock on wide datasources, so samples are populated lazily on the first `inspect` of a column (or explicitly via `slayer search refresh-samples`). See [Search](search.md#sample-value-cache).
 - **Embedding rows** — when the `advanced_search` extra is installed and a usable provider API key is in the environment, the embedding refresh re-runs for the datasource doc plus every visible model + its visible children. `SLAYER_EMBEDDING_MODEL` is an *optional* override of the default (`openai/text-embedding-3-small`); setting it is not required. The SHA256 `content_hash` on each row means re-ingests are cheap when nothing changed. See [Search](search.md#channel-3--dense-embedding-similarity).
 
 Both refreshes are best-effort: per-entity runtime failures land in `IdempotentIngestResult.errors` as friendly strings, never aborting ingestion. When the `advanced_search` extra is not installed or no API key is configured for the active embedding model, the embedding pass is silently skipped — the user-visible signal lives on the next `search` response.

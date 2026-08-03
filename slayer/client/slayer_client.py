@@ -22,6 +22,7 @@ from slayer.memories.models import (
 
 if TYPE_CHECKING:
     from slayer.core.policy import SessionPolicy
+    from slayer.core.recommend import RootModelRecommendation
     from slayer.search.service import SearchResponse
 
 logger = logging.getLogger(__name__)
@@ -477,7 +478,7 @@ class SlayerClient:
     async def inspect(
         self,
         *,
-        reference: str | list[str],
+        reference: str | list[str] | None = None,
         entity_type: str,
         compact: bool = True,
         format: str = "markdown",
@@ -486,8 +487,10 @@ class SlayerClient:
         sections: list[str] | None = None,
         descriptions_max_chars: int | None = None,
     ) -> str:
-        """Inspect EXACTLY one entity by reference and kind (DEV-1588), or a
-        homogeneous-kind BATCH when ``reference`` is a list (DEV-1612).
+        """Inspect EXACTLY one entity by reference and kind (DEV-1588), a
+        homogeneous-kind BATCH when ``reference`` is a list (DEV-1612), or the
+        whole COLLECTION at a kind when ``reference`` is ``None`` / ``[]``
+        (DEV-1667).
 
         A point-lookup (no fusion / ranking / bundled memories).
         ``entity_type`` is required, one of
@@ -495,7 +498,8 @@ class SlayerClient:
         ``memory``, and applies to every id in a list. A single ``str`` keeps
         its byte-for-byte single output; a list returns, in input order, one
         ``## <canonical>`` block per id under ``format="markdown"`` or a JSON
-        array under ``format="json"``, with per-id error isolation.
+        array under ``format="json"``, with per-id error isolation. ``None`` /
+        ``[]`` lists the whole collection (``model`` / ``datasource`` only).
         """
         if self._storage is not None:
             # Local import: slayer.inspect.service transitively imports the
@@ -532,7 +536,7 @@ class SlayerClient:
     @staticmethod
     def _build_inspect_body(
         *,
-        reference: str | list[str],
+        reference: str | list[str] | None,
         entity_type: str,
         compact: bool,
         format: str,
@@ -597,7 +601,7 @@ class SlayerClient:
     def inspect_sync(
         self,
         *,
-        reference: str | list[str],
+        reference: str | list[str] | None = None,
         entity_type: str,
         compact: bool = True,
         format: str = "markdown",
@@ -606,7 +610,8 @@ class SlayerClient:
         sections: list[str] | None = None,
         descriptions_max_chars: int | None = None,
     ) -> str:
-        """Synchronous variant of :meth:`inspect` (DEV-1588; batch DEV-1612)."""
+        """Synchronous variant of :meth:`inspect` (DEV-1588; batch DEV-1612;
+        collection DEV-1667)."""
         if self._storage is not None:
             from slayer.async_utils import run_sync
 
@@ -632,6 +637,43 @@ class SlayerClient:
         )
         resp = self._request_sync(method="POST", path="/inspect", json=body)
         return resp["result"]
+
+    async def recommend_root_model(
+        self, items: list[str], *, data_source: str | None = None,
+        root_hint: str | None = None,
+    ) -> "RootModelRecommendation":
+        """Recommend the query ``source_model`` (root) for a set of
+        ``model.column`` / ``model.metric`` items, plus each item's
+        join-qualified path from that root (DEV-1626).
+
+        ``root_hint`` forces the intended root when it reaches every item
+        (else the auto-pick is used with an explanatory warning)."""
+        from slayer.core.recommend import RootModelRecommendation
+
+        if self._engine is not None:
+            return await self._engine.recommend_root_model(
+                items, data_source=data_source, root_hint=root_hint
+            )
+        body: dict[str, Any] = {"items": items}
+        if data_source is not None:
+            body["data_source"] = data_source
+        if root_hint is not None:
+            body["root_hint"] = root_hint
+        result = await self._request(
+            method="POST", path="/recommend-root-model", json=body
+        )
+        return RootModelRecommendation.model_validate(result)
+
+    def recommend_root_model_sync(
+        self, items: list[str], *, data_source: str | None = None,
+        root_hint: str | None = None,
+    ) -> "RootModelRecommendation":
+        """Synchronous variant of :meth:`recommend_root_model`."""
+        from slayer.async_utils import run_sync
+
+        return run_sync(self.recommend_root_model(
+            items, data_source=data_source, root_hint=root_hint
+        ))
 
     def query_df(self, query: QueryInput):
         """Execute a query and return a pandas DataFrame (sync).

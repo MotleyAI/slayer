@@ -96,7 +96,7 @@ DELETE /datasources/{name}       # Delete a datasource
 # List datasources
 curl http://localhost:5143/datasources
 
-# Get datasource (password/connection_string shown as ***)
+# Get datasource (credential fields shown as ***)
 curl http://localhost:5143/datasources/my_postgres
 ```
 
@@ -129,7 +129,7 @@ Response:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `reference` | str \| array[str] | Canonical id (`mydb.orders.amount`), bare name, join path (`orders.customers.region` → resolved to the owning model), or `memory:<id>`. Normalised via the shared resolver; the normalised id is echoed in the result. **A list is a homogeneous-kind batch** (DEV-1612): one `entity_type` for every id; `result` is one block per id in input order (a `## <canonical>` header per block in markdown, a JSON-array string under `format="json"`). Per-id resolution errors are isolated. An empty list returns HTTP 400; a non-string member returns HTTP 422. |
+| `reference` | str \| array[str] \| null | Canonical id (`mydb.orders.amount`), bare name, join path (`orders.customers.region` → resolved to the owning model), or `memory:<id>`. Normalised via the shared resolver; the normalised id is echoed in the result. **A list is a homogeneous-kind batch** (DEV-1612): one `entity_type` for every id; `result` is one block per id in input order (a `## <canonical>` header per block in markdown, a JSON-array string under `format="json"`). Per-id resolution errors are isolated; a non-string member returns HTTP 422. **`null` / omitted (or `[]`) is the collection view** (DEV-1667): lists the whole kind at `entity_type` — `model` (all models grouped by datasource) or `datasource` (all datasources); other kinds return HTTP 400. `compact` toggles verbosity; the JSON `result` is a `{"entity_type", "collection": true, "datasources": [...], "warnings": []}` envelope string. Subsumes `models_summary` / `list_datasources`. |
 | `entity_type` | str | **Required.** One of `datasource`, `model`, `column`, `measure`, `aggregation`, `memory`. Disambiguates the 3-part canonical collision (a name shared by, e.g., a column and an aggregation) and asserts the kind — a mismatch returns HTTP 400. |
 | `compact` | bool | Default `true`. Description-only for column / measure / aggregation / datasource / memory; a cheap schema **skeleton** (column / measure / aggregation names + join targets, zero DB calls) for `model`. `false` returns the full render, and a per-model skeleton for each visible model for `datasource`. |
 | `format` | str | `"markdown"` (default) or `"json"`. |
@@ -188,7 +188,7 @@ Response (`SearchResponse`):
 {
   "results": [
     {"kind": "memory",  "id": "42", "score": 0.13, "text": "Brooklyn switched POS in late 2024 …", "matched_entities": [], "query": null},
-    {"kind": "column",  "id": "jaffle_shop.orders.order_total", "score": 0.11, "text": "...\nSample values: [\"100.00\", \"42.50\", …]\nDistinct count: 4382", "matched_entities": [], "query": null},
+    {"kind": "column",  "id": "jaffle_shop.orders.order_total", "score": 0.11, "text": "...\nSample values: [\"100.00\", \"42.50\", …]", "matched_entities": [], "query": null},
     {"kind": "model",   "id": "jaffle_shop.stores", "score": 0.09, "text": "...", "matched_entities": [], "query": null}
   ],
   "resolved_input_entities": [],
@@ -196,7 +196,7 @@ Response (`SearchResponse`):
 }
 ```
 
-`kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `DELETE /memories/{id}`); `query` carries the saved `SlayerQuery` when the memory is query-bearing. Column hits embed the structured `sampled_values` (top 50 by frequency, JSON-encoded) and `Distinct count: N` lines from the column profile; stale profiles are refreshed lazily inside `/search`.
+`kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `DELETE /memories/{id}`); `query` carries the saved `SlayerQuery` when the memory is query-bearing. Column hits embed the structured `sampled_values` (top 50 by frequency, JSON-encoded; overflow columns are marked `50+ distinct` in the text snapshot); stale profiles are refreshed lazily inside `/search`.
 
 **`POST /memories` body:**
 

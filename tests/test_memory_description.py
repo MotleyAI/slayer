@@ -155,24 +155,24 @@ async def test_description_round_trip_sqlite() -> None:
 
 
 @pytest.mark.asyncio
-async def test_description_yaml_persists_on_disk() -> None:
-    """memories.yaml on disk literally contains the description field."""
+async def test_description_md_persists_on_disk() -> None:
+    """DEV-1658: the per-memory .md file's frontmatter carries description."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         await _seed_orders(storage)
-        await storage.save_memory(
+        mem = await storage.save_memory(
             learning="x",
             entities=["mydb.orders.amount"],
             description="d",
         )
-        memories_path = os.path.join(tmpdir, "memories.yaml")
+        md_path = os.path.join(tmpdir, "memories", f"{mem.id}.md")
 
-        def _read_yaml() -> list:
-            with open(memories_path, "r") as f:
-                return yaml.safe_load(f)
+        def _read() -> str:
+            with open(md_path, "r") as f:
+                return f.read()
 
-        rows = await asyncio.to_thread(_read_yaml)
-        assert any(r.get("description") == "d" for r in rows)
+        text = await asyncio.to_thread(_read)
+        assert "description: d" in text
 
 
 # ---------------------------------------------------------------------------
@@ -194,10 +194,10 @@ async def test_legacy_dedupe_rejects_description_mismatch() -> None:
 
 @pytest.mark.asyncio
 async def test_legacy_v2_row_without_description_loads_with_none() -> None:
+    # DEV-1658: seed a legacy flat ``memories.yaml`` row (no ``description``)
+    # BEFORE constructing the store, so the one-time migration converts it to a
+    # per-file ``.md``; it must load with ``description=None``.
     with tempfile.TemporaryDirectory() as tmpdir:
-        storage = YAMLStorage(base_dir=tmpdir)
-        await _seed_orders(storage)
-        # Write a legacy-shaped row directly (no ``description`` key).
         legacy = [{
             "version": 2,
             "id": "1",
@@ -206,13 +206,10 @@ async def test_legacy_v2_row_without_description_loads_with_none() -> None:
             "query": None,
             "created_at": "2026-01-01T00:00:00+00:00",
         }]
-        memories_path = os.path.join(tmpdir, "memories.yaml")
+        with open(os.path.join(tmpdir, "memories.yaml"), "w") as f:  # NOSONAR(S7493) — test seeds the legacy file directly; sync I/O in an async test is fine
+            yaml.safe_dump(legacy, f)
 
-        def _write_yaml() -> None:
-            with open(memories_path, "w") as f:
-                yaml.safe_dump(legacy, f)
-
-        await asyncio.to_thread(_write_yaml)
+        storage = YAMLStorage(base_dir=tmpdir)  # __init__ migrates
         reloaded = await storage.get_memory("1")
         assert reloaded.description is None
         assert reloaded.learning == "legacy"
