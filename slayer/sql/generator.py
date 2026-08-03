@@ -5768,7 +5768,7 @@ class SQLGenerator:
                 # ``claim.claim_number = '...'`` references a joined alias
                 # that must be in scope; without the join, the WHERE
                 # references an undefined alias.
-                placeholder_allocator = self._new_allocator()
+                placeholder_allocator = self._gen_allocator or self._new_allocator()
                 placeholder_scope = ScopeFrame(
                     scope_id=placeholder_allocator.next_scope_id(source_relation),
                     root_model=source_model,
