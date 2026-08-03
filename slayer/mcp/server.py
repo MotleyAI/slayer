@@ -21,10 +21,11 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.recommend import render_recommendation_markdown
 from slayer.engine.ingestion import _friendly_db_error
 from slayer.engine.profiling import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
-from slayer.help import TOPIC_SUMMARY_LINE, render_help
+from slayer.memories.help_seed import seed_help_memories
 from slayer.inspect.model_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
     _build_sample_query_args,
     _collect_measure_profile,
@@ -39,6 +40,10 @@ from slayer.inspect.model_render import (  # noqa: F401 — re-exported for back
     _strip_model_prefix,
     _truncate_description,
     render_model_inspection,
+)
+from slayer.inspect.collection_render import (
+    render_datasource_list,
+    render_models_summary,
 )
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
@@ -251,11 +256,32 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     storage: StorageBackend,
     *,
     ingest_on_startup: bool = False,
+    _seed_help: bool = True,
 ):
+    from slayer.async_utils import run_sync
+
+    # DEV-1658: seed the conceptual-help memories (help.intro …). ``_seed_help``
+    # is False when embedded in create_app (which seeds once itself), so the
+    # pass never fires twice. Idempotent / skip-if-unchanged, so a warm store
+    # is a cheap no-op.
+    #
+    # DEV-1669: seeding is a convenience side-effect and must never crash server
+    # construction. Skip silently for a ``None`` / non-``StorageBackend`` arg —
+    # metadata-only builds (reading advertised tool names / a tool's JSON
+    # schema) need no storage at all. When a real backend is given, treat a
+    # genuine seed failure (nested-loop ``run_sync``, embedding/DB error) as
+    # best-effort: warn and continue rather than abort the build.
+    if _seed_help and isinstance(storage, StorageBackend):
+        try:
+            run_sync(seed_help_memories(storage=storage))
+        except Exception as exc:  # noqa: BLE001 — seeding must not abort the build
+            logger.warning(
+                "SLayer help-memory seeding skipped: %s", exc, exc_info=True
+            )
+
     if ingest_on_startup:
         import sys
 
-        from slayer.async_utils import run_sync
         from slayer.engine.ingestion import ingest_all_datasources_idempotent
 
         run_sync(
@@ -271,24 +297,24 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         instructions=(
             "SLayer is a semantic layer for querying databases. "
             "Instead of writing SQL, describe what data you want using models, measures, dimensions, and filters. "
-            "Call help() for an overview of SLayer concepts, and help(topic='...') for deep dives on specific topics. "
-            "Typical workflow: list_datasources → models_summary → inspect → query. "
+            "New to SLayer? Start with inspect(reference='memory:help.intro', entity_type='memory') for an overview of core concepts and the query shape — it lists the deep-dive topics you can inspect the same way. "
+            "Use search(question='...') to find relevant concepts, models, and saved learnings. "
+            "Typical workflow: inspect(memory:help.intro) → search → inspect → query. "
             "To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."
         ),
     )
     engine = SlayerQueryEngine(storage=storage)
-
-    _help_description = (
-        "Return conceptual help on SLayer. "
-        "Call without a topic for the intro (what SLayer is, core entities, the query shape). "
-        "Pass a topic name for a deep dive. "
-        f"{TOPIC_SUMMARY_LINE} "
-        "Args: topic (optional) — the topic name. Unknown topics return a friendly error listing the valid ones."
-    )
-
-    @mcp.tool(description=_help_description)
-    async def help(topic: str | None = None) -> str:  # noqa: A001 — intentional shadow of builtin inside factory
-        return render_help(topic=topic)
+    # DEV-1656: expose the closure engine so callers (bird-interact-agents on
+    # the cloud Ray runner, where one actor process is reused across many
+    # tasks) can dispose its per-task asyncpg pools at task teardown:
+    #   engine = getattr(mcp, "_slayer_engine", None)
+    #   if engine is not None:
+    #       await engine.aclose()   # loop-bound; run before the task loop closes
+    # aclose() is idempotent and leaves the engine reusable (a later execute
+    # lazily recreates the async engine). The read-only introspection tools
+    # (validate_models / recommend_root_model) reuse this same engine so a
+    # single engine holds every cached SQL client for the server's lifetime.
+    mcp._slayer_engine = engine
 
     @mcp.tool()
     async def query(  # NOSONAR S107 — FastMCP introspects this signature to expose each query option as a typed MCP tool argument; collapsing into a dict would degrade the agent-facing schema
@@ -320,11 +346,21 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                   ``{"name": "ad_hoc", "sql_table": "things", "data_source": "test", "columns": [...]}``.
             measures: Aggregated values to return. Each is a formula: {"formula": "*:count"},
                 {"formula": "revenue:sum / *:count", "name": "aov"} (arithmetic),
-                {"formula": "cumsum(revenue:sum)"} (cumulative sum), {"formula": "change(revenue:sum)"} (diff from previous row),
-                {"formula": "change_pct(revenue:sum)"} (% change), {"formula": "time_shift(revenue:sum, -1)"} (previous period via self-join),
-                {"formula": "time_shift(revenue:sum, -1, 'year')"} (year-over-year), {"formula": "lag(revenue:sum, 1)"} (previous row via window function),
+                {"formula": "cumsum(revenue:sum)"} (cumulative sum),
+                {"formula": "change(revenue:sum)"} (period-over-period difference),
+                {"formula": "change_pct(revenue:sum)"} (period-over-period % change, e.g. month-over-month growth),
+                {"formula": "time_shift(revenue:sum, -1)"} (the shifted value itself, one time bucket back),
+                {"formula": "time_shift(revenue:sum, -1, 'year')"} (value from one year earlier, for custom arithmetic),
+                {"formula": "lag(revenue:sum, 1)"} (previous row via window function; shifts by row position, NULL at edges),
                 {"formula": "lead(revenue:sum, 1)"} (next row via window function), {"formula": "last(revenue:sum)"} (most recent),
                 {"formula": "rank(revenue:sum)"} (ranking). A bare name like {"formula": "aov"} resolves to a saved ModelMeasure on the model.
+                change / change_pct / time_shift are calendar-aware and partition-safe: change and change_pct compare
+                each row against the prior time bucket (one step back at the query's own granularity), while time_shift
+                compares at its explicitly requested offset and granularity. All three join on the same non-time
+                dimension values, so per-group series reset cleanly — safe for grouped queries like month-over-month
+                revenue by store.
+                For period-over-period growth, prefer change_pct (or change for the absolute delta); use time_shift
+                only when you need the shifted value itself as a term in your own arithmetic.
             dimensions: List of dimension names to group by, e.g. ["status", "region"].
             filters: Filter conditions as formula strings. Examples: "status == 'completed'",
                 "amount > 100", "status in ('a', 'b')", "status is None",
@@ -571,112 +607,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 matched.append(m)
         matched.sort(key=lambda m: m.name)
 
-        if not matched:
-            return f"Datasource '{datasource_name}' has no models."
-
-        if fmt == "json":
-            if compact:
-                return json.dumps(
-                    {
-                        "datasource_name": datasource_name,
-                        "model_count": len(matched),
-                        "models": [
-                            {
-                                "name": m.name,
-                                "description": m.description,
-                                "column_count": sum(
-                                    1 for c in m.columns if not c.hidden
-                                ),
-                                "measure_names": [mm.name for mm in m.measures],
-                                "joins_to": sorted(
-                                    {j.target_model for j in m.joins}
-                                ),
-                            }
-                            for m in matched
-                        ],
-                    },
-                    indent=2,
-                )
-            return json.dumps(
-                {
-                    "datasource_name": datasource_name,
-                    "model_count": len(matched),
-                    "models": [
-                        {
-                            "name": m.name,
-                            "description": m.description,
-                            "columns": [
-                                {"name": c.name, "type": str(c.type), "description": c.description}
-                                for c in m.columns if not c.hidden
-                            ],
-                            "measures": [
-                                {"name": mm.name, "formula": mm.formula, "description": mm.description}
-                                for mm in m.measures
-                            ],
-                            "joins_to": sorted({j.target_model for j in m.joins}),
-                        }
-                        for m in matched
-                    ],
-                },
-                indent=2,
-            )
-
-        sections: list[str] = [
-            f"# Datasource: `{datasource_name}` — {len(matched)} model(s)"
-        ]
-        for m in matched:
-            model_lines: list[str] = [f"## `{m.name}`"]
-            if m.description:
-                model_lines.append(m.description)
-
-            if compact:
-                visible_col_count = sum(1 for c in m.columns if not c.hidden)
-                model_lines.append(f"Columns: {visible_col_count}")
-                measure_names = ", ".join(
-                    mm.name for mm in m.measures if mm.name is not None
-                )
-                model_lines.append(f"Measures: {measure_names}")
-                if m.joins:
-                    targets = sorted({j.target_model for j in m.joins})
-                    rendered = ", ".join(f"`{t}`" for t in targets)
-                    model_lines.append(f"Joins to: {rendered}")
-                else:
-                    model_lines.append("Joins to: _(none)_")
-                sections.append("\n".join(model_lines))
-                continue
-
-            col_rows = [
-                {"name": c.name, "type": str(c.type), "description": c.description}
-                for c in m.columns if not c.hidden
-            ]
-            model_lines.append(f"**Columns ({len(col_rows)}):**")
-            model_lines.append("")
-            model_lines.append(
-                _markdown_table(rows=col_rows, columns=["name", "type", "description"])
-            )
-            model_lines.append("")
-
-            measure_rows = [
-                {"name": mm.name, "formula": mm.formula, "description": mm.description}
-                for mm in m.measures
-            ]
-            model_lines.append(f"**Measures ({len(measure_rows)}):**")
-            model_lines.append("")
-            model_lines.append(
-                _markdown_table(rows=measure_rows, columns=["name", "formula", "description"])
-            )
-            model_lines.append("")
-
-            if m.joins:
-                targets = sorted({j.target_model for j in m.joins})
-                rendered = ", ".join(f"`{t}`" for t in targets)
-                model_lines.append(f"**Joins to:** {rendered}")
-            else:
-                model_lines.append("**Joins to:** _(none)_")
-
-            sections.append("\n".join(model_lines))
-
-        return "\n\n".join(sections)
+        # DEV-1667: rendering delegates to the shared renderer (also used by
+        # the ``inspect`` model collection view) — one code path, no drift.
+        return render_models_summary(
+            datasource_name=datasource_name,
+            models=matched,
+            fmt=fmt,
+            compact=compact,
+        )
 
     @mcp.tool()
     async def inspect_model(
@@ -766,8 +704,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
     @mcp.tool()
     async def inspect(
-        reference: str | list[str],
         entity_type: str,
+        reference: str | list[str] | None = None,
         compact: bool = True,
         format: str = "markdown",
         num_rows: int = 3,
@@ -775,12 +713,21 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         sections: list[str] | None = None,
         descriptions_max_chars: int | None = None,
     ) -> str:
-        """Inspect EXACTLY one entity by reference and kind — or a homogeneous
-        BATCH when ``reference`` is a list.
+        """Inspect EXACTLY one entity by reference and kind, a homogeneous
+        BATCH when ``reference`` is a list — or the whole COLLECTION at a kind
+        when ``reference`` is omitted / ``None``.
 
         A clean point-lookup: no fusion / ranking / cypher, and no bundled
         memories. Use ``search`` instead when you want an entity surfaced *in
         context* (with related memories and ranked neighbours).
+
+        Collection (DEV-1667): omit ``reference`` (or pass ``None`` / ``[]``)
+        to list a whole kind. ``entity_type="model"`` lists all models grouped
+        by datasource (compact=True: one terse line per model; compact=False:
+        the full per-model tables). ``entity_type="datasource"`` lists all
+        datasources. Only ``model`` / ``datasource`` support the collection
+        view; other kinds raise. This subsumes ``models_summary`` /
+        ``list_datasources``.
 
         Batch (DEV-1612): pass a ``list`` of references that all share the one
         ``entity_type``. Returns one rendered block per id, in input order,
@@ -1396,7 +1343,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )
         ds = DatasourceConfig.model_validate(data)
         existed = await storage.get_datasource(name) is not None
-        await storage.save_datasource(ds)
+        try:
+            await storage.save_datasource(ds)
+        except ValueError as exc:
+            return f"Cannot create datasource: {exc}"
         verb = "replaced" if existed else "created"
 
         ok, msg = _test_connection(ds)
@@ -1417,20 +1367,32 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 return "\n".join(lines)
             raise
 
+        save_errors: list[str] = []
+        saved_models = []
         for model in models:
-            await storage.save_model(model)
+            try:
+                await storage.save_model(model)
+                saved_models.append(model)
+            except ValueError as exc:
+                # e.g. quoted case-variant tables — report and continue.
+                save_errors.append(f"- {model.name}: {exc}")
+        models = saved_models
 
-        if not models:
+        if not models and not save_errors:
             lines.append("No tables found to ingest.")
             schemas = _get_schemas(ds)
             if schemas:
                 lines.append(f"Available schemas: {', '.join(schemas)}")
-        else:
+        elif models:
             lines.append(f"Ingested {len(models)} model(s):")
             for m in models:
                 lines.append(f"- {m.name} ({len(m.columns)} columns, {len(m.measures)} measures)")
             lines.append("")
             lines.append("Use models_summary and inspect to explore, then query to fetch data.")
+
+        if save_errors:
+            lines.append(f"Failed to save {len(save_errors)} model(s):")
+            lines.extend(save_errors)
 
         return "\n".join(lines)
 
@@ -1438,18 +1400,17 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     async def list_datasources() -> str:
         """List all configured database connections (names and types only, credentials are not shown). Use describe_datasource for connection details and status."""
         names = await storage.list_datasources()
-        if not names:
-            return "No datasources configured. Use create_datasource to add a database connection."
-        lines = []
+        # DEV-1667: rendering delegates to the shared renderer (also used by
+        # the ``inspect`` datasource collection view) — one code path.
+        pairs: list[tuple[str, str | None]] = []
         for name in names:
             try:
                 ds = await storage.get_datasource(name)
-                ds_type = ds.type if ds else "unknown"
-                lines.append(f"- {name} ({ds_type})")
+                pairs.append((name, ds.type if ds else "unknown"))
             except Exception as exc:
                 logger.warning("Failed to load datasource '%s': %s", name, exc)
-                lines.append(f"- {name} (ERROR: invalid datasource config)")
-        return "\n".join(lines)
+                pairs.append((name, None))
+        return render_datasource_list(pairs=pairs, fmt="markdown")
 
     @mcp.tool()
     async def describe_datasource(
@@ -1618,12 +1579,69 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             ds = await storage.get_datasource(data_source)
             if ds is None:
                 return f"Datasource '{data_source}' not found."
-        engine = SlayerQueryEngine(storage=storage)
+        # DEV-1656: reuse the closure engine (not a fresh per-call engine) so
+        # the schema-drift SQL client it opens is cached on the server's
+        # engine and disposed by ``mcp._slayer_engine.aclose()`` at teardown.
         try:
             entries = await engine.validate_models(data_source=data_source)
         except (sa.exc.OperationalError, sa.exc.DatabaseError) as exc:
             return _friendly_db_error(exc)
         return json.dumps([e.model_dump(mode="json") for e in entries], indent=2)
+
+    @mcp.tool()
+    async def recommend_root_model(
+        items: list[str], data_source: str | None = None,
+        root_hint: str | None = None, format: str = "markdown"  # noqa: A002
+    ) -> str:
+        """Recommend the root model (query ``source_model``) for a set of
+        ``model.column`` / ``model.metric`` items, and give each item's
+        join-qualified reference path from that root.
+
+        Introspects the join graph and picks the model from which every
+        requested item is reachable (LEFT joins are directional; INNER
+        joins traverse both ways), minimizing total join hops. The returned
+        paths are ready to drop into a query whose ``source_model`` is the
+        recommended root — e.g. a joined column comes back as
+        ``customers.regions.name`` and a root-owned one as ``status``;
+        aggregation suffixes (``:sum``) are preserved.
+
+        When no single model reaches everything, ``root_model`` is null and
+        ``coverage`` lists the best partial roots so you can split the
+        request into a multi-stage query.
+
+        Args:
+            items: entity references (``orders.revenue``, ``customers.name``,
+                ``orders.revenue:sum``, bare ``aov`` for a saved metric...).
+            data_source: optional datasource scope; when omitted, names
+                resolve via the datasource-priority list. All items must
+                resolve to a single datasource.
+            root_hint: optional intended root — a bare model name or
+                ``<data_source>.<model>`` within the resolved datasource.
+                Honored when it reaches every item (overriding the min-hops
+                pick, so you can force a bridge model that owns none of the
+                items); otherwise the auto-pick is used and a warning
+                explains why. Resolved after the datasource is determined,
+                so it cannot pick the datasource.
+            format: ``"markdown"`` (default) or ``"json"``.
+        """
+        fmt = format.lower().strip()
+        if fmt not in ("markdown", "json"):
+            return (
+                f"recommend_root_model failed: unknown format '{format}'. "
+                f"Use 'markdown' or 'json'."
+            )
+        # DEV-1656: reuse the closure engine (see validate_models above).
+        try:
+            rec = await engine.recommend_root_model(
+                items, data_source=data_source, root_hint=root_hint
+            )
+        except AmbiguousModelError as exc:
+            return _ambiguous_with_mcp_hint(exc)
+        except (ValueError, EntityResolutionError) as exc:
+            return f"recommend_root_model failed: {exc}"
+        if fmt == "json":
+            return json.dumps(rec.model_dump(mode="json"), indent=2)
+        return render_recommendation_markdown(rec)
 
     @mcp.tool()
     async def delete_datasource(name: str) -> str:

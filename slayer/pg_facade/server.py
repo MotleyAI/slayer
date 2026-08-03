@@ -35,6 +35,7 @@ async def serve(
     engine_factory: EngineFactory | None = None,
     tls_ctx: ssl.SSLContext | None = None,
     catalog_extra_relations=None,
+    catalog_ttl_seconds: float | None = None,
 ) -> None:
     """Bind and serve forever. Validates the bind/token combination first.
 
@@ -48,6 +49,13 @@ async def serve(
     (e.g. Storyline) use this to project real per-tenant data into
     ``pg_roles`` / ``pg_database`` / add new tables. Override is by table
     name; new tables are appended.
+
+    ``catalog_ttl_seconds``: catalog freshness for each connection. ``None``
+    (default) keeps the historical behavior — the catalog is built once at
+    connect and stays static for the connection's lifetime. A float enables
+    TTL-gated, on-demand refresh: an idle connection re-checks the storage
+    fingerprint at most once per window and rebuilds only when it changed, so
+    long-lived BI sessions pick up model/schema edits without reconnecting.
     """
     # A custom authenticator that prompts for a password counts as auth, so the
     # non-loopback-requires-a-secret rule is satisfied even without a token.
@@ -65,6 +73,7 @@ async def serve(
             storage_provider=storage_provider, engine_factory=engine_factory,
             tls_ctx=tls_ctx,
             catalog_extra_relations=catalog_extra_relations,
+            catalog_ttl_seconds=catalog_ttl_seconds,
         )
         try:
             await conn.run()

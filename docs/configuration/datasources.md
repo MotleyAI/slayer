@@ -24,6 +24,11 @@ type: postgres
 connection_string: postgresql://user:pass@host:5432/dbname
 ```
 
+When configuring individual connection fields, enter credentials exactly as issued. SLayer URL-encodes
+reserved characters when building the connection string. When supplying `connection_string` directly,
+percent-encode reserved characters within credential components yourself; do not encode the URL's
+structural delimiters.
+
 ## Environment Variables
 
 Use `${VAR_NAME}` references for credentials — resolved at read time from the process environment:
@@ -155,6 +160,7 @@ Statement-level timeout is enforced via
 | `username` | string | No | Database username |
 | `password` | string | No | Database password |
 | `connection_string` | string | No | Full connection string (alternative to individual fields) |
+| `credentials_json` | string | No | Credentials JSON (used for BigQuery service accounts) |
 | `schema_name` | string | No | Default schema name |
 
 !!! note

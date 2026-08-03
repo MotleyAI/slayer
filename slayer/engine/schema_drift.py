@@ -199,6 +199,34 @@ def data_type_bucket(dt: DataType) -> str:
     return str(dt)
 
 
+def _type_buckets_conflict(*, persisted: DataType, live: DataType) -> bool:
+    """True when persisted vs live types are genuinely incompatible.
+
+    Opacity is deliberately **one-way**:
+
+    - *live* opaque + operable persisted type → **conflict**. The physical
+      column has no equality operator, so the persisted model is promising a
+      ``GROUP BY`` / ``DISTINCT`` / aggregation the database will refuse. That
+      is a real runtime hazard and must surface rather than be hidden.
+    - *persisted* opaque + known live type → no conflict. ``UNKNOWN`` makes no
+      type claim to contradict; it only says "we could not classify this", and
+      the live type is strictly more information.
+    - both opaque → no conflict (they agree).
+    - both known → ordinary bucket comparison.
+
+    Note this means models ingested before opaque classification existed (an
+    exotic column coarsed to TEXT back then, read as UNKNOWN now) will be
+    reported. That is intentional: those columns really are unusable as
+    declared. The remedy is to re-ingest / retype the column to ``UNKNOWN``,
+    after which the conflict disappears.
+    """
+    if live.is_opaque:
+        return not persisted.is_opaque
+    if persisted.is_opaque:
+        return False
+    return data_type_bucket(persisted) != data_type_bucket(live)
+
+
 def _is_bare_identifier(s: str | None) -> bool:
     """``s`` is a bare SQL identifier (alphanumeric + underscore, no leading digit)."""
     if not s:
@@ -246,7 +274,7 @@ def _diff_sql_table_columns(
             )
             continue
         live_dt = live_table.columns[bare_name]
-        if data_type_bucket(col.type) != data_type_bucket(live_dt):
+        if _type_buckets_conflict(persisted=col.type, live=live_dt):
             dropped.append(col.name)
             reasons.append(
                 DeleteReason(
@@ -427,7 +455,7 @@ def diff_sql_model(
                     )
                 )
             continue
-        if data_type_bucket(col.type) != data_type_bucket(live_dt):
+        if _type_buckets_conflict(persisted=col.type, live=live_dt):
             dropped_cols.append(col.name)
             reasons.append(
                 DeleteReason(
@@ -2035,9 +2063,17 @@ async def _collect_sql_diffs(
     # distinct clients. Mirror that key shape here via the shared
     # ``_sql_client_cache_key`` helper.
     from slayer.engine.query_engine import _sql_client_cache_key  # noqa: PLC0415
-    client = (sql_clients or {}).get(_sql_client_cache_key(datasource))
+    key = _sql_client_cache_key(datasource)
+    client = (sql_clients or {}).get(key)
     if client is None:
         client = SlayerSQLClient(datasource=datasource)
+        # DEV-1656: cache the client back into the shared engine dict so the
+        # asyncpg pool it opens (trial-execute of sql-mode models) is
+        # reachable by ``SlayerQueryEngine.aclose()`` and disposed at task
+        # teardown. When ``sql_clients`` is None (no engine — direct/test
+        # callers own the lifecycle), behaviour is unchanged.
+        if sql_clients is not None:
+            sql_clients[key] = client
 
     async def _diff_one(model: SlayerModel) -> None:
         live_cols = await _live_columns_for_sql_model(model=model, client=client)

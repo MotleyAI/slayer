@@ -4,6 +4,7 @@ import datetime
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.engine import make_url
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelMeasure, SlayerModel
@@ -1129,6 +1130,204 @@ class TestDatasourceConfig:
         assert "sqlserver" in cs
         assert "slayer_demo" in cs
 
+    # Issue #240: the generic (non-tsql) connection-string branch must not
+    # corrupt credentials whose password contains reserved URL characters.
+    # The password below exercises every generic-branch delimiter: '@'
+    # (userinfo/host), ':' (userinfo/port), '/' (path), '#' (fragment),
+    # '?' (query), and a space.
+    _RESERVED_PASSWORD = "p@ss/w:rd#q?x y"  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+
+    @pytest.mark.parametrize(
+        ("ds_type", "expected_driver"),
+        [
+            ("postgres", "postgresql"),
+            ("postgresql", "postgresql"),
+            ("mysql", "mysql+pymysql"),
+            ("mariadb", "mysql+pymysql"),
+            ("clickhouse", "clickhouse+http"),
+            # Fallback dialect (issue #240 names "fallback dialects"): an
+            # unmapped type keeps its own name as the driver and must still
+            # encode reserved-char credentials safely.
+            ("customdb", "customdb"),
+        ],
+    )
+    def test_reserved_char_password_round_trips(
+        self, ds_type: str, expected_driver: str
+    ) -> None:
+        ds = DatasourceConfig(
+            name="example",
+            type=ds_type,
+            host="db.example",
+            port=5432,
+            database="analytics",
+            username="user",
+            password=self._RESERVED_PASSWORD,
+        )
+        cs = ds.get_connection_string()
+
+        # The reserved delimiters the issue names ('@', '/', ':') must be
+        # percent-encoded, not left as raw URL delimiters.
+        assert "%40" in cs  # '@'
+        assert "%2F" in cs  # '/'
+        assert "%3A" in cs  # ':'
+        assert self._RESERVED_PASSWORD not in cs
+
+        url = make_url(cs)
+        assert url.drivername == expected_driver
+        assert url.username == "user"
+        assert url.password == self._RESERVED_PASSWORD
+        assert url.host == "db.example"
+        assert url.port == 5432
+        assert url.database == "analytics"
+
+    def test_reserved_char_username_round_trips(self) -> None:
+        # Issue #240 names manually interpolated usernames as affected too,
+        # not just passwords. URL.create must percent-encode reserved
+        # characters in the username so it round-trips intact.
+        username = "user@tenant/name:role"
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="db.example",
+            port=5432,
+            database="analytics",
+            username=username,
+            password="plain_pass",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        cs = ds.get_connection_string()
+
+        assert username not in cs  # raw delimiters must not leak through
+        url = make_url(cs)
+        assert url.username == username
+        assert url.password == "plain_pass"
+        assert url.host == "db.example"
+        assert url.port == 5432
+        assert url.database == "analytics"
+
+    @pytest.mark.parametrize(
+        "ds_type",
+        ["postgres", "postgresql", "mysql", "mariadb", "clickhouse", "customdb"],
+    )
+    def test_delimiter_safe_password_no_regression(self, ds_type: str) -> None:
+        # A password with no reserved characters must round-trip exactly as
+        # it did before the URL.create switch.
+        ds = DatasourceConfig(
+            name="example",
+            type=ds_type,
+            host="db.example",
+            port=5432,
+            database="analytics",
+            username="user",
+            password="plain_pass",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.username == "user"
+        assert url.password == "plain_pass"
+        assert url.host == "db.example"
+        assert url.port == 5432
+        assert url.database == "analytics"
+
+    def test_host_with_embedded_port_is_split(self) -> None:
+        # Backward-compat: the pre-fix generic branch let a caller stuff
+        # "host:port" into the host field with port unset. URL.create would
+        # otherwise treat the colon as an IPv6-style host and bracket it, so
+        # a single-colon numeric-port host is split back into host + port.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="db.example:5432",
+            database="analytics",
+            username="user",
+            password="plain_pass",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.host == "db.example"
+        assert url.port == 5432
+        assert url.database == "analytics"
+
+    def test_ipv6_host_is_not_split(self) -> None:
+        # A bare IPv6 host (multiple colons, no bracket) must NOT be treated
+        # as host:port — URL.create brackets it correctly on its own.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="::1",
+            port=5432,
+            database="analytics",
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.host == "::1"
+        assert url.port == 5432
+
+    def test_bracketed_ipv6_host_is_unwrapped(self) -> None:
+        # The pre-fix string branch tolerated a bracketed IPv6 host; URL.create
+        # wants the raw host, so the brackets are stripped.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="[::1]",
+            port=5432,
+            database="analytics",
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.host == "::1"
+        assert url.port == 5432
+
+    def test_conflicting_port_in_host_and_port_field_raises(self) -> None:
+        # A port embedded in the host AND a separate port field is
+        # contradictory config — raise rather than guess which wins.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="db.example:5432",
+            port=9999,
+            database="analytics",
+        )
+        with pytest.raises(ValueError, match="only one place"):
+            ds.get_connection_string()
+
+    def test_conflicting_port_bracketed_ipv6_and_port_field_raises(self) -> None:
+        # Same conflict for a bracketed IPv6 host that embeds a port.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="[::1]:5432",
+            port=9999,
+            database="analytics",
+        )
+        with pytest.raises(ValueError, match="only one place"):
+            ds.get_connection_string()
+
+    def test_bracketed_ipv6_host_with_embedded_port_is_split(self) -> None:
+        # Bracketed IPv6 with an embedded port and no separate port field.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="[::1]:5432",
+            database="analytics",
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.host == "::1"
+        assert url.port == 5432
+
+    def test_password_without_username_is_dropped(self) -> None:
+        # Parity with the pre-fix generic branch, which only emitted the
+        # password when a username was present. URL.create matches this:
+        # a password without a username is not rendered.
+        ds = DatasourceConfig(
+            name="example",
+            type="postgres",
+            host="db.example",
+            port=5432,
+            database="analytics",
+            password="secret",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        url = make_url(ds.get_connection_string())
+        assert url.username is None
+        assert url.password is None
+        assert url.host == "db.example"
+        assert url.database == "analytics"
+
 
 class TestTimeGranularity:
     def test_period_start_week(self) -> None:
@@ -1932,6 +2131,54 @@ class TestColumnTypeLenientValidator:
     def test_enum_value_passes_through(self) -> None:
         col = Column(name="x", type=DataType.INT)
         assert col.type == DataType.INT
+
+    def test_legacy_lowercase_unknown_maps_to_unknown(self) -> None:
+        col = Column(name="x", type="unknown")
+        assert col.type == DataType.UNKNOWN
+        assert col.type.is_opaque is True
+
+
+class TestOpaqueColumn:
+    """Opaque (``UNKNOWN``) columns are stored + displayed but never operated
+    on — the raw DB type rides along on ``db_type``."""
+
+    def test_db_type_defaults_to_none(self) -> None:
+        assert Column(name="x", type=DataType.TEXT).db_type is None
+
+    def test_db_type_round_trips(self) -> None:
+        col = Column(name="loc", type=DataType.UNKNOWN, db_type="point")
+        assert col.db_type == "point"
+        assert Column.model_validate(col.model_dump()).db_type == "point"
+
+    def test_allowed_aggregations_rejected_on_opaque_column(self) -> None:
+        # Built outside the raises block so only the SlayerModel construction
+        # can produce the expected failure.
+        opaque_col = Column(
+            name="loc",
+            type=DataType.UNKNOWN,
+            db_type="point",
+            allowed_aggregations=["count"],
+        )
+        with pytest.raises(ValidationError) as exc_info:
+            SlayerModel(
+                name="places",
+                sql_table="places",
+                data_source="ds",
+                columns=[opaque_col],
+            )
+        msg = str(exc_info.value)
+        assert "loc" in msg
+        assert "point" in msg
+        assert "not supported" in msg
+
+    def test_opaque_column_without_allowed_aggregations_is_valid(self) -> None:
+        model = SlayerModel(
+            name="places",
+            sql_table="places",
+            data_source="ds",
+            columns=[Column(name="loc", type=DataType.UNKNOWN, db_type="point")],
+        )
+        assert model.columns[0].type is DataType.UNKNOWN
 
 
 class TestModelMeasureType:

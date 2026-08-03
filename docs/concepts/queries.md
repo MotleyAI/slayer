@@ -326,6 +326,38 @@ MCP equivalent: `query(source_model="<model>", variables={...}, dry_run=True/Fal
 
 ---
 
+## Choosing a root model
+
+When you know the columns and metrics you want but not which model to use as `source_model`, `recommend_root_model` introspects the join graph and picks it for you. Give it the `model.column` / `model.metric` items (aggregation suffixes allowed) and it returns the recommended root plus each item's join-qualified reference path from that root — ready to paste into a query.
+
+```python
+rec = engine.recommend_root_model_sync(["customers.name", "products.category"])
+rec.root_model          # "orders"  (the bridge model that reaches both)
+{ip.input_item: ip.path for ip in rec.item_paths}
+# {"customers.name": "customers.name", "products.category": "products.category"}
+```
+
+A root is valid when every requested item is reachable from it over the join graph — LEFT joins are directional (source → target), INNER joins traverse both ways. Among valid roots, the one with the fewest total join hops wins. Root-owned items come back as a bare leaf (`status`); joined items as a dotted path (`customers.regions.name`); aggregation suffixes are preserved (`revenue:sum`).
+
+When no single model reaches everything, `root_model` is `None`, `reachable` is `False`, and `coverage` lists the best partial roots (each with its reachable / unreachable items) so you can split the request into a multi-stage [`source_queries`](models.md#query-backed-models) query.
+
+### Forcing a root with `root_hint`
+
+Sometimes you already know the host you want — often a **bridge** model that owns none of the requested items but matches the grain you're building on. Pass `root_hint` (a bare model name or `<data_source>.<model>`) to force it:
+
+```python
+rec = engine.recommend_root_model_sync(
+    ["customers.name", "regions.name"], root_hint="orders"
+)
+rec.root_model   # "orders"  (honored — it reaches both, overriding the closer auto-pick)
+```
+
+When the hint reaches every item it's honored outright, overriding the fewest-hops pick. When it can't reach everything, the auto-pick is used instead and `warnings` explains which owning models the hint missed and which root was chosen. If no model reaches everything (`reachable` is `False`), the hint's own row is included in `coverage` too, so you can see exactly what it reaches. `root_hint` is resolved after the datasource is fixed from the items, so it names a model *within* that datasource — it can't choose the datasource. A hint that isn't a model in the resolved datasource raises.
+
+Surfaces: MCP `recommend_root_model(items, data_source=None, root_hint=None, format="markdown")`, REST `POST /recommend-root-model` (`{"items": [...], "data_source": null, "root_hint": null}`), CLI `slayer recommend-root-model ITEM... [--data-source X] [--root-hint M] [--format json|text]`, and `SlayerClient.recommend_root_model(_sync)`. The optional `data_source` scopes name resolution to one datasource; all items must resolve to a single datasource.
+
+---
+
 ## Examples
 
 ### Count by status

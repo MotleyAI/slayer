@@ -31,7 +31,9 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-_FORBIDDEN_ID_CHARS = (":", "/", "?", "#")
+# DEV-1658: ``\`` is forbidden too so a memory id is a safe single path
+# segment on every platform (YAMLStorage writes ``memories/<id>.md``).
+_FORBIDDEN_ID_CHARS = (":", "/", "?", "#", "\\")
 
 #: Canonical-id prefix for cross-memory references (`memory:<id>`).
 #: Re-exported from this module so the resolver, search service, and

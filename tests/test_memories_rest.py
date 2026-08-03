@@ -45,7 +45,7 @@ def _shared_client(_shared_storage: YAMLStorage) -> TestClient:
 
 
 def _reset_yaml_storage(storage: YAMLStorage) -> None:
-    for sub in ("models", "datasources"):
+    for sub in ("models", "datasources", "memories"):
         d = os.path.join(storage.base_dir, sub)
         if os.path.isdir(d):
             for entry in os.listdir(d):

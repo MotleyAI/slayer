@@ -307,8 +307,8 @@ class TestInspectModelEndToEnd:
 
         # Sample data table: count + amount_avg + quantity_avg + 2 dim columns
         # SLayer names the *:count output '_count' when grouped by dimensions.
-        assert "## Sample Data" in result
-        sample_section = result.split("## Sample Data", 1)[1]
+        assert "## Data Profile" in result
+        sample_section = result.split("## Data Profile", 1)[1]
         assert "_count" in sample_section
         assert "amount_avg" in sample_section
         assert "quantity_avg" in sample_section
@@ -353,7 +353,7 @@ class TestInspectModelSectionGatingIntegration:
         assert "completed" in col_section
         # No sample data section; the reachable-via-joins heading was removed
         # entirely in DEV-1560 and must never appear.
-        assert "## Sample Data" not in result
+        assert "## Data Profile" not in result
         assert "## Reachable" not in result
         # Empty list-only headings for the rest are OK (model has no measures /
         # aggregations / joins, so they render nothing); footer should still

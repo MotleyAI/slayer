@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import time
 import types
 
 import pytest
@@ -232,7 +233,7 @@ def _ready_statuses(msgs: list[tuple[str, bytes]]) -> list[bytes]:
     return [body for t, body in msgs if t == "Z"]
 
 
-def _error_sqlstate(body: bytes) -> str | None:
+def _error_field(body: bytes, ftype_wanted: bytes) -> str | None:
     i = 0
     while i < len(body) and body[i:i + 1] != b"\x00":
         ftype = body[i:i + 1]
@@ -240,9 +241,17 @@ def _error_sqlstate(body: bytes) -> str | None:
         end = body.index(b"\x00", i)
         val = body[i:end].decode("utf-8")
         i = end + 1
-        if ftype == b"C":
+        if ftype == ftype_wanted:
             return val
     return None
+
+
+def _error_sqlstate(body: bytes) -> str | None:
+    return _error_field(body, b"C")
+
+
+def _error_message(body: bytes) -> str | None:
+    return _error_field(body, b"M")
 
 
 # --- startup / SSL -----------------------------------------------------------
@@ -375,6 +384,24 @@ async def test_multi_statement_begin_select_commit_tx_cycle() -> None:
     statuses = _ready_statuses(msgs)
     assert len(statuses) == 2  # startup + one for the simple-query message
     assert statuses[-1] == proto.TX_IDLE
+
+
+async def test_begin_read_only_tx_cycle() -> None:
+    # Metabase wraps reads in BEGIN READ ONLY; sqlglot can't parse that, so the
+    # facade recognises it pre-parse (DEV-1594). Whole cycle must succeed.
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("BEGIN READ ONLY; SELECT 1; COMMIT;")
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    assert not any(t == "E" for t, _ in msgs)  # no error
+    tags = [b for t, b in msgs if t == "C"]
+    assert any(b.startswith(b"BEGIN") for b in tags)
+    assert any(b.startswith(b"SELECT 1") for b in tags)
+    assert any(b.startswith(b"COMMIT") for b in tags)
+    assert _ready_statuses(msgs)[-1] == proto.TX_IDLE
 
 
 async def test_error_in_transaction_then_blocked_until_end() -> None:
@@ -518,6 +545,108 @@ async def test_execute_unknown_portal_errors() -> None:
     msgs = _messages(writer.buffer)
     err = next(body for t, body in msgs if t == "E")
     assert _error_sqlstate(err) == proto.SQLSTATE_INTERNAL_ERROR
+
+
+class _RaisingEngine:
+    """Engine double that raises a SQLAlchemy-shaped error: a wrapper whose
+    ``.orig`` carries the driver's ``sqlstate`` + bare message (mirrors how
+    asyncpg/psycopg errors reach the facade via SQLAlchemy's DBAPIError)."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    async def execute(self, *, query=None, data_source=None):  # NOSONAR(S7503)
+        raise self._exc
+
+
+class _DriverError(Exception):
+    """asyncpg/psycopg-shaped driver error carrying a SQLSTATE + message."""
+
+    def __init__(self, *, sqlstate=None, pgcode=None, message="") -> None:
+        super().__init__(message)
+        if sqlstate is not None:
+            self.sqlstate = sqlstate
+        if pgcode is not None:
+            self.pgcode = pgcode
+        self.message = message
+
+    def __str__(self) -> str:
+        return self.message
+
+
+def _dbapi_error(*, sqlstate: str, message: str) -> BaseException:
+    """A DBAPIError-like wrapper (``.orig`` holds the real driver error),
+    mirroring how SQLAlchemy nests the driver exception."""
+    wrapper = RuntimeError("(sqlalchemy wrapper) [SQL: SELECT ...]")
+    wrapper.orig = _DriverError(sqlstate=sqlstate, message=message)  # type: ignore[attr-defined]
+    return wrapper
+
+
+async def test_run_query_surfaces_driver_sqlstate_and_message() -> None:
+    """The ``_run_query`` error path must pass the driver's SQLSTATE +
+    bare server message straight through (via ``_engine_error_fields``),
+    NOT the generic XX000 + SQLAlchemy repr. Covers e.g. a client seeing
+    ``permission denied for table Item`` (42501)."""
+    engine = _RaisingEngine(
+        _dbapi_error(sqlstate="42501", message="permission denied for table Item")
+    )
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SELECT revenue_sum FROM orders")
+        + _terminate()
+    )
+    writer = await _run(inp, engine=engine)
+    msgs = _messages(writer.buffer)
+    err = next(body for t, body in msgs if t == "E")
+    assert _error_sqlstate(err) == "42501"
+    assert _error_message(err) == "permission denied for table Item"
+
+
+async def test_run_query_falls_back_to_internal_error_without_sqlstate() -> None:
+    """A plain exception with no driver SQLSTATE in its chain falls back to
+    XX000 + ``str(exc)`` — the ``_engine_error_fields`` default branch."""
+    engine = _RaisingEngine(ValueError("boom"))
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("SELECT revenue_sum FROM orders")
+        + _terminate()
+    )
+    writer = await _run(inp, engine=engine)
+    msgs = _messages(writer.buffer)
+    err = next(body for t, body in msgs if t == "E")
+    assert _error_sqlstate(err) == proto.SQLSTATE_INTERNAL_ERROR
+    assert _error_message(err) == "boom"
+
+
+def test_engine_error_fields_walks_exception_chain() -> None:
+    """Unit: ``_engine_error_fields`` finds a driver SQLSTATE through
+    ``.orig`` / ``__cause__`` / ``__context__`` and returns its message;
+    accepts both ``sqlstate`` and ``pgcode`` attributes; is cycle-safe."""
+    from slayer.pg_facade.connection import _engine_error_fields
+
+    # via .orig
+    assert _engine_error_fields(
+        _dbapi_error(sqlstate="42501", message="denied")
+    ) == ("42501", "denied")
+
+    # via __cause__ chain, using pgcode (psycopg spelling)
+    outer = RuntimeError("wrapper")
+    outer.__cause__ = _DriverError(pgcode="23505", message="duplicate key")
+    code, msg = _engine_error_fields(outer)
+    assert code == "23505"
+    assert msg == "duplicate key"
+
+    # No SQLSTATE anywhere → XX000 + str(exc)
+    assert _engine_error_fields(ValueError("plain")) == (
+        proto.SQLSTATE_INTERNAL_ERROR, "plain",
+    )
+
+    # Cyclic chain must terminate (seen-set guard), not hang.
+    a = RuntimeError("a")
+    b = RuntimeError("b")
+    a.__context__ = b
+    b.__context__ = a
+    assert _engine_error_fields(a) == (proto.SQLSTATE_INTERNAL_ERROR, "a")
 
 
 async def test_close_statement_then_complete() -> None:
@@ -2312,3 +2441,184 @@ async def test_static_storage_aclose_not_called_when_scope_swap_did_not_run() ->
     assert static_aclosed["called"] is False, (
         "static storage's aclose must not be called when scope-swap never ran"
     )
+
+
+# --- on-demand catalog refresh (TTL) ----------------------------------------
+
+
+class _RefreshableStorage(_FakeStorage):
+    """Fake storage whose content and fingerprint can be mutated mid-test."""
+
+    def __init__(self, models_by_ds, *, fingerprint: str) -> None:
+        super().__init__(models_by_ds)
+        self.fingerprint = fingerprint
+
+    async def graph_fingerprint(self) -> str:  # NOSONAR(S7503) — async to satisfy the awaited interface
+        return self.fingerprint
+
+
+def _refresh_conn(storage) -> PgConnection:
+    # ttl 0.0 => the window is always "elapsed", so every call re-checks the
+    # cheap fingerprint (the change-gate is what decides whether to rebuild).
+    conn = PgConnection(
+        asyncio.StreamReader(), _FakeWriter(),
+        engine=_FakeEngine([]), storage=storage,
+        catalog_ttl_seconds=0.0,
+    )
+    conn._storage = storage
+    return conn
+
+
+async def _seed_catalog(conn: PgConnection, storage) -> None:
+    conn._catalog = await conn._build_catalog()
+    conn._catalog_fingerprint = storage.fingerprint
+    conn._catalog_checked_at = 0.0
+
+
+async def test_refresh_rebuilds_catalog_when_fingerprint_changes() -> None:
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    # A model edit that also bumps the storage fingerprint.
+    storage._models_by_ds["jaffle"][0].description = "edited"
+    storage.fingerprint = "v2"
+
+    await conn._maybe_refresh_catalog()
+
+    assert conn._catalog is not before  # rebuilt
+    assert conn._catalog_fingerprint == "v2"
+    assert conn._column_type_index is None  # derived index dropped
+
+
+async def test_refresh_skips_when_fingerprint_unchanged() -> None:
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    # Content changes but the fingerprint doesn't -> the cheap check
+    # short-circuits and we never pay for a rebuild.
+    storage._models_by_ds["jaffle"].append(_orders_model())
+
+    await conn._maybe_refresh_catalog()
+
+    assert conn._catalog is before  # NOT rebuilt
+
+
+async def test_refresh_skips_mid_transaction() -> None:
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    storage.fingerprint = "v2"  # changed, but...
+    conn._tx_state = proto.TX_IN_TRANSACTION  # ...we're inside a transaction
+
+    await conn._maybe_refresh_catalog()
+
+    assert conn._catalog is before  # never shift the catalog mid-transaction
+
+
+async def test_refresh_disabled_by_default_never_rebuilds() -> None:
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = PgConnection(
+        asyncio.StreamReader(), _FakeWriter(),
+        engine=_FakeEngine([]), storage=storage,
+    )  # no catalog_ttl_seconds -> static catalog (historical behavior)
+    conn._storage = storage
+    conn._catalog = await conn._build_catalog()
+    before = conn._catalog
+    storage.fingerprint = "v2"
+
+    await conn._maybe_refresh_catalog()
+
+    assert conn._catalog is before
+
+
+async def test_refresh_swallows_fingerprint_error_and_keeps_catalog() -> None:
+    class _BoomFingerprint(_RefreshableStorage):
+        async def graph_fingerprint(self) -> str:
+            raise RuntimeError("storage unreachable")  # not an OSError
+
+    storage = _BoomFingerprint({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    # Best-effort: the error must be swallowed, not propagate to _run_statement.
+    await conn._maybe_refresh_catalog()
+
+    assert conn._catalog is before  # current catalog retained
+
+
+async def test_refresh_swallows_build_error_and_keeps_catalog() -> None:
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    # Fingerprint moves (forces a rebuild attempt), but the rebuild itself fails.
+    storage.fingerprint = "v2"
+
+    async def _boom():
+        raise RuntimeError("rebuild failed")
+
+    conn._build_catalog = _boom  # type: ignore[assignment]
+
+    await conn._maybe_refresh_catalog()  # must not raise
+
+    assert conn._catalog is before  # half-built/None never swapped in
+    # Fingerprint not advanced -> the next TTL window retries the rebuild.
+    assert conn._catalog_fingerprint == "v1"
+
+
+async def test_describe_triggers_catalog_refresh() -> None:
+    # Regression: Describe advertises the RowDescription, so it must refresh
+    # too — not only Execute — or a mid-window edit could make the later
+    # Execute's rows disagree with the already-sent RowDescription.
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = _refresh_conn(storage)  # ttl 0.0 -> always re-checks
+    await _seed_catalog(conn, storage)
+    before = conn._catalog
+
+    storage._models_by_ds["jaffle"][0].description = "edited"
+    storage.fingerprint = "v2"
+
+    # Missing statement still exercises the refresh at the top of _handle_describe.
+    await conn._handle_describe(proto.DescribeMessage(kind="S", name="nope"))
+
+    assert conn._catalog is not before  # refreshed at Describe
+    assert conn._catalog_fingerprint == "v2"
+
+
+async def test_describe_pins_execute_to_same_catalog_within_window() -> None:
+    ttl = 30.0  # realistic window (NOT 0)
+    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    conn = PgConnection(
+        asyncio.StreamReader(), _FakeWriter(),
+        engine=_FakeEngine([]), storage=storage,
+        catalog_ttl_seconds=ttl,
+    )
+    conn._storage = storage
+    conn._catalog = await conn._build_catalog()
+    conn._catalog_fingerprint = "v1"
+    # Last checked more than the TTL ago, relative to the live monotonic clock,
+    # so the first check treats the window as expired regardless of process
+    # uptime. (A literal 0.0 would fail on a young process where monotonic() < ttl.)
+    conn._catalog_checked_at = time.monotonic() - (ttl + 1.0)
+
+    # Edit lands before Describe -> Describe rebuilds to the v2 snapshot.
+    storage.fingerprint = "v2"
+    await conn._handle_describe(proto.DescribeMessage(kind="S", name="nope"))
+    pinned = conn._catalog
+    assert conn._catalog_fingerprint == "v2"
+
+    # A further edit lands, but Execute (via _maybe_refresh_catalog) is inside
+    # the same TTL window Describe just stamped, so it must NOT shift the
+    # catalog underneath the RowDescription Describe advertised.
+    storage.fingerprint = "v3"
+    await conn._maybe_refresh_catalog()
+    assert conn._catalog is pinned
+    assert conn._catalog_fingerprint == "v2"

@@ -1,10 +1,8 @@
-"""Integration tests for forced-filter RLS (DEV-1578) — end-to-end against a
-real SQLite database with two tenants.
+"""End-to-end forced-filter RLS tests against a real SQLite database with two tenants.
 
-Verifies that ``SlayerQueryEngine(storage, policy=...)`` silently scopes every
-query — base, joins, profiling/sample data, dry-run preview — to the
-configured tenant, that the column-presence probe is cached, and that the
-``block`` / ``pass`` semantics behave on a tenant-less (shared) table.
+Covers both rulesets: that every query shape is silently scoped to the configured
+tenant, the column-presence probe is cached, and a join ruleset fails closed on a table
+it does not list.
 
 Run with: poetry run pytest tests/integration/test_integration_rls.py -m integration
 """
@@ -22,7 +20,12 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.policy import ColumnFilterRule, SessionPolicy
+from slayer.core.policy import (
+    ColumnFilterRuleset,
+    JoinFilterRule,
+    JoinFilterRuleset,
+    SessionPolicy,
+)
 from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.profiling import profile_column
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -35,8 +38,8 @@ ORG_B = "orgB"
 
 @pytest.fixture
 async def rls_storage(tmp_path):
-    """Two-tenant SQLite DB + YAML storage with orders / customers (both
-    org-scoped) and a tenant-less exchange_rates table."""
+    """Two-tenant SQLite DB with org-scoped orders/customers and a tenant-less
+    exchange_rates table."""
     db_path = tmp_path / "rls.db"
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
@@ -144,7 +147,7 @@ async def rls_storage(tmp_path):
 
 def _org_policy(org=ORG_A, **kw):
     return SessionPolicy(
-        data_filters=[ColumnFilterRule(column="organization_uuid", value=org, **kw)]
+        ruleset=ColumnFilterRuleset(column="organization_uuid", value=org, **kw)
     )
 
 
@@ -335,3 +338,264 @@ async def test_column_presence_is_cached(rls_storage, monkeypatch):
 
     await engine.execute(query)
     assert calls["n"] == after_first  # second run served entirely from cache
+
+
+# ===========================================================================
+# JoinFilterRuleset — end-to-end explicit-join scoping
+# ===========================================================================
+
+
+@pytest.fixture
+async def rls_join_storage(tmp_path):
+    """The tenant column lives only on ``customers``, so ``orders`` and ``line_items``
+    must reach it through explicit joins; ``exchange_rates`` is tenant-less."""
+    db_path = tmp_path / "rls_join.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE customers (
+            id INTEGER PRIMARY KEY,
+            organization_uuid TEXT NOT NULL,
+            name TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            customer_id INTEGER NOT NULL,
+            amount REAL NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE line_items (
+            id INTEGER PRIMARY KEY,
+            order_id INTEGER NOT NULL,
+            qty INTEGER NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        "CREATE TABLE exchange_rates (day TEXT NOT NULL, rate REAL NOT NULL)"
+    )
+    cur.executemany(
+        "INSERT INTO customers VALUES (?, ?, ?)",
+        [(1, ORG_A, "Alice"), (2, ORG_B, "Charlie")],
+    )
+    cur.executemany(
+        "INSERT INTO orders VALUES (?, ?, ?)",
+        [(10, 1, 100.0), (11, 2, 999.0)],  # order 10 -> orgA, 11 -> orgB
+    )
+    cur.executemany(
+        "INSERT INTO line_items VALUES (?, ?, ?)",
+        [(100, 10, 5), (101, 11, 7)],  # item 100 -> orgA, 101 -> orgB
+    )
+    cur.executemany(
+        "INSERT INTO exchange_rates VALUES (?, ?)",
+        [("2025-01-01", 1.1), ("2025-02-01", 1.2)],
+    )
+    conn.commit()
+    conn.close()
+
+    from slayer.storage.yaml_storage import YAMLStorage
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+
+    await storage.save_datasource(
+        DatasourceConfig(name="rls_sqlite", type="sqlite", database=str(db_path))
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="rls_sqlite",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="organization_uuid", sql="organization_uuid", type=DataType.TEXT),
+                Column(name="name", sql="name", type=DataType.TEXT),
+            ],
+        )
+    )
+    # orders / line_items deliberately have NO organization_uuid column
+    await storage.save_model(
+        SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="rls_sqlite",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.INT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="line_items",
+            sql_table="line_items",
+            data_source="rls_sqlite",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="order_id", sql="order_id", type=DataType.INT),
+                Column(name="qty", sql="qty", type=DataType.INT),
+            ],
+        )
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="exchange_rates",
+            sql_table="exchange_rates",
+            data_source="rls_sqlite",
+            columns=[
+                Column(name="day", sql="day", type=DataType.TEXT),
+                Column(name="rate", sql="rate", type=DataType.DOUBLE),
+            ],
+        )
+    )
+    return storage
+
+
+_ORDERS_HOP = "orders.customer_id = customers.id"
+
+
+def _join_policy(org=ORG_A, *, whitelist=()):
+    """Anchored on ``customers``, reaching orders (single-hop) and line_items
+    (multihop) via explicit joins; ``whitelist`` names pass-through tables."""
+    return SessionPolicy(
+        ruleset=JoinFilterRuleset(
+            table="customers",
+            column="organization_uuid",
+            value=org,
+            joins=[
+                JoinFilterRule(target_table="orders", join_path=[_ORDERS_HOP]),
+                JoinFilterRule(
+                    target_table="line_items",
+                    join_path=["line_items.order_id = orders.id", _ORDERS_HOP],
+                ),
+            ],
+            whitelist=whitelist,
+        )
+    )
+
+
+async def test_single_hop_join_scopes_orders(rls_join_storage):
+    """orders lacks the tenant column but is scoped via the explicit join."""
+    engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
+    resp = await engine.execute(
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
+    )
+    assert resp.data[0]["orders._count"] == 1  # only order 10 (orgA)
+
+
+async def test_single_hop_join_scopes_sum(rls_join_storage):
+    engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_B))
+    resp = await engine.execute(
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="amount:sum")])
+    )
+    assert resp.data[0]["orders.amount_sum"] == pytest.approx(999.0)  # orgB's order 11
+
+
+async def test_multihop_join_scopes_line_items(rls_join_storage):
+    """line_items reaches the tenant column via line_items -> orders -> customers."""
+    engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
+    resp = await engine.execute(
+        SlayerQuery(source_model="line_items", measures=[ModelMeasure(formula="*:count")])
+    )
+    assert resp.data[0]["line_items._count"] == 1  # only item 100 (orgA)
+
+
+async def test_columnless_target_scoped_via_join(rls_join_storage):
+    """orders lacks organization_uuid but is a join target, so it is scoped via
+    the correlated EXISTS rather than failing closed."""
+    engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
+    resp = await engine.execute(
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
+    )
+    assert resp.data[0]["orders._count"] == 1  # no ForcedFilterError raised
+
+
+async def test_anchor_directly_scoped(rls_join_storage):
+    """customers is the anchor -> filtered directly by organization_uuid."""
+    engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
+    resp = await engine.execute(
+        SlayerQuery(source_model="customers", measures=[ModelMeasure(formula="*:count")])
+    )
+    assert resp.data[0]["customers._count"] == 1  # only orgA's customer
+
+
+async def test_unlisted_table_fails_closed(rls_join_storage):
+    """exchange_rates is neither the anchor, a join target, nor whitelisted ->
+    fails closed."""
+    engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
+    query = SlayerQuery(
+        source_model="exchange_rates",
+        measures=[ModelMeasure(formula="*:count")],
+    )
+    with pytest.raises(ForcedFilterError) as exc:
+        await engine.execute(query)
+    assert exc.value.table == "exchange_rates"
+
+
+async def test_whitelisted_table_passes_through(rls_join_storage):
+    """A whitelisted shared table is emitted unfiltered."""
+    engine = SlayerQueryEngine(
+        storage=rls_join_storage,
+        policy=_join_policy(ORG_A, whitelist=("exchange_rates",)),
+    )
+    resp = await engine.execute(
+        SlayerQuery(
+            source_model="exchange_rates", measures=[ModelMeasure(formula="*:count")]
+        )
+    )
+    assert resp.data[0]["exchange_rates._count"] == 2  # both rows, unfiltered
+
+
+async def test_dry_run_shows_exists_wrap(rls_join_storage):
+    engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
+    resp = await engine.execute(
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")]),
+        dry_run=True,
+    )
+    flat = resp.sql.replace("\n", " ")
+    assert "EXISTS" in flat.upper()
+    assert "organization_uuid = 'orgA'" in flat
+
+
+async def test_execute_invokes_clickhouse_preflight(rls_join_storage, monkeypatch):
+    """The execution pipeline calls the ClickHouse correlated-subquery preflight
+    before applying the policy (it no-ops for non-ClickHouse dialects)."""
+    engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
+    seen = {"n": 0}
+    real = engine._preflight_clickhouse_correlated
+
+    async def spy(*, dialect, datasource):
+        seen["n"] += 1
+        return await real(dialect=dialect, datasource=datasource)
+
+    monkeypatch.setattr(engine, "_preflight_clickhouse_correlated", spy)
+    await engine.execute(
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
+    )
+    assert seen["n"] >= 1
+
+
+async def test_get_column_types_invokes_clickhouse_preflight(
+    rls_join_storage, monkeypatch
+):
+    engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
+    seen = {"n": 0}
+    real = engine._preflight_clickhouse_correlated
+
+    async def spy(*, dialect, datasource):
+        seen["n"] += 1
+        return await real(dialect=dialect, datasource=datasource)
+
+    monkeypatch.setattr(engine, "_preflight_clickhouse_correlated", spy)
+    await engine.get_column_types(model_name="orders", data_source="rls_sqlite")
+    assert seen["n"] >= 1

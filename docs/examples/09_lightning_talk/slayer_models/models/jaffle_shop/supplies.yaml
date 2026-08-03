@@ -8,30 +8,51 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  label: Supply ID
   hidden: false
 - name: name
   sql: name
   type: TEXT
   primary_key: false
+  description: Supply name.
+  label: Supply
   hidden: false
 - name: cost
   sql: cost
   type: DOUBLE
   primary_key: false
+  description: Cost per unit, in dollars.
+  label: Unit Cost
   hidden: false
   format:
-    type: float
+    type: currency
+    precision: 2
+    symbol: $
 - name: perishable
   sql: perishable
   type: TEXT
   primary_key: false
+  description: Whether the supply is perishable.
+  label: Perishable
   hidden: false
 - name: sku
   sql: sku
   type: TEXT
   primary_key: true
+  description: Product this supply is used for.
+  label: Product
   hidden: false
-measures: []
+measures:
+- formula: cost:sum
+  name: total_supply_cost
+  label: Total Supply Cost
+  description: Total supply cost, in dollars.
+  type: DOUBLE
+- formula: cost:avg
+  name: avg_unit_cost
+  label: Avg Unit Cost
+  description: Average supply unit cost, in dollars.
+  type: DOUBLE
 aggregations: []
 joins:
 - target_model: products
@@ -40,4 +61,6 @@ joins:
     - sku
   join_type: left
 filters: []
+description: Supplies (ingredients and packaging) used per product, with unit costs
+  in dollars.
 hidden: false

@@ -276,8 +276,15 @@ async def test_joined_model_derived_referencing_further_joined(tmp_path) -> None
     assert "B__C.name" in norm, (
         f"Expected canonical B__C alias, got:\n{sql}"
     )
-    # And the C join must actually be present in the FROM.
-    assert "JOIN C AS B__C" in norm or "JOIN \"C\" AS \"B__C\"" in norm or "JOIN C B__C" in norm, (
+    # And the C join must actually be present in the FROM. DEV-1645 quotes the
+    # mixed-case physical table name but not the SLayer-internal alias, so the
+    # asymmetric `JOIN "C" AS B__C` is the current (correct) emitted form.
+    assert (
+        "JOIN C AS B__C" in norm
+        or 'JOIN "C" AS "B__C"' in norm
+        or 'JOIN "C" AS B__C' in norm
+        or "JOIN C B__C" in norm
+    ), (
         f"C join missing from FROM clause:\n{sql}"
     )
 

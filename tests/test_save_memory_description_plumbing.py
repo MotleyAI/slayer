@@ -111,9 +111,10 @@ async def test_mcp_save_memory_description_too_long_friendly_error(
     assert "raise" not in raw
     assert "description" in raw.lower()
     assert "500" in raw
-    # Storage is untouched.
+    # Storage holds no user memory from the rejected save (DEV-1658: the
+    # seeded help.* memories are infrastructure, not persisted by this call).
     memories = await storage.list_memories(entities=None)
-    assert memories == []
+    assert [m for m in memories if not m.id.startswith("help.")] == []
 
 
 @pytest.mark.asyncio

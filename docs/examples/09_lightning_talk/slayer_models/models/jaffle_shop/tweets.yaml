@@ -8,23 +8,35 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  label: Tweet ID
   hidden: false
 - name: user_id
   sql: user_id
   type: TEXT
   primary_key: false
+  description: Customer who tweeted.
+  label: Customer ID
   hidden: false
 - name: tweeted_at
   sql: tweeted_at
   type: DATE
   primary_key: false
+  description: When the tweet was posted.
+  label: Tweet Date
   hidden: false
 - name: content
   sql: content
   type: TEXT
   primary_key: false
+  description: Tweet text.
+  label: Tweet
   hidden: false
-measures: []
+measures:
+- formula: id:count
+  name: tweet_count
+  label: Tweets
+  description: Number of tweets.
+  type: INT
 aggregations: []
 joins:
 - target_model: customers
@@ -34,4 +46,5 @@ joins:
   join_type: left
 filters: []
 default_time_dimension: tweeted_at
+description: Synthetic customer tweets mentioning the Jaffle Shop.
 hidden: false

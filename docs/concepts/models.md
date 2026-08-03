@@ -22,7 +22,7 @@ A query then asks for `revenue:sum` (aggregate the `revenue` column), `aov` (the
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | Yes | Unique model name |
+| `name` | string | Yes | Unique model name. In the default YAML storage, names differing only by letter case (`Orders` vs `orders`) are rejected at save time (`IdCollisionError`) — they would collide as filenames on macOS / Windows |
 | `sql_table` | string | One of | A physical database table (e.g. `public.orders`) |
 | `sql` | string | these | A SQL subquery to use as the source |
 | `source_queries` | list[SlayerQuery] | three | Saved query stages — makes the model **query-backed** |
@@ -69,9 +69,9 @@ A column is the unit of structure on the model. The same column entry can serve 
 | `allowed_aggregations` | list[str] | No | — | Whitelist (must be a subset of the type-default eligibility set, or a custom aggregation defined on this model) |
 | `filter` | string | No | — | SQL condition applied inside `CASE WHEN` at aggregation time. See [Filtered columns](#filtered-columns) |
 | `meta` | dict | No | — | Arbitrary JSON metadata |
-| `sampled` | string | No | — | Cached sample-value text snapshot (top-20 by frequency joined, or `top20 ... (N distinct)` on overflow, or `min .. max` for numeric/temporal); populated by `slayer ingest` and friends |
+| `sampled` | string | No | — | Cached sample-value text snapshot (top-20 by frequency joined, or `top20 ... (50+ distinct)` on overflow, or `min .. max` for numeric/temporal); populated lazily on the first `inspect` of the column (or via `slayer search refresh-samples`), not at ingest time |
 | `sampled_values` | list[str] | No | — | Structured top-50-by-frequency list (categorical only); the unambiguous counterpart to `sampled` for consumers that need to compare predicate literals against stored values. `None` for numeric/temporal columns |
-| `distinct_count` | int | No | — | True total cardinality at profile time (categorical only). Set via a secondary `count_distinct` query when overflow is detected, so it's exact rather than capped. `None` for numeric/temporal columns |
+| `distinct_count` | int | No | — | Exact distinct count when ≤ 50 (categorical only). `None` on overflow (> 50 distinct — one scan only, no secondary `count_distinct` query) and for numeric/temporal columns |
 
 ### Data types
 

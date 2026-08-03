@@ -15,6 +15,7 @@ import sqlalchemy.exc
 from sqlalchemy.pool import StaticPool
 
 from slayer.core.models import DatasourceConfig
+from slayer.engine import timing
 from slayer.sql.dialects.sqlite import SqliteDialect
 
 # Module-level singleton — its ``register_udfs`` is the SQLAlchemy
@@ -435,6 +436,17 @@ def _get_column_types_sync(
         return _extract_types_from_cursor(result, db_type=db_type)
 
 
+def get_column_types_sync(
+    sql: str, *, engine: sa.Engine, db_type: str | None = None
+) -> dict[str, str]:
+    """Public sync column-type inference for a query over an existing engine.
+
+    Stable entry point (e.g. for the OSI importer) around
+    ``_get_column_types_sync``; returns ``{column_name: type_category}``.
+    """
+    return _get_column_types_sync(sql, connection_string="", db_type=db_type, engine=engine)
+
+
 async def _get_column_types_async(
     sql: str,
     engine,
@@ -695,8 +707,11 @@ async def _execute_sql_async(
     db_type: str | None,
     timeout_seconds: int = 120,
 ) -> list[dict[str, Any]]:
+    _t = timing.start()
     async with engine.connect() as conn:
+        timing.record("connect", _t)
         timeout_ms = timeout_seconds * 1000
+        _t = timing.start()
         if db_type in ("mysql", "mariadb"):
             await conn.execute(sa.text(f"SET max_execution_time = {timeout_ms}"))
         elif db_type in ("postgres", "postgresql", None):
@@ -713,9 +728,13 @@ async def _execute_sql_async(
             timeout_sql = dialect_for_ds_type(db_type).statement_timeout_sql(timeout_seconds)
             if timeout_sql:
                 await conn.execute(sa.text(timeout_sql))
+        timing.record("set_timeout", _t)
+        _t = timing.start()
         result = await conn.execute(sa.text(sql))
         columns = list(result.keys())
-        return [dict(zip(columns, row)) for row in result.fetchall()]
+        rows = [dict(zip(columns, row)) for row in result.fetchall()]
+        timing.record("query", _t)
+        return rows
 
 
 # ---------------------------------------------------------------------------

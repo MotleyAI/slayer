@@ -18,6 +18,9 @@ _DATATYPE_TO_JDBC: dict[DataType, str] = {
     DataType.BOOLEAN: "BOOLEAN",
     DataType.DATE: "DATE",
     DataType.TIMESTAMP: "TIMESTAMP",
+    # Opaque columns travel as text over the wire — the value is whatever the
+    # driver stringified, and no client-side type claim would be honest.
+    DataType.UNKNOWN: "VARCHAR",
 }
 
 

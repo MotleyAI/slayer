@@ -8,45 +8,110 @@ columns:
   sql: id
   type: TEXT
   primary_key: true
+  label: Order ID
   hidden: false
 - name: customer_id
   sql: customer_id
   type: TEXT
   primary_key: false
+  description: Customer who placed the order.
+  label: Customer ID
   hidden: false
 - name: ordered_at
   sql: ordered_at
   type: DATE
   primary_key: false
+  description: When the order was placed.
+  label: Order Date
   hidden: false
 - name: store_id
   sql: store_id
   type: TEXT
   primary_key: false
+  description: Store where the order was placed.
+  label: Store ID
   hidden: false
 - name: subtotal
   sql: subtotal
   type: DOUBLE
   primary_key: false
+  description: Pre-tax order amount, in dollars.
+  label: Net Sales
   hidden: false
   format:
-    type: float
+    type: currency
+    precision: 2
+    symbol: $
 - name: tax_paid
   sql: tax_paid
   type: DOUBLE
   primary_key: false
+  description: Tax charged on the order, in dollars.
+  label: Tax Paid
   hidden: false
   format:
-    type: float
+    type: currency
+    precision: 2
+    symbol: $
 - name: order_total
   sql: order_total
   type: DOUBLE
   primary_key: false
+  description: Final order amount including tax, in dollars.
+  label: Order Total
   hidden: false
   format:
-    type: float
-measures: []
-aggregations: []
+    type: currency
+    precision: 2
+    symbol: $
+measures:
+- formula: order_total:sum
+  name: total_revenue
+  label: Total Revenue
+  description: Gross sales including tax, in dollars.
+  type: DOUBLE
+- formula: subtotal:sum
+  name: net_sales
+  label: Net Sales (pre-tax)
+  description: Sales before tax, in dollars.
+  type: DOUBLE
+- formula: tax_paid:sum
+  name: tax_collected
+  label: Tax Collected
+  description: Total tax collected, in dollars.
+  type: DOUBLE
+- formula: id:count
+  name: order_count
+  label: Orders
+  description: Number of orders.
+  type: INT
+- formula: customer_id:count_distinct
+  name: unique_customers
+  label: Unique Customers
+  description: Distinct customers who ordered.
+  type: INT
+- formula: order_total:sum / nullif(id:count, 0)
+  name: avg_order_value
+  label: Average Order Value
+  description: Revenue per order, in dollars.
+  type: DOUBLE
+- formula: tax_paid:sum / nullif(subtotal:sum, 0)
+  name: effective_tax_rate
+  label: Effective Tax Rate
+  description: Tax collected as a share of net sales.
+  type: DOUBLE
+- formula: order_total:weighted_avg
+  name: sales_weighted_aov
+  label: Sales-Weighted Avg Order
+  description: Average order total weighted by subtotal (larger orders weigh more),
+    in dollars.
+  type: DOUBLE
+aggregations:
+- name: weighted_avg
+  params:
+  - name: weight
+    sql: subtotal
+  description: Weighted average defaulting the weight to order subtotal.
 joins:
 - target_model: customers
   join_pairs:
@@ -60,4 +125,7 @@ joins:
   join_type: left
 filters: []
 default_time_dimension: ordered_at
+description: "Customer orders \u2014 one row per order. Monetary amounts are in dollars.\
+  \ The fact table at the center of the demo: joins to customers and stores, and is\
+  \ referenced by items."
 hidden: false

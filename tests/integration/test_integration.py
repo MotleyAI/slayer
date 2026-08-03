@@ -469,8 +469,15 @@ async def test_arithmetic_expression(integration_env):
     assert response.data[0]["orders.avg_amount"] == pytest.approx(125.0)
 
 
-async def test_time_shift_row_based(integration_env):
-    """time_shift(x, -1) without granularity → LAG (previous row)."""
+async def test_time_shift_default_granularity_calendar(integration_env):
+    """time_shift(x, n) without granularity → calendar self-join at the query's time grain.
+
+    Filtering to completed orders leaves a gap: Jan(300) and Mar(300), no
+    completed orders in Feb. Calendar shifting matches on the actual month,
+    so the gap yields NULLs where row-based LAG/LEAD would return the
+    adjacent row's value — and reaches across the gap where LAG(2) on a
+    two-row result would fall off the edge.
+    """
     engine = integration_env
 
     query = SlayerQuery(
@@ -482,24 +489,30 @@ async def test_time_shift_row_based(integration_env):
         measures=[
             ModelMeasure(formula="total_amount:sum"),
             ModelMeasure(formula="time_shift(total_amount:sum, -1)", name="prev"),
+            ModelMeasure(formula="time_shift(total_amount:sum, -2)", name="prev2"),
             ModelMeasure(formula="time_shift(total_amount:sum, 1)", name="next"),
         ],
+        filters=["status == 'completed'"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
-    # 3 months: Jan(300), Feb(125), Mar(325)
-    assert response.row_count == 3
+    # 2 months with completed orders: Jan(300), Mar(300) — Feb is a gap
+    assert response.row_count == 2
 
-    # Row-based backward shift (LAG): first row has no previous
-    assert response.data[0]["orders.prev"] is None
-    assert response.data[1]["orders.prev"] == pytest.approx(300.0)  # Feb's prev = Jan
-    assert response.data[2]["orders.prev"] == pytest.approx(125.0)  # Mar's prev = Feb
+    # Calendar backward shift: Mar - 1 month = Feb, which has no data → NULL
+    # (row-based LAG(1) would have returned Jan's 300)
+    assert response.data[0]["orders.prev"] is None  # Jan - 1 = Dec, no data
+    assert response.data[1]["orders.prev"] is None  # Mar - 1 = Feb, gap
 
-    # Row-based forward shift (LEAD): last row has no next
-    assert response.data[0]["orders.next"] == pytest.approx(125.0)  # Jan's next = Feb
-    assert response.data[1]["orders.next"] == pytest.approx(325.0)  # Feb's next = Mar
-    assert response.data[2]["orders.next"] is None
+    # Calendar shift reaches across the gap: Mar - 2 months = Jan → 300
+    # (row-based LAG(2) on a two-row result would have returned NULL)
+    assert response.data[1]["orders.prev2"] == pytest.approx(300.0)
+
+    # Calendar forward shift: Jan + 1 month = Feb, gap → NULL
+    # (row-based LEAD(1) would have returned Mar's 300)
+    assert response.data[0]["orders.next"] is None
+    assert response.data[1]["orders.next"] is None  # Mar + 1 = Apr, no data
 
 
 async def test_time_shift_calendar_based(integration_env):
@@ -529,6 +542,52 @@ async def test_time_shift_calendar_based(integration_env):
     assert response.data[1]["orders.prev_month"] == pytest.approx(300.0)
     # Mar's previous month is Feb
     assert response.data[2]["orders.prev_month"] == pytest.approx(125.0)
+
+
+async def test_multiple_time_shifts_in_one_query(integration_env):
+    """DEV-1692: two arithmetic-wrapped time_shifts in one query.
+
+    Used to fail outright with a duplicate-CTE error; the offsets are kept
+    distinct here (-1 vs -2) so a regression that re-collapses them onto one
+    shared CTE shows up as wrong values rather than just a parser error.
+    """
+    engine = integration_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        measures=[
+            ModelMeasure(formula="total_amount:sum"),
+            ModelMeasure(
+                formula="total_amount:sum - time_shift(total_amount:sum, -1, 'month')",
+                name="growth_1m",
+            ),
+            ModelMeasure(
+                formula="total_amount:sum - time_shift(total_amount:sum, -2, 'month')",
+                name="growth_2m",
+            ),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = await engine.execute(query)
+
+    # 3 months: Jan(300), Feb(125), Mar(325)
+    assert response.row_count == 3
+
+    # No month two back from Jan/Feb, and none one back from Jan → NULL
+    assert response.data[0]["orders.growth_1m"] is None
+    assert response.data[0]["orders.growth_2m"] is None
+    assert response.data[1]["orders.growth_2m"] is None
+
+    # Feb vs Jan
+    assert response.data[1]["orders.growth_1m"] == pytest.approx(125.0 - 300.0)
+    # Mar vs Feb (-1) and Mar vs Jan (-2) must differ — same-CTE collapse
+    # would make both read the -1 shift.
+    assert response.data[2]["orders.growth_1m"] == pytest.approx(325.0 - 125.0)
+    assert response.data[2]["orders.growth_2m"] == pytest.approx(325.0 - 300.0)
 
 
 async def test_time_shift_with_date_range(integration_env):
@@ -3097,22 +3156,32 @@ async def search_env(tmp_path):
     return engine, storage
 
 
-async def test_search_ingest_populates_sampled(search_env):
-    """``slayer ingest`` writes ``Column.sampled`` for every non-pk column
-    on every table-backed model. Categorical and numeric columns get
-    different formats — spot-check one of each."""
-    _engine, storage = search_env
+async def test_refresh_samples_populates_sampled(search_env):
+    """Ingest no longer profiles columns (samples are lazy). An explicit
+    ``refresh-samples`` pass writes ``Column.sampled`` for every non-pk
+    column. Categorical and numeric columns get different formats —
+    spot-check one of each."""
+    from slayer.engine.profiling import refresh_all_table_backed_sampled
+
+    engine, storage = search_env
+    # After ingest alone, samples are unpopulated.
+    orders = await storage.get_model("orders", data_source="test_sqlite")
+    assert next(c for c in orders.columns if c.name == "status").sampled is None
+
+    # Explicit refresh populates them.
+    errors = await refresh_all_table_backed_sampled(
+        engine=engine, storage=storage, data_source="test_sqlite",
+    )
+    assert errors == [], f"Unexpected refresh errors: {errors}"
+
     orders = await storage.get_model("orders", data_source="test_sqlite")
     customers = await storage.get_model("customers", data_source="test_sqlite")
-    assert orders is not None
-    assert customers is not None
-
     for model in (orders, customers):
         for col in model.columns:
             if col.primary_key or col.hidden:
                 continue
             assert col.sampled is not None, (
-                f"{model.name}.{col.name} sampled was not populated by ingest"
+                f"{model.name}.{col.name} sampled was not populated by refresh"
             )
 
     status = next(c for c in orders.columns if c.name == "status")
