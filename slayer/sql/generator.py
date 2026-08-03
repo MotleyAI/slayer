@@ -8229,7 +8229,7 @@ class SQLGenerator:
                 out.append(qualified)
         return out
 
-    def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — one cohesive per-slot time_shift CTE-pair emission: validate key → build the offset/trunc time expr → partition specs → aggregate-synth vs column passthrough for the shifted CTE → unique alias + collision-safe CTE names → sjoin build (carry-forward + time/partition equalities) → downstream alias registration. Each block shares slots_by_id / aliases maps / cte_allocator state; extracting helpers would scatter that contract without simplifying it (same rationale as the sibling emitters' NOSONAR).
+    def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — one cohesive per-slot time_shift CTE-pair emission: validate key → build the offset/trunc time expr → partition specs → aggregate-synth vs column passthrough for the shifted CTE → unique alias + collision-safe CTE names → sjoin build (carry-forward + time/partition equalities) → downstream alias registration. Each block shares slots_by_id / aliases maps / cte_allocator state; extracting helpers would scatter that contract without simplifying it (same rationale as the sibling emitters' suppressions).
         self,
         *,
         slot,
@@ -8573,7 +8573,7 @@ class SQLGenerator:
         # ``available_alias_by_slot_id`` is "pick one" — first alias wins.
         available_alias_by_slot_id.setdefault(slot.id, slot_full_aliases[0])
 
-    def _emit_consecutive_periods_ctes_for_planned(
+    def _emit_consecutive_periods_ctes_for_planned(  # NOSONAR(S3776) — one cohesive per-slot consecutive_periods CTE-pair emission (cp_reset detection → cp_value run-length accumulation → unique alias + collision-safe CTE names → downstream alias registration). Each block shares slots_by_id / aliases maps / cte_allocator state; extracting helpers would scatter that contract without simplifying it (same rationale as the sibling emitters' suppressions).
         self,
         *,
         slot,

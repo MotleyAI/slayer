@@ -212,7 +212,8 @@ class TestBeltCaseFolding:
         # key is all-lowercase, so a mixed-case "Foo" can only come from the
         # original spelling being reported.
         msg = str(exc.value)
-        assert "Foo" in msg and "foo" in msg, msg
+        assert "Foo" in msg, msg
+        assert "foo" in msg, msg
 
     def test_fold_note_in_message(self) -> None:
         """When the colliding originals differ only by case, the message
