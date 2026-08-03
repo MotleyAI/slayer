@@ -133,7 +133,8 @@ def _substitute_model_sql_surfaces(
         return model
 
     def _sub(text: str) -> str:
-        return substitute_variables(filter_str=text, variables=variables)
+        # Mode-A surfaces are parsed by sqlglot → escape string values SQL-style.
+        return substitute_variables(filter_str=text, variables=variables, escape="sql")
 
     new_columns = []
     for col in model.columns:
@@ -1120,7 +1121,18 @@ class SlayerQueryEngine:
 
         probe_query = self._build_type_probe_query(model=model)
         try:
-            enriched = await self._enrich(query=probe_query, model=model)
+            # DEV-1625: a template source model's Mode-A {var} surfaces must be
+            # rendered before probe SQL is generated. Use the model's OWN
+            # query_variables defaults only — the probe has no caller variables
+            # and must honour the no-dummy-fill decision. An undefaulted {var}
+            # raises here and degrades to {} via the surrounding except (same as
+            # an unresolvable probe), so partially-defaulted models stay safe.
+            probe_model = model
+            if model.source_model_origin is None and model.query_variables:
+                probe_model = _substitute_model_sql_surfaces(
+                    model=model, variables=model.query_variables
+                )
+            enriched = await self._enrich(query=probe_query, model=probe_model)
             dialect = self._dialect_for_type(datasource.type)
             generator = SQLGenerator(dialect=dialect)
             # DEV-1444: type probing is a user-visible call site; pin

@@ -353,6 +353,47 @@ Or use the saved result as a model in another query:
 }
 ```
 
+### Variables in model SQL
+
+`{variable}` substitution is not limited to query-level filters — the same mechanism injects caller-supplied values into a model's **raw-SQL (Mode A) surfaces**. This is the primitive for parameterizing hand-written model SQL (for example, representing a Cube `FILTER_PARAMS` cube as an `sql`-mode model whose filter bounds arrive as variables).
+
+The four substituted surfaces are:
+
+| Surface | What it holds |
+| -- | -- |
+| `SlayerModel.sql` | the raw SQL body of an `sql`-mode model (WHERE inside CTEs, projected scalars, anywhere) |
+| `SlayerModel.filters` | model-level always-applied WHERE predicates |
+| `Column.sql` | a column's row-level SQL expression |
+| `Column.filter` | a column's CASE-WHEN conditional (e.g. a windowed TY/LY sum with scalar bounds) |
+
+```json
+{
+  "name": "floored_orders",
+  "data_source": "shop",
+  "sql": "SELECT id, region, amount FROM orders WHERE amount >= {floor}",
+  "query_variables": {"floor": 0},
+  "columns": [
+    {"name": "id", "sql": "id", "type": "INT", "primary_key": true},
+    {"name": "region", "sql": "region", "type": "TEXT"},
+    {"name": "amount", "sql": "amount", "type": "DOUBLE"}
+  ]
+}
+```
+
+Querying this model with `variables={"floor": 100}` renders `WHERE amount >= 100` before the body reaches sqlglot.
+
+Rules:
+
+- **Same precedence** as everywhere else (runtime kwarg > stage > outer query > `model.query_variables`), and the same `{{`/`}}` literal-brace escaping.
+- **Raise on missing.** An unresolved `{var}` (with no default in `query_variables`) raises — a parameterized model is meant to fail without its value, not silently render a neutral predicate.
+- **String escaping is Mode-A-aware.** Write the surrounding quotes yourself (`WHERE region = '{region}'`); a string value's embedded single quotes are doubled so it stays inside that literal. Numbers (including booleans) insert verbatim; non-finite floats are rejected.
+- **Variable-free models are never touched**, so a raw brace literal (e.g. a Postgres array `'{1,2,3}'`) in a model that declares no variables survives verbatim. If a model *does* use variables, escape any literal braces as `{{`/`}}`.
+- **`inspect` / `inspect_model` show the literal template** (`{floor}`), not a rendered value.
+
+**Scope (DEV-1625):** substitution currently applies to the **direct source model** of a query. Nested `source_queries` stages, query-backed direct sources, join-target models, and cross-model-target models are the deferred follow-up ([DEV-1678](https://linear.app/motley-ai/issue/DEV-1678)). A `{var}` in one of those lineages is left untouched (and surfaces as an error on the stray placeholder) until that lands.
+
+**Known limitation:** a string value containing a backslash does not round-trip through every backend (notably SQLite, whose driver does not unescape backslashes) — this is a pre-existing dialect quirk, independent of variable substitution.
+
 ### Variable precedence
 
 When a query-backed model references `{var}` placeholders, values flow in this order (highest first):

@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import datetime
 import logging
+import math
 import re
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, field_validator, model_validator
 
@@ -38,21 +39,56 @@ def _validate_query_filter_string(formula: str) -> None:
         raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")
 
 
-def substitute_variables(filter_str: str, variables: dict[str, Any]) -> str:
-    """Substitute {variable} placeholders in a filter string.
+def _escape_string_value(value: str, escape: Literal["sql", "python"]) -> str:
+    """Escape a string variable value for the target expression layer.
 
-    - {var_name} is replaced with the variable's value (str or number, inserted as-is).
+    The value is inserted, unquoted, into a quoted literal the author already
+    wrote (``status = '{v}'``); escaping keeps it from breaking out of that
+    literal. Two layers, two escaping regimes (DEV-1625):
+
+    - ``"sql"`` — Mode-A raw-SQL surfaces are parsed by sqlglot. A single quote
+      is doubled (``'`` → ``''``); backslash is an ordinary character and is
+      left untouched.
+    - ``"python"`` — Mode-B query filters are parsed by SLayer's Python-AST
+      formula parser, where SQL quote-doubling would be read as adjacent-literal
+      concatenation (``'O''Brien'`` → ``'OBrien'``). So backslash is doubled
+      FIRST, then both quote styles are backslash-escaped, matching Python
+      string-literal rules so ``ast.parse`` recovers the original value.
+    """
+    if escape == "sql":
+        return value.replace("'", "''")
+    # python: order matters — double the backslash before escaping quotes.
+    return value.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
+
+
+def substitute_variables(
+    filter_str: str, variables: dict[str, Any], *, escape: Literal["sql", "python"]
+) -> str:
+    """Substitute {variable} placeholders in a filter or raw-SQL string.
+
+    - {var_name} is replaced with the variable's value (str or number).
     - {{ and }} are escaped to literal { and }.
     - Variable names must be alphanumeric + underscore.
     - Raises ValueError for undefined variables or invalid variable names.
 
+    ``escape`` (required, keyword-only) selects the escaping regime for string
+    values by expression layer — ``"sql"`` for Mode-A raw-SQL surfaces,
+    ``"python"`` for Mode-B query filters. See :func:`_escape_string_value`.
+    Numbers (including ``bool``) pass through via ``str()``; non-finite floats
+    (``nan``/``inf``) raise, since they can never render a valid literal.
+
     Example:
-        substitute_variables("status = '{status_val}'", {"status_val": "active"})
+        substitute_variables("status = '{status_val}'", {"status_val": "active"}, escape="sql")
         → "status = 'active'"
 
-        substitute_variables("amount > {min_amount}", {"min_amount": 100})
+        substitute_variables("amount > {min_amount}", {"min_amount": 100}, escape="sql")
         → "amount > 100"
     """
+    if escape not in ("sql", "python"):
+        raise ValueError(
+            f"Invalid escape mode {escape!r}; expected 'sql' or 'python'."
+        )
+
     def _replace(match: re.Match) -> str:
         full = match.group(0)
         if full == "{{":
@@ -68,15 +104,14 @@ def substitute_variables(filter_str: str, variables: dict[str, Any]) -> str:
                     f"Available variables: {sorted(variables.keys())}"
                 )
             value = variables[valid_name]
-            # String values are single-quote-escaped (embedded ``'`` doubled)
-            # so a value like ``O'Brien`` yields ``O''Brien`` and can't break
-            # out of the surrounding quoted literal the author wrote
-            # (``status = '{v}'``). No outer quotes are added. Numbers pass
-            # through verbatim. Applies uniformly to Mode-A raw-SQL surfaces
-            # and query-level filters (DEV-1625).
             if isinstance(value, str):
-                return value.replace("'", "''")
+                return _escape_string_value(value, escape)
+            # bool is an int subclass and is accepted (renders True/False).
             if isinstance(value, (int, float)):
+                if isinstance(value, float) and not math.isfinite(value):
+                    raise ValueError(
+                        f"Variable '{valid_name}' must be finite, got {value!r}"
+                    )
                 return str(value)
             raise ValueError(
                 f"Variable '{valid_name}' must be a string or number, got {type(value).__name__}"

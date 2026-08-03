@@ -1710,8 +1710,11 @@ async def enrich_query(
     # DEV-1625) before this function sees the model.
     query_filters = list(query.filters or [])
     if query.variables and query_filters:
+        # Mode-B filters are parsed by the Python-AST formula parser → escape
+        # string values Python-style so quotes/backslashes round-trip.
         query_filters = [
-            substitute_variables(filter_str=f, variables=query.variables) for f in query_filters
+            substitute_variables(filter_str=f, variables=query.variables, escape="python")
+            for f in query_filters
         ]
 
     # DEV-1543: distinct_dimension_values=False rejects any measure
