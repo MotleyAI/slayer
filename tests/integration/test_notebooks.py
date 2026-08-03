@@ -106,6 +106,30 @@ def _github_reachable(host: str = "github.com", port: int = 443, timeout: float 
         return False
 
 
+def _bootstrap_failure_is_transient(error_text: str) -> bool:
+    """True if a MetricFlow bootstrap error reflects a transient network/server
+    problem (GitHub 5xx/429, DNS, dropped connection) rather than a deterministic
+    one (bad pin SHA, missing CSVs). A reachable socket does not guarantee a clone
+    succeeds — GitHub can accept the connection and still answer 503 — so the skip
+    guard consults this in addition to :func:`_github_reachable`.
+
+    Reuses the setup helper's classifier (imported lazily, mirroring the in-fixture
+    ``build_jaffle_shop`` import above) so the retry loop and skip guard agree on
+    what counts as transient. If the helper can't be imported, err toward *not*
+    transient so a genuine failure is never silently skipped.
+    """
+    import sys
+
+    metricflow_dir = EXAMPLES_DIR / _METRICFLOW_NB_DIR
+    if str(metricflow_dir) not in sys.path:
+        sys.path.insert(0, str(metricflow_dir))
+    try:
+        from setup_metricflow import _is_transient_git_error
+    except ImportError:
+        return False
+    return _is_transient_git_error(error_text)
+
+
 def test_notebook_runs_without_errors(notebook_path, request):
     """Execute the notebook and assert it completes without errors."""
     rel = str(notebook_path.relative_to(EXAMPLES_DIR))
@@ -132,9 +156,14 @@ def test_notebook_runs_without_errors(notebook_path, request):
     try:
         client.execute()
     except nbclient.exceptions.CellExecutionError as exc:
-        # A reachable socket but a failing `git fetch` (or a stale/partial cache)
-        # surfaces as MetricFlowDemoError mid-run; skip when GitHub is unreachable
-        # rather than reporting a bootstrap failure as a notebook bug.
-        if is_metricflow and "MetricFlowDemoError" in str(exc) and not _github_reachable():
-            pytest.skip(f"MetricFlow notebook could not bootstrap offline: {exc}")
+        # A failing `git fetch` (or a stale/partial cache) surfaces as
+        # MetricFlowDemoError mid-run. Skip — rather than report a bootstrap
+        # failure as a notebook bug — when GitHub is unreachable *or* the failure
+        # is a transient network/server hiccup (e.g. a 503 over a reachable
+        # socket). A deterministic MetricFlowDemoError (bad pin, missing CSVs)
+        # still fails loudly.
+        if is_metricflow and "MetricFlowDemoError" in str(exc):
+            text = str(exc)
+            if not _github_reachable() or _bootstrap_failure_is_transient(text):
+                pytest.skip(f"MetricFlow notebook could not bootstrap: {exc}")
         raise
