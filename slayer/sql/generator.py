@@ -3286,6 +3286,17 @@ class SQLGenerator:
         # ``step`` / ``shifted_`` / ``sjoin_`` / ``cp_`` families never collide.
         cte_allocator = AliasAllocator()
         cte_allocator.reserve(*(name for name, _ in ctes))
+        # Codex (PR #269): also reserve every already-projected column alias's
+        # BARE form so a hidden transform alias minted below
+        # (``_time_shift_inner`` / ``_consecutive_periods_inner``) can never
+        # shadow a real user column of that name — mirrors the legacy path
+        # seeding ``base_aliases`` into its allocator.
+        _alias_prefix = f"{source_relation}."
+        cte_allocator.reserve(*(
+            a[len(_alias_prefix):] if a.startswith(_alias_prefix) else a
+            for aliases in aliases_by_slot_id.values()
+            for a in aliases
+        ))
         # "Pick one" map for transform-input / time-key / partition-key /
         # order-entry / POST-filter lookups. Initialised from the first
         # alias of every materialised slot.
@@ -7899,7 +7910,7 @@ class SQLGenerator:
                 out.append(qualified)
         return out
 
-    def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — one cohesive per-slot time_shift CTE-pair emission: validate key → build the offset/trunc time expr → partition specs → aggregate-synth vs column passthrough for the shifted CTE → unique alias + collision-safe CTE names → sjoin build (carry-forward + time/partition equalities) → downstream alias registration. Each block shares slots_by_id / aliases maps / cte_allocator state; extracting helpers would scatter that contract without simplifying it (same rationale as the sibling emitters' NOSONAR).
+    def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — one cohesive per-slot time_shift CTE-pair emission: validate the key, build the offset and trunc time expr, partition specs, aggregate-synth vs column passthrough, unique hidden alias plus collision-safe CTE names, sjoin build with carry-forward and time and partition equalities, then downstream alias registration. Each block shares the slot registry and alias maps and cte_allocator; extracting helpers would scatter that contract without simplifying it.
         self,
         *,
         slot,
@@ -8243,7 +8254,7 @@ class SQLGenerator:
         # ``available_alias_by_slot_id`` is "pick one" — first alias wins.
         available_alias_by_slot_id.setdefault(slot.id, slot_full_aliases[0])
 
-    def _emit_consecutive_periods_ctes_for_planned(
+    def _emit_consecutive_periods_ctes_for_planned(  # NOSONAR(S3776) — one cohesive per-slot consecutive_periods emission: predicate-shape decision, unique hidden alias plus collision-safe reset and value CTE names, the reset-group window layer, then the count-within-group window layer. Each block shares the slot registry and alias maps and cte_allocator; extracting helpers would scatter that contract without simplifying it.
         self,
         *,
         slot,
