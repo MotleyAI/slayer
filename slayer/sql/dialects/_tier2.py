@@ -35,6 +35,13 @@ class RedshiftDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = False
 
+    def build_null_safe_eq(
+        self, left: exp.Expression, right: exp.Expression,
+    ) -> exp.Expression:
+        """DEV-1708: Redshift (Postgres 8.0.2 fork) has no ``IS NOT DISTINCT
+        FROM`` — emit the expanded ``a = b OR (a IS NULL AND b IS NULL)``."""
+        return self._expanded_null_safe_eq(left, right)
+
     def build_approx_count_distinct(
         self,
         col_sql: str,
@@ -127,6 +134,13 @@ class OracleDialect(SqlDialect):
     # the canonical 2-arg LOG(base, x) form.
     log10_native: bool = False
     log2_native: bool = False
+
+    def build_null_safe_eq(
+        self, left: exp.Expression, right: exp.Expression,
+    ) -> exp.Expression:
+        """DEV-1708: Oracle has no ``IS NOT DISTINCT FROM`` — emit the expanded
+        ``a = b OR (a IS NULL AND b IS NULL)``."""
+        return self._expanded_null_safe_eq(left, right)
 
     def build_approx_count_distinct(
         self,

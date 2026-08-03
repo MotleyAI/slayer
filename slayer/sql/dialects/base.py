@@ -160,6 +160,37 @@ class SqlDialect(BaseModel):
     log2_native: bool = True
 
     # ------------------------------------------------------------------
+    # Null-safe equality (DEV-1708 / Codex F2)
+    # ------------------------------------------------------------------
+
+    def build_null_safe_eq(
+        self, left: exp.Expression, right: exp.Expression,
+    ) -> exp.Expression:
+        """A null-safe equality (``left`` and ``right`` compare equal, and two
+        NULLs compare equal) for the cross-model grain join-back's ``ON`` clause.
+
+        Base (Postgres-family) uses sqlglot's ``NullSafeEQ`` → ``IS NOT DISTINCT
+        FROM``, which sqlglot also transpiles correctly for DuckDB / Snowflake /
+        BigQuery / Trino / Databricks / ClickHouse. MySQL overrides to ``<=>``;
+        SQLite to bare ``IS``; dialects with no native form (T-SQL / Oracle /
+        Redshift) to the expanded ``a = b OR (a IS NULL AND b IS NULL)``.
+        """
+        return exp.NullSafeEQ(this=left, expression=right)
+
+    @staticmethod
+    def _expanded_null_safe_eq(
+        left: exp.Expression, right: exp.Expression,
+    ) -> exp.Expression:
+        """``left = right OR (left IS NULL AND right IS NULL)`` — the portable
+        expansion for dialects without a native null-safe equality operator."""
+        eq = exp.EQ(this=left.copy(), expression=right.copy())
+        both_null = exp.And(
+            this=exp.Is(this=left.copy(), expression=exp.Null()),
+            expression=exp.Is(this=right.copy(), expression=exp.Null()),
+        )
+        return exp.paren(exp.Or(this=eq, expression=exp.paren(both_null)))
+
+    # ------------------------------------------------------------------
     # Date-trunc / time arithmetic
     # ------------------------------------------------------------------
 

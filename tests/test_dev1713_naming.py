@@ -266,12 +266,18 @@ class TestJoinedDimensionDottedKeys:
         DERIVED dimension. ``build_response_metadata`` drops any attribute
         whose result key is absent from the SQL projection, so a labeled
         derived joined dim surfaces in ``attributes.dimensions`` under the
-        DOTTED key iff both producers agree on the dotted form."""
+        DOTTED key iff both producers agree on the dotted form.
+
+        Uses only LOCAL measures: a derived joined dim combined with a
+        cross-model measure is a separate, deliberately-deferred case (DEV-1708
+        raises ``NotImplementedError`` for a derived dim used as a cross-model
+        shared grain — full support tracked in DEV-1495-b1). The naming
+        agreement this test pins needs no cross-model measure."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.rev_x2")],  # labeled -> surfaces
             measures=[
-                ModelMeasure(formula="customers.revenue:sum"),  # labeled -> surfaces
+                ModelMeasure(formula="amount:sum"),
                 ModelMeasure(formula="*:count", name="n"),
             ],
         )
@@ -288,11 +294,17 @@ class TestJoinedDimensionDottedKeys:
     async def test_all_slot_types_generator_and_response_agree(self, engine) -> None:
         """Codex F6 (per slot-key type): a single query exercising local
         ColumnKey dim, joined ColumnKey dim, joined ColumnSqlKey (derived)
-        dim, joined TimeTruncKey, local aggregate, cross-model aggregate, and
-        star-count. The generator's SQL aliases (``_full_alias_for_slot``) and
-        response_meta's keys (``_slot_result_keys``) — the two independent
-        producers the shared decomposition helper unifies — must agree on the
-        dotted form for every one."""
+        dim, joined TimeTruncKey, local aggregate, and star-count. The
+        generator's SQL aliases (``_full_alias_for_slot``) and response_meta's
+        keys (``_slot_result_keys``) — the two independent producers the shared
+        decomposition helper unifies — must agree on the dotted form for every
+        one.
+
+        No cross-model measure here: a derived joined dim combined with a
+        cross-model aggregate is the DEV-1708-deferred shared-grain case
+        (``NotImplementedError``, full support = DEV-1495-b1). Cross-model
+        measure key agreement is covered by
+        ``test_cross_model_measure_key_still_dotted``."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[
@@ -308,7 +320,6 @@ class TestJoinedDimensionDottedKeys:
             ],
             measures=[
                 ModelMeasure(formula="amount:sum"),          # local aggregate
-                ModelMeasure(formula="customers.revenue:sum"),  # cross-model aggregate
                 ModelMeasure(formula="*:count", name="n"),   # star-count
             ],
         )
@@ -319,7 +330,6 @@ class TestJoinedDimensionDottedKeys:
             "orders.customers.rev_x2",
             "orders.customers.signup_at",
             "orders.amount_sum",
-            "orders.customers.revenue_sum",
             "orders.n",
         }
         # response_meta side (resp.columns) — every key dotted, none flattened.
