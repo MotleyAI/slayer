@@ -71,6 +71,13 @@ class TsqlDialect(SqlDialect):
     log10_native: bool = True
     log2_native: bool = False
 
+    def build_null_safe_eq(
+        self, left: exp.Expression, right: exp.Expression,
+    ) -> exp.Expression:
+        """DEV-1708: T-SQL has no ``IS NOT DISTINCT FROM`` / ``<=>`` — emit the
+        portable expanded ``a = b OR (a IS NULL AND b IS NULL)``."""
+        return self._expanded_null_safe_eq(left, right)
+
     def build_approx_count_distinct(
         self,
         col_sql: str,

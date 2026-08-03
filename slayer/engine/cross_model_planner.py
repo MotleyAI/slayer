@@ -644,6 +644,32 @@ class IsolatedCteCrossModelPlanner:
                 td_path = column_path(s.key.column)
                 if not td_path or td_path == target_path[: len(td_path)]:
                     shared_grain.append(s.id)
+            elif (
+                isinstance(s.key, ColumnSqlKey)
+                and s.key.path
+                and not s.hidden
+            ):
+                # DEV-1708 (user-approved): a PLAIN derived (non-time) dimension
+                # PROJECTED on the target path would need to participate as
+                # cross-model shared grain, but the host aliases it flattened
+                # (``customers_v2__deep_pop``) while the CTE join-back expects the
+                # dotted form (DEV-1495-b1). Silently excluding it (the pre-Stage-4
+                # behaviour) CROSS-JOIN-broadcasts the GLOBAL aggregate across
+                # groups — wrong per-group values. Raise loudly instead; full
+                # support rides with DEV-1495 (Stage 8/9). Guards: ``not s.hidden``
+                # so a derived column appearing only as a FILTER operand (a hidden
+                # slot) is unaffected; a host-local derived dim (``path == ()``)
+                # is unaffected too — it broadcasts by design.
+                if s.key.path == target_path[: len(s.key.path)]:
+                    raise NotImplementedError(
+                        f"DEV-1708: a plain derived (non-time) dimension "
+                        f"({s.key.column_name!r}) used as cross-model shared "
+                        f"grain is not yet rendered — its host alias is "
+                        f"flattened while the CTE join-back expects the dotted "
+                        f"form (DEV-1495-b1). Pull the dimension to the host "
+                        f"base, use a base column, or wrap it in a time "
+                        f"dimension. Full support tracked in DEV-1495."
+                    )
 
         first_hop = join_chain[0]
         first_hop_target = (
