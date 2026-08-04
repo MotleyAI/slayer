@@ -12540,3 +12540,17 @@ class TestWindowedMeasureGuards:
         with pytest.raises(ValueError, match="could not resolve its time dimension"):
             await _engine_generate(query=query, model=model)
 
+    async def test_windowed_mixed_row_filter_raises(self, orders_model: SlayerModel) -> None:
+        """Codex round 5: a single filter mixing a windowed measure with a ROW
+        predicate (not just a plain aggregate — G7's case) is reclassified whole
+        to POST, so the row part would neither filter pre-aggregation nor resolve
+        against an unprojected ``_base`` column. Reject it at plan time."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
+            filters=["revenue:sum(window='90d') > 100 and status = 'active'"],
+        )
+        with pytest.raises(NotImplementedError, match="mix"):
+            await _engine_generate(query=query, model=orders_model)
+

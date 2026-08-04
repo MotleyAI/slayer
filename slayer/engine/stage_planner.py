@@ -926,6 +926,26 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         active_td_slot_id=active_td_slot_id,
     )
 
+    # DEV-1714 (Codex round 5): a filter that references a windowed measure is
+    # reclassified WHOLE to Phase.POST (outer WHERE on the joined-back column).
+    # It must therefore reference ONLY windowed measures (+ literals). Mixing a
+    # windowed predicate with a row column or a plain aggregate in ONE filter
+    # can't be cleanly split — the windowed part is POST while the row part is a
+    # pre-aggregation WHERE — and would emit an outer-WHERE reference to an
+    # unprojected ``_base`` column. Reject it (the pre-projection G7 already
+    # catches the windowed+plain-aggregate half with a specific message; this
+    # also covers windowed+row-column, which G7's aggregate-only scan misses).
+    if windowed_slot_ids:
+        for bf in bound_filters:
+            refs = filter_referenced_slot_ids(bf, projection.registry)
+            if (refs & windowed_slot_ids) and (refs - windowed_slot_ids):
+                raise NotImplementedError(
+                    "A single filter that mixes a windowed measure (window='…') "
+                    "with another predicate (a row column or a plain aggregate) "
+                    "is not yet supported (DEV-1504). Put them in separate "
+                    "filters."
+                )
+
     # DEV-1712 (Law 2): plan-time classification of every ORDER BY target that
     # is not a declared/public slot. Order-only AGGREGATES (local or
     # cross-model) always materialise and order — never rejected. The rest:
