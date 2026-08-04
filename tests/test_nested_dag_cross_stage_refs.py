@@ -1365,6 +1365,39 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         finally:
             tmp.cleanup()
 
+    async def test_intercepted_cmm_order_only_self_qualified_resolves(
+        self,
+    ) -> None:
+        """DEV-1712 (Codex): a downstream stage may SELF-qualify an order ref
+        with its own stage name (``s1.customers__revenue_sum``). The
+        qualifier-aware host-local check must recognise the stage relation as
+        the host, so it resolves identically to the bare form — not
+        misclassified as a foreign-joined ref."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            outer = SlayerQuery(
+                source_model="s1",
+                dimensions=["customers__regions__name"],
+                distinct_dimension_values=False,
+                order=[{"column": "s1.customers__revenue_sum"}],
+            )
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            sql = resp.sql or ""
+            order = _outermost_select(sql).args.get("order")
+            assert order is not None, f"Outer ORDER BY missing.\nSQL:\n{sql}"
+            cols = list(order.find_all(exp.Column))
+            assert cols, f"ORDER BY has no column.\nSQL:\n{sql}"
+            assert cols[0].table == "s1", f"SQL:\n{sql}"
+            assert cols[0].name == "customers__revenue_sum", f"SQL:\n{sql}"
+        finally:
+            tmp.cleanup()
+
 
 
 # ===========================================================================

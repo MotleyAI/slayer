@@ -402,7 +402,7 @@ def lower_sugar_transforms(key: ValueKey) -> ValueKey:
     return key
 
 
-def rewrite_rank_partition_keys(
+def rewrite_rank_partition_keys(  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union; each branch is the per-type identity-preserving rebuild contract, mirroring lower_sugar_transforms. Extracting per-type helpers would scatter the contract across the module.
     key: ValueKey, *, rewrite_fn: Callable[[TransformKey], FrozenSet],
 ) -> ValueKey:
     """Walk ``key``; for every rank-family ``TransformKey`` carrying an

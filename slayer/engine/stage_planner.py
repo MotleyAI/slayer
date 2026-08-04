@@ -392,11 +392,11 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         bound_filter_texts.append(f)
 
     order_specs = []
-    _order_host_name = (
-        scope.source_model.name
-        if isinstance(scope, ModelScope) and scope.source_model is not None
-        else None
-    )
+    # Host identity for the qualifier check below — the source model for a
+    # ``ModelScope``, the stage relation name (``s1``) for a downstream
+    # ``StageSchema`` (so a self-qualified ``s1.metric`` order stays host-local,
+    # Codex). Same resolution ``_host_model_name`` uses everywhere else.
+    _order_host_name = _host_model_name(scope)
     for o in (query.order or []):
         col_name = o.column.name
         full_name = o.column.full_name
