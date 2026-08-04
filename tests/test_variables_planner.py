@@ -177,19 +177,35 @@ class TestApplyVariablesToQuery:
         with pytest.raises(ValueError, match="Invalid variable name"):
             apply_variables_to_query(query=q, variables={})
 
-    def test_list_value_raises(self) -> None:
-        q = SlayerQuery(source_model="orders", filters=["a = {b}"])
-        with pytest.raises(ValueError, match="must be a string or number"):
-            apply_variables_to_query(query=q, variables={"b": [1, 2, 3]})
+    def test_list_value_renders_a_mode_b_tuple(self) -> None:
+        """Was ``test_list_value_raises``. DEV-1730 made list values legal (the
+        ``IN``-pushdown primitive), so the rejection is superseded.
+
+        Under Mode-B's ``python`` escaping the body carries a TRAILING COMMA —
+        ``('x',)`` is a Python tuple literal whereas ``('x')`` is a
+        parenthesised string, so the comma is what makes a single-element list
+        parse as a collection. The documented spelling puts the parentheses in
+        the filter (``region in ({regions})``); this pins the substituted body
+        itself.
+        """
+        q = SlayerQuery(source_model="orders", filters=["a in ({b})"])
+        out = apply_variables_to_query(query=q, variables={"b": [1, 2, 3]})
+        assert out.filters == ["a in (1, 2, 3,)"], out.filters
+
+        single = apply_variables_to_query(
+            query=SlayerQuery(source_model="orders", filters=["a in ({b})"]),
+            variables={"b": ["x"]},
+        )
+        assert single.filters == ["a in ('x',)"], single.filters
 
     def test_dict_value_raises(self) -> None:
         q = SlayerQuery(source_model="orders", filters=["a = {b}"])
-        with pytest.raises(ValueError, match="must be a string or number"):
+        with pytest.raises(ValueError, match="must be a string, number, or list"):
             apply_variables_to_query(query=q, variables={"b": {"k": "v"}})
 
     def test_none_value_raises(self) -> None:
         q = SlayerQuery(source_model="orders", filters=["a = {b}"])
-        with pytest.raises(ValueError, match="must be a string or number"):
+        with pytest.raises(ValueError, match="must be a string, number, or list"):
             apply_variables_to_query(query=q, variables={"b": None})
 
     def test_filters_none_returns_copy_unchanged(self) -> None:

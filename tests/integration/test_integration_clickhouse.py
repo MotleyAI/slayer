@@ -1056,3 +1056,107 @@ def test_clickhouse_datetime_typed_correctly(clickhouse_ingest_for_types_env) ->
         f"ClickHouse DateTime must map to TIMESTAMP, got "
         f"{by_name['created_at'].type!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1727 — dialect-aware Mode-A {var} escaping (ClickHouse is a Tier-1
+# backslash dialect with C-style string literals: the naive '' quote-doubling
+# from DEV-1625 mis-parses a backslash-bearing value; the hardened escaping
+# must round-trip end-to-end).
+# ---------------------------------------------------------------------------
+
+# Distinct amounts per tricky status so a correct match is provable via the sum.
+_CH_ESC_ROWS = [
+    {"id": 1, "status": "a\\'b", "amount": 10.0},       # backslash + single quote
+    {"id": 2, "status": "plain", "amount": 20.0},
+    {"id": 3, "status": 'say "hi"', "amount": 30.0},    # embedded double quote
+    {"id": 4, "status": "back\\slash", "amount": 40.0}, # lone backslash
+]
+
+
+@pytest.fixture(scope="module")
+def _clickhouse_esc_storage(clickhouse_container, tmp_path_factory):
+    """Per-module ClickHouse DB with an ``esc`` table of tricky-status rows +
+    a model whose Mode-A filter carries a ``{v}`` placeholder."""
+    db_name = _create_module_db(clickhouse_container)
+    try:
+        engine = sa.create_engine(_ds_url_for_db(clickhouse_container, db_name))
+        try:
+            with engine.begin() as conn:
+                conn.execute(sa.text("""
+                    CREATE TABLE esc (
+                        id Int32,
+                        status String,
+                        amount Float64
+                    ) ENGINE = MergeTree() ORDER BY id
+                """))
+                # Core Table insert → the driver binds each value as a
+                # parameter, storing it literally regardless of SLayer's escaping.
+                esc = sa.Table(
+                    "esc",
+                    sa.MetaData(),
+                    sa.Column("id", sa.Integer),
+                    sa.Column("status", sa.String),
+                    sa.Column("amount", sa.Float),
+                )
+                conn.execute(esc.insert(), _CH_ESC_ROWS)
+        finally:
+            engine.dispose()
+
+        tmpdir = str(tmp_path_factory.mktemp("clickhouse_esc"))
+        storage = YAMLStorage(base_dir=tmpdir)
+        run_sync(storage.save_datasource(_ds_config(clickhouse_container, db_name)))
+        run_sync(storage.save_model(SlayerModel(
+            name="esc",
+            sql_table="esc",
+            data_source="testclickhouse",
+            filters=["status = '{v}'"],
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )))
+        yield storage
+    finally:
+        _drop_module_db(clickhouse_container, db_name)
+
+
+@pytest.fixture
+def clickhouse_esc_env(_clickhouse_esc_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_clickhouse_esc_storage)
+
+
+@pytest.mark.integration
+class TestClickHouseModeAEscaping:
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("a\\'b", 10.0),
+            ('say "hi"', 30.0),
+            ("back\\slash", 40.0),
+        ],
+    )
+    async def test_backslash_value_matches_only_its_row(
+        self, clickhouse_esc_env: SlayerQueryEngine, value: str, expected: float
+    ) -> None:
+        resp = await clickhouse_esc_env.execute(SlayerQuery(
+            source_model="esc",
+            measures=[{"formula": "amount:sum"}],
+            variables={"v": value},
+        ))
+        assert resp.row_count == 1
+        assert float(resp.data[0]["esc.amount_sum"]) == expected
+
+    async def test_breakout_attempt_matches_nothing(
+        self, clickhouse_esc_env: SlayerQueryEngine
+    ) -> None:
+        # Assert on the COUNT of matching rows (unambiguous) rather than a zero
+        # aggregate — a breakout that matched the whole table would give a
+        # non-zero count, and a zero SUM would not distinguish the cases.
+        resp = await clickhouse_esc_env.execute(SlayerQuery(
+            source_model="esc",
+            measures=[{"formula": "*:count"}],
+            variables={"v": "x\\' OR '1'='1"},
+        ))
+        assert int(resp.data[0]["esc._count"]) == 0

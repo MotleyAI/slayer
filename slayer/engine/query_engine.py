@@ -28,6 +28,14 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
+from slayer.core.query import (
+    SlayerQuery,
+    _contains_block_delimiter,
+    coerce_declared_list_variables,
+    declares_variables,
+    list_valued_variable_names,
+    substitute_variables,
+)
 from slayer.core.warnings import NormalizationWarning
 from slayer.core.recommend import (
     CandidateCoverage,
@@ -35,10 +43,6 @@ from slayer.core.recommend import (
     RootModelRecommendation,
 )
 from slayer.core.refs import split_agg_suffix
-from slayer.core.query import (
-    SlayerQuery,
-    substitute_variables,
-)
 from slayer.engine.cache import (
     CacheConfig,
     QueryCache,
@@ -65,11 +69,14 @@ from slayer.engine.stage_planner import plan_stages
 from slayer.engine.variables import apply_variables_to_query
 from slayer.engine.introspect_utils import _safe_get_columns
 from slayer.engine.join_graph import JoinGraph, min_hops_root
-from slayer.memories.resolver import _all_models_in_datasource, resolve_entity
-from slayer.sql import engine_factory
+from slayer.memories.resolver import (
+    _all_models_in_datasource,
+    resolve_entity,
+)
 from slayer.sql.client import SlayerSQLClient
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
+from slayer.sql import engine_factory
 from slayer.sql.engine_factory import _runtime_fingerprint
-from slayer.sql.dialects import dialect_for_ds_type, get_dialect
 from slayer.sql.generator import generate_planned_stages
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
@@ -225,26 +232,86 @@ def _merge_query_variables(
     return {**(outer or {}), **(stage or {}), **(runtime or {})}
 
 
+def _model_has_optional_block(model: SlayerModel) -> bool:
+    """True if any Mode-A surface carries an optional ``{? ... ?}`` block.
+
+    Such a model must run through substitution even with zero variables so its
+    blocks collapse to ``(1=1)`` (DEV-1730) instead of leaking the raw ``{?``
+    delimiters into emitted SQL.
+    """
+    surfaces = [model.sql, *(model.filters or [])]
+    for col in model.columns:
+        surfaces.append(col.sql)
+        surfaces.append(col.filter)
+    return any(s and _contains_block_delimiter(s) for s in surfaces)
+
+
+def _model_needs_substitution_pass(model: SlayerModel) -> bool:
+    """True if substitution must run even when NO variables are supplied.
+
+    Two independent reasons, both of which defeat the DEV-1625 zero-variable
+    fast path (which exists so raw brace literals like a Postgres array
+    ``'{1,2,3}'`` survive verbatim in models that don't use variables):
+
+    - an optional ``{? ... ?}`` block must collapse to ``(1=1)`` rather than
+      leak its delimiters into the SQL (DEV-1730), and
+    - the model DECLARES its variables, so it is importer-generated and has no
+      brace-literal ambiguity to protect — skipping the pass would emit a bare
+      ``{var}`` into the SQL instead of raising the documented missing-variable
+      error. This closes the fast-path hole for a generated model whose
+      pushdowns are all required (no block to force the pass).
+    """
+    return _model_has_optional_block(model) or declares_variables(model)
+
+
 def _substitute_model_sql_surfaces(
-    *, model: SlayerModel, variables: dict[str, Any]
+    *, model: SlayerModel, variables: dict[str, Any], dialect: SqlDialect
 ) -> SlayerModel:
     """Return a copy of ``model`` with ``{var}`` substituted into the four
     Mode-A (raw-SQL) surfaces: ``SlayerModel.sql``, ``SlayerModel.filters``,
     ``Column.sql``, and ``Column.filter`` (DEV-1625).
 
-    No-op copy when ``variables`` is empty — so a model that uses no variables
-    is never touched and raw brace literals (e.g. Postgres arrays ``'{1,2,3}'``)
-    survive verbatim. Uses the hardened :func:`substitute_variables`
-    (raise-on-missing, string single-quote escaping). Never mutates the input
-    model — it may be a shared cached object. Only these four surfaces change;
-    Mode-B surfaces (``ModelMeasure.formula`` etc.) are copied through as-is.
+    ``dialect`` is REQUIRED (DEV-1727 fail-closed): the Mode-A escaping regime
+    is dialect-aware, and deriving ``backslash_escapes`` from the resolved
+    dialect here — rather than accepting an optional bool — means no caller can
+    render raw SQL for a backslash dialect (MySQL/ClickHouse/...) while silently
+    under-escaping the value.
+
+    No-op copy when ``variables`` is empty AND the model needs no pass of its
+    own (see :func:`_model_needs_substitution_pass`) — so a model that uses no
+    variables is never touched and raw brace literals (e.g. Postgres arrays
+    ``'{1,2,3}'``) survive verbatim. A block-bearing or variable-declaring
+    model, however, must still run — so its blocks collapse to ``(1=1)``, and a
+    declared-but-missing variable raises, even on a zero-variable call
+    (DEV-1730). Uses the hardened
+    :func:`substitute_variables` (raise-on-missing, dialect-aware escaping, block
+    collapse). Never mutates the input model — it may be a shared cached object.
+    Only these four surfaces change; Mode-B surfaces (``ModelMeasure.formula``
+    etc.) are copied through as-is.
+
+    A scalar passed for a variable the model DECLARES list-valued (an importer's
+    generated ``col IN ({var})`` template) is wrapped to a one-element list
+    first — see :func:`coerce_declared_list_variables`. This is the one
+    substitution choke point for Mode-A model surfaces (execution and the
+    type-probe both route through here), so the coercion cannot be bypassed.
     """
-    if not variables:
+    if not variables and not _model_needs_substitution_pass(model):
         return model
 
+    variables = coerce_declared_list_variables(
+        variables, list_valued=list_valued_variable_names(model)
+    )
+    backslash_escapes = dialect.backslash_escapes_strings
+
     def _sub(text: str) -> str:
-        # Mode-A surfaces are parsed by sqlglot → escape string values SQL-style.
-        return substitute_variables(filter_str=text, variables=variables, escape="sql")
+        # Mode-A surfaces are parsed by sqlglot → escape string values SQL-style
+        # in the target dialect's regime.
+        return substitute_variables(
+            filter_str=text,
+            variables=variables,
+            escape="sql",
+            backslash_escapes=backslash_escapes,
+        )
 
     new_columns = []
     for col in model.columns:
@@ -263,18 +330,22 @@ def _substitute_model_sql_surfaces(
     return model.model_copy(update=model_updates)
 
 
-def _render_probe_model(model: SlayerModel) -> SlayerModel:
+def _render_probe_model(model: SlayerModel, *, dialect: SqlDialect) -> SlayerModel:
     """Substitute a template model's OWN ``query_variables`` defaults into its
     Mode-A surfaces for type-probing (DEV-1625).
 
-    Defaults only — the probe has no caller variables and must honour the
-    no-dummy-fill decision. A rendered virtual model (``source_model_origin``
-    set) is returned unchanged. An undefaulted ``{var}`` raises here and is
-    caught by the probe's graceful-``{}`` handler in ``get_column_types``.
+    ``dialect`` is REQUIRED (DEV-1727 fail-closed) and threads into the
+    dialect-aware Mode-A escaping. Defaults only — the probe has no caller
+    variables and must honour the no-dummy-fill decision. A rendered virtual
+    model (``source_model_origin`` set) is returned unchanged. An undefaulted
+    ``{var}`` raises here and is caught by the probe's graceful-``{}`` handler
+    in ``get_column_types``.
     """
-    if model.source_model_origin is None and model.query_variables:
+    if model.source_model_origin is None and (
+        model.query_variables or _model_needs_substitution_pass(model)
+    ):
         return _substitute_model_sql_surfaces(
-            model=model, variables=model.query_variables
+            model=model, variables=model.query_variables, dialect=dialect
         )
     return model
 
@@ -857,6 +928,17 @@ class SlayerQueryEngine:
         model = bundle.source_model
         assert model is not None
 
+        # ``override_datasource`` pins the connection identity (used by
+        # refresh() re-exec): the query is re-run against the EXACT datasource
+        # the entry was cached under (its ds_key), not whatever the model's
+        # ``data_source`` name resolves to now — so a same-name repoint can't
+        # migrate the entry or store rows from a different database.
+        #
+        # Resolved HERE (before Mode-A substitution) because DEV-1727 escaping
+        # is dialect-aware and needs it. Safe to hoist: substitution rewrites
+        # only the four raw-SQL surfaces, never ``model.data_source``.
+        datasource = override_datasource or await self._resolve_datasource(model=model)
+
         # DEV-1625: substitute {var} into the DIRECT source model's Mode-A
         # raw-SQL surfaces (sql / filters / Column.sql / Column.filter) before
         # anything parses them. The typed planner, binder and cross-model
@@ -867,9 +949,20 @@ class SlayerQueryEngine:
         # skipped; nested stages / join targets / cross-model targets are
         # DEV-1678 scope. ``bundle.query_variables`` already merges
         # runtime > stage > outer > model defaults.
-        if model.source_model_origin is None and bundle.query_variables:
+        #
+        # DEV-1730: called UNCONDITIONALLY (no ``and bundle.query_variables``
+        # guard) — the helper is a no-op for a variable-free, block-free model
+        # (preserving DEV-1625 raw-brace-literal protection), but a
+        # block-bearing model must still run so its ``{? ?}`` blocks collapse
+        # to ``(1=1)`` even on a zero-variable call. DEV-1727: escaping is
+        # dialect-aware, so the resolved datasource's dialect is threaded in —
+        # backslash dialects (MySQL/ClickHouse/…) get the hardened regime,
+        # standard dialects the ``''`` doubling.
+        if model.source_model_origin is None:
             substituted = _substitute_model_sql_surfaces(
-                model=model, variables=bundle.query_variables,
+                model=model,
+                variables=bundle.query_variables,
+                dialect=dialect_for_ds_type(datasource.type),
             )
             bundle = bundle.model_copy(
                 update={
@@ -934,12 +1027,6 @@ class SlayerQueryEngine:
         planned_list = plan_stages(queries=stages, bundle=bundle)
         root_planned = planned_list[-1]
 
-        # ``override_datasource`` pins the connection identity (used by
-        # refresh() re-exec): the query is re-run against the EXACT datasource
-        # the entry was cached under (its ds_key), not whatever the model's
-        # ``data_source`` name resolves to now — so a same-name repoint can't
-        # migrate the entry or store rows from a different database.
-        datasource = override_datasource or await self._resolve_datasource(model=model)
         dialect = self._dialect_for_type(datasource.type)
         sql = generate_planned_stages(
             planned_list, bundle=bundle, dialect=dialect,
@@ -1721,7 +1808,11 @@ class SlayerQueryEngine:
             # rendered (from its own query_variables defaults) before probe SQL
             # is generated; an undefaulted {var} raises here and degrades to {}
             # via the surrounding except, so partially-defaulted models stay safe.
-            model = _render_probe_model(model)
+            # DEV-1727: pass the resolved datasource's dialect so probe-SQL
+            # escaping matches the backend that parses it.
+            model = _render_probe_model(
+                model, dialect=dialect_for_ds_type(datasource.type)
+            )
             if not model.source_queries:
                 probe_query = probe_query.model_copy(update={"source_model": model})
             bundle = await build_resolved_source_bundle(

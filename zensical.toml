@@ -52,6 +52,9 @@ nav = [
     { "SLayer vs dbt" = "dbt/slayer_vs_dbt.md" },
     { "Importing dbt definitions" = "dbt/dbt_import.md" },
   ]},
+  { "Cube" = [
+    { "Importing Cube definitions" = "cube/cube_import.md" },
+  ]},
   { "OSI" = [
     { "Importing OSI configs" = "osi/osi_import.md" },
   ]},

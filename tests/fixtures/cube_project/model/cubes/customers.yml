@@ -1,0 +1,20 @@
+cubes:
+  - name: customers
+    sql_table: public.customers
+    measures:
+      - name: count
+        type: count
+      - name: lifetime_value
+        type: sum
+        sql: "{CUBE}.ltv"
+    dimensions:
+      - name: id
+        sql: "{CUBE}.id"
+        type: number
+        primary_key: true
+      - name: name
+        sql: "{CUBE}.name"
+        type: string
+      - name: region
+        sql: "{CUBE}.region"
+        type: string
