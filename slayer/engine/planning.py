@@ -25,7 +25,7 @@ composes these with the cross-model planner to build a
 
 from __future__ import annotations
 
-from typing import Dict, FrozenSet, List, Optional
+from typing import Callable, Dict, FrozenSet, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -54,6 +54,7 @@ from slayer.core.keys import (
     column_path,
     normalize_scalar,
 )
+from slayer.core.formula import RANK_FAMILY_TRANSFORMS
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
 from slayer.engine.binding import BoundExpr, BoundFilter
 from slayer.engine.planned import SlotId, ValueSlot
@@ -398,6 +399,63 @@ def lower_sugar_transforms(key: ValueKey) -> ValueKey:
         if new_col is key.column:
             return key
         return InKey(column=new_col, values=key.values, negated=key.negated)
+    return key
+
+
+def rewrite_rank_partition_keys(  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union; each branch is the per-type identity-preserving rebuild contract, mirroring lower_sugar_transforms. Extracting per-type helpers would scatter the contract across the module.
+    key: ValueKey, *, rewrite_fn: Callable[[TransformKey], FrozenSet],
+) -> ValueKey:
+    """Walk ``key``; for every rank-family ``TransformKey`` carrying an
+    explicit ``partition_by`` (non-empty ``partition_keys``), replace those
+    keys with ``rewrite_fn(transform_key)`` (DEV-1497).
+
+    ``rewrite_fn`` receives the whole ``TransformKey`` and returns a new
+    ``frozenset`` of partition keys — validating that each resolves to a query
+    dimension / time-dimension and rewriting a time-dimension source column to
+    its ``TimeTruncKey`` bucket. It may raise ``ValueError`` for a partition
+    column that is not a query dimension.
+
+    Identity-preserving (mirrors :func:`lower_sugar_transforms`): parents are
+    rebuilt only where a child changed, so this runs BEFORE interning without
+    churning unrelated slots. Reaches rank transforms nested in composite
+    measures (``ArithmeticKey`` / ``ScalarCallKey``) and in filter predicates
+    (comparisons are ``ArithmeticKey``).
+    """
+    def _rec(k: ValueKey) -> ValueKey:
+        return rewrite_rank_partition_keys(key=k, rewrite_fn=rewrite_fn)
+
+    if isinstance(key, TransformKey):
+        new_input = _rec(key.input)
+        new_pk = key.partition_keys
+        if key.op in RANK_FAMILY_TRANSFORMS and key.partition_keys:
+            new_pk = rewrite_fn(key)
+        if new_input is key.input and new_pk == key.partition_keys:
+            return key
+        return key.model_copy(update={"input": new_input, "partition_keys": new_pk})
+    if isinstance(key, ArithmeticKey):
+        new_ops = tuple(_rec(op) for op in key.operands)
+        unchanged = all(a is b for a, b in zip(new_ops, key.operands))
+        return key if unchanged else ArithmeticKey(op=key.op, operands=new_ops)
+    if isinstance(key, ScalarCallKey):
+        rewritable = _SLOTTABLE_KIND + (ArithmeticKey, ScalarCallKey, BetweenKey)
+        new_args = tuple(
+            _rec(a) if isinstance(a, rewritable) else a for a in key.args
+        )
+        unchanged = all(a is b for a, b in zip(new_args, key.args))
+        return key if unchanged else ScalarCallKey(name=key.name, args=new_args)
+    if isinstance(key, BetweenKey):
+        new_col, new_low, new_high = _rec(key.column), _rec(key.low), _rec(key.high)
+        unchanged = (
+            new_col is key.column and new_low is key.low and new_high is key.high
+        )
+        return key if unchanged else BetweenKey(
+            column=new_col, low=new_low, high=new_high,
+        )
+    if isinstance(key, InKey):
+        new_col = _rec(key.column)
+        return key if new_col is key.column else InKey(
+            column=new_col, values=key.values, negated=key.negated,
+        )
     return key
 
 

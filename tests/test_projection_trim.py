@@ -1123,15 +1123,6 @@ class TestWrapperLayering:
 # Group M — Cross-model / isolated ORDER BY hoisted, not projected.
 # ===========================================================================
 class TestCrossModelOrderBy:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1495 (Bug 2): an order-by-only cross-model aggregate "
-            "(``customers.revenue:sum``, no declared measure) LEAKS into the "
-            "outer projection as a malformed ``orders.customers._sum`` instead "
-            "of staying a hidden slot. Auto-promotes when DEV-1495 is fixed."
-        ),
-    )
     async def test_order_by_cross_model_agg_hoisted_not_projected(
         self, orders_customers_engine,
     ) -> None:

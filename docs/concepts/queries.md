@@ -107,6 +107,27 @@ A sort specification: `column` is the short alias (`status`, `revenue_sum`, `*:c
 
 Via MCP: `{"column": "*:count", "direction": "desc"}`
 
+### Ordering by something you don't project
+
+`order` may reference a column or aggregate that is **not** declared as a dimension/measure — the classic "top-N by metric X, display only Y, Z" pattern:
+
+```json
+{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "*:count"}],
+ "order": [{"column": "amount:sum", "direction": "desc"}], "limit": 10}
+```
+
+The `amount:sum` aggregate is computed as a hidden column, sorted on, and **stripped from the result** — the response projects only `status` and `_count`. This works for local aggregates, cross-model aggregates (`customers.revenue:sum`), and inner-stage columns re-aggregated in a later DAG stage (`customers__revenue_sum:max`).
+
+What each shape of an *undeclared* order target does:
+
+| Order target | Behavior |
+| --- | --- |
+| An aggregate (`amount:sum`, `customers.revenue:sum`) | Computed hidden, sorted on, stripped from the result. Always allowed. |
+| A raw row column, in a **raw-rows** query (`distinct_dimension_values: false`, no measures) | Sorted on directly (`ORDER BY orders.created_at`). |
+| A raw row column, in an **aggregated / dedup** query | Rejected (HTTP 400): it isn't in the `GROUP BY`. Add it to `dimensions`, or order by an aggregate of it (`created_at:max`). |
+| A **joined** row column (`customers.regions.name`) not projected | Rejected (HTTP 400): project it (add to `dimensions`) or order by a projected field. |
+| An inline **transform / composite** (`change(amount:sum)`, `revenue:sum / cnt:sum`) not declared | Rejected (HTTP 400): declare it as a measure (optionally with a `name`) and order by that. |
+
 ## Response
 
 Query results are returned as a `SlayerResponse`:

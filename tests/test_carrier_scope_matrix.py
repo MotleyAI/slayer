@@ -39,9 +39,10 @@ point-fix worktrees, each pinned to the DEV-1703 stage that fixes it):
   |          | guards (8)                             |                                                     |       |
   | DEV-1527 | agg-kwarg derived path-alias (LOCAL    | test_agg_param_derived_column_path_alias_xfail      | 2     |
   |          | half; cross-model remainder = Stage 4) | (+ tests/test_dev1527_agg_kwargs.py)                |       |
-  | DEV-1474 | cross-model partition in time_shift    | TestScopeDefectPins::                               | 7     |
-  |          | (no committed worktree — reconstructed | test_time_shift_cross_model_partition (this file)   |       |
-  |          | from the issue)                        |                                                     |       |
+  | DEV-1474 | cross-model partition in time_shift    | tests/test_dev1474_time_shift_cross_model_         | 7     |
+  |          | (PROMOTED at Stage 7 — the pin in      | partition.py (rich suite) + TestScopeDefectPins::   |       |
+  |          | TestScopeDefectPins is now a plain     | test_time_shift_cross_model_partition (this file)   |       |
+  |          | passing test)                          |                                                     |       |
 
 DEV-1526's ``TestColumnSqlKeyJoinPathsHelper`` is deliberately NOT landed: it
 unit-tests ``SQLGenerator._column_sql_key_join_paths``, a Stage-4 production
@@ -356,15 +357,12 @@ class TestRlsIsolationCte:
 # currently-passing representative.
 # --------------------------------------------------------------------------- #
 class TestScopeDefectPins:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1714 (Stage 10): duration-windowed measures (sum(window=)) are "
-            "silently dropped on the typed pipeline; the intended _wm_ range-join "
-            "CTE is not emitted. Auto-promotes when Stage 10 lands."
-        ),
-    )
     async def test_windowed_measure_emits_wm_cte(self) -> None:
+        # DEV-1714 (Stage 10) landed: duration-windowed measures now emit the
+        # host-rooted `_wm_` range-join CTE on the typed pipeline, so this
+        # promoted from its strict-xfail pin. Rich coverage lives in
+        # tests/test_sql_generator.py (TestFields / TestWindowedMeasureGuards)
+        # and tests/integration/test_integration_windowed_measures.py.
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(
@@ -386,16 +384,11 @@ class TestScopeDefectPins:
         cm_body = _cte_body(sql, r"_cm_\w+")
         assert "LEFT JOIN regions AS regions" in cm_body
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1711 (Stage 7): DEV-1474 — cross-model partition in a "
-            "time_shift CTE (stage 7b.12) is not implemented; the shifted CTE "
-            "cannot partition by a joined dimension. Reconstructed from the "
-            "issue (no committed worktree survived). Auto-promotes at Stage 7."
-        ),
-    )
     async def test_time_shift_cross_model_partition(self) -> None:
+        # DEV-1711 (Stage 7) landed: the shifted CTE is a ScopeFrame that pulls
+        # the join a cross-model partition crosses, so this promoted from its
+        # strict-xfail pin. Rich coverage lives in
+        # tests/test_dev1474_time_shift_cross_model_partition.py.
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(

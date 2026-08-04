@@ -68,6 +68,7 @@ __all__ = [
     "SlotId",
     "TransformLayer",
     "ValueSlot",
+    "WindowedAggregatePlan",
 ]
 
 
@@ -243,6 +244,52 @@ class CrossModelAggregatePlan(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# WindowedAggregatePlan
+# ---------------------------------------------------------------------------
+
+
+class WindowedAggregatePlan(BaseModel):
+    """Plan for one duration-windowed aggregate slot (DEV-1714 Stage 10).
+
+    A windowed measure (``revenue:sum(window='90d')``) is a trailing rolling
+    aggregate: for each output bucket, SLayer sums source rows in the trailing
+    ``window`` interval ending at that bucket's end. It renders as a HOST-ROOTED
+    ``_wm_<model>__<measure>`` CTE — an inner ``_src`` self-join subquery joined
+    to ``_base`` on the query grain with an ``INTERVAL`` range predicate — then
+    LEFT-JOINed back to ``_base`` on the shared grain (same join-back machinery
+    as the cross-model ``_cm_*`` CTEs, so adding a windowed measure never
+    changes host cardinality).
+
+    The renderer looks up the aggregate ``ValueSlot`` (source column, ``agg``,
+    result ``type``, ``column_filter_key``) and the grain ``ValueSlot``s by id
+    from the owning ``PlannedQuery``; this plan carries the window duration, the
+    resolved window time-dimension slot + its granularity, the per-role grain
+    slot partition, and the WHERE-phase filter ids inherited into ``_src`` (the
+    typed ``date_range`` is deliberately excluded so the trailing window reaches
+    rows before the range start).
+
+    Scope for Stage 10 is ``sum``/``avg`` local measures only; cross-model,
+    transform-combined, composite, hidden, and mixed-filter windowed shapes are
+    guarded loudly at plan time (DEV-1504 lifts those guards).
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    aggregate_slot_id: SlotId
+    agg: str
+    window_raw: str
+    window_parts: List[Tuple[int, str]]
+    window_time_dimension_slot_id: SlotId
+    window_granularity: str
+    dimension_slot_ids: List[SlotId] = Field(default_factory=list)
+    other_time_dimension_slot_ids: List[SlotId] = Field(default_factory=list)
+    grain_slot_ids: List[SlotId] = Field(default_factory=list)
+    where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    public_alias: Optional[str] = None
+    hidden: bool = False
+
+
+# ---------------------------------------------------------------------------
 # TransformLayer
 # ---------------------------------------------------------------------------
 
@@ -339,6 +386,7 @@ class PlannedQuery(BaseModel):
     row_slots: List[ValueSlot] = Field(default_factory=list)
     aggregate_slots: List[ValueSlot] = Field(default_factory=list)
     cross_model_aggregate_plans: List[CrossModelAggregatePlan] = Field(default_factory=list)
+    windowed_aggregate_plans: List["WindowedAggregatePlan"] = Field(default_factory=list)
     combined_expression_slots: List[ValueSlot] = Field(default_factory=list)
     transform_layers: List[TransformLayer] = Field(default_factory=list)
     filters_by_phase: List[FilterPhase] = Field(default_factory=list)

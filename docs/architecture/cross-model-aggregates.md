@@ -285,9 +285,31 @@ the ranked-subquery rank columns exist — still contributes its joins.
 the crossing value is materialized as a `_val_<n>` projection *inside* the
 subquery and the outer `MAX(CASE WHEN _last_rn = 1 THEN _val_<n> END)` references
 the alias — a raw crossing ref there is bound only inside the subquery. A HAVING
-on the same aggregate binds the same alias. `generate_from_planned` installs one
-generation-wide `AliasAllocator` (save/restore) so inline forward CTEs and the
-host base never collide on `_val_<n>`.
+on the same aggregate binds the same alias. The **shared grain** obeys the same
+law (DEV-1728): a crossing derived grain is materialized as a `_val_<n>`
+projection inside the subquery, the outer `SELECT`/`GROUP BY` reference the
+alias, and `PARTITION BY` keeps the raw expression (evaluated where the join is
+bound). `generate_from_planned` installs one generation-wide `AliasAllocator`
+(save/restore) so inline forward CTEs, grain projections, and the host base
+never collide on `_val_<n>`; the CTE reserves the target's physical column names
+so a minted alias never shadows a `target.*` column.
+
+### Derived shared-grain rendering (DEV-1728)
+
+A cross-model aggregate can be grouped by a joined **derived** dimension
+(`{"dimensions": ["customers.rev_x2"], "measures": ["customers.revenue:sum"]}`,
+where `rev_x2` is a `Column.sql` on `customers`). The grain loop expands the
+derived column's `Column.sql` rooted at the target relation, adds it to the CTE
+`SELECT` + `GROUP BY` under the **dotted** host alias
+(`orders.customers.rev_x2` — the same alias the host base projects since
+DEV-1713), and joins back null-safe. A derived expression that crosses a
+*further* join (`deep_pop` = `regions.population`) pulls that join into the CTE
+`FROM` via the same `ScopeFrame` machinery the derived-time-dimension grain uses;
+a plain derived grain is wrapped in the same `CAST(... AS <type>)` the host base
+applies so the join-back compares identically-typed values. Only an
+**intermediate-hop** grain (a grain on a middle hop of a multi-hop aggregate
+target path) is still unrendered — it raises the same 7b.12 `NotImplementedError`
+a base column on an intermediate hop does.
 
 ### Null-safe grain join-back
 
@@ -320,12 +342,11 @@ null-safe form retains it.
   **relation-qualified** — a bare `weight=qty` resolves against the host by DSL
   rule and raises at bind time. A *host-local* weight column evaluated inside
   the target CTE remains unsupported.
-- A **plain derived (non-time) dimension** used as cross-model shared grain
-  raises `NotImplementedError` (DEV-1708, user-approved) — the host aliases it
-  flattened (`customers__deep_pop`) while the CTE join-back expects the dotted
-  form (DEV-1495-b1). Pull the dimension to the host base, use a base column, or
-  wrap it in a time dimension. A time-truncated derived grain **is** supported.
-  Full support tracked in DEV-1495 (Stage 8/9).
+- A **shared-grain dimension on an intermediate hop** of a multi-hop aggregate
+  target path (base or derived) raises the 7b.12 `NotImplementedError` — use the
+  terminal-target path or pull the dimension to the host base. (A plain derived
+  grain on the *terminal* target path is fully rendered — see
+  [Derived shared-grain rendering](#derived-shared-grain-rendering-dev-1728).)
 
 ## Design rationale
 

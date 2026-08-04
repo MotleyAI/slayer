@@ -36,14 +36,70 @@ import sqlglot
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 from sqlglot import exp
 
+# ---------------------------------------------------------------------------
+# Dialect case-folding policy (DEV-1726).
+#
+# SLayer-minted names (CTE families, ``_val_<n>`` materialisation aliases) are
+# emitted unquoted, so on case-folding backends two names differing only in
+# case fold to the same identifier — two user measure aliases ``Foo``/``foo``
+# both driving time_shift CTEs would produce a duplicate ``WITH`` name. The
+# policy of WHICH sqlglot dialects fold lives HERE (naming policy, per the
+# Stage-9 ownership decision) because this module must stay an import leaf —
+# dialect modules import from it.
+#
+# Membership notes (confirmed against vendor docs, sqlglot's
+# NORMALIZATION_STRATEGY, and — for SQLite/DuckDB — empirically):
+# * BigQuery FOLDS: GoogleSQL's case-sensitivity table marks "aliases within
+#   a query" (which CTE names are) case-insensitive; only real table/dataset
+#   names are case-sensitive. This corrects the DEV-1726 issue text.
+# * SQLite and DuckDB reject case-differing CTE names even when QUOTED.
+# * MySQL / T-SQL fold DELIBERATELY despite platform/collation dependence:
+#   folding is rename-only-safe (every reference uses the allocated name),
+#   while not folding leaves the collision live on the majority configs
+#   (Windows/macOS MySQL, default-collation SQL Server).
+# * ClickHouse identifiers are case-sensitive — exact comparison.
+# * Unknown dialect strings compare exact (previous behavior, fail-safe).
+#
+# The fold KEY is ``str.lower()`` — parity with sqlglot's
+# ``normalize_identifier``; ``str.casefold()`` would over-equate (``ß``→``ss``).
+# ---------------------------------------------------------------------------
+
+CASE_FOLDING_SQLGLOT_DIALECTS: frozenset[str] = frozenset({
+    "postgres", "redshift", "snowflake", "oracle", "mysql", "tsql",
+    "sqlite", "duckdb", "trino", "presto", "databricks", "spark", "bigquery",
+})
+
+# Explicit, so "does not fold" is a decision, not an omission: every registry
+# dialect must appear in exactly one of the two sets (pinned by
+# tests/test_dev1726_cte_case_folding.py against the dialect registry).
+KNOWN_CASE_SENSITIVE_SQLGLOT_DIALECTS: frozenset[str] = frozenset({"clickhouse"})
+
+
+def dialect_folds_case(dialect: str) -> bool:
+    """True iff ``dialect`` case-folds unquoted identifiers (CTE names in
+    particular). Input is normalized via ``strip().lower()``; an unknown
+    dialect string returns False (exact comparison — fail-safe)."""
+    return dialect.strip().lower() in CASE_FOLDING_SQLGLOT_DIALECTS
+
 
 class AliasAllocator(BaseModel):
-    """Per-generation collision-safe name allocator (mutable)."""
+    """Per-generation collision-safe name allocator (mutable).
+
+    With ``folds_case=True`` (case-folding dialects — DEV-1726, set via
+    :func:`dialect_folds_case` by ``SQLGenerator._new_allocator``), every
+    ``_taken`` comparison folds with ``str.lower()`` while names are still
+    returned in the caller's original case — so ``shifted_Foo`` blocks
+    ``shifted_foo`` and the second mint walks to ``shifted_foo_2``.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    # Fold every _taken comparison with str.lower() (DEV-1726). Comparison
+    # only: allocated names keep the caller's original case.
+    folds_case: bool = False
+
     # External names the allocator must avoid (user columns, join aliases,
-    # public projection aliases, model names).
+    # public projection aliases, model names). Stored FOLDED when folds_case.
     # NOSONAR lines below: Pydantic v2 PrivateAttr idiom — the annotation is the
     # attribute's runtime type after model init; the ``PrivateAttr(...)`` sentinel
     # is replaced by Pydantic. S5890 can't model this and is a false positive.
@@ -56,12 +112,17 @@ class AliasAllocator(BaseModel):
     # Monotonic scope-id cursor.
     _scope_seq: int = PrivateAttr(default=0)  # NOSONAR(S5890)
 
+    def _fold(self, name: str) -> str:
+        """The comparison key: ``str.lower()`` when folding, else identity."""
+        return name.lower() if self.folds_case else name
+
     def reserve(self, *names: str) -> None:
         """Mark ``names`` as taken so they are never allocated."""
-        self._reserved.update(names)
+        self._reserved.update(self._fold(n) for n in names)
 
     def _taken(self, name: str) -> bool:
-        return name in self._reserved or name in self._used
+        key = self._fold(name)
+        return key in self._reserved or key in self._used
 
     def allocate(self, preferred: str) -> str:
         """Return ``preferred`` if free, else ``preferred_2``, ``preferred_3``, …"""
@@ -70,7 +131,7 @@ class AliasAllocator(BaseModel):
         while self._taken(candidate):
             candidate = f"{preferred}_{suffix}"
             suffix += 1
-        self._used.add(candidate)
+        self._used.add(self._fold(candidate))
         return candidate
 
     def allocate_val(self) -> str:
@@ -79,7 +140,7 @@ class AliasAllocator(BaseModel):
             candidate = f"_val_{self._val_seq}"
             self._val_seq += 1
             if not self._taken(candidate):
-                self._used.add(candidate)
+                self._used.add(self._fold(candidate))
                 return candidate
 
     def allocate_cte(self, preferred: str) -> str:
@@ -255,14 +316,32 @@ def assert_unique_cte_names(sql: str, *, dialect: str = "postgres") -> None:
     each ``exp.With`` is validated independently. Raises ``ValueError`` on a
     same-scope duplicate — the loud failure the DEV-1692 de-collision guards
     against (a duplicate ``shifted_*`` CTE otherwise silently shadows).
+
+    On case-folding dialects (:func:`dialect_folds_case`) names are compared
+    case-folded, REGARDLESS of identifier quoting (DEV-1726). That is
+    deliberately over-strict for quoted names on Postgres/Snowflake/Oracle:
+    this belt validates SLayer's own allocator-sanitized output — which never
+    quotes CTE names — so a fold-collision here always signals an
+    allocator-bypass bug, never a legitimately-distinct quoted pair. It is
+    not a general-purpose validator of arbitrary SQL.
     """
+    fold = dialect_folds_case(dialect)
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     for with_node in parsed.find_all(exp.With):
         names = [cte.alias_or_name for cte in with_node.expressions]
-        seen: set[str] = set()
+        seen: dict[str, str] = {}
         for name in names:
-            if name in seen:
-                raise ValueError(
-                    f"Duplicate CTE name {name!r} within one WITH scope: {names}"
+            key = name.lower() if fold else name
+            if key in seen:
+                first = seen[key]
+                fold_note = (
+                    f" ({first!r} and {name!r} case-fold to {key!r} on "
+                    f"{dialect})"
+                    if first != name
+                    else ""
                 )
-            seen.add(name)
+                raise ValueError(
+                    f"Duplicate CTE name {name!r} within one WITH scope"
+                    f"{fold_note}: {names}"
+                )
+            seen[key] = name

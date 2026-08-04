@@ -532,20 +532,6 @@ def _classify_subplan_filters(
     return sub_filter_texts or None
 
 
-def derived_shared_grain_not_implemented(column_name: str) -> NotImplementedError:
-    """DEV-1708: the single source of the "plain derived dimension used as
-    cross-model shared grain is not yet supported" error, shared by the planner
-    (which raises it) and the SQL generator's grain-loop defensive backstop, so
-    the two never drift. Full support is tracked in DEV-1495 (Stage 8/9)."""
-    return NotImplementedError(
-        f"DEV-1708: a plain derived (non-time) dimension ({column_name!r}) used "
-        f"as cross-model shared grain is not yet rendered — its host alias is "
-        f"flattened while the CTE join-back expects the dotted form "
-        f"(DEV-1495-b1). Pull the dimension to the host base, use a base column, "
-        f"or wrap it in a time dimension. Full support tracked in DEV-1495."
-    )
-
-
 def _route_host_filters(
     *,
     host_filters: List[HostFilterRouting],
@@ -591,7 +577,7 @@ def _route_host_filters(
     return applied, where_ids, having_ids, dropped
 
 
-def _compute_shared_grain_slots(  # NOSONAR(S3776) — one cohesive classification pass over host ROW slots (ColumnKey / TimeTruncKey / derived ColumnSqlKey), each carrying its own path-prefix rule; splitting the three branches into per-kind helpers scatters the single shared-grain contract without simplifying it.
+def _compute_shared_grain_slots(
     *, host_slots: List[ValueSlot], target_path: Tuple[str, ...],
 ) -> List[SlotId]:
     """Host ROW slots (dimensions / time-dimensions) whose path lies on the
@@ -599,27 +585,28 @@ def _compute_shared_grain_slots(  # NOSONAR(S3776) — one cohesive classificati
     (extracted from ``IsolatedCteCrossModelPlanner.plan`` — DEV-1708). Cross-
     branch and aggregate/transform slots do not.
 
-    A projected, path-bearing **plain derived** (``ColumnSqlKey``) dimension on
-    the target path raises ``derived_shared_grain_not_implemented`` (user-
-    approved): the host aliases it flattened while the CTE join-back expects the
-    dotted form (DEV-1495-b1), and silently excluding it would CROSS-JOIN-
-    broadcast the global aggregate across groups. ``not s.hidden`` keeps a
-    filter-only derived ref (a hidden slot) unaffected; ``path == ()`` (a
-    host-local derived dim) broadcasts by design.
+    A path-bearing **plain derived** (``ColumnSqlKey``) dimension on the target
+    path flows through identically to a base ``ColumnKey`` dim (DEV-1728): the
+    generator expands its ``Column.sql`` inside the ``_cm_*`` CTE, groups by it,
+    and joins back on the DOTTED host alias (the DEV-1708 raise is gone now that
+    DEV-1713 fixed the naming half). ``path == ()`` (a host-local derived dim)
+    still broadcasts by design — the generator's grain loop skips empty-path
+    slots — and a hidden filter-only derived ref is excluded there via the
+    ``base_projection_ids`` intersection, so no ``not s.hidden`` guard is needed.
     """
     shared_grain: List[SlotId] = []
     for s in host_slots:
-        if isinstance(s.key, ColumnKey):
+        # Base and derived dims carry their path directly; a time dimension
+        # carries it on the wrapped column. One prefix test then serves all
+        # three kinds — the DEV-1728 merge of what were two identical branches.
+        if isinstance(s.key, (ColumnKey, ColumnSqlKey)):
             p = s.key.path
-            if not p or p == target_path[: len(p)]:
-                shared_grain.append(s.id)
         elif isinstance(s.key, TimeTruncKey):
-            td_path = column_path(s.key.column)
-            if not td_path or td_path == target_path[: len(td_path)]:
-                shared_grain.append(s.id)
-        elif isinstance(s.key, ColumnSqlKey) and s.key.path and not s.hidden:
-            if s.key.path == target_path[: len(s.key.path)]:
-                raise derived_shared_grain_not_implemented(s.key.column_name)
+            p = column_path(s.key.column)
+        else:
+            continue
+        if not p or p == target_path[: len(p)]:
+            shared_grain.append(s.id)
     return shared_grain
 
 

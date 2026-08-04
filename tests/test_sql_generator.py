@@ -24,9 +24,11 @@ from slayer.sql.generator import (
     _validate_agg_param_value,
     _wrap_cast_for_type,
 )
+from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._engine_helpers import _engine_generate
+from tests._cross_model_chain import _extract_cte_body
+from tests._engine_helpers import _assert_valid_sql, _engine_generate
 
 
 async def _noop_async(**kw):
@@ -66,36 +68,6 @@ def _extract_src_body(sql: str) -> str:
     open_token = "LEFT JOIN (\n"
     start = sql.rfind(open_token, 0, end) + len(open_token)
     return sql[start:end]
-
-
-def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:
-    """Extract one CTE body by matching ``<cte_name> AS (`` and walking balanced
-    parentheses to its closing ``)``.
-
-    Robust against nested subqueries inside the CTE body (e.g. the ranked
-    ``FROM (SELECT ... ROW_NUMBER() …) AS …`` that first/last isolated CTEs
-    contain). ``cte_name_pattern`` is a regex matched against the CTE name —
-    typical use: ``r"_cm_\\w*loss_payment_amt\\w*"``. Raises ``AssertionError``
-    if no matching CTE is found.
-    """
-    name_match = _re.search(rf"({cte_name_pattern})\s+AS\s*\(", sql)
-    assert name_match, f"No CTE matching {cte_name_pattern!r} in:\n{sql}"
-    # Position just after the opening paren of ``<name> AS (``.
-    body_start = sql.index("(", name_match.start()) + 1
-    depth = 1
-    i = body_start
-    while i < len(sql) and depth > 0:
-        ch = sql[i]
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                return sql[body_start:i]
-        i += 1
-    raise AssertionError(
-        f"Unbalanced parens — no closing ) for CTE {name_match.group(1)!r}:\n{sql}"
-    )
 
 
 def _outer_order_terms(sql: str, dialect: str = "postgres") -> list[tuple[str, str]]:
@@ -178,26 +150,6 @@ def _outer_from_node(sql: str, dialect: str = "postgres"):
     return fc.this
 
 
-def _assert_valid_sql(sql: str, dialect: str = "postgres"):
-    """Assert generated SQL is structurally valid (parses, no nested WITH).
-
-    DEV-1713 removed the BigQuery ``TypeError`` carve-out (finalised naming/
-    mangling no longer emits the dotted-alias shapes sqlglot choked on), so a
-    ``TypeError`` here is a real failure for every dialect.
-    """
-    try:
-        statements = sqlglot.parse(sql, dialect=dialect)
-        assert statements, f"SQL failed to parse:\n{sql}"
-        assert len(statements) == 1, f"Expected 1 SQL statement, got {len(statements)}:\n{sql}"
-    except TypeError as exc:
-        raise AssertionError(
-            f"sqlglot TypeError while validating {dialect} SQL:\n{sql}"
-        ) from exc
-    # No nested WITH — only one WITH keyword allowed at the start of a line
-    with_lines = [line for line in sql.split("\n") if line.strip().upper().startswith("WITH ")]
-    assert len(with_lines) <= 1, f"Nested WITH clauses detected:\n{sql}"
-
-
 async def _generate(
     generator: SQLGenerator,
     query: SlayerQuery,
@@ -222,35 +174,13 @@ async def _generate(
     )
 
 
-_XFAIL_WINDOWED = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEV-1496: duration-windowed measures (sum(window='…')) are not yet "
-        "implemented on the typed pipeline — the window kwarg is dropped and "
-        "the measure degrades to a plain grouped aggregate. Auto-promotes when "
-        "the range-join primitive is reimplemented."
-    ),
-)
-
-# DEV-1705 Stage-1 harvest reason strings (in-source strict-xfail pins; the
-# owning DEV-1703 stage auto-promotes each when its fix lands).
+# DEV-1496 / DEV-1714 Stage 10 landed: duration-windowed measures now emit the
+# `_wm_` range-join CTE and RAISE on unsupported shapes, so the former
+# `_XFAIL_WINDOWED` / `_DEV1496_STAGE10` strict-xfail pins were promoted to
+# plain tests (markers removed in the implementation commit).
 # DEV-1531 (first/last over a cross-join derived source) landed in DEV-1709
-# Stage 5; its pinned strict-xfails were promoted to plain tests asserting
-# the host-rooted isolated-CTE shape.
-# DEV-1526 (cross-model aggregate source crossing a further join) landed in
-# DEV-1708 Stage 4; its pinned strict-xfails were promoted to plain tests.
-_DEV1496_STAGE10 = (
-    "DEV-1714 (Stage 10): DEV-1496 — duration-windowed measures must emit a "
-    "`_wm_` range-join CTE and RAISE (not silently degrade) on unsupported "
-    "shapes. Today the window kwarg is dropped. Auto-promotes at Stage 10."
-)
-_DEV1474_STAGE7 = (
-    "DEV-1711 (Stage 7): DEV-1474 — cross-model partition in a time_shift CTE "
-    "(stage 7b.12) is not implemented on the typed pipeline. Reconstructed from "
-    "the issue (no committed worktree survived). Auto-promotes at Stage 7."
-)
-
-
+# Stage 5; DEV-1526 (cross-model aggregate source crossing a further join)
+# landed in DEV-1708 Stage 4 — both likewise promoted to plain tests.
 @pytest.fixture
 def orders_model() -> SlayerModel:
     return SlayerModel(
@@ -899,7 +829,6 @@ class TestFields:
         assert '>= 2' in norm
         assert '"orders.long_enough"' in norm
 
-    @_XFAIL_WINDOWED
     async def test_windowed_sum_uses_range_join_primitive(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -921,7 +850,6 @@ class TestFields:
         assert "INTERVAL '90 DAY'" in norm
         assert '_src._w_dim_0 = _base."orders.status"' in norm
 
-    @_XFAIL_WINDOWED
     async def test_windowed_sum_preserves_other_time_dim_grain(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
@@ -971,7 +899,6 @@ class TestFields:
         await storage.save_model(orders)
         return SlayerQueryEngine(storage=storage), orders
 
-    @_XFAIL_WINDOWED
     async def test_windowed_sum_excludes_unrelated_joins(
         self, generator: SQLGenerator, orders_with_customers_engine,
     ) -> None:
@@ -1004,7 +931,6 @@ class TestFields:
             f"src_body:\n{src_body}"
         )
 
-    @_XFAIL_WINDOWED
     async def test_windowed_sum_keeps_joins_used_by_query_filter(
         self, generator: SQLGenerator, orders_with_customers_engine,
     ) -> None:
@@ -1035,7 +961,6 @@ class TestFields:
             f"WHERE filter references customers.region_id.\nsrc_body:\n{src_body}"
         )
 
-    @_XFAIL_WINDOWED
     async def test_windowed_sum_keeps_transitive_joins_for_multi_hop_filter(
         self, generator: SQLGenerator, tmp_path,
     ) -> None:
@@ -1095,7 +1020,6 @@ class TestFields:
             f"src_body:\n{src_body}"
         )
 
-    @_XFAIL_WINDOWED
     async def test_filter_on_windowed_measure_is_post_filter(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
@@ -1137,7 +1061,6 @@ class TestFields:
             f"Windowed-measure filter must not be applied as HAVING on the base aggregate.\nsql:\n{sql}"
         )
 
-    @_XFAIL_WINDOWED
     async def test_window_duration_full_compact_syntax(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -1163,7 +1086,6 @@ class TestFields:
         ):
             assert piece in norm, f"missing per-unit interval clause '{piece}'\nsql:\n{sql}"
 
-    @_XFAIL_WINDOWED
     async def test_windowed_sum_sqlite_duration_modifiers(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -1181,6 +1103,325 @@ class TestFields:
         assert "'-3 hours'" in sql
         assert "'-4 minutes'" in sql
         assert "'-5 seconds'" in sql
+
+    # ------------------------------------------------------------------ #
+    # DEV-1714 Stage 10 — new coverage beyond the DEV-1496 harvest pins.
+    # Shape-gap tests: shapes no existing pin covers (two windowed measures
+    # in one query, Column.filter CASE-wrap, filter-carrier join discovery
+    # into _src, ORDER BY the windowed alias). Each asserts a window-specific
+    # artifact (``_wm_``/``_src``) now emitted by the Stage-10 range-join CTE.
+    # ------------------------------------------------------------------ #
+
+    async def test_two_windowed_measures_emit_distinct_ctes(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Two windowed measures in one query must each get their own
+        collision-safe ``_wm_`` CTE and both join back to the base grain."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[
+                {"formula": "revenue:sum(window='90d')", "name": "rev_90d"},
+                {"formula": "revenue:avg(window='30d')", "name": "rev_30d"},
+            ],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert "_wm_orders__rev_90d" in norm, sql
+        assert "_wm_orders__rev_30d" in norm, sql
+        # Each windowed CTE is defined exactly once (distinct, never collapsed).
+        assert norm.count("_wm_orders__rev_90d AS (") == 1, sql
+        assert norm.count("_wm_orders__rev_30d AS (") == 1, sql
+        # Codex round 3: deterministic order — CTEs follow measure declaration
+        # order (rev_90d before rev_30d), never set-iteration order.
+        assert norm.index("_wm_orders__rev_90d AS (") < norm.index("_wm_orders__rev_30d AS ("), sql
+        # Both CTEs join back to the base grain in the combined SELECT.
+        assert "LEFT JOIN _wm_orders__rev_90d" in norm, sql
+        assert "LEFT JOIN _wm_orders__rev_30d" in norm, sql
+        # Both surface in the public projection.
+        assert '"orders.rev_90d"' in norm, sql
+        assert '"orders.rev_30d"' in norm, sql
+
+    async def test_windowed_source_column_filter_wraps_case_in_src(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A windowed measure whose source ``Column`` carries a ``filter=``
+        must CASE-wrap the value inside ``_src`` (``_w_value``), mirroring the
+        legacy filtered-aggregate shape."""
+        model = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="paid_revenue", sql="amount", filter="status = 'paid'", type=DataType.DOUBLE),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "paid_revenue:sum(window='90d')", "name": "pr_90d"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=model)
+        assert "_wm_orders__pr_90d" in sql, sql
+        src_body = _extract_src_body(sql)
+        assert "CASE" in src_body.upper(), f"_w_value must CASE-wrap the Column.filter.\nsrc:\n{src_body}"
+        assert "'paid'" in src_body, src_body
+
+    async def test_windowed_source_column_filter_crossing_join_kept_in_src(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """DEV-1714 (Codex C3): a windowed measure whose source ``Column.filter``
+        crosses a join must pull that join INTO ``_src`` (predicate-carrier join
+        discovery via the resolver's filter path, not just a local CASE)."""
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="flagged_revenue", sql="amount", filter="customers.region_id = 5", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "flagged_revenue:sum(window='90d')", "name": "fr_90d"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
+        assert "_wm_" in sql, sql
+        src_body = _extract_src_body(sql)
+        # Assert a real JOIN was registered — not merely that the alias appears
+        # inside the CASE predicate text (which would pass even if discovery
+        # were broken).
+        assert "customers" in _join_aliases(src_body), (
+            f"_src must register the customers JOIN crossed by the Column.filter.\nsrc:\n{src_body}"
+        )
+
+    async def test_windowed_model_filter_crossing_join_kept_in_src(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """DEV-1714 (Codex C3): a model-level ``SlayerModel.filters`` entry that
+        crosses a join must pull that join INTO ``_src`` (the Mode-A filter-text
+        carrier path, distinct from the query-filter path already pinned)."""
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            filters=["customers.region_id = 5"],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
+        assert "_wm_" in sql, sql
+        src_body = _extract_src_body(sql)
+        # Assert a real JOIN was registered (walk the JOIN nodes), not just an
+        # alias appearing in the filter predicate text.
+        assert "customers" in _join_aliases(src_body), (
+            f"_src must register the customers JOIN crossed by the model filter.\nsrc:\n{src_body}"
+        )
+
+    async def test_order_by_windowed_alias_resolves(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """ORDER BY the windowed measure's public alias must resolve against the
+        combined SELECT (the ``_wm_`` join-back column), not the base."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
+            order=[{"column": {"name": "revenue_90d"}, "direction": "desc"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert "_wm_" in norm, sql
+        order_portion = norm.split("ORDER BY", 1)[1] if "ORDER BY" in norm else ""
+        assert '"orders.revenue_90d"' in order_portion, (
+            f"ORDER BY must reference the windowed public alias.\nsql:\n{sql}"
+        )
+        # The order term is the BARE combined-SELECT output column (the _wm_
+        # value), never a ``_base.`` qualifier — _base excludes the windowed
+        # measure, so ``_base."orders.revenue_90d"`` would dangle.
+        assert '_base."orders.revenue_90d"' not in order_portion, sql
+        # And the windowed measure must NOT be materialised in _base as a dead
+        # plain aggregate (Codex re-review round 2).
+        base_body = _extract_cte_body(sql, r"_base")
+        assert '"orders.revenue_90d"' not in base_body, (
+            f"windowed measure must not render as a plain aggregate in _base.\n"
+            f"_base:\n{base_body}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # DEV-1714 Stage 10 — parity / semantic pins (F1/F4 playbook): turn the
+    # spec-interview decisions into contracts.
+    # ------------------------------------------------------------------ #
+
+    async def test_windowed_row_filter_applied_inside_src(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """F4: a query WHERE-phase row filter constrains the ``_src`` scope
+        (host-rooted scope inherits host row filters)."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
+            filters=["status = 'completed'"],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        assert "_wm_" in sql, sql
+        src_body = _extract_src_body(sql)
+        assert "'completed'" in src_body, (
+            f"WHERE-phase row filter must be applied inside _src.\nsrc:\n{src_body}"
+        )
+
+    async def test_windowed_date_range_not_applied_inside_src(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """The typed ``date_range`` on the window time dim must be STRIPPED from
+        ``_src`` — the trailing window has to reach rows before the range start
+        — while still bounding the outer/base grain."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+                date_range=["2024-06-01", "2024-12-31"],
+            )],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        assert "_wm_" in sql, sql
+        src_body = _extract_src_body(sql)
+        # The range join itself is present in _src.
+        assert "_src._w_time >=" in _norm(sql), sql
+        # The date_range lower bound must NOT appear inside _src (stripped)…
+        assert "2024-06-01" not in src_body, (
+            f"date_range must be stripped from _src.\nsrc:\n{src_body}"
+        )
+        # …but must still bound the host grain somewhere in the statement.
+        assert "2024-06-01" in sql, sql
+
+    async def test_windowed_explicit_time_filter_truncates_src(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """DEV-1732 (documented parity edge): an EXPLICIT row filter on the raw
+        window time column is NOT a ``date_range``, so it IS applied inside
+        ``_src`` — truncating the trailing window near the boundary. Stage 10
+        pins current (legacy) behavior; DEV-1732 tracks making it consistent."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
+            filters=["created_at >= '2024-06-01'"],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        assert "_wm_" in sql, sql
+        src_body = _extract_src_body(sql)
+        assert "2024-06-01" in src_body, (
+            f"DEV-1732: an explicit raw-time-column filter is applied inside _src "
+            f"(documented truncation).\nsrc:\n{src_body}"
+        )
+
+    async def test_windowed_output_is_scope_closed(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Acceptance: the emitted ``_wm_`` statement is scope-closed — every
+        alias referenced in a scope is bound in that scope's own FROM/JOINs.
+        Makes the ``assert_scope_closed`` guarantee an explicit contract rather
+        than only the autouse harness side effect."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        assert "_wm_" in sql, sql
+        # Explicit validator pass (raises ScopeLeakError on any unbound ref).
+        assert_scope_closed(sql, dialect="postgres")
+
+    async def test_same_windowed_measure_two_aliases_both_surface(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Codex#2: the same windowed formula selected under two names interns to
+        ONE slot / ONE ``_wm_`` CTE, but BOTH public aliases must surface in the
+        combined projection (the CTE's single aggregate column is remapped ``AS``
+        each alias) — the later alias must not be dropped."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[
+                {"formula": "revenue:sum(window='90d')", "name": "rev_a"},
+                {"formula": "revenue:sum(window='90d')", "name": "rev_b"},
+            ],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert '"orders.rev_a"' in norm, sql
+        assert '"orders.rev_b"' in norm, sql
+        # One shared _wm_ CTE (same structural key), not two.
+        assert norm.count("_wm_orders__rev_a AS (") == 1, sql
+
+    async def test_windowed_joined_time_dimension_registers_join_in_src(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """Codex#1: a windowed measure whose window time dimension lives on a
+        JOINED model must pull that join INTO ``_src`` (registered through the
+        scope), not reference an unbound alias."""
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="signup_at", sql="signup_at", type=DataType.TIMESTAMP),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="customers.signup_at"), granularity=TimeGranularity.MONTH,
+            )],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
+        assert "_wm_" in sql, sql
+        src_body = _extract_src_body(sql)
+        assert "customers" in _join_aliases(src_body), (
+            f"_src must register the customers JOIN crossed by the window time "
+            f"dimension.\nsrc:\n{src_body}"
+        )
 
     async def test_time_shift_row_based(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """time_shift without explicit granularity uses the time dim's granularity (calendar-based)."""
@@ -2080,15 +2321,6 @@ class TestRankFamilyTransforms:
             in _norm(sql)
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1497: the typed pipeline does not validate that a rank "
-            "partition_by column is a query dimension — it silently adds it "
-            "to the base GROUP BY (changing result grain) instead of raising. "
-            "Auto-promotes when the validation is restored."
-        ),
-    )
     async def test_partition_by_must_be_a_query_dimension(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
@@ -2458,7 +2690,6 @@ class TestMultiDialectGeneration:
             assert "INTERVAL" in sql_upper
 
     @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
-    @_XFAIL_WINDOWED
     async def test_window_measure_multi_unit_interval_dialect_correct(
         self, dialect: str, orders_model: SlayerModel,
     ) -> None:
@@ -2498,7 +2729,6 @@ class TestMultiDialectGeneration:
             )
 
     @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
-    @_XFAIL_WINDOWED
     async def test_window_measure_single_unit_interval_dialect_correct(
         self, dialect: str, orders_model: SlayerModel,
     ) -> None:
@@ -7188,11 +7418,12 @@ class TestDev1501BroadTriggerAndGuards:
     async def test_hidden_row_order_target_raises_nyi(
         self, generator: SQLGenerator
     ) -> None:
-        """ORDER BY a non-projected ROW column (e.g. ``customer_id``) is
-        not a supported shape and must raise NotImplementedError — both
-        today and after Change 2. Guards against broad ``include_order=
-        True`` accidentally materialising hidden row slots and silently
-        changing GROUP BY grain.
+        """ORDER BY a non-projected ROW column (e.g. ``customer_id``) in an
+        aggregated query is refused. DEV-1712 (Stage 8) replaced the earlier
+        ``NotImplementedError`` with a clear plan-time ``ValueError`` (the
+        column is not in the GROUP BY; add it to dimensions or order by an
+        aggregate of it) — the query is still rejected, never silently
+        grain-widened.
         """
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
@@ -7210,8 +7441,9 @@ class TestDev1501BroadTriggerAndGuards:
                 dimensions=[ColumnRef(name="status")],
                 order=[OrderItem(column="customer_id", direction="asc")],
             )
-            with pytest.raises(NotImplementedError):
+            with pytest.raises(ValueError) as ei:
                 await engine.execute(query, dry_run=True)
+            assert "customer_id" in str(ei.value)
 
     async def test_hidden_simple_aggregate_in_having(
         self, generator: SQLGenerator
@@ -10500,7 +10732,6 @@ class TestCastEmissionNonBasePaths:
             ],
         )
 
-    @_XFAIL_WINDOWED
     async def test_windowed_sum_with_measure_type_wraps_in_cast(
         self, orders_model_for_window: SlayerModel,
     ) -> None:
@@ -10534,12 +10765,15 @@ class TestCastEmissionNonBasePaths:
         assert "CAST(SUM(" in norm or "CAST (SUM(" in norm
         assert "DOUBLE" in norm
 
-    @_XFAIL_WINDOWED
-    async def test_windowed_sum_no_measure_type_skips_cast(
+    async def test_windowed_sum_no_measure_type_casts_inferred_type(
         self, orders_model_for_window: SlayerModel,
     ) -> None:
-        """Without a declared measure type, no CAST wrapper is emitted around
-        the windowed aggregation."""
+        """DEV-1714 decision: with no EXPLICIT measure type, the windowed
+        aggregation still CASTs on the type inferred from the source column
+        (``revenue`` is ``DOUBLE``) — exactly as a plain aggregate does in the
+        base path (DEV-1361). A windowed sum and a plain sum of the same no-type
+        measure must emit identical CAST behavior; the legacy explicit-only
+        distinction no longer exists on the typed pipeline."""
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(
             source_model="orders_for_window2",
@@ -10555,10 +10789,11 @@ class TestCastEmissionNonBasePaths:
         )
         orders_model_for_window.name = "orders_for_window2"
         sql = await _generate(gen, query, orders_model_for_window)
-        # Windowed CTE present but no CAST around SUM(_w_value).
         assert "_wm_orders_for_window2__rev_90d" in sql
         norm = _norm(sql).upper()
-        assert "CAST(SUM(_SRC._W_VALUE)" not in norm
+        # Inferred DOUBLE type drives a CAST around SUM(_src._w_value).
+        assert "CAST(SUM(" in norm or "CAST (SUM(" in norm
+        assert "DOUBLE" in norm
 
     async def test_percentile_uses_column_type_for_inner_cast(self) -> None:
         """``_resolve_value_sql`` must propagate ``column_type`` so that
@@ -12037,7 +12272,6 @@ class TestWindowedMeasureGuards:
             ],
         )
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
     async def test_windowed_non_sum_avg_raises(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -12047,7 +12281,6 @@ class TestWindowedMeasureGuards:
         with pytest.raises(ValueError, match="only supported for sum and avg"):
             await _engine_generate(query=query, model=orders_model)
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
     async def test_windowed_no_time_dimension_raises(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -12057,7 +12290,6 @@ class TestWindowedMeasureGuards:
         with pytest.raises(ValueError, match="could not resolve its time dimension"):
             await _engine_generate(query=query, model=orders_model)
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
     async def test_windowed_cross_model_raises(self, tmp_path) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
@@ -12087,7 +12319,6 @@ class TestWindowedMeasureGuards:
         with pytest.raises(NotImplementedError, match="cross-model"):
             await engine.execute(query, dry_run=True)
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
     async def test_windowed_with_transform_raises(self, orders_model: SlayerModel) -> None:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
@@ -12101,7 +12332,6 @@ class TestWindowedMeasureGuards:
         with pytest.raises(NotImplementedError, match="transform"):
             await _engine_generate(query=query, model=orders_model)
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
     async def test_windowed_as_transform_input_raises(self, orders_model: SlayerModel) -> None:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
@@ -12112,7 +12342,6 @@ class TestWindowedMeasureGuards:
         with pytest.raises(NotImplementedError, match="transform"):
             await _engine_generate(query=query, model=orders_model)
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
     async def test_windowed_in_arithmetic_raises(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -12122,7 +12351,6 @@ class TestWindowedMeasureGuards:
         with pytest.raises(NotImplementedError, match="arithmetic|composite|scalar"):
             await _engine_generate(query=query, model=orders_model)
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
     async def test_windowed_filter_only_hidden_raises(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -12133,13 +12361,217 @@ class TestWindowedMeasureGuards:
         with pytest.raises(NotImplementedError, match="selected"):
             await _engine_generate(query=query, model=orders_model)
 
-    @pytest.mark.xfail(strict=True, reason=_DEV1496_STAGE10)
     async def test_windowed_mixed_aggregate_filter_raises(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
             filters=["revenue:sum(window='90d') > 100 and revenue:sum > 50"],
+        )
+        with pytest.raises(NotImplementedError, match="mix"):
+            await _engine_generate(query=query, model=orders_model)
+
+    # ------------------------------------------------------------------ #
+    # DEV-1714 Stage 10 — loud-error coverage beyond the DEV-1496/1504 pins:
+    # invalid durations must raise at plan time (never a silent degrade nor a
+    # TypeError), the ``window`` kwarg name is reserved for sum/avg only (even
+    # on custom aggregations), and guard PRECEDENCE (Codex C1) is contractual.
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.parametrize("bad", ["90x", "d90", "9z"])
+    async def test_windowed_malformed_duration_raises(
+        self, bad: str, orders_model: SlayerModel,
+    ) -> None:
+        """A malformed compact duration must raise a clear ``ValueError`` at
+        plan time, not silently degrade."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": f"revenue:sum(window='{bad}')", "name": "rev_w"}],
+        )
+        with pytest.raises(ValueError, match=r"Use syntax like '1y2m3w5d6h7min8s'"):
+            await _engine_generate(query=query, model=orders_model)
+
+    async def test_windowed_empty_duration_raises(self, orders_model: SlayerModel) -> None:
+        """An empty window duration must raise the distinct empty-duration error."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='')", "name": "rev_w"}],
+        )
+        with pytest.raises(ValueError, match="cannot be empty"):
+            await _engine_generate(query=query, model=orders_model)
+
+    async def test_windowed_non_string_duration_raises(self, orders_model: SlayerModel) -> None:
+        """Codex C4: a non-string ``window`` value (e.g. ``window=90``) must be
+        normalized to a ``ValueError`` — never a raw ``TypeError`` from feeding a
+        number to the compact-duration regex."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window=90)", "name": "rev_w"}],
+        )
+        with pytest.raises(ValueError):
+            await _engine_generate(query=query, model=orders_model)
+
+    async def test_custom_aggregation_with_window_raises(self) -> None:
+        """The ``window`` kwarg name is reserved for sum/avg; invoking a custom
+        aggregation with ``window=`` must raise G1 (legacy parity — legacy pops
+        ``window`` unconditionally before dispatch)."""
+        model = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="amount_col", sql="amount", type=DataType.DOUBLE),
+            ],
+            aggregations=[Aggregation(name="myagg", formula="SUM({value})")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "amount_col:myagg(window='90d')", "name": "w"}],
+        )
+        with pytest.raises(ValueError, match="only supported for sum and avg"):
+            await _engine_generate(query=query, model=model)
+
+    async def test_windowed_transform_input_precedence_not_selected(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """Codex C1: a windowed aggregate nested in a transform interns as a
+        HIDDEN dependency slot, so the transform guard (G4) must win over the
+        hidden-slot guard (G6) — the error says ``transform``, never
+        ``selected``."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "cumsum(revenue:sum(window='90d'))", "name": "cum_w"}],
+        )
+        with pytest.raises(NotImplementedError) as excinfo:
+            await _engine_generate(query=query, model=orders_model)
+        msg = str(excinfo.value).lower()
+        assert "transform" in msg, msg
+        assert "selected" not in msg, msg
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "g1_non_sum_avg", "g2_no_time_dim", "g3_cross_model", "g4_transform",
+            "g5_arithmetic", "g6_hidden", "g7_mixed", "g8_malformed",
+        ],
+    )
+    def test_windowed_guards_fire_at_plan_time(self, case: str) -> None:  # NOSONAR(S3776) — flat case dispatch for a parametrized guard matrix; each branch builds one (query, bundle, exc, match) tuple, kept inline so the guard scenario reads next to its expectation.
+        """Decision D-a / Codex C1+C2: every windowed guard raises in the PLANNER
+        (``plan_query``) — before any SQL is rendered. Proves the guards are
+        plan-time (a renderer-only guard would fail this by not raising here)."""
+        created_at = Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP)
+        base_cols = [
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            created_at,
+            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+        ]
+        td = [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)]
+
+        def _plain() -> SlayerModel:
+            return SlayerModel(
+                name="orders", sql_table="public.orders", data_source="test",
+                columns=[c.model_copy() for c in base_cols],
+            )
+
+        def _bundle(model: SlayerModel, referenced=None) -> ResolvedSourceBundle:
+            return ResolvedSourceBundle(source_model=model, referenced_models=referenced or [])
+
+        if case == "g1_non_sum_avg":
+            q = SlayerQuery(source_model="orders", time_dimensions=td,
+                            measures=[{"formula": "revenue:min(window='30d')", "name": "rev_w"}])
+            bundle, exc, match = _bundle(_plain()), ValueError, "only supported for sum and avg"
+        elif case == "g2_no_time_dim":
+            q = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")],
+                            measures=[{"formula": "revenue:sum(window='30d')", "name": "rev_w"}])
+            bundle, exc, match = _bundle(_plain()), ValueError, "could not resolve its time dimension"
+        elif case == "g3_cross_model":
+            customers = SlayerModel(
+                name="customers", sql_table="customers", data_source="test",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+                ],
+            )
+            orders = SlayerModel(
+                name="orders", sql_table="orders", data_source="test",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                    created_at.model_copy(),
+                ],
+                joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            )
+            q = SlayerQuery(source_model="orders", time_dimensions=td,
+                            measures=[{"formula": "customers.revenue:sum(window='30d')", "name": "rev_w"}])
+            bundle, exc, match = _bundle(orders, [customers]), NotImplementedError, "cross-model"
+        elif case == "g4_transform":
+            model = _plain()
+            model.default_time_dimension = "created_at"
+            q = SlayerQuery(source_model="orders", time_dimensions=td, measures=[
+                {"formula": "revenue:sum(window='90d')", "name": "rev_w"},
+                {"formula": "time_shift(revenue:sum, -1)", "name": "rev_prev"},
+            ])
+            bundle, exc, match = _bundle(model), NotImplementedError, "transform"
+        elif case == "g5_arithmetic":
+            q = SlayerQuery(source_model="orders", time_dimensions=td,
+                            measures=[{"formula": "revenue:sum(window='90d') / 2", "name": "half_w"}])
+            bundle, exc, match = _bundle(_plain()), NotImplementedError, "arithmetic|composite|scalar"
+        elif case == "g6_hidden":
+            q = SlayerQuery(source_model="orders", time_dimensions=td,
+                            measures=[{"formula": "revenue:sum", "name": "rev"}],
+                            filters=["revenue:sum(window='90d') > 100"])
+            bundle, exc, match = _bundle(_plain()), NotImplementedError, "selected"
+        elif case == "g7_mixed":
+            q = SlayerQuery(source_model="orders", time_dimensions=td,
+                            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
+                            filters=["revenue:sum(window='90d') > 100 and revenue:sum > 50"])
+            bundle, exc, match = _bundle(_plain()), NotImplementedError, "mix"
+        else:  # g8_malformed
+            q = SlayerQuery(source_model="orders", time_dimensions=td,
+                            measures=[{"formula": "revenue:sum(window='90x')", "name": "rev_w"}])
+            bundle, exc, match = _bundle(_plain()), ValueError, "Use syntax like"
+
+        with pytest.raises(exc, match=match):
+            plan_query(query=q, bundle=bundle)
+
+    async def test_windowed_default_time_dimension_not_selected_raises(self) -> None:
+        """CR#3: a windowed measure whose only time dimension is the model's
+        ``default_time_dimension`` (never selected as a query ``time_dimensions``
+        entry, so never interned as a bucket-grain slot) must raise the clean G2
+        message — not crash on the required ``window_time_dimension_slot_id``."""
+        model = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+            default_time_dimension="created_at",
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
+        )
+        with pytest.raises(ValueError, match="could not resolve its time dimension"):
+            await _engine_generate(query=query, model=model)
+
+    async def test_windowed_mixed_row_filter_raises(self, orders_model: SlayerModel) -> None:
+        """Codex round 5: a single filter mixing a windowed measure with a ROW
+        predicate (not just a plain aggregate — G7's case) is reclassified whole
+        to POST, so the row part would neither filter pre-aggregation nor resolve
+        against an unprojected ``_base`` column. Reject it at plan time."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
+            filters=["revenue:sum(window='90d') > 100 and status = 'active'"],
         )
         with pytest.raises(NotImplementedError, match="mix"):
             await _engine_generate(query=query, model=orders_model)
