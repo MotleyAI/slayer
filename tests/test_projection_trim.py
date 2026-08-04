@@ -20,8 +20,8 @@ from sqlglot import exp
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+import slayer.engine.query_engine as query_engine_module
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.generator import SQLGenerator
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _engine_generate
@@ -1241,37 +1241,45 @@ class TestWindowChainReuse:
 # Test 17 (revised), 38, 39, 40, 41 — call-site / contract pins.
 # ===========================================================================
 class TestCallSitesAndContractPins:
-    async def test_get_column_types_does_not_call_legacy_generate(
+    async def test_get_column_types_renders_through_planned_stages(
         self, orders_model: SlayerModel, tmp_path, monkeypatch,
     ) -> None:
-        """DEV-1452 Stage B — ``get_column_types`` no longer routes through
-        ``SQLGenerator.generate(enriched=...)``. Spy on the legacy entry
-        point; assert it's never invoked. (Pre-Stage-B this test pinned
-        ``render_mode='outer'`` on that call; the typed-pipeline migration
-        deletes the legacy path entirely, so the equivalent contract is
-        "zero legacy generate calls".)
+        """DEV-1452 Stage B — ``get_column_types`` renders its type-probe
+        SQL through the typed ``generate_planned_stages`` entry point.
+
+        (Was ``test_get_column_types_does_not_call_legacy_generate``, which
+        spied on ``SQLGenerator.generate`` and asserted it was never called
+        with an ``enriched=`` kwarg. DEV-1703 deletes that entry point
+        outright, so the negative form is both unspyable — there is no
+        attribute left to patch — and vacuous. The positive half of the
+        same contract is what is pinned here: the probe goes through the
+        planned-stage renderer, exactly once, and yields probe SQL.)
         """
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
         await storage.save_model(orders_model)
         engine = SlayerQueryEngine(storage=storage)
 
-        legacy_calls: List[dict] = []
-        original_generate = SQLGenerator.generate
+        planned_calls: List[str] = []
+        original_generate = query_engine_module.generate_planned_stages
 
-        def _wrapper(self, *args, **kwargs):
-            if "enriched" in kwargs:
-                legacy_calls.append(dict(kwargs))
-            return original_generate(self, *args, **kwargs)
+        def _wrapper(*args, **kwargs):
+            sql = original_generate(*args, **kwargs)
+            planned_calls.append(sql)
+            return sql
 
-        monkeypatch.setattr(SQLGenerator, "generate", _wrapper)
+        monkeypatch.setattr(
+            query_engine_module, "generate_planned_stages", _wrapper,
+        )
 
         await engine.get_column_types(model_name="orders")
 
-        assert not legacy_calls, (
-            f"get_column_types must NOT call legacy "
-            f"SQLGenerator.generate(enriched=...); captured: {legacy_calls}"
+        assert len(planned_calls) == 1, (
+            f"get_column_types must render the probe through "
+            f"generate_planned_stages exactly once; got {len(planned_calls)} "
+            f"call(s)"
         )
+        assert "SELECT" in planned_calls[0].upper(), planned_calls[0]
 
     async def test_outer_wrapper_owns_order_limit_offset(
         self, orders_model: SlayerModel,

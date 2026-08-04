@@ -15,7 +15,6 @@ from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
-from slayer.sql.dialects import BigqueryDialect
 from slayer.sql.generator import (
     AggRenderSpec,
     SQLGenerator,
@@ -11167,8 +11166,14 @@ async def _build_joined_customers_orders_engine_dev1539(
     derived column carries ``customers_score_sql``. Used by the dotted
     joined-column wrap test and the dotted-branch backslash-safety
     test so the storage + join boilerplate isn't duplicated.
+
+    DEV-1703: a ``test`` datasource is registered so the two call sites can
+    render through ``engine.execute(dry_run=True)`` (they used to build an
+    ``EnrichedQuery`` by hand and feed the retired
+    ``SQLGenerator.generate(enriched=...)`` entry point).
     """
     storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
     await storage.save_model(SlayerModel(
         name="customers",
         sql_table="customers",
@@ -11282,35 +11287,51 @@ class TestFilterOuterParenWrapDev1539:
         )
 
     async def test_filter_inlines_multiterm_joined_column_with_outer_parens(
-        self, generator: SQLGenerator, tmp_path,
+        self, tmp_path,
     ) -> None:
-        """The dotted joined-column branch of ``resolve_filter_columns``
-        (enrichment.py around line 2789) must also wrap inlined non-bare
-        Column.sql bodies in outer parens. Filter
+        """The dotted joined-column filter branch must also wrap inlined
+        non-bare Column.sql bodies in outer parens. Filter
         ``joined_model.score > 7`` where the joined column's sql is a
         multi-term arithmetic expression.
+
+        DEV-1703: rendered through ``engine.execute(dry_run=True)``; was
+        ``engine._enrich`` + ``SQLGenerator.generate(enriched=...)``.
         """
         engine = await _build_joined_customers_orders_engine_dev1539(
             tmp_path=tmp_path,
             customers_score_sql="a * 0.6 + b * 0.4",
         )
-        orders = await engine.storage.get_model("orders", data_source="test")
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="*:count")],
             filters=["customers.score > 7"],
         )
-        enriched = await engine._enrich(query=query, model=orders)
-        sql = generator.generate(enriched=enriched)
+        sql = (await engine.execute(query=query, dry_run=True)).sql or ""
         norm = _norm(sql)
-        # The inlined cross-model expression must be wrapped before `> 7`.
-        m = _re.search(
-            r"\(\s*customers\.a\s*\*\s*0\.6\s*\+\s*customers\.b\s*\*\s*0\.4\s*\)\s*>\s*7",
-            norm,
-        )
+        # The inlined joined-column expression must be ENCLOSED before `> 7`.
+        # Same shape as the local-column sibling above: the typed pipeline
+        # qualifies the refs and encloses the derived expression in its type
+        # CAST — ``CAST(customers.a * 0.6 + customers.b * 0.4 AS DOUBLE
+        # PRECISION) > 7`` — so the whole arithmetic sum binds to ``> 7``,
+        # not just the trailing term. Single bounded quantifier (`[^)]+`)
+        # keeps the S5852-safe regex shape.
+        assert "WHERE" in norm
+        where_clause = norm.split("WHERE", 1)[1]
+        m = _re.search(r"CAST\(\s*customers\.a \* 0\.6[^)]+\)\s*>\s*7", where_clause)
         assert m is not None, (
-            f"Expected dotted joined-column multi-term sql wrapped before `> 7`; "
-            f"got normalised SQL:\n{norm}"
+            f"Expected dotted joined-column multi-term sql enclosed before "
+            f"`> 7`; got: {where_clause}"
+        )
+        # Both weighted terms survive inside the enclosed LHS.
+        for _term in ("customers.a", "customers.b"):
+            assert _term in m.group(0), (
+                f"Expected weighted term {_term} inside the enclosed LHS; "
+                f"got: {m.group(0)}"
+            )
+        # Negative: the trailing arithmetic term must NOT land bare next to
+        # ``> 7`` (the un-enclosed, precedence-broken shape).
+        assert "* 0.4 > 7" not in where_clause, (
+            f"Pre-wrap shape `b * 0.4 > 7` should not survive; got: {where_clause}"
         )
 
     async def test_dsl_compare_lhs_binop_wrapped(
@@ -11497,12 +11518,15 @@ class TestFilterOuterParenWrapDev1539:
         )
 
     async def test_filter_inline_preserves_backslash_in_joined_column_sql(
-        self, generator: SQLGenerator, tmp_path,
+        self, tmp_path,
     ) -> None:
         """Site 1b backslash safety: the dotted joined-column inlining
-        branch at ``enrichment.py:2789`` must also use lambda-replacement
-        in ``re.sub`` so backslashes inside the joined column's SQL
-        aren't silently halved when substituted into the filter text.
+        branch must also use lambda-replacement in ``re.sub`` so
+        backslashes inside the joined column's SQL aren't silently halved
+        when substituted into the filter text.
+
+        DEV-1703: rendered through ``engine.execute(dry_run=True)``; was
+        ``engine._enrich`` + ``SQLGenerator.generate(enriched=...)``.
         """
         # The joined ``customers.risk`` column must be MULTI-TERM so
         # the non-bare-identifier inlining branch fires AND contains a
@@ -11516,7 +11540,6 @@ class TestFilterOuterParenWrapDev1539:
             tmp_path=tmp_path,
             customers_score_sql=risk_sql,
         )
-        orders = await engine.storage.get_model("orders", data_source="test")
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="*:count")],
@@ -11524,8 +11547,7 @@ class TestFilterOuterParenWrapDev1539:
             # the alias under which the backslash-bearing sql lives.
             filters=["customers.score > 0"],
         )
-        enriched = await engine._enrich(query=query, model=orders)
-        sql = generator.generate(enriched=enriched)
+        sql = (await engine.execute(query=query, dry_run=True)).sql or ""
         assert f"'{double_bs}'" in sql, (
             f"Site 1b (dotted-path) backslash halving regression; got:\n{sql}"
         )
@@ -12060,61 +12082,78 @@ class TestBigQueryAliasMangling:
                 f"stage under the same mangled name:\n{sql}"
             )
 
-    async def test_rewrite_fires_after_outer_projection_trim(
+    async def test_rewrite_mangles_the_final_public_projection(
         self, orders_model: SlayerModel,
     ) -> None:
-        """The BigQuery alias rewrite must fire AFTER
-        ``_apply_outer_projection_trim`` (and not before). Mangling before
-        the trim would let the trim's parser see already-mangled aliases
-        and potentially miss public-projection columns. Pins Codex MEDIUM
-        #5 — the placement contract.
+        """On BigQuery, the FINAL emitted SQL's public projection carries
+        ``___``-mangled aliases — the rewrite ran on SQL whose projection
+        had already been decided.
 
-        Strategy: spy on both ``SQLGenerator._apply_outer_projection_trim``
-        and ``BigqueryDialect.rewrite_emitted_sql`` and assert the call
-        order. Both wrappers delegate to the real implementations so the
-        test verifies the production code path, not a stubbed substitute.
+        SUBSTITUTION (DEV-1703). This test replaces
+        ``test_rewrite_fires_after_outer_projection_trim``, which spied on
+        ``SQLGenerator._apply_outer_projection_trim`` and
+        ``BigqueryDialect.rewrite_emitted_sql`` and asserted the call order
+        ``["trim", "rewrite"]`` (Codex MEDIUM #5 — mangling before the trim
+        would let the trim's parser see already-mangled aliases and miss
+        public-projection columns). ``_apply_outer_projection_trim`` existed
+        only on the retired ``SQLGenerator.generate(enriched=...)`` entry
+        point: the typed pipeline has no trim pass at all, because the
+        planner BUILDS the public projection instead of trimming a wider one
+        down. The ordering contract is therefore unrepresentable — there is
+        no second call to order against.
 
-        NOTE: ``_apply_outer_projection_trim`` exists only on the
-        ``SQLGenerator.generate(enriched=...)`` entry point — the typed
-        pipeline builds the public projection in the planner instead, so
-        there is no typed analogue of this ordering contract. The enriched
-        query is therefore built through ``engine._enrich`` (same as the
-        other ``generate(enriched=...)`` tests in this module) rather than
-        importing ``slayer.engine.enrichment`` directly; the contract this
-        test pins retires together with that entry point.
+        What survives is the OBSERVABLE half of that contract, pinned below:
+        the mangling is applied to the finished, already-projected SQL. If
+        the rewrite fired before the projection was decided, the projection
+        layer emitted afterwards would carry dotted aliases and the outermost
+        SELECT would come back with ``orders.status`` rather than
+        ``orders___status``.
+
+        The same query as the retired test is used — the ``dense_rank``
+        filter forces a hidden hoisted column, so the public projection is a
+        real narrowing rather than a no-op on a trivial query.
         """
-        gen = SQLGenerator(dialect="bigquery")
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="*:count")],
             dimensions=[ColumnRef(name="status")],
             # Filter using a windowed transform creates a hidden hoisted
-            # column, so the trim has actual work to do (rather than being
-            # a no-op on a trivial query).
+            # column, so the public projection is a real narrowing.
             filters=["dense_rank(revenue:sum) <= 5"],
         )
         async with _persist_and_engine(orders_model, ds_type="bigquery") as engine:
-            enriched = await engine._enrich(query=query, model=orders_model)
-        call_order: list[str] = []
-        real_trim = SQLGenerator._apply_outer_projection_trim
-        real_rewrite = BigqueryDialect.rewrite_emitted_sql
-
-        def trim_spy(self, *, sql, enriched):
-            call_order.append("trim")
-            return real_trim(self, sql=sql, enriched=enriched)
-
-        def rewrite_spy(self, sql):
-            call_order.append("rewrite")
-            return real_rewrite(self, sql)
-
-        with patch.object(SQLGenerator, "_apply_outer_projection_trim", trim_spy), \
-                patch.object(BigqueryDialect, "rewrite_emitted_sql", rewrite_spy):
-            gen.generate(enriched=enriched, render_mode="outer")
-        # Trim ran first; rewrite ran after.
-        assert call_order == ["trim", "rewrite"], (
-            f"_apply_outer_projection_trim must run before rewrite_emitted_sql, "
-            f"got call order: {call_order}"
+            resp = await engine.execute(query=query, dry_run=True)
+        sql = resp.sql or ""
+        # The outermost SELECT is exactly the public projection, mangled.
+        outer = _outer_projection_names(sql, dialect="bigquery")
+        assert outer == {"orders___status", "orders____count"}, (
+            f"final projection must be the mangled public keys; got "
+            f"{outer!r}\nSQL:\n{sql}"
         )
+        # ...and the un-mangled dotted forms never reach the output.
+        for dotted in ("orders.status", "orders._count"):
+            assert dotted not in outer, (
+                f"dotted alias {dotted!r} survived into the final projection — "
+                f"the rewrite did not run on the projected SQL:\n{sql}"
+            )
+        # The hidden hoisted column was narrowed away by the projection (so
+        # the projection genuinely ran) yet is itself mangled where it does
+        # appear (so the rewrite covered the inner layers too).
+        assert "orders____dense_rank_inner" in sql, (
+            f"expected the hoisted dense_rank column, mangled, inside the "
+            f"query body:\n{sql}"
+        )
+        assert not any(name.endswith("_dense_rank_inner") for name in outer), (
+            f"hidden hoisted column must not reach the public projection; got "
+            f"{outer!r}\nSQL:\n{sql}"
+        )
+        # No backticked identifier anywhere retains a dot.
+        for ident in _re.findall(r"`([^`]+)`", sql):
+            assert "." not in ident, (
+                f"BigQuery output still has a dotted identifier `{ident}`:\n{sql}"
+            )
+        # The engine decodes the mangled keys back to the dotted result keys.
+        assert resp.columns == ["orders.status", "orders._count"], resp.columns
 
 
 class TestCrossModelAggregateSourceSqlJoinInference:
