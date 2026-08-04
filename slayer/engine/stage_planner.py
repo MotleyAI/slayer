@@ -267,10 +267,13 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
     filter_vks: list,
     order_vks: list,
     active_td_key,
-) -> set:
+) -> dict:
     """Reject unsupported windowed-measure shapes at plan time and return the
-    set of cleanly-SELECTED windowed ``AggregateKey``s (the ones that get a
-    ``WindowedAggregatePlan``).
+    cleanly-SELECTED windowed ``AggregateKey``s (the ones that get a
+    ``WindowedAggregatePlan``) as an insertion-ordered mapping in measure
+    declaration order — so the emitted ``_wm_`` CTEs and combined-SELECT columns
+    are DETERMINISTIC (a set made the SQL output order vary across runs, which
+    breaks the SQL-text cache key of DEV-1587).
 
     Runs on the ORIGINAL declared-measure / filter / order value-key trees —
     before projection interning would hide a transform / composite dependency
@@ -279,7 +282,7 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
     """
     all_vks = [*measure_vks, *filter_vks, *order_vks]
     if not any(_windowed_agg_keys(vk) for vk in all_vks):
-        return set()
+        return {}
 
     # G1 / G8 / G3 — per-key validation runs FIRST (documented precedence), so a
     # windowed key with an invalid aggregation / malformed duration / cross-model
@@ -301,13 +304,13 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
 
     # G5 — a top-level declared measure that IS a windowed AggregateKey is
     # cleanly selected; a windowed key nested in an arithmetic / scalar composite
-    # measure is rejected.
-    selected_windowed: set = set()
+    # measure is rejected. ``dict`` (not ``set``) preserves measure order.
+    selected_windowed: dict = {}
     for vk in measure_vks:
         if not _windowed_agg_keys(vk):
             continue
         if _window_kwarg_of(vk) is not None:
-            selected_windowed.add(vk)
+            selected_windowed.setdefault(vk, None)
         else:
             raise NotImplementedError(  # G5
                 "Windowed measures (window='…') inside arithmetic / composite / "
@@ -350,7 +353,7 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
 
 def _build_windowed_plans(
     *,
-    selected_windowed: set,
+    selected_windowed: dict,
     registry,
     row_slots: list,
     active_td_key,

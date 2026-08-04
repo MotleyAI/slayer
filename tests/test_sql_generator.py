@@ -1182,6 +1182,9 @@ class TestFields:
         # Each windowed CTE is defined exactly once (distinct, never collapsed).
         assert norm.count("_wm_orders__rev_90d AS (") == 1, sql
         assert norm.count("_wm_orders__rev_30d AS (") == 1, sql
+        # Codex round 3: deterministic order — CTEs follow measure declaration
+        # order (rev_90d before rev_30d), never set-iteration order.
+        assert norm.index("_wm_orders__rev_90d AS (") < norm.index("_wm_orders__rev_30d AS ("), sql
         # Both CTEs join back to the base grain in the combined SELECT.
         assert "LEFT JOIN _wm_orders__rev_90d" in norm, sql
         assert "LEFT JOIN _wm_orders__rev_30d" in norm, sql
