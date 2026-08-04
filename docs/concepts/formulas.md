@@ -71,8 +71,9 @@ The following windowed-measure shapes raise a clear error rather than returning
 wrong numbers, and are planned follow-ups: a windowed aggregation other than
 `sum`/`avg`; a cross-model windowed measure (`customers.revenue:sum(window=…)`);
 a windowed measure combined with a transform (`cumsum`, `time_shift`, …), nested
-in an arithmetic/composite expression (`revenue:sum(window='90d') / 2`), or used
-only in a filter that also references a plain aggregate.
+in an arithmetic/composite expression (`revenue:sum(window='90d') / 2`), or
+compared against a plain aggregate inside one filter
+(`revenue:sum(window='90d') > 100 and revenue:sum > 50`).
 
 ---
 

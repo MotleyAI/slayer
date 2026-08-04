@@ -281,9 +281,17 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
     if not any(_windowed_agg_keys(vk) for vk in all_vks):
         return set()
 
+    # G1 / G8 / G3 — per-key validation runs FIRST (documented precedence), so a
+    # windowed key with an invalid aggregation / malformed duration / cross-model
+    # source reports its specific error even when it is also wrapped in a
+    # transform (G4) or composite (G5).
+    for vk in all_vks:
+        for key in _windowed_agg_keys(vk):
+            _reject_unsupported_windowed_key(key)
+
     # G4 — a windowed measure cannot coexist with (or be the input of) any
-    # transform. Checked first so ``cumsum(revenue:sum(window='90d'))`` reports
-    # 'transform', never the hidden-slot 'selected'.
+    # transform. Checked before the hidden-slot guard so
+    # ``cumsum(revenue:sum(window='90d'))`` reports 'transform', never 'selected'.
     if any(isinstance(k, TransformKey) for vk in all_vks for k in walk_value_keys(vk)):
         raise NotImplementedError(
             "Windowed measures (window='…') combined with transforms are not yet "
@@ -291,9 +299,9 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
             "query stage."
         )
 
-    # Selected windowed measures: a top-level declared measure that IS a
-    # windowed AggregateKey. A windowed key nested in an arithmetic / scalar
-    # composite measure is G5.
+    # G5 — a top-level declared measure that IS a windowed AggregateKey is
+    # cleanly selected; a windowed key nested in an arithmetic / scalar composite
+    # measure is rejected.
     selected_windowed: set = set()
     for vk in measure_vks:
         if not _windowed_agg_keys(vk):
@@ -305,11 +313,6 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
                 "Windowed measures (window='…') inside arithmetic / composite / "
                 "scalar expressions are not yet supported (DEV-1504)."
             )
-
-    # G1 / G8 / G3 on every windowed key (selected and filter/order-referenced).
-    for vk in all_vks:
-        for key in _windowed_agg_keys(vk):
-            _reject_unsupported_windowed_key(key)
 
     # G7 (mixed) then G6 (hidden) for filter-referenced windowed measures.
     for vk in filter_vks:
@@ -361,6 +364,19 @@ def _build_windowed_plans(
     if not selected_windowed:
         return plans, windowed_slot_ids
 
+    # CR#3 / G2 (post-projection): the window time dimension must be a SELECTED
+    # query time dimension (interned as a row slot so it becomes part of the
+    # bucket grain). A model ``default_time_dimension`` the query does not select
+    # resolves ``active_td_key`` (so the pre-projection G2 passes) but is never
+    # interned — ``active_td_slot_id`` is then None. Raise the G2 message rather
+    # than crash on the required ``window_time_dimension_slot_id: SlotId`` field.
+    if active_td_slot_id is None:
+        raise ValueError(
+            "Windowed measure could not resolve its time dimension. Add a single "
+            "time_dimensions entry, or set main_time_dimension to select among "
+            "multiple time dimensions."
+        )
+
     # Grain partition from the PROJECTED (non-hidden) ROW slots: plain
     # dimensions → ``_w_dim_<n>``, non-window time dimensions → ``_w_td_<n>``.
     dim_slot_ids: list = []
@@ -382,7 +398,15 @@ def _build_windowed_plans(
     for key in selected_windowed:
         sid = registry.find_by_key(key)
         if sid is None:
-            continue
+            # CR#4: the guard pass already proved this is a cleanly-selected
+            # top-level windowed measure, so a missing slot is planner/projection
+            # drift — fail loudly rather than let the measure degrade to a plain
+            # (non-windowed) aggregate in the base (the silent-wrong-results mode
+            # the guards exist to prevent).
+            raise RuntimeError(
+                f"Windowed measure {key!r} was selected but has no projection "
+                f"slot; planner/projection drift (DEV-1714).",
+            )
         window_raw = _window_kwarg_of(key)
         plans.append(WindowedAggregatePlan(
             aggregate_slot_id=sid,

@@ -5524,6 +5524,11 @@ class SQLGenerator:
         for idx, sid in enumerate(plan.other_time_dimension_slot_ids):
             tslot = slots_by_id.get(sid)
             base_alias = _alias_of(sid)
+            # Codex#1: register any join the time column crosses into the scope
+            # (a joined time dimension would otherwise reference an unbound alias
+            # in _src); the expression itself comes from the is_root/derived-aware
+            # helper below.
+            src_scope.resolve(tslot.key.column)
             raw = self._raw_time_col_expr_for_planned(
                 time_column=tslot.key.column, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
@@ -5540,6 +5545,8 @@ class SQLGenerator:
         # The window time dimension's RAW column → ``_w_time`` (the range axis).
         wtd_slot = slots_by_id.get(plan.window_time_dimension_slot_id)
         wtd_alias = _alias_of(plan.window_time_dimension_slot_id)
+        # Codex#1: register the window time column's crossed join (if any) too.
+        src_scope.resolve(wtd_slot.key.column)
         raw_time = self._raw_time_col_expr_for_planned(
             time_column=wtd_slot.key.column, source_model=source_model,
             source_relation=source_relation, bundle=bundle,
@@ -6289,13 +6296,27 @@ class SQLGenerator:
             )
 
         # DEV-1714 Stage 10 — windowed side: project each ``_wm_`` CTE's
-        # aggregate column (its name IS the dotted result key, so no ``AS``
-        # remap is needed).
+        # aggregate column. Codex#2: one occurrence per declared user alias (C13
+        # lets the same windowed key be selected under multiple names — the CTE
+        # holds one aggregate column, remapped ``AS`` each public alias). The
+        # column name already IS the primary dotted result key, so that occurrence
+        # needs no remap.
         for plan in planned_query.windowed_aggregate_plans:
+            agg_slot = slots_by_id[plan.aggregate_slot_id]
             cte_name = wm_cte_name_for_plan[plan.aggregate_slot_id]
             agg_col = wm_agg_col_for_plan[plan.aggregate_slot_id]
-            combined_parts.append(f'{cte_name}.{self._quote_ident(agg_col)}')
-            combined_aliases_by_slot_id[plan.aggregate_slot_id] = [agg_col]
+            public_names = list(agg_slot.public_aliases) or (
+                [agg_slot.public_name] if agg_slot.public_name else []
+            )
+            full_aliases = [f"{source_relation}.{p}" for p in public_names] or [agg_col]
+            for full in full_aliases:
+                if full == agg_col:
+                    combined_parts.append(f'{cte_name}.{self._quote_ident(agg_col)}')
+                else:
+                    combined_parts.append(
+                        f'{cte_name}.{self._quote_ident(agg_col)} AS {self._quote_ident(full)}',
+                    )
+            combined_aliases_by_slot_id[plan.aggregate_slot_id] = list(full_aliases)
 
         from_clause_str = "FROM _base"
         joined_cte_names: set = set()
@@ -6426,6 +6447,18 @@ class SQLGenerator:
         # combined cross-model result — the combined SELECT becomes the base
         # CTE and the window step CTEs / outer wrap are layered above it.
         if planned_query.transform_layers:
+            if wm_ctes:
+                # Unreachable today — guard G4 rejects a windowed measure that
+                # coexists with a transform — but the combined SELECT already
+                # projects/joins the _wm_ CTEs, which this prelude omits. Fail
+                # loudly so lifting G4 (DEV-1504) can't silently emit a statement
+                # referencing undefined _wm_ CTEs.
+                raise NotImplementedError(
+                    "DEV-1714 Stage 10: a windowed measure combined with a "
+                    "transform layer is not supported (guarded at plan time by "
+                    "G4); the cross-model transform chain does not carry `_wm_` "
+                    "CTEs.",
+                )
             return self._render_cross_model_transform_chain(
                 prelude_ctes=[("_base", base_cte_sql)] + cm_ctes,
                 combined_select_sql=combined_select_sql,

@@ -1399,6 +1399,65 @@ class TestFields:
         # Explicit validator pass (raises ScopeLeakError on any unbound ref).
         assert_scope_closed(sql, dialect="postgres")
 
+    async def test_same_windowed_measure_two_aliases_both_surface(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Codex#2: the same windowed formula selected under two names interns to
+        ONE slot / ONE ``_wm_`` CTE, but BOTH public aliases must surface in the
+        combined projection (the CTE's single aggregate column is remapped ``AS``
+        each alias) — the later alias must not be dropped."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[
+                {"formula": "revenue:sum(window='90d')", "name": "rev_a"},
+                {"formula": "revenue:sum(window='90d')", "name": "rev_b"},
+            ],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert '"orders.rev_a"' in norm, sql
+        assert '"orders.rev_b"' in norm, sql
+        # One shared _wm_ CTE (same structural key), not two.
+        assert norm.count("_wm_orders__rev_a AS (") == 1, sql
+
+    async def test_windowed_joined_time_dimension_registers_join_in_src(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """Codex#1: a windowed measure whose window time dimension lives on a
+        JOINED model must pull that join INTO ``_src`` (registered through the
+        scope), not reference an unbound alias."""
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="signup_at", sql="signup_at", type=DataType.TIMESTAMP),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="customers.signup_at"), granularity=TimeGranularity.MONTH,
+            )],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
+        assert "_wm_" in sql, sql
+        src_body = _extract_src_body(sql)
+        assert "customers" in _join_aliases(src_body), (
+            f"_src must register the customers JOIN crossed by the window time "
+            f"dimension.\nsrc:\n{src_body}"
+        )
+
     async def test_time_shift_row_based(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """time_shift without explicit granularity uses the time dim's granularity (calendar-based)."""
         orders_model.default_time_dimension = "created_at"
@@ -12523,4 +12582,25 @@ class TestWindowedMeasureGuards:
 
         with pytest.raises(exc, match=match):
             plan_query(query=q, bundle=bundle)
+
+    async def test_windowed_default_time_dimension_not_selected_raises(self) -> None:
+        """CR#3: a windowed measure whose only time dimension is the model's
+        ``default_time_dimension`` (never selected as a query ``time_dimensions``
+        entry, so never interned as a bucket-grain slot) must raise the clean G2
+        message — not crash on the required ``window_time_dimension_slot_id``."""
+        model = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+            default_time_dimension="created_at",
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
+        )
+        with pytest.raises(ValueError, match="could not resolve its time dimension"):
+            await _engine_generate(query=query, model=model)
 
