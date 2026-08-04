@@ -302,6 +302,27 @@ class RollupGraphError(Exception):
 # ---------------------------------------------------------------------------
 
 
+def _is_cross_schema_fk(fk: dict, schema: str | None) -> bool:
+    """Does this FK point at a table in a DIFFERENT schema than the one ingested?
+
+    Models are keyed by bare table name within a datasource, so a cross-schema
+    FK has no model to bind to. Without this guard it would silently bind to a
+    same-named table in the ingested schema — producing a join to the wrong
+    table and, since DEV-1688, inferring that join's cardinality from the
+    wrong table's key constraints.
+
+    Only skips when both schemas are known AND differ: ``referred_schema`` is
+    commonly ``None`` for same-schema FKs (and always ``None`` on schemaless
+    backends like SQLite), which must keep working.
+    """
+    referred_schema = fk.get("referred_schema")
+    return (
+        referred_schema is not None
+        and schema is not None
+        and referred_schema != schema
+    )
+
+
 def _get_fk_relationships(
     inspector: sa.engine.Inspector,
     table_name: str,
@@ -317,6 +338,8 @@ def _get_fk_relationships(
     for fk in fks:
         referred_table = fk["referred_table"]
         if referred_table not in table_set or referred_table == table_name:
+            continue
+        if _is_cross_schema_fk(fk, schema):
             continue
         constrained = fk["constrained_columns"]
         referred = fk["referred_columns"]
@@ -409,6 +432,8 @@ def _get_fk_constraint_groups(
         referred_table = fk["referred_table"]
         if referred_table not in table_set or referred_table == table_name:
             continue
+        if _is_cross_schema_fk(fk, schema):
+            continue
         pairs = list(zip(fk["constrained_columns"], fk["referred_columns"]))
         if pairs:
             result.append((referred_table, pairs))
@@ -461,23 +486,43 @@ def _unique_constraint_key_sets(
     return out
 
 
+def _is_partial_index(idx: dict) -> bool:
+    """Does this index carry a filter predicate (a PARTIAL index)?
+
+    A partial unique index (``CREATE UNIQUE INDEX ... WHERE deleted_at IS
+    NULL``) only guarantees uniqueness among the rows matching its predicate,
+    so it is NOT evidence of whole-table uniqueness. SQLAlchemy surfaces the
+    predicate per dialect under ``dialect_options`` as ``<dialect>_where``
+    (``postgresql_where``, ``sqlite_where``, ...).
+    """
+    opts = idx.get("dialect_options") or {}
+    return any(key.endswith("_where") and opts[key] for key in opts)
+
+
 def _unique_index_key_sets(
     inspector: sa.engine.Inspector, table_name: str, schema: str | None,
 ) -> list[list[str]]:
-    """Key-sets from unique indexes.
+    """Key-sets from unique indexes that constrain the WHOLE table.
 
-    A key-set with ANY falsy member is rejected outright rather than compacted.
-    SQLAlchemy reports expression-index members as ``None`` in ``column_names``
-    (the text lives in ``expressions``), so dropping them would turn a unique
-    index on ``(email, lower(name))`` into a bogus single-column claim on
-    ``email`` — wrongly stamping ``Column.unique`` and inferring a one-side
-    cardinality. Same rule as ``_unique_constraint_key_sets``.
+    Two shapes are rejected rather than trusted:
+
+    * **Expression members.** SQLAlchemy reports expression-index members as
+      ``None`` in ``column_names`` (the text lives in ``expressions``), so
+      compacting them away would turn a unique index on
+      ``(email, lower(name))`` into a bogus single-column claim on ``email``.
+      Any falsy member rejects the whole key-set — same rule as
+      ``_unique_constraint_key_sets``.
+    * **Partial indexes.** A predicate-filtered unique index says nothing
+      about rows outside the predicate.
+
+    Either mistake would wrongly stamp ``Column.unique`` and infer a one-side
+    cardinality.
     """
     out: list[list[str]] = []
     for idx in _safe_introspect(
         lambda: inspector.get_indexes(table_name, schema=schema)
     ):
-        if not idx.get("unique"):
+        if not idx.get("unique") or _is_partial_index(idx):
             continue
         cols = idx.get("column_names") or []
         if cols and all(cols):

@@ -22,6 +22,7 @@ from slayer.engine.ingestion import (
     _build_fk_graph,
     _generate_joins,
     _get_single_column_unique_names,
+    _is_cross_schema_fk,
     _unique_index_key_sets,
     ingest_datasource_idempotent,
 )
@@ -262,3 +263,92 @@ class TestColumnUnique:
         assert _get_single_column_unique_names(
             insp, "t", None, pk_cols=set()
         ) == {"slug"}
+
+    def test_partial_unique_index_is_not_a_uniqueness_claim(self) -> None:
+        """A predicate-filtered unique index constrains only matching rows.
+
+        `CREATE UNIQUE INDEX ... ON t (email) WHERE deleted_at IS NULL` (the
+        common soft-delete pattern) says nothing about rows outside the
+        predicate, so it must not stamp `unique` or imply a one-side arity.
+        """
+
+        class _FakeInspector:
+            def get_unique_constraints(self, table_name, schema=None):
+                return []
+
+            def get_indexes(self, table_name, schema=None):
+                return [
+                    {
+                        "unique": True,
+                        "column_names": ["email"],
+                        "dialect_options": {"postgresql_where": "deleted_at IS NULL"},
+                    },
+                    {"unique": True, "column_names": ["slug"]},
+                    # An empty predicate is not a predicate.
+                    {
+                        "unique": True,
+                        "column_names": ["ref"],
+                        "dialect_options": {"postgresql_where": None},
+                    },
+                ]
+
+        insp = _FakeInspector()
+        assert _unique_index_key_sets(insp, "t", None) == [["slug"], ["ref"]]
+        assert _get_single_column_unique_names(
+            insp, "t", None, pk_cols=set()
+        ) == {"slug", "ref"}
+
+
+class TestCrossSchemaFk:
+    """A cross-schema FK has no model to bind to and must not be guessed."""
+
+    def test_cross_schema_fk_is_skipped(self) -> None:
+        fk = {
+            "referred_table": "customers",
+            "referred_schema": "other",
+            "constrained_columns": ["customer_id"],
+            "referred_columns": ["id"],
+        }
+        assert _is_cross_schema_fk(fk, "public") is True
+
+    def test_same_schema_fk_is_kept(self) -> None:
+        fk = {"referred_table": "customers", "referred_schema": "public"}
+        assert _is_cross_schema_fk(fk, "public") is False
+
+    def test_null_referred_schema_is_kept(self) -> None:
+        # Same-schema FKs commonly report referred_schema=None.
+        fk = {"referred_table": "customers", "referred_schema": None}
+        assert _is_cross_schema_fk(fk, "public") is False
+
+    def test_schemaless_backend_is_kept(self) -> None:
+        # SQLite and friends have no schema at all.
+        fk = {"referred_table": "customers", "referred_schema": None}
+        assert _is_cross_schema_fk(fk, None) is False
+
+    def test_cross_schema_fk_excluded_from_generated_joins(self) -> None:
+        """End-to-end: the wrong same-named table is not joined to."""
+
+        class _FakeInspector:
+            def get_foreign_keys(self, table_name, schema=None):
+                return [
+                    {
+                        "referred_table": "customers",
+                        "referred_schema": "archive",  # NOT the ingested schema
+                        "constrained_columns": ["customer_id"],
+                        "referred_columns": ["id"],
+                    },
+                ]
+
+            def get_pk_constraint(self, table_name, schema=None):
+                return {"constrained_columns": ["id"]}
+
+            def get_unique_constraints(self, table_name, schema=None):
+                return []
+
+            def get_indexes(self, table_name, schema=None):
+                return []
+
+        joins = _generate_joins(
+            _FakeInspector(), "orders", {"customers"}, "public", {"orders", "customers"},
+        )
+        assert joins == []
