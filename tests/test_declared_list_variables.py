@@ -104,6 +104,7 @@ def test_true_flag_enables_coercion():
         {"note": {}},                        # unrelated bag under the same key
         {"note": {"text": "hi"}},            # dict entries, but no 'member'
         {"note": {"member": 42}},            # 'member' present but not a string
+        {"note": {"member": ""}},            # empty member — never importer output
     ],
 )
 def test_unrelated_meta_under_the_same_key_is_not_a_declaration(bag):

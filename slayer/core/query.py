@@ -557,12 +557,13 @@ def declared_variable_specs(model: SlayerModel) -> dict[str, dict]:
     user-extensible, so every layer is shape-checked and a malformed bag
     degrades to "nothing declared" rather than raising during a query.
 
-    An entry counts as a declaration only if it carries a string ``member`` —
-    the shape every importer writes. That makes the bag SELF-IDENTIFYING, so a
-    hand-written ``meta`` that happens to reuse the ``cube_variables`` key for
-    something else (``{"cube_variables": {"note": {}}}``) is not mistaken for
-    generated SQL. The distinction matters: :func:`declares_variables` disables
-    the zero-variable brace-literal fast path, so a false positive would make a
+    An entry counts as a declaration only if it carries a NON-EMPTY string
+    ``member`` — the shape every importer writes (a member name is always a
+    parsed identifier). That makes the bag SELF-IDENTIFYING, so a hand-written
+    ``meta`` that happens to reuse the ``cube_variables`` key for something else
+    (``{"cube_variables": {"note": {}}}``) is not mistaken for generated SQL.
+    The distinction matters: :func:`declares_variables` disables the
+    zero-variable brace-literal fast path, so a false positive would make a
     previously-working model with raw braces start raising.
     """
     declared = (model.meta or {}).get("cube_variables")
@@ -571,10 +572,15 @@ def declared_variable_specs(model: SlayerModel) -> dict[str, dict]:
     return {
         name: spec
         for name, spec in declared.items()
-        if isinstance(name, str)
-        and isinstance(spec, dict)
-        and isinstance(spec.get("member"), str)
+        if isinstance(name, str) and isinstance(spec, dict) and _is_member_name(spec)
     }
+
+
+def _is_member_name(spec: dict) -> bool:
+    """True if ``spec`` carries the non-empty string ``member`` that marks it as
+    a real importer-written variable declaration."""
+    member = spec.get("member")
+    return isinstance(member, str) and bool(member)
 
 
 def declares_variables(model: SlayerModel) -> bool:
