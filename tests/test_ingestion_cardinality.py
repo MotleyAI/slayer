@@ -23,6 +23,7 @@ from slayer.engine.ingestion import (
     _generate_joins,
     _get_single_column_unique_names,
     _is_cross_schema_fk,
+    _is_partial_index,
     _pk_key_sets,
     _safe_get_pk_constraint,
     _unique_index_key_sets,
@@ -327,6 +328,28 @@ class TestCrossSchemaFk:
         fk = {"referred_table": "customers", "referred_schema": None}
         assert _is_cross_schema_fk(fk, None) is False
 
+    def test_default_schema_ingest_still_skips_cross_schema(self) -> None:
+        """Ingesting the default schema passes schema=None.
+
+        Without falling back to the connection's default_schema_name, a
+        reflected referred_schema would slip through unskipped.
+        """
+        fk = {"referred_table": "customers", "referred_schema": "archive"}
+        assert _is_cross_schema_fk(fk, None, "public") is True
+
+    def test_default_schema_ingest_keeps_same_schema_fk(self) -> None:
+        fk = {"referred_table": "customers", "referred_schema": "public"}
+        assert _is_cross_schema_fk(fk, None, "public") is False
+
+    def test_unknown_schema_on_both_sides_keeps_fk(self) -> None:
+        # No basis to reject it.
+        fk = {"referred_table": "customers", "referred_schema": "archive"}
+        assert _is_cross_schema_fk(fk, None, None) is False
+
+    def test_explicit_schema_wins_over_default(self) -> None:
+        fk = {"referred_table": "customers", "referred_schema": "archive"}
+        assert _is_cross_schema_fk(fk, "archive", "public") is False
+
     def test_cross_schema_fk_excluded_from_generated_joins(self) -> None:
         """End-to-end: the wrong same-named table is not joined to."""
 
@@ -402,3 +425,43 @@ class TestSafePkConstraintContract:
         # sa_engine=None path goes straight to the inspector, un-normalized.
         assert _pk_key_sets(self._insp(None), "t", None, None) == []
         assert _pk_key_sets(self._insp({"constrained_columns": ["id"]}), "t", None, None) == [["id"]]
+
+
+class TestPartialIndexPredicateIsNeverEvaluated:
+    """`ColumnElement.__bool__` raises, and this runs outside _safe_introspect."""
+
+    class _Raising:
+        def __bool__(self):
+            raise TypeError("Boolean value of this clause is not defined")
+
+    def test_expression_predicate_counts_as_partial_without_bool(self) -> None:
+        idx = {
+            "unique": True,
+            "column_names": ["email"],
+            "dialect_options": {"postgresql_where": self._Raising()},
+        }
+        # Must not raise, and must classify as partial.
+        assert _is_partial_index(idx) is True
+
+    def test_index_with_raising_predicate_is_skipped_not_fatal(self) -> None:
+        class _I:
+            def get_indexes(self, table_name, schema=None):
+                return [
+                    {
+                        "unique": True,
+                        "column_names": ["email"],
+                        "dialect_options": {
+                            "postgresql_where": TestPartialIndexPredicateIsNeverEvaluated._Raising()
+                        },
+                    },
+                    {"unique": True, "column_names": ["slug"]},
+                ]
+
+        assert _unique_index_key_sets(_I(), "t", None) == [["slug"]]
+
+    def test_empty_string_predicate_is_not_partial(self) -> None:
+        assert _is_partial_index(
+            {"dialect_options": {"postgresql_where": "   "}}
+        ) is False
+        assert _is_partial_index({"dialect_options": {}}) is False
+        assert _is_partial_index({}) is False

@@ -302,7 +302,9 @@ class RollupGraphError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _is_cross_schema_fk(fk: dict, schema: str | None) -> bool:
+def _is_cross_schema_fk(
+    fk: dict, schema: str | None, default_schema: str | None = None,
+) -> bool:
     """Does this FK point at a table in a DIFFERENT schema than the one ingested?
 
     Models are keyed by bare table name within a datasource, so a cross-schema
@@ -311,16 +313,21 @@ def _is_cross_schema_fk(fk: dict, schema: str | None) -> bool:
     table and, since DEV-1688, inferring that join's cardinality from the
     wrong table's key constraints.
 
-    Only skips when both schemas are known AND differ: ``referred_schema`` is
-    commonly ``None`` for same-schema FKs (and always ``None`` on schemaless
-    backends like SQLite), which must keep working.
+    ``referred_schema`` is ``None`` for same-schema FKs (and always ``None`` on
+    schemaless backends like SQLite), so that case is never cross-schema. When
+    it IS set, it is compared against the schema actually being ingested —
+    which is ``schema`` when given, else the connection's ``default_schema``.
+    Ingesting the default schema passes ``schema=None``, so without the
+    fallback a reflected ``referred_schema="other"`` would slip through
+    unskipped. If neither is known the FK is kept (no basis to reject it).
     """
     referred_schema = fk.get("referred_schema")
-    return (
-        referred_schema is not None
-        and schema is not None
-        and referred_schema != schema
-    )
+    if referred_schema is None:
+        return False
+    effective_schema = schema if schema is not None else default_schema
+    if effective_schema is None:
+        return False
+    return referred_schema != effective_schema
 
 
 def _get_fk_relationships(
@@ -339,7 +346,9 @@ def _get_fk_relationships(
         referred_table = fk["referred_table"]
         if referred_table not in table_set or referred_table == table_name:
             continue
-        if _is_cross_schema_fk(fk, schema):
+        if _is_cross_schema_fk(
+            fk, schema, getattr(inspector, "default_schema_name", None)
+        ):
             continue
         constrained = fk["constrained_columns"]
         referred = fk["referred_columns"]
@@ -432,7 +441,9 @@ def _get_fk_constraint_groups(
         referred_table = fk["referred_table"]
         if referred_table not in table_set or referred_table == table_name:
             continue
-        if _is_cross_schema_fk(fk, schema):
+        if _is_cross_schema_fk(
+            fk, schema, getattr(inspector, "default_schema_name", None)
+        ):
             continue
         pairs = list(zip(fk["constrained_columns"], fk["referred_columns"]))
         if pairs:
@@ -500,9 +511,24 @@ def _is_partial_index(idx: dict) -> bool:
     so it is NOT evidence of whole-table uniqueness. SQLAlchemy surfaces the
     predicate per dialect under ``dialect_options`` as ``<dialect>_where``
     (``postgresql_where``, ``sqlite_where``, ...).
+
+    The predicate is never evaluated for truthiness: reflection usually yields
+    a string, but a dialect may hand back a SQLAlchemy expression object, and
+    ``ColumnElement.__bool__`` RAISES. This runs outside ``_safe_introspect``,
+    so a raising ``bool()`` would abort the whole ingest instead of skipping
+    one index. Strings are checked for non-emptiness; any other non-``None``
+    value counts as a predicate by its mere presence.
     """
     opts = idx.get("dialect_options") or {}
-    return any(key.endswith("_where") and opts[key] for key in opts)
+    for key, value in opts.items():
+        if not key.endswith("_where") or value is None:
+            continue
+        if isinstance(value, str):
+            if value.strip():
+                return True
+            continue
+        return True
+    return False
 
 
 def _unique_index_key_sets(
