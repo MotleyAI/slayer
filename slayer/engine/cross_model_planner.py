@@ -577,7 +577,7 @@ def _route_host_filters(
     return applied, where_ids, having_ids, dropped
 
 
-def _compute_shared_grain_slots(  # NOSONAR(S3776) — one cohesive classification pass over host ROW slots (ColumnKey / TimeTruncKey / derived ColumnSqlKey), each carrying its own path-prefix rule; splitting the three branches into per-kind helpers scatters the single shared-grain contract without simplifying it.
+def _compute_shared_grain_slots(
     *, host_slots: List[ValueSlot], target_path: Tuple[str, ...],
 ) -> List[SlotId]:
     """Host ROW slots (dimensions / time-dimensions) whose path lies on the
@@ -596,18 +596,17 @@ def _compute_shared_grain_slots(  # NOSONAR(S3776) — one cohesive classificati
     """
     shared_grain: List[SlotId] = []
     for s in host_slots:
-        if isinstance(s.key, ColumnKey):
+        # Base and derived dims carry their path directly; a time dimension
+        # carries it on the wrapped column. One prefix test then serves all
+        # three kinds — the DEV-1728 merge of what were two identical branches.
+        if isinstance(s.key, (ColumnKey, ColumnSqlKey)):
             p = s.key.path
-            if not p or p == target_path[: len(p)]:
-                shared_grain.append(s.id)
         elif isinstance(s.key, TimeTruncKey):
-            td_path = column_path(s.key.column)
-            if not td_path or td_path == target_path[: len(td_path)]:
-                shared_grain.append(s.id)
-        elif isinstance(s.key, ColumnSqlKey):
-            p = s.key.path
-            if not p or p == target_path[: len(p)]:
-                shared_grain.append(s.id)
+            p = column_path(s.key.column)
+        else:
+            continue
+        if not p or p == target_path[: len(p)]:
+            shared_grain.append(s.id)
     return shared_grain
 
 

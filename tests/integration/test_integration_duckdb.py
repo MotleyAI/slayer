@@ -10,7 +10,7 @@ import duckdb
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -751,7 +751,6 @@ async def duckdb_derived_chain_env(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="duckdb", database=str(db_path))
     )
-    from slayer.core.models import ModelJoin
     await storage.save_model(
         SlayerModel(
             name="b_tbl",
@@ -816,8 +815,6 @@ def _dev1531_duckdb_storage(tmp_path_factory):
     """orders → customers → regions chain with a cross-join derived column on
     orders (``customers__regions.payment_amount``) plus a single-hop derived
     column (``customers.balance``)."""
-    from slayer.core.models import ModelJoin
-
     tmp_path = tmp_path_factory.mktemp("dev1531_duckdb")
     db_path = tmp_path / "dev1531.duckdb"
     conn = duckdb.connect(str(db_path))
@@ -959,8 +956,6 @@ def _dev1709_duckdb_storage(tmp_path_factory):
     """orders → line_items (1:N). ``li_qty`` on orders crosses that join
     (sql=``line_items.qty``); order 1 has TWO line items so any base-pull
     would double-count order 1's local values."""
-    from slayer.core.models import ModelJoin
-
     tmp_path = tmp_path_factory.mktemp("dev1709_duckdb")
     db_path = tmp_path / "dev1709.duckdb"
     conn = duckdb.connect(str(db_path))
@@ -1103,8 +1098,6 @@ def _f1f4_duckdb_storage(tmp_path_factory):
     """orders → customers chain. customer 3 has NO orders; customer 2 is
     reached only via an UNPAID order — so a host `status='paid'` filter that
     (wrongly) leaked into the target scalar would change the customer sum."""
-    from slayer.core.models import ModelJoin
-
     tmp_path = tmp_path_factory.mktemp("f1f4_duckdb")
     db_path = tmp_path / "f1f4.duckdb"
     conn = duckdb.connect(str(db_path))
@@ -1222,8 +1215,6 @@ class TestF1F4SemanticValues:
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
 def _dev1728_duckdb_storage(tmp_path_factory):
-    from slayer.core.models import ModelJoin
-
     tmp_path = tmp_path_factory.mktemp("dev1728_duckdb")
     db_path = tmp_path / "dev1728.duckdb"
     conn = duckdb.connect(str(db_path))

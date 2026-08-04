@@ -26,6 +26,7 @@ from slayer.sql.generator import (
 )
 from slayer.storage.yaml_storage import YAMLStorage
 
+from tests._cross_model_chain import _extract_cte_body
 from tests._engine_helpers import _assert_valid_sql, _engine_generate
 
 
@@ -66,36 +67,6 @@ def _extract_src_body(sql: str) -> str:
     open_token = "LEFT JOIN (\n"
     start = sql.rfind(open_token, 0, end) + len(open_token)
     return sql[start:end]
-
-
-def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:
-    """Extract one CTE body by matching ``<cte_name> AS (`` and walking balanced
-    parentheses to its closing ``)``.
-
-    Robust against nested subqueries inside the CTE body (e.g. the ranked
-    ``FROM (SELECT ... ROW_NUMBER() …) AS …`` that first/last isolated CTEs
-    contain). ``cte_name_pattern`` is a regex matched against the CTE name —
-    typical use: ``r"_cm_\\w*loss_payment_amt\\w*"``. Raises ``AssertionError``
-    if no matching CTE is found.
-    """
-    name_match = _re.search(rf"({cte_name_pattern})\s+AS\s*\(", sql)
-    assert name_match, f"No CTE matching {cte_name_pattern!r} in:\n{sql}"
-    # Position just after the opening paren of ``<name> AS (``.
-    body_start = sql.index("(", name_match.start()) + 1
-    depth = 1
-    i = body_start
-    while i < len(sql) and depth > 0:
-        ch = sql[i]
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                return sql[body_start:i]
-        i += 1
-    raise AssertionError(
-        f"Unbalanced parens — no closing ) for CTE {name_match.group(1)!r}:\n{sql}"
-    )
 
 
 def _outer_order_terms(sql: str, dialect: str = "postgres") -> list[tuple[str, str]]:

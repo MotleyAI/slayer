@@ -60,159 +60,15 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._engine_helpers import _engine_generate
+from tests._cross_model_chain import (
+    _extract_cte_body,
+    _gen,
+    _joinback_on_predicate,
+    _norm,
+    _split_at_ranked_subquery,
+)
 
 pytestmark = pytest.mark.asyncio
-
-
-# --------------------------------------------------------------------------- #
-# Small SQL helpers (copied from test_dev1708_stage4_cte_scope.py — the test
-# modules deliberately keep private copies rather than sharing).
-# --------------------------------------------------------------------------- #
-def _norm(s: str) -> str:
-    return " ".join(s.split())
-
-
-def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:
-    """Extract one CTE body by matching ``<cte_name> AS (`` and walking balanced
-    parentheses to its closing ``)``."""
-    name_match = _re.search(rf"({cte_name_pattern})\s+AS\s*\(", sql)
-    assert name_match, f"No CTE matching {cte_name_pattern!r} in:\n{sql}"
-    body_start = sql.index("(", name_match.start()) + 1
-    depth = 1
-    i = body_start
-    while i < len(sql) and depth > 0:
-        ch = sql[i]
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                return sql[body_start:i]
-        i += 1
-    raise AssertionError(
-        f"Unbalanced parens — no closing ) for CTE {name_match.group(1)!r}:\n{sql}"
-    )
-
-
-def _split_at_ranked_subquery(norm: str) -> "tuple[str, str]":
-    """Split a normalized CTE body into ``(outer, inner)`` at the ranked
-    subquery's ``FROM (``. Asserts the marker exists so a shape change (no
-    ranked subquery) fails loudly instead of silently slicing at ``-1``."""
-    at = norm.find("FROM (")
-    assert at != -1, f"no ranked subquery (FROM () in:\n{norm}"
-    return norm[:at], norm[at:]
-
-
-def _joinback_on_predicate(sql: str, *, dialect: str = "postgres") -> str:
-    """Return the rendered ON predicate of the combined SELECT's
-    ``LEFT JOIN _cm_* ON ...`` grain join-back (the null-safe target)."""
-    import sqlglot
-
-    tree = sqlglot.parse_one(sql, dialect=dialect)
-    for join in tree.find_all(sqlglot.exp.Join):
-        target = join.this
-        name = getattr(target, "alias_or_name", "") or ""
-        if name.startswith("_cm_") or name.startswith("_fm_"):
-            on = join.args.get("on")
-            if on is not None:
-                return on.sql(dialect=dialect)
-    raise AssertionError(f"no LEFT JOIN _cm_*/_fm_* ON predicate in:\n{sql}")
-
-
-# --------------------------------------------------------------------------- #
-# Model builders — chain: orders_x → customers_v2 → regions → countries.
-# --------------------------------------------------------------------------- #
-def _countries() -> SlayerModel:
-    return SlayerModel(
-        name="countries", sql_table="countries", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="gdp", sql="gdp", type=DataType.DOUBLE),
-        ],
-    )
-
-
-def _regions() -> SlayerModel:
-    return SlayerModel(
-        name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="population", sql="population", type=DataType.DOUBLE),
-            Column(name="country_id", sql="country_id", type=DataType.DOUBLE),
-            Column(name="opened_at", sql="opened_at", type=DataType.TIMESTAMP),
-        ],
-        joins=[ModelJoin(target_model="countries", join_pairs=[["country_id", "id"]])],
-    )
-
-
-def _customers_v2(*, extra_columns=None) -> SlayerModel:
-    cols = [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
-        Column(name="lifetime_value", sql="lifetime_value", type=DataType.DOUBLE),
-        Column(name="signup_at", sql="signup_at", type=DataType.TIMESTAMP),
-        Column(name="status", sql="status", type=DataType.TEXT),
-        # Target-LOCAL derived dims (expand to customers_v2-only columns):
-        Column(name="ltv_x2", sql="lifetime_value * 2", type=DataType.DOUBLE),
-        Column(name="ltv_third", sql="lifetime_value / 3.0", type=DataType.INT),
-        # Derived, one-hop crossing (customers_v2 → regions):
-        Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
-        Column(name="deep_pop_x2", sql="regions.population * 2", type=DataType.DOUBLE),
-        # Derived, TWO-hop crossing (customers_v2 → regions → countries):
-        Column(name="deep_gdp", sql="regions__countries.gdp", type=DataType.DOUBLE),
-        # Derived TIME dim whose sql crosses a further join (DEV-1701):
-        Column(name="region_opened_eff",
-               sql="coalesce(regions.opened_at, signup_at)",
-               type=DataType.TIMESTAMP),
-    ]
-    if extra_columns:
-        cols.extend(extra_columns)
-    return SlayerModel(
-        name="customers_v2", sql_table="customers", data_source="test",
-        columns=cols,
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
-        default_time_dimension="signup_at",
-    )
-
-
-def _orders_x(*, extra_columns=None) -> SlayerModel:
-    cols = [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-        Column(name="amount", sql="amount", type=DataType.DOUBLE),
-        Column(name="status", sql="status", type=DataType.TEXT),
-        Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-    ]
-    if extra_columns:
-        cols.extend(extra_columns)
-    return SlayerModel(
-        name="orders_x", sql_table="orders", data_source="test",
-        columns=cols,
-        joins=[ModelJoin(target_model="customers_v2", join_pairs=[["customer_id", "id"]])],
-        default_time_dimension="created_at",
-    )
-
-
-async def _gen(
-    query: SlayerQuery,
-    *,
-    orders_extra=None,
-    customers_extra=None,
-    dialect: str = "postgres",
-) -> str:
-    """Render ``query`` against the orders_x chain and return the SQL."""
-    return await _engine_generate(
-        query=query,
-        model=_orders_x(extra_columns=orders_extra),
-        dialect=dialect,
-        extra_models=[
-            _customers_v2(extra_columns=customers_extra),
-            _regions(),
-            _countries(),
-        ],
-    )
 
 
 # =========================================================================== #
@@ -361,6 +217,9 @@ class TestForwardDerivedGrainShape:
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         assert "regions.population" in cm_body, cm_body
         assert 'AS "orders_x.customers_v2.deep_pop"' in cm_body, cm_body
+        # The filter predicate must actually survive into the rendered SQL —
+        # without this the test passes even if the generator drops the filter.
+        assert "regions.population > 50" in _norm(sql), sql
 
     async def test_intermediate_hop_derived_grain_still_raises(self) -> None:
         """A derived grain on an INTERMEDIATE hop of a multi-hop target path
@@ -508,6 +367,25 @@ class TestFirstLastDerivedGrain:
         assert_scope_closed(sql)
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         # The materialised grain must use a NON-colliding alias (not _val_0).
+        vals = _re.findall(r"AS (_val_\d+)", cm_body)
+        assert vals, cm_body
+        assert "_val_0" not in vals, cm_body
+
+    async def test_val_alias_avoids_physical_column_collision(self) -> None:
+        """The star-projection exports PHYSICAL column names, which differ from
+        the semantic name whenever a column renames its source. A column
+        ``Column(name="renamed", sql="_val_0")`` exports ``_val_0`` through
+        ``target.*``, so the allocator must reserve the physical name too — not
+        just ``c.name`` (Codex)."""
+        customers_extra = [Column(name="renamed", sql="_val_0", type=DataType.INT)]
+        query = SlayerQuery(
+            source_model="orders_x",
+            dimensions=["customers_v2.deep_pop"],
+            measures=[ModelMeasure(formula="customers_v2.lifetime_value:last")],
+        )
+        sql = await _gen(query, customers_extra=customers_extra)
+        assert_scope_closed(sql)
+        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         vals = _re.findall(r"AS (_val_\d+)", cm_body)
         assert vals, cm_body
         assert "_val_0" not in vals, cm_body
