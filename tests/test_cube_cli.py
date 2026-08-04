@@ -59,9 +59,11 @@ def test_import_cube_writes_models_and_report(tmp_path):
     assert report["model_count"] >= 3
 
 
-def test_import_cube_survives_save_failure(tmp_path, monkeypatch):
+def test_import_cube_survives_save_failure(tmp_path, monkeypatch, capsys):
     # A save_model failure on one model must not abort the run — the report is
-    # still written ("report, don't crash").
+    # still written ("report, don't crash"), the failure is categorized
+    # SAVE_FAILED (not the misleading PARSE_ERROR), and the summary reports the
+    # actual saved count.
     import slayer.storage.yaml_storage as ys
 
     async def _boom(self, model):
@@ -71,7 +73,13 @@ def test_import_cube_survives_save_failure(tmp_path, monkeypatch):
     storage_dir = tmp_path / "store"
     code = _run("import-cube", FIXTURE, "--datasource", "cube_ds", "--storage", str(storage_dir))
     assert code == 0
-    assert (storage_dir / "cube_import_report.json").exists()
+    report_path = storage_dir / "cube_import_report.json"
+    assert report_path.exists()
+    report = json.loads(report_path.read_text())
+    save_failures = [i for i in report["issues"] if i["category"] == "save_failed"]
+    assert save_failures  # every model failed to save → a SAVE_FAILED issue each
+    # Summary reflects that nothing was actually saved.
+    assert "0 of" in capsys.readouterr().out
 
 
 def test_import_cube_report_honors_models_dir(tmp_path):

@@ -240,8 +240,23 @@ def test_case_dimension_becomes_case_when_column():
     )])
     models, _ = _convert(project)
     sql = models["orders"].get_column("size_bucket").sql
-    assert "CASE WHEN" in sql and "'small'" in sql and "'big'" in sql
+    assert "CASE WHEN" in sql
+    assert "'small'" in sql
+    assert "'big'" in sql
     assert "{CUBE}" not in sql
+
+
+def test_case_dimension_label_escapes_quotes():
+    project = CubeProject(cubes=[CubeCube(
+        name="orders", sql_table="public.orders",
+        dimensions=[CubeDimension(name="owner", type="string", case={
+            "when": [{"sql": "{CUBE}.x = 1", "label": "Bob's"}],
+            "else": {"label": "n/a"},
+        })],
+    )])
+    models, _ = _convert(project)
+    sql = models["orders"].get_column("owner").sql
+    assert "'Bob''s'" in sql  # apostrophe doubled, not a broken literal
 
 
 def test_geo_dimension_reported_not_emitted():
@@ -312,19 +327,6 @@ def test_join_to_missing_target_cube_reported():
     models, report = _convert(project)
     assert models["orders"].joins == []
     assert any(i.category == CubeIssueCategory.UNSUPPORTED_JOIN for i in report.issues)
-
-
-def test_case_dimension_label_escapes_quotes():
-    project = CubeProject(cubes=[CubeCube(
-        name="orders", sql_table="public.orders",
-        dimensions=[CubeDimension(name="owner", type="string", case={
-            "when": [{"sql": "{CUBE}.x = 1", "label": "Bob's"}],
-            "else": {"label": "n/a"},
-        })],
-    )])
-    models, _ = _convert(project)
-    sql = models["orders"].get_column("owner").sql
-    assert "'Bob''s'" in sql  # apostrophe doubled, not a broken literal
 
 
 def test_non_equi_join_reported_and_dropped():

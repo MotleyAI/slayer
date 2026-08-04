@@ -94,7 +94,10 @@ def _load_yaml(path: str, issues: list):
     try:
         with open(path, encoding="utf-8") as fh:
             raw_text = fh.read()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # UnicodeDecodeError (invalid UTF-8) is a ValueError, not an OSError —
+        # catch it too so a single bad file becomes a PARSE_ERROR warning
+        # instead of aborting the whole import.
         issues.append(CubeConversionIssue(
             category=CubeIssueCategory.PARSE_ERROR, severity="warning",
             message=f"File '{path}' could not be read: {exc}",

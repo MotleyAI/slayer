@@ -955,13 +955,39 @@ class TestSubstituteVariablesHardened:
             ('col = "{v}"', 'a\\"b'),
             ("col = '{v}'", "abc\\"),
             ("col = '{v}'", "plain"),
+            # Control chars must be backslash-escaped so a raw newline/CR/tab/NUL
+            # doesn't make the single-quoted literal a SyntaxError.
+            ("col = '{v}'", "a\nb"),
+            ("col = '{v}'", "a\r\nb"),
+            ("col = '{v}'", "a\tb"),
+            ("col = '{v}'", "a\x00b"),
         ],
     )
     def test_python_mode_ast_roundtrip(self, template: str, value: str) -> None:
         # Semantic contract: whatever escaping produces, ast.parse of the
         # substituted filter must recover the ORIGINAL value (both quote
-        # delimiters, backslash, and backslash-before-quote combinations).
+        # delimiters, backslash, backslash-before-quote, and control chars).
         assert _python_mode_roundtrips(template, value)
+
+    def test_python_mode_newline_escaped(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        # A real newline becomes the two-char escape \n so the literal stays on
+        # one line and re-parses to the original value.
+        result = substitute_variables(
+            filter_str="note = '{v}'", variables={"v": "a\nb"}, escape="python"
+        )
+        assert result == "note = 'a\\nb'"
+
+    def test_sql_mode_newline_left_raw(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        # SQL string literals permit raw newlines, so sql-mode must NOT escape
+        # them (only the single quote is special there).
+        result = substitute_variables(
+            filter_str="note = '{v}'", variables={"v": "a\nb"}, escape="sql"
+        )
+        assert result == "note = 'a\nb'"
 
     def test_number_value_not_escaped_either_mode(self) -> None:
         from slayer.core.query import substitute_variables
@@ -1559,7 +1585,9 @@ class TestListValueRenderingPython:
         )
         assert result == "x in (1, 2,)"
 
-    @pytest.mark.parametrize("values", [["A"], ["A", "B"], ["O'Brien", "a\\b"]])
+    @pytest.mark.parametrize(
+        "values", [["A"], ["A", "B"], ["O'Brien", "a\\b"], ["a\nb", "x"]]
+    )
     def test_python_list_ast_roundtrip_is_tuple(self, values: list) -> None:
         # The substituted ``x in (...)`` must parse to an ast.Tuple (never a
         # bare Constant) whose elements recover the ORIGINAL string values —

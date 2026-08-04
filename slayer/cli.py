@@ -1561,6 +1561,7 @@ def _run_import_dbt(args):
 def _run_import_cube(args):
     from slayer.cube.converter import CubeToSlayerConverter
     from slayer.cube.parser import parse_cube_project
+    from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
 
     storage = _resolve_storage(args)
     project, parse_issues = parse_cube_project(args.cube_project_path)
@@ -1573,20 +1574,21 @@ def _run_import_cube(args):
         project=project, data_source=args.datasource, parse_issues=parse_issues,
         honor_required_meta=not args.ignore_required_meta,
     ).convert()
-    from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
+    saved = 0
     for model in result.models:
         try:
             run_sync(storage.save_model(model))
+            saved += 1
         except Exception as exc:  # noqa: BLE001 — one bad model shouldn't abort the import
             result.report.add(CubeConversionIssue(
-                category=CubeIssueCategory.PARSE_ERROR, severity="error",
+                category=CubeIssueCategory.SAVE_FAILED, severity="error",
                 cube=model.name,
                 message=f"Failed to save model '{model.name}': {exc}"))
 
     _print_cube_import_summary(result, include_hidden=args.include_hidden)
     report_path = _write_cube_report(result, args)
     print(
-        f"\nDone: {result.report.model_count} models "
+        f"\nDone: {saved} of {result.report.model_count} models saved "
         f"({result.report.hidden_count} hidden, {result.report.view_count} views), "
         f"{len(result.report.issues)} report issues. Report: {report_path}"
     )

@@ -61,11 +61,25 @@ def _escape_string_value(value: str, escape: Literal["sql", "python"]) -> str:
       concatenation (``'O''Brien'`` → ``'OBrien'``). So backslash is doubled
       FIRST, then both quote styles are backslash-escaped, matching Python
       string-literal rules so ``ast.parse`` recovers the original value.
+      Control characters (newline, carriage return, tab, NUL) are also converted
+      to their backslash escapes — a raw newline/CR/NUL in a single-quoted Python
+      literal is a ``SyntaxError`` (or "null bytes" error), so leaving them
+      unescaped would make ``ast.parse`` reject an otherwise valid value. (SQL
+      literals permit raw newlines, so the ``"sql"`` branch leaves them alone.)
     """
     if escape == "sql":
         return value.replace("'", "''")
-    # python: order matters — double the backslash before escaping quotes.
-    return value.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
+    # python: order matters — double the backslash before escaping quotes, then
+    # escape the control chars that can't sit in a single-line Python literal.
+    return (
+        value.replace("\\", "\\\\")
+        .replace("'", "\\'")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+        .replace("\x00", "\\x00")
+    )
 
 
 def _render_list_value(
