@@ -215,10 +215,22 @@ class TestPlanFilters:
         assert plan.registry.find_by_key(agg) is not None
         assert plan.registry.find_by_key(_status()) is not None
 
-    def test_order_arithmetic_walks_to_aggregate(self):
-        # `ORDER BY amount:sum + 1` with no declared amount:sum: the
-        # planner must intern the inner aggregate as a hidden slot, NOT
-        # the arithmetic root.
+    def test_order_arithmetic_slots_root_and_aggregate(self):
+        """``ORDER BY amount:sum + 1`` with no declared ``amount:sum``.
+
+        DEV-1733 INVERTED the second half of this contract. The planner still
+        interns the inner aggregate as a hidden slot, and still never slots the
+        literal — but the ArithmeticKey ROOT is now slotted too.
+
+        Before: the root had no slot, so ``plan_query``'s ``find_by_key``
+        lookup returned ``None`` and the ORDER BY entry was SILENTLY DROPPED —
+        the query ran unsorted with no error. The root now gets a hidden slot
+        the generator materialises and the outer wrap orders on.
+
+        Only ORDER does this. A FILTER's top-level composite is still walked to
+        its operands only (pinned by the filter tests above), because the
+        generator renders filter predicates inline into WHERE / HAVING.
+        """
         planner = ProjectionPlanner()
         agg = _amount_sum()
         order_expr = ArithmeticKey(
@@ -238,11 +250,12 @@ class TestPlanFilters:
                           direction="desc"),
             ],
         )
-        # Slots: status (public) + amount:sum (hidden).
+        # Slots: status (public) + amount:sum (hidden) + the root (hidden).
         assert plan.registry.find_by_key(agg) is not None
-        # ArithmeticKey root NOT slotted.
-        assert plan.registry.find_by_key(order_expr) is None
-        # LiteralKey NOT slotted.
+        root_sid = plan.registry.find_by_key(order_expr)
+        assert root_sid is not None, "DEV-1733: the composite order root is slotted"
+        assert plan.registry.get(root_sid).hidden is True
+        # LiteralKey still NOT slotted.
         assert plan.registry.find_by_key(LiteralKey(value=Decimal(1))) is None
 
 

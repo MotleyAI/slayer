@@ -128,38 +128,76 @@ class ValueRegistry:
         self._by_key: Dict[ValueKey, SlotId] = {}
         self._declared_names: Dict[str, SlotId] = {}
         self._counter = 0
+        # DEV-1733: every alias name already spoken for — user-declared public
+        # names (reserved up front, see ``reserve_public_names``) plus the
+        # resolved ``declared_name`` of each interned slot. HIDDEN slots are
+        # uniquified against this set at intern time so no renderer can emit
+        # two different expressions under one alias.
+        self._taken_names: set = set()
 
     def _next_id(self) -> SlotId:
         self._counter += 1
         return f"s{self._counter}"
 
-    def intern(
+    def reserve_public_names(self, names) -> None:
+        """Claim user-declared names BEFORE any hidden slot is interned.
+
+        DEV-1733: hidden-name uniquification must not depend on intern order.
+        Measures are interned public-slot-then-hidden-deps, so measure *i*'s
+        hidden dependency would otherwise be able to claim a name that measure
+        *j > i* later declares publicly — and public names are never renamed,
+        so the collision would come straight back. Reserving every declared
+        name first makes the outcome order-independent.
+        """
+        for name in names:
+            if name:
+                self._taken_names.add(name)
+
+    def _unique_hidden_name(self, declared_name: str) -> str:
+        """``declared_name``, suffixed ``_2`` / ``_3`` / … if already taken.
+
+        Hidden canonical names are structural, not user-facing
+        (``_cumsum_inner``, ``_arith_/``, ``_scalar_abs``), so two distinct
+        keys of the same shape collide by construction:
+        ``cumsum(a:sum) + cumsum(b:sum)`` interned two hidden slots both named
+        ``_cumsum_inner``, the step CTE projected two columns under that one
+        alias, and the composite silently evaluated ``cumsum(a) + cumsum(a)``.
+        DEV-1692 fixed this inside the ``time_shift`` / ``consecutive_periods``
+        emitters only; owning it here covers every renderer at once.
+        """
+        if declared_name not in self._taken_names:
+            return declared_name
+        n = 2
+        while f"{declared_name}_{n}" in self._taken_names:
+            n += 1
+        return f"{declared_name}_{n}"
+
+    def _validate_alias_collisions(
         self,
         *,
         key: ValueKey,
         declared_name: str,
-        phase: Phase,
-        public_name: Optional[str] = None,
-        canonical_alias: Optional[str] = None,
-        hidden: bool = False,
-        label: Optional[str] = None,
-        type: Optional[DataType] = None,
-        expression: Optional["BoundExpr"] = None,
-        format: Optional[NumberFormat] = None,
-        description: Optional[str] = None,
-    ) -> SlotId:
-        # Alias-collision validations (P4 / DEV-1443).
-        # Exemption: a dimension whose public name IS its own column
-        # name (``ColumnKey(path=(), leaf=X)`` declared as ``X``) is the
-        # column, not a rename of it — collision check skipped. Same
-        # exemption for a local ``TimeTruncKey`` over that same column
-        # since a time dimension on ``created_at`` projects the
-        # (truncated) ``created_at`` column rather than introducing a
-        # new alias. DEV-1450 stage 7b.13: also exempt
-        # ``ColumnSqlKey(model=..., column_name=X)`` declared as ``X``
-        # -- a derived column (``Column.sql`` set) selected as a
-        # dimension projects the column unchanged, identical to the
-        # plain-column case.
+        public_name: Optional[str],
+        canonical_alias: Optional[str],
+    ) -> None:
+        """Alias-collision validations (P4 / DEV-1443).
+
+        Split out of :meth:`intern` so the interning path reads as
+        validate → merge-or-create. Raises
+        ``MeasureNameCollidesWithColumnError`` when a public name shadows a
+        source column, and ``CanonicalAliasShadowsColumnError`` when a
+        renamed measure's canonical alias does.
+
+        Exemption: a dimension whose public name IS its own column name
+        (``ColumnKey(path=(), leaf=X)`` declared as ``X``) is the column, not a
+        rename of it — collision check skipped. Same exemption for a local
+        ``TimeTruncKey`` over that same column, since a time dimension on
+        ``created_at`` projects the (truncated) ``created_at`` column rather
+        than introducing a new alias. DEV-1450 stage 7b.13: also exempt
+        ``ColumnSqlKey(model=..., column_name=X)`` declared as ``X`` — a
+        derived column (``Column.sql`` set) selected as a dimension projects
+        the column unchanged, identical to the plain-column case.
+        """
         is_self_named_dimension = (
             isinstance(key, ColumnKey)
             and key.path == ()
@@ -204,6 +242,28 @@ class ValueRegistry:
                 model=self._host_model_name,
             )
 
+    def intern(
+        self,
+        *,
+        key: ValueKey,
+        declared_name: str,
+        phase: Phase,
+        public_name: Optional[str] = None,
+        canonical_alias: Optional[str] = None,
+        hidden: bool = False,
+        label: Optional[str] = None,
+        type: Optional[DataType] = None,
+        expression: Optional["BoundExpr"] = None,
+        format: Optional[NumberFormat] = None,
+        description: Optional[str] = None,
+    ) -> SlotId:
+        self._validate_alias_collisions(
+            key=key,
+            declared_name=declared_name,
+            public_name=public_name,
+            canonical_alias=canonical_alias,
+        )
+
         existing_sid = self._by_key.get(key)
         if existing_sid is not None:
             return self._merge_into_existing(
@@ -230,6 +290,14 @@ class ValueRegistry:
                 )
 
         sid = self._next_id()
+        # DEV-1733: uniquify HIDDEN slot names only. A public name is the
+        # user's result-key contract and is never rewritten — a genuine
+        # duplicate there already raised ``DuplicateMeasureNameError`` above.
+        if hidden:
+            declared_name = self._unique_hidden_name(declared_name)
+        self._taken_names.add(declared_name)
+        if public_name is not None:
+            self._taken_names.add(public_name)
         public_aliases = [public_name] if public_name is not None else []
         slot = ValueSlot(
             id=sid,
@@ -612,6 +680,23 @@ class ProjectionPlanner:
     """Allocate slots for declared measures + hidden slots for refs only
     used in order/filter."""
 
+    @staticmethod
+    def _intern_hidden(registry: "ValueRegistry", key: ValueKey) -> None:
+        """Intern ``key`` as a hidden slot unless it already has one.
+
+        The single rule every hidden-slot site shares — measure aux deps,
+        filter operands, order operands, and (DEV-1733) an order target that
+        is itself a composite. Keeping it in one place is what stops the four
+        call sites drifting on ``declared_name`` / ``phase``.
+        """
+        if registry.find_by_key(key) is None:
+            registry.intern(
+                key=key,
+                declared_name=_canonical_name(key),
+                hidden=True,
+                phase=key.phase,
+            )
+
     def plan(
         self,
         *,
@@ -624,6 +709,15 @@ class ProjectionPlanner:
         registry = ValueRegistry(
             source_column_names=source_column_names,
             host_model_name=host_model_name,
+        )
+        # DEV-1733: claim every user-declared name before the first intern, so
+        # hidden-name uniquification is independent of intern order (a hidden
+        # dependency of measure 1 must not be able to take a name measure 2
+        # declares publicly — public names are never renamed).
+        registry.reserve_public_names(
+            name
+            for m in measures
+            for name in (m.declared_name, m.public_name, m.canonical_alias)
         )
         public_projection: List[SlotId] = []
         for m in measures:
@@ -645,38 +739,33 @@ class ProjectionPlanner:
             # rendered by the generator into the inner SELECT but not
             # surfaced in the public projection.
             for dep in _iter_slot_deps(m.bound.value_key):
-                if dep == m.bound.value_key:
-                    continue
-                if registry.find_by_key(dep) is None:
-                    registry.intern(
-                        key=dep,
-                        declared_name=_canonical_name(dep),
-                        hidden=True,
-                        phase=dep.phase,
-                    )
+                if dep != m.bound.value_key:
+                    self._intern_hidden(registry, dep)
 
         # Filter and order share the same dependency-selection rule: walk
         # the bound expression, intern each slot-worthy key as a hidden
         # slot if not already present.
         for f in filters:
             for dep in _iter_slot_deps(f.value_key):
-                if registry.find_by_key(dep) is None:
-                    registry.intern(
-                        key=dep,
-                        declared_name=_canonical_name(dep),
-                        hidden=True,
-                        phase=dep.phase,
-                    )
+                self._intern_hidden(registry, dep)
 
         for o in order:
             for dep in _iter_slot_deps(o.bound.value_key):
-                if registry.find_by_key(dep) is None:
-                    registry.intern(
-                        key=dep,
-                        declared_name=_canonical_name(dep),
-                        hidden=True,
-                        phase=dep.phase,
-                    )
+                self._intern_hidden(registry, dep)
+            # DEV-1733: ``_iter_slot_deps`` yields a composite's OPERANDS but
+            # never the composite itself (the generator normally inlines those
+            # nodes). An ORDER BY target that IS a composite therefore had no
+            # slot of its own, so ``plan_query``'s ``find_by_key`` lookup
+            # returned None and the order entry was SILENTLY DROPPED — the
+            # ``change`` / ``change_pct`` / scalar-call ORDER BY bug. Intern the
+            # top-level key so it gets a hidden slot the generator can
+            # materialise and the outer wrap can order on.
+            #
+            # ORDER ONLY: filters keep the operands-only walk. A filter's
+            # top-level composite is rendered inline into WHERE / HAVING, and
+            # giving it a slot would change that emission.
+            if isinstance(o.bound.value_key, (ArithmeticKey, ScalarCallKey)):
+                self._intern_hidden(registry, o.bound.value_key)
 
         return ProjectionPlan(
             registry=registry,

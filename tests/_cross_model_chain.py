@@ -5,12 +5,14 @@ collection while ``from tests._cross_model_chain import ...`` still works.
 
 Two groups live here:
 
-* **SQL-shape helpers** — ``_norm``, ``_extract_cte_body``,
-  ``_split_at_ranked_subquery``, ``_joinback_on_predicate``. Every cross-model
-  test module needs to slice a ``_cm_*`` CTE body out of the emitted statement,
-  split it at the ranked subquery, or read the grain join-back's ``ON``
-  predicate. These were copied per-module until DEV-1728; the copies are now one
-  definition (they were byte-identical, so the duplication bought nothing).
+* **SQL-shape helpers** — ``_split_at_ranked_subquery`` and
+  ``_joinback_on_predicate``, for splitting a ``_cm_*`` CTE body at the ranked
+  subquery and reading the grain join-back's ``ON`` predicate. These were copied
+  per-module until DEV-1728; the copies are now one definition (they were
+  byte-identical, so the duplication bought nothing). ``_norm`` /
+  ``_extract_cte_body`` are re-exported from ``tests/_engine_helpers.py``, which
+  DEV-1732 made the single home for the SQL-shape helpers that are not
+  cross-model-specific — same one-definition rule, one module up.
 * **The canonical join chain** — ``orders_x → customers_v2 → regions →
   countries``, the fixture the DEV-1708 / DEV-1728 cross-model CTE tests render
   against. ``_customers_v2`` carries the derived-column matrix those suites
@@ -23,56 +25,18 @@ Two groups live here:
 
 from __future__ import annotations
 
-import re as _re
-
 import sqlglot
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 
-from tests._engine_helpers import _engine_generate
+from tests._engine_helpers import _engine_generate, _extract_cte_body, _norm
 
 
 # --------------------------------------------------------------------------- #
 # SQL-shape helpers
 # --------------------------------------------------------------------------- #
-def _norm(s: str) -> str:
-    """Collapse all runs of whitespace to single spaces (pretty-printed SQL →
-    one line) so shape assertions are newline-insensitive."""
-    return " ".join(s.split())
-
-
-def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:
-    """Extract one CTE body by matching ``<cte_name> AS (`` and walking balanced
-    parentheses to its closing ``)``.
-
-    Robust against nested subqueries inside the CTE body (e.g. the ranked
-    ``FROM (SELECT ... ROW_NUMBER() …) AS …`` that first/last isolated CTEs
-    contain). ``cte_name_pattern`` is a regex matched against the CTE name —
-    typical use: ``r"_cm_\\w*loss_payment_amt\\w*"``. Raises ``AssertionError``
-    if no matching CTE is found.
-    """
-    name_match = _re.search(rf"({cte_name_pattern})\s+AS\s*\(", sql)
-    assert name_match, f"No CTE matching {cte_name_pattern!r} in:\n{sql}"
-    # Position just after the opening paren of ``<name> AS (``.
-    body_start = sql.index("(", name_match.start()) + 1
-    depth = 1
-    i = body_start
-    while i < len(sql) and depth > 0:
-        ch = sql[i]
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                return sql[body_start:i]
-        i += 1
-    raise AssertionError(
-        f"Unbalanced parens — no closing ) for CTE {name_match.group(1)!r}:\n{sql}"
-    )
-
-
 def _split_at_ranked_subquery(norm: str) -> "tuple[str, str]":
     """Split a normalized CTE body into ``(outer, inner)`` at the ranked
     subquery's ``FROM (``. Asserts the marker exists so a shape change (no

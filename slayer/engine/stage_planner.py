@@ -52,8 +52,14 @@ from slayer.core.keys import (
     normalize_scalar,
 )
 from slayer.core.models import SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery, TimeDimension
+from slayer.core.query import (
+    ORDER_PLACEHOLDER_NAMES,
+    ModelExtension,
+    SlayerQuery,
+    TimeDimension,
+)
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
+from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.aggregate_input_paths import (
@@ -79,6 +85,7 @@ from slayer.engine.planned import (
     FilterPhase,
     OrderEntry,
     PlannedQuery,
+    SrcFilterRewrite,
     TransformLayer,
     ValueSlot,
     WindowedAggregatePlan,
@@ -330,13 +337,15 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
 
     # G5 — a top-level declared measure that IS a windowed AggregateKey is
     # cleanly selected; a windowed key nested in an arithmetic / scalar composite
-    # measure is rejected. ``dict`` (not ``set``) preserves measure order.
+    # measure is rejected. ``dict`` (not ``set``) preserves measure order; the
+    # value is the slot's ``hidden`` flag (DEV-1733) — False for a declared
+    # measure, True for an order-only target.
     selected_windowed: dict = {}
     for vk in measure_vks:
         if not _windowed_agg_keys(vk):
             continue
         if _window_kwarg_of(vk) is not None:
-            selected_windowed.setdefault(vk, None)
+            selected_windowed.setdefault(vk, False)
         else:
             raise NotImplementedError(  # G5
                 "Windowed measures (window='…') inside arithmetic / composite / "
@@ -362,10 +371,20 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
                 "Filtering on a windowed measure (window='…') requires that "
                 "measure to also be selected (DEV-1504)."
             )
-    # NB: an ORDER-BY-only windowed reference is not a reachable hidden shape —
-    # ``OrderItem`` coercion canonicalises ``revenue:sum(window='90d')`` to the
-    # column name ``revenue_sum``, dropping the window kwarg before the planner
-    # sees it, so there is never an order-only hidden windowed slot to guard.
+    # DEV-1733 — order-only windowed targets. This IS a reachable shape (the
+    # pre-DEV-1733 comment here claimed otherwise): ``OrderItem`` canonicalises
+    # ``revenue:sum(window='90d')`` to the column name ``revenue_sum``, but
+    # ``OrderItem.raw_formula`` preserves the original text and the planner
+    # binds from it whenever the canonical name matches no declared measure. It
+    # used to fall through with no ``WindowedAggregatePlan``, materialising a
+    # PLAIN ``SUM`` in the base and ordering by it — the window silently gone.
+    #
+    # A windowed key referenced ONLY by ORDER BY is registered here as a HIDDEN
+    # plan (S-a top-level, S-b nested in a composite). Registering it after the
+    # measure loop means an also-declared key keeps ``hidden=False``.
+    for vk in order_vks:
+        for key in _windowed_agg_keys(vk):
+            selected_windowed.setdefault(key, True)
 
     # G2 — a windowed measure needs a resolvable time dimension.
     if active_td_key is None:
@@ -375,6 +394,40 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
             "multiple time dimensions."
         )
     return selected_windowed
+
+
+def _windowed_grain_partition(
+    *,
+    row_slots: list,
+    active_td_slot_id,
+) -> Tuple[list, list, list]:
+    """Split the PROJECTED (non-hidden) ROW slots into the ``_wm_`` grain roles.
+
+    Returns ``(dim_slot_ids, other_td_slot_ids, grain_slot_ids)`` — plain
+    dimensions render as ``_w_dim_<n>`` in the ``_src`` subquery, non-window
+    time dimensions as ``_w_td_<n>``, and ``grain_slot_ids`` is the join-back
+    key order (dims, then the window TD, then the other TDs).
+
+    HIDDEN row slots are excluded by design: the window buckets at the grain
+    the query actually projects, so an order-only (hidden) target must not
+    widen or narrow it.
+    """
+    dim_slot_ids: list = []
+    other_td_slot_ids: list = []
+    for rs in row_slots:
+        if rs.hidden:
+            continue
+        if isinstance(rs.key, TimeTruncKey):
+            if rs.id != active_td_slot_id:
+                other_td_slot_ids.append(rs.id)
+        else:
+            dim_slot_ids.append(rs.id)
+    grain_slot_ids = (
+        dim_slot_ids
+        + ([active_td_slot_id] if active_td_slot_id is not None else [])
+        + other_td_slot_ids
+    )
+    return dim_slot_ids, other_td_slot_ids, grain_slot_ids
 
 
 def _build_windowed_plans(
@@ -406,25 +459,11 @@ def _build_windowed_plans(
             "multiple time dimensions."
         )
 
-    # Grain partition from the PROJECTED (non-hidden) ROW slots: plain
-    # dimensions → ``_w_dim_<n>``, non-window time dimensions → ``_w_td_<n>``.
-    dim_slot_ids: list = []
-    other_td_slot_ids: list = []
-    for rs in row_slots:
-        if rs.hidden:
-            continue
-        if isinstance(rs.key, TimeTruncKey):
-            if rs.id != active_td_slot_id:
-                other_td_slot_ids.append(rs.id)
-        else:
-            dim_slot_ids.append(rs.id)
-    grain_slot_ids = (
-        dim_slot_ids
-        + ([active_td_slot_id] if active_td_slot_id is not None else [])
-        + other_td_slot_ids
+    dim_slot_ids, other_td_slot_ids, grain_slot_ids = _windowed_grain_partition(
+        row_slots=row_slots, active_td_slot_id=active_td_slot_id,
     )
 
-    for key in selected_windowed:
+    for key, is_hidden in selected_windowed.items():
         sid = registry.find_by_key(key)
         if sid is None:
             # CR#4: the guard pass already proved this is a cleanly-selected
@@ -437,6 +476,11 @@ def _build_windowed_plans(
                 f"slot; planner/projection drift (DEV-1714).",
             )
         window_raw = _window_kwarg_of(key)
+        # DEV-1733: the slot is the authority on visibility — a key registered
+        # hidden by the order pass may still have been promoted to public by a
+        # declared measure sharing it (same key -> one slot).
+        slot = registry.get(sid)
+        hidden = bool(is_hidden and slot.hidden)
         plans.append(WindowedAggregatePlan(
             aggregate_slot_id=sid,
             agg=key.agg,
@@ -447,6 +491,8 @@ def _build_windowed_plans(
             dimension_slot_ids=dim_slot_ids,
             other_time_dimension_slot_ids=other_td_slot_ids,
             grain_slot_ids=grain_slot_ids,
+            hidden=hidden,
+            public_alias=None if hidden else slot.public_name,
         ))
         windowed_slot_ids.add(sid)
     return plans, windowed_slot_ids
@@ -732,6 +778,23 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     for o in (query.order or []):
         col_name = o.column.name
         full_name = o.column.full_name
+        # DEV-1733: a placeholder ColumnRef means the item is an EXPRESSION,
+        # not a column reference — bind ``raw_formula`` and skip the
+        # declared-alias lookups below (which could otherwise match a real
+        # model column that happens to share the sentinel's name). BOTH the
+        # sentinel AND a captured ``raw_formula`` are required, so a model with
+        # a genuine ``_expr_pending`` column, or a hand-built / deserialized
+        # ``OrderItem``, still resolves through the normal path.
+        if col_name in ORDER_PLACEHOLDER_NAMES and o.raw_formula:
+            order_specs.append(OrderSpec(
+                bound=bind_expr(
+                    parsed=parse_expr(o.raw_formula, allow_dunder=flat_scope),
+                    scope=scope,
+                    bundle=bundle,
+                ),
+                direction=o.direction,
+            ))
+            continue
         # An order ref qualified with a FOREIGN model (``owners.status`` when
         # the host is ``orders``) must not resolve to a same-named local column
         # via the bare-leaf shortcut — otherwise a joined sort key silently
@@ -1113,8 +1176,8 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     #     CROSS JOIN — every group would get the same global value and the
     #     sort would silently do nothing. Failing loudly beats sorting by a
     #     constant. Full support (host-rooted crossing MAX) is DEV-1735;
-    #   * transform / composite -> ValueError (deferred to DEV-1733; declare it
-    #     as a measure and order by that).
+    #   * transform / composite -> materialised as a hidden slot and ordered at
+    #     the outer wrap (DEV-1733), same Law-2 discipline as aggregates.
     #
     # The hidden MAX is interned post-bind, so the bind-time aggregation gate
     # (PK columns, ``allowed_aggregations``, per-type defaults) deliberately
@@ -1162,15 +1225,13 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                 )
             order_key_remap[okey] = max_key
             continue
-
-        # TransformKey / ArithmeticKey / ScalarCallKey — an inline transform or
-        # composite expression that is only referenced in ORDER BY.
-        raise ValueError(
-            "ORDER BY references a transform / composite expression that is "
-            "not a declared measure. Declare it as a measure (optionally with "
-            "a name) and order by that measure. (DEV-1733: materialising inline "
-            "transform / composite ORDER BY targets is not yet supported.)"
-        )
+        # DEV-1733: TransformKey / ArithmeticKey / ScalarCallKey — an inline
+        # transform or composite expression referenced only in ORDER BY. These
+        # materialise as hidden slots (a step CTE on the transform path, a
+        # trimmed base-SELECT column on the no-transform path, an inline
+        # combined-SELECT term when an operand is cross-model or windowed) and
+        # order at the outer wrap. Stage 8 rejected them here; nothing left to
+        # reject.
 
     # Re-bucket: the pass above may have interned hidden ``:max`` order slots,
     # which must reach the PlannedQuery's aggregate bucket (and hence the
@@ -1335,10 +1396,25 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         # aggregate above; order on that slot, not the bare row key.
         okey = order_key_remap.get(spec.bound.value_key, spec.bound.value_key)
         sid = projection.registry.find_by_key(okey)
-        if sid is not None:
-            order_entries.append(
-                OrderEntry(slot_id=sid, direction=spec.direction),
+        if sid is None:
+            # DEV-1733: an order target that reached here without a slot would
+            # be SILENTLY DROPPED — the query runs unsorted and returns wrong
+            # rows with no error. That was the original `change(...)` /
+            # scalar-call bug, and the entry-point relaxation makes new key
+            # shapes reachable (e.g. a top-level `IN` / `BETWEEN` predicate,
+            # which `_iter_slot_deps` treats as WHERE-inlined and never slots).
+            # Fail loudly for ANY unslotted shape rather than enumerating them,
+            # so this whole bug class cannot come back.
+            raise ValueError(
+                f"ORDER BY expression is not supported: "
+                f"{type(spec.bound.value_key).__name__} has no materialisable "
+                f"slot. Order by an aggregate, a transform, a composite "
+                f"arithmetic / scalar expression, a dimension, or declare the "
+                f"expression as a measure and order by its name."
             )
+        order_entries.append(
+            OrderEntry(slot_id=sid, direction=spec.direction),
+        )
 
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)
     stage_schema = _emit_stage_schema(
@@ -1353,18 +1429,27 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # Stage 7b.10 — the active TD's slot id (``active_td_slot_id``) is resolved
     # right after projection above so the windowed-plan builder can use it.
 
-    # DEV-1714 Stage 10 — the ``_wm_`` ``_src`` scope inherits WHERE-phase row
-    # filters (model + user), EXCEPT the typed date_range (``f0..f{n-1}``): the
-    # trailing window must reach rows before the range start. POST-reclassified
-    # windowed-measure filters are already excluded (phase != ROW).
+    # DEV-1732 — the frame-bound column set: raw columns of this stage's
+    # NON-HIDDEN time dimensions. Computed once and carried on the plan so the
+    # windowed ``_src`` path (below) and the generator's ``time_shift``
+    # shifted-CTE path read the SAME set.
+    frame_bound_columns = _frame_bound_columns(row_slots=row_slots)
+
+    # DEV-1714 Stage 10 / DEV-1732 — the ``_wm_`` ``_src`` scope inherits
+    # WHERE-phase row filters (model + user) MINUS their frame bounds: the
+    # trailing window must reach rows before the visible frame starts.
+    # POST-reclassified windowed-measure filters are already excluded
+    # (phase != ROW).
     if windowed_plans:
         date_range_fids = {f"f{i}" for i in range(n_date_range)}
-        src_where_ids = [
-            fp.id for fp in filters_by_phase
-            if fp.phase == Phase.ROW and fp.id not in date_range_fids
-        ]
+        src_where_ids, src_rewrites = _plan_src_row_filters(
+            filters_by_phase=filters_by_phase,
+            date_range_fids=date_range_fids,
+            frame_bound_columns=frame_bound_columns,
+        )
         for wp in windowed_plans:
             wp.where_filter_ids = src_where_ids
+            wp.src_filter_rewrites = src_rewrites
 
     return PlannedQuery(
         source_relation=source_relation,
@@ -1383,7 +1468,86 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         active_time_dimension_slot_id=active_td_slot_id,
         render_source_model=render_source_model,
         distinct_dimension_values=query.distinct_dimension_values,
+        frame_bound_columns=frame_bound_columns,
     )
+
+
+def _frame_bound_columns(*, row_slots: list) -> List[ValueKey]:
+    """Raw column keys of the stage's NON-HIDDEN time dimensions (DEV-1732).
+
+    An explicit relational bound on one of these is a FRAME bound — the
+    caller restating what ``TimeDimension.date_range`` expresses — and is
+    stripped from CTEs that must read outside the frame. A bound on any other
+    column, temporal or not, is a population filter and is left alone.
+
+    Hidden ``TimeTruncKey`` slots are excluded deliberately, and the exclusion
+    is load-bearing rather than cosmetic: ``_build_windowed_plans`` skips hidden
+    row slots when building ``other_time_dimension_slot_ids``, so a hidden time
+    axis is never equality-joined into ``_src``. Stripping a bound on one would
+    leave that axis wholly unconstrained — an unbounded over-count — where
+    keeping it merely preserves the pre-DEV-1732 result.
+
+    Order-stable and de-duplicated: the same column carried at two
+    granularities contributes one entry.
+    """
+    out: List[ValueKey] = []
+    seen: set = set()
+    for rs in row_slots:
+        if rs.hidden or not isinstance(rs.key, TimeTruncKey):
+            continue
+        col = rs.key.column
+        if col in seen:
+            continue
+        seen.add(col)
+        out.append(col)
+    return out
+
+
+def _plan_src_row_filters(
+    *,
+    filters_by_phase: list,
+    date_range_fids: set,
+    frame_bound_columns: List[ValueKey],
+) -> "Tuple[List[str], List[SrcFilterRewrite]]":
+    """Partition ROW-phase filters for a windowed measure's ``_src`` scope.
+
+    Returns ``(where_filter_ids, src_filter_rewrites)``:
+
+    * a filter that is ENTIRELY a frame bound is omitted from the ids;
+    * a filter that is PARTLY one keeps its id and gains a rewrite carrying the
+      residual population predicate;
+    * everything else keeps its id with no rewrite.
+
+    Mode-A model filters (``FilterPhase.text``, no typed expression) are exempt
+    by design — a model filter defines which rows EXIST rather than which frame
+    the query looks at, there is no ``date_range`` spelling at model level, and
+    analysing raw dialect SQL would make a silent mis-strip possible.
+
+    ``date_range_fids`` is skipped up front. That is redundant with
+    ``strip_frame_bounds`` (which recognises ``BetweenKey`` too) and kept
+    deliberately: it makes a Stage-10 regression structurally impossible even if
+    a ``date_range`` ever binds to a shape the helper does not match.
+    """
+    time_cols = frozenset(frame_bound_columns)
+    where_ids: List[str] = []
+    rewrites: List[SrcFilterRewrite] = []
+    for fp in filters_by_phase:
+        if fp.phase != Phase.ROW or fp.id in date_range_fids:
+            continue
+        if fp.expression is None:
+            where_ids.append(fp.id)  # Mode-A model filter — exempt.
+            continue
+        residual = strip_frame_bounds(
+            key=fp.expression.value_key, time_columns=time_cols,
+        )
+        if residual is None:
+            continue  # wholly a frame bound
+        where_ids.append(fp.id)
+        if residual is not fp.expression.value_key:
+            rewrites.append(SrcFilterRewrite(
+                filter_id=fp.id, expression=PlannedBoundExpr(value_key=residual),
+            ))
+    return where_ids, rewrites
 
 
 def _coerce_extension(spec) -> ModelExtension:

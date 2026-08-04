@@ -67,12 +67,63 @@ Windowed measures need exactly one resolvable time dimension (a single
 a windowed measure (`{"formula": "revenue:sum(window='90d') > 100"}`) applies
 after aggregation, and the windowed measure must also be selected.
 
+A windowed measure may also be used purely as an **order** target without being
+selected — `{"order": [{"column": "revenue:sum(window='90d')", "direction": "desc"}]}`
+ranks by the rolling value and keeps it out of the result. That works both for a
+bare windowed measure and for one inside an order-only composite
+(`{"column": "revenue:sum(window='90d') / cnt:sum"}`).
+
+Note the deliberate asymmetry: a windowed measure inside a composite is allowed
+in `order` but not yet in `measures`. Ordering needs only a single scalar
+comparison, whereas projecting the composite surfaces the rolling value's NULLs
+(a grain bucket with no matching source rows yields NULL) as user-visible
+result values — settling those semantics is part of the follow-up below.
+
+#### Time bounds do not clip the window
+
+A trailing window has to read rows from *before* the earliest bucket you asked
+for — otherwise that bucket silently under-counts. So a **time bound narrows
+which buckets come back, not which rows the window may reach**. These two
+queries return identical numbers:
+
+```json
+{"time_dimensions": [{"dimension": "created_at", "granularity": "month",
+                      "date_range": ["2025-01-01", "2025-12-31"]}]}
+```
+```json
+{"time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
+ "filters": ["created_at >= '2025-01-01' and created_at <= '2025-12-31'"]}
+```
+
+A bound counts as a *frame* bound when it compares a **time dimension's own
+column** against a **literal** using `<`, `<=`, `>`, or `>=`. Everything else is
+an ordinary row filter and does restrict the window's input, including:
+
+- other operators on that column — `created_at == '2025-01-01'`, `IN (…)`,
+  `IS NOT NULL`;
+- a bound on a time column that is not one of the query's time dimensions;
+- a comparison against another column rather than a literal;
+- a bound wrapped in `or` or `not`, which cannot be separated out safely;
+- `filters` declared on the **model** — those define which rows exist at all, so
+  a model scoped to `created_at >= '2024-01-01'` does clip the window there.
+
+Mixed filters are split, so only the time part is set aside:
+`"created_at >= '2025-01-01' and status = 'paid'"` restricts the window's input
+to paid rows while still reaching back before January.
+
+The same rule applies to [`time_shift`](#transform-functions) — the earliest
+visible bucket still gets its prior-period value under either spelling.
+
+If you genuinely want to clip the underlying rows, apply the bound in an inner
+stage of a multi-stage query so the windowed stage never sees the raw column.
+
 The following windowed-measure shapes raise a clear error rather than returning
 wrong numbers, and are planned follow-ups: a windowed aggregation other than
 `sum`/`avg`; a cross-model windowed measure (`customers.revenue:sum(window=…)`);
-a windowed measure combined with a transform (`cumsum`, `time_shift`, …), nested
-in an arithmetic/composite expression (`revenue:sum(window='90d') / 2`), or
-compared against a plain aggregate inside one filter
+a windowed measure combined with a transform (`cumsum`, `time_shift`, …) in any
+position; a windowed measure nested in an arithmetic/composite expression in
+`measures` (`{"formula": "revenue:sum(window='90d') / 2"}`); or one compared
+against a plain aggregate inside one filter
 (`revenue:sum(window='90d') > 100 and revenue:sum > 50`).
 
 ---

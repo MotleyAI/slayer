@@ -8,7 +8,7 @@ query engine's _enrich() step.
 import copy
 import logging
 import re
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Set, Tuple, Union
+from typing import AbstractSet, Any, Dict, List, Literal, NamedTuple, Optional, Set, Tuple, Union
 
 import sqlglot
 from sqlglot import exp
@@ -23,9 +23,10 @@ from slayer.core.enums import (
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from slayer.core.errors import AggregationNotAllowedError, UnresolvableOrderColumnError
-from slayer.core.keys import _reroot_path_ref, reroot_aggregate_key
+from slayer.core.keys import _FrozenKey, _reroot_path_ref, reroot_aggregate_key
 from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
+from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration as _parse_window_duration
 from slayer.engine.column_expansion import (
     _is_trivial_base,
@@ -604,6 +605,31 @@ def _cte_name_from_alias(prefix: str, alias: str) -> str:
     sanitized = flat_name(alias)
     sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", sanitized)
     return prefix + sanitized
+
+
+def _effective_src_filters(*, planned_query, plan) -> list:
+    """``planned_query.filters_by_phase`` as the windowed ``_src`` scope sees it
+    (DEV-1732): frame-bound residuals substituted for the host's predicates.
+
+    Returned as ONE list that both ``_resolve_where_filter_joins_via_scope`` and
+    ``_build_where_having_from_planned`` consume, so join discovery and
+    rendering are structurally guaranteed to agree. Entries whose filter is
+    wholly a frame bound need no substitution here — the planner already left
+    their ids out of ``plan.where_filter_ids``, and the caller's
+    ``skip_filter_ids`` drops them.
+
+    Returns the original list unchanged when the plan carries no rewrites, so a
+    query without a split conjunction emits byte-identical SQL.
+    """
+    rewrites = getattr(plan, "src_filter_rewrites", None)
+    if not rewrites:
+        return planned_query.filters_by_phase
+    by_id = {r.filter_id: r.expression for r in rewrites}
+    return [
+        fp if fp.id not in by_id
+        else fp.model_copy(update={"expression": by_id[fp.id]})
+        for fp in planned_query.filters_by_phase
+    ]
 
 
 def _alias_prefixes(model_name: str) -> list:
@@ -3828,6 +3854,42 @@ class SQLGenerator:
                 )
 
     @staticmethod
+    def _composite_has_remote_operand(
+        *,
+        key,
+        slots_by_id: Dict[str, Any],
+        slot_id_by_key: Dict[Any, str],
+        planned_query,
+    ) -> bool:
+        """Whether any operand of ``key`` is materialised OUTSIDE the base CTE.
+
+        DEV-1733: a composite whose operands include a CROSS-MODEL aggregate
+        (``_cm_`` CTE) or a WINDOWED aggregate (``_wm_`` CTE) cannot render in
+        ``_base`` — the operand column is not in that scope. Such composites
+        are owned by the combined SELECT instead, which resolves each operand
+        to its CTE-qualified column.
+        """
+        from slayer.core.keys import AggregateKey as _AggKey
+        from slayer.engine.binding import walk_value_keys
+
+        remote_slot_ids = {
+            p.aggregate_slot_id
+            for p in planned_query.cross_model_aggregate_plans
+        } | {
+            p.aggregate_slot_id
+            for p in planned_query.windowed_aggregate_plans
+        }
+        for node in walk_value_keys(key):
+            if not isinstance(node, _AggKey):
+                continue
+            if getattr(node.source, "path", ()):
+                return True  # cross-model source, even without a plan yet
+            sid = slot_id_by_key.get(node)
+            if sid is not None and sid in remote_slot_ids:
+                return True
+        return False
+
+    @staticmethod
     def _collect_base_aux_slot_ids(  # NOSONAR(S3776) — recursive ValueKey walker (nested ``_collect_from``) over the closed key union plus three top-level passes (transform layers / phase-gated filter deps / order deps). Each pass is one decision; extracting them would scatter the slot-dep contract.
         *,
         planned_query,
@@ -3974,6 +4036,26 @@ class SQLGenerator:
                 if slot is None:
                     continue
                 _collect_from(slot.key)
+                # DEV-1733: an order-only COMPOSITE (``a:sum / b:sum``,
+                # ``abs(a:sum)``) needs its OWN materialised column, not just
+                # its operands — the outer trim wrap orders on a plain quoted
+                # alias, so the composite has to exist as a column of the inner
+                # SELECT. ``_collect_from`` deliberately recurses past
+                # composite nodes (the generator inlines them elsewhere), so
+                # the slot id is added here explicitly.
+                #
+                # Cross-model / windowed composites are EXCLUDED: their
+                # operands live in ``_cm_`` / ``_wm_`` CTEs, so the composite
+                # is owned by the combined SELECT and rendering it in ``_base``
+                # would reference an out-of-scope column. The cross-model
+                # renderer routes them via ``outer_composite_slot_ids``.
+                if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)):
+                    if not SQLGenerator._composite_has_remote_operand(
+                        key=slot.key, slots_by_id=slots_by_id,
+                        slot_id_by_key=slot_id_by_key,
+                        planned_query=planned_query,
+                    ):
+                        out.add(oe.slot_id)
 
         return out
 
@@ -5524,7 +5606,16 @@ class SQLGenerator:
             args = []
             any_agg = False
             for a in key.args:
-                if isinstance(a, (AggregateKey, ArithmeticKey, ScalarCallKey, LiteralKey)):
+                # DEV-1733: dispatch on the KEY BASE, not a hand-listed subset.
+                # The trailing ``else`` below stringifies whatever it does not
+                # recognise, so a row-column argument
+                # (``coalesce(revenue:sum, quantity)``) used to render as the
+                # SQL string literal ``'path=() leaf=''quantity'''`` — valid
+                # SQL, silently wrong results. Routing every ValueKey through
+                # the recursive renderer makes an unsupported operand hit the
+                # same terminal NotImplementedError the arithmetic path raises,
+                # and leaves the ``else`` for genuine Python literals only.
+                if isinstance(a, _FrozenKey):
                     e, ag = self._render_aggregate_composite_expr(
                         key=a, slot=slot, source_model=source_model,
                         source_relation=source_relation,
@@ -5683,18 +5774,21 @@ class SQLGenerator:
         src_cols.append(val_expr.as_("_w_value"))
 
         # WHERE-phase row filters (model + user) inherited into ``_src``, minus
-        # date_range (``plan.where_filter_ids``). Register their crossed joins
-        # into ``src_scope`` first (Law 1), then render.
+        # their frame bounds (``plan.where_filter_ids`` /
+        # ``plan.src_filter_rewrites``, DEV-1714 + DEV-1732). ONE effective list
+        # feeds both join discovery (Law 1) and rendering, so the two can never
+        # disagree about what this CTE contains.
         all_filter_ids = {fp.id for fp in planned_query.filters_by_phase}
         skip_for_src = all_filter_ids - set(plan.where_filter_ids)
+        src_filters = _effective_src_filters(planned_query=planned_query, plan=plan)
         self._resolve_where_filter_joins_via_scope(
             planned_query=planned_query, scope=src_scope,
-            skip_filter_ids=skip_for_src,
+            skip_filter_ids=skip_for_src, filters_override=src_filters,
         )
         src_where, _src_having = self._build_where_having_from_planned(
             planned_query=planned_query, source_relation=source_relation,
             source_model=source_model, bundle=bundle,
-            skip_filter_ids=skip_for_src,
+            skip_filter_ids=skip_for_src, filters_override=src_filters,
         )
 
         # ``_src`` FROM + joins from the scope's discovered paths.
@@ -5890,7 +5984,14 @@ class SQLGenerator:
             for k in walk_value_keys(slot.key):
                 if isinstance(k, AggregateKey):
                     s = slot_by_key.get(k)
-                    if s is not None and s.id in cma_slot_ids:
+                    # DEV-1733: a WINDOWED operand routes the composite outward
+                    # for the same reason a cross-model one does — the value
+                    # lives in a ``_wm_`` CTE joined back to ``_base``, so
+                    # rendering the composite inside ``_base`` would silently
+                    # substitute a PLAIN aggregate for the rolling one.
+                    if s is not None and (
+                        s.id in cma_slot_ids or s.id in windowed_slot_ids
+                    ):
                         outer_composite_slot_ids.add(slot.id)
                         break
         base_projection = [
@@ -5987,7 +6088,16 @@ class SQLGenerator:
                     dep = slot_by_key.get(k)
                     if dep is None:
                         continue
-                    if dep.id in cma_slot_ids or dep.id in seen_base_ids:
+                    # DEV-1733: a WINDOWED operand is owned by its ``_wm_`` CTE,
+                    # exactly like a cross-model one is owned by ``_cm_``.
+                    # Promoting it into ``_base`` would emit a dead PLAIN
+                    # aggregate under the windowed slot's alias, which the outer
+                    # composite would then read instead of the rolling value.
+                    if (
+                        dep.id in cma_slot_ids
+                        or dep.id in windowed_slot_ids
+                        or dep.id in seen_base_ids
+                    ):
                         continue
                     base_render_order.append(dep.id)
                     seen_base_ids.add(dep.id)
@@ -6331,6 +6441,17 @@ class SQLGenerator:
                 outer_composite_cm_map[plan.aggregate_slot_id] = (
                     cte_name, agg_col_alias,
                 )
+            # DEV-1733: windowed operands resolve the same way — the renderer
+            # substitutes ``<cte>."<col>"`` for any slot id in this map, and a
+            # ``_wm_`` CTE is joined into the combined FROM exactly as a
+            # ``_cm_`` one is. Without these entries the operand would fall
+            # through to the ``_base.<alias>`` fallback and read a plain
+            # aggregate (or dangle).
+            for plan in planned_query.windowed_aggregate_plans:
+                outer_composite_cm_map[plan.aggregate_slot_id] = (
+                    wm_cte_name_for_plan[plan.aggregate_slot_id],
+                    wm_agg_col_for_plan[plan.aggregate_slot_id],
+                )
 
             def _render_outer_composite(cslot) -> str:
                 rendered = self._render_filter_for_outer_wrapper(
@@ -6412,7 +6533,7 @@ class SQLGenerator:
             # DEV-1495 bug 2 / DEV-1712: an order-by-only (hidden) cross-model
             # aggregate never surfaces in the combined projection — its CTE is
             # still joined below, and the ORDER BY references it CTE-qualified
-            # (``hidden_cma_order_ref``). Trimming it keeps the outer SELECT to
+            # (``hidden_cte_order_refs``). Trimming it keeps the outer SELECT to
             # the user-declared columns (Law 2 projection boundary). Only when
             # there is NO transform chain: a hidden CMA feeding a transform
             # layer (``cumsum(customers.revenue:sum)``) must stay projected so
@@ -6453,6 +6574,16 @@ class SQLGenerator:
             agg_slot = slots_by_id[plan.aggregate_slot_id]
             cte_name = wm_cte_name_for_plan[plan.aggregate_slot_id]
             agg_col = wm_agg_col_for_plan[plan.aggregate_slot_id]
+            # DEV-1733: an order-only (hidden) windowed aggregate never surfaces
+            # in the combined projection — its ``_wm_`` CTE is still joined
+            # below and the ORDER BY references it CTE-qualified
+            # (``hidden_wm_order_ref``). Same trim predicate the hidden
+            # cross-model aggregate uses: with a transform chain on top the
+            # column must stay projected so the step CTE can consume it, and
+            # the transform outer wrap does the public-vs-hidden trim there.
+            if plan.hidden and not planned_query.transform_layers:
+                combined_aliases_by_slot_id[plan.aggregate_slot_id] = []
+                continue
             public_names = list(agg_slot.public_aliases) or (
                 [agg_slot.public_name] if agg_slot.public_name else []
             )
@@ -6631,7 +6762,7 @@ class SQLGenerator:
         # are trimmed from the projection above, so their ORDER BY term must be
         # CTE-qualified (``_cm_*."<agg_col_alias>"``) rather than the bare
         # combined-SELECT alias.
-        hidden_cma_order_ref: Dict[str, str] = {}
+        hidden_cte_order_refs: Dict[str, str] = {}
         for plan in planned_query.cross_model_aggregate_plans:
             # Only CMAs actually trimmed from the projection (hidden + no
             # transform chain) need the CTE-qualified ORDER BY reference.
@@ -6640,8 +6771,18 @@ class SQLGenerator:
             _canon = canonical_alias_for_plan[plan.aggregate_slot_id]
             _agg_col = agg_col_alias_for_plan[plan.aggregate_slot_id]
             _cte = _cte_name_from_alias("_cm_", _canon)
-            hidden_cma_order_ref[plan.aggregate_slot_id] = (
+            hidden_cte_order_refs[plan.aggregate_slot_id] = (
                 f'{_cte}.{self._quote_ident(_agg_col)}'
+            )
+        # DEV-1733: same treatment for a hidden (order-only) WINDOWED aggregate
+        # trimmed from the combined projection above — reference its ``_wm_``
+        # CTE column rather than a bare alias the SELECT no longer emits.
+        for plan in planned_query.windowed_aggregate_plans:
+            if not (plan.hidden and not planned_query.transform_layers):
+                continue
+            hidden_cte_order_refs[plan.aggregate_slot_id] = (
+                f'{wm_cte_name_for_plan[plan.aggregate_slot_id]}.'
+                f'{self._quote_ident(wm_agg_col_for_plan[plan.aggregate_slot_id])}'
             )
         order_sql = self._build_combined_order_by_sql(
             planned_query=planned_query,
@@ -6654,7 +6795,7 @@ class SQLGenerator:
             bare_order_slot_ids=set(order_only_local_ids) | windowed_slot_ids,
             outer_composite_aliases=outer_composite_order_alias_by_sid,
             outer_composite_expressions=outer_composite_order_expressions,
-            hidden_cma_order_ref=hidden_cma_order_ref,
+            hidden_cte_order_refs=hidden_cte_order_refs,
         )
         if order_sql:
             sql += "\n" + order_sql
@@ -8061,7 +8202,7 @@ class SQLGenerator:
         bare_order_slot_ids: Optional[Set[str]] = None,
         outer_composite_aliases: Optional[Dict[str, str]] = None,
         outer_composite_expressions: Optional[Dict[str, str]] = None,
-        hidden_cma_order_ref: Optional[Dict[str, str]] = None,
+        hidden_cte_order_refs: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Build the ORDER BY clause for the combined SELECT.
 
@@ -8089,7 +8230,7 @@ class SQLGenerator:
         bare_ids = bare_order_slot_ids or set()
         outer_aliases = outer_composite_aliases or {}
         outer_expressions = outer_composite_expressions or {}
-        hidden_cma_refs = hidden_cma_order_ref or {}
+        hidden_cte_refs = hidden_cte_order_refs or {}
         parts: List[str] = []
         for entry in planned_query.order:
             slot = slots_by_id.get(entry.slot_id)
@@ -8104,7 +8245,7 @@ class SQLGenerator:
                 bare_ids=bare_ids,
                 outer_aliases=outer_aliases,
                 outer_expressions=outer_expressions,
-                hidden_cma_refs=hidden_cma_refs,
+                hidden_cte_refs=hidden_cte_refs,
             )
             if term is not None:
                 parts.append(term)
@@ -8123,7 +8264,7 @@ class SQLGenerator:
         bare_ids: Set[str],
         outer_aliases: Dict[str, str],
         outer_expressions: Optional[Dict[str, str]] = None,
-        hidden_cma_refs: Optional[Dict[str, str]] = None,
+        hidden_cte_refs: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Resolve one ``OrderEntry`` to its ``"alias" <direction>`` term.
 
@@ -8138,13 +8279,17 @@ class SQLGenerator:
         rendered).
         """
         direction = "ASC" if entry.direction == "asc" else "DESC"
+        # DEV-1712 / DEV-1733: a HIDDEN (order-only) aggregate that lives in its
+        # own CTE — cross-model (``_cm_``) or windowed (``_wm_``) — is trimmed
+        # from the combined projection, so the bare alias no longer names a
+        # projected column. Reference the CTE-qualified column instead. Checked
+        # BEFORE the ``cma_slot_ids`` gate because a windowed slot is not a
+        # cross-model slot and would otherwise fall through to the bare-alias
+        # branch below and dangle.
+        hidden_ref = (hidden_cte_refs or {}).get(entry.slot_id)
+        if hidden_ref is not None:
+            return f'{hidden_ref} {direction}'
         if entry.slot_id in cma_slot_ids:
-            # DEV-1712: a HIDDEN (order-only) cross-model aggregate is trimmed
-            # from the combined projection, so the bare alias no longer names a
-            # projected column — reference the CTE-qualified column instead.
-            hidden_ref = (hidden_cma_refs or {}).get(entry.slot_id)
-            if hidden_ref is not None:
-                return f'{hidden_ref} {direction}'
             alias = cm_alias_for_plan.get(entry.slot_id)
             if alias is None:
                 return None
@@ -8976,12 +9121,16 @@ class SQLGenerator:
         """Build the WHERE clauses for the shifted CTE that re-aggregates
         the source relation, plus the join paths those clauses cross.
 
-        7b.3c invariant: ``BetweenKey`` filters (those derived from
-        ``TimeDimension.date_range``) MUST be omitted from the shifted
-        inner CTE so the earliest visible bucket can still carry a
-        non-null shifted value. Other ROW-phase filters
-        (e.g. ``status = 'active'``) are propagated unchanged so the
-        shifted aggregation runs over the same row population.
+        7b.3c invariant, generalised by DEV-1732: a FRAME BOUND must be omitted
+        from the shifted inner CTE so the earliest visible bucket can still
+        carry a non-null shifted value. That covers the ``BetweenKey`` a
+        ``date_range`` produces AND the explicit relational spelling of the same
+        intent (``created_at >= '2024-01-01'``), which used to be propagated —
+        so the two spellings gave different numbers. A filter that is only
+        PARTLY a frame bound propagates as its residual population predicate.
+
+        Other ROW-phase filters (e.g. ``status = 'active'``) are propagated
+        unchanged so the shifted aggregation runs over the same row population.
         AGGREGATE / POST phase filters never apply to the shifted CTE
         (they're outer-projection concerns).
 
@@ -8997,12 +9146,17 @@ class SQLGenerator:
 
         out: List[str] = []
         crossed_paths: List[Tuple[str, ...]] = []
+        # DEV-1732: the frame-bound column set is computed once by the planner
+        # and carried on the plan, so this path and the windowed ``_src`` path
+        # cannot drift apart.
+        time_cols = frozenset(planned_query.frame_bound_columns)
         for fp in planned_query.filters_by_phase:
             if fp.phase != Phase.ROW:
                 continue
             rendered = self._shifted_where_part(
                 fp=fp, source_relation=source_relation,
                 source_model=source_model, bundle=bundle,
+                time_columns=time_cols,
             )
             if rendered is None:
                 continue
@@ -9015,10 +9169,26 @@ class SQLGenerator:
 
     def _shifted_where_part(
         self, *, fp, source_relation: str, source_model, bundle,
+        time_columns: "AbstractSet[Any]",
     ) -> "Optional[Tuple[str, List[Tuple[str, ...]]]]":
         """Render one ROW-phase filter for the shifted CTE, returning its SQL
-        plus the join paths it crosses — or ``None`` to omit it (a
-        ``BetweenKey`` date_range filter, per the 7b.3c invariant).
+        plus the join paths it crosses — or ``None`` to omit it entirely.
+
+        A filter that is wholly a FRAME BOUND on one of ``time_columns`` is
+        omitted; one that is partly a frame bound renders as its residual
+        population predicate (DEV-1732). This subsumes the old
+        ``isinstance(..., BetweenKey)`` special case: a ``date_range``'s
+        ``BetweenKey`` column is always a query time dimension's raw column, so
+        ``strip_frame_bounds`` returns ``None`` for it — same behaviour, one
+        rule.
+
+        Mode-A ``text`` filters are exempt from the analysis and always
+        propagate (a model filter defines which rows EXIST, not the frame).
+
+        ``time_columns`` is REQUIRED, deliberately (Codex): ``strip_frame_bounds``
+        returns its input unchanged for an empty set, so a default would let a
+        future caller silently start rendering every ``date_range`` into the
+        shifted CTE — the exact 7b.3c regression this method exists to prevent.
 
         The join paths are collected per carrier kind (CodeRabbit): a TYPED
         filter is scanned STRUCTURALLY on its already-rendered AST via
@@ -9028,14 +9198,18 @@ class SQLGenerator:
         ``text`` filter has only its string form, so it keeps the
         ``_filter_join_paths`` dual raw + inline-expanded scan (the DEV-1494
         contract that surfaces a derived ref's expansion joins).
-        """
-        from slayer.core.keys import BetweenKey
 
+        Note the scan runs on the RESIDUAL, so the shifted CTE's join set
+        follows what it actually renders.
+        """
         if fp.expression is not None:
-            if isinstance(fp.expression.value_key, BetweenKey):
-                return None  # date_range filter — omit from inner shifted CTE.
+            residual = strip_frame_bounds(
+                key=fp.expression.value_key, time_columns=time_columns,
+            )
+            if residual is None:
+                return None  # wholly a frame bound — omit from the shifted CTE.
             rendered = self._render_value_key_for_filter(
-                key=fp.expression.value_key,
+                key=residual,
                 source_relation=source_relation,
                 source_model=source_model,
                 bundle=bundle,
@@ -10232,6 +10406,7 @@ class SQLGenerator:
     def _resolve_where_filter_joins_via_scope(
         self, *, planned_query, scope: ScopeFrame,
         skip_filter_ids: Optional[Set[str]] = None,
+        filters_override: "Optional[List[Any]]" = None,
     ) -> None:
         """Register into ``scope.join_paths`` the joins every WHERE-phase filter
         references (Law 1 — discovery is a side effect of resolving the filter
@@ -10252,11 +10427,19 @@ class SQLGenerator:
         Filters routed to a per-plan ``_cm_*`` CTE (``skip_filter_ids``) are
         applied there, not on the host base, so their joins are not registered
         here.
+
+        ``filters_override`` (DEV-1732) replaces the filter list being scanned —
+        the windowed ``_src`` scope passes the SAME rewritten list it renders, so
+        discovery and rendering can never disagree about what the CTE contains.
         """
         from slayer.core.keys import Phase
 
         skip = skip_filter_ids or set()
-        for fp in planned_query.filters_by_phase:
+        filters = (
+            planned_query.filters_by_phase
+            if filters_override is None else filters_override
+        )
+        for fp in filters:
             if fp.phase != Phase.ROW or fp.id in skip:
                 continue
             if fp.expression is not None:
@@ -10590,7 +10773,7 @@ class SQLGenerator:
             f"AggregateKey source {type(source).__name__} not supported.",
         )
 
-    def _build_where_having_from_planned(
+    def _build_where_having_from_planned(  # NOSONAR(S3776) — one cohesive pass over filters_by_phase routing each entry to WHERE / HAVING / POST by phase, with the per-carrier (typed vs Mode-A text) rendering and the HAVING grouped-column guard inline. The complexity is pre-existing; DEV-1732 added only the `filters_override` list selection. Splitting the phase routing from the rendering would thread slot_by_key / first_last_state / where_parts / having_parts through helpers without simplifying anything.
         self,
         *,
         planned_query,
@@ -10600,7 +10783,10 @@ class SQLGenerator:
         skip_filter_ids: Optional[Set[str]] = None,
         first_last_state: Optional[FirstLastRenderState] = None,
         aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
+        filters_override: "Optional[List[Any]]" = None,
     ):
+        """``filters_override`` (DEV-1732) replaces ``filters_by_phase`` as the
+        list being rendered — see ``_effective_src_filters``."""
         from slayer.core.keys import Phase
 
         skip = skip_filter_ids or set()
@@ -10616,7 +10802,11 @@ class SQLGenerator:
         }
         where_parts: list[str] = []
         having_parts: list[str] = []
-        for fp in planned_query.filters_by_phase:
+        filters = (
+            planned_query.filters_by_phase
+            if filters_override is None else filters_override
+        )
+        for fp in filters:
             if fp.id in skip:
                 # DEV-1450 stage 7b.12: filters routed into a per-plan
                 # cross-model CTE (where_filter_ids / having_filter_ids)
@@ -11505,7 +11695,24 @@ class SQLGenerator:
         targets out of ``base_render_order``, preserving today's
         ``NotImplementedError``).
         """
-        from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, TimeTruncKey
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            ColumnKey,
+            ColumnSqlKey,
+            ScalarCallKey,
+            TimeTruncKey,
+            TransformKey,
+        )
+
+        # DEV-1733: the EXACT set of hidden key kinds that resolve to a
+        # materialised alias. Deliberately enumerated rather than "any hidden
+        # slot that happens to carry an alias" — a hidden ROW slot with an
+        # alias must still hit the split-emission / invariant branches below,
+        # never be ordered on as a bare column that is not in the GROUP BY.
+        _MATERIALISED_ORDER_KINDS = (
+            AggregateKey, ArithmeticKey, ScalarCallKey, TransformKey,
+        )
 
         for order_entry in planned_query.order:
             slot = slots_by_id.get(order_entry.slot_id)
@@ -11522,7 +11729,7 @@ class SQLGenerator:
                     if aliases_by_slot_id is not None
                     else []
                 )
-                if aliases and isinstance(slot.key, AggregateKey):
+                if aliases and isinstance(slot.key, _MATERIALISED_ORDER_KINDS):
                     full_alias = aliases[0]
                     order_col = exp.Column(
                         this=exp.to_identifier(full_alias, quoted=True),

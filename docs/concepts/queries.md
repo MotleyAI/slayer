@@ -97,6 +97,8 @@ A time dimension with a required granularity and an optional date range. Support
 
 `week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
 
+`date_range` and an equivalent explicit filter (`"created_at >= '2024-01-01' and created_at <= '2024-12-31'"`) are interchangeable — including for trailing-window measures and `time_shift`, which still read rows from before the range so the earliest bucket isn't short-changed. See [Time bounds do not clip the window](formulas.md#time-bounds-do-not-clip-the-window) for exactly which predicates count as a time bound.
+
 ## OrderItem
 
 A sort specification: `column` is the short alias (`status`, `revenue_sum`, `*:count`), `direction` is `asc` or `desc`.
@@ -123,10 +125,25 @@ What each shape of an *undeclared* order target does:
 | Order target | Behavior |
 | --- | --- |
 | An aggregate (`amount:sum`, `customers.revenue:sum`) | Computed hidden, sorted on, stripped from the result. Always allowed. |
+| An inline **transform** (`rank(amount:sum)`, `cumsum(...)`, `change(...)`, `lag`/`lead`/`ntile`) | Computed hidden, sorted on, stripped. |
+| An inline **composite** (`revenue:sum / cnt:sum`, `abs(amount:sum)`, `change(amount:sum) / 2`) | Computed hidden, sorted on, stripped. |
+| A **windowed** aggregate (`amount:sum(window='90d')`), alone or inside a composite | Computed hidden in its own rolling-window CTE, sorted on, stripped. |
 | A raw row column, in a **raw-rows** query (`distinct_dimension_values: false`, no measures) | Sorted on directly (`ORDER BY orders.created_at`). |
 | A raw row column, in an **aggregated / dedup** query | Rejected (HTTP 400): it isn't in the `GROUP BY`. Add it to `dimensions`, or order by an aggregate of it (`created_at:max`). |
 | A **joined** row column (`customers.regions.name`) not projected | Rejected (HTTP 400): project it (add to `dimensions`) or order by a projected field. |
-| An inline **transform / composite** (`change(amount:sum)`, `revenue:sum / cnt:sum`) not declared | Rejected (HTTP 400): declare it as a measure (optionally with a `name`) and order by that. |
+
+Transform and composite order targets accept the full formula syntax, so
+`{"column": "revenue:sum / cnt:sum"}` and `{"column": "change(revenue:sum)"}` both
+work without declaring a measure. One limit: the operands must be written as
+formulas, not as the *names* of measures you declared in the same query —
+`{"column": "rev / cnt"}` is rejected at validation, because referencing a
+declared measure by its alias inside an expression is not supported anywhere in
+SLayer. Write `{"column": "revenue:sum / cnt:sum"}` instead.
+
+A windowed measure inside a **declared** composite measure
+(`{"formula": "revenue:sum(window='90d') / cnt:sum"}`), and any combination of a
+windowed measure with a transform, are still rejected — see
+[formulas](formulas.md#windowed-sum-and-average).
 
 ## Response
 
