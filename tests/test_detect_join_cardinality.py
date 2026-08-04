@@ -612,4 +612,5 @@ class TestEmptyPopulationIsNoEvidence:
         assert unsupported.verdict is CardinalityVerdict.SKIPPED_UNSUPPORTED
         assert empty.verdict != unsupported.verdict
         # Neither detects a value.
-        assert empty.detected is None and unsupported.detected is None
+        assert empty.detected is None
+        assert unsupported.detected is None
