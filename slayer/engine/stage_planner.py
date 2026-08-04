@@ -31,6 +31,7 @@ from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
 from slayer.core.errors import (
     AmbiguousReferenceError,
+    DistinctDimensionValuesError,
     UnknownReferenceError,
     UnresolvableOrderColumnError,
 )
@@ -99,6 +100,7 @@ from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
 )
+from slayer.engine.normalization import func_style_agg_to_colon
 from slayer.engine.syntax import parse_expr, parse_filter_expr
 from slayer.sql.naming import flat_name
 from slayer.sql.sql_expr import has_window_function
@@ -450,6 +452,114 @@ def _build_windowed_plans(
     return plans, windowed_slot_ids
 
 
+_RAW_ROW_FIX_HINT = (
+    "Either remove the measure reference, or set "
+    "distinct_dimension_values=True (the default) to keep the "
+    "auto-aggregating behaviour."
+)
+
+
+def _expr_has_measure_ref(node, *, measure_names: FrozenSet[str]) -> bool:
+    """True if a parsed Mode-B expression references an aggregation, a
+    transform, or a saved ``ModelMeasure`` by bare name.
+
+    Structural walk over the typed parser's AST — the legacy check re-parsed
+    the raw text with the enrichment parsers, which no longer exist.
+    """
+    from slayer.engine.syntax import AggCall, Ref, TransformCall
+
+    found = False
+
+    def _walk(n) -> None:
+        nonlocal found
+        if found or n is None:
+            return
+        if isinstance(n, (AggCall, TransformCall)):
+            found = True
+            return
+        if isinstance(n, Ref) and n.name in measure_names:
+            found = True
+            return
+        for attr in ("input", "left", "right", "this", "operand"):
+            child = getattr(n, attr, None)
+            if child is not None and not isinstance(child, (str, bool)):
+                _walk(child)
+        for attr in ("args", "operands", "kwargs"):
+            seq = getattr(n, attr, None) or ()
+            for item in seq:
+                _walk(item[1] if isinstance(item, tuple) and len(item) == 2 else item)
+
+    _walk(node)
+    return found
+
+
+def _reject_measure_refs_for_raw_rows(*, query: SlayerQuery, scope) -> None:
+    """DEV-1543: with ``distinct_dimension_values=False`` the caller asked for
+    RAW ROWS, so no measure reference may appear in ``filters`` or ``order``.
+
+    ``SlayerQuery``'s validator already rejects the model-free cases (a
+    non-empty ``measures``, no dimensions at all). This is the half that needs
+    the resolved model: a bare ``aov`` is only a measure reference if ``aov``
+    is a saved ``ModelMeasure``. Unparseable text is left alone — the binder
+    raises on it downstream with a message tied to the original string.
+    """
+    src = getattr(scope, "source_model", None)
+    measure_names: FrozenSet[str] = frozenset(
+        m.name for m in (getattr(src, "measures", None) or []) if m.name
+    )
+    custom_agg_names: FrozenSet[str] = frozenset(
+        a.name for a in (getattr(src, "aggregations", None) or []) if a.name
+    )
+
+    for f in (query.filters or []):
+        if not isinstance(f, str):
+            continue
+        try:
+            parsed = parse_filter_expr(f)
+        except Exception:  # noqa: BLE001 — binder reports parse errors properly
+            continue
+        if _expr_has_measure_ref(parsed, measure_names=measure_names):
+            raise DistinctDimensionValuesError(
+                f"distinct_dimension_values=False rejects measure references, "
+                f"but filter {f!r} contains one. {_RAW_ROW_FIX_HINT}"
+            )
+
+    for item in (query.order or []):
+        raw = getattr(item, "raw_formula", None)
+        if raw:
+            # Function-style aggregations (``sum(amount)``) are not valid
+            # Mode-B; the slack layer rewrites them to colon form. Do the same
+            # rewrite here so this check sees the aggregation rather than
+            # letting the binder report a generic "function not allowed".
+            try:
+                text = func_style_agg_to_colon(
+                    raw, custom_agg_names=custom_agg_names,
+                )
+            except Exception:  # noqa: BLE001
+                text = raw
+            try:
+                parsed = parse_expr(text)
+            except Exception:  # noqa: BLE001
+                parsed = None
+            if parsed is not None and _expr_has_measure_ref(
+                parsed, measure_names=measure_names,
+            ):
+                raise DistinctDimensionValuesError(
+                    f"distinct_dimension_values=False rejects measure "
+                    f"references, but order item {raw!r} contains one. "
+                    f"{_RAW_ROW_FIX_HINT}"
+                )
+        col = getattr(item, "column", None)
+        name = getattr(col, "name", None)
+        if name and name in measure_names:
+            raise DistinctDimensionValuesError(
+                f"distinct_dimension_values=False rejects measure references, "
+                f"but order item {name!r} resolves to a saved measure on "
+                f"{getattr(src, 'name', 'the source model')!r}. "
+                f"{_RAW_ROW_FIX_HINT}"
+            )
+
+
 def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-1503 addition is a small trigger-predicate branch + a kwarg pass-through; the function's pre-existing complexity is owned by the multi-stage scope / bundle / projection / filter-routing wiring it orchestrates and is tracked as a separate refactor.
     *,
     query: SlayerQuery,
@@ -496,6 +606,13 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     render_source_model = (
         scope.source_model if isinstance(scope, ModelScope) else None
     )
+
+    # DEV-1543: raw-rows mode rejects measure references in filters / order.
+    # Runs BEFORE binding so the targeted, actionable error wins over the
+    # binder's generic "cannot resolve reference" / "function not allowed"
+    # for a saved-measure or function-style-aggregate reference.
+    if query.distinct_dimension_values is False:
+        _reject_measure_refs_for_raw_rows(query=query, scope=scope)
 
     # Downstream stages bind against a flat StageSchema — ``__`` is legal
     # in their refs (the upstream's flattened multi-hop aliases); model-
@@ -909,6 +1026,31 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     row_slots, agg_slots, combined_slots = _bucket_slots(
         projection.registry.slots,
     )
+
+    # DEV-1543: ``distinct_dimension_values=False`` asks for RAW ROWS, so no
+    # measure reference may appear anywhere in the query. ``SlayerQuery``'s
+    # validator already rejects the cheap structural cases (a non-empty
+    # ``measures``, or no dimensions at all) without needing a model; the
+    # remaining references hide in ``filters`` and ``order``, which only
+    # resolve once bound.
+    #
+    # The typed pipeline checks this structurally instead of re-parsing the
+    # filter/order TEXT the way the legacy stack did: after binding, ANY
+    # aggregate-phase slot in a raw-rows query can only have come from a
+    # filter or an order item, since measures were rejected upstream. Without
+    # this the query silently aggregates — a ``filters=["amount:sum > 100"]``
+    # raw-rows query materialised a hidden aggregate and emitted
+    # ``GROUP BY ... HAVING ...``, the exact auto-aggregation the flag exists
+    # to turn off.
+    if query.distinct_dimension_values is False and agg_slots:
+        offender = _canonical_name(agg_slots[0].key)
+        raise DistinctDimensionValuesError(
+            f"distinct_dimension_values=False rejects measure references, but "
+            f"this query references the aggregation {offender!r} in its "
+            f"filters or order. Either remove the measure reference, or set "
+            f"distinct_dimension_values=True (the default) to keep the "
+            f"auto-aggregating behaviour."
+        )
 
     # DEV-1714 Stage 10 — build one WindowedAggregatePlan per selected windowed
     # measure. The window time dimension is the query's resolved active TD.

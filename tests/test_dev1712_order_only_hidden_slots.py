@@ -46,7 +46,10 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.errors import UnresolvableOrderColumnError
+from slayer.core.errors import (
+    DistinctDimensionValuesError,
+    UnresolvableOrderColumnError,
+)
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -512,20 +515,25 @@ class TestLocalAggregateHiddenOrder:
             f"outer ORDER BY must name the hidden alias.\nSQL:\n{sql}"
         )
 
-    async def test_ungrouped_input_local_aggregate_order_still_works(self, engine) -> None:
-        """has_grouping=False INPUT (dedup off, no measures) but the ORDER BY
-        target is a local aggregate: the aggregate induces GROUP BY on the
-        declared dims, so it materialises + orders like any grouped query —
-        it never falls into the row-column split/reject branch."""
+    async def test_ungrouped_input_local_aggregate_order_rejected(self, engine) -> None:
+        """``distinct_dimension_values=False`` asks for RAW ROWS, so ordering
+        by an aggregate is a contradiction and is rejected (DEV-1543).
+
+        Stage 8 originally let this through: the aggregate induced a GROUP BY
+        on the declared dims, so a 4-row table came back as 2 rows — silently
+        performing exactly the dedup the flag turns off. The compile-time half
+        of the DEV-1543 contract had no owner on the typed pipeline at the
+        time; DEV-1703 Phase 3 restored it. Honouring BOTH (raw rows ordered
+        by a per-group aggregate, via SUM(...) OVER (PARTITION BY ...)) is
+        DEV-1736."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             distinct_dimension_values=False,
             order=[OrderItem(column="amount:sum", direction="desc")],
         )
-        sql = await _sql(engine, query)
-        assert _outer_select_columns(sql) == ["orders.status"], f"SQL:\n{sql}"
-        assert _outer_order_by_names(sql) == ["orders.amount_sum"], f"SQL:\n{sql}"
+        with pytest.raises(DistinctDimensionValuesError):
+            await _sql(engine, query)
 
     async def test_dev1472_joined_dim_repro(self, engine) -> None:
         """The literal DEV-1472 repro — joined dim + *:count + order by a
@@ -732,17 +740,20 @@ class TestCrossModelHiddenOrder:
         assert any("customers" in n and "revenue_sum" in n for n in order_names), order_names
         assert any("suppliers" in n and "revenue_sum" in n for n in order_names), order_names
 
-    async def test_ungrouped_input_cross_model_aggregate_order_hidden(self, engine) -> None:
-        """has_grouping=False INPUT (dedup off) ordering by a cross-model
-        aggregate: still hidden, never projected."""
+    async def test_ungrouped_input_cross_model_aggregate_order_rejected(
+        self, engine,
+    ) -> None:
+        """Same DEV-1543 contradiction as the local case, via a cross-model
+        aggregate: raw rows were requested, so a measure sort key is rejected
+        rather than silently re-introducing the grouping."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             distinct_dimension_values=False,
             order=[OrderItem(column="customers.revenue:sum", direction="desc")],
         )
-        sql = await _sql(engine, query)
-        assert _outer_select_columns(sql) == ["orders.status"], f"SQL:\n{sql}"
+        with pytest.raises(DistinctDimensionValuesError):
+            await _sql(engine, query)
 
     async def test_execute_cross_model_hidden_order_stripped(self, exec_engine) -> None:
         """Execution: an order-only cross-model aggregate is absent from the

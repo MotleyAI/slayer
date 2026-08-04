@@ -15,11 +15,10 @@ Layered validation:
   full model context (custom aggregations, named measures, post-variable
   substitution); any measure-reference shape rejected here.
 
-KNOWN GAP (see ``_TYPED_PIPELINE_GAP`` below): the compile-time half of
-that contract has no owner on the typed pipeline, so the whole
-``TestCompileRejects`` class plus the three async ``TestErrorMessage``
-cases are strict-xfail. The assertions are unchanged and will flip to
-XPASS the moment the check is reinstated.
+Both halves are live on the typed pipeline: the structural half in
+``SlayerQuery``'s validator, the compile-time half in
+``stage_planner._reject_measure_refs_for_raw_rows`` plus the aggregate-bucket
+guard in ``plan_query``.
 """
 
 import sqlite3
@@ -54,18 +53,11 @@ from tests._engine_helpers import _engine_generate
 # Known gap on the typed pipeline
 # ---------------------------------------------------------------------------
 
-_TYPED_PIPELINE_GAP = (
-    "distinct_dimension_values=False measure-reference rejection is not "
-    "implemented on the typed pipeline. The only DistinctDimensionValuesError "
-    "raise sites outside SlayerQuery's Pydantic validator live in the legacy "
-    "`enrich_query` module being deleted (_check_no_measure_refs / the "
-    "order-item check), which the typed pipeline never calls. Today a "
-    "flag=False query whose filter or order references an aggregation "
-    "silently materialises a hidden aggregate measure and re-emits GROUP BY "
-    "(exactly the failure mode test_order_arithmetic_over_aggregations "
-    "documents), instead of raising. These are strict-xfail so they flip to "
-    "XPASS as soon as the check is ported into the typed pipeline."
-)
+# DEV-1703 Phase 3: the compile-time half of the DEV-1543 contract now has
+# a typed owner. ``stage_planner._reject_measure_refs_for_raw_rows`` runs
+# BEFORE binding (so the targeted error beats the binder's generic
+# "cannot resolve" / "function not allowed"), and a post-bind guard on
+# the aggregate bucket catches anything the pre-scan's text walk misses.
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +288,6 @@ class TestCompileAccepts:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason=_TYPED_PIPELINE_GAP)
 class TestCompileRejects:
     """Each case: query passes Pydantic construction; then compilation
     raises ``DistinctDimensionValuesError``."""
@@ -463,7 +454,6 @@ class TestCompileRejects:
 
 
 class TestErrorMessage:
-    @pytest.mark.xfail(strict=True, reason=_TYPED_PIPELINE_GAP)
     async def test_message_names_offending_filter(self) -> None:
         """Case 29: error message points at the offending filter text."""
         model = _orders_model()
@@ -478,7 +468,6 @@ class TestErrorMessage:
         # The offending filter text must appear in the message.
         assert "amount:sum > 100" in str(exc.value)
 
-    @pytest.mark.xfail(strict=True, reason=_TYPED_PIPELINE_GAP)
     async def test_message_points_at_the_fix(self) -> None:
         """Case 30: error message includes the remediation hint."""
         model = _orders_model()
@@ -498,7 +487,6 @@ class TestErrorMessage:
             or "drop" in msg
         )
 
-    @pytest.mark.xfail(strict=True, reason=_TYPED_PIPELINE_GAP)
     async def test_message_names_offending_order(self) -> None:
         """Order-item form of case 29: error message must name the
         offending order spec, not just filters."""
