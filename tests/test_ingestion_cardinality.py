@@ -21,6 +21,8 @@ from slayer.core.models import DatasourceConfig
 from slayer.engine.ingestion import (
     _build_fk_graph,
     _generate_joins,
+    _get_single_column_unique_names,
+    _unique_index_key_sets,
     ingest_datasource_idempotent,
 )
 from slayer.storage.yaml_storage import YAMLStorage
@@ -231,3 +233,32 @@ class TestColumnUnique:
         assert id_col.primary_key is True
         # primary_key is the canonical marker — unique is NOT redundantly stamped.
         assert id_col.unique is False
+
+    def test_expression_index_is_not_a_single_column_claim(self) -> None:
+        """A unique EXPRESSION index must not collapse to a solo-unique claim.
+
+        SQLAlchemy reports expression members as ``None`` in ``column_names``
+        (the text lives in ``expressions``). Compacting those away would turn a
+        unique index on ``(email, lower(name))`` into a bogus single-column
+        uniqueness claim on ``email``.
+        """
+
+        class _FakeInspector:
+            def get_unique_constraints(self, table_name, schema=None):
+                return []
+
+            def get_indexes(self, table_name, schema=None):
+                return [
+                    # (email, <expression>) — unique on the PAIR, not on email.
+                    {"unique": True, "column_names": ["email", None]},
+                    # A genuine single-column unique index.
+                    {"unique": True, "column_names": ["slug"]},
+                    # Non-unique index is ignored entirely.
+                    {"unique": False, "column_names": ["region"]},
+                ]
+
+        insp = _FakeInspector()
+        assert _unique_index_key_sets(insp, "t", None) == [["slug"]]
+        assert _get_single_column_unique_names(
+            insp, "t", None, pk_cols=set()
+        ) == {"slug"}

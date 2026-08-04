@@ -46,7 +46,6 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType, TimeGranularity
 from slayer.core.models import ModelJoin, SlayerModel
-from slayer.engine.cardinality import declares_solo_unique
 from slayer.core.query import (
     ColumnRef,
     ModelExtension,
@@ -54,6 +53,7 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
 )
+from slayer.engine.cardinality import declares_solo_unique
 from slayer.facade.catalog import (
     CATALOG_NAME,
     FacadeCatalog,

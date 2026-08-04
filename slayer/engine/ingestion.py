@@ -464,16 +464,24 @@ def _unique_constraint_key_sets(
 def _unique_index_key_sets(
     inspector: sa.engine.Inspector, table_name: str, schema: str | None,
 ) -> list[list[str]]:
-    """Key-sets from unique indexes."""
+    """Key-sets from unique indexes.
+
+    A key-set with ANY falsy member is rejected outright rather than compacted.
+    SQLAlchemy reports expression-index members as ``None`` in ``column_names``
+    (the text lives in ``expressions``), so dropping them would turn a unique
+    index on ``(email, lower(name))`` into a bogus single-column claim on
+    ``email`` — wrongly stamping ``Column.unique`` and inferring a one-side
+    cardinality. Same rule as ``_unique_constraint_key_sets``.
+    """
     out: list[list[str]] = []
     for idx in _safe_introspect(
         lambda: inspector.get_indexes(table_name, schema=schema)
     ):
         if not idx.get("unique"):
             continue
-        cols = [c for c in (idx.get("column_names") or []) if c]
-        if cols:
-            out.append(cols)
+        cols = idx.get("column_names") or []
+        if cols and all(cols):
+            out.append(list(cols))
     return out
 
 
