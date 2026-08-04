@@ -19,9 +19,12 @@ import pytest
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.engine.cardinality import CardinalityVerdict, JoinCardinalityReport
+from unittest.mock import patch
+
 from slayer.core.errors import ForcedFilterError
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -436,6 +439,13 @@ class TestSessionPolicyAppliedToProfiling:
     """
 
     async def test_profiling_sql_is_tenant_scoped(self, workspace: Path) -> None:
+        """Assert at the EXECUTION boundary, not at ``_apply_policy``'s return.
+
+        Spying on ``_apply_policy`` only proves the rewrite was computed. If
+        the scan then discarded it and submitted the original SQL, that spy
+        would still pass while the report carried cross-tenant statistics. So
+        capture what actually reaches the SQL client.
+        """
         _, storage, _ = await _build_engine(workspace)
         # `region` exists on customers but not orders; "pass" lets the tables
         # that lack it through so we can observe the rewrite on the one that
@@ -447,26 +457,35 @@ class TestSessionPolicyAppliedToProfiling:
         )
         scoped = SlayerQueryEngine(storage=storage, policy=policy)
 
-        seen: list[str] = []
-        original = scoped._apply_policy
+        executed: list[str] = []
+        real_client_cls = SlayerSQLClient
 
-        def _spy(*, sql, dialect, datasource):
-            out = original(sql=sql, dialect=dialect, datasource=datasource)
-            seen.append(out)
-            return out
+        class _RecordingClient(real_client_cls):
+            async def execute(self, sql=None, **kwargs):
+                executed.append(sql if sql is not None else kwargs.get("sql", ""))
+                return await super().execute(sql=sql, **kwargs) if sql is not None \
+                    else await super().execute(**kwargs)
 
-        scoped._apply_policy = _spy
-        report = await scoped.detect_join_cardinality(
-            data_source="ds", model="orders"
-        )
+        with patch(
+            "slayer.engine.query_engine.SlayerSQLClient", _RecordingClient
+        ):
+            report = await scoped.detect_join_cardinality(
+                data_source="ds", model="orders"
+            )
 
-        # Both scans per side, both sides -> at least 4 trips through the policy.
-        assert len(seen) >= 4
-        rewritten = [x for x in seen if "'US'" in x]
-        assert rewritten, f"policy never scoped any profiling SQL: {seen}"
-        # Only US customers are visible, so the target side shrinks to 1 row.
+        # Two scans per side, two sides.
+        assert len(executed) == 4
+        customers_scans = [q for q in executed if "customers" in q]
+        assert len(customers_scans) == 2
+        # BOTH customer-side scans (row count AND distinct) carry the filter.
+        for q in customers_scans:
+            assert "'US'" in q, f"unscoped SQL reached the datasource: {q}"
+
+        # And the scoped statistics are what the report actually contains:
+        # only 1 of the 3 customers is in region 'US'.
         f = _find(report, "orders", "customers")
         assert f.target_side.row_count == 1
+        assert f.target_side.distinct_count == 1
 
     async def test_policy_failure_is_not_bypassed(self, workspace: Path) -> None:
         """Fail-closed must propagate — detection must not sidestep the policy.

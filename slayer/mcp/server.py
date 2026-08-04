@@ -999,10 +999,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 one join per column. ``cardinality`` is the join's arity read
                 source->target ("many orders -> one customer"), one of
                 ``one_to_one`` / ``one_to_many`` / ``many_to_one`` / ``many_to_many``;
-                omit it when undetermined. It is descriptive metadata only —
-                orthogonal to the join type (joins stay LEFT) and it does not change
-                query results. Auto-ingestion fills it from key constraints, and
-                ``slayer joins detect-cardinality`` infers it from the data.
+                omit it when undetermined. It is descriptive metadata only: it
+                does not change ``join_type`` or query results. Auto-ingestion
+                fills it from key constraints, and ``slayer joins
+                detect-cardinality`` infers it from the data.
             add_filters: SQL filter strings to add (e.g. ["deleted_at IS NULL"]). Duplicates ignored.
             remove_filters: SQL filter strings to remove (exact match).
             remove: Named entities to delete, keyed by type:

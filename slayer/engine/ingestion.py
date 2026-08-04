@@ -317,16 +317,22 @@ def _is_cross_schema_fk(
     schemaless backends like SQLite), so that case is never cross-schema. When
     it IS set, it is compared against the schema actually being ingested —
     which is ``schema`` when given, else the connection's ``default_schema``.
-    Ingesting the default schema passes ``schema=None``, so without the
+    Ingesting the default schema passes ``schema=None``, so without that
     fallback a reflected ``referred_schema="other"`` would slip through
-    unskipped. If neither is known the FK is kept (no basis to reject it).
+    unskipped.
+
+    When an explicit ``referred_schema`` is set but the ingested schema cannot
+    be determined at all, the FK is SKIPPED rather than kept — the two cannot
+    be confirmed equal, and the failure modes are asymmetric: wrongly skipping
+    costs a missing join (visible, and addable by hand), while wrongly keeping
+    binds to the wrong table and silently derives cardinality from it.
     """
     referred_schema = fk.get("referred_schema")
     if referred_schema is None:
         return False
     effective_schema = schema if schema is not None else default_schema
     if effective_schema is None:
-        return False
+        return True
     return referred_schema != effective_schema
 
 
@@ -347,7 +353,9 @@ def _get_fk_relationships(
         if referred_table not in table_set or referred_table == table_name:
             continue
         if _is_cross_schema_fk(
-            fk, schema, getattr(inspector, "default_schema_name", None)
+            fk=fk,
+            schema=schema,
+            default_schema=getattr(inspector, "default_schema_name", None),
         ):
             continue
         constrained = fk["constrained_columns"]
@@ -442,7 +450,9 @@ def _get_fk_constraint_groups(
         if referred_table not in table_set or referred_table == table_name:
             continue
         if _is_cross_schema_fk(
-            fk, schema, getattr(inspector, "default_schema_name", None)
+            fk=fk,
+            schema=schema,
+            default_schema=getattr(inspector, "default_schema_name", None),
         ):
             continue
         pairs = list(zip(fk["constrained_columns"], fk["referred_columns"]))
@@ -458,10 +468,20 @@ def _safe_introspect(fn) -> list:
     (ClickHouse and BigQuery expose no FK metadata; duckdb-engine doesn't
     reflect indices), so a raising call must degrade to "no evidence" rather
     than abort ingestion.
+
+    The degrade is logged: an unsupported backend and a permissions error or
+    driver defect otherwise produce an identical silent ``[]``. The result is
+    not a crash but silently thinner metadata — a missing unique key-set makes
+    ``infer_structural_cardinality`` return ``None``, recording a real
+    ``many_to_one`` as undetermined with nothing in the logs to explain why.
     """
     try:
         return list(fn())
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — degrade to "no evidence"
+        logger.debug(
+            "Constraint/index reflection unavailable (%s); "
+            "treating as no uniqueness evidence.", exc,
+        )
         return []
 
 
@@ -478,7 +498,12 @@ def _pk_key_sets(
     """
     try:
         if sa_engine is not None:
-            pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, schema)
+            pk = _safe_get_pk_constraint(
+                inspector=inspector,
+                sa_engine=sa_engine,
+                table_name=table_name,
+                schema=schema,
+            )
         else:
             pk = inspector.get_pk_constraint(table_name, schema=schema)
             if not isinstance(pk, dict):
@@ -570,9 +595,16 @@ def _get_unique_key_sets(
 ) -> list[list[str]]:
     """All PK + UNIQUE key-sets for a table, as ``list[list[str]]`` (DEV-1688)."""
     return (
-        _pk_key_sets(inspector, table_name, schema, sa_engine)
-        + _unique_constraint_key_sets(inspector, table_name, schema)
-        + _unique_index_key_sets(inspector, table_name, schema)
+        _pk_key_sets(
+            inspector=inspector, table_name=table_name,
+            schema=schema, sa_engine=sa_engine,
+        )
+        + _unique_constraint_key_sets(
+            inspector=inspector, table_name=table_name, schema=schema,
+        )
+        + _unique_index_key_sets(
+            inspector=inspector, table_name=table_name, schema=schema,
+        )
     )
 
 
@@ -592,8 +624,12 @@ def _get_single_column_unique_names(
     inference instead of being flattened onto individual columns.
     """
     key_sets = (
-        _unique_constraint_key_sets(inspector, table_name, schema)
-        + _unique_index_key_sets(inspector, table_name, schema)
+        _unique_constraint_key_sets(
+            inspector=inspector, table_name=table_name, schema=schema,
+        )
+        + _unique_index_key_sets(
+            inspector=inspector, table_name=table_name, schema=schema,
+        )
     )
     names = {ks[0] for ks in key_sets if len(ks) == 1}
     return names - set(pk_cols)
@@ -623,7 +659,10 @@ def _generate_joins(
         schema=schema,
         table_set=table_set,
     )
-    source_uniques = _get_unique_key_sets(inspector, source_table, schema, sa_engine)
+    source_uniques = _get_unique_key_sets(
+        inspector=inspector, table_name=source_table,
+        schema=schema, sa_engine=sa_engine,
+    )
 
     joins = []
     seen_signatures: set[tuple] = set()
@@ -637,7 +676,10 @@ def _generate_joins(
 
         source_cols = [s for s, _ in pairs]
         target_cols = [t for _, t in pairs]
-        target_uniques = _get_unique_key_sets(inspector, ref_table, schema, sa_engine)
+        target_uniques = _get_unique_key_sets(
+            inspector=inspector, table_name=ref_table,
+            schema=schema, sa_engine=sa_engine,
+        )
         cardinality = infer_structural_cardinality(
             source_unique=is_key_set_unique(
                 key_columns=source_cols, unique_key_sets=source_uniques
@@ -988,9 +1030,13 @@ def introspect_table_to_model(
         sql_table=sql_table,
         columns=columns,
     )
-    pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, schema)
+    pk = _safe_get_pk_constraint(
+        inspector=inspector, sa_engine=sa_engine,
+        table_name=table_name, schema=schema,
+    )
     unique_columns = _get_single_column_unique_names(
-        inspector, table_name, schema, pk_cols=set(pk.get("constrained_columns", []))
+        inspector=inspector, table_name=table_name, schema=schema,
+        pk_cols=set(pk.get("constrained_columns", [])),
     )
     return _columns_to_model(
         name=model_name or table_name,
@@ -1046,9 +1092,12 @@ def ingest_datasource(
         referenced = set() if has_cycles else _compute_transitive_closure(fk_graph, table_name)
         sql_table = f"{schema}.{table_name}" if schema else table_name
 
-        table_pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, schema)
+        table_pk = _safe_get_pk_constraint(
+            inspector=inspector, sa_engine=sa_engine,
+            table_name=table_name, schema=schema,
+        )
         unique_columns = _get_single_column_unique_names(
-            inspector, table_name, schema,
+            inspector=inspector, table_name=table_name, schema=schema,
             pk_cols=set(table_pk.get("constrained_columns", [])),
         )
 

@@ -341,10 +341,27 @@ class TestCrossSchemaFk:
         fk = {"referred_table": "customers", "referred_schema": "public"}
         assert _is_cross_schema_fk(fk, None, "public") is False
 
-    def test_unknown_schema_on_both_sides_keeps_fk(self) -> None:
-        # No basis to reject it.
+    def test_explicit_target_schema_is_skipped_when_ingest_schema_unknown(
+        self,
+    ) -> None:
+        """Fail safe: an explicit target schema we cannot confirm is skipped.
+
+        The failure modes are asymmetric — wrongly skipping costs a missing
+        join (visible, addable by hand), while wrongly keeping binds to the
+        wrong table and silently derives cardinality from it.
+        """
         fk = {"referred_table": "customers", "referred_schema": "archive"}
+        assert _is_cross_schema_fk(fk, None, None) is True
+        # Also with neither the ingested schema nor a default available.
+        assert _is_cross_schema_fk(fk, None) is True
+
+    def test_absent_referred_schema_is_always_kept(self) -> None:
+        # No explicit target schema -> nothing to disagree with, at any
+        # combination of ingested/default schema.
+        fk = {"referred_table": "customers", "referred_schema": None}
         assert _is_cross_schema_fk(fk, None, None) is False
+        assert _is_cross_schema_fk(fk, "public", None) is False
+        assert _is_cross_schema_fk(fk, None, "public") is False
 
     def test_explicit_schema_wins_over_default(self) -> None:
         fk = {"referred_table": "customers", "referred_schema": "archive"}
