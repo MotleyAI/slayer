@@ -22,8 +22,9 @@ CTE ScopeFrame lands). Here we add:
   SELECT's LEFT JOIN ON uses dialect-aware null-safe predicates so NULL
   dimension values / nullable truncated time grains join back instead of
   dropping.
-* **Plain derived (non-TIME) shared-grain dim → raise** (user-approved: replaces
-  today's silently-wrong CROSS-JOIN broadcast; full support = DEV-1495-b1).
+* **Plain derived (non-TIME) shared-grain dim** — DEV-1708 raised here; DEV-1728
+  now RENDERS it (the raise-pin below became a render-pin). Full coverage lives
+  in tests/test_dev1728_derived_shared_grain.py.
 * **Generation-wide AliasAllocator determinism** — repeated / multi-CTE renders
   are byte-stable.
 
@@ -549,20 +550,25 @@ class TestRoutedFilterDerivedCrossing:
 
 
 # =========================================================================== #
-# Plain derived (non-TIME) shared-grain dim → raise (user-approved).
+# Plain derived (non-TIME) shared-grain dim — DEV-1728 renders it (was a raise).
 # =========================================================================== #
-class TestDerivedSharedGrainRaises:
-    async def test_plain_derived_dim_shared_grain_raises(self) -> None:
+class TestDerivedSharedGrainRenders:
+    async def test_plain_derived_dim_shared_grain_renders(self) -> None:
         """A PLAIN derived (non-TIME) dimension on the target path used as
-        cross-model shared grain raises NotImplementedError (replaces the
-        silently-wrong CROSS-JOIN broadcast); full support = DEV-1495-b1."""
+        cross-model shared grain now RENDERS (DEV-1728 removed the DEV-1708
+        raise): the derived expression is expanded inside the ``_cm_*`` CTE,
+        grouped, and joined back null-safe. Full coverage lives in
+        tests/test_dev1728_derived_shared_grain.py."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
             measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
         )
-        with pytest.raises(NotImplementedError, match=r"(?i)shared.grain|derived"):
-            await _gen(query)
+        sql = await _gen(query)  # must not raise
+        assert_scope_closed(sql)
+        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
+        assert "regions.population" in cm_body, cm_body
+        assert 'AS "orders_x.customers_v2.deep_pop"' in cm_body, cm_body
 
     async def test_derived_source_unaffected_by_grain_guard(self) -> None:
         """The guard fires ONLY for a shared-grain dim — a derived aggregate

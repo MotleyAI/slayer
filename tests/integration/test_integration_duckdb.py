@@ -1210,3 +1210,173 @@ class TestF1F4SemanticValues:
         }
         assert by_status["paid"] == pytest.approx(700.0), by_status
         assert by_status["unpaid"] == pytest.approx(700.0), by_status
+
+
+# --------------------------------------------------------------------------- #
+# DEV-1728: a cross-model aggregate grouped by a joined DERIVED dimension
+# (shared-grain rendering). Executed on DuckDB so the mainstream native
+# ``IS NOT DISTINCT FROM`` grain join-back path runs end-to-end (SQLite uses
+# the ``IS`` override). orders → customers → regions chain with a target-local
+# derived dim (``ltv_x2``) and a crossing one (``deep_pop`` = regions.population,
+# nullable for the NULL-grain group).
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module")
+def _dev1728_duckdb_storage(tmp_path_factory):
+    from slayer.core.models import ModelJoin
+
+    tmp_path = tmp_path_factory.mktemp("dev1728_duckdb")
+    db_path = tmp_path / "dev1728.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE regions (id INTEGER PRIMARY KEY, population DOUBLE)"
+    )
+    conn.execute(
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER, "
+        "lifetime_value DOUBLE, signup_at TIMESTAMP)"
+    )
+    conn.execute(
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
+        "amount DOUBLE, created_at TIMESTAMP)"
+    )
+    conn.executemany(
+        "INSERT INTO regions VALUES (?, ?)",
+        # region 3 has NULL population — the nullable derived grain.
+        [(1, 100.0), (2, 200.0), (3, None)],
+    )
+    conn.executemany(
+        "INSERT INTO customers VALUES (?, ?, ?, ?)",
+        [
+            (1, 1, 10.0, "2024-01-01 00:00:00"),
+            (2, 1, 30.0, "2024-03-01 00:00:00"),
+            (3, 2, 20.0, "2024-02-01 00:00:00"),
+            (4, 3, 40.0, "2024-04-01 00:00:00"),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO orders VALUES (?, ?, ?, ?)",
+        [
+            (1, 1, 5.0, "2024-01-05 00:00:00"),
+            (2, 2, 7.0, "2024-03-05 00:00:00"),
+            (3, 3, 9.0, "2024-02-05 00:00:00"),
+            (4, 4, 11.0, "2024-04-05 00:00:00"),
+        ],
+    )
+    conn.close()
+
+    storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+    run_sync(storage.save_datasource(DatasourceConfig(
+        name="testduckdb", type="duckdb", database=str(db_path),
+    )))
+    run_sync(storage.save_model(SlayerModel(
+        name="regions", sql_table="regions", data_source="testduckdb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="population", sql="population", type=DataType.DOUBLE),
+        ],
+    )))
+    run_sync(storage.save_model(SlayerModel(
+        name="customers", sql_table="customers", data_source="testduckdb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.INT),
+            Column(name="lifetime_value", sql="lifetime_value", type=DataType.DOUBLE),
+            Column(name="signup_at", sql="signup_at", type=DataType.TIMESTAMP),
+            Column(name="ltv_x2", sql="lifetime_value * 2", type=DataType.DOUBLE),
+            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        default_time_dimension="signup_at",
+    )))
+    run_sync(storage.save_model(SlayerModel(
+        name="orders", sql_table="orders", data_source="testduckdb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.INT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        default_time_dimension="created_at",
+    )))
+    return storage
+
+
+@pytest.fixture
+def dev1728_env(_dev1728_duckdb_storage):
+    return SlayerQueryEngine(storage=_dev1728_duckdb_storage)
+
+
+@pytest.mark.integration
+class TestDev1728DerivedSharedGrain:
+    async def test_target_local_derived_grain(self, dev1728_env: SlayerQueryEngine) -> None:
+        # Group cross-model sum by target-local ltv_x2.
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="customers.ltv_x2")],
+            measures=[ModelMeasure(formula="customers.lifetime_value:sum")],
+        )
+        result = await dev1728_env.execute(query=query)
+        by_grain = {
+            r["orders.customers.ltv_x2"]: float(r["orders.customers.lifetime_value_sum"])
+            for r in result.data
+        }
+        # ltv 10→grain 20 (sum 10), 30→60 (30), 20→40 (20), 40→80 (40).
+        assert by_grain[20.0] == pytest.approx(10.0), result.data
+        assert by_grain[60.0] == pytest.approx(30.0), result.data
+        assert by_grain[40.0] == pytest.approx(20.0), result.data
+        assert by_grain[80.0] == pytest.approx(40.0), result.data
+
+    async def test_crossing_derived_grain(self, dev1728_env: SlayerQueryEngine) -> None:
+        # Group cross-model sum by crossing deep_pop = regions.population.
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="customers.deep_pop")],
+            measures=[ModelMeasure(formula="customers.lifetime_value:sum")],
+        )
+        result = await dev1728_env.execute(query=query)
+        by_pop = {
+            r["orders.customers.deep_pop"]: r["orders.customers.lifetime_value_sum"]
+            for r in result.data
+        }
+        # region 1 (pop 100): ltv 10 + 30 = 40; region 2 (pop 200): 20.
+        assert float(by_pop[100.0]) == pytest.approx(40.0), result.data
+        assert float(by_pop[200.0]) == pytest.approx(20.0), result.data
+
+    async def test_crossing_derived_grain_null_group_retained(
+        self, dev1728_env: SlayerQueryEngine
+    ) -> None:
+        # The NULL-population group (region 3) retains its aggregate via the
+        # native IS NOT DISTINCT FROM join-back.
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="customers.deep_pop")],
+            measures=[ModelMeasure(formula="customers.lifetime_value:sum")],
+        )
+        result = await dev1728_env.execute(query=query)
+        by_pop = {
+            r["orders.customers.deep_pop"]: r["orders.customers.lifetime_value_sum"]
+            for r in result.data
+        }
+        assert None in by_pop, result.data
+        # customer 4 (region 3, NULL pop) has lifetime_value 40.
+        assert float(by_pop[None]) == pytest.approx(40.0), result.data
+
+    async def test_first_last_crossing_derived_grain(
+        self, dev1728_env: SlayerQueryEngine
+    ) -> None:
+        # last(lifetime_value ORDER BY signup_at) per crossing population group.
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="customers.deep_pop")],
+            measures=[ModelMeasure(
+                formula="customers.lifetime_value:last(customers.signup_at)")],
+        )
+        result = await dev1728_env.execute(query=query)
+        by_pop = {
+            r["orders.customers.deep_pop"]:
+                r["orders.customers.lifetime_value_last_customers_signup_at"]
+            for r in result.data
+        }
+        # region 1 (pop 100): customers 1 (Jan) & 2 (Mar) → latest = 30.
+        assert float(by_pop[100.0]) == pytest.approx(30.0), result.data
+        assert float(by_pop[200.0]) == pytest.approx(20.0), result.data
