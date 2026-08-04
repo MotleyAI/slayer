@@ -1,6 +1,6 @@
 """Query engine — central orchestrator for SLayer queries.
 
-Flow: SlayerQuery → _enrich() → EnrichedQuery → SQLGenerator → SQL → execute
+Flow: SlayerQuery → plan_query() → PlannedQuery → SQLGenerator → SQL → execute
 """
 
 import copy
@@ -408,8 +408,9 @@ class _Prepared(BaseModel):
 class SlayerQueryEngine:
     """Central orchestrator: resolves queries via storage, generates SQL, executes.
 
-    The engine enriches a SlayerQuery (user-facing, just names) into an
-    EnrichedQuery (fully resolved SQL expressions), then passes it to the
+    The engine resolves a SlayerQuery (user-facing, just names) into a
+    PlannedQuery (typed value keys interned into slots, each carrying its
+    resolved expression, join path and phase), then passes it to the
     SQLGenerator for SQL generation.
     """
 

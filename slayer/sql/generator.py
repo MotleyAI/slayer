@@ -141,8 +141,9 @@ class AggRenderSpec(BaseModel):
     """Query-time aggregation parameter overrides as typed 2-kind values
     (DEV-1706 D-I). Column-ref kwargs arrive as ``kind="expr"`` (scope-resolved
     at spec-build); everything else as ``kind="str"``. A bare ``str`` value is
-    coerced to ``kind="str"`` by ``_coerce_agg_kwargs`` so the legacy
-    ``EnrichedMeasure`` shim and direct-construction call sites keep working."""
+    coerced to ``kind="str"`` by ``_coerce_agg_kwargs`` so direct-construction
+    call sites keep working (this also carried the retired ``EnrichedMeasure``
+    shim before DEV-1485 deleted it)."""
 
     @field_validator("agg_kwargs", mode="before")
     @classmethod

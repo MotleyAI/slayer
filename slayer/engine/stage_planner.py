@@ -1848,9 +1848,10 @@ def _type_for_dimension(
 ) -> Optional[DataType]:
     """Lift ``type`` for a dimension. Local refs read the source column;
     joined (dotted) refs walk the join chain to the terminal column's
-    type. Returning ``None`` for joined refs (the old behaviour) made
-    ``_query_as_model`` coerce them to ``DOUBLE``, mistyping joined
-    string / temporal dimensions on the persisted virtual model.
+    type. Returning ``None`` for joined refs (the old behaviour) made the
+    query-backed virtual-model wrap coerce them to ``DOUBLE`` (its
+    ``sc.type or DataType.DOUBLE`` fallback), mistyping joined string /
+    temporal dimensions on the persisted virtual model.
     """
     if not isinstance(scope, ModelScope) or scope.source_model is None:
         return None
@@ -1873,7 +1874,8 @@ def _opaque_dim_type(
     Resolves BOTH a ``ModelScope`` origin (via ``_type_for_dimension``) AND a
     downstream ``StageSchema`` (via its typed ``columns``). ``_type_for_dimension``
     deliberately returns ``None`` for a StageSchema — that ``None`` is load-bearing
-    for downstream typing (``_query_as_model`` coercion) and must not change — so
+    for downstream typing (the virtual-model ``DOUBLE`` coercion) and must not
+    change — so
     the guard needs its own resolver to catch an opaque column projected in one
     stage and grouped in the next.
     """

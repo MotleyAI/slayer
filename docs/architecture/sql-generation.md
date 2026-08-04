@@ -50,23 +50,28 @@ It builds its own `slot_id_by_key` map (the `PlannedQuery` doesn't carry the
 registry), materializes hidden aux slots referenced as transform inputs /
 partition keys / time keys / POST-filter operands, and renders.
 
-### The synthetic-`EnrichedMeasure` adapter (deviation)
+### `AggRenderSpec` — the dialect-helper interface
 
-To render aggregations identically to legacy across all dialects, the new path
-**reuses the legacy dialect helpers** (`_build_agg`, `_build_percentile`,
-`_build_stat_agg`, `_wrap_cast_for_type`, `_resolve_sql`, `_build_date_trunc`).
-It does so by synthesizing `EnrichedMeasure` objects from planned slots
-(`_synthesize_enriched_measure_from_planned`) and feeding them to those helpers.
+To render aggregations identically across all dialects, the shared dialect
+helpers (`_build_agg`, `_build_percentile`, `_build_stat_agg`,
+`_wrap_cast_for_type`, `_resolve_sql`, `_build_date_trunc`) consume a single
+typed input: `AggRenderSpec`, built directly from planned slots by
+`_build_agg_render_spec_from_planned`.
 
-This is a real coupling: `generate_from_planned` consumes `PlannedQuery` at the
-top but adapts back to `EnrichedMeasure` — a type DEV-1452 wants to delete — to
-emit aggregate SQL. The plan said "rewrite `generator.py` to consume
-`PlannedQuery`"; the implemented path is a hybrid. It is flagged in
-[the deviations list](index.md#deviations-from-the-plan). The upside is that
-dialect-specific behavior (SQLite UDFs, ClickHouse `quantile`, the MySQL
-`median` `NotImplementedError`, etc.) is rendered by exactly one code path,
-shared with legacy — so the two pipelines can't drift on dialect SQL while both
-exist.
+Dialect-specific behavior (SQLite UDFs, ClickHouse `quantile`, the MySQL
+`median` `NotImplementedError`, and so on) is therefore emitted by exactly one
+code path.
+
+!!! note "Historical: the synthetic-`EnrichedMeasure` adapter"
+
+    `generate_from_planned` originally consumed `PlannedQuery` at the top but
+    adapted *back* to `EnrichedMeasure` (`_synthesize_enriched_measure_from_planned`)
+    to reach the dialect helpers — a hybrid that coupled the new path to a
+    legacy type, kept deliberately so the two coexisting pipelines could not
+    drift on dialect SQL. DEV-1452 Stage A retyped the helpers onto
+    `AggRenderSpec`; DEV-1485 deleted the last adapter
+    (`_agg_render_spec_from_enriched`) and `_build_agg`'s `measure=` compat
+    surface with the rest of the legacy stack.
 
 ## Multi-stage chaining (`generate_planned_stages`)
 
@@ -228,9 +233,9 @@ materialised aliases (`orders.revenue_last_created_at`,
 
 ## Response metadata (`response_meta.py`)
 
-The legacy engine derived `SlayerResponse.attributes` and `expected_columns` from
-an `EnrichedQuery`. The typed pipeline has none, so `build_response_metadata`
-rebuilds both from the root `PlannedQuery` plus the rendered SQL:
+`build_response_metadata` builds `SlayerResponse.attributes` and
+`expected_columns` from the root `PlannedQuery` plus the rendered SQL (the
+retired legacy engine derived both from an `EnrichedQuery`):
 
 - **`expected_columns`** comes from the final SQL's `named_selects` — the literal
   result-key columns rows come back under. Reading them from the SQL (rather than
@@ -251,12 +256,13 @@ in `query_engine`) so the module imports nothing from the engine;
 
 ## Design rationale
 
-- **Why reuse legacy dialect helpers instead of reimplementing aggregation SQL?**
-  Dialect coverage (SQLite UDFs, ClickHouse parametric quantiles, MySQL's
-  unsupported-function `NotImplementedError`, the `log10`/`log2` literal
-  preservation, JSON-extract rewriting) is large and well-tested. Sharing one
-  emitter keeps the two pipelines from drifting on dialect SQL while both exist —
-  at the cost of the `EnrichedMeasure` coupling, which DEV-1452 removes.
+- **Why one shared dialect emitter?** Dialect coverage (SQLite UDFs, ClickHouse
+  parametric quantiles, MySQL's unsupported-function `NotImplementedError`, the
+  `log10`/`log2` literal preservation, JSON-extract rewriting) is large and
+  well-tested. Routing every caller through one emitter keeps that behaviour in
+  a single place. This originally also kept the two coexisting pipelines from
+  drifting on dialect SQL, at the cost of an `EnrichedMeasure` coupling that
+  DEV-1452 / DEV-1485 removed.
 - **Why derive `expected_columns` from the SQL?** Because the SQL is the ground
   truth for what rows come back keyed by. Re-deriving from slots risks a subtle
   mismatch; reading `named_selects` cannot.

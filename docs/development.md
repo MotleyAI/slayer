@@ -68,7 +68,8 @@ slayer/
   engine/
     query_engine.py       # SlayerQueryEngine — central orchestrator
     ingestion.py          # Auto-ingestion with rollup-style FK joins
-    enriched.py           # EnrichedQuery — fully resolved query for SQL generation
+    stage_planner.py      # SlayerQuery --> PlannedQuery (typed keys, slots, phases)
+    planned.py            # PlannedQuery — fully resolved query for SQL generation
   storage/
     base.py               # StorageBackend ABC
     yaml_storage.py       # YAML file storage

@@ -1222,9 +1222,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     "engine-managed (auto-derived from the backing query)."
                 )
             # Strip cache fields before save so engine.save_model can repopulate
-            # them from a fresh _query_as_model pass. (These are present here
-            # only because they were on the existing stored model, not from
-            # this edit.)
+            # them from a fresh expansion of the backing query. (These are
+            # present here only because they were on the existing stored
+            # model, not from this edit.)
             validated = validated.model_copy(update={
                 "columns": [],
                 "backing_query_sql": None,

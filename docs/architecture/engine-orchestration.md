@@ -59,42 +59,39 @@ it rejects user-supplied cache fields and calls `_validate_and_populate_cache`,
 which renders the backing query and stores `columns` / `backing_query_sql` /
 `data_source`.
 
-## Where the legacy stack still runs (the deviation)
-
-This is the most important orchestration fact, and the largest gap between the
-plan and the implementation. The cutover routed **top-level query planning**
-through the new pipeline, but **query-backed model expansion** still runs
-entirely on the legacy stack — in production, not just tests:
-
-| Path | Renders the backing SQL via |
-| --- | --- |
-| `_execute_pipeline` → `_expand_query_backed_model` | `_query_as_model` → `enrich_query` → `SQLGenerator.generate` (legacy) |
-| `save_model` → `_validate_and_populate_cache` | `_query_as_model` → … → `SQLGenerator.generate` (legacy) |
+## Query-backed model expansion
 
 `_expand_query_backed_model` turns a model's `source_queries` into a virtual
-`sql`-mode model whose `.sql` is the rendered backing query — and it does so by
-calling `_query_as_model`, which internally runs `_enrich` and the legacy
-`SQLGenerator.generate`. The new pipeline then treats that virtual model as a
-plain `sql`-mode model and plans/renders the **outer** query through the typed
-path.
+`sql`-mode model whose `.sql` is the rendered backing query. It mirrors
+`_execute_pipeline`'s mid-section (bundle → expand-nested → normalize →
+variables → `plan_stages` → `generate_planned_stages`) and wraps the result in a
+flat-rename SELECT so the virtual model exposes downstream-bindable flat
+columns. The pipeline then treats that virtual model as a plain `sql`-mode model
+and plans/renders the **outer** query the same way.
 
-`_execute_pipeline` invokes `_expand_query_backed_model` for the source model
-(line ~581), for query-backed referenced (join/cross-model target) models
-(~621), and for non-root stage sources (~640). So:
+`_execute_pipeline` invokes it for the source model, for query-backed referenced
+(join/cross-model target) models, and for non-root stage sources; `save_model` →
+`_validate_and_populate_cache` uses the same path for its save-time dry run. One
+renderer, one set of semantics, in every case.
 
-- `enrichment.py` (~100 KB), `enriched.py` (`EnrichedQuery` / `EnrichedMeasure`),
-  `_query_as_model`, the legacy `SQLGenerator.generate`,
-  `_rewrite_funcstyle_aggregations`, and the `_forbidden_sibling_refs_var` /
-  `_join_target_resolving_var` `ContextVar`s **all still exist and still run**;
-- the typed pipeline is the resolution path for the *outer* query and for the
-  four acceptance bugs; the legacy stack is load-bearing for query-backed inner
-  rendering and (via the synth adapter) dialect SQL emission.
+!!! note "Historical: the two-pipeline period"
 
-The plan's stage-7b bullet said the cutover would delete all of the above. In
-practice every deletion is deferred to **DEV-1452**, which must first migrate
-query-backed expansion onto the typed pipeline (it shares machinery with
-cross-stage join rendering). Until then, do not read the legacy modules as dead
-code — `_query_as_model` is on a hot path.
+    Between the DEV-1450 cutover and DEV-1485 there were **two** rendering
+    stacks. The cutover routed top-level query planning through the typed
+    pipeline, but query-backed expansion kept running on the legacy
+    `_query_as_model` → `enrich_query` → `SQLGenerator.generate(enriched=…)`
+    path in production. DEV-1452 Stage B migrated expansion onto the typed
+    pipeline, and DEV-1485 (Stage D) deleted the legacy stack outright —
+    `enrichment.py`, `enriched.py` (`EnrichedQuery` / `EnrichedMeasure`),
+    `_query_as_model`, the legacy `SQLGenerator.generate`, and the
+    `_forbidden_sibling_refs_var` / `_join_target_resolving_var` `ContextVar`s
+    are all gone. Sibling stages resolve through `_follow_sibling_chain` in
+    `source_bundle.py`; forward / self / cycle references are caught by
+    `topologically_order_stages` up front.
+
+    Documentation, commit messages, and issues written during that period may
+    still describe the legacy path as load-bearing. It is not — it no longer
+    exists.
 
 ## Pre-processing before the "single" slack pass
 
