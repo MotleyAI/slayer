@@ -269,6 +269,25 @@ class TestScalarFunctions:
         assert result.name == "lower"
         assert result.args == (Ref(name="name"),)
 
+    def test_scalar_names_are_case_insensitive(self):
+        """SQL function names are case-insensitive, and users write
+        ``COALESCE(x, 0)`` as readily as the lower-case form. The legacy
+        parser lowercased before its allowlist lookup; matching exactly
+        rejected every SQL-cased formula (DEV-1703 Phase 2 regression fix).
+        """
+        for spelling in ("COALESCE", "Coalesce", "coalesce"):
+            result = parse_expr(f"{spelling}(revenue, 0)")
+            assert isinstance(result, ScalarCall)
+            # Normalised, so the spellings intern to ONE key rather than
+            # several slots computing the same value.
+            assert result.name == "coalesce"
+
+    def test_uppercase_scalar_in_filter(self):
+        result = parse_filter_expr("ROUND(revenue, 2) > 5")
+        assert isinstance(result, Cmp)
+        assert isinstance(result.left, ScalarCall)
+        assert result.left.name == "round"
+
     def test_coalesce(self):
         result = parse_expr("coalesce(revenue, 0)")
         assert isinstance(result, ScalarCall)

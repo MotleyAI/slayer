@@ -397,7 +397,8 @@ def _is_kwarg_equals(
     if top is None or not top[0]:
         return False
     callee = top[1]
-    if callee is not None and callee in SCALAR_FUNCTIONS:
+    # Case-insensitive, matching the scalar-call parse branch below.
+    if callee is not None and callee.lower() in SCALAR_FUNCTIONS:
         return False
     prev_kind = hist[-1][0] if hist else None
     if prev_kind != "NAME":
@@ -953,15 +954,21 @@ def _convert_call(
             kwargs=kwargs,
         )
 
-    # Scalar function?
-    if func_name in SCALAR_FUNCTIONS:
+    # Scalar function? Matched case-INSENSITIVELY: SQL function names are
+    # case-insensitive and users write ``COALESCE(x, 0)`` as readily as
+    # ``coalesce(x, 0)``. The legacy parser lowercased before the allowlist
+    # lookup; matching exactly here rejected every SQL-cased formula. The
+    # name is normalised to lower case on the way into ``ScalarCall`` so the
+    # two spellings intern to ONE key rather than two slots computing the
+    # same value.
+    if func_name.lower() in SCALAR_FUNCTIONS:
         if kwargs:
             raise ValueError(
                 f"Invalid Mode-B expression {original!r}: scalar function "
                 f"{func_name!r} does not accept keyword arguments. Pass "
                 f"values positionally."
             )
-        return ScalarCall(name=func_name, args=args)
+        return ScalarCall(name=func_name.lower(), args=args)
 
     # Otherwise — unknown.
     raise UnknownFunctionError(
