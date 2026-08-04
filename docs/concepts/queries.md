@@ -269,7 +269,7 @@ Filters support `{variable_name}` placeholders, substituted from the query's `va
 This produces the filter `status = 'completed' AND amount > 100`.
 
 - Variable names must be alphanumeric + underscore (`[a-zA-Z_][a-zA-Z0-9_]*`)
-- Values must be strings, numbers, or **lists**. **You write the surrounding quotes** in the template (`status = '{status}'`); the string value is then automatically escaped so an embedded quote (e.g. `O'Brien`) can't break out of that literal. Numbers (including booleans) are inserted verbatim; non-finite floats (`nan`/`inf`) are rejected.
+- Values must be strings, numbers, or **lists**. **You write the surrounding quotes** in the template (`status = '{status}'`); the string value is then automatically escaped so an embedded quote (e.g. `O'Brien`), backslash, or control character (newline, tab) can't break out of that literal or the filter parser (DEV-1727). Numbers (including booleans) are inserted verbatim; non-finite floats (`nan`/`inf`) are rejected.
 - **List values render an `IN`-list.** A list variable powers an `in` / `not in` filter — write the parentheses and omit per-element quotes (each string element is auto-quoted):
 
     ```json
