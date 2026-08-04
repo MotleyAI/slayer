@@ -11,19 +11,20 @@ slot):
   cross-model aggregate    | works                           | hidden CMA plan, trimmed, CTE order
   local row column         | split emission (orders.col)     | ValueError (add to dims / order agg)
   joined row column        | UnresolvableOrderColumnError    | UnresolvableOrderColumnError
-  transform (change/…)     | ValueError -> declare (DEV-1733)| same
+  transform (change/…)     | materialise hidden, order, strip| same (DEV-1733)
 
 ``has_grouping`` = any aggregating measure OR (dims/time-dims present AND
 ``distinct_dimension_values``). An order-only aggregate never needs
 rejection — it always materialises and orders. Composite arithmetic
-(``a:sum / b:sum``) is not expressible as an ``OrderItem.column`` at all
-(Pydantic rejects it), pinned below.
+(``a:sum / b:sum``) became expressible as an ``OrderItem.column`` in
+DEV-1733; the full contract for transform / composite / windowed order
+targets lives in ``tests/test_dev1733_order_only_transform_composite.py``.
 
 Refs: DEV-1712 (this stage), DEV-1472 (order-only hidden slots), DEV-1495
 bug 2 (cross-model leak — the canonical repro lives in
 ``tests/test_projection_trim.py``), DEV-1497 (partition_by guard), DEV-1645
-(split-not-composite ORDER BY), DEV-1733 (deferred transform/composite
-order targets).
+(split-not-composite ORDER BY), DEV-1733 (transform/composite/windowed
+order targets — the deferral this file's Group 8 used to pin).
 """
 from __future__ import annotations
 
@@ -477,6 +478,67 @@ class TestLocalAggregateHiddenOrder:
         )
         assert _outer_order_by_names(sql) == ["orders.id_count"]
 
+    async def test_hidden_cross_model_agg_order_in_cumsum_chain(self, engine) -> None:
+        """DEV-1733 shape 3: an order-only CROSS-MODEL aggregate inside a
+        transform-chain-wrapped query threads through the chain layers and
+        orders at the outer wrap. The hidden CMA stays projected through the
+        chain (the step CTE has to carry it) and the transform outer wrap does
+        the public-vs-hidden trim."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
+            measures=[ModelMeasure(formula="cumsum(amount:sum)", name="cs")],
+            order=[OrderItem(column="customers.revenue:sum", direction="desc")],
+        )
+        sql = await _sql(engine, query)
+        outer = _outer_select_columns(sql)
+        assert outer == ["orders.created_at", "orders.cs"], (
+            f"hidden cross-model agg must not project.\ngot: {outer}\nSQL:\n{sql}"
+        )
+        assert _outer_order_by_names(sql) == ["orders.customers.revenue_sum"], sql
+
+    async def test_hidden_local_agg_order_in_change_chain(self, engine) -> None:
+        """Same shape-3 contract, but the chain is a time_shift self-join pair
+        (``change``) rather than a plain window step — a different
+        carry-forward path (``sjoin_`` carries the hidden alias forward).
+
+        The order target is a LOCAL aggregate: ``time_shift`` combined with a
+        CROSS-MODEL aggregate is an independent deferral (DEV-1450 stage
+        7b.15e) that rejects the declared-measure form too, so it is not a
+        shape DEV-1733 can exercise.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
+            measures=[ModelMeasure(formula="change(amount:sum)", name="ch")],
+            order=[OrderItem(column="id:count", direction="desc")],
+        )
+        sql = await _sql(engine, query)
+        outer = _outer_select_columns(sql)
+        assert outer == ["orders.created_at", "orders.ch"], (
+            f"hidden local agg must not project.\ngot: {outer}\nSQL:\n{sql}"
+        )
+        assert _outer_order_by_names(sql) == ["orders.id_count"], sql
+
+    async def test_hidden_local_agg_order_in_cross_model_transform_chain(
+        self, engine,
+    ) -> None:
+        """The chain is rooted on a CROSS-MODEL combined SELECT
+        (``cumsum(customers.revenue:sum)``); a hidden LOCAL order aggregate
+        must still thread through it."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
+            measures=[ModelMeasure(formula="cumsum(customers.revenue:sum)", name="ccr")],
+            order=[OrderItem(column="id:count", direction="desc")],
+        )
+        sql = await _sql(engine, query)
+        outer = _outer_select_columns(sql)
+        assert outer == ["orders.created_at", "orders.ccr"], (
+            f"hidden local agg must not project.\ngot: {outer}\nSQL:\n{sql}"
+        )
+        assert _outer_order_by_names(sql) == ["orders.id_count"], sql
+
 
 # ===========================================================================
 # Group 5 — execution: top-N by a hidden metric + response-column strip.
@@ -774,49 +836,19 @@ class TestPartitionByGuard:
 
 
 # ===========================================================================
-# Group 8 — transform / composite order targets: deferred (DEV-1733).
+# Group 8 — transform / composite order targets: SUPPORTED as of DEV-1733.
+#
+# Stage 8 rejected these with an actionable ValueError and pinned the future
+# contract as a strict xfail. DEV-1733 landed hidden TransformKey / composite
+# materialisation, so the xfail promoted and the rejection tests inverted.
+# The full contract lives in tests/test_dev1733_order_only_transform_composite.py;
+# what stays here is the Stage-8 boundary, now asserting support.
 # ===========================================================================
-class TestTransformOrderDeferred:
-    async def test_transform_order_only_raises_actionable(self, engine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
-            measures=[ModelMeasure(formula="amount:sum")],
-            order=[OrderItem(column="change(amount:sum)", direction="desc")],
-        )
-        with pytest.raises(ValueError) as ei:
-            await _sql(engine, query)
-        msg = str(ei.value).lower()
-        assert "measure" in msg, f"error should tell the user to declare it as a measure: {ei.value}"
-
-    async def test_cumsum_order_only_raises(self, engine) -> None:
-        query = SlayerQuery(
-            source_model="orders",
-            time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
-            measures=[ModelMeasure(formula="amount:sum")],
-            order=[OrderItem(column="cumsum(amount:sum)", direction="desc")],
-        )
-        with pytest.raises(ValueError):
-            await _sql(engine, query)
-
-    def test_composite_order_string_rejected_at_construction(self) -> None:
-        """A composite arithmetic ORDER BY string is not expressible as an
-        ``OrderItem.column`` — Pydantic rejects it before it ever reaches the
-        engine. Pins the boundary so DEV-1733 knows the entry point that must
-        change to support it."""
-        with pytest.raises(pydantic.ValidationError):
-            OrderItem(column="amount:sum / id:count", direction="desc")
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1733: order-only transform refs (change(...)/cumsum(...) in "
-            "ORDER BY, not declared as a measure) are deferred — Stage 8 "
-            "raises a clean ValueError. Auto-promotes when DEV-1733 lands "
-            "hidden TransformKey materialisation for ORDER BY."
-        ),
-    )
-    async def test_transform_order_only_materializes_FUTURE(self, engine) -> None:
+class TestTransformOrderSupported:
+    async def test_transform_order_only_materializes(self, engine) -> None:
+        """Promoted from ``test_transform_order_only_materializes_FUTURE`` — the
+        change() value is materialised (hidden) and the outermost ORDER BY
+        references it: not dropped, not projected."""
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
@@ -824,10 +856,37 @@ class TestTransformOrderDeferred:
             order=[OrderItem(column="change(amount:sum)", direction="desc")],
         )
         sql = await _sql(engine, query)
-        # Future contract: the change() value is materialised (hidden) and the
-        # outermost ORDER BY references it — not dropped, not projected.
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.amount_sum"]
         assert _outer_order_by_names(sql), f"ORDER BY must be present.\nSQL:\n{sql}"
+
+    async def test_cumsum_order_only_materializes(self, engine) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
+            measures=[ModelMeasure(formula="amount:sum")],
+            order=[OrderItem(column="cumsum(amount:sum)", direction="desc")],
+        )
+        sql = await _sql(engine, query)
+        assert _outer_select_columns(sql) == ["orders.created_at", "orders.amount_sum"]
+        names = _outer_order_by_names(sql)
+        assert names and names[0] not in _outer_select_columns(sql), (
+            f"the cumsum must be ordered on but not projected.\nSQL:\n{sql}"
+        )
+
+    def test_composite_order_string_now_accepted_at_construction(self) -> None:
+        """Replaces ``test_composite_order_string_rejected_at_construction``.
+
+        DEV-1733 relaxed the entry point: a composite carrying a colon-form
+        aggregation becomes a formula (placeholder ColumnRef + ``raw_formula``).
+        A composite over declared measure ALIASES carries no colon and is still
+        rejected at construction, because alias references inside expressions
+        are unsupported everywhere in SLayer.
+        """
+        item = OrderItem(column="amount:sum / id:count", direction="desc")
+        assert item.column.name == "_expr_pending"
+        assert item.raw_formula == "amount:sum / id:count"
+        with pytest.raises(pydantic.ValidationError):
+            OrderItem(column="rev / cnt", direction="desc")
 
 
 # ===========================================================================

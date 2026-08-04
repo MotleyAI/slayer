@@ -128,10 +128,49 @@ class ValueRegistry:
         self._by_key: Dict[ValueKey, SlotId] = {}
         self._declared_names: Dict[str, SlotId] = {}
         self._counter = 0
+        # DEV-1733: every alias name already spoken for — user-declared public
+        # names (reserved up front, see ``reserve_public_names``) plus the
+        # resolved ``declared_name`` of each interned slot. HIDDEN slots are
+        # uniquified against this set at intern time so no renderer can emit
+        # two different expressions under one alias.
+        self._taken_names: set = set()
 
     def _next_id(self) -> SlotId:
         self._counter += 1
         return f"s{self._counter}"
+
+    def reserve_public_names(self, names) -> None:
+        """Claim user-declared names BEFORE any hidden slot is interned.
+
+        DEV-1733: hidden-name uniquification must not depend on intern order.
+        Measures are interned public-slot-then-hidden-deps, so measure *i*'s
+        hidden dependency would otherwise be able to claim a name that measure
+        *j > i* later declares publicly — and public names are never renamed,
+        so the collision would come straight back. Reserving every declared
+        name first makes the outcome order-independent.
+        """
+        for name in names:
+            if name:
+                self._taken_names.add(name)
+
+    def _unique_hidden_name(self, declared_name: str) -> str:
+        """``declared_name``, suffixed ``_2`` / ``_3`` / … if already taken.
+
+        Hidden canonical names are structural, not user-facing
+        (``_cumsum_inner``, ``_arith_/``, ``_scalar_abs``), so two distinct
+        keys of the same shape collide by construction:
+        ``cumsum(a:sum) + cumsum(b:sum)`` interned two hidden slots both named
+        ``_cumsum_inner``, the step CTE projected two columns under that one
+        alias, and the composite silently evaluated ``cumsum(a) + cumsum(a)``.
+        DEV-1692 fixed this inside the ``time_shift`` / ``consecutive_periods``
+        emitters only; owning it here covers every renderer at once.
+        """
+        if declared_name not in self._taken_names:
+            return declared_name
+        n = 2
+        while f"{declared_name}_{n}" in self._taken_names:
+            n += 1
+        return f"{declared_name}_{n}"
 
     def intern(
         self,
@@ -230,6 +269,14 @@ class ValueRegistry:
                 )
 
         sid = self._next_id()
+        # DEV-1733: uniquify HIDDEN slot names only. A public name is the
+        # user's result-key contract and is never rewritten — a genuine
+        # duplicate there already raised ``DuplicateMeasureNameError`` above.
+        if hidden:
+            declared_name = self._unique_hidden_name(declared_name)
+        self._taken_names.add(declared_name)
+        if public_name is not None:
+            self._taken_names.add(public_name)
         public_aliases = [public_name] if public_name is not None else []
         slot = ValueSlot(
             id=sid,
@@ -625,6 +672,15 @@ class ProjectionPlanner:
             source_column_names=source_column_names,
             host_model_name=host_model_name,
         )
+        # DEV-1733: claim every user-declared name before the first intern, so
+        # hidden-name uniquification is independent of intern order (a hidden
+        # dependency of measure 1 must not be able to take a name measure 2
+        # declares publicly — public names are never renamed).
+        registry.reserve_public_names(
+            name
+            for m in measures
+            for name in (m.declared_name, m.public_name, m.canonical_alias)
+        )
         public_projection: List[SlotId] = []
         for m in measures:
             sid = registry.intern(
@@ -677,6 +733,29 @@ class ProjectionPlanner:
                         hidden=True,
                         phase=dep.phase,
                     )
+            # DEV-1733: ``_iter_slot_deps`` yields a composite's OPERANDS but
+            # never the composite itself (the generator normally inlines those
+            # nodes). An ORDER BY target that IS a composite therefore had no
+            # slot of its own, so ``plan_query``'s ``find_by_key`` lookup
+            # returned None and the order entry was SILENTLY DROPPED — the
+            # ``change`` / ``change_pct`` / scalar-call ORDER BY bug. Intern the
+            # top-level key so it gets a hidden slot the generator can
+            # materialise and the outer wrap can order on.
+            #
+            # ORDER ONLY: filters keep the operands-only walk. A filter's
+            # top-level composite is rendered inline into WHERE / HAVING, and
+            # giving it a slot would change that emission.
+            top = o.bound.value_key
+            if (
+                isinstance(top, (ArithmeticKey, ScalarCallKey))
+                and registry.find_by_key(top) is None
+            ):
+                registry.intern(
+                    key=top,
+                    declared_name=_canonical_name(top),
+                    hidden=True,
+                    phase=top.phase,
+                )
 
         return ProjectionPlan(
             registry=registry,

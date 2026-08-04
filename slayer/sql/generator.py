@@ -3803,6 +3803,42 @@ class SQLGenerator:
                 )
 
     @staticmethod
+    def _composite_has_remote_operand(
+        *,
+        key,
+        slots_by_id: Dict[str, Any],
+        slot_id_by_key: Dict[Any, str],
+        planned_query,
+    ) -> bool:
+        """Whether any operand of ``key`` is materialised OUTSIDE the base CTE.
+
+        DEV-1733: a composite whose operands include a CROSS-MODEL aggregate
+        (``_cm_`` CTE) or a WINDOWED aggregate (``_wm_`` CTE) cannot render in
+        ``_base`` — the operand column is not in that scope. Such composites
+        are owned by the combined SELECT instead, which resolves each operand
+        to its CTE-qualified column.
+        """
+        from slayer.core.keys import AggregateKey as _AggKey
+        from slayer.engine.binding import walk_value_keys
+
+        remote_slot_ids = {
+            p.aggregate_slot_id
+            for p in planned_query.cross_model_aggregate_plans
+        } | {
+            p.aggregate_slot_id
+            for p in planned_query.windowed_aggregate_plans
+        }
+        for node in walk_value_keys(key):
+            if not isinstance(node, _AggKey):
+                continue
+            if getattr(node.source, "path", ()):
+                return True  # cross-model source, even without a plan yet
+            sid = slot_id_by_key.get(node)
+            if sid is not None and sid in remote_slot_ids:
+                return True
+        return False
+
+    @staticmethod
     def _collect_base_aux_slot_ids(  # NOSONAR(S3776) — recursive ValueKey walker (nested ``_collect_from``) over the closed key union plus three top-level passes (transform layers / phase-gated filter deps / order deps). Each pass is one decision; extracting them would scatter the slot-dep contract.
         *,
         planned_query,
@@ -3949,6 +3985,26 @@ class SQLGenerator:
                 if slot is None:
                     continue
                 _collect_from(slot.key)
+                # DEV-1733: an order-only COMPOSITE (``a:sum / b:sum``,
+                # ``abs(a:sum)``) needs its OWN materialised column, not just
+                # its operands — the outer trim wrap orders on a plain quoted
+                # alias, so the composite has to exist as a column of the inner
+                # SELECT. ``_collect_from`` deliberately recurses past
+                # composite nodes (the generator inlines them elsewhere), so
+                # the slot id is added here explicitly.
+                #
+                # Cross-model / windowed composites are EXCLUDED: their
+                # operands live in ``_cm_`` / ``_wm_`` CTEs, so the composite
+                # is owned by the combined SELECT and rendering it in ``_base``
+                # would reference an out-of-scope column. The cross-model
+                # renderer routes them via ``outer_composite_slot_ids``.
+                if isinstance(slot.key, (ArithmeticKey, ScalarCallKey)):
+                    if not SQLGenerator._composite_has_remote_operand(
+                        key=slot.key, slots_by_id=slots_by_id,
+                        slot_id_by_key=slot_id_by_key,
+                        planned_query=planned_query,
+                    ):
+                        out.add(oe.slot_id)
 
         return out
 
@@ -5858,7 +5914,14 @@ class SQLGenerator:
             for k in walk_value_keys(slot.key):
                 if isinstance(k, AggregateKey):
                     s = slot_by_key.get(k)
-                    if s is not None and s.id in cma_slot_ids:
+                    # DEV-1733: a WINDOWED operand routes the composite outward
+                    # for the same reason a cross-model one does — the value
+                    # lives in a ``_wm_`` CTE joined back to ``_base``, so
+                    # rendering the composite inside ``_base`` would silently
+                    # substitute a PLAIN aggregate for the rolling one.
+                    if s is not None and (
+                        s.id in cma_slot_ids or s.id in windowed_slot_ids
+                    ):
                         outer_composite_slot_ids.add(slot.id)
                         break
         base_projection = [
@@ -5955,7 +6018,16 @@ class SQLGenerator:
                     dep = slot_by_key.get(k)
                     if dep is None:
                         continue
-                    if dep.id in cma_slot_ids or dep.id in seen_base_ids:
+                    # DEV-1733: a WINDOWED operand is owned by its ``_wm_`` CTE,
+                    # exactly like a cross-model one is owned by ``_cm_``.
+                    # Promoting it into ``_base`` would emit a dead PLAIN
+                    # aggregate under the windowed slot's alias, which the outer
+                    # composite would then read instead of the rolling value.
+                    if (
+                        dep.id in cma_slot_ids
+                        or dep.id in windowed_slot_ids
+                        or dep.id in seen_base_ids
+                    ):
                         continue
                     base_render_order.append(dep.id)
                     seen_base_ids.add(dep.id)
@@ -6299,6 +6371,17 @@ class SQLGenerator:
                 outer_composite_cm_map[plan.aggregate_slot_id] = (
                     cte_name, agg_col_alias,
                 )
+            # DEV-1733: windowed operands resolve the same way — the renderer
+            # substitutes ``<cte>."<col>"`` for any slot id in this map, and a
+            # ``_wm_`` CTE is joined into the combined FROM exactly as a
+            # ``_cm_`` one is. Without these entries the operand would fall
+            # through to the ``_base.<alias>`` fallback and read a plain
+            # aggregate (or dangle).
+            for plan in planned_query.windowed_aggregate_plans:
+                outer_composite_cm_map[plan.aggregate_slot_id] = (
+                    wm_cte_name_for_plan[plan.aggregate_slot_id],
+                    wm_agg_col_for_plan[plan.aggregate_slot_id],
+                )
 
             def _render_outer_composite(cslot) -> str:
                 rendered = self._render_filter_for_outer_wrapper(
@@ -6380,7 +6463,7 @@ class SQLGenerator:
             # DEV-1495 bug 2 / DEV-1712: an order-by-only (hidden) cross-model
             # aggregate never surfaces in the combined projection — its CTE is
             # still joined below, and the ORDER BY references it CTE-qualified
-            # (``hidden_cma_order_ref``). Trimming it keeps the outer SELECT to
+            # (``hidden_cte_order_refs``). Trimming it keeps the outer SELECT to
             # the user-declared columns (Law 2 projection boundary). Only when
             # there is NO transform chain: a hidden CMA feeding a transform
             # layer (``cumsum(customers.revenue:sum)``) must stay projected so
@@ -6421,6 +6504,16 @@ class SQLGenerator:
             agg_slot = slots_by_id[plan.aggregate_slot_id]
             cte_name = wm_cte_name_for_plan[plan.aggregate_slot_id]
             agg_col = wm_agg_col_for_plan[plan.aggregate_slot_id]
+            # DEV-1733: an order-only (hidden) windowed aggregate never surfaces
+            # in the combined projection — its ``_wm_`` CTE is still joined
+            # below and the ORDER BY references it CTE-qualified
+            # (``hidden_wm_order_ref``). Same trim predicate the hidden
+            # cross-model aggregate uses: with a transform chain on top the
+            # column must stay projected so the step CTE can consume it, and
+            # the transform outer wrap does the public-vs-hidden trim there.
+            if plan.hidden and not planned_query.transform_layers:
+                combined_aliases_by_slot_id[plan.aggregate_slot_id] = []
+                continue
             public_names = list(agg_slot.public_aliases) or (
                 [agg_slot.public_name] if agg_slot.public_name else []
             )
@@ -6599,7 +6692,7 @@ class SQLGenerator:
         # are trimmed from the projection above, so their ORDER BY term must be
         # CTE-qualified (``_cm_*."<agg_col_alias>"``) rather than the bare
         # combined-SELECT alias.
-        hidden_cma_order_ref: Dict[str, str] = {}
+        hidden_cte_order_refs: Dict[str, str] = {}
         for plan in planned_query.cross_model_aggregate_plans:
             # Only CMAs actually trimmed from the projection (hidden + no
             # transform chain) need the CTE-qualified ORDER BY reference.
@@ -6608,8 +6701,18 @@ class SQLGenerator:
             _canon = canonical_alias_for_plan[plan.aggregate_slot_id]
             _agg_col = agg_col_alias_for_plan[plan.aggregate_slot_id]
             _cte = _cte_name_from_alias("_cm_", _canon)
-            hidden_cma_order_ref[plan.aggregate_slot_id] = (
+            hidden_cte_order_refs[plan.aggregate_slot_id] = (
                 f'{_cte}.{self._quote_ident(_agg_col)}'
+            )
+        # DEV-1733: same treatment for a hidden (order-only) WINDOWED aggregate
+        # trimmed from the combined projection above — reference its ``_wm_``
+        # CTE column rather than a bare alias the SELECT no longer emits.
+        for plan in planned_query.windowed_aggregate_plans:
+            if not (plan.hidden and not planned_query.transform_layers):
+                continue
+            hidden_cte_order_refs[plan.aggregate_slot_id] = (
+                f'{wm_cte_name_for_plan[plan.aggregate_slot_id]}.'
+                f'{self._quote_ident(wm_agg_col_for_plan[plan.aggregate_slot_id])}'
             )
         order_sql = self._build_combined_order_by_sql(
             planned_query=planned_query,
@@ -6622,7 +6725,7 @@ class SQLGenerator:
             bare_order_slot_ids=set(order_only_local_ids) | windowed_slot_ids,
             outer_composite_aliases=outer_composite_order_alias_by_sid,
             outer_composite_expressions=outer_composite_order_expressions,
-            hidden_cma_order_ref=hidden_cma_order_ref,
+            hidden_cte_order_refs=hidden_cte_order_refs,
         )
         if order_sql:
             sql += "\n" + order_sql
@@ -7978,7 +8081,7 @@ class SQLGenerator:
         bare_order_slot_ids: Optional[Set[str]] = None,
         outer_composite_aliases: Optional[Dict[str, str]] = None,
         outer_composite_expressions: Optional[Dict[str, str]] = None,
-        hidden_cma_order_ref: Optional[Dict[str, str]] = None,
+        hidden_cte_order_refs: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Build the ORDER BY clause for the combined SELECT.
 
@@ -8006,7 +8109,7 @@ class SQLGenerator:
         bare_ids = bare_order_slot_ids or set()
         outer_aliases = outer_composite_aliases or {}
         outer_expressions = outer_composite_expressions or {}
-        hidden_cma_refs = hidden_cma_order_ref or {}
+        hidden_cte_refs = hidden_cte_order_refs or {}
         parts: List[str] = []
         for entry in planned_query.order:
             slot = slots_by_id.get(entry.slot_id)
@@ -8021,7 +8124,7 @@ class SQLGenerator:
                 bare_ids=bare_ids,
                 outer_aliases=outer_aliases,
                 outer_expressions=outer_expressions,
-                hidden_cma_refs=hidden_cma_refs,
+                hidden_cte_refs=hidden_cte_refs,
             )
             if term is not None:
                 parts.append(term)
@@ -8040,7 +8143,7 @@ class SQLGenerator:
         bare_ids: Set[str],
         outer_aliases: Dict[str, str],
         outer_expressions: Optional[Dict[str, str]] = None,
-        hidden_cma_refs: Optional[Dict[str, str]] = None,
+        hidden_cte_refs: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Resolve one ``OrderEntry`` to its ``"alias" <direction>`` term.
 
@@ -8055,13 +8158,17 @@ class SQLGenerator:
         rendered).
         """
         direction = "ASC" if entry.direction == "asc" else "DESC"
+        # DEV-1712 / DEV-1733: a HIDDEN (order-only) aggregate that lives in its
+        # own CTE — cross-model (``_cm_``) or windowed (``_wm_``) — is trimmed
+        # from the combined projection, so the bare alias no longer names a
+        # projected column. Reference the CTE-qualified column instead. Checked
+        # BEFORE the ``cma_slot_ids`` gate because a windowed slot is not a
+        # cross-model slot and would otherwise fall through to the bare-alias
+        # branch below and dangle.
+        hidden_ref = (hidden_cte_refs or {}).get(entry.slot_id)
+        if hidden_ref is not None:
+            return f'{hidden_ref} {direction}'
         if entry.slot_id in cma_slot_ids:
-            # DEV-1712: a HIDDEN (order-only) cross-model aggregate is trimmed
-            # from the combined projection, so the bare alias no longer names a
-            # projected column — reference the CTE-qualified column instead.
-            hidden_ref = (hidden_cma_refs or {}).get(entry.slot_id)
-            if hidden_ref is not None:
-                return f'{hidden_ref} {direction}'
             alias = cm_alias_for_plan.get(entry.slot_id)
             if alias is None:
                 return None
@@ -11331,7 +11438,24 @@ class SQLGenerator:
         targets out of ``base_render_order``, preserving today's
         ``NotImplementedError``).
         """
-        from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, TimeTruncKey
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            ColumnKey,
+            ColumnSqlKey,
+            ScalarCallKey,
+            TimeTruncKey,
+            TransformKey,
+        )
+
+        # DEV-1733: the EXACT set of hidden key kinds that resolve to a
+        # materialised alias. Deliberately enumerated rather than "any hidden
+        # slot that happens to carry an alias" — a hidden ROW slot with an
+        # alias must still hit the split-emission / invariant branches below,
+        # never be ordered on as a bare column that is not in the GROUP BY.
+        _MATERIALISED_ORDER_KINDS = (
+            AggregateKey, ArithmeticKey, ScalarCallKey, TransformKey,
+        )
 
         for order_entry in planned_query.order:
             slot = slots_by_id.get(order_entry.slot_id)
@@ -11348,7 +11472,7 @@ class SQLGenerator:
                     if aliases_by_slot_id is not None
                     else []
                 )
-                if aliases and isinstance(slot.key, AggregateKey):
+                if aliases and isinstance(slot.key, _MATERIALISED_ORDER_KINDS):
                     full_alias = aliases[0]
                     order_col = exp.Column(
                         this=exp.to_identifier(full_alias, quoted=True),

@@ -67,12 +67,25 @@ Windowed measures need exactly one resolvable time dimension (a single
 a windowed measure (`{"formula": "revenue:sum(window='90d') > 100"}`) applies
 after aggregation, and the windowed measure must also be selected.
 
+A windowed measure may also be used purely as an **order** target without being
+selected — `{"order": [{"column": "revenue:sum(window='90d')", "direction": "desc"}]}`
+ranks by the rolling value and keeps it out of the result. That works both for a
+bare windowed measure and for one inside an order-only composite
+(`{"column": "revenue:sum(window='90d') / cnt:sum"}`).
+
+Note the deliberate asymmetry: a windowed measure inside a composite is allowed
+in `order` but not yet in `measures`. Ordering needs only a single scalar
+comparison, whereas projecting the composite surfaces the rolling value's NULLs
+(a grain bucket with no matching source rows yields NULL) as user-visible
+result values — settling those semantics is part of the follow-up below.
+
 The following windowed-measure shapes raise a clear error rather than returning
 wrong numbers, and are planned follow-ups: a windowed aggregation other than
 `sum`/`avg`; a cross-model windowed measure (`customers.revenue:sum(window=…)`);
-a windowed measure combined with a transform (`cumsum`, `time_shift`, …), nested
-in an arithmetic/composite expression (`revenue:sum(window='90d') / 2`), or
-compared against a plain aggregate inside one filter
+a windowed measure combined with a transform (`cumsum`, `time_shift`, …) in any
+position; a windowed measure nested in an arithmetic/composite expression in
+`measures` (`{"formula": "revenue:sum(window='90d') / 2"}`); or one compared
+against a plain aggregate inside one filter
 (`revenue:sum(window='90d') > 100 and revenue:sum > 50`).
 
 ---

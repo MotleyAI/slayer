@@ -51,7 +51,12 @@ from slayer.core.keys import (
     normalize_scalar,
 )
 from slayer.core.models import SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery, TimeDimension
+from slayer.core.query import (
+    ORDER_PLACEHOLDER_NAMES,
+    ModelExtension,
+    SlayerQuery,
+    TimeDimension,
+)
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
@@ -327,13 +332,15 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
 
     # G5 — a top-level declared measure that IS a windowed AggregateKey is
     # cleanly selected; a windowed key nested in an arithmetic / scalar composite
-    # measure is rejected. ``dict`` (not ``set``) preserves measure order.
+    # measure is rejected. ``dict`` (not ``set``) preserves measure order; the
+    # value is the slot's ``hidden`` flag (DEV-1733) — False for a declared
+    # measure, True for an order-only target.
     selected_windowed: dict = {}
     for vk in measure_vks:
         if not _windowed_agg_keys(vk):
             continue
         if _window_kwarg_of(vk) is not None:
-            selected_windowed.setdefault(vk, None)
+            selected_windowed.setdefault(vk, False)
         else:
             raise NotImplementedError(  # G5
                 "Windowed measures (window='…') inside arithmetic / composite / "
@@ -359,10 +366,20 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
                 "Filtering on a windowed measure (window='…') requires that "
                 "measure to also be selected (DEV-1504)."
             )
-    # NB: an ORDER-BY-only windowed reference is not a reachable hidden shape —
-    # ``OrderItem`` coercion canonicalises ``revenue:sum(window='90d')`` to the
-    # column name ``revenue_sum``, dropping the window kwarg before the planner
-    # sees it, so there is never an order-only hidden windowed slot to guard.
+    # DEV-1733 — order-only windowed targets. This IS a reachable shape (the
+    # pre-DEV-1733 comment here claimed otherwise): ``OrderItem`` canonicalises
+    # ``revenue:sum(window='90d')`` to the column name ``revenue_sum``, but
+    # ``OrderItem.raw_formula`` preserves the original text and the planner
+    # binds from it whenever the canonical name matches no declared measure. It
+    # used to fall through with no ``WindowedAggregatePlan``, materialising a
+    # PLAIN ``SUM`` in the base and ordering by it — the window silently gone.
+    #
+    # A windowed key referenced ONLY by ORDER BY is registered here as a HIDDEN
+    # plan (S-a top-level, S-b nested in a composite). Registering it after the
+    # measure loop means an also-declared key keeps ``hidden=False``.
+    for vk in order_vks:
+        for key in _windowed_agg_keys(vk):
+            selected_windowed.setdefault(key, True)
 
     # G2 — a windowed measure needs a resolvable time dimension.
     if active_td_key is None:
@@ -421,7 +438,7 @@ def _build_windowed_plans(
         + other_td_slot_ids
     )
 
-    for key in selected_windowed:
+    for key, is_hidden in selected_windowed.items():
         sid = registry.find_by_key(key)
         if sid is None:
             # CR#4: the guard pass already proved this is a cleanly-selected
@@ -434,6 +451,11 @@ def _build_windowed_plans(
                 f"slot; planner/projection drift (DEV-1714).",
             )
         window_raw = _window_kwarg_of(key)
+        # DEV-1733: the slot is the authority on visibility — a key registered
+        # hidden by the order pass may still have been promoted to public by a
+        # declared measure sharing it (same key -> one slot).
+        slot = registry.get(sid)
+        hidden = bool(is_hidden and slot.hidden)
         plans.append(WindowedAggregatePlan(
             aggregate_slot_id=sid,
             agg=key.agg,
@@ -444,6 +466,8 @@ def _build_windowed_plans(
             dimension_slot_ids=dim_slot_ids,
             other_time_dimension_slot_ids=other_td_slot_ids,
             grain_slot_ids=grain_slot_ids,
+            hidden=hidden,
+            public_alias=None if hidden else slot.public_name,
         ))
         windowed_slot_ids.add(sid)
     return plans, windowed_slot_ids
@@ -614,6 +638,23 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     for o in (query.order or []):
         col_name = o.column.name
         full_name = o.column.full_name
+        # DEV-1733: a placeholder ColumnRef means the item is an EXPRESSION,
+        # not a column reference — bind ``raw_formula`` and skip the
+        # declared-alias lookups below (which could otherwise match a real
+        # model column that happens to share the sentinel's name). BOTH the
+        # sentinel AND a captured ``raw_formula`` are required, so a model with
+        # a genuine ``_expr_pending`` column, or a hand-built / deserialized
+        # ``OrderItem``, still resolves through the normal path.
+        if col_name in ORDER_PLACEHOLDER_NAMES and o.raw_formula:
+            order_specs.append(OrderSpec(
+                bound=bind_expr(
+                    parsed=parse_expr(o.raw_formula, allow_dunder=flat_scope),
+                    scope=scope,
+                    bundle=bundle,
+                ),
+                direction=o.direction,
+            ))
+            continue
         # An order ref qualified with a FOREIGN model (``owners.status`` when
         # the host is ``orders``) must not resolve to a same-named local column
         # via the bare-leaf shortcut — otherwise a joined sort key silently
@@ -933,8 +974,8 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     #     isn't in GROUP BY; add it to dims, or order by an aggregate of it);
     #   * local row column, ungrouped -> allowed (split emission in the
     #     generator, ``_apply_order_limit_from_planned``);
-    #   * transform / composite       -> ValueError (deferred to DEV-1733;
-    #     declare it as a measure and order by that).
+    #   * transform / composite       -> allowed since DEV-1733 (materialised
+    #     hidden, ordered at the outer wrap, stripped from the projection).
     _has_grouping = bool(agg_slots) or (
         bool(query.dimensions or query.time_dimensions)
         and query.distinct_dimension_values
@@ -965,14 +1006,13 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                     f"by an aggregate of it (e.g. '{disp}:max')."
                 )
             continue  # ungrouped local row column -> split emission
-        # TransformKey / ArithmeticKey / ScalarCallKey — an inline transform or
-        # composite expression that is only referenced in ORDER BY.
-        raise ValueError(
-            "ORDER BY references a transform / composite expression that is "
-            "not a declared measure. Declare it as a measure (optionally with "
-            "a name) and order by that measure. (DEV-1733: materialising inline "
-            "transform / composite ORDER BY targets is not yet supported.)"
-        )
+        # DEV-1733: TransformKey / ArithmeticKey / ScalarCallKey — an inline
+        # transform or composite expression referenced only in ORDER BY. These
+        # materialise as hidden slots (a step CTE on the transform path, a
+        # trimmed base-SELECT column on the no-transform path, an inline
+        # combined-SELECT term when an operand is cross-model or windowed) and
+        # order at the outer wrap. Stage 8 rejected them here; nothing left to
+        # reject.
 
     # Build filters_by_phase in legacy WHERE order:
     #   1. date_range bound filters (bound_filters[:n_date_range])
