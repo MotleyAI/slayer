@@ -5734,6 +5734,19 @@ Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         assert "AVG(" in sql.upper()
 
 
+# Join target for TestSelfReferencingPaths, shared by the fixture (which saves
+# it into the fixture's own store) and ``_engine_generate`` (which builds a
+# fresh store per call and needs it passed as an extra model).
+_CUSTOMERS_SELF_REF = SlayerModel(
+    name="customers", sql_table="customers", data_source="test",
+    columns=[
+        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+        Column(name="name", sql="name", type=DataType.TEXT),
+        Column(name="score", sql="score", type=DataType.DOUBLE),
+    ],
+)
+
+
 class TestSelfReferencingPaths:
     """LLMs sometimes prefix cross-model paths with the source model name.
 
@@ -5771,36 +5784,48 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
         return engine, orders
 
     async def test_self_ref_dimension_resolved_after_strip(self, engine_and_models) -> None:
-        """'orders.customers.name' is pre-stripped to 'customers.name', then resolves correctly."""
-        engine, model = engine_and_models
+        """'orders.customers.name' is pre-stripped to 'customers.name', then resolves correctly.
+
+        DEV-1485 Stage D: was two assertions against the legacy
+        ``engine._resolve_dimension_via_joins``. Now end-to-end through the
+        typed pipeline, which is strictly better coverage — ``execute`` applies
+        ``strip_source_model_prefix`` itself, so this exercises the real
+        user-facing path rather than an internal resolver.
+        """
+        _engine, model = engine_and_models
         query = SlayerQuery(source_model="orders", dimensions=["orders.customers.name"])
+        # The strip itself stays pinned directly — it is pure and deterministic.
         stripped = query.strip_source_model_prefix()
-        # After stripping, the dimension is "customers.name"
-        assert stripped.dimensions[0].model == "customers"
-        assert stripped.dimensions[0].name == "name"
-        # Verify the engine can resolve the stripped path
-        parts = stripped.dimensions[0].model.split(".") + [stripped.dimensions[0].name]
-        dim = await engine._resolve_dimension_via_joins(model=model, parts=parts)
-        assert dim is not None
-        assert dim.name == "name"
+        assert (stripped.dimensions[0].model, stripped.dimensions[0].name) == (
+            "customers", "name",
+        )
+        sql = await _engine_generate(
+            query=query, model=model, extra_models=[_CUSTOMERS_SELF_REF],
+        )
+        assert "LEFT JOIN" in sql, sql
+        assert "customers" in sql, sql
+        # Resolved as a JOINED dimension under the dotted result key, not as a
+        # bare local column that silently referenced the wrong table.
+        assert "orders.customers.name" in sql, sql
 
     async def test_self_ref_measure_resolved_after_strip(self, engine_and_models) -> None:
-        """'orders.customers.score:sum' is pre-stripped to 'customers.score:sum', then resolves."""
-        engine, model = engine_and_models
-        query = SlayerQuery(source_model="orders", measures=["orders.customers.score:sum"])
-        stripped = query.strip_source_model_prefix()
-        # After stripping, the formula is "customers.score:sum"
-        assert stripped.measures[0].formula == "customers.score:sum"
-        # Verify the engine can resolve the stripped cross-model measure
-        result = await engine._resolve_cross_model_measure(
-            spec_name="customers.score",
-            field_name="score",
-            model=model,
-            query=stripped,
-            dimensions=[], time_dimensions=[],
-            aggregation_name="sum",
+        """'orders.customers.score:sum' is pre-stripped to 'customers.score:sum', then resolves.
+
+        DEV-1485 Stage D: was an assertion against the legacy
+        ``engine._resolve_cross_model_measure``; now pins the emitted
+        cross-model aggregate end-to-end.
+        """
+        _engine, model = engine_and_models
+        query = SlayerQuery(
+            source_model="orders", measures=["orders.customers.score:sum"],
         )
-        assert result.target_model_name == "customers"
+        stripped = query.strip_source_model_prefix()
+        assert stripped.measures[0].formula == "customers.score:sum"
+        sql = await _engine_generate(
+            query=query, model=model, extra_models=[_CUSTOMERS_SELF_REF],
+        )
+        assert "SUM(" in sql.upper(), sql
+        assert "customers" in sql, sql
 
     def test_simple_self_ref_dimension_stripped(self) -> None:
         """'orders.status' on source_model=orders becomes local 'status'."""

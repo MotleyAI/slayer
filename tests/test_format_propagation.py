@@ -5,7 +5,11 @@ import pytest
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
-from slayer.engine.query_engine import FieldMetadata, _infer_aggregated_format
+from slayer.engine.query_engine import FieldMetadata
+
+# DEV-1485 Stage D: imported through ``query_engine`` while the legacy
+# ``_query_as_model`` re-exported it; now imported from its owning module.
+from slayer.engine.response_meta import _infer_aggregated_format
 
 
 # ---------------------------------------------------------------------------

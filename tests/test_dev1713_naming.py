@@ -491,17 +491,14 @@ class TestMultiStageNaming:
 class TestFlattenerDelegation:
     """Codex F7: every downstream-bind-name flattener must DELEGATE to
     ``flat_name`` (single owner), not keep its own ``.replace('.', '__')``
-    body. The virtual-model one is a closure (``_alias_to_short`` inside
-    ``SlayerQueryEngine._query_as_model``), so this inspects the enclosing
-    source to assert the delegation call is present — a body that dropped it
-    would fail here. The typed pipeline's flattener is
-    ``build_flat_rename_wrapper`` (the ``_alias_to_short_local`` successor:
-    same strip-source-relation-then-``__``-flatten contract for stage CTEs
-    and the query-backed virtual-model wrap)."""
+    body. The typed pipeline's flattener is ``build_flat_rename_wrapper``
+    (the ``_alias_to_short_local`` successor: same
+    strip-source-relation-then-``__``-flatten contract for stage CTEs and the
+    query-backed virtual-model wrap).
 
-    def test_query_as_model_delegates_to_flat_name(self) -> None:
-        src = inspect.getsource(SlayerQueryEngine._query_as_model)
-        assert "flat_name(" in src, "expected _query_as_model to call flat_name()"
+    DEV-1485 Stage D: the companion guard over the legacy virtual-model
+    closure (``_alias_to_short`` inside ``SlayerQueryEngine._query_as_model``)
+    is gone with the legacy enrichment stack, leaving ONE flattener to own."""
 
     def test_stage_flat_rename_wrapper_delegates_to_flat_name(self) -> None:
         src = inspect.getsource(build_flat_rename_wrapper)

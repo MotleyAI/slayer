@@ -754,20 +754,37 @@ async def test_get_column_types_decodes_bigquery_mangled_probe_keys() -> None:
         tmp.cleanup()
 
 
-async def test_query_as_model_wrapped_refs_match_mangled_inner_bigquery() -> None:
-    """DEV-1716 (Codex review): ``generate(render_mode="wrapped")`` alias-mangles
-    the inner query's projection on BigQuery, so ``_query_as_model``'s outer
-    rename wrapper must reference the mangled, backticked (``___``) form — NOT a
-    raw ANSI ``"orders.status"``, which BigQuery reads as a string literal
-    pointing at a column the mangled inner subquery no longer exposes."""
+async def test_virtual_model_wrapped_refs_match_mangled_inner_bigquery() -> None:
+    """DEV-1716 (Codex review): stage rendering alias-mangles the inner query's
+    projection on BigQuery, so the virtual model's outer rename wrapper must
+    reference the mangled, backticked (``___``) form — NOT a raw ANSI
+    ``"orders.status"``, which BigQuery reads as a string literal pointing at a
+    column the mangled inner subquery no longer exposes.
+
+    Migrated from ``_query_as_model`` to the typed
+    ``_expand_query_backed_model`` (DEV-1485 Stage D). The mangling invariant is
+    unchanged — only the outer rename TARGET differs: the typed wrapper renames
+    to the flat downstream-bind name (``status``) rather than re-exposing the
+    dotted alias, which is the documented virtual-model contract.
+    """
     engine, tmp, _ = await _build_bigquery_engine(rows=[])
     try:
-        inner = SlayerQuery(
-            source_model="orders",
-            measures=[{"formula": "*:count"}],
-            dimensions=["status"],
+        model = SlayerModel(
+            name="qb_orders",
+            data_source="bq",
+            source_queries=[SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "*:count"}],
+                dimensions=["status"],
+            )],
         )
-        vmodel = await engine._query_as_model(inner_query=inner)
+        vmodel = await engine._expand_query_backed_model(
+            model=model,
+            outer_vars=None,
+            runtime_kwarg=None,
+            dry_run_placeholders=True,
+            _resolving=set(),
+        )
         wrapped = vmodel.sql
         # No ANSI-quoted dotted identifier survives (would be a string literal
         # on BigQuery and reference a non-existent column).
@@ -777,6 +794,8 @@ async def test_query_as_model_wrapped_refs_match_mangled_inner_bigquery() -> Non
         # ``orders____count`` (3 underscores from the dot + 1 leading).
         assert "orders___status" in wrapped, wrapped
         assert "orders____count" in wrapped, wrapped
+        # The outer rename exposes the flat bind names downstream stages use.
+        assert [c.name for c in vmodel.columns] == ["status", "_count"], vmodel.columns
     finally:
         tmp.cleanup()
 

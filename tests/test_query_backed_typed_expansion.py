@@ -704,111 +704,14 @@ class TestGetColumnTypesTypedPipeline:
 # ---------------------------------------------------------------------------
 
 
-class _TrackingContextVar:
-    """Drop-in replacement for ``contextvars.ContextVar`` that records every
-    ``.set`` / ``.get`` / ``.reset`` call to a list. Used to assert the
-    migrated Stage B paths never touch the legacy ContextVars.
+# DEV-1485 Stage D: ``_TrackingContextVar`` + ``TestContextVarSafety`` were
+# deleted here. They pinned that the migrated path never set or read the two
+# legacy ContextVars (``_join_target_resolving_var`` /
+# ``_forbidden_sibling_refs_var``) while the legacy query-backed wrap still
+# used them. Both ContextVars are now gone with the legacy enrichment stack,
+# so there is no longer anything the migrated path could touch -- the
+# property is structural, not a behaviour needing a regression guard.
 
-    Inherits the read-only behaviour of real ``ContextVar.set`` by simply
-    tracking the call and storing the value; the migrated path does not
-    rely on actual ContextVar semantics so a no-op tracker suffices.
-    """
-
-    def __init__(self, name: str, *, default=None) -> None:
-        self.name = name
-        self._value = default
-        self._default = default
-        self.set_calls: list = []
-        self.get_calls: int = 0
-
-    def set(self, value):
-        self.set_calls.append(value)
-        prev, self._value = self._value, value
-        # Return a sentinel object that ``reset(token)`` can accept.
-        return ("token", prev)
-
-    def get(self, *args):
-        self.get_calls += 1
-        if self._value is None and args:
-            return args[0]
-        return self._value
-
-    def reset(self, token) -> None:
-        if token[0] == "token":
-            self._value = token[1]
-
-
-class TestContextVarSafety:
-    async def test_expand_query_backed_model_does_not_touch_contextvars(
-        self,
-    ) -> None:
-        """Migrated ``_expand_query_backed_model`` MUST NOT set / get the
-        two legacy ContextVars. They still exist for ``the legacy query-backed wrap``
-        until Stage D; this test pins that the migrated path is independent.
-        """
-        from slayer.engine import query_engine as qe
-
-        tracker_a = _TrackingContextVar("_join_target_resolving", default=None)
-        tracker_b = _TrackingContextVar("_forbidden_sibling_refs", default=None)
-
-        # Multi-stage with named non-final stages exercises the legacy
-        # ``_scope_named_queries_to_prior`` + ``_forbidden_sibling_refs_var``
-        # set path (and the engine's ``_join_target_resolving_var`` when a
-        # query-backed model is used as a join target).
-        kpi_qb = SlayerModel(
-            name="kpi_for_join",
-            data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "*:count"}],
-                dimensions=["customer_id"],
-            )],
-        )
-        m = SlayerModel(
-            name="qb_multistage",
-            data_source="ds",
-            source_queries=[
-                SlayerQuery(
-                    name="kpi",
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum"}],
-                    dimensions=["status"],
-                ),
-                SlayerQuery(
-                    source_model={
-                        "source_name": "orders",
-                        "joins": [{
-                            "target_model": "kpi_for_join",
-                            "join_pairs": [["customer_id", "customer_id"]],
-                        }],
-                    },
-                    dimensions=["status"],
-                ),
-            ],
-        )
-        engine, tmp = await _engine(kpi_qb)
-        try:
-            with patch.object(qe, "_join_target_resolving_var", tracker_a), \
-                 patch.object(qe, "_forbidden_sibling_refs_var", tracker_b):
-                await engine.save_model(m)
-            assert not tracker_a.set_calls, (
-                f"_join_target_resolving_var.set called by migrated path: "
-                f"{tracker_a.set_calls!r}"
-            )
-            assert not tracker_b.set_calls, (
-                f"_forbidden_sibling_refs_var.set called by migrated path: "
-                f"{tracker_b.set_calls!r}"
-            )
-            assert tracker_a.get_calls == 0, (
-                f"_join_target_resolving_var.get called by migrated path: "
-                f"{tracker_a.get_calls}"
-            )
-            assert tracker_b.get_calls == 0, (
-                f"_forbidden_sibling_refs_var.get called by migrated path: "
-                f"{tracker_b.get_calls}"
-            )
-        finally:
-            tmp.cleanup()
 
 
 # ---------------------------------------------------------------------------

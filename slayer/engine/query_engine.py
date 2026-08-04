@@ -8,7 +8,6 @@ import decimal
 import logging
 import re
 from collections.abc import Callable
-from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
@@ -22,14 +21,12 @@ from pydantic import (
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
 from slayer.core.errors import AmbiguousModelError, ForcedFilterError
 from slayer.core.policy import JoinFilterRuleset, SessionPolicy
-from slayer.core.format import NumberFormat, NumberFormatType, format_number
+from slayer.core.format import format_number
 from slayer.core.models import (
     Column,
     DatasourceConfig,
-    ModelJoin,
     ModelMeasure,
     SlayerModel,
-    SourceModelOrigin,
 )
 from slayer.core.warnings import NormalizationWarning
 from slayer.core.recommend import (
@@ -39,9 +36,7 @@ from slayer.core.recommend import (
 )
 from slayer.core.refs import split_agg_suffix
 from slayer.core.query import (
-    ColumnRef,
     SlayerQuery,
-    TimeDimension,
     extract_placeholder_names,
     substitute_variables,
 )
@@ -53,21 +48,12 @@ from slayer.engine.cache import (
     RefreshResult,
     _CacheEntry,
 )
-from slayer.engine.enriched import (
-    CrossModelMeasure,
-    EnrichedMeasure,
-    EnrichedQuery,
-)
 from slayer.engine.agg_registry import collect_reachable_agg_names
-from slayer.engine.enrichment import enrich_query
 from slayer.engine.normalization import normalize_model, normalize_query
-from slayer.engine.path_resolution import NoJoinError as _NoJoinError
-from slayer.engine.path_resolution import walk_join_chain
 from slayer.engine.planned import PlannedQuery
 from slayer.engine.response_meta import (
     FieldMetadata as FieldMetadata,  # re-export for slayer_client / tests
     ResponseAttributes,
-    _infer_aggregated_format,
     build_response_metadata,
 )
 from slayer.engine.source_bundle import (
@@ -85,8 +71,7 @@ from slayer.sql import engine_factory
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.engine_factory import _runtime_fingerprint
 from slayer.sql.dialects import dialect_for_ds_type, get_dialect
-from slayer.sql.generator import SQLGenerator, generate_planned_stages
-from slayer.sql.naming import flat_name
+from slayer.sql.generator import generate_planned_stages
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend
@@ -212,30 +197,6 @@ def _build_recommend_coverage(
         ))
     entries.sort(key=lambda e: (-len(e[0].reachable_items), e[1], e[0].model_name))
     return [e[0] for e in entries]
-
-
-
-# Per-task in-flight join-target names. Used by _resolve_join_target to break
-# loops when a query-backed target's own join graph references it back. Lives
-# in a ContextVar (not on the engine) so concurrent requests through the same
-# engine don't see each other's in-flight state — each asyncio task gets its
-# own copy of the context. The default=None + lazy-init pattern below means
-# only tasks that actually hit a query-backed join target allocate a set.
-_join_target_resolving_var: ContextVar[Optional[set]] = ContextVar(
-    "_join_target_resolving", default=None
-)
-
-
-# Per-task "forbidden sibling stage names" — names that exist in the enclosing
-# source_queries list but are NOT visible from the stage currently being
-# resolved (i.e. forward references and self references). Used by
-# _resolve_model_inner to differentiate forward/self refs from genuine
-# misspellings, so the user gets a clear error instead of "Model 'X' not found".
-# Each entry maps a forbidden target name to the stage that tried to reach it.
-_forbidden_sibling_refs_var: ContextVar[Optional[Dict[str, str]]] = ContextVar(
-    "_forbidden_sibling_refs", default=None
-)
-
 
 _PLACEHOLDER_FILL_VALUE = "0"
 
@@ -685,45 +646,6 @@ class SlayerQueryEngine:
         present = column.lower() in names
         self._column_presence_cache[key] = present
         return present
-
-    def _get_join_target_resolving(self) -> set:
-        """Return the per-task in-flight join-target name set, allocating one
-        on first access in this asyncio context. See ``_join_target_resolving_var``.
-        """
-        s = _join_target_resolving_var.get()
-        if s is None:
-            s = set()
-            _join_target_resolving_var.set(s)
-        return s
-
-    @staticmethod
-    def _scope_named_queries_to_prior(
-        named_queries: Dict[str, "SlayerQuery"], stage_name: Optional[str]
-    ) -> Dict[str, "SlayerQuery"]:
-        """Slice an insertion-ordered named-queries dict to entries that
-        come strictly before ``stage_name``.
-
-        When a non-final stage of a ``source_queries`` list is being
-        resolved, only its *prior* siblings are visible to it. This keeps
-        the DAG acyclic. Runtime query lists pre-sort via
-        :meth:`_topologically_order_queries` so the insertion order here
-        is already a valid topological order; ``SlayerModel.source_queries``
-        retains strict-order semantics and relies on this slice plus the
-        forward-reference error in ``_resolve_model_inner`` to catch
-        out-of-order references.
-
-        Returns ``named_queries`` unchanged when ``stage_name`` is None or
-        absent from the dict (e.g. the final stage, or an externally-named
-        stored model).
-        """
-        if not stage_name or stage_name not in named_queries:
-            return named_queries
-        out: Dict[str, "SlayerQuery"] = {}
-        for k, v in named_queries.items():
-            if k == stage_name:
-                return out
-            out[k] = v
-        return out
 
     @classmethod
     def _topologically_order_queries(
@@ -1635,40 +1557,6 @@ class SlayerQueryEngine:
                     out.add(target)
         return out
 
-    async def _collect_models_touched(
-        self, *, model: SlayerModel, enriched: "EnrichedQuery"
-    ) -> "set[str]":
-        """Compute the set of model names that participated in this query.
-
-        Includes the source model, every cross-model measure root, every
-        query-backed base name (resolved from storage when ``model`` is a
-        virtual stage produced by ``_query_as_model``), and (transitively)
-        every join target reachable through the join graph.
-        """
-        touched: set[str] = {model.name}
-        for cm in enriched.cross_model_measures:
-            touched.add(cm.target_model_name)
-            touched.add(cm.source_model_name)
-        touched |= self._collect_query_backed_base_names(model)
-        # The resolved ``model`` may be a virtual stage from
-        # _query_as_model() — its ``source_queries`` is already expanded,
-        # so the base-name walk above turns up nothing. Fall back to the
-        # persisted record under ``model.name`` (if any) so query-backed
-        # drift attribution still names the real persisted base models.
-        if model.data_source:
-            try:
-                persisted = await self.storage.get_model(
-                    model.name, data_source=model.data_source
-                )
-            except Exception:
-                persisted = None
-            if persisted is not None and persisted.source_queries:
-                touched |= self._collect_query_backed_base_names(persisted)
-        await self._expand_join_graph(
-            touched=touched, data_source=model.data_source or None
-        )
-        return touched
-
     async def _expand_join_graph(
         self, *, touched: "set[str]", data_source: Optional[str]
     ) -> None:
@@ -1699,18 +1587,17 @@ class SlayerQueryEngine:
         *,
         err: BaseException,
         model: SlayerModel,
-        enriched: "Optional[EnrichedQuery]" = None,
-        touched_models: "Optional[set[str]]" = None,
+        touched_models: "set[str]",
     ) -> None:
         """Attribute a query-time exception to schema drift via
         ``validate_models``. If drift is found in the touched models, raise
         ``SchemaDriftError`` (with ``err`` as ``__cause__``); otherwise
         return so the caller re-raises the original exception untouched.
 
-        The typed pipeline passes ``touched_models`` directly (computed from
-        the resolved bundle / plan); the legacy path passes ``enriched`` and
-        the set is derived from it. Either way the join graph is widened via
-        ``_expand_join_graph`` before attribution.
+        ``touched_models`` is computed from the resolved bundle / plan; the
+        join graph is widened via ``_expand_join_graph`` before attribution.
+        (DEV-1485 Stage D removed the alternative ``enriched=`` mode, which
+        derived the same set from a legacy ``EnrichedQuery``.)
 
         Any error from ``validate_models`` itself is swallowed so the
         original exception is never masked.
@@ -1718,15 +1605,10 @@ class SlayerQueryEngine:
         from slayer.core.errors import SchemaDriftError
 
         try:
-            if touched_models is not None:
-                touched = set(touched_models)
-                await self._expand_join_graph(
-                    touched=touched, data_source=model.data_source or None
-                )
-            else:
-                touched = await self._collect_models_touched(
-                    model=model, enriched=enriched
-                )
+            touched = set(touched_models)
+            await self._expand_join_graph(
+                touched=touched, data_source=model.data_source or None
+            )
             # Cross-model measure source models share the parent's DS in
             # validated queries (cross-DS joins are rejected at resolve
             # time), so attribution only needs the parent's data_source.
@@ -2629,93 +2511,6 @@ class SlayerQueryEngine:
             # ``StageSchema`` namespace, not via the legacy lineage walk.
         )
 
-    async def _resolve_query_model(  # NOSONAR S3776 — type-dispatch on str/SlayerModel/ModelExtension/dict; flat is clearer than per-shape helpers here
-        self,
-        query_model,
-        named_queries: dict = None,
-        _resolving: set = None,
-        outer_vars: Optional[Dict[str, Any]] = None,
-        runtime_kwarg: Optional[Dict[str, Any]] = None,
-        dry_run_placeholders: bool = False,
-        prefer_data_source: Optional[str] = None,
-    ) -> SlayerModel:
-        """Resolve query.source_model — handles str, SlayerModel, and ModelExtension."""
-        from slayer.core.query import ModelExtension
-
-        named_queries = named_queries or {}
-
-        if isinstance(query_model, str):
-            return await self._resolve_model(
-                model_name=query_model,
-                named_queries=named_queries,
-                _resolving=_resolving,
-                outer_vars=outer_vars,
-                runtime_kwarg=runtime_kwarg,
-                dry_run_placeholders=dry_run_placeholders,
-                prefer_data_source=prefer_data_source,
-            )
-        elif isinstance(query_model, SlayerModel):
-            # Inline SlayerModel may itself be query-backed; expand its
-            # source_queries the same way storage-backed models do, otherwise
-            # the outer enrichment can't see the virtual columns.
-            return await self._expand_query_backed_model(
-                model=query_model,
-                outer_vars=outer_vars,
-                runtime_kwarg=runtime_kwarg,
-                dry_run_placeholders=dry_run_placeholders,
-                _resolving=_resolving,
-            )
-        elif isinstance(query_model, ModelExtension):
-            base = await self._resolve_model(
-                model_name=query_model.source_name,
-                named_queries=named_queries,
-                _resolving=_resolving,
-                outer_vars=outer_vars,
-                runtime_kwarg=runtime_kwarg,
-                dry_run_placeholders=dry_run_placeholders,
-                prefer_data_source=prefer_data_source,
-            )
-            # Extend the base model with extra columns/measures/joins
-            # ModelJoin already imported at the top of the file.
-
-            extra_cols = [
-                Column.model_validate(c) if isinstance(c, dict) else c for c in (query_model.columns or [])
-            ]
-            extra_measures = [
-                ModelMeasure.model_validate(m) if isinstance(m, dict) else m for m in (query_model.measures or [])
-            ]
-            extra_joins = [ModelJoin.model_validate(j) if isinstance(j, dict) else j for j in (query_model.joins or [])]
-            return base.model_copy(
-                update={
-                    "columns": list(base.columns) + extra_cols,
-                    "measures": list(base.measures) + extra_measures,
-                    "joins": list(base.joins) + extra_joins,
-                }
-            )
-        elif isinstance(query_model, dict):
-            # Dict — could be ModelExtension or SlayerModel
-            if "source_name" in query_model:
-                ext = ModelExtension.model_validate(query_model)
-                return await self._resolve_query_model(
-                    ext,
-                    named_queries,
-                    _resolving=_resolving,
-                    outer_vars=outer_vars,
-                    runtime_kwarg=runtime_kwarg,
-                    dry_run_placeholders=dry_run_placeholders,
-                )
-            else:
-                model = SlayerModel.model_validate(query_model)
-                return await self._expand_query_backed_model(
-                    model=model,
-                    outer_vars=outer_vars,
-                    runtime_kwarg=runtime_kwarg,
-                    dry_run_placeholders=dry_run_placeholders,
-                    _resolving=_resolving,
-                )
-        else:
-            raise ValueError(f"Invalid query.source_model type: {type(query_model)}")
-
     async def _resolve_model(
         self,
         model_name: str,
@@ -2726,8 +2521,15 @@ class SlayerQueryEngine:
         dry_run_placeholders: bool = False,
         prefer_data_source: Optional[str] = None,
     ) -> SlayerModel:
-        """Resolve a model by name — checks named queries first, then storage."""
-        named_queries = named_queries or {}
+        """Resolve a model by name from storage, expanding a query-backed one.
+
+        ``named_queries`` is accepted but unused: it is part of the
+        ``resolve_model`` callback contract that
+        :func:`slayer.engine.path_resolution.walk_join_chain` defines. Sibling
+        stages are resolved by the typed pipeline in ``source_bundle`` (via
+        ``_follow_sibling_chain``), never here — DEV-1485 Stage D deleted the
+        named-query branch along with the rest of the legacy stack.
+        """
         _resolving = _resolving if _resolving is not None else set()
 
         # Circular reference protection (per-call set, safe for concurrent requests)
@@ -2740,7 +2542,6 @@ class SlayerQueryEngine:
         try:
             return await self._resolve_model_inner(
                 model_name,
-                named_queries,
                 _resolving=_resolving,
                 outer_vars=outer_vars,
                 runtime_kwarg=runtime_kwarg,
@@ -2753,23 +2554,12 @@ class SlayerQueryEngine:
     async def _resolve_model_inner(
         self,
         model_name: str,
-        named_queries: dict[str, SlayerQuery],
         _resolving: set = None,
         outer_vars: Optional[Dict[str, Any]] = None,
         runtime_kwarg: Optional[Dict[str, Any]] = None,
         dry_run_placeholders: bool = False,
         prefer_data_source: Optional[str] = None,
     ) -> SlayerModel:
-        # Named query overrides stored model
-        if model_name in named_queries:
-            return await self._query_as_model(
-                inner_query=named_queries[model_name],
-                named_queries=named_queries,
-                _resolving=_resolving,
-                outer_vars=outer_vars,
-                runtime_kwarg=runtime_kwarg,
-                dry_run_placeholders=dry_run_placeholders,
-            )
 
         # v4 (DEV-1330): bare-name lookups consult the priority list (via
         # storage.get_model's None branch) and the ``prefer_data_source``
@@ -2787,22 +2577,6 @@ class SlayerQueryEngine:
                 raise ValueError(
                     f"Model '{model_name}' not found in data_source "
                     f"'{prefer_data_source}'."
-                )
-            forbidden = _forbidden_sibling_refs_var.get()
-            if forbidden and model_name in forbidden:
-                offender = forbidden[model_name]
-                if offender == model_name:
-                    raise ValueError(
-                        f"Stage '{offender}' cannot reference itself via "
-                        f"'joins.target_model' (or as 'source_model'); a "
-                        f"stage may only resolve to prior named stages in "
-                        f"the same source_queries list."
-                    )
-                raise ValueError(
-                    f"Stage '{offender}' cannot reference stage "
-                    f"'{model_name}': forward references are not allowed. "
-                    f"A stage may only resolve to prior named stages in "
-                    f"the same source_queries list."
                 )
             raise ValueError(f"Model '{model_name}' not found")
 
@@ -3044,880 +2818,6 @@ class SlayerQueryEngine:
             "data_source": virtual.data_source,
         })
 
-    async def _enrich(  # NOSONAR S3776 — orchestrates resolve-callback closures + cross-model post-processing; splitting into helpers obscures the closure variables threaded through enrich_query
-        self,
-        query: SlayerQuery,
-        model: SlayerModel,
-        named_queries: dict[str, SlayerQuery] = None,
-        dialect: Optional[str] = None,
-        *,
-        drop_unreachable_filters: bool = False,
-    ) -> EnrichedQuery:
-        """Resolve a SlayerQuery against model definitions into an EnrichedQuery.
-
-        Delegates to enrich_query() in enrichment.py, passing engine callbacks
-        for model resolution (joins, cross-model measures, join targets).
-
-        ``dialect`` controls how Column.sql is parsed during derived-reference
-        expansion. Falls back to the model's resolved datasource type, then to
-        ``"postgres"`` if neither is available (e.g., in unit tests with a
-        fake data_source name).
-        """
-
-        if dialect is None:
-            dialect = "postgres"
-            try:
-                if model.data_source and self.storage:
-                    ds = await self.storage.get_datasource(model.data_source)
-                    if ds is not None:
-                        dialect = self._dialect_for_type(ds.type)
-            except Exception:  # noqa: BLE001 — diagnostics only; never block enrichment
-                pass
-
-        async def _resolve_join_target(target_model_name, named_queries):
-            nq = named_queries or {}
-            if target_model_name in nq:
-                # Named-query stages inherit the variable context of the query
-                # being enriched (its filter substitutions) so nested query-
-                # backed model resolution works through joins as well.
-                target = await self._query_as_model(
-                    inner_query=nq[target_model_name],
-                    named_queries=nq,
-                    outer_vars=query.variables,
-                )
-            elif self.storage:
-                # v4 (DEV-1330): joins must stay inside the parent model's
-                # logical database (cross-datasource joins aren't executable).
-                # When parent has a ``data_source``, do a *strict* lookup —
-                # no bare-name fallback that could silently pick the same
-                # name from another datasource. Only fall through to the
-                # priority/unique-match resolver when the parent has no
-                # datasource hint to give.
-                if model.data_source:
-                    target = await self.storage.get_model(
-                        target_model_name, data_source=model.data_source
-                    )
-                else:
-                    target = await self.storage.get_model(target_model_name)
-                if target is None:
-                    # When the lookup misses, distinguish a forward / self
-                    # reference (sibling stage that's not in this stage's
-                    # scope) from a genuinely-missing storage model so the
-                    # caller gets a clear error instead of a generic "not
-                    # found" — same logic as ``_resolve_model_inner``
-                    # (DEV-1340).
-                    forbidden = _forbidden_sibling_refs_var.get()
-                    if forbidden and target_model_name in forbidden:
-                        offender = forbidden[target_model_name]
-                        if offender == target_model_name:
-                            raise ValueError(
-                                f"Stage '{offender}' cannot reference itself "
-                                f"via 'joins.target_model'; a stage may only "
-                                f"resolve to prior named stages in the same "
-                                f"source_queries list."
-                            )
-                        raise ValueError(
-                            f"Stage '{offender}' cannot reference stage "
-                            f"'{target_model_name}': forward references are "
-                            f"not allowed. A stage may only resolve to prior "
-                            f"named stages in the same source_queries list."
-                        )
-                if target and target.source_queries:
-                    target = await self._render_query_backed_join_target(
-                        target=target,
-                        outer_query_variables=query.variables,
-                    )
-            else:
-                target = None
-            if target and target.sql_table:
-                return target.sql_table, target
-            elif target and target.sql:
-                return f"({target.sql})", target
-            return None
-
-        async def _resolve_model_for_expansion(model_name, named_queries):
-            """Adapter for column_expansion: returns ``SlayerModel`` or None.
-            Catches lookup errors so unknown alias paths don't blow up the
-            whole enrichment — the expander treats them as opaque.
-
-            v4: pass the *outer* model's ``data_source`` as the hint so
-            ``B.col`` references inside ``A``'s derived columns resolve
-            within ``A.data_source``, never across the join graph into a
-            sibling datasource.
-            """
-            try:
-                return await self._resolve_model(
-                    model_name=model_name,
-                    named_queries=named_queries or {},
-                    prefer_data_source=model.data_source or None,
-                )
-            except Exception:  # noqa: BLE001 — opaque alias is expected for CTE/sub-query refs
-                return None
-
-        enriched = await enrich_query(
-            query=query,
-            model=model,
-            named_queries=named_queries,
-            resolve_dimension_via_joins=self._resolve_dimension_with_terminal,
-            resolve_cross_model_measure=self._resolve_cross_model_measure,
-            resolve_join_target=_resolve_join_target,
-            resolve_model=_resolve_model_for_expansion,
-            dialect=dialect,
-            drop_unreachable_filters=drop_unreachable_filters,
-        )
-
-        # Post-process: build re-rooted enriched queries for cross-model measures
-        for cm in enriched.cross_model_measures:
-            cm.rerooted_enriched = await self._build_rerooted_enriched(
-                cm=cm, query=query, model=model,
-                named_queries=named_queries or {},
-            )
-
-        return enriched
-
-    async def _render_query_backed_join_target(
-        self,
-        target: SlayerModel,
-        outer_query_variables: Optional[Dict[str, Any]],
-    ) -> SlayerModel:
-        """Resolve a query-backed model used as a JOIN target.
-
-        Threads the enclosing query's variables into the target's stage filter
-        substitution so a target with ``filters=["amount > {threshold}"]`` sees
-        the runtime value, not the cached/default fill.
-
-        Recursion guard: ``self._join_target_resolving`` blocks re-entry on the
-        same target name. The call stack crosses ``_enrich`` invocations
-        (target's source_queries → target's own joins → _resolve_join_target
-        again), so this guard lives on the engine instance, not on a closure.
-        Re-entry returns the cached SQL if available, else returns the raw
-        target unchanged so enrichment fails with a clear "no sql" error
-        instead of looping.
-        """
-        resolving = self._get_join_target_resolving()
-        if target.name in resolving:
-            if target.backing_query_sql:
-                return target.model_copy(update={"sql": target.backing_query_sql})
-            return target
-        # When the enclosing query has no variables AND a canonical cache
-        # exists, prefer the cached SQL (avoids the second render).
-        if not outer_query_variables and target.backing_query_sql:
-            return target.model_copy(update={"sql": target.backing_query_sql})
-        # Otherwise render fresh with merged variables (target defaults +
-        # enclosing query's vars; enclosing wins).
-        stages = list(target.source_queries or [])
-        if not stages:
-            return target
-        merged = {**dict(target.query_variables), **(outer_query_variables or {})}
-        resolving.add(target.name)
-        try:
-            return await self._query_as_model(
-                inner_query=stages[-1],
-                named_queries={q.name: q for q in stages[:-1] if q.name},
-                override_name=target.name,
-                outer_vars=merged,
-                runtime_kwarg=outer_query_variables or None,
-            )
-        finally:
-            resolving.discard(target.name)
-
-    async def _query_as_model(  # NOSONAR S3776 — variable-precedence + enrich + SQL-gen + virtual-model assembly is a single conceptual unit
-        self,
-        inner_query: SlayerQuery,
-        named_queries: dict[str, SlayerQuery] = None,
-        override_name: str = None,
-        _resolving: set = None,
-        outer_vars: Optional[Dict[str, Any]] = None,
-        runtime_kwarg: Optional[Dict[str, Any]] = None,
-        dry_run_placeholders: bool = False,
-    ) -> SlayerModel:
-        """Build a virtual SlayerModel from a nested query's result.
-
-        Enriches and generates SQL for the inner query, then creates a model
-        whose `sql` is the inner query's SQL and whose dimensions/measures
-        are derived from the inner query's enriched columns.
-
-        ``outer_vars``, ``runtime_kwarg``, and ``dry_run_placeholders`` thread
-        the variable-precedence machinery through nested query-backed model
-        resolution; see ``_merge_query_variables`` and
-        ``_apply_placeholder_fill``.
-        """
-        named_queries = named_queries or {}
-
-        # Compute effective variables for this stage and stamp them onto a
-        # copy of the inner query so substitution at enrichment time uses
-        # the merged set.
-        effective = _merge_query_variables(
-            outer=outer_vars,
-            stage=inner_query.variables,
-            runtime=runtime_kwarg,
-        )
-        if dry_run_placeholders:
-            effective = _apply_placeholder_fill(inner_query, effective)
-        if effective != (inner_query.variables or {}):
-            inner_query = inner_query.model_copy(update={"variables": effective})
-
-        # Scope ``named_queries`` to the prior siblings of this stage. A
-        # non-final stage may only resolve names that come BEFORE it in the
-        # source_queries list; forward references and self references fall
-        # out of scope here and surface a clear error from
-        # ``_resolve_model_inner``. (For top-level stages — final stage,
-        # un-named query-backed wrapper, or stored-model lookup — the scope
-        # is unchanged.)
-        scoped = self._scope_named_queries_to_prior(
-            named_queries, inner_query.name
-        )
-        forbidden_now: Dict[str, str] = {}
-        if scoped is not named_queries and inner_query.name:
-            for k in named_queries:
-                if k not in scoped:
-                    forbidden_now[k] = inner_query.name
-
-        # Stack the new forbidden refs on top of any from an enclosing
-        # stage; restore on the way out so concurrent / sibling resolutions
-        # don't see this frame's bans.
-        prev_forbidden = _forbidden_sibling_refs_var.get()
-        if forbidden_now:
-            merged_forbidden = dict(prev_forbidden) if prev_forbidden else {}
-            # Outer frames win on the same key (a closer ancestor's ban is
-            # the more specific one), but in practice keys don't overlap
-            # because each frame names a distinct stage.
-            for k, v in forbidden_now.items():
-                merged_forbidden.setdefault(k, v)
-            token = _forbidden_sibling_refs_var.set(merged_forbidden)
-        else:
-            token = None
-
-        try:
-            # Resolve the inner model (handles str, SlayerModel, ModelExtension).
-            # Pass ``effective`` as the next layer's outer_vars so nested
-            # query-backed models inherit this stage's resolved context.
-            inner_model = await self._resolve_query_model(
-                query_model=inner_query.source_model,
-                named_queries=scoped,
-                _resolving=_resolving,
-                outer_vars=effective,
-                runtime_kwarg=runtime_kwarg,
-                dry_run_placeholders=dry_run_placeholders,
-            )
-
-            # Enrich the inner query — pass scoped named_queries so any
-            # ``joins.target_model`` referencing a prior named sibling is
-            # resolvable here too (DEV-1340).
-            enriched = await self._enrich(
-                query=inner_query, model=inner_model, named_queries=scoped
-            )
-        finally:
-            if token is not None:
-                _forbidden_sibling_refs_var.reset(token)
-
-        # Generate SQL
-        datasource = await self._resolve_datasource(model=inner_model)
-        dialect = self._dialect_for_type(datasource.type)
-        generator = SQLGenerator(dialect=dialect)
-        # DEV-1444: _query_as_model wraps the inner query as a virtual model;
-        # downstream references reach EVERY hoisted alias, so the inner SQL
-        # must keep its full projection rather than getting trimmed.
-        inner_sql = generator.generate(enriched=enriched, render_mode="wrapped")
-
-        # Build virtual model from enriched columns.
-        # Inner query columns have aliases like "orders.count" (with dots).
-        # We wrap the inner SQL in a renaming subquery so the virtual model
-        # has clean column names that work naturally in JOINs and references.
-        virtual_name = override_name or inner_query.name or f"_subquery_{inner_model.name}"
-
-        # Build lookups for labels/descriptions from the source model.
-        # In v2 there is no dim/measure split — every column carries both
-        # potential roles, so a single map per attribute is sufficient.
-        source_label = {c.name: c.label for c in inner_model.columns if c.label}
-        source_desc = {c.name: c.description for c in inner_model.columns if c.description}
-
-        # Collect all inner aliases and their short names.
-        # Short names must be valid SQL identifiers (no dots). We derive them
-        # from the alias by stripping the source model prefix and replacing
-        # dots with underscores.
-        def _alias_to_short(alias: str) -> str:
-            """Convert result alias to a flat column name for the virtual model.
-
-            The query result is a self-contained table without the joins the
-            source model may have had, so dot syntax (join paths) is not
-            applicable. We use ``__`` to preserve the path information:
-
-            'orders.customers.regions.name' → 'customers__regions__name'
-            'orders.count'                  → 'count'
-            """
-            # DEV-1713: the strip-source-prefix + ``__`` flatten is owned by
-            # the naming module (single owner). The first path segment is the
-            # source-model prefix to strip.
-            strip = alias.split(".", 1)[0] if "." in alias else None
-            return flat_name(alias, strip_relation=strip)
-
-        # (inner_alias, short_name, data_type, label, description, format)
-        column_map = []
-        for d in enriched.dimensions:
-            short = _alias_to_short(d.alias)
-            label = d.label or source_label.get(d.name)
-            desc = source_desc.get(d.name)
-            column_map.append((d.alias, short, d.type, label, desc, d.format))
-        for td in enriched.time_dimensions:
-            short = _alias_to_short(td.alias)
-            label = td.label or source_label.get(td.name)
-            desc = source_desc.get(td.name)
-            column_map.append((td.alias, short, DataType.TIMESTAMP, label, desc, None))
-        for m in enriched.measures:
-            src_name = m.source_measure_name or m.name
-            label = m.label or source_label.get(src_name)
-            desc = source_desc.get(src_name)
-            fmt = _infer_aggregated_format(
-                model=inner_model,
-                measure_name=src_name,
-                aggregation=m.aggregation,
-            )
-            column_map.append((m.alias, m.name, DataType.DOUBLE, label, desc, fmt))
-        for t in enriched.transforms:
-            column_map.append(
-                (t.alias, t.name, DataType.DOUBLE, t.label, None, NumberFormat(type=NumberFormatType.FLOAT))
-            )
-        for e in enriched.expressions:
-            column_map.append(
-                (e.alias, e.name, DataType.DOUBLE, e.label, None, NumberFormat(type=NumberFormatType.FLOAT))
-            )
-        for cm in enriched.cross_model_measures:
-            # DEV-1448: when the user supplied an explicit ``name``, cm.name is
-            # a bare identifier (ModelMeasure.name forbids dots). Use it
-            # directly as the downstream short form so callers reference the
-            # user's chosen name without learning the ``__``-flattened
-            # encoding. Auto-derived names always contain a dot (e.g.
-            # ``customers.revenue_sum``) so they fall through to the legacy
-            # ``_alias_to_short`` flatten path.
-            #
-            # Codex review round 3 on PR #136: gate the short-circuit on
-            # ``cm.user_declared`` — hidden cross-model measures auto-
-            # extracted from arithmetic / transform formulas (in enrichment.py
-            # ``_ensure_measure_from_spec`` / ``_flatten_spec``) have bare
-            # internal placeholder names (e.g. ``__agg0__``) that must NOT
-            # leak into the virtual model's column set. Only user-declared
-            # renames qualify for the bare-name short.
-            if cm.user_declared and cm.name and "." not in cm.name:
-                short = cm.name
-            else:
-                short = _alias_to_short(cm.alias)
-            column_map.append((cm.alias, short, DataType.DOUBLE, cm.label, None, cm.format))
-
-        # Wrap inner SQL: SELECT <ref> AS id, <ref> AS count, ... FROM (inner) AS _inner
-        # DEV-1716: ``generate(render_mode="wrapped")`` dialect-quotes AND
-        # (BigQuery / T-SQL) alias-mangles the inner query's projection, so the
-        # outer reference must match. Dialect-quote each alias and apply the same
-        # ``rewrite_emitted_sql`` — identity for Postgres/SQLite/DuckDB and for
-        # MySQL's dot-preserving backticks; mangles the dotted alias on
-        # BigQuery/T-SQL to the ``___`` form the inner actually exposes. A raw
-        # ANSI ``"{alias}"`` would reference a column the mangled inner no longer
-        # has (and be a string literal, not an identifier, on MySQL/BigQuery/T-SQL).
-        def _inner_ref(alias: str) -> str:
-            return generator._dialect.rewrite_emitted_sql(generator._quote_ident(alias))
-
-        rename_parts = [f'{_inner_ref(alias)} AS {short}' for alias, short, _, _, _, _ in column_map]
-        wrapped_sql = f"SELECT {', '.join(rename_parts)} FROM ({inner_sql}) AS _inner"
-
-        # One Column per result column — each is potentially both a dimension
-        # (group-by) or measure (with colon-aggregation) at query time.
-        cols: List[Column] = []
-        for _, short, dtype, label, desc, fmt in column_map:
-            cols.append(Column(name=short, sql=short, type=dtype, label=label, description=desc, format=fmt))
-
-        # DEV-1449 / Codex round 10: record only columns that are
-        # reliably the same cross-model aggregate the outer-stage
-        # intercept would resolve a `customers.revenue:sum` reference
-        # to. Includes:
-        #   * Auto-derived cross-model canonical-flats (`_alias_to_short(cm.alias)`).
-        #   * Intercept-produced EnrichedMeasures (from a downstream
-        #     stage re-using the intercepted projection).
-        # Excludes:
-        #   * User-renamed CMM shorts: a user-supplied `name` could
-        #     coincidentally match a different aggregate's canonical-flat.
-        #   * Plain measures / transforms / expressions: their names are
-        #     user-supplied and could collide with cross-model canonicals
-        #     by coincidence.
-        agg_shorts = set()
-        for cm in enriched.cross_model_measures:
-            if not (cm.user_declared and cm.name and "." not in cm.name):
-                agg_shorts.add(_alias_to_short(cm.alias))
-        for m in enriched.measures:
-            if m.from_cross_model_intercept:
-                agg_shorts.add(m.name)
-
-        # DEV-1449: record the lineage breadcrumb so outer-stage dotted-ref
-        # lookup can strip the right ancestor prefix and find the flat
-        # column in this wrapped projection. ``parent`` carries any
-        # existing chain on ``inner_model``, so chained nested-DAGs
-        # build a linked list down to the original table-backed root.
-        return SlayerModel(
-            name=virtual_name,
-            sql=wrapped_sql,
-            data_source=inner_model.data_source,
-            columns=cols,
-            default_time_dimension=inner_model.default_time_dimension,
-            source_model_origin=SourceModelOrigin(
-                name=inner_model.name,
-                data_source=inner_model.data_source,
-                parent=inner_model.source_model_origin,
-                agg_column_names=frozenset(agg_shorts),
-            ),
-        )
-
-    async def _resolve_dimension_via_joins(
-        self,
-        model: SlayerModel,
-        parts: list[str],
-        named_queries: dict = None,
-    ) -> "Column | None":
-        """Walk the join graph to resolve a multi-hop column reference.
-
-        For "customers.regions.name", walks: model → customers → regions,
-        then looks up "name" on the regions model.
-        """
-        result = await self._resolve_dimension_with_terminal(
-            model=model, parts=parts, named_queries=named_queries,
-        )
-        return result[0] if result is not None else None
-
-    async def _resolve_dimension_with_terminal(
-        self,
-        model: SlayerModel,
-        parts: list[str],
-        named_queries: dict = None,
-    ) -> "tuple[Column, SlayerModel] | None":
-        """Like ``_resolve_dimension_via_joins`` but also returns the
-        terminal model so callers (column-SQL expansion) can recurse into
-        the resolved column's own ``sql``.
-        """
-        try:
-            terminal_model, _first_join = await self._walk_join_chain(
-                source_model=model,
-                hop_names=parts[:-1],
-                named_queries=named_queries,
-                strict_missing_join=False,
-            )
-        except _NoJoinError:
-            return None
-
-        col = terminal_model.get_column(parts[-1])
-        if col is None:
-            return None
-        return col, terminal_model
-
-    async def _walk_join_chain(
-        self,
-        *,
-        source_model: SlayerModel,
-        hop_names: list[str],
-        named_queries: dict = None,
-        strict_missing_join: bool = True,
-    ) -> "tuple[SlayerModel, ModelJoin | None]":
-        """Thin shim — delegates to ``slayer.engine.path_resolution.walk_join_chain``.
-
-        Kept as an instance method so existing call sites
-        (``self._walk_join_chain(...)``) continue to work unchanged
-        after the DEV-1450 stage-3 extraction.
-        """
-        return await walk_join_chain(
-            source_model=source_model,
-            hop_names=hop_names,
-            resolve_model=self._resolve_model,
-            named_queries=named_queries,
-            strict_missing_join=strict_missing_join,
-        )
-
-    async def _auto_move_fields_to_dimensions(
-        self,
-        query: SlayerQuery,
-        model: SlayerModel,
-        named_queries: dict,
-    ) -> SlayerQuery:
-        """Move bare (no-colon) measure-formula entries to dimensions when they
-        name a column that isn't a (named) ModelMeasure formula.
-
-        LLMs frequently place column names in ``measures`` instead of
-        ``dimensions``. When an entry has no colon (no aggregation) and
-        resolves as a column but NOT as a model-level ModelMeasure formula,
-        silently move it to ``dimensions`` with a warning.
-        """
-        if not query.measures:
-            return query
-
-        kept: List = []
-        extra_dims = list(query.dimensions or [])
-        moved = False
-
-        for f in query.measures:
-            formula = f.formula.strip()
-            # Only consider bare names (no colon, no operators, no parens)
-            if ":" not in formula and not any(c in formula for c in "+-*/()"):
-                if "." not in formula:
-                    # Local reference
-                    is_col = model.get_column(formula) is not None
-                    is_named_measure = model.get_measure(formula) is not None
-                    if is_col and not is_named_measure:
-                        logger.warning(
-                            "Auto-moved '%s' from measures to dimensions (not a named measure formula)",
-                            formula,
-                        )
-                        extra_dims.append(ColumnRef(name=formula))
-                        moved = True
-                        continue
-                else:
-                    # Cross-model reference — walk the full join path
-                    parts = formula.split(".")
-                    try:
-                        col_def = await self._resolve_dimension_via_joins(
-                            model=model, parts=parts, named_queries=named_queries,
-                        )
-                    except ValueError:
-                        col_def = None  # Circular join — leave in measures
-                    if col_def is not None:
-                        # parts[-2] is the terminal model containing the column at parts[-1]
-                        terminal_model_name = parts[-2]
-                        try:
-                            terminal_model = await self._resolve_model(
-                                model_name=terminal_model_name,
-                                named_queries=named_queries or {},
-                                prefer_data_source=model.data_source or None,
-                            )
-                        except ValueError:
-                            terminal_model = None
-                        is_named_measure = (
-                            terminal_model.get_measure(parts[-1]) is not None
-                            if terminal_model else False
-                        )
-                        if not is_named_measure:
-                            logger.warning(
-                                "Auto-moved '%s' from measures to dimensions (not a named measure formula)",
-                                formula,
-                            )
-                            extra_dims.append(ColumnRef(name=formula))
-                            moved = True
-                            continue
-            kept.append(f)
-
-        if not moved:
-            return query
-        return query.model_copy(update={"measures": kept or None, "dimensions": extra_dims})
-
-    async def _resolve_cross_model_measure(
-        self,
-        spec_name: str,
-        field_name: str,
-        model: SlayerModel,
-        query,
-        dimensions: list,
-        time_dimensions: list,
-        label: str = None,
-        named_queries: dict = None,
-        aggregation_name: str = None,
-        agg_kwargs: dict = None,
-    ) -> CrossModelMeasure:
-        """Resolve a cross-model measure reference like 'customers.avg_score'.
-
-        Supports multi-hop paths: 'claim_coverage.claim_amount.total_claim_amount'
-        walks the join graph hop-by-hop to reach the final model.
-
-        Looks up the join from the source model, loads the target model
-        (checking named queries first), finds shared dimensions, and returns
-        a CrossModelMeasure for SQL generation.
-        """
-        parts = spec_name.split(".")
-        if len(parts) < 2:
-            raise ValueError(f"Invalid cross-model measure reference: '{spec_name}'")
-        measure_name = parts[-1]
-        hop_names = parts[:-1]  # e.g. ["claim_coverage", "claim_amount"]
-
-        # Walk the join chain to find the final target model. v4 (DEV-1330):
-        # ``_walk_join_chain`` keeps each hop scoped to the source model's
-        # datasource, so ``customers.revenue:sum`` against ``orders@db_a``
-        # never silently pulls ``customers@db_b``.
-        target_model, first_join = await self._walk_join_chain(
-            source_model=model,
-            hop_names=hop_names,
-            named_queries=named_queries,
-            strict_missing_join=True,
-        )
-
-        target_model_name = hop_names[-1]
-        join = first_join  # For join_pairs: source model → first hop
-
-        # Find the column in the target model
-        if measure_name == "*":
-            measure_def = Column(name="*", sql=None)
-        else:
-            from slayer.core.enums import NUMERIC_ONLY_AGGREGATIONS
-
-            col_def = target_model.get_column(measure_name)
-            if col_def is None:
-                raise ValueError(
-                    f"Column '{measure_name}' not found in model '{target_model_name}'. "
-                    f"Available columns: {[c.name for c in target_model.columns]}"
-                )
-            if (
-                aggregation_name
-                and aggregation_name in NUMERIC_ONLY_AGGREGATIONS
-                and str(col_def.type) == "string"
-            ):
-                raise ValueError(
-                    f"Aggregation '{aggregation_name}' is not applicable to "
-                    f"string column '{measure_name}' in model '{target_model_name}'."
-                )
-            measure_def = col_def
-
-        # The cross-model sub-query starts FROM the source table with JOIN to
-        # the target, so all source dimensions are available for grouping.
-        # Use all query dimensions and time dimensions as the grouping context.
-        shared_dims = list(dimensions)
-        shared_time_dims = list(time_dimensions)
-
-        query_model_name = query.source_model if isinstance(query.source_model, str) else model.name
-
-        # Resolve aggregation: explicit colon syntax required
-        if aggregation_name:
-            agg = aggregation_name
-            canonical = f"_{aggregation_name}" if measure_name == "*" else f"{measure_name}_{aggregation_name}"
-        else:
-            raise ValueError(
-                f"Cross-model measure '{spec_name}' must include an aggregation (e.g., '{spec_name}:sum')."
-            )
-
-        hop_path = ".".join(hop_names)
-        alias = f"{query_model_name}.{hop_path}.{canonical}"
-        aggregation_def = target_model.get_aggregation(agg)
-
-        # Infer format from the target model's measure and aggregation
-        cm_format = _infer_aggregated_format(
-            model=target_model,
-            measure_name=measure_name,
-            aggregation=agg,
-        )
-
-        # Expand derived references inside the target column's sql so that
-        # cross-model measures over chained derivations work. measure_def.sql
-        # is None for ``*:count``; nothing to expand there.
-        from slayer.engine.column_expansion import expand_derived_refs
-
-        expanded_measure_sql = measure_def.sql
-        if measure_def.sql:
-            try:
-                ds = await self.storage.get_datasource(target_model.data_source) \
-                    if self.storage and target_model.data_source else None
-            except Exception:  # noqa: BLE001
-                ds = None
-            cross_dialect = self._dialect_for_type(ds.type) if ds else "postgres"
-
-            async def _resolve_for_cross(model_name, named_queries):
-                try:
-                    return await self._resolve_model(
-                        model_name=model_name,
-                        named_queries=named_queries or {},
-                        prefer_data_source=target_model.data_source or None,
-                    )
-                except Exception:  # noqa: BLE001
-                    return None
-
-            expanded = await expand_derived_refs(
-                sql=measure_def.sql,
-                model=target_model,
-                alias_path=target_model_name,
-                resolve_model=_resolve_for_cross,
-                named_queries=named_queries or {},
-                dialect=cross_dialect,
-            )
-            if expanded is not None:
-                expanded_measure_sql = expanded
-
-        return CrossModelMeasure(
-            name=field_name,
-            alias=alias,
-            target_model_name=target_model_name,
-            target_model_sql_table=target_model.sql_table,
-            target_model_sql=target_model.sql,
-            measure=EnrichedMeasure(
-                name=canonical,
-                sql=expanded_measure_sql,
-                aggregation=agg,
-                alias=f"{target_model_name}.{canonical}",
-                model_name=target_model_name,
-                aggregation_def=aggregation_def,
-                agg_kwargs=agg_kwargs or {},
-                source_measure_name=measure_name,
-            ),
-            join_pairs=join.join_pairs,
-            join_type=str(join.join_type),
-            shared_dimensions=shared_dims,
-            shared_time_dimensions=shared_time_dims,
-            source_model_name=model.name,
-            source_sql_table=model.sql_table,
-            source_sql=model.sql,
-            label=label,
-            format=cm_format,
-        )
-
-    async def _build_rerooted_enriched(
-        self,
-        cm: CrossModelMeasure,
-        query: SlayerQuery,
-        model: SlayerModel,
-        named_queries: dict,
-    ) -> EnrichedQuery:
-        """Build a re-rooted EnrichedQuery for a cross-model measure.
-
-        Instead of the minimal source→target CTE, this constructs a full query
-        with the target model as source. All of the target model's joins are
-        available, so filters on related tables (e.g., premium.has_premium)
-        are applied correctly.
-
-        Dimensions and filters referencing models not reachable from the
-        target are dropped.
-        """
-        from slayer.core.formula import parse_filter
-
-        target_model = await self._resolve_model(
-            model_name=cm.target_model_name,
-            named_queries=named_queries,
-            prefer_data_source=model.data_source or None,
-        )
-
-        source_model_name = model.name
-        target_model_name = cm.target_model_name
-
-        # --- Build re-rooted field (measure becomes local) ---
-        measure_name = cm.measure.source_measure_name or cm.measure.name
-        aggregation = cm.measure.aggregation
-        if cm.measure.agg_kwargs:
-            kwargs_str = ", ".join(f"{k}={v}" for k, v in cm.measure.agg_kwargs.items())
-            field_formula = f"{measure_name}:{aggregation}({kwargs_str})"
-        else:
-            field_formula = f"{measure_name}:{aggregation}"
-
-        # --- Remap dimensions ---
-        rerooted_dims = []
-        for dim in (query.dimensions or []):
-            if dim.model is None:
-                # Source-local dimension → cross-model from target's perspective
-                rerooted_dims.append(ColumnRef(name=f"{source_model_name}.{dim.name}"))
-            elif dim.model == target_model_name:
-                # Dimension on target model → now local
-                rerooted_dims.append(ColumnRef(name=dim.name))
-            elif dim.model.startswith(target_model_name + "."):
-                # Path through target → strip target prefix
-                new_model = dim.model[len(target_model_name) + 1:]
-                rerooted_dims.append(ColumnRef(name=f"{new_model}.{dim.name}"))
-            else:
-                # Other cross-model dim → keep as-is (enrichment resolves via target's joins)
-                rerooted_dims.append(ColumnRef(name=dim.full_name))
-
-        # --- Remap time dimensions ---
-        rerooted_time_dims = []
-        for td in (query.time_dimensions or []):
-            dim_ref = td.dimension
-            if dim_ref.model is None:
-                new_ref = ColumnRef(name=f"{source_model_name}.{dim_ref.name}")
-            elif dim_ref.model == target_model_name:
-                new_ref = ColumnRef(name=dim_ref.name)
-            elif dim_ref.model.startswith(target_model_name + "."):
-                new_model = dim_ref.model[len(target_model_name) + 1:]
-                new_ref = ColumnRef(name=f"{new_model}.{dim_ref.name}")
-            else:
-                new_ref = ColumnRef(name=dim_ref.full_name)
-            rerooted_time_dims.append(TimeDimension(
-                dimension=new_ref,
-                granularity=td.granularity,
-                date_range=td.date_range,
-                label=td.label,
-            ))
-
-        # --- Remap filters ---
-        rerooted_filters = []
-        target_prefix = target_model_name + "."
-        _custom_agg_names = frozenset(
-            a.name for m in (model, target_model)
-            for a in m.aggregations
-        ) or None
-        for f_str in (query.filters or []) + list(model.filters):
-            remapped = f_str
-            # Strip target model prefix from dotted references
-            # e.g., "policy_amount.premium.has_premium = '1'" → "premium.has_premium = '1'"
-            if target_prefix in remapped:
-                remapped = remapped.replace(target_prefix, "")
-            # For unqualified column references that are source model dimensions,
-            # prepend source model name (they're now on a joined table)
-            parsed = parse_filter(remapped, extra_agg_names=_custom_agg_names)
-            for col in parsed.columns:
-                if "." not in col:
-                    src_col = model.get_column(col)
-                    if src_col:
-                        remapped = re.sub(
-                            rf"(?<!\.)(?<!\w)\b{re.escape(col)}\b(?!\.)",
-                            f"{source_model_name}.{col}",
-                            remapped,
-                        )
-            rerooted_filters.append(remapped)
-
-        # --- Build and enrich re-rooted query ---
-        rerooted_query = SlayerQuery(
-            source_model=target_model_name,
-            measures=[ModelMeasure(formula=field_formula)],
-            dimensions=rerooted_dims or None,
-            time_dimensions=rerooted_time_dims or None,
-            filters=rerooted_filters or None,
-        )
-
-        # Re-rooted enrichment intentionally inherits the outer query's
-        # filter list; some filters reference models reachable from the
-        # outer source but not from ``target_model``. ``drop_unreachable_filters``
-        # tells the resolver to drop those entries from the result instead
-        # of raising the DEV-1367 strict-resolution error.
-        rerooted_enriched = await self._enrich(
-            query=rerooted_query,
-            model=target_model,
-            named_queries=named_queries,
-            drop_unreachable_filters=True,
-        )
-
-        # --- Fix aliases to match main query's expectations ---
-        # Dimensions: rerooted aliases are "target.source.dim", main expects "source.dim"
-        main_dim_aliases = [d.alias for d in cm.shared_dimensions]
-        for i, dim in enumerate(rerooted_enriched.dimensions):
-            if i < len(main_dim_aliases):
-                dim.alias = main_dim_aliases[i]
-
-        main_td_aliases = [td.alias for td in cm.shared_time_dimensions]
-        for i, td in enumerate(rerooted_enriched.time_dimensions):
-            if i < len(main_td_aliases):
-                td.alias = main_td_aliases[i]
-
-        # Measure alias
-        if rerooted_enriched.measures:
-            rerooted_enriched.measures[0].alias = cm.alias
-
-        # --- Strip unreachable dimensions and filters ---
-        available_aliases = {target_model_name}
-        for _, alias, _, _ in rerooted_enriched.resolved_joins:
-            available_aliases.add(alias)
-
-        rerooted_enriched.dimensions = [
-            d for d in rerooted_enriched.dimensions
-            if d.model_name == target_model_name or d.model_name in available_aliases
-        ]
-        rerooted_enriched.time_dimensions = [
-            td for td in rerooted_enriched.time_dimensions
-            if td.model_name == target_model_name or td.model_name in available_aliases
-        ]
-        rerooted_enriched.filters = [
-            f for f in rerooted_enriched.filters
-            if all(
-                col.split(".")[0] in available_aliases or "." not in col
-                for col in f.columns
-            )
-        ]
-
-        return rerooted_enriched
 
     async def _resolve_datasource(self, model: SlayerModel) -> DatasourceConfig:
         ds_name = model.data_source

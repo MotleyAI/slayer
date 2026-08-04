@@ -42,6 +42,7 @@ from slayer.core.recommend import (
     ItemPath,
     RootModelRecommendation,
 )
+from slayer.engine.path_resolution import walk_join_chain
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
@@ -330,12 +331,19 @@ class TestInnerJoins:
         assert _paths(rec)["order_items.sku"] == "order_items.sku"
 
     async def test_inner_path_resolvable_by_engine_walker(self, engine, storage) -> None:
-        # The emitted INNER hop must be walkable by the engine's own
-        # _walk_join_chain (the query-time resolver), proving the recommended
-        # path is query-resolvable given the storage symmetry invariant.
+        # The emitted INNER hop must be walkable by the query-time join
+        # resolver, proving the recommended path is query-resolvable given the
+        # storage symmetry invariant.
+        #
+        # DEV-1485 Stage D: called through the engine's ``_walk_join_chain``
+        # shim, which is deleted with the legacy stack (it had no production
+        # caller left). Calls the underlying helper directly instead, wired to
+        # the same engine model resolver the shim passed.
         orders = await storage.get_model("orders", data_source="mydb")
-        terminal, _first = await engine._walk_join_chain(
-            source_model=orders, hop_names=["order_items"]
+        terminal, _first = await walk_join_chain(
+            source_model=orders,
+            hop_names=["order_items"],
+            resolve_model=engine._resolve_model,
         )
         assert terminal.name == "order_items"
 

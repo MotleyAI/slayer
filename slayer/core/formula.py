@@ -932,7 +932,6 @@ def _parse_transform_kwargs(  # NOSONAR S3776 — straight-line whitelist + per-
 # ---------------------------------------------------------------------------
 
 # Internal filter functions (used after pre-processing operators like `like`)
-FILTER_FUNCTIONS = {"__like__", "__notlike__"}
 
 
 class ParsedFilter(BaseModel):
