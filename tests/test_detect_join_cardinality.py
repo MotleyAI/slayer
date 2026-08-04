@@ -13,16 +13,15 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.engine.cardinality import CardinalityVerdict, JoinCardinalityReport
-from unittest.mock import patch
-
 from slayer.core.errors import ForcedFilterError
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
+from slayer.engine.cardinality import CardinalityVerdict, JoinCardinalityReport
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
@@ -53,6 +52,7 @@ def _seed_db(db_path: str) -> None:
         CREATE TABLE empty_src (k INTEGER);
         CREATE TABLE empty_tgt (k INTEGER PRIMARY KEY);
         CREATE TABLE all_null_src (k INTEGER);
+        CREATE TABLE populated_src (k INTEGER);
 
         INSERT INTO customers VALUES (1,'US'),(2,'EU'),(3,'AP');
         -- customer_id has duplicates (1,1) and a NULL -> NOT unique.
@@ -70,6 +70,8 @@ def _seed_db(db_path: str) -> None:
         -- empty_src / empty_tgt stay empty on purpose.
         -- all_null_src has rows, but every key is NULL -> empty population.
         INSERT INTO all_null_src VALUES (NULL),(NULL);
+        -- populated source pointing at an EMPTY target.
+        INSERT INTO populated_src VALUES (1),(2),(3);
         """
     )
     conn.commit()
@@ -118,6 +120,12 @@ def _models() -> list[SlayerModel]:
         m(
             "empty_src",
             "empty_src",
+            [_col("k")],
+            [ModelJoin(target_model="empty_tgt", join_pairs=[["k", "k"]])],
+        ),
+        m(
+            "populated_src",
+            "populated_src",
             [_col("k")],
             [ModelJoin(target_model="empty_tgt", join_pairs=[["k", "k"]])],
         ),
@@ -578,6 +586,30 @@ class TestEmptyPopulationIsNoEvidence:
         assert f.source_side.row_count == 0
         # The non-empty target side is still profiled and reported.
         assert f.target_side.row_count == 3
+
+    async def test_populated_source_with_empty_target_detects_nothing(
+        self, workspace: Path
+    ) -> None:
+        """The TARGET side alone being empty is equally no evidence.
+
+        Guards the asymmetric case: an implementation that checked only
+        `source_side.row_count` would infer (and persist) an arity here off a
+        target scan that read nothing.
+        """
+        engine, storage, _ = await _build_engine(workspace)
+        report = await engine.detect_join_cardinality(
+            data_source="ds", persist=True
+        )
+        f = _find(report, "populated_src", "empty_tgt")
+        assert f.verdict is CardinalityVerdict.NO_EVIDENCE
+        assert f.detected is None
+        # The source really was populated — only the target was empty.
+        assert f.source_side.row_count == 3
+        assert f.target_side.row_count == 0
+        # persist=True must not have written an arity.
+        reloaded = await storage.get_model("populated_src", data_source="ds")
+        j = next(j for j in reloaded.joins if j.target_model == "empty_tgt")
+        assert j.cardinality is None
 
     async def test_empty_side_is_never_persisted(self, workspace: Path) -> None:
         engine, storage, _ = await _build_engine(workspace)
