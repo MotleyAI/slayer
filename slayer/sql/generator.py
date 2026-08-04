@@ -5796,8 +5796,13 @@ class SQLGenerator:
             if (
                 sid in cma_slot_ids
                 or sid in outer_composite_slot_ids
+                or sid in windowed_slot_ids
                 or sid in seen_base_ids
             ):
+                # DEV-1714: a windowed slot lives in its ``_wm_`` CTE, never
+                # ``_base`` — materialising it here as an order-only local slot
+                # would emit a dead plain aggregate in ``_base``. It resolves in
+                # the combined ORDER BY via its bare projected alias instead.
                 continue
             slot = slots_by_id.get(sid)
             if slot is None:
@@ -6484,7 +6489,10 @@ class SQLGenerator:
             slots_by_id=slots_by_id,
             cma_slot_ids=cma_slot_ids,
             cm_alias_for_plan=canonical_alias_for_plan,
-            bare_order_slot_ids=set(order_only_local_ids),
+            # DEV-1714: windowed slots are referenced bare in the combined ORDER
+            # BY — they surface as a projected combined-SELECT column (from their
+            # ``_wm_`` CTE), so a ``_base.`` qualifier would dangle.
+            bare_order_slot_ids=set(order_only_local_ids) | windowed_slot_ids,
             outer_composite_aliases=outer_composite_order_alias_by_sid,
             outer_composite_expressions=outer_composite_order_expressions,
         )

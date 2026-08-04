@@ -1309,6 +1309,17 @@ class TestFields:
         assert '"orders.revenue_90d"' in order_portion, (
             f"ORDER BY must reference the windowed public alias.\nsql:\n{sql}"
         )
+        # The order term is the BARE combined-SELECT output column (the _wm_
+        # value), never a ``_base.`` qualifier — _base excludes the windowed
+        # measure, so ``_base."orders.revenue_90d"`` would dangle.
+        assert '_base."orders.revenue_90d"' not in order_portion, sql
+        # And the windowed measure must NOT be materialised in _base as a dead
+        # plain aggregate (Codex re-review round 2).
+        base_body = _extract_cte_body(sql, r"_base")
+        assert '"orders.revenue_90d"' not in base_body, (
+            f"windowed measure must not render as a plain aggregate in _base.\n"
+            f"_base:\n{base_body}"
+        )
 
     # ------------------------------------------------------------------ #
     # DEV-1714 Stage 10 — parity / semantic pins (F1/F4 playbook): turn the
