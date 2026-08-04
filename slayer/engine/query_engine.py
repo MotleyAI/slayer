@@ -36,7 +36,10 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
     _contains_block_delimiter,
+    coerce_declared_list_variables,
+    declares_variables,
     extract_placeholder_names,
+    list_valued_variable_names,
     substitute_variables,
 )
 from slayer.core.recommend import (
@@ -275,6 +278,24 @@ def _model_has_optional_block(model: SlayerModel) -> bool:
     return any(s and _contains_block_delimiter(s) for s in surfaces)
 
 
+def _model_needs_substitution_pass(model: SlayerModel) -> bool:
+    """True if substitution must run even when NO variables are supplied.
+
+    Two independent reasons, both of which defeat the DEV-1625 zero-variable
+    fast path (which exists so raw brace literals like a Postgres array
+    ``'{1,2,3}'`` survive verbatim in models that don't use variables):
+
+    - an optional ``{? ... ?}`` block must collapse to ``(1=1)`` rather than
+      leak its delimiters into the SQL (DEV-1730), and
+    - the model DECLARES its variables, so it is importer-generated and has no
+      brace-literal ambiguity to protect — skipping the pass would emit a bare
+      ``{var}`` into the SQL instead of raising the documented missing-variable
+      error. This closes the fast-path hole for a generated model whose
+      pushdowns are all required (no block to force the pass).
+    """
+    return _model_has_optional_block(model) or declares_variables(model)
+
+
 def _substitute_model_sql_surfaces(
     *, model: SlayerModel, variables: dict[str, Any], dialect: SqlDialect
 ) -> SlayerModel:
@@ -288,19 +309,30 @@ def _substitute_model_sql_surfaces(
     render raw SQL for a backslash dialect (MySQL/ClickHouse/...) while silently
     under-escaping the value.
 
-    No-op copy when ``variables`` is empty AND no surface carries an optional
-    ``{? ... ?}`` block — so a model that uses no variables is never touched and
-    raw brace literals (e.g. Postgres arrays ``'{1,2,3}'``) survive verbatim. A
-    block-bearing model, however, must still run so its blocks collapse to
-    ``(1=1)`` even on a zero-variable call (DEV-1730). Uses the hardened
+    No-op copy when ``variables`` is empty AND the model needs no pass of its
+    own (see :func:`_model_needs_substitution_pass`) — so a model that uses no
+    variables is never touched and raw brace literals (e.g. Postgres arrays
+    ``'{1,2,3}'``) survive verbatim. A block-bearing or variable-declaring
+    model, however, must still run — so its blocks collapse to ``(1=1)``, and a
+    declared-but-missing variable raises, even on a zero-variable call
+    (DEV-1730). Uses the hardened
     :func:`substitute_variables` (raise-on-missing, dialect-aware escaping, block
     collapse). Never mutates the input model — it may be a shared cached object.
     Only these four surfaces change; Mode-B surfaces (``ModelMeasure.formula``
     etc.) are copied through as-is.
+
+    A scalar passed for a variable the model DECLARES list-valued (an importer's
+    generated ``col IN ({var})`` template) is wrapped to a one-element list
+    first — see :func:`coerce_declared_list_variables`. This is the one
+    substitution choke point for Mode-A model surfaces (execution and the
+    type-probe both route through here), so the coercion cannot be bypassed.
     """
-    if not variables and not _model_has_optional_block(model):
+    if not variables and not _model_needs_substitution_pass(model):
         return model
 
+    variables = coerce_declared_list_variables(
+        variables, list_valued=list_valued_variable_names(model)
+    )
     backslash_escapes = dialect.backslash_escapes_strings
 
     def _sub(text: str) -> str:
@@ -342,7 +374,7 @@ def _render_probe_model(model: SlayerModel, *, dialect: SqlDialect) -> SlayerMod
     in ``get_column_types``.
     """
     if model.source_model_origin is None and (
-        model.query_variables or _model_has_optional_block(model)
+        model.query_variables or _model_needs_substitution_pass(model)
     ):
         return _substitute_model_sql_surfaces(
             model=model, variables=model.query_variables, dialect=dialect

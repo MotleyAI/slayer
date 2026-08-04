@@ -393,6 +393,16 @@ class CubeToSlayerConverter:
         return entity.description if entity is not None else None
 
     def _build_cube_variables(self, cube: CubeCube, refs) -> dict:
+        """Stash one entry per emitted variable under ``meta.cube_variables``.
+
+        ``list_valued`` is the front-end-NEUTRAL half of the contract, and the
+        only field the engine reads: the string form emits the fixed template
+        ``col IN ({var})``, whose parentheses the importer — not the caller —
+        wrote, so the caller cannot supply the per-element quotes a scalar
+        placeholder normally expects. Flagging it lets the engine coerce a bare
+        scalar to a one-element list instead of rendering an unquoted identifier
+        (DEV-1730). ``kind`` stays Cube's own taxonomy, for the report/humans.
+        """
         required = self._required_members(cube, refs)
         out: dict = {}
         for ref in refs:
@@ -401,6 +411,7 @@ class CubeToSlayerConverter:
                     "member": ref.member,
                     "required": ref.member in required,
                     "kind": ref.kind,
+                    "list_valued": ref.kind == "string",
                     "description": self._member_description(cube, ref.member),
                 }
         return out

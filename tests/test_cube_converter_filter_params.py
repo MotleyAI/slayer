@@ -121,6 +121,18 @@ def test_meta_cube_variables_full_shape():
     assert brand["required"] is False
 
 
+def test_meta_declares_list_valued_only_for_the_in_list_form():
+    """``list_valued`` is the neutral flag the ENGINE reads to coerce a scalar
+    into a one-element list. Only the string form emits ``col IN ({var})``; the
+    arrow forms splice pre-quoted scalars and must not be flagged."""
+    models, _ = _convert(_rr_source())
+    cube_vars = models["RrDrivers"].meta["cube_variables"]
+    assert cube_vars["brand"]["list_valued"] is True
+    assert cube_vars["market"]["list_valued"] is True
+    assert cube_vars["fulfillment_date_from"]["list_valued"] is False
+    assert cube_vars["fulfillment_date_to"]["list_valued"] is False
+
+
 def test_model_variables_discoverable_required_and_optional():
     from slayer.core.query import extract_model_variables
     models, _ = _convert(_rr_source())

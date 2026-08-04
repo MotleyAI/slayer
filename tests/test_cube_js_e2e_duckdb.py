@@ -103,6 +103,34 @@ async def test_count_with_brand_pushdown(tmp_path):
     assert _sole_value(resp) == 2
 
 
+async def test_count_with_scalar_brand_pushdown(tmp_path):
+    """A bare scalar for an importer-generated ``IN ({var})`` pushdown must
+    behave exactly like the one-element list — the importer wrote the
+    parentheses, so the caller has nowhere to put the quotes. Without the
+    declared-list coercion this renders ``IN (Acme)`` and DuckDB fails on the
+    unknown column reference."""
+    engine, _ = await _import_and_engine(tmp_path)
+    q = SlayerQuery(
+        source_model="RrDrivers", measures=[{"formula": "count"}],
+        variables={**_FULL_VARS, "brand": "Acme"},
+    )
+    resp = await engine.execute(q)
+    assert _sole_value(resp) == 2
+
+
+async def test_scalar_and_list_pushdowns_agree(tmp_path):
+    engine, _ = await _import_and_engine(tmp_path)
+
+    async def _count(brand):
+        q = SlayerQuery(
+            source_model="RrDrivers", measures=[{"formula": "count"}],
+            variables={**_FULL_VARS, "brand": brand},
+        )
+        return _sole_value(await engine.execute(q))
+
+    assert await _count("Zeta") == await _count(["Zeta"]) == 1
+
+
 async def test_grouped_max_measure(tmp_path):
     engine, _ = await _import_and_engine(tmp_path)
     q = SlayerQuery(

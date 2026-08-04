@@ -122,11 +122,33 @@ the caller supplies one, else the neutral `1 = 1`. SLayer represents this with
 [`{variable}` substitution](../concepts/models.md#variables-in-model-sql):
 
 - **String form** `.filter('col')` → an optional block `{? col IN ({member}) ?}`
-  — the caller passes a list, or omits it and the block collapses to `(1=1)`.
+  — the caller passes a list (`{"brand": ["Acme", "Zeta"]}`), a bare scalar
+  (`{"brand": "Acme"}`, normalized to a one-element list — see below), or omits
+  it and the block collapses to `(1=1)`.
 - **Arrow form** `.filter((from, to) => ...)` → the body is emitted with `from` /
   `to` spliced as the pre-quoted variables `{<member>_from}` / `{<member>_to}`.
   A bare-param body used in a scalar position (`...filter((from,to)=>from)::TIMESTAMP`)
   is handled too.
+
+#### Scalars are accepted for the string form
+
+The general [`{variable}` rule](../concepts/models.md#variables-in-model-sql) puts
+quoting on whoever writes the template — a scalar string substitutes *unquoted*,
+which is what makes `amount >= {floor}` and `'{d}'::TIMESTAMP` both expressible.
+That rule assumes an author who can see the SQL position, and the importer's
+`col IN ({member})` template has none: the parentheses are generated, so the
+caller has nowhere to put the quotes and a bare `"Acme"` would otherwise render
+`IN (Acme)` — a column reference that parses cleanly and then fails at the
+database.
+
+So the importer marks each string-form variable `list_valued` in
+`meta.cube_variables`, and the engine wraps a scalar into a one-element list
+before substituting. In `IN (...)` position a scalar and a one-element list mean
+the same thing, so `{"brand": "Acme"}` and `{"brand": ["Acme"]}` are equivalent.
+This applies **only** to variables a model declares that way — hand-written
+model SQL keeps the author-written-quotes convention unchanged. An **empty list**
+still raises (`IN ()` is invalid SQL); to mean "no filter", omit the variable and
+let the block collapse.
 
 Whether a pushdown is **required** (bare `{var}`, omitting it raises a clear error)
 or **optional** (wrapped in a block) is decided by the referenced member's

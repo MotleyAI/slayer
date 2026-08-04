@@ -548,6 +548,100 @@ def extract_model_variables(model: SlayerModel) -> ModelVariables:
     )
 
 
+def declared_variable_specs(model: SlayerModel) -> dict[str, dict]:
+    """The model's DECLARED Mode-A variable bag (``name -> spec``), or ``{}``.
+
+    An importer that generates parameterized model SQL records what it emitted
+    under ``meta.cube_variables``, so the engine can tell a generated template
+    apart from hand-written SQL that merely contains braces. ``meta`` is
+    user-extensible, so every layer is shape-checked and a malformed bag
+    degrades to "nothing declared" rather than raising during a query.
+    """
+    declared = (model.meta or {}).get("cube_variables")
+    if not isinstance(declared, dict):
+        return {}
+    return {
+        name: spec
+        for name, spec in declared.items()
+        if isinstance(name, str) and isinstance(spec, dict)
+    }
+
+
+def declares_variables(model: SlayerModel) -> bool:
+    """True if the model declares its Mode-A variables (importer-generated SQL).
+
+    Such a model is unambiguously parameterized, so the DEV-1625 brace-literal
+    protection — which leaves surfaces untouched on a zero-variable call so raw
+    braces like a Postgres array ``'{1,2,3}'`` survive — must NOT apply: leaving
+    a declared ``{var}`` unrendered emits it into SQL instead of raising the
+    documented missing-variable error. Hand-written models declare nothing and
+    keep the protection.
+    """
+    return bool(declared_variable_specs(model))
+
+
+def list_valued_variable_names(model: SlayerModel) -> set[str]:
+    """Names of the model's Mode-A variables DECLARED to fill an ``IN``-list.
+
+    The generic ``{var}`` contract puts quoting on the template author — a
+    scalar string renders unquoted so ``{var}`` also works in numeric and
+    fragment positions (``order_total >= {floor}``, ``{d}::TIMESTAMP``). That
+    reasoning needs an author who can see the position, and it breaks down for
+    a MACHINE-generated surface: the Cube importer emits the fixed template
+    ``col IN ({var})``, so the caller can never write the quotes, and a scalar
+    string would render ``IN (US)`` — a column reference that sqlglot parses
+    happily and the database rejects (or, worse, silently resolves).
+
+    An importer therefore declares such a variable with ``list_valued: true`` in
+    ``meta.cube_variables``; :func:`coerce_declared_list_variables` acts on it.
+    Only that neutral flag is read here — not Cube's ``kind`` taxonomy — so a
+    future front-end emitting a different list-shaped template opts in the same
+    way. Returns an empty set for a hand-written model (nothing declared), which
+    keeps the generic scalar convention untouched.
+
+    The flag must be exactly ``True``: ``meta`` is user-extensible, and matching
+    on truthiness would let a stray ``1`` or the string ``"false"`` silently
+    switch a variable's substitution semantics.
+    """
+    return {
+        name
+        for name, spec in declared_variable_specs(model).items()
+        if spec.get("list_valued") is True
+    }
+
+
+def coerce_declared_list_variables(
+    variables: dict[str, Any], *, list_valued: set[str]
+) -> dict[str, Any]:
+    """Wrap a scalar supplied for a declared list-valued variable in a
+    one-element list, so it renders ``IN ('US')`` rather than ``IN (US)``.
+
+    In ``IN (...)`` position a scalar and a one-element list are semantically
+    identical, so this is a normalisation, not a guess — there is no competing
+    reading of ``{"regions": "US"}`` against ``region IN ({regions})``.
+
+    Only ``str``/``int``/``float``/``bool`` are wrapped. A ``list``/``tuple``
+    passes through unchanged (including the empty list, which keeps raising —
+    ``IN ()`` is invalid SQL and "no filter" belongs to an optional block or a
+    sentinel default). Any other type is left alone so
+    :func:`_render_variable_value` still raises its own naming error. Returns
+    the input dict unchanged when nothing needs wrapping; never mutates it.
+    """
+    if not list_valued:
+        return variables
+    coerced: dict[str, Any] | None = None
+    for name in list_valued:
+        if name not in variables:
+            continue
+        value = variables[name]
+        # bool is an int subclass and is accepted, matching the list renderer.
+        if isinstance(value, (str, int, float)):
+            if coerced is None:
+                coerced = dict(variables)
+            coerced[name] = [value]
+    return variables if coerced is None else coerced
+
+
 class ColumnRef(BaseModel):
     """Reference to a dimension by name.
 
