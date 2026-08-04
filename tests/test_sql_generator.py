@@ -1843,9 +1843,11 @@ class TestFields:
         # ``by_name["growth"] != by_name["growth_2m"]``).
         growth = _alias_bodies(sql, "orders.growth")
         growth_2m = _alias_bodies(sql, "orders.growth_2m")
-        assert len(growth) == 1 and len(growth_2m) == 1, (
-            f"each computed measure must be emitted exactly once; got "
-            f"growth={growth}, growth_2m={growth_2m} in:\n{sql}"
+        assert len(growth) == 1, (
+            f"'growth' must be emitted exactly once; got {growth} in:\n{sql}"
+        )
+        assert len(growth_2m) == 1, (
+            f"'growth_2m' must be emitted exactly once; got {growth_2m} in:\n{sql}"
         )
         assert growth[0] != growth_2m[0], (
             f"growth and growth_2m share one shift expression: {growth[0]!r}"
@@ -3798,7 +3800,10 @@ class TestMeasureSourceSqlJoinInference:
             f"projection inside the ranked subquery:\n{norm}"
         )
         first_subquery = norm.find("FROM (")
-        assert first_subquery != -1 and first_proj.start() > first_subquery, (
+        assert first_subquery != -1, (
+            f"DEV-1531: no ranked subquery found at all in:\n{norm}"
+        )
+        assert first_proj.start() > first_subquery, (
             f"DEV-1531: `_val` projection of `{ref}` is not inside the ranked "
             f"subquery:\n{norm}"
         )

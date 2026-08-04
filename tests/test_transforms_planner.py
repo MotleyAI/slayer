@@ -218,27 +218,21 @@ class TestBindTransformValidation:
     def test_rank_rejects_extra_positional_arg(self) -> None:
         # rank-family transforms are keyword-only after the value; an extra
         # positional must fail fast rather than being silently dropped.
+        parsed = parse_expr("rank(amount:sum, 2)")
         with pytest.raises(ValueError, match="exactly one positional"):
-            bind_expr(
-                parse_expr("rank(amount:sum, 2)"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(parsed, scope=_scope(), bundle=_bundle())
 
     def test_ntile_rejects_positional_n(self) -> None:
         # ``ntile(x, 4)`` is rejected — n must be passed by keyword (n=4).
+        parsed = parse_expr("ntile(amount:sum, 4)")
         with pytest.raises(ValueError, match="exactly one positional"):
-            bind_expr(
-                parse_expr("ntile(amount:sum, 4)"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(parsed, scope=_scope(), bundle=_bundle())
 
     def test_rank_rejects_n_kwarg(self) -> None:
         # ``n`` is ntile-only; rank must not silently accept it.
+        parsed = parse_expr("rank(amount:sum, n=4)")
         with pytest.raises(ValueError, match="rank.*not.*accept.*'n'"):
-            bind_expr(
-                parse_expr("rank(amount:sum, n=4)"),
-                scope=_scope(), bundle=_bundle(),
-            )
+            bind_expr(parsed, scope=_scope(), bundle=_bundle())
 
     def test_time_shift_positional_periods_binds(self) -> None:
         # ``time_shift(x, -1)`` — the row-based positional form maps onto the

@@ -153,7 +153,8 @@ class TestScopeClosureInvariant:
             dimensions=[ColumnRef(name="status")],
         )
         sql = await _gen(query, _orders())
-        assert "GROUP BY" in sql and "_cm_" not in sql  # host base scope
+        assert "GROUP BY" in sql
+        assert "_cm_" not in sql  # host base scope
         assert_scope_closed(sql)
 
     async def test_host_base_where_filter_typed(self) -> None:
@@ -204,7 +205,8 @@ class TestScopeClosureInvariant:
             measures=[ModelMeasure(formula="balance:last(ordered_at)")],
         )
         sql = await _gen(query, _orders())
-        assert "_last_rn" in sql and "ROW_NUMBER()" in sql  # ranked subquery scope
+        assert "_last_rn" in sql  # ranked subquery scope
+        assert "ROW_NUMBER()" in sql
         assert "orders.ordered_at" in sql                    # explicit time carrier
         assert_scope_closed(sql)
 

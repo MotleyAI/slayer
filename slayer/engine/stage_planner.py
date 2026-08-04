@@ -505,6 +505,23 @@ _RAW_ROW_FIX_HINT = (
 )
 
 
+def _iter_expr_children(node):
+    """Yield the child nodes of a parsed Mode-B expression node.
+
+    Attribute-driven rather than type-driven so one walker covers every node
+    shape the typed parser emits. ``str`` / ``bool`` scalars are skipped —
+    they are leaf payloads (an operator name, a flag), never child nodes.
+    """
+    for attr in ("input", "left", "right", "this", "operand"):
+        child = getattr(node, attr, None)
+        if child is not None and not isinstance(child, (str, bool)):
+            yield child
+    for attr in ("args", "operands", "kwargs"):
+        for item in getattr(node, attr, None) or ():
+            # kwargs come through as (name, value) pairs; take the value.
+            yield item[1] if isinstance(item, tuple) and len(item) == 2 else item
+
+
 def _expr_has_measure_ref(node, *, measure_names: FrozenSet[str]) -> bool:
     """True if a parsed Mode-B expression references an aggregation, a
     transform, or a saved ``ModelMeasure`` by bare name.
@@ -514,29 +531,16 @@ def _expr_has_measure_ref(node, *, measure_names: FrozenSet[str]) -> bool:
     """
     from slayer.engine.syntax import AggCall, Ref, TransformCall
 
-    found = False
-
-    def _walk(n) -> None:
-        nonlocal found
-        if found or n is None:
-            return
-        if isinstance(n, (AggCall, TransformCall)):
-            found = True
-            return
-        if isinstance(n, Ref) and n.name in measure_names:
-            found = True
-            return
-        for attr in ("input", "left", "right", "this", "operand"):
-            child = getattr(n, attr, None)
-            if child is not None and not isinstance(child, (str, bool)):
-                _walk(child)
-        for attr in ("args", "operands", "kwargs"):
-            seq = getattr(n, attr, None) or ()
-            for item in seq:
-                _walk(item[1] if isinstance(item, tuple) and len(item) == 2 else item)
-
-    _walk(node)
-    return found
+    if node is None:
+        return False
+    if isinstance(node, (AggCall, TransformCall)):
+        return True
+    if isinstance(node, Ref) and node.name in measure_names:
+        return True
+    return any(
+        _expr_has_measure_ref(child, measure_names=measure_names)
+        for child in _iter_expr_children(node)
+    )
 
 
 def _reject_measure_refs_for_raw_rows(*, query: SlayerQuery, scope) -> None:
@@ -556,7 +560,19 @@ def _reject_measure_refs_for_raw_rows(*, query: SlayerQuery, scope) -> None:
     custom_agg_names: FrozenSet[str] = frozenset(
         a.name for a in (getattr(src, "aggregations", None) or []) if a.name
     )
+    _reject_measure_refs_in_filters(query=query, measure_names=measure_names)
+    _reject_measure_refs_in_order(
+        query=query,
+        measure_names=measure_names,
+        custom_agg_names=custom_agg_names,
+        source_name=getattr(src, "name", None),
+    )
 
+
+def _reject_measure_refs_in_filters(
+    *, query: SlayerQuery, measure_names: FrozenSet[str],
+) -> None:
+    """Filter half of :func:`_reject_measure_refs_for_raw_rows`."""
     for f in (query.filters or []):
         if not isinstance(f, str):
             continue
@@ -570,23 +586,37 @@ def _reject_measure_refs_for_raw_rows(*, query: SlayerQuery, scope) -> None:
                 f"but filter {f!r} contains one. {_RAW_ROW_FIX_HINT}"
             )
 
+
+def _parse_order_formula(raw: str, *, custom_agg_names: FrozenSet[str]):
+    """Parse an ``OrderItem.raw_formula`` to a Mode-B AST, or ``None``.
+
+    Function-style aggregations (``sum(amount)``) are not valid Mode-B; the
+    slack layer rewrites them to colon form, so do the same here — otherwise
+    this check would miss the aggregation and let the binder report a generic
+    "function not allowed" instead.
+    """
+    try:
+        text = func_style_agg_to_colon(raw, custom_agg_names=custom_agg_names)
+    except Exception:  # noqa: BLE001 — fall back to the original text
+        text = raw
+    try:
+        return parse_expr(text)
+    except Exception:  # noqa: BLE001 — binder reports parse errors properly
+        return None
+
+
+def _reject_measure_refs_in_order(
+    *,
+    query: SlayerQuery,
+    measure_names: FrozenSet[str],
+    custom_agg_names: FrozenSet[str],
+    source_name: Optional[str],
+) -> None:
+    """ORDER BY half of :func:`_reject_measure_refs_for_raw_rows`."""
     for item in (query.order or []):
         raw = getattr(item, "raw_formula", None)
         if raw:
-            # Function-style aggregations (``sum(amount)``) are not valid
-            # Mode-B; the slack layer rewrites them to colon form. Do the same
-            # rewrite here so this check sees the aggregation rather than
-            # letting the binder report a generic "function not allowed".
-            try:
-                text = func_style_agg_to_colon(
-                    raw, custom_agg_names=custom_agg_names,
-                )
-            except Exception:  # noqa: BLE001
-                text = raw
-            try:
-                parsed = parse_expr(text)
-            except Exception:  # noqa: BLE001
-                parsed = None
+            parsed = _parse_order_formula(raw, custom_agg_names=custom_agg_names)
             if parsed is not None and _expr_has_measure_ref(
                 parsed, measure_names=measure_names,
             ):
@@ -595,13 +625,12 @@ def _reject_measure_refs_for_raw_rows(*, query: SlayerQuery, scope) -> None:
                     f"references, but order item {raw!r} contains one. "
                     f"{_RAW_ROW_FIX_HINT}"
                 )
-        col = getattr(item, "column", None)
-        name = getattr(col, "name", None)
+        name = getattr(getattr(item, "column", None), "name", None)
         if name and name in measure_names:
             raise DistinctDimensionValuesError(
                 f"distinct_dimension_values=False rejects measure references, "
                 f"but order item {name!r} resolves to a saved measure on "
-                f"{getattr(src, 'name', 'the source model')!r}. "
+                f"{source_name or 'the source model'!r}. "
                 f"{_RAW_ROW_FIX_HINT}"
             )
 
@@ -1224,7 +1253,6 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                     phase=max_key.phase,
                 )
             order_key_remap[okey] = max_key
-            continue
         # DEV-1733: TransformKey / ArithmeticKey / ScalarCallKey — an inline
         # transform or composite expression referenced only in ORDER BY. These
         # materialise as hidden slots (a step CTE on the transform path, a

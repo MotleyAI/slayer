@@ -305,7 +305,8 @@ SELECT u.k2 FROM u
             "GROUP BY orders.status) SELECT _cm_customers.balance_sum FROM _cm_customers"
         )
         result = check_scope_closed(sql)
-        assert result.closed is False and result.skipped is False
+        assert result.closed is False
+        assert result.skipped is False
         assert any(leak.reference.endswith("balance_sum") for leak in result.leaks), result.leaks
 
     def test_multiple_distinct_leaks_all_reported(self) -> None:
