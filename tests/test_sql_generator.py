@@ -7613,20 +7613,33 @@ class TestDev1501BroadTriggerAndGuards:
                 f"{group_counts}\nSQL:\n{sql}"
             )
 
-    def test_hidden_composite_order_rejected_at_input_validation(
+    def test_hidden_composite_order_accepted_at_input_validation(
         self, generator: SQLGenerator
     ) -> None:
-        """Composite-aggregate ORDER BY (an operator over aggregates) is
-        REJECTED at ``OrderItem`` input validation — the string syntax
-        ``"revenue:sum - cost:sum"`` becomes an invalid identifier and
-        Pydantic raises ``ValidationError`` before the query reaches the
-        planner. So hidden composite order is structurally unreachable
-        in the no-transform path, and Change 3 needs no explicit raise.
+        """DEV-1733 INVERTED this contract.
+
+        DEV-1501 pinned composite-aggregate ORDER BY as structurally
+        unreachable: ``"revenue:sum - cost:sum"`` canonicalised to an invalid
+        identifier and Pydantic rejected it before the planner ever saw it,
+        which is why the no-transform path needed no explicit raise.
+
+        The entry point now recognises it as a FORMULA rather than a column
+        reference: the ``ColumnRef`` becomes the ``_expr_pending`` placeholder
+        and ``raw_formula`` carries the original text for the planner to bind.
+        A composite over declared measure ALIASES (no colon, no func-style
+        call) is NOT a formula candidate and still raises here — alias
+        references inside expressions are unsupported everywhere in SLayer.
+
+        Full behaviour: ``tests/test_dev1733_order_only_transform_composite.py``.
         """
         from pydantic import ValidationError as PydanticValidationError
 
+        item = OrderItem(column="revenue:sum - cost:sum", direction="desc")
+        assert item.column.name == "_expr_pending"
+        assert item.raw_formula == "revenue:sum - cost:sum"
+
         with pytest.raises(PydanticValidationError):
-            OrderItem(column="revenue:sum - cost:sum", direction="desc")
+            OrderItem(column="revenue - cost", direction="desc")
 
 
 class TestMultiHopCrossModelMeasure:

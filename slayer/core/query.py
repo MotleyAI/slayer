@@ -163,6 +163,47 @@ def _coerce_column_ref(v: Any) -> Any:
 _FUNCSTYLE_CALL_PATTERN = re.compile(r"^\w+\([^()]*\)$")
 
 
+# DEV-1733: sentinel ``ColumnRef.name`` values meaning "this ORDER BY item is
+# an EXPRESSION — resolve it from ``raw_formula``, not as a column reference".
+# ``_funcstyle_pending`` marks an unrewritten function-style call (a custom
+# aggregation or a transform); ``_expr_pending`` marks any other formula shape
+# that is not expressible as a ``ColumnRef`` (composite arithmetic, a scalar
+# call over an aggregation, arithmetic over a transform). Consumers MUST also
+# require a non-empty ``raw_formula`` before treating a name as a sentinel, so
+# a model that genuinely has a column of that name still resolves normally.
+_FUNCSTYLE_PENDING = "_funcstyle_pending"
+_EXPR_PENDING = "_expr_pending"
+ORDER_PLACEHOLDER_NAMES = frozenset({_FUNCSTYLE_PENDING, _EXPR_PENDING})
+
+
+def _order_formula_candidate(v: str) -> str | None:
+    """The func-style-rewritten form of ``v`` when it carries a measure
+    expression (a colon aggregation, or a function-style call), else ``None``.
+
+    Single source of truth for "this ORDER BY string is a formula, not a column
+    reference". Shared by :meth:`OrderItem._capture_raw_formula` (which
+    preserves the original text) and :func:`_coerce_order_column` (which emits
+    the placeholder ``ColumnRef``) so the two cannot drift — if only one of
+    them recognised a shape, the item would either lose its formula or bind a
+    meaningless placeholder name.
+    """
+    from slayer.core.formula import _rewrite_funcstyle_aggregations
+
+    rewritten = _rewrite_funcstyle_aggregations(v)
+    if ":" in rewritten or _FUNCSTYLE_CALL_PATTERN.match(rewritten):
+        return rewritten
+    return None
+
+
+def _is_valid_column_ref_name(name: str) -> bool:
+    """Whether ``name`` parses as a ``ColumnRef`` (bare leaf or dotted path)."""
+    try:
+        ColumnRef.model_validate({"name": name})
+    except Exception:
+        return False
+    return True
+
+
 def _coerce_order_column(v: Any) -> Any:
     """Coerce ORDER BY column, normalizing aggregation syntax.
 
@@ -177,15 +218,27 @@ def _coerce_order_column(v: Any) -> Any:
     - "revenue:last(ordered_at)" → "revenue_last"
     - "rolling_avg(revenue)" → placeholder, raw_formula carries the call so
       enrichment can resolve it via ``extra_agg_names``.
+    - "revenue:sum / cnt:sum" → placeholder (DEV-1733), raw_formula carries the
+      composite so the planner binds it as an expression.
+
+    DEV-1733: a composite that is NOT a formula candidate — ``"rev / cnt"``,
+    arithmetic over declared measure ALIASES — falls through to normal
+    ``ColumnRef`` validation and keeps its original error. Alias references
+    inside expressions are unsupported everywhere in SLayer, so failing fast at
+    construction is better than a deep binder error.
     """
     if isinstance(v, str):
         from slayer.core.formula import _rewrite_funcstyle_aggregations
-        rewritten = _rewrite_funcstyle_aggregations(v)
+        candidate = _order_formula_candidate(v)
+        rewritten = (
+            candidate if candidate is not None
+            else _rewrite_funcstyle_aggregations(v)
+        )
         if _FUNCSTYLE_CALL_PATTERN.match(rewritten):
             # Unrewritten function-style call (custom aggregation). Enrichment
             # parses raw_formula with custom_agg_names and overwrites
             # column.name with the canonical alias, so a placeholder is fine.
-            return {"name": "_funcstyle_pending"}
+            return {"name": _FUNCSTYLE_PENDING}
         if ":" in rewritten:
             base, agg = rewritten.rsplit(":", 1)
             agg_name = agg.split("(", 1)[0]  # strip arglist
@@ -193,6 +246,11 @@ def _coerce_order_column(v: Any) -> Any:
                 rewritten = f"_{agg_name}"
             else:
                 rewritten = f"{base}_{agg_name}"
+        if candidate is not None and not _is_valid_column_ref_name(rewritten):
+            # A formula that does not canonicalise to a column reference —
+            # composite arithmetic, a scalar call over an aggregation, or
+            # arithmetic over a transform. ``raw_formula`` carries the original.
+            return {"name": _EXPR_PENDING}
         return {"name": rewritten}
     return v
 
@@ -235,14 +293,17 @@ class OrderItem(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _capture_raw_formula(cls, data: Any) -> Any:
-        """Capture the raw column formula before coercion normalizes it."""
+        """Capture the raw column formula before coercion normalizes it.
+
+        Shares :func:`_order_formula_candidate` with ``_coerce_order_column``
+        so a shape can never be recognised by one and not the other.
+        """
         if isinstance(data, dict):
             col = data.get("column")
             if isinstance(col, str):
-                from slayer.core.formula import _rewrite_funcstyle_aggregations
-                rewritten = _rewrite_funcstyle_aggregations(col)
-                if ":" in rewritten or _FUNCSTYLE_CALL_PATTERN.match(rewritten):
-                    data = {**data, "raw_formula": rewritten}
+                candidate = _order_formula_candidate(col)
+                if candidate is not None:
+                    data = {**data, "raw_formula": candidate}
         return data
 
     @field_validator("direction")
