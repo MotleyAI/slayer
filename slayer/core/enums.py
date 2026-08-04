@@ -215,7 +215,7 @@ def normalize_aggregation_name(name: str) -> str:
 def format_unknown_aggregation(name: str, known: "set[str] | frozenset[str]") -> str:
     """DEV-1576: the shared 'Unknown aggregation' error message.
 
-    Used by both the ``enrich_query`` gate (``slayer/engine/enrichment.py``)
+    Used by both the binder's aggregation gate (``slayer/engine/binding.py``)
     and the typed binding gate (``slayer/engine/binding.py``) so the wording
     stays byte-identical: an unknown aggregation name is distinguished from a
     known-but-disallowed one, with a close-match suggestion and the model-wide
@@ -246,7 +246,7 @@ BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
 
 # Aggregations that only make sense on numeric-valued measures. Applying them
 # to a non-numeric measure (e.g. AVG on a VARCHAR column) is always invalid
-# and is rejected during query enrichment rather than at SQL execution time.
+# and is rejected during query binding rather than at SQL execution time.
 # min, max, count, count_distinct, first, last work on any type and are NOT
 # in this set.
 NUMERIC_ONLY_AGGREGATIONS: frozenset[str] = frozenset({

@@ -1,8 +1,12 @@
-"""SQL generator — converts EnrichedQuery to SQL via sqlglot AST.
+"""SQL generator — converts a ``PlannedQuery`` to SQL via sqlglot AST.
 
-The generator works exclusively with EnrichedQuery objects (fully resolved
-SQL expressions). It never looks up model definitions — that's done by the
-query engine's _enrich() step.
+The generator works exclusively with ``PlannedQuery`` objects (typed value
+keys interned into slots, each carrying its resolved expression, join path
+and phase). It never looks up model definitions — every referenced model is
+already loaded on the ``ResolvedSourceBundle`` it is handed.
+
+Entry points: ``generate_from_planned`` (one stage) and
+``generate_planned_stages`` (a multi-stage DAG rendered to one statement).
 """
 
 import logging

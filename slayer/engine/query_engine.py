@@ -2809,8 +2809,9 @@ class SlayerQueryEngine:
 
         DEV-1450 stage 6 — runs the slack-normalization layer over the
         incoming model so persisted formulas land in canonical form. The
-        legacy in-tree rewriters still fire during enrichment for callers
-        that load and re-execute persisted models.
+        (Before DEV-1485 the legacy in-tree rewriters also fired during
+        enrichment for callers that loaded and re-executed persisted models;
+        normalization at save time is now the only such rewrite.)
 
         DEV-1500 — the FUNC_STYLE_AGG rewrite recognises custom aggregations
         defined on joined models via ``_reachable_aggs_for_save`` (best-effort

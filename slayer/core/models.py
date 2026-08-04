@@ -265,7 +265,7 @@ class ModelMeasure(BaseModel):
     # DEV-1369: ModelMeasure formulas may legitimately contain ``__`` —
     # virtual-model columns produced by ``_query_as_model`` flatten join
     # paths into names like ``kpis__total_amount_sum``, which downstream
-    # stages reference directly. Strict resolution at enrichment time
+    # stages reference directly. Strict resolution at binding time
     # catches typos like ``customers__region`` that don't resolve to any
     # Column on the model.
 
@@ -372,7 +372,7 @@ class SourceModelOrigin(BaseModel):
     ``agg_column_names`` (Codex review on PR #137 round 9) records the
     flat names of columns on this stage that came from
     ``cross_model_measures`` or aggregated ``measures`` in the inner
-    query's enrichment — i.e. the columns the cross-stage intercept
+    query's binding — i.e. the columns the cross-stage intercept
     is safe to re-aggregate. Without this provenance, a user-defined
     dimension whose name happens to look like an aggregation canonical
     (e.g. ``customers__revenue_sum``) would be silently re-summed by

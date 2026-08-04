@@ -2,7 +2,7 @@
 
 DEV-1369 consolidates the identifier-shape regexes and aggregation-suffix
 parsing that previously lived in four different files (``formula.py``,
-``dbt/converter.py``, ``engine/enrichment.py``, ``memories/resolver.py``).
+``dbt/converter.py``, ``engine/binding.py``, ``memories/resolver.py``).
 Keeping a single source of truth prevents the four copies from drifting
 out of sync.
 

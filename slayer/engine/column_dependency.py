@@ -48,7 +48,7 @@ def _resolve_target_for_ref(
     """Return the model that a column reference resolves to, or ``None``.
 
     Mirrors the runtime alias resolution in
-    :func:`slayer.engine.column_expansion._walk_path_to_target` so the
+    :func:`slayer.engine.column_expansion._walk_path_to_target_sync` so the
     save-time validator and the compile-time expander agree on which
     references count. ``table_alias`` may be:
 

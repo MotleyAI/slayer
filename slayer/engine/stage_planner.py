@@ -256,7 +256,7 @@ def _window_kwarg_of(key: ValueKey):
     """The ``window`` kwarg value of an ``AggregateKey``, or ``None``.
 
     ``window`` is a globally reserved aggregation kwarg name (legacy parity —
-    the enrichment pipeline pops it unconditionally before dispatch), so its
+    the legacy enrichment pipeline popped it unconditionally before dispatch), so its
     presence marks a windowed measure regardless of the aggregation.
     """
     if isinstance(key, AggregateKey):

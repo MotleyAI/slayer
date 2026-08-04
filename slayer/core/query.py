@@ -1,8 +1,9 @@
 """Query models for SLayer.
 
 SlayerQuery is the user-facing query object — minimal, just enough to express intent.
-It is later converted into EnrichedQuery (see slayer/engine/enriched.py) which carries
-fully resolved SQL expressions, model metadata, and is ready for SQL generation.
+It is later planned into a ``PlannedQuery`` (see slayer/engine/planned.py), which
+carries typed value keys interned into slots with their resolved expressions, join
+paths and phases, and is ready for SQL generation.
 """
 from __future__ import annotations
 
@@ -38,9 +39,9 @@ def _validate_query_filter_string(formula: str) -> None:
     syntax.
 
     Raw SQL function calls (``json_extract``, ``coalesce``, …) and
-    unknown bare names are rejected at enrichment time by
+    unknown bare names are rejected at binding time by
     :func:`slayer.core.formula.parse_filter` and the strict-resolution
-    pass in :func:`slayer.engine.enrichment.resolve_filter_columns`.
+    pass in :func:`slayer.engine.binding.bind_expr`.
     """
     if has_window_function(formula):
         raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")
@@ -776,7 +777,7 @@ def _coerce_order_column(v: Any) -> Any:
     - "sum(revenue)" → "revenue_sum"
     - "revenue:last(ordered_at)" → "revenue_last"
     - "rolling_avg(revenue)" → placeholder, raw_formula carries the call so
-      enrichment can resolve it via ``extra_agg_names``.
+      binding can resolve it via ``extra_agg_names``.
     - "revenue:sum / cnt:sum" → placeholder (DEV-1733), raw_formula carries the
       composite so the planner binds it as an expression.
 
@@ -1007,7 +1008,7 @@ class SlayerQuery(BaseModel):
     """User-facing query object. Specifies what data to retrieve from a model.
 
     This is intentionally minimal — just names and references, no SQL.
-    The query engine enriches it into an EnrichedQuery for execution.
+    The query engine plans it into a ``PlannedQuery`` for execution.
 
     Use ``measures`` for computed/aggregated values and ``filters`` for
     conditions::
@@ -1066,13 +1067,13 @@ class SlayerQuery(BaseModel):
         Filter strings are pre-parsed in DSL mode so raw ``OVER (...)``
         is caught at construction time with an actionable error message.
         Bare-name strict resolution and raw-SQL-function rejection happen
-        at enrichment, where the parser has full custom-aggregation and
+        at binding, where the parser has full custom-aggregation and
         named-measure context.
 
         Note: ``__`` is **not** rejected here. Virtual-model columns
         produced by ``_query_as_model`` flatten join paths into single
         identifiers like ``kpis__total_amount_sum``, which downstream
-        stages reference directly. Strict resolution at enrichment
+        stages reference directly. Strict resolution at binding
         catches typos that don't resolve to any column / measure.
         """
         if self.filters:
@@ -1091,7 +1092,7 @@ class SlayerQuery(BaseModel):
         * Both ``dimensions`` and ``time_dimensions`` empty — there are
           no projected columns to ``SELECT``.
 
-        Deep filter / order measure-reference checks happen at enrichment,
+        Deep filter / order measure-reference checks happen at binding,
         where named measures, custom aggregations, and post-substitution
         text are all available. Detecting them here would either reject
         valid ``{var}`` filters before substitution or miss model-defined

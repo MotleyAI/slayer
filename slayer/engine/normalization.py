@@ -518,7 +518,7 @@ def normalize_query(
     Returns the (possibly rewritten) query and the structured warnings.
     Existing in-tree rewriters (notably
     ``slayer.core.formula._rewrite_funcstyle_aggregations``) continue to
-    run during enrichment; in stage 6 they see canonical input and
+    run during binding; in stage 6 they see canonical input and
     silently no-op for any input this layer already rewrote.
     """
     all_warnings: List[NormalizationWarning] = []
