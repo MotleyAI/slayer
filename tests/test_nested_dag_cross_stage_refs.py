@@ -1289,14 +1289,19 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         finally:
             tmp.cleanup()
 
-    async def test_intercepted_cmm_order_only_bare_grouped_raises(
+    async def test_intercepted_cmm_order_only_bare_grouped_max_wraps(
         self,
     ) -> None:
-        """DEV-1712 (D-D variant 2): an AGGREGATED outer stage ordering by a
-        BARE inner-stage row column (``customers__revenue_sum``, not
-        re-aggregated) is not in the outer GROUP BY — no valid SQL exists, so
-        the pipeline rejects it at plan time (the D-B row-column-under-grouping
-        contract)."""
+        """DEV-1712 (D-D variant 2), superseded by DEV-1703 Phase 1: an
+        AGGREGATED outer stage ordering by a BARE inner-stage row column
+        (``customers__revenue_sum``, not re-aggregated) is not in the outer
+        GROUP BY. Stage 8 rejected it; the sort key now materialises as a
+        hidden ``:max`` over the stage column and orders on that alias.
+
+        The stage boundary is the point of this test: the wrap must resolve
+        against the ``s1`` rowset (``MAX(s1.customers__revenue_sum)``), never
+        reach back into s1's own source tables, and must not widen the outer
+        grain or leak into the public projection."""
         engine, tmp = await _engine_with_join_chain()
         try:
             inner = SlayerQuery(
@@ -1311,16 +1316,17 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 measures=[{"formula": "*:count"}],
                 order=[{"column": "customers__revenue_sum"}],
             )
-            with pytest.raises(ValueError) as ei:
-                await engine.execute(query=[inner, outer], dry_run=True)
-            msg = str(ei.value)
-            assert "customers__revenue_sum" in msg, (
-                f"error must name the offending order column.\ngot: {msg}"
-            )
-            assert "dimension" in msg.lower() or "aggregate" in msg.lower(), (
-                f"error must guide the user (add as dimension / order by an "
-                f"aggregate).\ngot: {msg}"
-            )
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            sql = " ".join(resp.sql.split())
+            # Wrapped against the STAGE rowset, not s1's underlying tables.
+            assert "MAX(s1.customers__revenue_sum)" in sql, sql
+            # Outer grain unchanged, wrap trimmed from the public projection.
+            assert "GROUP BY s1.customers__regions__name" in sql, sql
+            assert 'ORDER BY "s1.customers__revenue_sum_max"' in sql, sql
+            outer_select = sql.rsplit(") AS _outer", 1)[0].rsplit("SELECT", 1)[0]
+            assert "customers__revenue_sum_max" not in outer_select.split(
+                "FROM ("
+            )[0], sql
         finally:
             tmp.cleanup()
 

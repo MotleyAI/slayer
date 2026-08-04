@@ -7415,15 +7415,19 @@ class TestDev1501BroadTriggerAndGuards:
                 f"materialised. Counts: {group_counts}\nSQL:\n{sql}"
             )
 
-    async def test_hidden_row_order_target_raises_nyi(
+    async def test_hidden_row_order_target_max_wraps_without_widening_grain(
         self, generator: SQLGenerator
     ) -> None:
-        """ORDER BY a non-projected ROW column (e.g. ``customer_id``) in an
-        aggregated query is refused. DEV-1712 (Stage 8) replaced the earlier
-        ``NotImplementedError`` with a clear plan-time ``ValueError`` (the
-        column is not in the GROUP BY; add it to dimensions or order by an
-        aggregate of it) — the query is still rejected, never silently
-        grain-widened.
+        """ORDER BY a non-projected LOCAL ROW column (e.g. ``customer_id``) in
+        an aggregated query.
+
+        History: this raised ``NotImplementedError``, then (DEV-1712 Stage 8) a
+        plan-time ``ValueError``. DEV-1703 Phase 1 resolves it instead — the
+        column materialises as a hidden ``customer_id:max`` aggregate and the
+        ORDER BY names that alias. The invariant this test has always really
+        been about is preserved and pinned explicitly below: the sort key must
+        NEVER reach GROUP BY, because widening the grain would change both the
+        row count and every other measure's value.
         """
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
@@ -7441,9 +7445,15 @@ class TestDev1501BroadTriggerAndGuards:
                 dimensions=[ColumnRef(name="status")],
                 order=[OrderItem(column="customer_id", direction="asc")],
             )
-            with pytest.raises(ValueError) as ei:
-                await engine.execute(query, dry_run=True)
-            assert "customer_id" in str(ei.value)
+            resp = await engine.execute(query, dry_run=True)
+            sql = resp.sql
+            assert _re.search(r"MAX\(\s*orders\.customer_id\s*\)", sql), sql
+            # The sort key must not widen the grain: GROUP BY stays on status.
+            inner = sqlglot.parse_one(sql, dialect="postgres").find(sqlglot.exp.Group)
+            assert inner is not None, sql
+            group_sql = " ".join(e.sql() for e in inner.expressions)
+            assert "customer_id" not in group_sql, sql
+            assert "status" in group_sql, sql
 
     async def test_hidden_simple_aggregate_in_having(
         self, generator: SQLGenerator

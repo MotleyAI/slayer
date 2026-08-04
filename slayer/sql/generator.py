@@ -4294,6 +4294,7 @@ class SQLGenerator:
         needed_join_paths = self._collect_joined_paths_for_base(
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
+            order_slot_ids=[e.slot_id for e in planned_query.order],
         )
         # DEV-1708 (D-E): share the generation-wide allocator so host-base and
         # per-plan ``_cm_*`` CTE ``_val_<n>`` names are globally unique.
@@ -8237,6 +8238,7 @@ class SQLGenerator:
         *,
         base_render_order: List[str],
         slots_by_id: Dict[str, Any],
+        order_slot_ids: Optional[List[str]] = None,
     ) -> List[Tuple[str, ...]]:
         """Walk ROW slots in render order to collect unique joined DIMENSION
         paths needed for projection / GROUP BY.
@@ -8248,6 +8250,13 @@ class SQLGenerator:
         ``_resolve_agg_inputs_via_scope`` (sub-pass 4), where anchoring the arg
         through the host ``ScopeFrame`` registers its crossed join as a Law-1
         side effect (bare, derived, and multi-hop args alike).
+
+        ``order_slot_ids`` (DEV-1703 Phase 1) walks ORDER BY targets for the
+        same paths. An order-only joined row column is deliberately NOT in
+        ``base_render_order`` (materialising it there would project it and add
+        it to GROUP BY, changing the result grain), but the split reference the
+        ORDER BY emits still needs its join bound in the base FROM — Law 1
+        applies to a sort key exactly as it does to a filter ref.
         """
         from slayer.core.keys import ColumnKey, Phase, TimeTruncKey
 
@@ -8260,16 +8269,20 @@ class SQLGenerator:
             seen.add(path)
             ordered.append(path)
 
-        for sid in base_render_order:
+        def _add_row_slot(sid: str) -> None:
             slot = slots_by_id.get(sid)
-            if slot is None:
-                continue
+            if slot is None or slot.phase != Phase.ROW:
+                return
             key = slot.key
-            if slot.phase == Phase.ROW:
-                if isinstance(key, ColumnKey):
-                    _add(key.path)
-                elif isinstance(key, TimeTruncKey):
-                    _add(key.column.path)
+            if isinstance(key, ColumnKey):
+                _add(key.path)
+            elif isinstance(key, TimeTruncKey):
+                _add(key.column.path)
+
+        for sid in base_render_order:
+            _add_row_slot(sid)
+        for sid in order_slot_ids or ():
+            _add_row_slot(sid)
         return ordered
 
     def _build_from_and_joins(
@@ -11445,25 +11458,30 @@ class SQLGenerator:
                         self._ordered(order_col, ascending=ascending),
                     )
                     continue
-                # DEV-1712 (Law 2, split emission): a hidden LOCAL ROW column
-                # ordered in an UNGROUPED query. The plan-time order validation
+                # DEV-1712 (Law 2, split emission): a hidden ROW column ordered
+                # in an UNGROUPED query. The plan-time order validation
                 # (``plan_query``) guarantees the only hidden ROW slot that
-                # reaches here is a local (empty-path) column in a query with no
-                # GROUP BY — grouped row columns and joined columns are rejected
-                # up front, aggregates take the branch above. Emit a SPLIT
+                # reaches here is a bare column in a query with no GROUP BY —
+                # grouped row columns are rejected or MAX-wrapped up front, and
+                # aggregates take the branch above. Emit a SPLIT
                 # ``<relation>.<column>`` reference (mixed-case-aware) against
                 # the base FROM scope, identical to how the column would render
                 # if it were a projected dimension.
+                #
+                # DEV-1703 Phase 1: a JOINED column is emitted the same way,
+                # under its ``__`` path alias (``customers__regions.name``). The
+                # row IS the grain in an ungrouped query, so the bare reference
+                # is legal; Law 1 pulls the crossed join into the base FROM (see
+                # ``_collect_joined_paths_for_base``, which walks order targets).
                 key = slot.key
                 row_key = key.column if isinstance(key, TimeTruncKey) else key
-                # A bare LOCAL column — split-emit the qualified column ref.
                 if (
                     source_model is not None
                     and isinstance(row_key, ColumnKey)
-                    and not row_key.path
                 ):
                     order_col = self._joined_or_local_dim_expr(
-                        path=(), leaf=row_key.leaf, source_model=source_model,
+                        path=row_key.path, leaf=row_key.leaf,
+                        source_model=source_model,
                         source_relation=source_relation, bundle=bundle,
                     )
                     ascending = order_entry.direction == "asc"

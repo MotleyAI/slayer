@@ -86,6 +86,7 @@ from slayer.engine.planning import (
     DeclaredMeasure,
     OrderSpec,
     ProjectionPlanner,
+    _canonical_name,
     _iter_slot_deps,
     filter_referenced_slot_ids,
     lower_sugar_transforms,
@@ -944,21 +945,46 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                     "filters."
                 )
 
-    # DEV-1712 (Law 2): plan-time classification of every ORDER BY target that
-    # is not a declared/public slot. Order-only AGGREGATES (local or
-    # cross-model) always materialise and order — never rejected. The rest:
-    #   * joined row column           -> UnresolvableOrderColumnError (the sort
-    #     scope is relocated where the joined table is unbound);
-    #   * local row column, grouped   -> ValueError (no valid SQL — the column
-    #     isn't in GROUP BY; add it to dims, or order by an aggregate of it);
-    #   * local row column, ungrouped -> allowed (split emission in the
-    #     generator, ``_apply_order_limit_from_planned``);
-    #   * transform / composite       -> ValueError (deferred to DEV-1733;
-    #     declare it as a measure and order by that).
+    # DEV-1712 (Law 2) / DEV-1703 Phase 1: plan-time classification of every
+    # ORDER BY target that is not a declared/public slot.
+    #
+    # ONE RULE: an order-only ref resolves exactly like a filter ref. Law 1
+    # pulls whatever joins it crosses into the scope that owns its rows — even
+    # when ORDER BY is the only thing referencing it — and the ref is then
+    # emitted in whatever form that scope makes legal:
+    #   * order-only AGGREGATE (local or cross-model) -> hidden materialised
+    #     slot, ordered by its alias (unchanged);
+    #   * row column, UNGROUPED query -> split ``orders.created_at`` /
+    #     ``customers__regions.name`` emission in the generator's
+    #     ``_apply_order_limit_from_planned`` (the row IS the grain, so the
+    #     bare reference is legal);
+    #   * LOCAL row column, GROUPED query -> the bare reference is NOT legal
+    #     (the column is not in GROUP BY), so it materialises as a hidden
+    #     ``<col>:max`` aggregate slot and the order entry is repointed at it.
+    #     MAX is order-preserving per group and portable across every Tier-1
+    #     dialect;
+    #   * JOINED row column, GROUPED query -> still
+    #     ``UnresolvableOrderColumnError``. A host-rooted MAX over a joined
+    #     column is not expressible today: an ``AggregateKey`` with a
+    #     non-empty ``source.path`` always routes to a TARGET-rooted CTE
+    #     (Law 3), which for a host-grain sort key degenerates to a scalar
+    #     CROSS JOIN — every group would get the same global value and the
+    #     sort would silently do nothing. Failing loudly beats sorting by a
+    #     constant. Full support (host-rooted crossing MAX) is DEV-1735;
+    #   * transform / composite -> ValueError (deferred to DEV-1733; declare it
+    #     as a measure and order by that).
+    #
+    # The hidden MAX is interned post-bind, so the bind-time aggregation gate
+    # (PK columns, ``allowed_aggregations``, per-type defaults) deliberately
+    # does not apply: the caller asked to SORT by a column, not to aggregate
+    # it, and a sort must not fail because ``max`` is not whitelisted on the
+    # column being sorted.
     _has_grouping = bool(agg_slots) or (
         bool(query.dimensions or query.time_dimensions)
         and query.distinct_dimension_values
     )
+    # ORDER BY targets rewritten to a hidden aggregate: original key -> MAX key.
+    order_key_remap: Dict[ValueKey, ValueKey] = {}
     for spec in order_specs:
         okey = spec.bound.value_key
         osid = projection.registry.find_by_key(okey)
@@ -967,24 +993,34 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         if isinstance(okey, AggregateKey):
             continue  # hidden aggregate (local base or cross-model CTE)
         if isinstance(okey, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
-            disp = _partition_key_display(okey)
+            if not _has_grouping:
+                continue  # raw-rows query -> split emission, no wrap needed
             path = _row_key_path(okey)
             if path:
                 # ``UnresolvableOrderColumnError`` formats ``qualifier.column``;
                 # pass the bare leaf as ``column`` and the joined path as the
                 # qualifier so the message reads ``customers.regions.name`` and
                 # not a duplicated ``customers.customers.regions.name``.
+                disp = _partition_key_display(okey)
                 raise UnresolvableOrderColumnError(
                     column=disp.rsplit(".", 1)[-1], qualifier=".".join(path),
                 )
-            if _has_grouping:
-                raise ValueError(
-                    f"ORDER BY column '{disp}' is a row column that this "
-                    f"aggregated query does not project, so it is not in the "
-                    f"GROUP BY. Add it to dimensions/time_dimensions, or order "
-                    f"by an aggregate of it (e.g. '{disp}:max')."
+            # A TimeTruncKey is not a legal aggregate source; wrap its
+            # underlying column instead. DATE_TRUNC is monotonic
+            # non-decreasing, so MAX(col) and MAX(trunc(col)) sort a group
+            # identically.
+            src = okey.column if isinstance(okey, TimeTruncKey) else okey
+            max_key = AggregateKey(source=src, agg="max")
+            if projection.registry.find_by_key(max_key) is None:
+                projection.registry.intern(
+                    key=max_key,
+                    declared_name=_canonical_name(max_key),
+                    hidden=True,
+                    phase=max_key.phase,
                 )
-            continue  # ungrouped local row column -> split emission
+            order_key_remap[okey] = max_key
+            continue
+
         # TransformKey / ArithmeticKey / ScalarCallKey — an inline transform or
         # composite expression that is only referenced in ORDER BY.
         raise ValueError(
@@ -992,6 +1028,14 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             "not a declared measure. Declare it as a measure (optionally with "
             "a name) and order by that measure. (DEV-1733: materialising inline "
             "transform / composite ORDER BY targets is not yet supported.)"
+        )
+
+    # Re-bucket: the pass above may have interned hidden ``:max`` order slots,
+    # which must reach the PlannedQuery's aggregate bucket (and hence the
+    # generator's slot maps) like any other aggregate.
+    if order_key_remap:
+        row_slots, agg_slots, combined_slots = _bucket_slots(
+            projection.registry.slots,
         )
 
     # Build filters_by_phase in legacy WHERE order:
@@ -1145,7 +1189,10 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
 
     order_entries = []
     for spec in order_specs:
-        sid = projection.registry.find_by_key(spec.bound.value_key)
+        # A grouped row-column sort key was rewritten to a hidden ``:max``
+        # aggregate above; order on that slot, not the bare row key.
+        okey = order_key_remap.get(spec.bound.value_key, spec.bound.value_key)
+        sid = projection.registry.find_by_key(okey)
         if sid is not None:
             order_entries.append(
                 OrderEntry(slot_id=sid, direction=spec.direction),

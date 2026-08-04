@@ -9,9 +9,19 @@ slot):
   ------------------------ | ------------------------------- | ----------------------------------
   local aggregate          | works (agg induces grouping)    | materialise hidden, order, strip
   cross-model aggregate    | works                           | hidden CMA plan, trimmed, CTE order
-  local row column         | split emission (orders.col)     | ValueError (add to dims / order agg)
-  joined row column        | UnresolvableOrderColumnError    | UnresolvableOrderColumnError
+  local row column         | split emission (orders.col)     | hidden <col>:max wrap, order, strip
+  joined row column        | Law-1 join pull + split emission| UnresolvableOrderColumnError
+  local derived, crossing  | UnresolvableOrderColumnError    | UnresolvableOrderColumnError
   transform (change/…)     | ValueError -> declare (DEV-1733)| same
+
+DEV-1703 Phase 1 replaced two of Stage 8's rejections with resolution: a
+GROUPED local row column now MAX-wraps, and an UNGROUPED joined row column
+now pulls its join (Law 1) and split-emits. The two rejections that remain
+are deliberate: a GROUPED joined column has no host-rooted representation
+today (an ``AggregateKey`` with a non-empty ``source.path`` always routes to
+a TARGET-rooted CTE, which degenerates to a scalar CROSS JOIN — the sort
+would silently do nothing), and a crossing local DERIVED column's join is
+likewise never pulled. Both are DEV-1735.
 
 ``has_grouping`` = any aggregating measure OR (dims/time-dims present AND
 ``distinct_dimension_values``). An order-only aggregate never needs
@@ -268,46 +278,131 @@ class TestUngroupedRowColumnSplit:
 # ===========================================================================
 # Group 2 — grouped row column -> plan-time ValueError (D-B).
 # ===========================================================================
-class TestGroupedRowColumnRejected:
-    async def test_dedup_on_row_column_order_raises(self, engine) -> None:
+class TestGroupedLocalRowColumnMaxWrapped:
+    """DEV-1703 Phase 1 supersedes Stage 8's rejection: a LOCAL row column
+    ordered in a GROUPED query materialises as a hidden ``<col>:max``
+    aggregate and orders on that alias. MAX is order-preserving per group and
+    portable across every Tier-1 dialect. The wrap is a hidden slot, so it is
+    trimmed from the public projection."""
+
+    async def test_dedup_on_row_column_order_max_wraps(self, engine) -> None:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],  # dedup ON (default) -> GROUP BY
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="desc")],
         )
-        with pytest.raises(ValueError) as ei:
-            await _sql(engine, query)
-        msg = str(ei.value).lower()
-        assert "created_at" in msg
-        assert "dimension" in msg or "aggregate" in msg, (
-            f"error should guide the user to project it or order by an "
-            f"aggregate. got: {ei.value}"
-        )
+        sql = await _sql(engine, query)
+        assert re.search(r"MAX\(\s*orders\.created_at\s*\)", sql), sql
+        # Ordered on the materialised alias, and the wrap is not public.
+        assert "orders.created_at_max" in _all_aliases_in_sql(sql), sql
+        assert "orders.created_at_max" not in _outer_select_columns(sql), sql
+        assert _outer_select_columns(sql) == ["orders.status"], sql
 
-    async def test_measures_present_row_column_order_raises(self, engine) -> None:
+    async def test_measures_present_row_column_order_max_wraps(self, engine) -> None:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="amount:sum")],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="desc")],
         )
-        with pytest.raises(ValueError):
-            await _sql(engine, query)
+        sql = await _sql(engine, query)
+        assert re.search(r"MAX\(\s*orders\.created_at\s*\)", sql), sql
+        # The declared measure still projects; only the sort wrap is hidden.
+        assert "orders.amount_sum" in _outer_select_columns(sql), sql
+        assert "orders.created_at_max" not in _outer_select_columns(sql), sql
+
+    async def test_time_dimension_order_wraps_underlying_column(
+        self, engine,
+    ) -> None:
+        """A ``TimeTruncKey`` is not a legal aggregate source, so the wrap
+        targets the underlying column. ``DATE_TRUNC`` is monotonic
+        non-decreasing, so ``MAX(col)`` orders each group identically to
+        ``MAX(trunc(col))``."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="amount:sum")],
+            order=[
+                OrderItem(
+                    column=ColumnRef(name="created_at"), direction="desc",
+                ),
+            ],
+        )
+        sql = await _sql(engine, query)
+        assert re.search(r"MAX\(\s*orders\.created_at\s*\)", sql), sql
+
+    async def test_order_and_filter_on_same_column_share_one_wrap(
+        self, engine,
+    ) -> None:
+        """The wrap is interned by structural key, so a column used by both a
+        filter and the sort key does not mint two MAX slots."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="amount:sum")],
+            filters=["created_at > '2024-01-01'"],
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="desc")],
+        )
+        sql = await _sql(engine, query)
+        assert len(re.findall(r"MAX\(\s*orders\.created_at\s*\)", sql)) == 1, sql
+
+    async def test_two_order_terms_wrap_independently(self, engine) -> None:
+        """A wrapped row column and a declared measure coexist as sort terms,
+        in the order given."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            order=[
+                OrderItem(column=ColumnRef(name="created_at"), direction="desc"),
+                OrderItem(column=ColumnRef(name="rev"), direction="asc"),
+            ],
+        )
+        sql = await _sql(engine, query)
+        order_cols = [name for _, name in _outer_order_by_columns(sql)]
+        assert order_cols == ["orders.created_at_max", "orders.rev"], sql
+
+    async def test_max_wrap_bypasses_the_aggregation_gate(self, engine) -> None:
+        """The hidden sort wrap is interned post-bind, so a column that does
+        not whitelist ``max`` can still be sorted on — the caller asked to
+        SORT, not to aggregate. ``id`` is a primary key (restricted to
+        count/count_distinct by the bind-time gate)."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="amount:sum")],
+            order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
+        )
+        sql = await _sql(engine, query)
+        assert re.search(r"MAX\(\s*orders\.id\s*\)", sql), sql
 
 
 # ===========================================================================
 # Group 3 — joined row column -> UnresolvableOrderColumnError.
 # ===========================================================================
 class TestJoinedRowColumnRejected:
-    async def test_joined_row_column_ungrouped_raises(self, engine) -> None:
+    async def test_joined_row_column_ungrouped_pulls_join_and_splits(
+        self, engine,
+    ) -> None:
+        """DEV-1703 Phase 1: in a RAW-ROWS query the row IS the grain, so a
+        joined sort key is legal as a bare reference. Law 1 pulls its join into
+        the base FROM — exactly as a filter ref would — and the ORDER BY emits
+        the SPLIT ``customers.region`` form under the path alias."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             distinct_dimension_values=False,
             order=[OrderItem(column=ColumnRef(name="customers.region"), direction="desc")],
         )
-        with pytest.raises(UnresolvableOrderColumnError):
-            await _sql(engine, query)
+        sql = await _sql(engine, query)
+        # Law 1: the join is bound in the base FROM.
+        assert "JOIN" in sql.upper(), sql
+        assert re.search(r"customers\b", sql), sql
+        # Split reference, never the composite single-token form.
+        assert ("customers", "region") in _outer_order_by_columns(sql), sql
+        assert '"customers.region"' not in sql, sql
+        # The sort key is not projected — ordering must not change the shape.
+        assert _outer_select_columns(sql) == ["orders.status"], sql
 
     async def test_joined_row_column_grouped_raises(self, engine) -> None:
         query = SlayerQuery(
@@ -321,11 +416,15 @@ class TestJoinedRowColumnRejected:
 
     async def test_joined_reject_message_does_not_duplicate_qualifier(self, engine) -> None:
         """The rejection message names the column once (``customers.region``),
-        not a duplicated ``customers.customers.region`` (CodeRabbit)."""
+        not a duplicated ``customers.customers.region`` (CodeRabbit).
+
+        Uses the GROUPED shape — the ungrouped one now resolves (DEV-1703
+        Phase 1), so the message contract is pinned where the reject survives.
+        """
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            distinct_dimension_values=False,
+            measures=[ModelMeasure(formula="*:count")],
             order=[OrderItem(column=ColumnRef(name="customers.region"), direction="desc")],
         )
         with pytest.raises(UnresolvableOrderColumnError) as ei:
@@ -496,6 +595,50 @@ class TestExecutionHiddenOrder:
         # Hidden order slot must be stripped from the response columns.
         assert "orders.amount_sum" not in resp.columns, f"columns: {resp.columns}"
         assert all("amount_sum" not in k for k in resp.data[0]), f"row: {resp.data[0]}"
+
+    async def test_execute_grouped_row_column_max_wrap_orders_correctly(
+        self, exec_engine,
+    ) -> None:
+        """DEV-1703 Phase 1, executed: the MAX wrap must produce the RIGHT
+        order, not merely valid SQL. Latest ``created_at`` per status —
+        open (2025-02-02) sorts before paid (2025-01-02) descending — and the
+        wrap must not leak into the response or change the row count."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="amount:sum")],
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="desc")],
+        )
+        resp = await exec_engine.execute(query)
+        assert [r["orders.status"] for r in resp.data] == ["open", "paid"], resp.data
+        # Grain preserved: one row per status, not one per (status, created_at).
+        assert len(resp.data) == 2, resp.data
+        # Sibling measure values are unaffected by the sort key.
+        by_status = {r["orders.status"]: r["orders.amount_sum"] for r in resp.data}
+        assert by_status == {"paid": 50.0, "open": 25.0}, resp.data
+        # The wrap is internal — never surfaced.
+        assert all("created_at_max" not in k for k in resp.columns), resp.columns
+
+    async def test_execute_ungrouped_joined_order_pulls_join_and_orders(
+        self, exec_engine,
+    ) -> None:
+        """A raw-rows query sorted by a joined column executes and orders by
+        that column's real values (Law-1 pull), without projecting it."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="id"), ColumnRef(name="status")],
+            distinct_dimension_values=False,
+            order=[
+                OrderItem(column=ColumnRef(name="customers.region"), direction="asc"),
+                OrderItem(column=ColumnRef(name="id"), direction="asc"),
+            ],
+        )
+        resp = await exec_engine.execute(query)
+        # customers.region: orders 3,4 -> 'East'; orders 1,2 -> 'West'.
+        assert [r["orders.id"] for r in resp.data] == [3, 4, 1, 2], resp.data
+        # Row count unchanged by the join pull, sort key not projected.
+        assert len(resp.data) == 4, resp.data
+        assert all("region" not in k for k in resp.columns), resp.columns
 
     async def test_hidden_order_slot_absent_from_attributes(self, exec_engine) -> None:
         query = SlayerQuery(

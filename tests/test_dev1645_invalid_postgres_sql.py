@@ -321,25 +321,32 @@ class TestFlavorAOrderByUnprojected:
 # ============================================================================
 
 class TestFlavorAJoinedOrderByDeferred:
-    """DEV-1645 chose to REJECT any unprojected joined/cross-model ORDER BY
-    (raising ``UnresolvableOrderColumnError``) rather than resolve it, because
-    the compiler's several outer-wrapping layers (measure CTEs, pagination, the
-    first/last ranked subquery, projection trim) relocate the ORDER BY into a
-    scope where the joined table is unbound — so resolving it in the base SELECT
-    is not reliably safe.
+    """Ordering by an unprojected JOINED column in a GROUPED query.
 
-    These xfail tests document the DEFERRED aspiration: ordering by an (in-scope)
-    joined column should eventually produce valid SQL the way filters already
-    resolve joined columns. They currently xfail because the code rejects.
-    ``strict=True`` flips them to XPASS — failing the suite — if joined ORDER BY
-    resolution is ever implemented, prompting removal of this xfail and the
-    reject. The companion reject tests in ``TestFlavorAOrderByUnprojected`` pin
-    the current contract (reject cleanly, never emit invalid SQL)."""
+    DEV-1645 originally rejected every unprojected joined/cross-model ORDER BY
+    (``UnresolvableOrderColumnError``). DEV-1703 Phase 1 narrowed that: an
+    order-only ref now resolves like a filter ref, so a joined sort key in a
+    RAW-ROWS query pulls its join (Law 1) and split-emits, and a LOCAL row
+    column in a grouped query materialises a hidden ``:max`` wrap.
+
+    All three queries below are GROUPED with a JOINED sort key — the one shape
+    still rejected, because it has no host-rooted representation today (see
+    ``_REASON``). They stay ``strict=True`` so they flip to XPASS the moment
+    DEV-1735 lands, prompting removal of the xfail and the reject. The
+    companion tests in ``TestFlavorAOrderByUnprojected`` pin the reject
+    contract; ``tests/test_dev1712_order_only_hidden_slots.py`` pins the
+    resolved shapes."""
 
     _REASON = (
-        "DEV-1645: joined/cross-model ORDER BY resolution is deferred — currently "
-        "rejected with UnresolvableOrderColumnError (project the column or order by "
-        "a projected field). Remove this xfail when joined ORDER BY resolves."
+        "DEV-1735: joined ORDER BY resolution in a GROUPED query is deferred. "
+        "DEV-1703 Phase 1 resolved the raw-rows case (Law-1 join pull + split "
+        "emission) and the grouped LOCAL case (hidden ``:max`` wrap), but a "
+        "grouped JOINED sort key has no host-rooted representation — an "
+        "AggregateKey with a non-empty source.path always routes to a "
+        "target-rooted CTE, which degenerates to a scalar CROSS JOIN whose "
+        "value is constant per group, so the sort would silently do nothing. "
+        "Rejecting loudly is preferred until DEV-1735 lands host-rooted "
+        "crossing MAX."
     )
 
     @pytest.mark.xfail(strict=True, reason=_REASON)
