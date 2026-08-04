@@ -1058,6 +1058,85 @@ class TestStillRejected:
         assert isinstance(col, exp.Column), sql
         assert col.table == "orders", sql
 
+    async def test_unslottable_order_expression_raises_not_dropped(
+        self, engine,
+    ) -> None:
+        """An ORDER BY expression with no materialisable slot must RAISE.
+
+        The entry-point relaxation makes key shapes reachable that
+        ``_iter_slot_deps`` treats as WHERE-inlined and never slots — a
+        top-level ``IN`` predicate is the reachable one. Before this guard the
+        order entry was silently discarded: the query ran UNSORTED and returned
+        the wrong rows with no error, which is the same failure mode as the
+        original ``change(...)`` bug.
+
+        The guard is deliberately shape-agnostic (raise whenever the lookup
+        misses) rather than an ``InKey``/``BetweenKey`` blocklist, so a future
+        key kind cannot silently reintroduce the class.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="*:count")],
+            order=[OrderItem(column="amount:sum in (1, 2)", direction="desc")],
+        )
+        with pytest.raises(ValueError) as ei:
+            await _sql(engine, query)
+        assert "not supported" in str(ei.value), ei.value
+
+    async def test_comparison_composite_order_still_works(self, engine) -> None:
+        """Control for the guard above: a boolean composite that DOES slot
+        (comparison / boolean arithmetic) must keep working, so the new raise
+        cannot be over-broad."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="*:count")],
+            order=[OrderItem(
+                column="amount:sum > 1 and amount:sum < 500", direction="desc",
+            )],
+        )
+        sql = await _sql(engine, query)
+        assert _outer_select_columns(sql) == ["orders.status", "orders._count"], sql
+        _hidden_order_alias(sql)
+
+    @pytest.mark.parametrize("formula", [
+        "coalesce(amount:sum, id)",      # scalar call with a row-column arg
+        "coalesce(amount:sum, created_at)",  # ... and a time-dimension arg
+    ])
+    async def test_scalar_call_with_row_operand_raises_not_stringified(
+        self, engine, formula: str,
+    ) -> None:
+        """A row-column operand inside a scalar call must NOT be stringified.
+
+        The scalar-call renderer's trailing ``else`` coerced anything it did
+        not recognise with ``str(a)``, so a ``ColumnKey`` argument rendered as
+        the SQL string literal ``'path=() leaf=''id'''`` — structurally valid
+        SQL that silently compares an aggregate against a literal. The
+        arithmetic path already raised for the same operand; both now behave
+        the same.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="*:count")],
+            order=[OrderItem(column=formula, direction="desc")],
+        )
+        with pytest.raises(NotImplementedError):
+            await _sql(engine, query)
+
+    async def test_arithmetic_with_row_operand_raises(self, engine) -> None:
+        """The arithmetic sibling of the case above — pinned so the two paths
+        cannot drift back apart."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="*:count")],
+            order=[OrderItem(column="amount:sum / id", direction="desc")],
+        )
+        with pytest.raises(NotImplementedError):
+            await _sql(engine, query)
+
     def test_hidden_order_branch_rejects_unlisted_slot_kinds(self) -> None:
         """The generator's hidden-ORDER-BY branch must dispatch on an EXPLICIT
         set of key kinds — ``(AggregateKey, ArithmeticKey, ScalarCallKey,

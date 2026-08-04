@@ -1186,10 +1186,25 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     order_entries = []
     for spec in order_specs:
         sid = projection.registry.find_by_key(spec.bound.value_key)
-        if sid is not None:
-            order_entries.append(
-                OrderEntry(slot_id=sid, direction=spec.direction),
+        if sid is None:
+            # DEV-1733: an order target that reached here without a slot would
+            # be SILENTLY DROPPED — the query runs unsorted and returns wrong
+            # rows with no error. That was the original `change(...)` /
+            # scalar-call bug, and the entry-point relaxation makes new key
+            # shapes reachable (e.g. a top-level `IN` / `BETWEEN` predicate,
+            # which `_iter_slot_deps` treats as WHERE-inlined and never slots).
+            # Fail loudly for ANY unslotted shape rather than enumerating them,
+            # so this whole bug class cannot come back.
+            raise ValueError(
+                f"ORDER BY expression is not supported: "
+                f"{type(spec.bound.value_key).__name__} has no materialisable "
+                f"slot. Order by an aggregate, a transform, a composite "
+                f"arithmetic / scalar expression, a dimension, or declare the "
+                f"expression as a measure and order by its name."
             )
+        order_entries.append(
+            OrderEntry(slot_id=sid, direction=spec.direction),
+        )
 
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)
     stage_schema = _emit_stage_schema(

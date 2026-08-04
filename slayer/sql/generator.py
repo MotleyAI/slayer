@@ -23,7 +23,7 @@ from slayer.core.enums import (
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from slayer.core.errors import AggregationNotAllowedError, UnresolvableOrderColumnError
-from slayer.core.keys import _reroot_path_ref, reroot_aggregate_key
+from slayer.core.keys import _FrozenKey, _reroot_path_ref, reroot_aggregate_key
 from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.core.window_duration import parse_window_duration as _parse_window_duration
@@ -5548,7 +5548,16 @@ class SQLGenerator:
             args = []
             any_agg = False
             for a in key.args:
-                if isinstance(a, (AggregateKey, ArithmeticKey, ScalarCallKey, LiteralKey)):
+                # DEV-1733: dispatch on the KEY BASE, not a hand-listed subset.
+                # The trailing ``else`` below stringifies whatever it does not
+                # recognise, so a row-column argument
+                # (``coalesce(revenue:sum, quantity)``) used to render as the
+                # SQL string literal ``'path=() leaf=''quantity'''`` — valid
+                # SQL, silently wrong results. Routing every ValueKey through
+                # the recursive renderer makes an unsupported operand hit the
+                # same terminal NotImplementedError the arithmetic path raises,
+                # and leaves the ``else`` for genuine Python literals only.
+                if isinstance(a, _FrozenKey):
                     e, ag = self._render_aggregate_composite_expr(
                         key=a, slot=slot, source_model=source_model,
                         source_relation=source_relation,
