@@ -19,6 +19,7 @@ Helpers:
 
 from __future__ import annotations
 
+import re
 import tempfile
 from typing import Optional
 
@@ -114,3 +115,79 @@ def _having_text(sql: str, *, dialect: str = "postgres") -> str:
     """Rendered text of the outermost SELECT's HAVING predicate ('' if none)."""
     having = _outer_select(sql, dialect=dialect).args.get("having")
     return having.this.sql(dialect=dialect) if having is not None else ""
+
+
+def _norm(s: str) -> str:
+    """Collapse all runs of whitespace to single spaces."""
+    return " ".join(s.split())
+
+
+def _join_aliases(sql: str, *, dialect: str = "postgres") -> set[str]:
+    """The set of joined-table aliases in ``sql``.
+
+    Walks every ``JOIN`` node and collects the joined table's alias (or
+    bare name when unaliased) — e.g. ``LEFT JOIN customers AS customers``
+    yields ``customers``; ``LEFT JOIN regions AS customers__regions``
+    yields ``customers__regions``.
+
+    DEV-1732: shared out of ``tests/test_sql_generator.py`` so the
+    frame-bound tests assert against real JOIN nodes rather than alias
+    substrings in predicate text.
+    """
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    aliases: set[str] = set()
+    for join in tree.find_all(exp.Join):
+        target = join.this
+        if isinstance(target, exp.Table):
+            aliases.add(target.alias_or_name)
+    return aliases
+
+
+def _extract_src_body(sql: str) -> str:
+    """Pull out the ``_src`` subquery body from a generated window-measure SQL.
+
+    Resilient when the outer query also contains other LEFT JOIN (...) blocks
+    (e.g. cross-model measure subqueries): anchors on the unique ``\\n) AS _src``
+    suffix and reverse-searches for the matching ``LEFT JOIN (\\n`` before it.
+
+    The missing-anchor assertion is not reachable with today's generator output
+    (CodeRabbit): without it ``rfind`` returns ``-1`` and the helper silently
+    returns a slice from an arbitrary offset, so a future change to the join
+    keyword or its formatting would surface as a confusing assertion against the
+    wrong text rather than a clear failure here.
+    """
+    end = sql.index("\n) AS _src")
+    open_token = "LEFT JOIN (\n"
+    open_at = sql.rfind(open_token, 0, end)
+    assert open_at != -1, f"No {open_token!r} opening the _src subquery in:\n{sql}"
+    return sql[open_at + len(open_token):end]
+
+
+def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:
+    """Extract one CTE body by matching ``<cte_name> AS (`` and walking balanced
+    parentheses to its closing ``)``.
+
+    Robust against nested subqueries inside the CTE body (e.g. the ranked
+    ``FROM (SELECT ... ROW_NUMBER() …) AS …`` that first/last isolated CTEs
+    contain). ``cte_name_pattern`` is a regex matched against the CTE name —
+    typical use: ``r"_cm_\\w*loss_payment_amt\\w*"``. Raises ``AssertionError``
+    if no matching CTE is found.
+    """
+    name_match = re.search(rf"({cte_name_pattern})\s+AS\s*\(", sql)
+    assert name_match, f"No CTE matching {cte_name_pattern!r} in:\n{sql}"
+    # Position just after the opening paren of ``<name> AS (``.
+    body_start = sql.index("(", name_match.start()) + 1
+    depth = 1
+    i = body_start
+    while i < len(sql) and depth > 0:
+        ch = sql[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return sql[body_start:i]
+        i += 1
+    raise AssertionError(
+        f"Unbalanced parens — no closing ) for CTE {name_match.group(1)!r}:\n{sql}"
+    )

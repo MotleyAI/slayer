@@ -27,47 +27,18 @@ from slayer.sql.generator import (
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._cross_model_chain import _extract_cte_body
-from tests._engine_helpers import _assert_valid_sql, _engine_generate
+from tests._engine_helpers import (
+    _assert_valid_sql,
+    _engine_generate,
+    _extract_cte_body,
+    _extract_src_body,
+    _join_aliases,
+    _norm,
+)
 
 
 async def _noop_async(**kw):
     return None
-
-
-def _norm(s: str) -> str:
-    return " ".join(s.split())
-
-
-def _join_aliases(sql: str, *, dialect: str = "postgres") -> set[str]:
-    """The set of joined-table aliases in ``sql`` (the rendered-SQL
-    equivalent of the legacy enriched-query join-alias set).
-
-    Walks every ``JOIN`` node and collects the joined table's alias (or
-    bare name when unaliased) — e.g. ``LEFT JOIN customers AS customers``
-    yields ``customers``; ``LEFT JOIN regions AS customers__regions``
-    yields ``customers__regions``.
-    """
-    tree = sqlglot.parse_one(sql, dialect=dialect)
-    aliases: set[str] = set()
-    for join in tree.find_all(sqlglot.exp.Join):
-        target = join.this
-        if isinstance(target, sqlglot.exp.Table):
-            aliases.add(target.alias_or_name)
-    return aliases
-
-
-def _extract_src_body(sql: str) -> str:
-    """Pull out the `_src` subquery body from a generated window-measure SQL.
-
-    Resilient when the outer query also contains other LEFT JOIN (...) blocks
-    (e.g. cross-model measure subqueries): anchors on the unique `\\n) AS _src`
-    suffix and reverse-searches for the matching `LEFT JOIN (\\n` before it.
-    """
-    end = sql.index("\n) AS _src")
-    open_token = "LEFT JOIN (\n"
-    start = sql.rfind(open_token, 0, end) + len(open_token)
-    return sql[start:end]
 
 
 def _outer_order_terms(sql: str, dialect: str = "postgres") -> list[tuple[str, str]]:
@@ -1325,13 +1296,18 @@ class TestFields:
         # …but must still bound the host grain somewhere in the statement.
         assert "2024-06-01" in sql, sql
 
-    async def test_windowed_explicit_time_filter_truncates_src(
+    async def test_windowed_explicit_time_filter_does_not_truncate_src(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
-        """DEV-1732 (documented parity edge): an EXPLICIT row filter on the raw
-        window time column is NOT a ``date_range``, so it IS applied inside
-        ``_src`` — truncating the trailing window near the boundary. Stage 10
-        pins current (legacy) behavior; DEV-1732 tracks making it consistent."""
+        """DEV-1732: an EXPLICIT relational bound on the raw window time column
+        is a FRAME bound, not a population filter — so it bounds ``_base`` and is
+        stripped from ``_src``, exactly like the ``date_range`` spelling of the
+        same intent.
+
+        Stage 10 pinned the opposite (legacy parity, a documented truncation);
+        DEV-1732 inverted this pin. Rich coverage lives in
+        ``tests/test_dev1732_frame_bound_filters.py``.
+        """
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
@@ -1341,10 +1317,12 @@ class TestFields:
         sql = await _generate(generator=generator, query=query, model=orders_model)
         assert "_wm_" in sql, sql
         src_body = _extract_src_body(sql)
-        assert "2024-06-01" in src_body, (
-            f"DEV-1732: an explicit raw-time-column filter is applied inside _src "
-            f"(documented truncation).\nsrc:\n{src_body}"
+        assert "2024-06-01" not in src_body, (
+            f"DEV-1732: an explicit raw-time-column frame bound must be stripped "
+            f"from _src.\nsrc:\n{src_body}"
         )
+        # …but it must still bound the host grain.
+        assert "2024-06-01" in _extract_cte_body(sql, r"_base"), sql
 
     async def test_windowed_output_is_scope_closed(
         self, generator: SQLGenerator, orders_model: SlayerModel,

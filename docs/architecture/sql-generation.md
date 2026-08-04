@@ -112,6 +112,36 @@ filters route to the combined-SELECT outer `WHERE` (`Phase.POST`). `sum`/`avg`
 local measures only; other shapes raise at plan time (`_guard_windowed_measures`
 in `stage_planner.py`).
 
+### Frame bounds vs population filters (DEV-1732)
+
+`_src` inherits the host's ROW-phase filters **minus their frame bounds** — a
+relational comparison (`<`, `<=`, `>`, `>=`) between a non-hidden time
+dimension's raw column and a temporal literal. Without that, the trailing window
+cannot reach rows before the earliest visible bucket and that bucket
+under-counts; with it, `date_range` and the explicit spelling of the same intent
+produce identical numbers.
+
+`slayer/core/time_bounds.py` owns the analysis (dependency-free, so planner and
+generator share it). `stage_planner.plan_query` computes the strippable column
+set once into `PlannedQuery.frame_bound_columns` and partitions the filters into
+`WindowedAggregatePlan.where_filter_ids` (applied) plus `src_filter_rewrites`
+(applied as a residual — a top-level `and` is split so only its frame-bound
+conjuncts drop; `or`/`not` are never descended into). The generator's
+`_effective_src_filters` materialises that view **once** and feeds the same list
+to both join discovery and rendering, so the two cannot disagree about what the
+CTE contains.
+
+Hidden `TimeTruncKey` slots are excluded from `frame_bound_columns` on purpose:
+`_build_windowed_plans` skips hidden row slots, so a hidden time axis is never
+equality-joined into `_src` and stripping its bound would leave it
+unconstrained. Mode-A `SlayerModel.filters` are exempt entirely — they define
+which rows exist, not which frame the query looks at.
+
+The `time_shift` shifted CTE (`_shifted_where_part`) applies the same rule,
+reading the same `frame_bound_columns`; its former
+`isinstance(..., BetweenKey)` special case is subsumed, since a `date_range`'s
+`BetweenKey` column is always a query time dimension's raw column.
+
 ## Mode-A filter inlining and join discovery (DEV-1494)
 
 A column-level `Column.filter` on an aggregated measure becomes a CASE-WHEN

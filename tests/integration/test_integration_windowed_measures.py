@@ -192,3 +192,216 @@ class TestWindowedMeasureValues:
         assert us_rows, result.data
         r0 = us_rows[0]
         assert float(r0[_key(r0, "rev_90d")]) == 300.0, r0
+
+
+# =========================================================================== #
+# DEV-1732 — frame-bound equivalence VALUE tests.
+#
+# The acceptance criterion in its strongest form: a `date_range` and an
+# equivalent explicit filter must produce IDENTICAL numbers, verified against
+# real databases rather than SQL shape.
+#
+# Its own seed and storages (not the `_ORDERS` set above) so the extra rows
+# these tests need cannot perturb the Stage-10 expectations.
+#
+# (id, amount, created_at, status)::
+#
+#     1: 2024-01-01  100  paid
+#     2: 2024-01-15  200  paid
+#     3: 2024-02-15  300  unpaid
+#     4: 2024-03-10  400  paid
+#     5: 2024-03-20  500  paid     <- AFTER a 2024-03-15 frame end, before
+#                                     March's bucket_end (2024-04-01)
+#
+# Monthly buckets, window='90d'; 2024 is a leap year:
+#
+#     bucket_end(Mar) = 2024-04-01, lower = 2024-04-01 - 90d = 2024-01-02
+#     March window [2024-01-02, 2024-04-01) holds rows 2,3,4,5 -> 1400
+#     (row 1 at 2024-01-01 falls just outside the lower bound)
+#     paid-only March window holds rows 2,4,5 -> 1100
+#     February bucket sum = 300 (row 3) — the `time_shift` prev for March
+# =========================================================================== #
+
+_FB_ORDERS = [
+    (1, 100.0, "2024-01-01 00:00:00", "paid"),
+    (2, 200.0, "2024-01-15 00:00:00", "paid"),
+    (3, 300.0, "2024-02-15 00:00:00", "unpaid"),
+    (4, 400.0, "2024-03-10 00:00:00", "paid"),
+    (5, 500.0, "2024-03-20 00:00:00", "paid"),
+]
+
+_MARCH_ONLY = ["2024-03-01", "2024-03-31"]
+_MARCH_ONLY_FILTER = "created_at >= '2024-03-01' and created_at <= '2024-03-31'"
+# Frame end mid-bucket: 2024-03-15 sits inside March, whose bucket_end is
+# 2024-04-01 — so row 5 (2024-03-20) is past the caller's stated end but inside
+# the trailing window.
+_MID_BUCKET_END = ["2024-01-01", "2024-03-15"]
+_MID_BUCKET_END_FILTER = "created_at >= '2024-01-01' and created_at <= '2024-03-15'"
+
+
+def _fb_orders_model() -> SlayerModel:
+    return SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source="fb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            Column(name="status", sql="status", type=DataType.TEXT),
+        ],
+    )
+
+
+@pytest.fixture(scope="module")
+def _duckdb_fb_storage(tmp_path_factory):
+    duckdb = pytest.importorskip("duckdb")
+    tmp = tmp_path_factory.mktemp("fb_duckdb")
+    db_path = tmp / "fb.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE orders (id INTEGER, amount DOUBLE, created_at TIMESTAMP, status VARCHAR)",
+    )
+    conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", _FB_ORDERS)
+    conn.close()
+    storage = YAMLStorage(base_dir=str(tmp / "storage"))
+    run_sync(storage.save_datasource(
+        DatasourceConfig(name="fb", type="duckdb", database=str(db_path)),
+    ))
+    run_sync(storage.save_model(_fb_orders_model()))
+    return storage
+
+
+@pytest.fixture(scope="module")
+def _sqlite_fb_storage(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("fb_sqlite")
+    db_path = tmp / "fb.sqlite"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE orders (id INTEGER, amount REAL, created_at TIMESTAMP, status TEXT)",
+    )
+    conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", _FB_ORDERS)
+    conn.commit()
+    conn.close()
+    storage = YAMLStorage(base_dir=str(tmp / "storage"))
+    run_sync(storage.save_datasource(
+        DatasourceConfig(name="fb", type="sqlite", database=str(db_path)),
+    ))
+    run_sync(storage.save_model(_fb_orders_model()))
+    return storage
+
+
+@pytest.fixture(params=["duckdb", "sqlite"])
+def frame_bound_engine(request) -> SlayerQueryEngine:
+    storage = request.getfixturevalue(f"_{request.param}_fb_storage")
+    return SlayerQueryEngine(storage=storage)
+
+
+def _by_month(result, suffix: str) -> dict:
+    return {
+        str(r[_key(r, "created_at")])[:7]: r[_key(r, suffix)]
+        for r in result.data
+    }
+
+
+@pytest.mark.integration
+class TestFrameBoundEquivalenceValues:
+    """DEV-1732: the two spellings of a time frame must agree numerically."""
+
+    async def _windowed_by_month(
+        self, engine: SlayerQueryEngine, *, date_range=None, filters=None,
+    ) -> dict:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+                date_range=date_range,
+            )],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
+            filters=filters,
+        )
+        return _by_month(await engine.execute(query=query), "rev_90d")
+
+    async def test_date_range_and_explicit_filter_agree(
+        self, frame_bound_engine: SlayerQueryEngine,
+    ) -> None:
+        """The headline acceptance criterion. Before DEV-1732 the explicit
+        spelling truncated ``_src`` to March, yielding 900 instead of 1400."""
+        via_range = await self._windowed_by_month(
+            frame_bound_engine, date_range=_MARCH_ONLY,
+        )
+        via_filter = await self._windowed_by_month(
+            frame_bound_engine, filters=[_MARCH_ONLY_FILTER],
+        )
+        assert via_range == via_filter, (via_range, via_filter)
+        assert float(via_range["2024-03"]) == 1400.0, via_range
+
+    async def test_mixed_spelling_agrees_with_split_spelling(
+        self, frame_bound_engine: SlayerQueryEngine,
+    ) -> None:
+        """``date_range`` + a population filter must equal the single combined
+        filter string — i.e. the top-level ``and`` really is split, and the
+        surviving ``status`` conjunct still constrains ``_src``.
+
+        1100, not 1400: the unpaid February 300 is excluded by ``status``. A
+        rule that dropped the WHOLE mixed predicate would return 1400 here.
+        """
+        via_range = await self._windowed_by_month(
+            frame_bound_engine, date_range=_MARCH_ONLY, filters=["status = 'paid'"],
+        )
+        via_filter = await self._windowed_by_month(
+            frame_bound_engine, filters=[f"{_MARCH_ONLY_FILTER} and status = 'paid'"],
+        )
+        assert via_range == via_filter, (via_range, via_filter)
+        assert float(via_range["2024-03"]) == 1100.0, via_range
+
+    async def test_upper_bound_widening_matches_date_range_mid_bucket(
+        self, frame_bound_engine: SlayerQueryEngine,
+    ) -> None:
+        """The accepted upper-bound consequence, pinned by VALUE.
+
+        The frame ends 2024-03-15, mid-March, but March's ``bucket_end`` is
+        2024-04-01 — so the trailing window legitimately reaches row 5
+        (2024-03-20), which is past the caller's stated end. That widening is
+        exactly what ``date_range`` already does; DEV-1732's contract is that
+        the explicit spelling does the same thing, not something safer.
+
+        1400 (includes row 5), not 900 (the pre-DEV-1732 truncated answer).
+        """
+        via_range = await self._windowed_by_month(
+            frame_bound_engine, date_range=_MID_BUCKET_END,
+        )
+        via_filter = await self._windowed_by_month(
+            frame_bound_engine, filters=[_MID_BUCKET_END_FILTER],
+        )
+        assert via_range == via_filter, (via_range, via_filter)
+        assert float(via_range["2024-03"]) == 1400.0, via_range
+
+    async def test_time_shift_prev_agrees_across_spellings(
+        self, frame_bound_engine: SlayerQueryEngine,
+    ) -> None:
+        """The same rule in the shifted CTE. Before DEV-1732 the explicit
+        spelling truncated the shifted CTE to March rows, so March's ``prev``
+        came back NULL while the ``date_range`` spelling gave February's 300."""
+        async def _prev(*, date_range=None, filters=None):
+            query = SlayerQuery(
+                source_model="orders",
+                time_dimensions=[TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                    date_range=date_range,
+                )],
+                measures=[{
+                    "formula": "time_shift(revenue:sum, -1, 'month')", "name": "prev",
+                }],
+                filters=filters,
+            )
+            return _by_month(await frame_bound_engine.execute(query=query), "prev")
+
+        via_range = await _prev(date_range=_MARCH_ONLY)
+        via_filter = await _prev(filters=[_MARCH_ONLY_FILTER])
+        assert via_range == via_filter, (via_range, via_filter)
+        assert via_range["2024-03"] is not None, via_range
+        assert float(via_range["2024-03"]) == 300.0, via_range

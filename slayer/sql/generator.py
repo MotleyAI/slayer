@@ -8,7 +8,7 @@ query engine's _enrich() step.
 import copy
 import logging
 import re
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Set, Tuple, Union
+from typing import AbstractSet, Any, Dict, List, Literal, NamedTuple, Optional, Set, Tuple, Union
 
 import sqlglot
 from sqlglot import exp
@@ -26,6 +26,7 @@ from slayer.core.errors import AggregationNotAllowedError, UnresolvableOrderColu
 from slayer.core.keys import _reroot_path_ref, reroot_aggregate_key
 from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
+from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration as _parse_window_duration
 from slayer.engine.column_expansion import (
     _is_trivial_base,
@@ -604,6 +605,31 @@ def _cte_name_from_alias(prefix: str, alias: str) -> str:
     sanitized = flat_name(alias)
     sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", sanitized)
     return prefix + sanitized
+
+
+def _effective_src_filters(*, planned_query, plan) -> list:
+    """``planned_query.filters_by_phase`` as the windowed ``_src`` scope sees it
+    (DEV-1732): frame-bound residuals substituted for the host's predicates.
+
+    Returned as ONE list that both ``_resolve_where_filter_joins_via_scope`` and
+    ``_build_where_having_from_planned`` consume, so join discovery and
+    rendering are structurally guaranteed to agree. Entries whose filter is
+    wholly a frame bound need no substitution here — the planner already left
+    their ids out of ``plan.where_filter_ids``, and the caller's
+    ``skip_filter_ids`` drops them.
+
+    Returns the original list unchanged when the plan carries no rewrites, so a
+    query without a split conjunction emits byte-identical SQL.
+    """
+    rewrites = getattr(plan, "src_filter_rewrites", None)
+    if not rewrites:
+        return planned_query.filters_by_phase
+    by_id = {r.filter_id: r.expression for r in rewrites}
+    return [
+        fp if fp.id not in by_id
+        else fp.model_copy(update={"expression": by_id[fp.id]})
+        for fp in planned_query.filters_by_phase
+    ]
 
 
 def _alias_prefixes(model_name: str) -> list:
@@ -5682,18 +5708,21 @@ class SQLGenerator:
         src_cols.append(val_expr.as_("_w_value"))
 
         # WHERE-phase row filters (model + user) inherited into ``_src``, minus
-        # date_range (``plan.where_filter_ids``). Register their crossed joins
-        # into ``src_scope`` first (Law 1), then render.
+        # their frame bounds (``plan.where_filter_ids`` /
+        # ``plan.src_filter_rewrites``, DEV-1714 + DEV-1732). ONE effective list
+        # feeds both join discovery (Law 1) and rendering, so the two can never
+        # disagree about what this CTE contains.
         all_filter_ids = {fp.id for fp in planned_query.filters_by_phase}
         skip_for_src = all_filter_ids - set(plan.where_filter_ids)
+        src_filters = _effective_src_filters(planned_query=planned_query, plan=plan)
         self._resolve_where_filter_joins_via_scope(
             planned_query=planned_query, scope=src_scope,
-            skip_filter_ids=skip_for_src,
+            skip_filter_ids=skip_for_src, filters_override=src_filters,
         )
         src_where, _src_having = self._build_where_having_from_planned(
             planned_query=planned_query, source_relation=source_relation,
             source_model=source_model, bundle=bundle,
-            skip_filter_ids=skip_for_src,
+            skip_filter_ids=skip_for_src, filters_override=src_filters,
         )
 
         # ``_src`` FROM + joins from the scope's discovered paths.
@@ -8889,12 +8918,16 @@ class SQLGenerator:
         """Build the WHERE clauses for the shifted CTE that re-aggregates
         the source relation, plus the join paths those clauses cross.
 
-        7b.3c invariant: ``BetweenKey`` filters (those derived from
-        ``TimeDimension.date_range``) MUST be omitted from the shifted
-        inner CTE so the earliest visible bucket can still carry a
-        non-null shifted value. Other ROW-phase filters
-        (e.g. ``status = 'active'``) are propagated unchanged so the
-        shifted aggregation runs over the same row population.
+        7b.3c invariant, generalised by DEV-1732: a FRAME BOUND must be omitted
+        from the shifted inner CTE so the earliest visible bucket can still
+        carry a non-null shifted value. That covers the ``BetweenKey`` a
+        ``date_range`` produces AND the explicit relational spelling of the same
+        intent (``created_at >= '2024-01-01'``), which used to be propagated —
+        so the two spellings gave different numbers. A filter that is only
+        PARTLY a frame bound propagates as its residual population predicate.
+
+        Other ROW-phase filters (e.g. ``status = 'active'``) are propagated
+        unchanged so the shifted aggregation runs over the same row population.
         AGGREGATE / POST phase filters never apply to the shifted CTE
         (they're outer-projection concerns).
 
@@ -8910,12 +8943,17 @@ class SQLGenerator:
 
         out: List[str] = []
         crossed_paths: List[Tuple[str, ...]] = []
+        # DEV-1732: the frame-bound column set is computed once by the planner
+        # and carried on the plan, so this path and the windowed ``_src`` path
+        # cannot drift apart.
+        time_cols = frozenset(planned_query.frame_bound_columns)
         for fp in planned_query.filters_by_phase:
             if fp.phase != Phase.ROW:
                 continue
             rendered = self._shifted_where_part(
                 fp=fp, source_relation=source_relation,
                 source_model=source_model, bundle=bundle,
+                time_columns=time_cols,
             )
             if rendered is None:
                 continue
@@ -8928,10 +8966,26 @@ class SQLGenerator:
 
     def _shifted_where_part(
         self, *, fp, source_relation: str, source_model, bundle,
+        time_columns: "AbstractSet[Any]",
     ) -> "Optional[Tuple[str, List[Tuple[str, ...]]]]":
         """Render one ROW-phase filter for the shifted CTE, returning its SQL
-        plus the join paths it crosses — or ``None`` to omit it (a
-        ``BetweenKey`` date_range filter, per the 7b.3c invariant).
+        plus the join paths it crosses — or ``None`` to omit it entirely.
+
+        A filter that is wholly a FRAME BOUND on one of ``time_columns`` is
+        omitted; one that is partly a frame bound renders as its residual
+        population predicate (DEV-1732). This subsumes the old
+        ``isinstance(..., BetweenKey)`` special case: a ``date_range``'s
+        ``BetweenKey`` column is always a query time dimension's raw column, so
+        ``strip_frame_bounds`` returns ``None`` for it — same behaviour, one
+        rule.
+
+        Mode-A ``text`` filters are exempt from the analysis and always
+        propagate (a model filter defines which rows EXIST, not the frame).
+
+        ``time_columns`` is REQUIRED, deliberately (Codex): ``strip_frame_bounds``
+        returns its input unchanged for an empty set, so a default would let a
+        future caller silently start rendering every ``date_range`` into the
+        shifted CTE — the exact 7b.3c regression this method exists to prevent.
 
         The join paths are collected per carrier kind (CodeRabbit): a TYPED
         filter is scanned STRUCTURALLY on its already-rendered AST via
@@ -8941,14 +8995,18 @@ class SQLGenerator:
         ``text`` filter has only its string form, so it keeps the
         ``_filter_join_paths`` dual raw + inline-expanded scan (the DEV-1494
         contract that surfaces a derived ref's expansion joins).
-        """
-        from slayer.core.keys import BetweenKey
 
+        Note the scan runs on the RESIDUAL, so the shifted CTE's join set
+        follows what it actually renders.
+        """
         if fp.expression is not None:
-            if isinstance(fp.expression.value_key, BetweenKey):
-                return None  # date_range filter — omit from inner shifted CTE.
+            residual = strip_frame_bounds(
+                key=fp.expression.value_key, time_columns=time_columns,
+            )
+            if residual is None:
+                return None  # wholly a frame bound — omit from the shifted CTE.
             rendered = self._render_value_key_for_filter(
-                key=fp.expression.value_key,
+                key=residual,
                 source_relation=source_relation,
                 source_model=source_model,
                 bundle=bundle,
@@ -10145,6 +10203,7 @@ class SQLGenerator:
     def _resolve_where_filter_joins_via_scope(
         self, *, planned_query, scope: ScopeFrame,
         skip_filter_ids: Optional[Set[str]] = None,
+        filters_override: "Optional[List[Any]]" = None,
     ) -> None:
         """Register into ``scope.join_paths`` the joins every WHERE-phase filter
         references (Law 1 — discovery is a side effect of resolving the filter
@@ -10165,11 +10224,19 @@ class SQLGenerator:
         Filters routed to a per-plan ``_cm_*`` CTE (``skip_filter_ids``) are
         applied there, not on the host base, so their joins are not registered
         here.
+
+        ``filters_override`` (DEV-1732) replaces the filter list being scanned —
+        the windowed ``_src`` scope passes the SAME rewritten list it renders, so
+        discovery and rendering can never disagree about what the CTE contains.
         """
         from slayer.core.keys import Phase
 
         skip = skip_filter_ids or set()
-        for fp in planned_query.filters_by_phase:
+        filters = (
+            planned_query.filters_by_phase
+            if filters_override is None else filters_override
+        )
+        for fp in filters:
             if fp.phase != Phase.ROW or fp.id in skip:
                 continue
             if fp.expression is not None:
@@ -10503,7 +10570,7 @@ class SQLGenerator:
             f"AggregateKey source {type(source).__name__} not supported.",
         )
 
-    def _build_where_having_from_planned(
+    def _build_where_having_from_planned(  # NOSONAR(S3776) — one cohesive pass over filters_by_phase routing each entry to WHERE / HAVING / POST by phase, with the per-carrier (typed vs Mode-A text) rendering and the HAVING grouped-column guard inline. The complexity is pre-existing; DEV-1732 added only the `filters_override` list selection. Splitting the phase routing from the rendering would thread slot_by_key / first_last_state / where_parts / having_parts through helpers without simplifying anything.
         self,
         *,
         planned_query,
@@ -10513,7 +10580,10 @@ class SQLGenerator:
         skip_filter_ids: Optional[Set[str]] = None,
         first_last_state: Optional[FirstLastRenderState] = None,
         aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
+        filters_override: "Optional[List[Any]]" = None,
     ):
+        """``filters_override`` (DEV-1732) replaces ``filters_by_phase`` as the
+        list being rendered — see ``_effective_src_filters``."""
         from slayer.core.keys import Phase
 
         skip = skip_filter_ids or set()
@@ -10529,7 +10599,11 @@ class SQLGenerator:
         }
         where_parts: list[str] = []
         having_parts: list[str] = []
-        for fp in planned_query.filters_by_phase:
+        filters = (
+            planned_query.filters_by_phase
+            if filters_override is None else filters_override
+        )
+        for fp in filters:
             if fp.id in skip:
                 # DEV-1450 stage 7b.12: filters routed into a per-plan
                 # cross-model CTE (where_filter_ids / having_filter_ids)
