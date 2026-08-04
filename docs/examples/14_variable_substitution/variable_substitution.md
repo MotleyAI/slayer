@@ -55,8 +55,9 @@ pushdown is *optional*: it filters when the caller supplies a value and becomes 
 no-op when they don't. SLayer expresses that with an **optional block**
 `{? ... ?}` on a Mode-A surface — it renders (parenthesised) when every `{var}`
 inside is supplied, and collapses to the neutral `(1=1)` otherwise. A **list**
-value renders an injection-safe `IN`-list (write the parens; per-element quotes
-are added for you). Open the `WHERE` with `1=1` so the collapse leaves valid SQL.
+value renders an injection-safe `IN`-list (write the parens; *string* elements
+are auto-quoted, numbers stay unquoted). Open the `WHERE` with `1=1` so the
+collapse leaves valid SQL.
 
 ```json
 {
@@ -88,8 +89,10 @@ query or per call.
 ## Contract
 
 - **Raise on missing — once any variable is in play.** As soon as one variable is
-  supplied, every `{var}` must resolve or execution raises. A parameterized model
-  is meant to fail loudly without its value, not silently match nothing.
+  supplied, every *required* `{var}` must resolve or execution raises. A
+  parameterized model is meant to fail loudly without its value, not silently
+  match nothing. (The exception is a `{var}` **inside a `{? ... ?}` block** —
+  when it's absent the whole block collapses to `(1=1)` instead of raising.)
 - **Fully variable-free executions treat braces as literals**, so a raw brace
   literal such as a Postgres array `'{1,2,3}'` survives untouched. Use `{{` / `}}`
   for literal braces in a model that *does* use variables.
