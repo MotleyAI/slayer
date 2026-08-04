@@ -1088,10 +1088,13 @@ class TestStillRejected:
             row_slots=[slot],
             order=[OrderEntry(slot_id="s0", direction="asc")],
         )
+        # Everything that can throw is built OUTSIDE the raises block, so the
+        # only invocation under test is the call itself.
         generator = SQLGenerator(dialect="sqlite")
+        select = exp.Select()
         with pytest.raises(NotImplementedError) as ei:
             generator._apply_order_limit_from_planned(
-                select=exp.Select(),
+                select=select,
                 planned_query=planned,
                 source_relation="orders",
                 slots_by_id={"s0": slot},
