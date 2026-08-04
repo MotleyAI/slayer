@@ -101,16 +101,19 @@ emitted as hidden models.
 parsed (via a pure-Python ESTree parser) into the same shapes as the YAML path,
 so every mapping above applies equally. Supported: template-literal strings
 (`` `...` ``) including `${CUBE}` / `${member}` / `${a.b}` refs, object and array
-literals, `//` and `/* */` comments, `module.exports = ` / `export default`
-wrappers, and multiple cubes per file. Member keys are accepted in either
-`camelCase` (`primaryKey`) or `snake_case` (`primary_key`); `meta` is preserved
-verbatim.
+literals, `//` and `/* */` comments, `module.exports =` / `export default`
+wrappers, `import` / `export` (ES-module) configs, and multiple cubes per file.
+Member keys are accepted in either `camelCase` (`primaryKey`) or `snake_case`
+(`primary_key`); `meta` is preserved verbatim.
 
 Anything **dynamic** — a helper call (`sql: buildSql()`), a spread (`...base`), a
 bare identifier reference (`sql: someConst`), or a computed key — can't be
 resolved offline. The affected member is skipped with a report issue and the rest
 of the cube still converts (one bad dimension does not sink the model). The parser
-targets ES2017; a config using newer syntax is reported rather than crashing.
+targets ES2017; a config using newer syntax is reported rather than crashing. One
+Stage-1 gap: a JS **view** whose `join_path` is written as a bare cube identifier
+(`join_path: Orders`) rather than a string is skipped — write it as a string
+(`join_path: 'Orders'`) for now.
 
 ### FILTER_PARAMS pushdowns
 
@@ -132,7 +135,10 @@ every pushdown as optional (literal Cube semantics) instead. Each emitted variab
 is listed in the report (`filter_params_variable`), and the model stashes the
 member/required/kind/description of each variable under `meta.cube_variables`.
 
-Only set-membership (`IN` / equals) semantics are representable in Stage 1. A
+Two pushdown shapes are representable in Stage 1: the **string form** (set
+membership — `IN` / equals) and the **arrow form** (a date range built from the
+`from` / `to` bounds, as above). Cube's other per-operator filter helpers
+(`contains`, `gt`, `startsWith`, …) are not represented as their own forms. A
 cross-cube reference, an unknown member, a generated-name collision, or an
 arrow form in a YAML (non-JS) config is reported as `filter_params_unsupported`
 and drops the cube.

@@ -598,7 +598,9 @@ def model_skeleton_fields(
     """Cheap, DB-free structured skeleton of a model.
 
     Shape: ``{name, canonical_id, description, column_names, measure_names,
-    aggregation_names, joins_to}``. Used by ``inspect(model, compact=True)``
+    aggregation_names, joins_to, variables}`` — ``variables`` is
+    ``{required, optional}`` (DEV-1730), the Mode-A ``{var}`` / ``{? ?}``
+    placeholders classified structurally. Used by ``inspect(model, compact=True)``
     JSON and by each entry of ``inspect(datasource, compact=False)``'s
     ``models`` list (DEV-1588). ``description`` is truncated by ``max_chars``;
     ``canonical_id`` falls back to the bare name when ``data_source`` is unset
@@ -632,7 +634,9 @@ def render_model_skeleton(
     An optional truncated description line (only when set), then four lines —
     ``Columns`` / ``Measures`` / ``Aggregations`` / ``Joins to`` — always
     present, each empty value rendered ``_(none)_`` (aligned to
-    ``models_summary(compact)``). The caller prepends the ``#``/``##`` heading.
+    ``models_summary(compact)``), plus a fifth ``Variables`` line when the model
+    is parameterised with Mode-A ``{var}`` / ``{? ?}`` placeholders (DEV-1730).
+    The caller prepends the ``#``/``##`` heading.
     """
     fields = model_skeleton_fields(model=model, max_chars=max_chars)
     lines: list[str] = []

@@ -381,7 +381,7 @@ examples:
     # ── import-cube ───────────────────────────────────────────────────
     import_cube_parser = subparsers.add_parser(
         "import-cube",
-        help="Import Cube (Cube.js / Cube.dev) YAML data models into SLayer models",
+        help="Import Cube (Cube.js / Cube.dev) YAML and JavaScript data models into SLayer models",
         epilog="""\
 examples:
   slayer import-cube ./cube_project --datasource my_postgres

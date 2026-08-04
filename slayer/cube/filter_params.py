@@ -80,8 +80,14 @@ def build_arrow_ref(
 
 def render_filter_param(ref: CubeFilterParamRef, *, required: bool) -> str:
     """Render a ref to SLayer Mode-A text: bare body if required (raise-on-missing),
-    else wrapped in an optional block (collapse to ``(1=1)`` when absent)."""
-    if required:
+    else wrapped in an optional block (collapse to ``(1=1)`` when absent).
+
+    A ref with **no** variables (a degenerate arrow whose body references neither
+    ``from`` nor ``to``) is always emitted bare — an optional block needs ≥1
+    variable to key on, so a var-less block would pass import validation but raise
+    at runtime. Rendering it bare keeps the constant predicate and stays valid.
+    """
+    if required or not ref.var_names:
         return ref.body_template
     return "{? " + ref.body_template + " ?}"
 
@@ -148,6 +154,20 @@ def _scan_filter_call(text: str, start: int) -> tuple[str, str, str, int] | None
     if not text.startswith(".filter(", pos):
         return None
     pos += len(".filter(")
+    scanned = _scan_balanced_arg(text, pos)
+    if scanned is None:
+        return None
+    arg, close = scanned
+    if not text.startswith("}", close + 1):
+        return None
+    return cube, member, arg, close + 2
+
+
+def _scan_balanced_arg(text: str, pos: int) -> tuple[str, int] | None:
+    """From just inside ``.filter(`` at ``pos``, return ``(arg_text, close_index)``
+    for the matching ``)``, or ``None`` if unbalanced. Parentheses are balanced
+    while respecting single-quoted string literals (``''`` escaping), so a ``)``
+    or ``,`` inside a literal doesn't truncate the argument."""
     arg_start = pos
     depth = 1
     in_str = False
@@ -169,10 +189,7 @@ def _scan_filter_call(text: str, start: int) -> tuple[str, str, str, int] | None
         elif c == ")":
             depth -= 1
             if depth == 0:
-                arg = text[arg_start:pos]
-                if text.startswith("}", pos + 1):
-                    return cube, member, arg, pos + 2
-                return None
+                return text[arg_start:pos], pos
         pos += 1
     return None
 

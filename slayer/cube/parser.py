@@ -177,7 +177,9 @@ def _parse_js_files(project_path: str, cubes: list, views: list, issues: list) -
         try:
             with open(path, encoding="utf-8") as fh:
                 source = fh.read()
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
+            # UnicodeDecodeError (invalid UTF-8) subclasses ValueError, not
+            # OSError — catch it too so one bad file doesn't abort the import.
             issues.append(CubeConversionIssue(
                 category=CubeIssueCategory.PARSE_ERROR, severity="warning",
                 message=f"File '{path}' could not be read: {exc}"))

@@ -138,6 +138,25 @@ def test_invalid_utf8_file_is_reported_not_fatal(tmp_path):
     assert any(i.category == CubeIssueCategory.PARSE_ERROR for i in issues)
 
 
+def test_invalid_utf8_js_file_is_reported_not_fatal(tmp_path):
+    # DEV-1730: a non-UTF-8 .js file raises UnicodeDecodeError on read; the JS
+    # discovery path must report it, not abort the import.
+    (tmp_path / "bad.js").write_bytes(b"cube(`\xff`, {})")
+    (tmp_path / "good.js").write_text("cube(`ok`, { sql_table: `public.ok` });")
+    project, issues = parse_cube_project(str(tmp_path))
+    assert any(c.name == "ok" for c in project.cubes)
+    assert any(i.category == CubeIssueCategory.PARSE_ERROR for i in issues)
+
+
+def test_js_files_discovered_alongside_yaml(tmp_path):
+    (tmp_path / "a.yml").write_text(
+        "cubes:\n  - name: y_cube\n    sql_table: public.y\n")
+    (tmp_path / "b.js").write_text("cube(`js_cube`, { sql_table: `public.j` });")
+    project, _ = parse_cube_project(str(tmp_path))
+    names = {c.name for c in project.cubes}
+    assert {"y_cube", "js_cube"} <= names
+
+
 def test_empty_dir_yields_empty_project(tmp_path):
     project, _ = parse_cube_project(str(tmp_path))
     assert project.cubes == []

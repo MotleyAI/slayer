@@ -328,17 +328,23 @@ def substitute_variables(
     if not _contains_block_delimiter(filter_str):
         return _VAR_PATTERN.sub(_replace, filter_str)
 
+    return _render_block_segments(filter_str, variables, _replace)
+
+
+def _render_block_segments(filter_str: str, variables: dict, replace_fn) -> str:
+    """Render a Mode-A string that contains at least one ``{? ... ?}`` block.
+
+    Plain text segments substitute normally; a block renders parenthesised when
+    every inner ``{var}`` is supplied, else collapses to the neutral ``(1=1)``.
+    """
     out: list[str] = []
     for kind, segment in _split_blocks(filter_str):
         if kind == "text":
-            out.append(_VAR_PATTERN.sub(_replace, segment))
+            out.append(_VAR_PATTERN.sub(replace_fn, segment))
             continue
-        # kind == "block": render (parenthesised) iff every inner var is
-        # supplied; otherwise collapse to the neutral (1=1).
         names = _block_var_names(segment, filter_str)
         if all(name in variables for name in names):
-            rendered = _VAR_PATTERN.sub(_replace, segment).strip()
-            out.append("(" + rendered + ")")
+            out.append("(" + _VAR_PATTERN.sub(replace_fn, segment).strip() + ")")
         else:
             out.append("(1=1)")
     return "".join(out)
@@ -409,7 +415,15 @@ def extract_variable_refs(text: str) -> tuple[set[str], set[str]]:
     """
     bare: set[str] = set()
     blocked: set[str] = set()
-    for kind, segment in _split_blocks(text):
+    try:
+        parts = _split_blocks(text)
+    except ValueError:
+        # Malformed block delimiters (stray '?}' / unterminated '{?'): classify
+        # structurally as block-free rather than breaking read-only inspection
+        # (extract_model_variables runs unguarded from the inspect skeleton).
+        # Execution still raises through substitute_variables.
+        parts = [("text", text)]
+    for kind, segment in parts:
         target = bare if kind == "text" else blocked
         for match in _VAR_PATTERN.finditer(segment):
             if match.group(0) in ("{{", "}}"):

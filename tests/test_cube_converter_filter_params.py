@@ -101,6 +101,11 @@ def test_report_has_one_variable_entry_per_logical_variable():
     # fulfillment_date (used at 2 sites) reported once; brand, market once each
     assert reported == {"fulfillment_date", "brand", "market"}
     assert all(i.severity == "info" for i in var_issues)
+    # Dedup is by variable NAME, so both fulfillment_date bounds are reported —
+    # the report must agree with meta.cube_variables (DEV-1730 review).
+    all_msgs = " ".join(i.message for i in var_issues)
+    assert "fulfillment_date_from" in all_msgs
+    assert "fulfillment_date_to" in all_msgs
 
 
 def test_meta_cube_variables_full_shape():

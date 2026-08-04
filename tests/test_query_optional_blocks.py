@@ -188,6 +188,15 @@ def test_extract_walks_all_four_mode_a_surfaces():
     assert set(v.required) == {"b_from", "d"}
 
 
+def test_extract_on_malformed_block_does_not_raise():
+    # Read-only inspection must never crash on a stored model whose SQL only
+    # *looks* like a block (a literal '?}' e.g. inside a regex/JSON path). It is
+    # classified as block-free; execution still raises (DEV-1730 review).
+    model = _sql_model(sql="SELECT * FROM t WHERE tag ~ 'a?}' AND x = '{y}'")
+    v = extract_model_variables(model)
+    assert v.required == ["y"]
+
+
 def test_extract_dedupes_and_sorts():
     model = _sql_model(
         sql="WHERE {? a IN ({a}) ?} AND {? a IN ({a}) ?}",

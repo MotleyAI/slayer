@@ -149,6 +149,48 @@ def test_module_exports_wrapper_recognised():
     assert result.cubes[0].name == "C"
 
 
+def test_es_module_export_default_recognised():
+    # `export default` requires module parsing — parseScript rejects it, so the
+    # parser must retry with parseModule (DEV-1730 review).
+    result = parse_cube_js("export default cube(`C`, { sql_table: `t` });")
+    assert not result.issues, [i.message for i in result.issues]
+    assert [c.name for c in result.cubes] == ["C"]
+
+
+def test_es_module_with_import_recognised():
+    result = parse_cube_js(
+        "import { foo } from 'helpers';\n"
+        "export default cube(`C`, { sql_table: `t` });"
+    )
+    assert [c.name for c in result.cubes] == ["C"]
+
+
+def test_computed_member_key_skips_only_that_member():
+    # A computed key ([name]: {...}) is dynamic; per-member isolation must skip
+    # just that member, not the whole cube (DEV-1730 review).
+    result = parse_cube_js(
+        "cube(`C`, { sql_table: `t`, dimensions: {"
+        "  ok: { sql: `${CUBE}.ok`, type: `string` },"
+        "  [dynamicName]: { sql: `${CUBE}.x`, type: `string` }"
+        "} });"
+    )
+    assert len(result.cubes) == 1
+    assert [d.name for d in result.cubes[0].dimensions] == ["ok"]
+    assert result.issues
+
+
+def test_skipped_dynamic_member_does_not_leak_filter_params_refs():
+    # A member that captures a FILTER_PARAMS ref in one field, then fails on a
+    # later dynamic field, must roll back the ref (else it dangles on the cube).
+    result = parse_cube_js(
+        "cube(`C`, { sql: `SELECT 1`, dimensions: {"
+        "  bad: { sql: `${FILTER_PARAMS.C.brand.filter('b')}`, type: helperCall() }"
+        "} });"
+    )
+    assert len(result.cubes) == 1
+    assert result.cubes[0].filter_params == []  # rolled back with the member
+
+
 # ── FILTER_PARAMS capture ───────────────────────────────────────────────────
 
 

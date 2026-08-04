@@ -32,7 +32,9 @@ def test_skeleton_fields_carry_variables():
 def test_skeleton_render_lists_variables_line():
     out = render_model_skeleton(model=_model())
     assert "Variables:" in out
-    assert "d_from" in out and "brand" in out and "market" in out
+    assert "d_from" in out
+    assert "brand" in out
+    assert "market" in out
 
 
 def test_skeleton_render_omits_variables_line_when_none():

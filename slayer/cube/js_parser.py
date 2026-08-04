@@ -78,18 +78,34 @@ def parse_cube_js(source: str, *, path: str = "<string>") -> CubeJsParseResult:
     issues: list[CubeConversionIssue] = []
     cubes: list[CubeCube] = []
     views: list[CubeView] = []
-    try:
-        tree = esprima.parseScript(source, {"range": True, "comment": True})
-    except Exception as exc:  # noqa: BLE001 — surface as a report issue
-        issues.append(CubeConversionIssue(
-            category=CubeIssueCategory.PARSE_ERROR, severity="warning",
-            message=f"File '{path}' could not be parsed as JavaScript: {exc}",
-        ))
+    tree = _parse_js_source(source, path, issues)
+    if tree is None:
         return CubeJsParseResult(issues=issues)
 
     for call in _iter_cube_calls(tree):
         _Walker(path=path, issues=issues).convert_call(call, cubes, views)
     return CubeJsParseResult(cubes=cubes, views=views, issues=issues)
+
+
+def _parse_js_source(source: str, path: str, issues: list[CubeConversionIssue]):
+    """Parse ``source`` to an ESTree, tolerating both plain script configs and
+    ES-module configs. ``parseScript`` is tried first (the classic global-``cube``
+    style); on failure ``parseModule`` handles top-level ``import`` / ``export``
+    (which ``parseScript`` rejects). Returns the tree, or ``None`` + a reported
+    issue when neither parses."""
+    opts = {"range": True, "comment": True}
+    try:
+        return esprima.parseScript(source, opts)
+    except Exception:  # noqa: BLE001 — retry as a module before giving up
+        pass
+    try:
+        return esprima.parseModule(source, opts)
+    except Exception as exc:  # noqa: BLE001 — surface as a report issue
+        issues.append(CubeConversionIssue(
+            category=CubeIssueCategory.PARSE_ERROR, severity="warning",
+            message=f"File '{path}' could not be parsed as JavaScript: {exc}",
+        ))
+        return None
 
 
 def _iter_cube_calls(tree):
@@ -195,14 +211,24 @@ class _Walker:
                     category=CubeIssueCategory.COMPLEX_SQL, severity="warning",
                     cube=cube, message=f"Spread/dynamic entry in '{section}'; skipped."))
                 continue
-            member_name = self._key_name(prop)
+            member_name: str | None = None
+            # Snapshot the FILTER_PARAMS ref count so a member that fails partway
+            # (after a template literal already appended a ref + sentinel) rolls
+            # back cleanly — otherwise a skipped member could leave a dangling
+            # ref that drops the whole cube or emits a phantom variable.
+            fp_mark = len(self._fp_refs)
             try:
+                # _key_name is inside the try so a computed key ([name]: {...})
+                # skips just this member instead of sinking the cube.
+                member_name = self._key_name(prop)
                 out[member_name] = self._object(prop.value)
             except _DynamicValue as exc:
+                del self._fp_refs[fp_mark:]
+                label = member_name or "<entry>"
                 self.issues.append(CubeConversionIssue(
                     category=CubeIssueCategory.COMPLEX_SQL, severity="warning",
                     cube=cube, member=member_name,
-                    message=f"'{section}.{member_name}' is dynamic ({exc.reason}); skipped."))
+                    message=f"'{section}.{label}' is dynamic ({exc.reason}); skipped."))
         return out
 
     def _build_cube(self, name, body, cubes: list) -> None:

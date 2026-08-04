@@ -1,10 +1,10 @@
 """`slayer import-cube` on JavaScript configs + --ignore-required-meta (DEV-1730)."""
 
-import asyncio
 import os
 import sys
 from contextlib import contextmanager
 
+from slayer.async_utils import run_sync
 from slayer.cli import main as cli_main
 from slayer.core.query import extract_model_variables
 from slayer.storage.yaml_storage import YAMLStorage
@@ -33,9 +33,7 @@ def _run(*argv: str) -> int:
 
 def _get_model(storage_dir, name):
     storage = YAMLStorage(base_dir=str(storage_dir))
-    return asyncio.new_event_loop().run_until_complete(
-        storage.get_model(name, data_source="cube_ds")
-    )
+    return run_sync(storage.get_model(name, data_source="cube_ds"))
 
 
 def test_import_cube_discovers_js_files(tmp_path):
