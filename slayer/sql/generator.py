@@ -2418,8 +2418,17 @@ class SQLGenerator:
         # Custom field names (e.g., {"formula": "x:count_distinct", "name": "my_name"})
         alias_lookup.update(enriched.field_name_aliases)
 
+        # A ref qualified with a FOREIGN model (``owners.status`` when the base
+        # model is ``orders``) must not resolve to a same-named local column via
+        # the bare-name / ``_name`` lookups — that silently sorts by the wrong
+        # field. Only unqualified refs, or refs qualified with the base model
+        # itself, take the bare shortcuts; a foreign qualifier falls through to
+        # the ``<model>.<col>`` qualified match and then the joined-qualifier
+        # rejection below. Mirrors the typed pipeline's plan-time guard.
+        host_local = model_prefix == enriched.model_name
+
         # Direct match on the user-provided name
-        if user_name in alias_lookup:
+        if host_local and user_name in alias_lookup:
             return _OrderColRef(alias_lookup[user_name], True, None, None)
 
         # Qualified match for cross-model measures:
@@ -2431,7 +2440,7 @@ class SQLGenerator:
 
         # Fallback for *:count → _count: user says "count", internal is "_count"
         prefixed = f"_{user_name}"
-        if prefixed in alias_lookup:
+        if host_local and prefixed in alias_lookup:
             return _OrderColRef(alias_lookup[prefixed], True, None, None)
 
         # Fallback: a non-projected order key is only safe to emit as a split
@@ -11025,24 +11034,67 @@ class SQLGenerator:
                 # the base FROM scope, identical to how the column would render
                 # if it were a projected dimension.
                 key = slot.key
-                if source_model is not None and isinstance(
-                    key, (ColumnKey, ColumnSqlKey, TimeTruncKey)
+                row_key = key.column if isinstance(key, TimeTruncKey) else key
+                # A bare LOCAL column — split-emit the qualified column ref.
+                if (
+                    source_model is not None
+                    and isinstance(row_key, ColumnKey)
+                    and not row_key.path
                 ):
-                    row_key = key.column if isinstance(key, TimeTruncKey) else key
-                    if isinstance(row_key, ColumnKey):
-                        path, leaf = row_key.path, row_key.leaf
-                    else:  # ColumnSqlKey
-                        path, leaf = row_key.path, row_key.column_name
-                    if not path:
-                        order_col = self._joined_or_local_dim_expr(
-                            path=(), leaf=leaf, source_model=source_model,
-                            source_relation=source_relation, bundle=bundle,
+                    order_col = self._joined_or_local_dim_expr(
+                        path=(), leaf=row_key.leaf, source_model=source_model,
+                        source_relation=source_relation, bundle=bundle,
+                    )
+                    ascending = order_entry.direction == "asc"
+                    select = select.order_by(
+                        self._ordered(order_col, ascending=ascending),
+                    )
+                    continue
+                # A LOCAL DERIVED column (``ColumnSqlKey``, path empty): resolve
+                # its ``Column.sql`` through a throwaway host scope. That both
+                # anchors the expansion AND surfaces whether the SQL crosses a
+                # join. A hidden order-only derived column is NOT projected, so
+                # its join was never pulled into the base FROM — ordering on it
+                # would reference an unbound table. Reject that (project it),
+                # rather than emit invalid SQL; a non-crossing derived column
+                # (e.g. a bare mixed-case identifier) orders on its expression.
+                if (
+                    source_model is not None
+                    and bundle is not None
+                    and isinstance(row_key, ColumnSqlKey)
+                    and not row_key.path
+                ):
+                    # Detect join crossing via a throwaway scope (register-only);
+                    # the resolved expr is discarded — its expansion lacks the
+                    # DEV-1645 mixed-case quoting the planned-dim helper applies.
+                    allocator = AliasAllocator()
+                    scope = ScopeFrame(
+                        scope_id=allocator.next_scope_id(source_relation),
+                        root_model=source_model,
+                        root_relation=source_relation,
+                        bundle=bundle,
+                        dialect=self._dialect,
+                        allocator=allocator,
+                    )
+                    scope.resolve(row_key)
+                    if scope.join_paths:
+                        crossed = ".".join(sorted(scope.join_paths)[0])
+                        raise UnresolvableOrderColumnError(
+                            column=row_key.column_name, qualifier=crossed,
                         )
-                        ascending = order_entry.direction == "asc"
-                        select = select.order_by(
-                            self._ordered(order_col, ascending=ascending),
-                        )
-                        continue
+                    # Non-crossing local derived column — emit through the
+                    # planned-dim helper so the expansion is quoted identically
+                    # to a projected dimension (mixed-case-safe).
+                    order_col = self._joined_or_local_dim_expr(
+                        path=(), leaf=row_key.column_name,
+                        source_model=source_model,
+                        source_relation=source_relation, bundle=bundle,
+                    )
+                    ascending = order_entry.direction == "asc"
+                    select = select.order_by(
+                        self._ordered(order_col, ascending=ascending),
+                    )
+                    continue
                 # Defensive: any other hidden shape should have been rejected at
                 # plan time (transform / composite / joined / grouped-row).
                 raise NotImplementedError(

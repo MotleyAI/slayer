@@ -594,11 +594,19 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     _dim_dms = declared_measures[:n_dims]
     _td_dms = declared_measures[n_dims:n_dims + n_tds]
     _dim_key_set = {dm.bound.value_key for dm in _dim_dms}
-    _td_by_source = {
-        dm.bound.value_key.column: dm.bound.value_key
-        for dm in _td_dms
-        if isinstance(dm.bound.value_key, TimeTruncKey)
-    }
+    # A source column carrying two time-dimension granularities (``created_at``
+    # at both month and day) maps to two distinct ``TimeTruncKey`` buckets — a
+    # bare ``partition_by=created_at`` is then ambiguous, so track those columns
+    # and reject rather than silently pick whichever bucket comes last.
+    _td_by_source: Dict[ValueKey, TimeTruncKey] = {}
+    _td_ambiguous_sources: set = set()
+    for dm in _td_dms:
+        vk = dm.bound.value_key
+        if not isinstance(vk, TimeTruncKey):
+            continue
+        if vk.column in _td_by_source:
+            _td_ambiguous_sources.add(vk.column)
+        _td_by_source[vk.column] = vk
     _td_key_set = set(_td_by_source.values())
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
 
@@ -607,6 +615,13 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         for pk in tk.partition_keys:
             if pk in _dim_key_set or pk in _td_key_set:
                 new_pks.append(pk)          # already a query dim / td bucket
+            elif pk in _td_ambiguous_sources:
+                raise ValueError(
+                    f"Transform '{tk.op}': partition_by column "
+                    f"'{_partition_key_display(pk)}' is ambiguous — it is a "
+                    f"time dimension at multiple granularities. Partition by a "
+                    f"single query dimension instead."
+                )
             elif pk in _td_by_source:
                 new_pks.append(_td_by_source[pk])  # td source col -> bucket
             else:
@@ -692,7 +707,13 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             disp = _partition_key_display(okey)
             path = _row_key_path(okey)
             if path:
-                raise UnresolvableOrderColumnError(column=disp, qualifier=path[0])
+                # ``UnresolvableOrderColumnError`` formats ``qualifier.column``;
+                # pass the bare leaf as ``column`` and the joined path as the
+                # qualifier so the message reads ``customers.regions.name`` and
+                # not a duplicated ``customers.customers.regions.name``.
+                raise UnresolvableOrderColumnError(
+                    column=disp.rsplit(".", 1)[-1], qualifier=".".join(path),
+                )
             if _has_grouping:
                 raise ValueError(
                     f"ORDER BY column '{disp}' is a row column that this "

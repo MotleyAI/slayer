@@ -144,6 +144,9 @@ async def _save_models(storage: YAMLStorage) -> SlayerModel:
             # ``filter`` references a joined table.
             Column(name="flagged_amount", sql="amount", type=DataType.DOUBLE,
                    filter="customers.region = 'West'"),
+            # A LOCAL derived column whose ``sql`` crosses the customers join —
+            # ``ColumnSqlKey(path=())`` but its expansion pulls a join.
+            Column(name="cust_region", sql="customers.region", type=DataType.TEXT),
         ],
         joins=[
             ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
@@ -312,6 +315,35 @@ class TestJoinedRowColumnRejected:
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="*:count")],
             order=[OrderItem(column=ColumnRef(name="customers.region"), direction="desc")],
+        )
+        with pytest.raises(UnresolvableOrderColumnError):
+            await _sql(engine, query)
+
+    async def test_joined_reject_message_does_not_duplicate_qualifier(self, engine) -> None:
+        """The rejection message names the column once (``customers.region``),
+        not a duplicated ``customers.customers.region`` (CodeRabbit)."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            distinct_dimension_values=False,
+            order=[OrderItem(column=ColumnRef(name="customers.region"), direction="desc")],
+        )
+        with pytest.raises(UnresolvableOrderColumnError) as ei:
+            await _sql(engine, query)
+        msg = str(ei.value)
+        assert "customers.region" in msg
+        assert "customers.customers" not in msg
+
+    async def test_ungrouped_order_by_derived_crossing_column_rejected(self, engine) -> None:
+        """A hidden order-only LOCAL DERIVED column whose ``Column.sql`` crosses
+        a join (``cust_region`` = ``customers.region``) is not projected, so its
+        join is never pulled into the base FROM. Ordering on it must be rejected
+        rather than emit an unbound ``ORDER BY`` (CodeRabbit / T3)."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            distinct_dimension_values=False,
+            order=[OrderItem(column=ColumnRef(name="cust_region"), direction="desc")],
         )
         with pytest.raises(UnresolvableOrderColumnError):
             await _sql(engine, query)
@@ -690,6 +722,23 @@ class TestPartitionByGuard:
         assert "customer_id" in msg
         assert "rank" in msg.lower(), f"error should name the transform: {msg}"
         assert "status" in msg, "error should list available dimensions"
+
+    async def test_partition_by_ambiguous_time_dim_granularity_raises(self, engine) -> None:
+        """A source column carried by two time-dimension granularities
+        (``created_at`` at month AND day) makes a bare ``partition_by=created_at``
+        ambiguous — reject rather than silently pick a bucket (CodeRabbit / T1)."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension="created_at", granularity="month"),
+                TimeDimension(dimension="created_at", granularity="day"),
+            ],
+            measures=[ModelMeasure(
+                formula="rank(amount:sum, partition_by=created_at)", name="rk")],
+        )
+        with pytest.raises(ValueError) as ei:
+            await _sql(engine, query)
+        assert "ambiguous" in str(ei.value).lower()
 
     async def test_partition_by_non_dim_raises_ntile(self, engine) -> None:
         query = SlayerQuery(
