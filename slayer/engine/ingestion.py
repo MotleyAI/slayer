@@ -460,15 +460,21 @@ def _pk_key_sets(
     schema: str | None,
     sa_engine: sa.Engine | None,
 ) -> list[list[str]]:
-    """The table's primary key as a single key-set (or none)."""
+    """The table's primary key as a single key-set (or none).
+
+    ``_safe_get_pk_constraint`` guarantees a mapping; the bare-inspector path
+    (no ``sa_engine``) is the one that still needs normalizing here.
+    """
     try:
         if sa_engine is not None:
             pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, schema)
         else:
             pk = inspector.get_pk_constraint(table_name, schema=schema)
+            if not isinstance(pk, dict):
+                return []
     except Exception:
         return []
-    cols = pk.get("constrained_columns") if isinstance(pk, dict) else None
+    cols = pk.get("constrained_columns")
     return [list(cols)] if cols else []
 
 
@@ -676,12 +682,18 @@ def _safe_get_pk_constraint(
     SQLite has no information_schema views; its stock inspector reads
     PRAGMA table_info() and is authoritative — empty constrained_columns
     on SQLite means the table genuinely has no primary key.
+
+    ALWAYS returns a mapping, so callers can do ``result.get(...)`` without
+    guarding. The inspector is a third-party boundary (dialects outside
+    SQLAlchemy's own tree can return ``None`` or a non-mapping), and this
+    helper is the single place that normalizes it.
     """
     if sa_engine.dialect.name == "sqlite":
         try:
-            return inspector.get_pk_constraint(table_name, schema=schema)
+            result = inspector.get_pk_constraint(table_name, schema=schema)
         except Exception:
             return {"constrained_columns": []}
+        return result if isinstance(result, dict) else {"constrained_columns": []}
     try:
         result = inspector.get_pk_constraint(table_name, schema=schema)
         if result.get("constrained_columns"):

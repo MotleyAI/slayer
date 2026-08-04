@@ -23,6 +23,8 @@ from slayer.engine.ingestion import (
     _generate_joins,
     _get_single_column_unique_names,
     _is_cross_schema_fk,
+    _pk_key_sets,
+    _safe_get_pk_constraint,
     _unique_index_key_sets,
     ingest_datasource_idempotent,
 )
@@ -352,3 +354,51 @@ class TestCrossSchemaFk:
             _FakeInspector(), "orders", {"customers"}, "public", {"orders", "customers"},
         )
         assert joins == []
+
+
+class TestSafePkConstraintContract:
+    """`_safe_get_pk_constraint` is annotated `-> dict` and four of its five
+    callers do an unguarded `.get()`, so every path must honour that."""
+
+    class _Eng:
+        class dialect:
+            name = "sqlite"
+
+    def _insp(self, result):
+        class _I:
+            def get_pk_constraint(self, table_name, schema=None):
+                if isinstance(result, Exception):
+                    raise result
+                return result
+
+        return _I()
+
+    def test_sqlite_none_result_normalized(self) -> None:
+        pk = _safe_get_pk_constraint(
+            self._insp(None), self._Eng(), "t", None
+        )
+        assert pk == {"constrained_columns": []}
+        assert pk.get("constrained_columns") == []  # caller pattern must work
+
+    def test_sqlite_non_mapping_result_normalized(self) -> None:
+        pk = _safe_get_pk_constraint(
+            self._insp(["not", "a", "mapping"]), self._Eng(), "t", None
+        )
+        assert pk == {"constrained_columns": []}
+
+    def test_sqlite_raising_inspector_normalized(self) -> None:
+        pk = _safe_get_pk_constraint(
+            self._insp(RuntimeError("boom")), self._Eng(), "t", None
+        )
+        assert pk == {"constrained_columns": []}
+
+    def test_sqlite_valid_mapping_passes_through(self) -> None:
+        pk = _safe_get_pk_constraint(
+            self._insp({"constrained_columns": ["id"]}), self._Eng(), "t", None
+        )
+        assert pk == {"constrained_columns": ["id"]}
+
+    def test_pk_key_sets_handles_bare_inspector_non_mapping(self) -> None:
+        # sa_engine=None path goes straight to the inspector, un-normalized.
+        assert _pk_key_sets(self._insp(None), "t", None, None) == []
+        assert _pk_key_sets(self._insp({"constrained_columns": ["id"]}), "t", None, None) == [["id"]]
