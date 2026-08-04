@@ -52,6 +52,7 @@ from slayer.core.keys import (
 from slayer.core.models import SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery, TimeDimension
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
+from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.aggregate_input_paths import (
     compute_aggregate_input_join_paths,
@@ -78,6 +79,7 @@ from slayer.engine.planned import (
     PlannedQuery,
     TransformLayer,
     ValueSlot,
+    WindowedAggregatePlan,
 )
 from slayer.engine.planning import (
     DeclaredMeasure,
@@ -210,6 +212,191 @@ def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
         # transform; the RHS values are literals.
         return _find_unresolved_time_needing_op(key.column)
     return None
+
+
+# ---------------------------------------------------------------------------
+# DEV-1714 Stage 10 — duration-windowed measures (``window='90d'``).
+# ---------------------------------------------------------------------------
+
+
+def _window_kwarg_of(key: ValueKey):
+    """The ``window`` kwarg value of an ``AggregateKey``, or ``None``.
+
+    ``window`` is a globally reserved aggregation kwarg name (legacy parity —
+    the enrichment pipeline pops it unconditionally before dispatch), so its
+    presence marks a windowed measure regardless of the aggregation.
+    """
+    if isinstance(key, AggregateKey):
+        for k, v in key.kwargs:
+            if k == "window":
+                return v
+    return None
+
+
+def _windowed_agg_keys(vk: ValueKey) -> list:
+    """Every windowed ``AggregateKey`` in ``vk``'s value-key tree."""
+    return [k for k in walk_value_keys(vk) if _window_kwarg_of(k) is not None]
+
+
+def _reject_unsupported_windowed_key(key: AggregateKey) -> None:
+    """Per-key guards shared by selected and filter/order-referenced windowed
+    aggregates: sum/avg-only (G1), string duration + compact syntax (G8), and
+    no cross-model source (G3). Raises with the pinned-message contract."""
+    if key.agg not in ("sum", "avg"):
+        raise ValueError(
+            f"Aggregation parameter 'window' is only supported for sum and avg, "
+            f"not '{key.agg}'."
+        )
+    window_val = _window_kwarg_of(key)
+    if not isinstance(window_val, str):
+        raise ValueError(
+            f"Window duration must be a compact duration string like '90d', got "
+            f"{window_val!r}. Use syntax like '1y2m3w5d6h7min8s'."
+        )
+    parse_window_duration(window_val)  # G8 — raises on empty / malformed
+    if getattr(key.source, "path", ()):  # G3
+        raise NotImplementedError(
+            "Windowed cross-model aggregates (e.g. customers.revenue:sum("
+            "window='90d')) are not yet supported (DEV-1504)."
+        )
+
+
+def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard pass (G1→G8→G3→G4→G5→G7→G6→G2) over the original value-key trees; each branch is a distinct unsupported-shape rejection sharing the windowed-key scan, and splitting would scatter the precedence contract.
+    *,
+    measure_vks: list,
+    filter_vks: list,
+    order_vks: list,
+    active_td_key,
+) -> set:
+    """Reject unsupported windowed-measure shapes at plan time and return the
+    set of cleanly-SELECTED windowed ``AggregateKey``s (the ones that get a
+    ``WindowedAggregatePlan``).
+
+    Runs on the ORIGINAL declared-measure / filter / order value-key trees —
+    before projection interning would hide a transform / composite dependency
+    slot — so the transform (G4) and composite (G5) guards win over the
+    hidden-slot guard (G6). Precedence: G1 → G8 → G3 → G4 → G5 → G7 → G6 → G2.
+    """
+    all_vks = [*measure_vks, *filter_vks, *order_vks]
+    if not any(_windowed_agg_keys(vk) for vk in all_vks):
+        return set()
+
+    # G4 — a windowed measure cannot coexist with (or be the input of) any
+    # transform. Checked first so ``cumsum(revenue:sum(window='90d'))`` reports
+    # 'transform', never the hidden-slot 'selected'.
+    if any(isinstance(k, TransformKey) for vk in all_vks for k in walk_value_keys(vk)):
+        raise NotImplementedError(
+            "Windowed measures (window='…') combined with transforms are not yet "
+            "supported (DEV-1504). Compute the windowed measure in a separate "
+            "query stage."
+        )
+
+    # Selected windowed measures: a top-level declared measure that IS a
+    # windowed AggregateKey. A windowed key nested in an arithmetic / scalar
+    # composite measure is G5.
+    selected_windowed: set = set()
+    for vk in measure_vks:
+        if not _windowed_agg_keys(vk):
+            continue
+        if _window_kwarg_of(vk) is not None:
+            selected_windowed.add(vk)
+        else:
+            raise NotImplementedError(  # G5
+                "Windowed measures (window='…') inside arithmetic / composite / "
+                "scalar expressions are not yet supported (DEV-1504)."
+            )
+
+    # G1 / G8 / G3 on every windowed key (selected and filter/order-referenced).
+    for vk in all_vks:
+        for key in _windowed_agg_keys(vk):
+            _reject_unsupported_windowed_key(key)
+
+    # G7 (mixed) then G6 (hidden) for filter-referenced windowed measures.
+    for vk in filter_vks:
+        wkeys = _windowed_agg_keys(vk)
+        if not wkeys:
+            continue
+        has_plain_agg = any(
+            isinstance(k, AggregateKey) and _window_kwarg_of(k) is None
+            for k in walk_value_keys(vk)
+        )
+        if has_plain_agg:
+            raise NotImplementedError(  # G7
+                "A single filter that mixes a windowed measure (window='…') with "
+                "a plain aggregate is not yet supported (DEV-1504)."
+            )
+        if any(k not in selected_windowed for k in wkeys):
+            raise NotImplementedError(  # G6
+                "Filtering on a windowed measure (window='…') requires that "
+                "measure to also be selected (DEV-1504)."
+            )
+    # NB: an ORDER-BY-only windowed reference is not a reachable hidden shape —
+    # ``OrderItem`` coercion canonicalises ``revenue:sum(window='90d')`` to the
+    # column name ``revenue_sum``, dropping the window kwarg before the planner
+    # sees it, so there is never an order-only hidden windowed slot to guard.
+
+    # G2 — a windowed measure needs a resolvable time dimension.
+    if active_td_key is None:
+        raise ValueError(
+            "Windowed measure could not resolve its time dimension. Add a single "
+            "time_dimensions entry, or set main_time_dimension to select among "
+            "multiple time dimensions."
+        )
+    return selected_windowed
+
+
+def _build_windowed_plans(
+    *,
+    selected_windowed: set,
+    registry,
+    row_slots: list,
+    active_td_key,
+    active_td_slot_id,
+) -> Tuple[list, set]:
+    """Build one ``WindowedAggregatePlan`` per selected windowed measure and
+    return ``(plans, windowed_slot_ids)``. The window time dimension is the
+    query's resolved main/active TD (same one first/last/time_shift use)."""
+    plans: list = []
+    windowed_slot_ids: set = set()
+    if not selected_windowed:
+        return plans, windowed_slot_ids
+
+    # Grain partition from the PROJECTED (non-hidden) ROW slots: plain
+    # dimensions → ``_w_dim_<n>``, non-window time dimensions → ``_w_td_<n>``.
+    dim_slot_ids: list = []
+    other_td_slot_ids: list = []
+    for rs in row_slots:
+        if rs.hidden:
+            continue
+        if isinstance(rs.key, TimeTruncKey):
+            if rs.id != active_td_slot_id:
+                other_td_slot_ids.append(rs.id)
+        else:
+            dim_slot_ids.append(rs.id)
+    grain_slot_ids = (
+        dim_slot_ids
+        + ([active_td_slot_id] if active_td_slot_id is not None else [])
+        + other_td_slot_ids
+    )
+
+    for key in selected_windowed:
+        sid = registry.find_by_key(key)
+        if sid is None:
+            continue
+        window_raw = _window_kwarg_of(key)
+        plans.append(WindowedAggregatePlan(
+            aggregate_slot_id=sid,
+            agg=key.agg,
+            window_raw=window_raw,
+            window_parts=parse_window_duration(window_raw),
+            window_time_dimension_slot_id=active_td_slot_id,
+            window_granularity=active_td_key.granularity,
+            dimension_slot_ids=dim_slot_ids,
+            other_time_dimension_slot_ids=other_td_slot_ids,
+            grain_slot_ids=grain_slot_ids,
+        ))
+        windowed_slot_ids.add(sid)
+    return plans, windowed_slot_ids
 
 
 def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-1503 addition is a small trigger-predicate branch + a kwarg pass-through; the function's pre-existing complexity is owned by the multi-stage scope / bundle / projection / filter-routing wiring it orchestrates and is tracked as a separate refactor.
@@ -548,6 +735,17 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     source_col_names = _source_column_names(scope)
     host_model_name = _host_model_name(scope)
 
+    # DEV-1714 Stage 10 — windowed-measure guards on the ORIGINAL (pre-
+    # projection) value-key trees. Raises on unsupported shapes (non-sum/avg,
+    # no time dim, cross-model, transform, composite, hidden, mixed, malformed
+    # duration); returns the set of cleanly-selected windowed AggregateKeys.
+    selected_windowed = _guard_windowed_measures(
+        measure_vks=[dm.bound.value_key for dm in declared_measures],
+        filter_vks=[bf.value_key for bf in bound_filters],
+        order_vks=[sp.bound.value_key for sp in order_specs],
+        active_td_key=active_td_key,
+    )
+
     projection = ProjectionPlanner().plan(
         measures=declared_measures,
         filters=bound_filters,
@@ -560,6 +758,21 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         projection.registry.slots,
     )
 
+    # DEV-1714 Stage 10 — build one WindowedAggregatePlan per selected windowed
+    # measure. The window time dimension is the query's resolved active TD.
+    active_td_slot_id = (
+        projection.registry.find_by_key(active_td_key)
+        if active_td_key is not None
+        else None
+    )
+    windowed_plans, windowed_slot_ids = _build_windowed_plans(
+        selected_windowed=selected_windowed,
+        registry=projection.registry,
+        row_slots=row_slots,
+        active_td_key=active_td_key,
+        active_td_slot_id=active_td_slot_id,
+    )
+
     # Build filters_by_phase in legacy WHERE order:
     #   1. date_range bound filters (bound_filters[:n_date_range])
     #   2. model.filters (text_filter_entries)
@@ -567,13 +780,24 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # bound_filter_ids preserves the mapping back to bound_filters for
     # the cross-model routing pass that follows (text_filter_entries
     # are excluded — model filters never feed cross-model routing).
+    # DEV-1714 Stage 10 — a filter referencing a windowed slot is reclassified
+    # to Phase.POST: the windowed value is computed in the ``_wm_`` CTE and
+    # joined back, so the predicate must apply on the combined SELECT (outer
+    # WHERE), never as a HAVING on the plain base aggregate.
+    def _windowed_phase(bf: BoundFilter) -> Phase:
+        if windowed_slot_ids and (
+            filter_referenced_slot_ids(bf, projection.registry) & windowed_slot_ids
+        ):
+            return Phase.POST
+        return bf.phase
+
     filters_by_phase: List[FilterPhase] = []
     bound_filter_ids: List[str] = []
     for i, bf in enumerate(bound_filters[:n_date_range]):
         fid = f"f{i}"
         filters_by_phase.append(
             FilterPhase(
-                id=fid, phase=bf.phase, text=None,
+                id=fid, phase=_windowed_phase(bf), text=None,
                 expression=PlannedBoundExpr(value_key=bf.value_key),
             ),
         )
@@ -583,7 +807,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         fid = f"f{i}"
         filters_by_phase.append(
             FilterPhase(
-                id=fid, phase=bf.phase, text=None,
+                id=fid, phase=_windowed_phase(bf), text=None,
                 expression=PlannedBoundExpr(value_key=bf.value_key),
             ),
         )
@@ -615,6 +839,12 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     cross_model_plans = []
     host_slots_for_classifier = projection.registry.slots
     for slot in agg_slots:
+        # DEV-1714 Stage 10 — a windowed slot renders via its own ``_wm_`` CTE
+        # (host-rooted range join), never a cross-model ``_cm_`` CTE, even when
+        # its ``Column.filter`` crosses a join (which would otherwise trip the
+        # host-rooted isolation trigger below).
+        if slot.id in windowed_slot_ids:
+            continue
         key = slot.key
         if not isinstance(key, AggregateKey):
             continue
@@ -710,21 +940,28 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         else host_model_name
     )
 
-    # Stage 7b.10 — surface the active TD's slot id so the generator can
-    # render ``ORDER BY <td-alias>`` in OVER clauses without re-walking
-    # the model graph. ``None`` when there is no TD (validation already
-    # ran above; we only reach here if no time-needing transform exists).
-    active_td_slot_id = (
-        projection.registry.find_by_key(active_td_key)
-        if active_td_key is not None
-        else None
-    )
+    # Stage 7b.10 — the active TD's slot id (``active_td_slot_id``) is resolved
+    # right after projection above so the windowed-plan builder can use it.
+
+    # DEV-1714 Stage 10 — the ``_wm_`` ``_src`` scope inherits WHERE-phase row
+    # filters (model + user), EXCEPT the typed date_range (``f0..f{n-1}``): the
+    # trailing window must reach rows before the range start. POST-reclassified
+    # windowed-measure filters are already excluded (phase != ROW).
+    if windowed_plans:
+        date_range_fids = {f"f{i}" for i in range(n_date_range)}
+        src_where_ids = [
+            fp.id for fp in filters_by_phase
+            if fp.phase == Phase.ROW and fp.id not in date_range_fids
+        ]
+        for wp in windowed_plans:
+            wp.where_filter_ids = src_where_ids
 
     return PlannedQuery(
         source_relation=source_relation,
         row_slots=row_slots,
         aggregate_slots=agg_slots,
         cross_model_aggregate_plans=cross_model_plans,
+        windowed_aggregate_plans=windowed_plans,
         combined_expression_slots=combined_slots,
         transform_layers=transform_layers,
         filters_by_phase=filters_by_phase,

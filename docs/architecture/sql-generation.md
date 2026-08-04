@@ -97,6 +97,20 @@ forward-path CTE renders (FROM bare target, grouped at the forward dims).
 `SUM(CASE WHEN <filter> THEN <col> END)`. See
 [Cross-model aggregates](cross-model-aggregates.md).
 
+The same renderer also emits one `_wm_*` CTE per `WindowedAggregatePlan` — a
+duration-windowed measure (`revenue:sum(window='90d')`). Unlike `_cm_*` (rooted
+at the join target), a `_wm_*` CTE is **host-rooted**: an inner `_src` subquery
+self-selects the host rows (dimensions → `_w_dim_<n>`, other time dims → `_w_td_
+<n>`, the raw window time column → `_w_time`, the value → `_w_value`) with its
+joins discovered through a host `ScopeFrame`, and `FROM _base LEFT JOIN _src`
+pairs the grain equalities with a trailing `INTERVAL` range predicate
+(`_src._w_time >= bucket_end − window` / `< bucket_end`). The result groups at
+the query grain and joins back to `_base` null-safe, exactly like a `_cm_*` CTE,
+so windowed and cross-model measures coexist in one query. Windowed-measure
+filters route to the combined-SELECT outer `WHERE` (`Phase.POST`). `sum`/`avg`
+local measures only; other shapes raise at plan time (`_guard_windowed_measures`
+in `stage_planner.py`).
+
 ## Mode-A filter inlining and join discovery (DEV-1494)
 
 A column-level `Column.filter` on an aggregated measure becomes a CASE-WHEN
