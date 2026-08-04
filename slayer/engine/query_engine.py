@@ -3972,6 +3972,21 @@ def _detection_skip_reason(*, model, target, src_cols, tgt_cols) -> str | None:
     return None
 
 
+def _declares_solo_unique(model, column) -> bool:
+    """Does ``column`` ALONE carry a declared uniqueness on ``model``?
+
+    ``unique`` is by definition single-column. ``primary_key``, however, is
+    stamped on every member of a COMPOSITE primary key, and a member of
+    ``(id, sku)`` says nothing about ``sku`` on its own — mirroring
+    ``is_key_set_unique``'s subset rule, where ``(id, sku)`` is not a subset of
+    ``(sku)``. So a PK column implies solo uniqueness only when it is the whole
+    primary key.
+    """
+    if column.unique:
+        return True
+    return column.primary_key and sum(1 for c in model.columns if c.primary_key) == 1
+
+
 def _unique_contradictions(
     *, model, target, src_cols, tgt_cols, src_side, tgt_side,
 ) -> list[str]:
@@ -3985,7 +4000,7 @@ def _unique_contradictions(
             continue
         c = cols[0]
         col = next((x for x in mdl.columns if x.name == c), None)
-        if col is not None and (col.unique or col.primary_key):
+        if col is not None and _declares_solo_unique(mdl, col):
             out.append(
                 f"{mdl.name}.{c} is declared unique but the data has duplicates"
             )

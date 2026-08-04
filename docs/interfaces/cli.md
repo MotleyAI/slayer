@@ -220,6 +220,26 @@ slayer search refresh-samples --data-source jaffle_shop
 slayer search refresh-samples --data-source jaffle_shop --model orders --model customers
 ```
 
+### `slayer joins detect-cardinality`
+
+Profile each join's arity from the data — full-scans both sides and classifies the join as `one_to_one` / `one_to_many` / `many_to_one` / `many_to_many`. Report-only unless `--persist`. See [Join cardinality](../concepts/models.md#join-cardinality).
+
+```bash
+slayer joins detect-cardinality
+slayer joins detect-cardinality --datasource jaffle_shop
+slayer joins detect-cardinality --datasource jaffle_shop --model orders --persist
+slayer joins detect-cardinality --format json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--datasource X` | all | Limit profiling to one datasource. |
+| `--model M` | all | Limit profiling to a single model. |
+| `--persist` | off | Write the detected `cardinality` back onto each matching join. |
+| `--format` | `text` | `text` or `json` (full `JoinCardinalityReport`). |
+
+Each join reports a `verdict` — `fills_none`, `confirms`, `refines`, `contradicts_hard` (the data disproves a uniqueness the stored value asserted), or `skipped_unsupported` (non-`sql_table` model or expression-valued join key).
+
 ### `slayer memory`
 
 Manage the agent-memory layer. See [Memories](../concepts/memories.md).

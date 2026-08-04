@@ -815,8 +815,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             description: What this model represents.
             columns: List of column definitions. Each: {"name": "col", "sql": "col", "type": "string"}.
                 Types: string, number, time, date, boolean. Optional fields: ``primary_key``,
-                ``allowed_aggregations`` (whitelist), ``filter`` (CASE WHEN inside aggregation),
-                ``label``, ``description``, ``hidden``, ``meta``.
+                ``unique`` (single-column uniqueness that is not the PK; ``primary_key``
+                already implies it), ``allowed_aggregations`` (whitelist), ``filter``
+                (CASE WHEN inside aggregation), ``label``, ``description``, ``hidden``,
+                ``meta``.
             measures: List of named formula definitions on the model. Each:
                 {"name": "aov", "formula": "revenue:sum / *:count", "label": "...",
                  "description": "...", "meta": {...}}.
@@ -972,10 +974,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             meta: Arbitrary JSON metadata for the model (replaces existing meta). Pass null/None to clear.
             columns: Columns to create or update (upsert by name). Each dict:
                 {"name": "col", "type": "string", "sql": "col", "description": "...",
-                 "primary_key": false, "hidden": false, "allowed_aggregations": ["sum", "avg"],
+                 "primary_key": false, "unique": false, "hidden": false,
+                 "allowed_aggregations": ["sum", "avg"],
                  "filter": "status = 'active'", "label": "..."}.
                 If a column with this name exists, only the provided fields are updated.
                 Types: string, number, time, date, boolean.
+                ``unique`` marks a single-column uniqueness constraint that is not the
+                primary key (``primary_key`` already implies uniqueness). It is
+                descriptive metadata used to infer join cardinality.
             measures: Named formula measures to create or update (upsert by name). Each dict:
                 {"name": "aov", "formula": "revenue:sum / *:count", "label": "...",
                  "description": "...", "meta": {...}}.
@@ -987,7 +993,16 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                  "meta": {...}}.
                 ``meta`` is an optional opaque dict for caller bookkeeping.
             joins: Joins to create or update (upsert by target_model). Each dict:
-                {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}.
+                {"target_model": "customers", "join_pairs": [["customer_id", "id"]],
+                 "cardinality": "many_to_one", "description": "...", "meta": {...}}.
+                A composite key is one join with several ``join_pairs`` entries, not
+                one join per column. ``cardinality`` is the join's arity read
+                source->target ("many orders -> one customer"), one of
+                ``one_to_one`` / ``one_to_many`` / ``many_to_one`` / ``many_to_many``;
+                omit it when undetermined. It is descriptive metadata only —
+                orthogonal to the join type (joins stay LEFT) and it does not change
+                query results. Auto-ingestion fills it from key constraints, and
+                ``slayer joins detect-cardinality`` infers it from the data.
             add_filters: SQL filter strings to add (e.g. ["deleted_at IS NULL"]). Duplicates ignored.
             remove_filters: SQL filter strings to remove (exact match).
             remove: Named entities to delete, keyed by type:

@@ -321,6 +321,54 @@ class TestUniqueContradictions:
         reloaded = await storage.get_model("orders", data_source="ds")
         assert next(c for c in reloaded.columns if c.name == "customer_id").unique is True
 
+    async def test_sole_pk_column_with_dups_is_reported(self, workspace: Path) -> None:
+        """A column that IS the whole primary key does claim solo uniqueness."""
+        engine, storage, _ = await _build_engine(workspace)
+        # cart_lines.cart_id has dups; declare it the sole PK of a probe model.
+        probe = SlayerModel(
+            name="solo_pk_lines",
+            sql_table="cart_lines",
+            data_source="ds",
+            columns=[_col("cart_id", pk=True), _col("id")],
+            joins=[ModelJoin(target_model="carts", join_pairs=[["cart_id", "id"]])],
+        )
+        await storage.save_model(probe)
+
+        report = await engine.detect_join_cardinality(
+            data_source="ds", model="solo_pk_lines"
+        )
+        f = _find(report, "solo_pk_lines", "carts")
+        assert any("cart_id" in c for c in f.unique_contradictions)
+
+    async def test_composite_pk_member_with_dups_is_not_a_contradiction(
+        self, workspace: Path
+    ) -> None:
+        """A member of a COMPOSITE primary key claims nothing on its own.
+
+        ``primary_key`` is stamped on every member of a composite PK, but
+        ``(a, b)`` being unique says nothing about ``a`` alone — the same
+        subset rule ``is_key_set_unique`` applies. Reporting it would misfire
+        on every composite-PK table (regression: jaffle_shop ``supplies``,
+        PK ``(id, sku)``, joined on ``sku`` alone).
+        """
+        engine, storage, _ = await _build_engine(workspace)
+        # ck_child.a has duplicates; both a and b are stamped PK (composite).
+        probe = SlayerModel(
+            name="ck_child_solo",
+            sql_table="ck_child",
+            data_source="ds",
+            columns=[_col("a", pk=True), _col("b", pk=True, dtype=DataType.TEXT)],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["a", "id"]])],
+        )
+        await storage.save_model(probe)
+
+        report = await engine.detect_join_cardinality(
+            data_source="ds", model="ck_child_solo"
+        )
+        f = _find(report, "ck_child_solo", "customers")
+        # 'a' has dups, but it is only half of the composite key — no claim broken.
+        assert not [c for c in f.unique_contradictions if "ck_child_solo.a" in c]
+
 
 # ---------------------------------------------------------------------------
 # Persistence (report-only default; opt-in write)

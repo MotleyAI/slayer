@@ -269,6 +269,40 @@ slayer search refresh-samples --data-source jaffle_shop --model orders --model c
 | `--data-source X` | all | Limit the refresh to one datasource. |
 | `--model M` | all | Repeatable; limit to specific models. |
 
+### `slayer joins detect-cardinality`
+
+Profile each join's arity from the data and report it. Full-scans both sides of every join, comparing non-null key rows against distinct key-tuples, and classifies the join as `one_to_one` / `one_to_many` / `many_to_one` / `many_to_many`. See [Join cardinality](../concepts/models.md#join-cardinality).
+
+Report-only by default — nothing is written unless you pass `--persist`.
+
+```bash
+slayer joins detect-cardinality
+slayer joins detect-cardinality --datasource jaffle_shop
+slayer joins detect-cardinality --datasource jaffle_shop --model orders --persist
+slayer joins detect-cardinality --format json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--datasource X` | all | Limit profiling to one datasource. |
+| `--model M` | all | Limit profiling to a single model. |
+| `--persist` | off | Write the detected `cardinality` back onto each matching join (identified by target model + key pairs). |
+| `--format` | `text` | `text` (one line per join) or `json` (full `JoinCardinalityReport`). |
+
+Each finding carries a `verdict` against the stored value:
+
+| Verdict | Meaning |
+|---------|---------|
+| `fills_none` | No cardinality was stored; the detected value fills the gap. |
+| `confirms` | Detected value matches what was stored. |
+| `refines` | Differs from the stored value, but the data does not disprove it — "no duplicates observed" only *suggests* uniqueness. |
+| `contradicts_hard` | The data **disproves** the stored value: a side it claimed unique has duplicates. |
+| `skipped_unsupported` | Not profilable — a non-`sql_table` model (sql-mode / query-backed) or an expression-valued join key. |
+
+Columns declared `unique` (or `primary_key`) that the data shows have duplicates are reported under `unique_contradictions`; detection never mutates `Column.unique`.
+
+Detection is a strong guess, not a guarantee: a duplicate disproves uniqueness with certainty, but its absence only suggests uniqueness.
+
 ### `slayer memory`
 
 Manage the agent-memory layer. See [Memories](../concepts/memories.md).
