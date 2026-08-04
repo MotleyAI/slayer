@@ -440,5 +440,6 @@ class TestHiddenOrderOnlyWindowedValues(object):
             f"so it must sort first; a plain SUM would lead with the NULL/Mar "
             f"group (400). got: {regions}\nrows: {result.data}"
         )
-        assert regions[1] is None and regions[2] is None, result.data
+        assert regions[1] is None, result.data
+        assert regions[2] is None, result.data
         assert all("90d" not in c for c in result.columns), result.columns

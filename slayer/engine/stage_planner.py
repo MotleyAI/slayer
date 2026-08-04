@@ -391,6 +391,40 @@ def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard p
     return selected_windowed
 
 
+def _windowed_grain_partition(
+    *,
+    row_slots: list,
+    active_td_slot_id,
+) -> Tuple[list, list, list]:
+    """Split the PROJECTED (non-hidden) ROW slots into the ``_wm_`` grain roles.
+
+    Returns ``(dim_slot_ids, other_td_slot_ids, grain_slot_ids)`` — plain
+    dimensions render as ``_w_dim_<n>`` in the ``_src`` subquery, non-window
+    time dimensions as ``_w_td_<n>``, and ``grain_slot_ids`` is the join-back
+    key order (dims, then the window TD, then the other TDs).
+
+    HIDDEN row slots are excluded by design: the window buckets at the grain
+    the query actually projects, so an order-only (hidden) target must not
+    widen or narrow it.
+    """
+    dim_slot_ids: list = []
+    other_td_slot_ids: list = []
+    for rs in row_slots:
+        if rs.hidden:
+            continue
+        if isinstance(rs.key, TimeTruncKey):
+            if rs.id != active_td_slot_id:
+                other_td_slot_ids.append(rs.id)
+        else:
+            dim_slot_ids.append(rs.id)
+    grain_slot_ids = (
+        dim_slot_ids
+        + ([active_td_slot_id] if active_td_slot_id is not None else [])
+        + other_td_slot_ids
+    )
+    return dim_slot_ids, other_td_slot_ids, grain_slot_ids
+
+
 def _build_windowed_plans(
     *,
     selected_windowed: dict,
@@ -420,22 +454,8 @@ def _build_windowed_plans(
             "multiple time dimensions."
         )
 
-    # Grain partition from the PROJECTED (non-hidden) ROW slots: plain
-    # dimensions → ``_w_dim_<n>``, non-window time dimensions → ``_w_td_<n>``.
-    dim_slot_ids: list = []
-    other_td_slot_ids: list = []
-    for rs in row_slots:
-        if rs.hidden:
-            continue
-        if isinstance(rs.key, TimeTruncKey):
-            if rs.id != active_td_slot_id:
-                other_td_slot_ids.append(rs.id)
-        else:
-            dim_slot_ids.append(rs.id)
-    grain_slot_ids = (
-        dim_slot_ids
-        + ([active_td_slot_id] if active_td_slot_id is not None else [])
-        + other_td_slot_ids
+    dim_slot_ids, other_td_slot_ids, grain_slot_ids = _windowed_grain_partition(
+        row_slots=row_slots, active_td_slot_id=active_td_slot_id,
     )
 
     for key, is_hidden in selected_windowed.items():

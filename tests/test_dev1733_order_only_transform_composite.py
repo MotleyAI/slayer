@@ -48,7 +48,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.errors import UnresolvableOrderColumnError
+from slayer.core.errors import UnknownReferenceError, UnresolvableOrderColumnError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -137,6 +137,28 @@ def _src_subquery_sql(sql: str, *, dialect: str = "sqlite") -> str:
         if node.alias == "_src":
             return node.sql(dialect=dialect)
     raise AssertionError(f"no `_src` subquery found — the _wm_ CTE is absent.\n{sql}")
+
+
+def _cte_aggregate_sql(
+    sql: str, *, cte: str, column: str, dialect: str = "sqlite",
+) -> list[str]:
+    """Rendered SQL of every aggregate over ``column`` inside the named CTE.
+
+    Selects the CTE from the parsed tree by alias rather than splitting on
+    separator text — a spacing change in the emitter would make a string split
+    silently return the whole statement, and the caller's assertion would stop
+    testing anything while still passing.
+    """
+    parsed = sqlglot.parse_one(sql, dialect=dialect)
+    target = next(
+        (c for c in parsed.find_all(exp.CTE) if c.alias == cte), None,
+    )
+    assert target is not None, f"no `{cte}` CTE found.\nSQL:\n{sql}"
+    return [
+        agg.sql(dialect=dialect)
+        for agg in target.find_all(exp.AggFunc)
+        if column in agg.sql(dialect=dialect)
+    ]
 
 
 def _hidden_order_alias(sql: str, *, dialect: str = "postgres") -> str:
@@ -481,7 +503,8 @@ class TestOrderOnlyChangeFamily:
             order=[OrderItem(column="change(amount:sum)", direction="desc")],
         )
         sql = await _sql(engine, query)
-        assert "shifted_" in sql and "sjoin_" in sql, sql
+        assert "shifted_" in sql, sql
+        assert "sjoin_" in sql, sql
 
     async def test_arithmetic_over_transform_order_only(self, engine) -> None:
         query = SlayerQuery(
@@ -672,8 +695,11 @@ class TestHiddenAliasUniqueness:
         sql = await _sql(engine, query)
         assert not _duplicate_select_aliases(sql), sql
         names = _outer_order_by_names(sql)
-        assert len(names) == 2 and len(set(names)) == 2, (
-            f"both order targets must survive under distinct aliases: {names}\n{sql}"
+        assert len(names) == 2, (
+            f"both order targets must survive: {names}\n{sql}"
+        )
+        assert len(set(names)) == 2, (
+            f"the two order targets must use distinct aliases: {names}\n{sql}"
         )
 
     async def test_two_hidden_composites_same_op(self, engine) -> None:
@@ -772,7 +798,8 @@ class TestWindowedOrderOnly:
             f"an order-only windowed measure needs its own _wm_ range-join CTE "
             f"— a plain SUM silently drops the window.\nSQL:\n{sql}"
         )
-        assert "_w_time" in sql and "_src" in sql, sql
+        assert "_w_time" in sql, sql
+        assert "_src" in sql, sql
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.id_count"], (
             f"the hidden windowed value must be trimmed from the projection.\n{sql}"
         )
@@ -820,10 +847,13 @@ class TestWindowedOrderOnly:
             f"not a plain aggregate.\nORDER BY: {terms[0]}\nSQL:\n{sql}"
         )
         # ... and no plain aggregate may be materialised for it in ``_base``.
-        base_cte = sql.split("), _wm_", 1)[0]
-        assert "SUM(orders.amount)" not in base_cte.replace(" ", ""), (
+        # AST-selected by CTE name, not string-split on the separator text: a
+        # spacing change would make `split` return the whole statement and this
+        # assertion would silently stop testing anything.
+        base_sums = _cte_aggregate_sql(sql, cte="_base", column="amount")
+        assert not base_sums, (
             f"a plain SUM of the windowed column must not be emitted in "
-            f"_base.\n{base_cte}"
+            f"_base.\ngot: {base_sums}\nSQL:\n{sql}"
         )
 
     async def test_hidden_and_public_windowed_in_one_query(self, engine) -> None:
@@ -1025,7 +1055,8 @@ class TestStillRejected:
         order = parsed.args.get("order")
         assert order is not None, sql
         col = order.expressions[0].this
-        assert isinstance(col, exp.Column) and col.table == "orders", sql
+        assert isinstance(col, exp.Column), sql
+        assert col.table == "orders", sql
 
     def test_hidden_order_branch_rejects_unlisted_slot_kinds(self) -> None:
         """The generator's hidden-ORDER-BY branch must dispatch on an EXPLICIT
@@ -1057,8 +1088,9 @@ class TestStillRejected:
             row_slots=[slot],
             order=[OrderEntry(slot_id="s0", direction="asc")],
         )
+        generator = SQLGenerator(dialect="sqlite")
         with pytest.raises(NotImplementedError) as ei:
-            SQLGenerator(dialect="sqlite")._apply_order_limit_from_planned(
+            generator._apply_order_limit_from_planned(
                 select=exp.Select(),
                 planned_query=planned,
                 source_relation="orders",
@@ -1377,8 +1409,10 @@ class TestMultiStage:
             source_model="s1",
             measures=[ModelMeasure(formula="amount_sum_window_90d:sum", name="leaked")],
         )
-        with pytest.raises(Exception) as ei:
+        with pytest.raises(UnknownReferenceError) as ei:
             await exec_engine.execute(query=[inner, outer])
+        # The message also names the stage's real column set, which is the
+        # positive half of the assertion: the hidden windowed slot is absent.
         assert "amount_sum_window_90d" in str(ei.value), ei.value
 
     async def test_hidden_alias_rename_does_not_leak_into_stage_schema(

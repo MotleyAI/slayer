@@ -869,7 +869,8 @@ class TestTransformOrderSupported:
         sql = await _sql(engine, query)
         assert _outer_select_columns(sql) == ["orders.created_at", "orders.amount_sum"]
         names = _outer_order_by_names(sql)
-        assert names and names[0] not in _outer_select_columns(sql), (
+        assert names, f"ORDER BY must be present.\nSQL:\n{sql}"
+        assert names[0] not in _outer_select_columns(sql), (
             f"the cumsum must be ordered on but not projected.\nSQL:\n{sql}"
         )
 

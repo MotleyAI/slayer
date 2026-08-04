@@ -172,33 +172,32 @@ class ValueRegistry:
             n += 1
         return f"{declared_name}_{n}"
 
-    def intern(
+    def _validate_alias_collisions(
         self,
         *,
         key: ValueKey,
         declared_name: str,
-        phase: Phase,
-        public_name: Optional[str] = None,
-        canonical_alias: Optional[str] = None,
-        hidden: bool = False,
-        label: Optional[str] = None,
-        type: Optional[DataType] = None,
-        expression: Optional["BoundExpr"] = None,
-        format: Optional[NumberFormat] = None,
-        description: Optional[str] = None,
-    ) -> SlotId:
-        # Alias-collision validations (P4 / DEV-1443).
-        # Exemption: a dimension whose public name IS its own column
-        # name (``ColumnKey(path=(), leaf=X)`` declared as ``X``) is the
-        # column, not a rename of it — collision check skipped. Same
-        # exemption for a local ``TimeTruncKey`` over that same column
-        # since a time dimension on ``created_at`` projects the
-        # (truncated) ``created_at`` column rather than introducing a
-        # new alias. DEV-1450 stage 7b.13: also exempt
-        # ``ColumnSqlKey(model=..., column_name=X)`` declared as ``X``
-        # -- a derived column (``Column.sql`` set) selected as a
-        # dimension projects the column unchanged, identical to the
-        # plain-column case.
+        public_name: Optional[str],
+        canonical_alias: Optional[str],
+    ) -> None:
+        """Alias-collision validations (P4 / DEV-1443).
+
+        Split out of :meth:`intern` so the interning path reads as
+        validate → merge-or-create. Raises
+        ``MeasureNameCollidesWithColumnError`` when a public name shadows a
+        source column, and ``CanonicalAliasShadowsColumnError`` when a
+        renamed measure's canonical alias does.
+
+        Exemption: a dimension whose public name IS its own column name
+        (``ColumnKey(path=(), leaf=X)`` declared as ``X``) is the column, not a
+        rename of it — collision check skipped. Same exemption for a local
+        ``TimeTruncKey`` over that same column, since a time dimension on
+        ``created_at`` projects the (truncated) ``created_at`` column rather
+        than introducing a new alias. DEV-1450 stage 7b.13: also exempt
+        ``ColumnSqlKey(model=..., column_name=X)`` declared as ``X`` — a
+        derived column (``Column.sql`` set) selected as a dimension projects
+        the column unchanged, identical to the plain-column case.
+        """
         is_self_named_dimension = (
             isinstance(key, ColumnKey)
             and key.path == ()
@@ -242,6 +241,28 @@ class ValueRegistry:
                 canonical=canonical_alias,
                 model=self._host_model_name,
             )
+
+    def intern(
+        self,
+        *,
+        key: ValueKey,
+        declared_name: str,
+        phase: Phase,
+        public_name: Optional[str] = None,
+        canonical_alias: Optional[str] = None,
+        hidden: bool = False,
+        label: Optional[str] = None,
+        type: Optional[DataType] = None,
+        expression: Optional["BoundExpr"] = None,
+        format: Optional[NumberFormat] = None,
+        description: Optional[str] = None,
+    ) -> SlotId:
+        self._validate_alias_collisions(
+            key=key,
+            declared_name=declared_name,
+            public_name=public_name,
+            canonical_alias=canonical_alias,
+        )
 
         existing_sid = self._by_key.get(key)
         if existing_sid is not None:
@@ -659,6 +680,23 @@ class ProjectionPlanner:
     """Allocate slots for declared measures + hidden slots for refs only
     used in order/filter."""
 
+    @staticmethod
+    def _intern_hidden(registry: "ValueRegistry", key: ValueKey) -> None:
+        """Intern ``key`` as a hidden slot unless it already has one.
+
+        The single rule every hidden-slot site shares — measure aux deps,
+        filter operands, order operands, and (DEV-1733) an order target that
+        is itself a composite. Keeping it in one place is what stops the four
+        call sites drifting on ``declared_name`` / ``phase``.
+        """
+        if registry.find_by_key(key) is None:
+            registry.intern(
+                key=key,
+                declared_name=_canonical_name(key),
+                hidden=True,
+                phase=key.phase,
+            )
+
     def plan(
         self,
         *,
@@ -701,38 +739,19 @@ class ProjectionPlanner:
             # rendered by the generator into the inner SELECT but not
             # surfaced in the public projection.
             for dep in _iter_slot_deps(m.bound.value_key):
-                if dep == m.bound.value_key:
-                    continue
-                if registry.find_by_key(dep) is None:
-                    registry.intern(
-                        key=dep,
-                        declared_name=_canonical_name(dep),
-                        hidden=True,
-                        phase=dep.phase,
-                    )
+                if dep != m.bound.value_key:
+                    self._intern_hidden(registry, dep)
 
         # Filter and order share the same dependency-selection rule: walk
         # the bound expression, intern each slot-worthy key as a hidden
         # slot if not already present.
         for f in filters:
             for dep in _iter_slot_deps(f.value_key):
-                if registry.find_by_key(dep) is None:
-                    registry.intern(
-                        key=dep,
-                        declared_name=_canonical_name(dep),
-                        hidden=True,
-                        phase=dep.phase,
-                    )
+                self._intern_hidden(registry, dep)
 
         for o in order:
             for dep in _iter_slot_deps(o.bound.value_key):
-                if registry.find_by_key(dep) is None:
-                    registry.intern(
-                        key=dep,
-                        declared_name=_canonical_name(dep),
-                        hidden=True,
-                        phase=dep.phase,
-                    )
+                self._intern_hidden(registry, dep)
             # DEV-1733: ``_iter_slot_deps`` yields a composite's OPERANDS but
             # never the composite itself (the generator normally inlines those
             # nodes). An ORDER BY target that IS a composite therefore had no
@@ -745,17 +764,8 @@ class ProjectionPlanner:
             # ORDER ONLY: filters keep the operands-only walk. A filter's
             # top-level composite is rendered inline into WHERE / HAVING, and
             # giving it a slot would change that emission.
-            top = o.bound.value_key
-            if (
-                isinstance(top, (ArithmeticKey, ScalarCallKey))
-                and registry.find_by_key(top) is None
-            ):
-                registry.intern(
-                    key=top,
-                    declared_name=_canonical_name(top),
-                    hidden=True,
-                    phase=top.phase,
-                )
+            if isinstance(o.bound.value_key, (ArithmeticKey, ScalarCallKey)):
+                self._intern_hidden(registry, o.bound.value_key)
 
         return ProjectionPlan(
             registry=registry,
