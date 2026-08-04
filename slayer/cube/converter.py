@@ -15,8 +15,19 @@ from slayer.core.enums import DataType, JoinType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.formula import ALL_TRANSFORMS, parse_formula
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.query import render_probe_text
 from slayer.cube.extends import flatten_cube_extends, flatten_view_extends
-from slayer.cube.models import CubeCube, CubeDimension, CubeMeasure, CubeView
+from slayer.cube.filter_params import (
+    apply_filter_params,
+    parse_string_filter_params,
+)
+from slayer.cube.models import (
+    CubeCube,
+    CubeDimension,
+    CubeFilterParamRef,
+    CubeMeasure,
+    CubeView,
+)
 from slayer.cube.refs import is_bare_identifier, parse_join_on, translate_cube_refs
 from slayer.cube.report import (
     CubeConversionIssue,
@@ -121,14 +132,25 @@ def _window_from_rolling(rolling, report, *, cube, member) -> str | None:
 class CubeToSlayerConverter:
     """Convert a CubeProject into SLayer models + a structured report."""
 
-    def __init__(self, project, data_source: str, parse_issues=None) -> None:
+    def __init__(
+        self, project, data_source: str, parse_issues=None,
+        *, honor_required_meta: bool = True,
+    ) -> None:
         self.project = project
         self.data_source = data_source
         self.parse_issues = parse_issues or []
+        # DEV-1730: honor a member's truthy ``meta.required`` by emitting its
+        # FILTER_PARAMS pushdown as a required (raise-on-missing) variable rather
+        # than an optional block. ``--ignore-required-meta`` flips this off.
+        self.honor_required_meta = honor_required_meta
         self._cubes: dict[str, CubeCube] = {}
         self._models: dict[str, SlayerModel] = {}
         # model name → {measure name → _MeasureInfo}
         self._measure_info: dict[str, dict[str, _MeasureInfo]] = {}
+        # Per-cube FILTER_PARAMS state (set in _convert_cube, consumed by the
+        # Mode-A translate helpers).
+        self._active_refs: list[CubeFilterParamRef] = []
+        self._active_required: set[str] = set()
 
     # ── pipeline ───────────────────────────────────────────────────────────
 
@@ -163,11 +185,26 @@ class CubeToSlayerConverter:
     # ── cube → model ───────────────────────────────────────────────────────
 
     def _convert_cube(self, cube: CubeCube, report: CubeConversionReport) -> SlayerModel | None:
+        # DEV-1730: gather FILTER_PARAMS refs (JS front-end already populated
+        # them + sentinelised the surfaces; YAML scans the raw text here) and
+        # validate them BEFORE any translation, so a bad ref drops the cube
+        # cleanly with no half-built variable entries.
+        cube, refs = self._prepare_filter_params(cube)
+        fp_error = self._validate_filter_params(cube, refs)
+        if fp_error is not None:
+            report.add(fp_error)
+            return None
+        self._active_refs = refs
+        self._active_required = self._required_members(cube, refs)
+
         source = self._cube_source(cube, report)
         if source is None:
             return None
 
         meta: dict = dict(cube.meta or {})
+        cube_vars = self._build_cube_variables(cube, refs)
+        if cube_vars:
+            meta["cube_variables"] = cube_vars
         if cube.title:
             meta["cube_title"] = cube.title
         unmapped: dict = {}
@@ -225,15 +262,148 @@ class CubeToSlayerConverter:
             ))
             return None
         self._measure_info[cube.name] = info
+        self._report_filter_param_variables(cube, refs, report)
         return model
+
+    # ── FILTER_PARAMS (DEV-1730) ────────────────────────────────────────────
+
+    def _prepare_filter_params(
+        self, cube: CubeCube
+    ) -> tuple[CubeCube, list[CubeFilterParamRef]]:
+        """Return ``(working_cube, refs)``. JS cubes arrive with structured refs
+        + sentinelised surfaces; YAML cubes carry raw ``{FILTER_PARAMS...}`` text
+        which is scanned here (on a deep copy) into refs + sentinels."""
+        if cube.filter_params:
+            return cube, list(cube.filter_params)
+        if not self._cube_mentions_filter_params(cube):
+            return cube, []
+        cube = cube.model_copy(deep=True)
+        refs: list[CubeFilterParamRef] = []
+
+        def scan(text: str | None) -> str | None:
+            nonlocal refs
+            if not text or "{FILTER_PARAMS." not in text:
+                return text
+            ext = parse_string_filter_params(
+                text, host_cube=cube.name, start_index=len(refs))
+            refs.extend(ext.refs)
+            # Unsupported occurrences are left verbatim; _validate_filter_params
+            # sees the still-present {FILTER_PARAMS...} text and drops the cube.
+            return ext.text
+
+        cube.sql = scan(cube.sql)
+        for dim in cube.dimensions:
+            dim.sql = scan(dim.sql)
+        for meas in cube.measures:
+            meas.sql = scan(meas.sql)
+            for f in meas.filters:
+                f.sql = scan(f.sql)
+        for seg in cube.segments:
+            seg.sql = scan(seg.sql)
+        return cube, refs
+
+    def _cube_mentions_filter_params(self, cube: CubeCube) -> bool:
+        surfaces = [cube.sql]
+        surfaces += [d.sql for d in cube.dimensions]
+        surfaces += [m.sql for m in cube.measures]
+        surfaces += [f.sql for m in cube.measures for f in m.filters]
+        surfaces += [s.sql for s in cube.segments]
+        return any(s and "{FILTER_PARAMS." in s for s in surfaces)
+
+    def _validate_filter_params(
+        self, cube: CubeCube, refs: list[CubeFilterParamRef]
+    ) -> CubeConversionIssue | None:
+        """Validate FILTER_PARAMS refs; return a drop-the-cube issue or None."""
+        if self._cube_mentions_filter_params(cube):
+            return CubeConversionIssue(
+                category=CubeIssueCategory.FILTER_PARAMS_UNSUPPORTED, severity="error",
+                cube=cube.name,
+                message="Unsupported FILTER_PARAMS form (cross-cube, arrow-in-YAML, "
+                        "or unparseable); cube dropped.")
+        valid_members = {d.name for d in cube.dimensions} | {m.name for m in cube.measures}
+        var_owner: dict[str, str] = {}
+        for ref in refs:
+            if ref.cube != cube.name:
+                return CubeConversionIssue(
+                    category=CubeIssueCategory.FILTER_PARAMS_UNSUPPORTED, severity="error",
+                    cube=cube.name, member=ref.member,
+                    message=f"Cross-cube FILTER_PARAMS reference "
+                            f"'{ref.cube}.{ref.member}' (host cube is '{cube.name}'); "
+                            f"cube dropped.")
+            if ref.member not in valid_members:
+                return CubeConversionIssue(
+                    category=CubeIssueCategory.FILTER_PARAMS_UNSUPPORTED, severity="error",
+                    cube=cube.name, member=ref.member,
+                    message=f"FILTER_PARAMS references unknown member "
+                            f"'{ref.member}'; cube dropped.")
+            for var in ref.var_names:
+                prior = var_owner.get(var)
+                if prior is not None and prior != ref.member:
+                    return CubeConversionIssue(
+                        category=CubeIssueCategory.FILTER_PARAMS_UNSUPPORTED, severity="error",
+                        cube=cube.name, member=ref.member,
+                        message=f"FILTER_PARAMS variable '{var}' is generated by both "
+                                f"member '{prior}' and '{ref.member}'; cube dropped.")
+                var_owner[var] = ref.member
+        return None
+
+    def _required_members(self, cube: CubeCube, refs) -> set[str]:
+        if not self.honor_required_meta:
+            return set()
+        return {r.member for r in refs if self._member_required(cube, r.member)}
+
+    def _member_required(self, cube: CubeCube, member: str) -> bool:
+        entity = next((d for d in cube.dimensions if d.name == member), None) \
+            or next((m for m in cube.measures if m.name == member), None)
+        return bool(entity and (entity.meta or {}).get("required"))
+
+    def _member_description(self, cube: CubeCube, member: str) -> str | None:
+        entity = next((d for d in cube.dimensions if d.name == member), None) \
+            or next((m for m in cube.measures if m.name == member), None)
+        return entity.description if entity is not None else None
+
+    def _build_cube_variables(self, cube: CubeCube, refs) -> dict:
+        required = self._required_members(cube, refs)
+        out: dict = {}
+        for ref in refs:
+            for var in ref.var_names:
+                out[var] = {
+                    "member": ref.member,
+                    "required": ref.member in required,
+                    "kind": ref.kind,
+                    "description": self._member_description(cube, ref.member),
+                }
+        return out
+
+    def _report_filter_param_variables(self, cube, refs, report) -> None:
+        seen: set[str] = set()
+        required = self._active_required
+        for ref in refs:
+            if ref.member in seen:
+                continue
+            seen.add(ref.member)
+            req = "required" if ref.member in required else "optional"
+            report.add(CubeConversionIssue(
+                category=CubeIssueCategory.FILTER_PARAMS_VARIABLE, severity="info",
+                cube=cube.name, member=ref.member,
+                message=f"FILTER_PARAMS member '{ref.member}' → {req} variable(s) "
+                        f"{ref.var_names}."))
+
+    def _resolve_fp(self, translated: str) -> str:
+        """Replace FILTER_PARAMS sentinels in already-``translate_cube_refs``-ed
+        text with their SLayer Mode-A form (block / bare). A no-op when the text
+        carries no sentinels."""
+        return apply_filter_params(
+            translated, self._active_refs, required_members=self._active_required)
 
     def _cube_source(self, cube: CubeCube, report) -> dict | None:
         if cube.sql_table:
             return {"sql_table": cube.sql_table}
         if cube.sql:
-            translated = translate_cube_refs(cube.sql, mode="sql", cube=cube.name)
+            translated = self._resolve_fp(
+                translate_cube_refs(cube.sql, mode="sql", cube=cube.name))
             try:
-                sqlglot.parse_one(translated)
+                sqlglot.parse_one(render_probe_text(translated))
             except Exception:  # noqa: BLE001
                 report.add(CubeConversionIssue(
                     category=CubeIssueCategory.COMPLEX_SQL, severity="error",
@@ -279,7 +449,8 @@ class CubeToSlayerConverter:
         if dim.case:
             sql = self._build_case_sql(cube, dim.case)
         elif dim.sql:
-            translated = translate_cube_refs(dim.sql, mode="sql", cube=cube.name)
+            translated = self._resolve_fp(
+                translate_cube_refs(dim.sql, mode="sql", cube=cube.name))
             sql = None if translated == dim.name else translated
         else:
             sql = None
@@ -295,7 +466,8 @@ class CubeToSlayerConverter:
     def _build_case_sql(self, cube, case: dict) -> str:
         parts = ["CASE"]
         for when in case.get("when", []):
-            cond = translate_cube_refs(when.get("sql", ""), mode="sql", cube=cube.name)
+            cond = self._resolve_fp(
+                translate_cube_refs(when.get("sql", ""), mode="sql", cube=cube.name))
             parts.append(f"WHEN {cond} THEN {_sql_str_literal(when.get('label', ''))}")
         if case.get("else"):
             parts.append(f"ELSE {_sql_str_literal(case['else'].get('label', ''))}")
@@ -356,7 +528,8 @@ class CubeToSlayerConverter:
                 info[meas.name] = _MeasureInfo(kind="star_count", emitted_name=final_name)
             return
 
-        translated = translate_cube_refs(meas.sql, mode="sql", cube=cube.name)
+        translated = self._resolve_fp(
+            translate_cube_refs(meas.sql, mode="sql", cube=cube.name))
         filter_pred = self._measure_filter(cube, meas)
         col_name = self._get_or_create_column(
             meas, translated, filter_pred, columns, names, dedup, report, cube)
@@ -374,7 +547,8 @@ class CubeToSlayerConverter:
     def _measure_filter(self, cube, meas) -> str | None:
         if not meas.filters:
             return None
-        preds = [translate_cube_refs(f.sql, mode="sql", cube=cube.name) for f in meas.filters]
+        preds = [self._resolve_fp(translate_cube_refs(f.sql, mode="sql", cube=cube.name))
+                 for f in meas.filters]
         return " AND ".join(preds) if preds else None
 
     def _get_or_create_column(self, meas, translated_sql, filter_pred, columns, names, dedup, report, cube) -> str:
@@ -412,7 +586,8 @@ class CubeToSlayerConverter:
     def _convert_segment(self, cube, seg, columns, names, report) -> None:
         name = names.take(seg.name, suffix="_seg")
         columns.append(Column(
-            name=name, sql=translate_cube_refs(seg.sql, mode="sql", cube=cube.name),
+            name=name,
+            sql=self._resolve_fp(translate_cube_refs(seg.sql, mode="sql", cube=cube.name)),
             type=DataType.BOOLEAN, hidden=not seg.public,
             label=seg.title, description=seg.description, meta=seg.meta))
         report.add(CubeConversionIssue(
@@ -472,7 +647,9 @@ class CubeToSlayerConverter:
                 good_cols.append(col)
                 continue
             try:
-                sqlglot.parse_one(col.sql)
+                # A column sql may carry {? ?} blocks / {var} placeholders
+                # (DEV-1730); probe-render before the syntax-only parse.
+                sqlglot.parse_one(render_probe_text(col.sql))
                 good_cols.append(col)
             except Exception:  # noqa: BLE001
                 dropped.add(col.name)

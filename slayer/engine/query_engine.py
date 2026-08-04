@@ -35,6 +35,7 @@ from slayer.core.query import (
     ColumnRef,
     SlayerQuery,
     TimeDimension,
+    _contains_block_delimiter,
     extract_placeholder_names,
     substitute_variables,
 )
@@ -260,6 +261,20 @@ def _merge_query_variables(
     return {**(outer or {}), **(stage or {}), **(runtime or {})}
 
 
+def _model_has_optional_block(model: SlayerModel) -> bool:
+    """True if any Mode-A surface carries an optional ``{? ... ?}`` block.
+
+    Such a model must run through substitution even with zero variables so its
+    blocks collapse to ``(1=1)`` (DEV-1730) instead of leaking the raw ``{?``
+    delimiters into emitted SQL.
+    """
+    surfaces = [model.sql, *(model.filters or [])]
+    for col in model.columns:
+        surfaces.append(col.sql)
+        surfaces.append(col.filter)
+    return any(s and _contains_block_delimiter(s) for s in surfaces)
+
+
 def _substitute_model_sql_surfaces(
     *, model: SlayerModel, variables: dict[str, Any]
 ) -> SlayerModel:
@@ -267,14 +282,17 @@ def _substitute_model_sql_surfaces(
     Mode-A (raw-SQL) surfaces: ``SlayerModel.sql``, ``SlayerModel.filters``,
     ``Column.sql``, and ``Column.filter`` (DEV-1625).
 
-    No-op copy when ``variables`` is empty — so a model that uses no variables
-    is never touched and raw brace literals (e.g. Postgres arrays ``'{1,2,3}'``)
-    survive verbatim. Uses the hardened :func:`substitute_variables`
-    (raise-on-missing, string single-quote escaping). Never mutates the input
-    model — it may be a shared cached object. Only these four surfaces change;
-    Mode-B surfaces (``ModelMeasure.formula`` etc.) are copied through as-is.
+    No-op copy when ``variables`` is empty AND no surface carries an optional
+    ``{? ... ?}`` block — so a model that uses no variables is never touched and
+    raw brace literals (e.g. Postgres arrays ``'{1,2,3}'``) survive verbatim. A
+    block-bearing model, however, must still run so its blocks collapse to
+    ``(1=1)`` even on a zero-variable call (DEV-1730). Uses the hardened
+    :func:`substitute_variables` (raise-on-missing, string single-quote escaping,
+    block collapse). Never mutates the input model — it may be a shared cached
+    object. Only these four surfaces change; Mode-B surfaces
+    (``ModelMeasure.formula`` etc.) are copied through as-is.
     """
-    if not variables:
+    if not variables and not _model_has_optional_block(model):
         return model
 
     def _sub(text: str) -> str:
@@ -1114,10 +1132,13 @@ class SlayerQueryEngine:
         # model's own defaults are the lowest layer.
         if model.source_model_origin is None:
             effective_vars = {**(model.query_variables or {}), **(query.variables or {})}
-            if effective_vars:
-                model = _substitute_model_sql_surfaces(
-                    model=model, variables=effective_vars
-                )
+            # Always call: the helper is a no-op for a variable-free, block-free
+            # model (preserving DEV-1625 raw-brace-literal protection), but a
+            # block-bearing model must still run so its {? ?} blocks collapse to
+            # (1=1) even on a zero-variable call (DEV-1730).
+            model = _substitute_model_sql_surfaces(
+                model=model, variables=effective_vars
+            )
 
         # Enrich: SlayerQuery + model → EnrichedQuery
         _t = timing.start()

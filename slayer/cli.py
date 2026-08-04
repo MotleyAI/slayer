@@ -393,6 +393,12 @@ examples:
     import_cube_parser.add_argument("--datasource", required=True, help="SLayer datasource name to file the imported models under")
     import_cube_parser.add_argument("--report", default=None, help="Path for the JSON conversion report (default: <storage>/cube_import_report.json)")
     import_cube_parser.add_argument("--include-hidden", action="store_true", help="Also print hidden (public: false) models in the summary")
+    import_cube_parser.add_argument(
+        "--ignore-required-meta", action="store_true",
+        help="Emit every FILTER_PARAMS pushdown as an optional filter (literal "
+             "Cube semantics), ignoring a member's meta.required marker. By "
+             "default a truthy meta.required makes that filter required "
+             "(raise-on-missing).")
     _add_storage_arg(import_cube_parser)
 
     # ── import-osi ────────────────────────────────────────────────────
@@ -1565,6 +1571,7 @@ def _run_import_cube(args):
 
     result = CubeToSlayerConverter(
         project=project, data_source=args.datasource, parse_issues=parse_issues,
+        honor_required_meta=not args.ignore_required_meta,
     ).convert()
     from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
     for model in result.models:

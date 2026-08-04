@@ -20,7 +20,7 @@ import sqlalchemy as sa
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.query import SlayerQuery, extract_model_variables
 from slayer.engine.ingestion import _friendly_db_error
 from slayer.engine.profiling import (
     _is_sample_cached,
@@ -607,6 +607,7 @@ def model_skeleton_fields(
     canonical_id = (
         f"{model.data_source}.{model.name}" if model.data_source else model.name
     )
+    mv = extract_model_variables(model)
     return {
         "name": model.name,
         "canonical_id": canonical_id,
@@ -615,6 +616,7 @@ def model_skeleton_fields(
         "measure_names": [m.name for m in model.measures if m.name is not None],
         "aggregation_names": [a.name for a in model.aggregations],
         "joins_to": sorted({j.target_model for j in model.joins}),
+        "variables": {"required": mv.required, "optional": mv.optional},
     }
 
 
@@ -640,7 +642,23 @@ def render_model_skeleton(
     lines.append(f"Measures: {_skeleton_csv(fields['measure_names'])}")
     lines.append(f"Aggregations: {_skeleton_csv(fields['aggregation_names'])}")
     lines.append(f"Joins to: {_skeleton_csv(fields['joins_to'])}")
+    var_line = _render_variables_line(fields["variables"])
+    if var_line:
+        lines.append(var_line)
     return "\n".join(lines)
+
+
+def _render_variables_line(variables: dict[str, list[str]]) -> str | None:
+    """Render the model-variable line for sql-mode models parameterised with
+    ``{var}`` / ``{? ?}`` (DEV-1730). Returns ``None`` when the model takes no
+    variables so a plain table-backed model's skeleton is unchanged.
+    """
+    required = variables.get("required") or []
+    optional = variables.get("optional") or []
+    if not required and not optional:
+        return None
+    parts = [f"{name} (required)" for name in required] + list(optional)
+    return f"Variables: {', '.join(parts)}"
 
 
 async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of the inspect_model tool body; the section-gating + cache-miss + dual markdown/json render is intentionally a single linear pass

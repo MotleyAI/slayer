@@ -17,16 +17,21 @@ from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
 logger = logging.getLogger(__name__)
 
 
-def _collect_yaml_paths(directory: str) -> list[str]:
+def _collect_paths(directory: str, suffixes: tuple[str, ...]) -> list[str]:
     paths: list[str] = []
     for root, dirs, files in os.walk(directory):
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d != "target"]
+        dirs[:] = [d for d in dirs
+                   if not d.startswith(".") and d not in ("target", "node_modules")]
         for filename in sorted(files):
             if filename.startswith("."):
                 continue
-            if filename.endswith((".yaml", ".yml")):
+            if filename.endswith(suffixes):
                 paths.append(os.path.join(root, filename))
     return paths
+
+
+def _collect_yaml_paths(directory: str) -> list[str]:
+    return _collect_paths(directory, (".yaml", ".yml"))
 
 
 def _str_has_jinja(value) -> bool:
@@ -155,4 +160,26 @@ def parse_cube_project(project_path: str) -> tuple[CubeProject, list[CubeConvers
         _parse_cubes(data, path, cubes, issues)
         _parse_views(data, path, views, issues)
 
+    _parse_js_files(project_path, cubes, views, issues)
+
     return CubeProject(cubes=cubes, views=views), issues
+
+
+def _parse_js_files(project_path: str, cubes: list, views: list, issues: list) -> None:
+    """Discover + parse ``.js`` Cube configs (DEV-1730), merging cubes / views /
+    issues into the same aggregation as the YAML front-end."""
+    from slayer.cube.js_parser import parse_cube_js  # local: keeps esprima lazy
+
+    for path in _collect_paths(project_path, (".js",)):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                source = fh.read()
+        except OSError as exc:
+            issues.append(CubeConversionIssue(
+                category=CubeIssueCategory.PARSE_ERROR, severity="warning",
+                message=f"File '{path}' could not be read: {exc}"))
+            continue
+        result = parse_cube_js(source, path=path)
+        cubes.extend(result.cubes)
+        views.extend(result.views)
+        issues.extend(result.issues)

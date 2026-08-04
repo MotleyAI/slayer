@@ -10,9 +10,28 @@ so the converter can either map them or stash the raw value under
 ``meta.cube_unmapped.<feature>`` (see the spec on DEV-1608, §7).
 """
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+
+class CubeFilterParamRef(BaseModel):
+    """A captured Cube ``FILTER_PARAMS.<cube>.<member>.filter(...)`` occurrence
+    (DEV-1730).
+
+    Front-ends (JS parser / YAML text scan) replace each occurrence with
+    ``sentinel`` in the surface text and record the structured ref here; the
+    converter resolves the sentinel to SLayer Mode-A text once requiredness is
+    known. ``body_template`` is the rendered inner SQL with ``{var}`` placeholders
+    (e.g. ``pr."BRAND" IN ({brand})`` or ``'{fulfillment_date_from}'``).
+    """
+
+    cube: str
+    member: str
+    kind: Literal["string", "arrow_value", "arrow_range"]
+    body_template: str
+    var_names: list[str] = Field(default_factory=list)
+    sentinel: str
 
 
 class CubeMeasureFilter(BaseModel):
@@ -97,6 +116,10 @@ class CubeCube(BaseModel):
     hierarchies: list[dict[str, Any]] | None = None
     pre_aggregations: list[dict[str, Any]] | None = None
     access_policy: list[dict[str, Any]] | None = None
+    # FILTER_PARAMS occurrences captured from this cube's raw-SQL surfaces
+    # (sentinels sit in the surface text). Populated by the front-end; resolved
+    # by the converter once requiredness is known (DEV-1730).
+    filter_params: list[CubeFilterParamRef] = Field(default_factory=list)
 
 
 class CubeViewCubeRef(BaseModel):

@@ -54,6 +54,8 @@ data dir, override with `$SLAYER_STORAGE`.
 - Models are keyed by `(data_source, name)`; joins resolve within the parent model's datasource
 - Models/queries/datasource configs carry a `version` field; storage migrations run automatically on load (`slayer/storage/migrations.py`)
 - Filters support `{variable}` placeholders from `query.variables` (scalars, plus lists → injection-safe `IN`-list body: `region IN ({regions})`); datasource configs support `${ENV_VAR}`
+- Mode-A raw-SQL surfaces also support optional blocks `{? pred ?}` — render parenthesised when every inner `{var}` is supplied, else collapse to `(1=1)` (Cube `FILTER_PARAMS` optional-pushdown form, DEV-1730). `extract_model_variables(model)` classifies placeholders required vs optional; surfaced in the inspect skeleton
+- `slayer import-cube` reads Cube `.yml`/`.yaml` **and `.js`** (`cube()`/`view()` via esprima); FILTER_PARAMS → `{var}`/`{? ?}`, requiredness from member `meta.required` (`--ignore-required-meta` to force optional). See `docs/cube/cube_import.md`
 
 ## Database Support
 

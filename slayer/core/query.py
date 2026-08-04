@@ -12,10 +12,17 @@ import math
 import re
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.models import ModelMeasure
+from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
 
@@ -140,6 +147,99 @@ def _render_variable_value(
     )
 
 
+_BLOCK_OPEN = "{?"
+_BLOCK_CLOSE = "?}"
+
+
+def _find_block_end(text: str, start: int) -> int:
+    """Scan from ``start`` (just past a ``{?``) to the matching ``?}``.
+
+    Returns the index of the closing ``?}``. Raises on a nested ``{?`` (blocks
+    do not nest) or if no close is found before end-of-string. ``{{``/``}}``
+    escapes are skipped so they can never masquerade as block delimiters.
+    """
+    i, n = start, len(text)
+    while i < n:
+        two = text[i:i + 2]
+        if two in ("{{", "}}"):
+            i += 2
+            continue
+        if two == _BLOCK_OPEN:
+            raise ValueError(
+                f"Nested optional block '{{?' is not allowed in: {text!r}"
+            )
+        if two == _BLOCK_CLOSE:
+            return i
+        i += 1
+    raise ValueError(
+        f"Unterminated optional block (missing '?}}') in: {text!r}"
+    )
+
+
+def _split_blocks(text: str) -> list[tuple[str, str]]:
+    """Split ``text`` into ``("text", s)`` / ``("block", inner)`` parts.
+
+    Top-level ``{? ... ?}`` spans become ``block`` parts (inner text only);
+    everything else is ``text``. ``{{``/``}}`` escapes are preserved verbatim in
+    ``text`` parts (the downstream var pass renders them). Raises on a stray
+    ``?}`` (a close with no open). Blocks never nest (enforced here).
+    """
+    parts: list[tuple[str, str]] = []
+    buf: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        two = text[i:i + 2]
+        if two in ("{{", "}}"):
+            buf.append(two)
+            i += 2
+            continue
+        if two == _BLOCK_OPEN:
+            parts.append(("text", "".join(buf)))
+            buf = []
+            end = _find_block_end(text, i + 2)
+            parts.append(("block", text[i + 2:end]))
+            i = end + 2
+            continue
+        if two == _BLOCK_CLOSE:
+            raise ValueError(
+                f"Unexpected '?}}' (optional-block close without open) in: {text!r}"
+            )
+        buf.append(text[i])
+        i += 1
+    parts.append(("text", "".join(buf)))
+    return parts
+
+
+def _block_var_names(inner: str, whole: str) -> list[str]:
+    """Return the valid ``{var}`` names inside a block's ``inner`` text.
+
+    Raises if the block carries an invalid ``{...}`` name, or if it contains no
+    ``{var}`` at all (an optional block with nothing to key on is a mistake —
+    it would render identically whether or not any variable is supplied).
+    """
+    names: list[str] = []
+    for match in _VAR_PATTERN.finditer(inner):
+        if match.group(0) in ("{{", "}}"):
+            continue
+        if match.group(1) is not None:
+            names.append(match.group(1))
+        else:
+            raise ValueError(
+                f"Invalid variable name '{match.group(2)}' in optional block "
+                f"of: {whole!r}."
+            )
+    if not names:
+        raise ValueError(
+            f"Optional block '{{? ... ?}}' must contain at least one "
+            f"{{variable}} in: {whole!r}."
+        )
+    return names
+
+
+def _contains_block_delimiter(text: str) -> bool:
+    return _BLOCK_OPEN in text or _BLOCK_CLOSE in text
+
+
 def substitute_variables(
     filter_str: str, variables: dict[str, Any], *, escape: Literal["sql", "python"]
 ) -> str:
@@ -200,7 +300,34 @@ def substitute_variables(
             f"Variable names must contain only letters, digits, and underscores."
         )
 
-    return _VAR_PATTERN.sub(_replace, filter_str)
+    # Optional blocks {? ... ?} are a Mode-A-only construct (DEV-1730). The
+    # Mode-B Python-AST filter layer rejects them outright.
+    if escape == "python":
+        if _contains_block_delimiter(filter_str):
+            raise ValueError(
+                f"Optional blocks '{{? ... ?}}' are not supported in Mode-B "
+                f"(python) filters: {filter_str!r}."
+            )
+        return _VAR_PATTERN.sub(_replace, filter_str)
+
+    # Fast path: no block delimiters -> the original single-pass regex sub.
+    if not _contains_block_delimiter(filter_str):
+        return _VAR_PATTERN.sub(_replace, filter_str)
+
+    out: list[str] = []
+    for kind, segment in _split_blocks(filter_str):
+        if kind == "text":
+            out.append(_VAR_PATTERN.sub(_replace, segment))
+            continue
+        # kind == "block": render (parenthesised) iff every inner var is
+        # supplied; otherwise collapse to the neutral (1=1).
+        names = _block_var_names(segment, filter_str)
+        if all(name in variables for name in names):
+            rendered = _VAR_PATTERN.sub(_replace, segment).strip()
+            out.append("(" + rendered + ")")
+        else:
+            out.append("(1=1)")
+    return "".join(out)
 
 
 def extract_placeholder_names(query: "SlayerQuery") -> set:
@@ -217,6 +344,99 @@ def extract_placeholder_names(query: "SlayerQuery") -> set:
             if valid_name:
                 found.add(valid_name)
     return found
+
+
+def _probe_replace(match: re.Match) -> str:
+    full = match.group(0)
+    if full == "{{":
+        return "{"
+    if full == "}}":
+        return "}"
+    return "0"  # any {var} (valid or not) -> a syntactically safe literal
+
+
+def render_probe_text(text: str) -> str:
+    """Render a Mode-A surface for a syntax-only sqlglot parse (DEV-1730).
+
+    Optional blocks collapse to ``(1=1)`` (their absent-value form) and every
+    remaining ``{var}`` becomes the literal ``0`` — enough for sqlglot to parse
+    structure without any caller variables. Shared by every converter validation
+    path so import-time validation matches execution-time rendering.
+    """
+    out: list[str] = []
+    for kind, segment in _split_blocks(text):
+        if kind == "block":
+            out.append("(1=1)")
+        else:
+            out.append(_VAR_PATTERN.sub(_probe_replace, segment))
+    return "".join(out)
+
+
+class ModelVariables(BaseModel):
+    """Structural classification of a model's Mode-A ``{var}`` placeholders.
+
+    ``required`` vars have no default and are not inside an optional block, so a
+    query that omits them raises. ``optional`` vars either sit inside a ``{? ?}``
+    block (collapse to ``(1=1)`` when absent) or carry a ``query_variables``
+    default. Derived on demand from the four Mode-A surfaces — nothing is
+    persisted, so there is no schema-version impact (DEV-1730).
+    """
+
+    required: list[str] = Field(default_factory=list)
+    optional: list[str] = Field(default_factory=list)
+
+
+def extract_variable_refs(text: str) -> tuple[set[str], set[str]]:
+    """Return ``(bare_names, blocked_names)`` referenced in a Mode-A ``text``.
+
+    ``bare_names`` appear outside any ``{? ?}`` block; ``blocked_names`` appear
+    inside one. A name may land in both sets (used bare in one place and blocked
+    in another) — the caller resolves the precedence.
+    """
+    bare: set[str] = set()
+    blocked: set[str] = set()
+    for kind, segment in _split_blocks(text):
+        target = bare if kind == "text" else blocked
+        for match in _VAR_PATTERN.finditer(segment):
+            if match.group(0) in ("{{", "}}"):
+                continue
+            if match.group(1):
+                target.add(match.group(1))
+    return bare, blocked
+
+
+def extract_model_variables(model: SlayerModel) -> ModelVariables:
+    """Classify a model's Mode-A ``{var}`` placeholders as required / optional.
+
+    Walks the four Mode-A surfaces — ``SlayerModel.sql``, ``SlayerModel.filters``,
+    ``Column.sql``, ``Column.filter`` — the same surfaces DEV-1625 substitutes.
+    A bare occurrence with no ``query_variables`` default is required; everything
+    else (inside a block, or defaulted) is optional. A bare-without-default
+    occurrence anywhere wins, so a var used both bare and blocked is required.
+    """
+    surfaces: list[str] = []
+    if model.sql:
+        surfaces.append(model.sql)
+    surfaces.extend(f for f in (model.filters or []) if f)
+    for col in model.columns:
+        if col.sql:
+            surfaces.append(col.sql)
+        if col.filter:
+            surfaces.append(col.filter)
+
+    bare: set[str] = set()
+    blocked: set[str] = set()
+    for surface in surfaces:
+        s_bare, s_blocked = extract_variable_refs(surface)
+        bare |= s_bare
+        blocked |= s_blocked
+
+    defaults = set(model.query_variables or {})
+    required = {name for name in bare if name not in defaults}
+    optional = (bare | blocked) - required
+    return ModelVariables(
+        required=sorted(required), optional=sorted(optional)
+    )
 
 
 class ColumnRef(BaseModel):
