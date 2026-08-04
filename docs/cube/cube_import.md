@@ -1,10 +1,11 @@
 # Importing Cube definitions
 
-SLayer can import [Cube](https://cube.dev) (Cube.js / Cube.dev) YAML data models —
-cubes and views — and convert them to SLayer models. The conversion is **fully
-offline**: data types come from Cube's declared dimension / measure types, so no
-database connection is required. Everything that can't be mapped cleanly is
-captured in a structured JSON report rather than silently dropped.
+SLayer can import [Cube](https://cube.dev) (Cube.js / Cube.dev) data models —
+cubes and views, in **YAML or JavaScript** — and convert them to SLayer models.
+The conversion is **fully offline**: data types come from Cube's declared
+dimension / measure types, so no database connection is required. Everything that
+can't be mapped cleanly is captured in a structured JSON report rather than
+silently dropped.
 
 ## Quick start
 
@@ -12,9 +13,10 @@ captured in a structured JSON report rather than silently dropped.
 slayer import-cube ./cube_project --datasource my_postgres --storage ./slayer_data
 ```
 
-This recursively reads every `.yml`/`.yaml` file under the path, extracts
-`cubes:` and `views:`, writes SLayer model files to the storage directory, and
-writes `cube_import_report.json` next to it.
+This recursively reads every `.yml`/`.yaml` **and `.js`** file under the path
+(skipping `node_modules` / `target`), extracts `cubes:` / `views:` (YAML) and
+`cube('Name', {...})` / `view(...)` calls (JavaScript), writes SLayer model files
+to the storage directory, and writes `cube_import_report.json` next to it.
 
 `--datasource` is just the SLayer datasource name to file the models under — it
 does not need to exist or be reachable. After importing, run `slayer ingest`
@@ -93,6 +95,54 @@ Cube inheritance is **flattened** at import time — a child inherits the parent
 members (child wins on conflicts), and abstract bases (`public: false`) are
 emitted as hidden models.
 
+### JavaScript configs
+
+`cube('Name', { ... })` and `view('Name', { ... })` calls in `.js` files are
+parsed (via a pure-Python ESTree parser) into the same shapes as the YAML path,
+so every mapping above applies equally. Supported: template-literal strings
+(`` `...` ``) including `${CUBE}` / `${member}` / `${a.b}` refs, object and array
+literals, `//` and `/* */` comments, `module.exports =` / `export default`
+wrappers, `import` / `export` (ES-module) configs, and multiple cubes per file.
+Member keys are accepted in either `camelCase` (`primaryKey`) or `snake_case`
+(`primary_key`); `meta` is preserved verbatim.
+
+Anything **dynamic** — a helper call (`sql: buildSql()`), a spread (`...base`), a
+bare identifier reference (`sql: someConst`), or a computed key — can't be
+resolved offline. The affected member is skipped with a report issue and the rest
+of the cube still converts (one bad dimension does not sink the model). The parser
+targets ES2017; a config using newer syntax is reported rather than crashing. One
+Stage-1 gap: a JS **view** whose `join_path` is written as a bare cube identifier
+(`join_path: Orders`) rather than a string is skipped — write it as a string
+(`join_path: 'Orders'`) for now.
+
+### FILTER_PARAMS pushdowns
+
+Cube's `FILTER_PARAMS.<cube>.<member>.filter(...)` renders a member's filter when
+the caller supplies one, else the neutral `1 = 1`. SLayer represents this with
+[`{variable}` substitution](../concepts/models.md#variables-in-model-sql):
+
+- **String form** `.filter('col')` → an optional block `{? col IN ({member}) ?}`
+  — the caller passes a list, or omits it and the block collapses to `(1=1)`.
+- **Arrow form** `.filter((from, to) => ...)` → the body is emitted with `from` /
+  `to` spliced as the pre-quoted variables `{<member>_from}` / `{<member>_to}`.
+  A bare-param body used in a scalar position (`...filter((from,to)=>from)::TIMESTAMP`)
+  is handled too.
+
+Whether a pushdown is **required** (bare `{var}`, omitting it raises a clear error)
+or **optional** (wrapped in a block) is decided by the referenced member's
+`meta.required`: a truthy value ⇒ required. Pass `--ignore-required-meta` to emit
+every pushdown as optional (literal Cube semantics) instead. Each emitted variable
+is listed in the report (`filter_params_variable`), and the model stashes the
+member/required/kind/description of each variable under `meta.cube_variables`.
+
+Two pushdown shapes are representable in Stage 1: the **string form** (set
+membership — `IN` / equals) and the **arrow form** (a date range built from the
+`from` / `to` bounds, as above). Cube's other per-operator filter helpers
+(`contains`, `gt`, `startsWith`, …) are not represented as their own forms. A
+cross-cube reference, an unknown member, a generated-name collision, or an
+arrow form in a YAML (non-JS) config is reported as `filter_params_unsupported`
+and drops the cube.
+
 ## What does not map (reported)
 
 These are recorded in `cube_import_report.json` and, where useful, preserved
@@ -135,4 +185,6 @@ Options:
   --storage PATH        Storage directory / .db file (default: platform path)
   --report PATH         JSON report path (default: <storage>/cube_import_report.json)
   --include-hidden      Also print hidden (public: false) models in the summary
+  --ignore-required-meta  Emit every FILTER_PARAMS pushdown as optional (ignore
+                          member meta.required)
 ```

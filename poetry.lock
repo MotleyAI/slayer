@@ -1681,6 +1681,17 @@ packaging = ">=21"
 sqlalchemy = ">=1.3.22"
 
 [[package]]
+name = "esprima"
+version = "4.0.1"
+description = "ECMAScript parsing infrastructure for multipurpose analysis in Python"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "esprima-4.0.1.tar.gz", hash = "sha256:08db1a876d3c2910db9cfaeb83108193af5411fc3a3a66ebefacd390d21323ee"},
+]
+
+[[package]]
 name = "executing"
 version = "2.2.1"
 description = "Get the currently executing AST node of a frame, and other information"
@@ -7960,4 +7971,4 @@ sqlserver = ["pyodbc"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "b4fe34cc49941759e67dfadecc27663a9f4467d0322b06a0a797f8ce5d1703cd"
+content-hash = "aa61d7145c9569f852cf60d41cdc64a079de4a68ed23f50afbea30c488b96d17"
