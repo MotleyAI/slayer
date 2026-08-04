@@ -22,8 +22,9 @@ CTE ScopeFrame lands). Here we add:
   SELECT's LEFT JOIN ON uses dialect-aware null-safe predicates so NULL
   dimension values / nullable truncated time grains join back instead of
   dropping.
-* **Plain derived (non-TIME) shared-grain dim → raise** (user-approved: replaces
-  today's silently-wrong CROSS-JOIN broadcast; full support = DEV-1495-b1).
+* **Plain derived (non-TIME) shared-grain dim** — DEV-1708 raised here; DEV-1728
+  now RENDERS it (the raise-pin below became a render-pin). Full coverage lives
+  in tests/test_dev1728_derived_shared_grain.py.
 * **Generation-wide AliasAllocator determinism** — repeated / multi-CTE renders
   are byte-stable.
 
@@ -56,152 +57,13 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._engine_helpers import _engine_generate
-
-
-def _norm(s: str) -> str:
-    return " ".join(s.split())
-
-
-def _split_at_ranked_subquery(norm: str) -> "tuple[str, str]":
-    """Split a normalized CTE body into ``(outer, inner)`` at the ranked
-    subquery's ``FROM (``. Asserts the marker exists so a shape change (no
-    ranked subquery) fails loudly instead of silently slicing at ``-1``."""
-    at = norm.find("FROM (")
-    assert at != -1, f"no ranked subquery (FROM () in:\n{norm}"
-    return norm[:at], norm[at:]
-
-
-def _joinback_on_predicate(sql: str, *, dialect: str = "postgres") -> str:
-    """Return the rendered ON predicate of the combined SELECT's
-    ``LEFT JOIN _cm_* ON ...`` grain join-back (the null-safe target)."""
-    import sqlglot
-
-    tree = sqlglot.parse_one(sql, dialect=dialect)
-    for join in tree.find_all(sqlglot.exp.Join):
-        target = join.this
-        name = getattr(target, "alias_or_name", "") or ""
-        if name.startswith("_cm_") or name.startswith("_fm_"):
-            on = join.args.get("on")
-            if on is not None:
-                return on.sql(dialect=dialect)
-    raise AssertionError(f"no LEFT JOIN _cm_*/_fm_* ON predicate in:\n{sql}")
-
-
-def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:
-    """Extract one CTE body by matching ``<cte_name> AS (`` and walking balanced
-    parentheses to its closing ``)`` (copied from test_sql_generator.py)."""
-    name_match = _re.search(rf"({cte_name_pattern})\s+AS\s*\(", sql)
-    assert name_match, f"No CTE matching {cte_name_pattern!r} in:\n{sql}"
-    body_start = sql.index("(", name_match.start()) + 1
-    depth = 1
-    i = body_start
-    while i < len(sql) and depth > 0:
-        ch = sql[i]
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                return sql[body_start:i]
-        i += 1
-    raise AssertionError(
-        f"Unbalanced parens — no closing ) for CTE {name_match.group(1)!r}:\n{sql}"
-    )
-
-
-# --------------------------------------------------------------------------- #
-# Model builders — chain: orders_x → customers_v2 → regions → countries.
-# Postgres dialect for SQL-shape assertions (mangling is identity).
-# --------------------------------------------------------------------------- #
-def _countries() -> SlayerModel:
-    return SlayerModel(
-        name="countries", sql_table="countries", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="gdp", sql="gdp", type=DataType.DOUBLE),
-        ],
-    )
-
-
-def _regions() -> SlayerModel:
-    return SlayerModel(
-        name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="population", sql="population", type=DataType.DOUBLE),
-            Column(name="weight", sql="weight", type=DataType.DOUBLE),
-            Column(name="country_id", sql="country_id", type=DataType.DOUBLE),
-            Column(name="opened_at", sql="opened_at", type=DataType.TIMESTAMP),
-        ],
-        joins=[ModelJoin(target_model="countries", join_pairs=[["country_id", "id"]])],
-    )
-
-
-def _customers_v2(*, extra_columns=None) -> SlayerModel:
-    cols = [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
-        Column(name="lifetime_value", sql="lifetime_value", type=DataType.DOUBLE),
-        Column(name="signup_at", sql="signup_at", type=DataType.TIMESTAMP),
-        Column(name="status", sql="status", type=DataType.TEXT),
-        # Derived, one-hop crossing (customers_v2 → regions):
-        Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
-        Column(name="deep_weight", sql="regions.weight", type=DataType.DOUBLE),
-        # Derived, TWO-hop crossing (customers_v2 → regions → countries):
-        Column(name="deep_gdp", sql="regions__countries.gdp", type=DataType.DOUBLE),
-        # Derived TIME dim whose sql crosses a further join (DEV-1701):
-        Column(name="region_opened_eff",
-               sql="coalesce(regions.opened_at, signup_at)",
-               type=DataType.TIMESTAMP),
-    ]
-    if extra_columns:
-        cols.extend(extra_columns)
-    return SlayerModel(
-        name="customers_v2", sql_table="customers", data_source="test",
-        columns=cols,
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
-        default_time_dimension="signup_at",
-    )
-
-
-def _orders_x(*, extra_columns=None) -> SlayerModel:
-    cols = [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-        Column(name="amount", sql="amount", type=DataType.DOUBLE),
-        Column(name="status", sql="status", type=DataType.TEXT),
-        Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-    ]
-    if extra_columns:
-        cols.extend(extra_columns)
-    return SlayerModel(
-        name="orders_x", sql_table="orders", data_source="test",
-        columns=cols,
-        joins=[ModelJoin(target_model="customers_v2", join_pairs=[["customer_id", "id"]])],
-        default_time_dimension="created_at",
-    )
-
-
-async def _gen(
-    query: SlayerQuery,
-    *,
-    orders_extra=None,
-    customers_extra=None,
-    dialect: str = "postgres",
-) -> str:
-    """Render ``query`` against the orders_x chain and return the SQL."""
-    return await _engine_generate(
-        query=query,
-        model=_orders_x(extra_columns=orders_extra),
-        dialect=dialect,
-        extra_models=[
-            _customers_v2(extra_columns=customers_extra),
-            _regions(),
-            _countries(),
-        ],
-    )
+from tests._cross_model_chain import (
+    _extract_cte_body,
+    _gen,
+    _joinback_on_predicate,
+    _norm,
+    _split_at_ranked_subquery,
+)
 
 
 # =========================================================================== #
@@ -549,20 +411,25 @@ class TestRoutedFilterDerivedCrossing:
 
 
 # =========================================================================== #
-# Plain derived (non-TIME) shared-grain dim → raise (user-approved).
+# Plain derived (non-TIME) shared-grain dim — DEV-1728 renders it (was a raise).
 # =========================================================================== #
-class TestDerivedSharedGrainRaises:
-    async def test_plain_derived_dim_shared_grain_raises(self) -> None:
+class TestDerivedSharedGrainRenders:
+    async def test_plain_derived_dim_shared_grain_renders(self) -> None:
         """A PLAIN derived (non-TIME) dimension on the target path used as
-        cross-model shared grain raises NotImplementedError (replaces the
-        silently-wrong CROSS-JOIN broadcast); full support = DEV-1495-b1."""
+        cross-model shared grain now RENDERS (DEV-1728 removed the DEV-1708
+        raise): the derived expression is expanded inside the ``_cm_*`` CTE,
+        grouped, and joined back null-safe. Full coverage lives in
+        tests/test_dev1728_derived_shared_grain.py."""
         query = SlayerQuery(
             source_model="orders_x",
             dimensions=["customers_v2.deep_pop"],
             measures=[ModelMeasure(formula="customers_v2.lifetime_value:sum")],
         )
-        with pytest.raises(NotImplementedError, match=r"(?i)shared.grain|derived"):
-            await _gen(query)
+        sql = await _gen(query)  # must not raise
+        assert_scope_closed(sql)
+        cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
+        assert "regions.population" in cm_body, cm_body
+        assert 'AS "orders_x.customers_v2.deep_pop"' in cm_body, cm_body
 
     async def test_derived_source_unaffected_by_grain_guard(self) -> None:
         """The guard fires ONLY for a shared-grain dim — a derived aggregate

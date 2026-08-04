@@ -33,7 +33,6 @@ from slayer.engine.column_expansion import (
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
-from slayer.engine.cross_model_planner import derived_shared_grain_not_implemented
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
 from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
@@ -684,6 +683,13 @@ _TRAILING_LIMIT_OFFSET_RE = re.compile(
 )
 _TRAILING_LIMIT_RE = re.compile(r"(?is)\s*LIMIT\s+\d+\s*\Z")
 
+# A ``Column.sql`` that is just an unqualified identifier — i.e. the column
+# renames a physical column rather than computing an expression. Used to
+# reserve star-exported physical names against ``_val_<n>`` collisions
+# (DEV-1728). Deliberately rejects dots: ``regions.population`` is a crossing
+# reference, not a column of the star-projected relation.
+_BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+
 
 def _strip_trailing_pagination(sql: str) -> str:
     """DEV-1444: remove trailing ORDER BY / LIMIT / OFFSET clauses that
@@ -760,6 +766,31 @@ class SQLGenerator:
         site in this module — pinned by test_dev1726_cte_case_folding — so a
         new allocation path cannot silently lose dialect awareness."""
         return AliasAllocator(folds_case=dialect_folds_case(self.dialect))
+
+    @staticmethod
+    def _reserve_model_column_names(allocator: AliasAllocator, model) -> None:
+        """Reserve every name a ``<relation>.*`` projection of ``model`` can
+        export, so a minted ``_val_<n>`` (Law-2 materialisation) never shadows a
+        real column (DEV-1728 / Codex F6).
+
+        Both the SEMANTIC name and — when ``Column.sql`` is a bare identifier —
+        the PHYSICAL column name are reserved: a star-projection exports the
+        physical names, and the two differ whenever a column renames its source
+        (``Column(name="value", sql="_val_0")``). A non-bare ``Column.sql`` is an
+        expression, not a star-exported column, so it contributes nothing.
+
+        Columns that exist in the database but not on the model are outside what
+        SLayer can see without reflection; a physical column literally named
+        ``_val_<n>`` is the only way to hit that residual, which the underscore
+        prefix makes vanishingly unlikely.
+        """
+        names: List[str] = []
+        for c in model.columns:
+            names.append(c.name)
+            sql = getattr(c, "sql", None)
+            if sql and _BARE_IDENT_RE.fullmatch(sql.strip()):
+                names.append(sql.strip())
+        allocator.reserve(*names)
 
     @staticmethod
     def _maybe_quote_ident(ident: Optional[exp.Expression]) -> None:
@@ -5159,7 +5190,7 @@ class SQLGenerator:
         # and never collapse onto one ``_val``; bare refs are type-agnostic
         # (no CAST) and sharing IS correct.
         allocator = self._gen_allocator or self._new_allocator()
-        allocator.reserve(*[c.name for c in source_model.columns])
+        self._reserve_model_column_names(allocator, source_model)
         value_alias_by_sql: Dict[str, str] = {}
 
         def _materialize_if_crossing(
@@ -7071,12 +7102,31 @@ class SQLGenerator:
         # column on the left side). Intersect with the host's actual
         # projection ids so only projected slots flow into the CTE.
         cte_select_columns: List[exp.Expression] = []
+        # DEV-1728: two GROUP-BY lists — ``cte_group_by`` is the OUTER GROUP BY
+        # (an alias ref ``_val_<n>`` for a first/last-materialised crossing
+        # grain, the raw expression otherwise); ``cte_partition_exprs`` is the
+        # ranked-subquery PARTITION BY, always the RAW expression (valid inside
+        # the subquery where the crossed join is bound). They are identical for
+        # every non-first/last query and every non-crossing grain.
         cte_group_by: List[exp.Expression] = []
+        cte_partition_exprs: List[exp.Expression] = []
         shared_grain_aliases: List[str] = []
         # DEV-1701: join paths crossed by a shared-grain derived TIME dimension's
         # expanded ``Column.sql``. Collected during the loop (which runs before
         # the CTE scope's join set is assembled) and merged into it below.
         shared_grain_join_paths: List[Tuple[str, ...]] = []
+        # DEV-1728: first/last grain materialisations (``_val_<n>`` projections
+        # to inject INTO the ranked subquery for crossing derived grains). The
+        # generation-wide allocator is hoisted here so grain + source ``_val``s
+        # share one monotonic sequence. Reserve the target's physical column
+        # names (Codex F6): the ranked subquery re-exports ``target.*``, so a
+        # minted ``_val_<n>`` must never collide with a real target column of
+        # that name — mirrors the host-path reservation in
+        # ``_build_first_last_base_select``.
+        cte_allocator = self._gen_allocator or self._new_allocator()
+        self._reserve_model_column_names(cte_allocator, target_model)
+        is_first_or_last = agg_slot.key.agg in ("first", "last")
+        grain_extra_projections: List[Tuple[str, exp.Expression]] = []
         for sid in plan.shared_grain_slots:
             if sid not in base_projection_ids:
                 continue
@@ -7090,10 +7140,10 @@ class SQLGenerator:
             elif isinstance(key, TimeTruncKey):
                 path = key.column.path
             elif isinstance(key, ColumnSqlKey):
-                # DEV-1708: a plain derived (non-time) dim carries its own path;
-                # extracting it lets a path-bearing one reach the shared-grain
-                # raise below (host-local ``path == ()`` derived dims still fall
-                # through to the CROSS-JOIN broadcast, unchanged).
+                # DEV-1708 / DEV-1728: a plain derived (non-time) dim carries its
+                # own path; a path-bearing one renders here like any grain, a
+                # host-local ``path == ()`` one falls through to the CROSS-JOIN
+                # broadcast below (unchanged).
                 path = key.path
             if not path:
                 # Local-only host dim — broadcast via CROSS JOIN.
@@ -7123,21 +7173,11 @@ class SQLGenerator:
 
             grain_column = key.column if isinstance(key, TimeTruncKey) else key
             if isinstance(grain_column, _ColumnSqlKey):
-                # DEV-1708 (user-approved): a PLAIN derived (non-TIME) dimension
-                # used as cross-model shared grain is not yet supported — the
-                # host aliases it flattened (``customers_v2__deep_pop``) while the
-                # join-back builder assumes the dotted form (DEV-1495-b1, Stage
-                # 8/9). Rather than silently CROSS-JOIN-broadcast the GLOBAL
-                # aggregate across groups (wrong per-group values), raise loudly.
-                # A TimeTrunc-wrapped derived grain IS supported (below).
-                if not isinstance(key, TimeTruncKey):
-                    # Defensive backstop — the planner raises this first (a
-                    # plain derived shared-grain slot never reaches the emitted
-                    # ``shared_grain_slots``); shares the planner's message so
-                    # the two can't drift (DEV-1708).
-                    raise derived_shared_grain_not_implemented(
-                        grain_column.column_name,
-                    )
+                # DEV-1728: a derived (ColumnSqlKey) grain — plain dimension OR
+                # time dimension — expands its Column.sql rooted at the target and
+                # renders here. (The DEV-1708 raise for a PLAIN derived grain is
+                # gone: DEV-1713 fixed the naming half, so the host's dotted alias
+                # and the CTE join-back now agree.)
                 expanded_grain_sql = self._expand_derived_column_sql(
                     source_model=target_model,
                     source_relation=target_relation,
@@ -7146,7 +7186,22 @@ class SQLGenerator:
                 )
                 col_expr = self._parse(expanded_grain_sql)
                 leaf = grain_column.column_name
-                # DEV-1701: register every further join the derived TIME dim's
+                if not isinstance(key, TimeTruncKey):
+                    # DEV-1728: a PLAIN derived grain is CAST to its declared type
+                    # to match the host base's ``_wrap_cast_for_type`` (a bare
+                    # column ref / TEXT is skipped there and here identically), so
+                    # the join-back compares identically-typed values. A
+                    # TimeTrunc-wrapped grain keeps ``_build_date_trunc``'s own
+                    # temporal shape (no extra cast — parity with the host base).
+                    grain_col = next(
+                        (c for c in target_model.columns
+                         if c.name == grain_column.column_name),
+                        None,
+                    )
+                    col_expr = _wrap_cast_for_type(
+                        col_expr, grain_col.type if grain_col else None,
+                    )
+                # DEV-1701: register every further join the derived grain's
                 # expanded sql crosses (rooted at the target relation), so the
                 # CTE's FROM pulls it. Merged into the CTE join set below.
                 for _p in self._joined_paths_in_sql(
@@ -7172,8 +7227,32 @@ class SQLGenerator:
             # ``_build_base_select_for_planned`` already aliases that
             # way for joined ROW slots.
             host_alias = planned_query.source_relation + "." + ".".join(path) + f".{leaf}"
-            cte_select_columns.append(col_expr.copy().as_(host_alias))
-            cte_group_by.append(col_expr)
+            # DEV-1728 Law 2: for a first/last aggregate the CTE's FROM is a
+            # ROW_NUMBER-ranked subquery that re-exports only ``target.*`` + rank
+            # columns. A grain whose expression CROSSES a join references a table
+            # bound ONLY inside that subquery, so the outer SELECT / GROUP BY
+            # cannot name it — materialise it as a ``_val_<n>`` projection inside
+            # the subquery, group the outer SELECT on the alias, and keep the RAW
+            # expression for PARTITION BY (evaluated where the join is bound). A
+            # target-local grain (no crossing) needs no materialisation — it is
+            # re-exported by ``target.*``.
+            grain_crosses = is_first_or_last and bool(
+                self._joined_paths_in_sql(
+                    sql_expr=col_expr, source_relation=target_relation,
+                    source_model=target_model, bundle=bundle,
+                )
+            )
+            if grain_crosses:
+                val_alias = cte_allocator.allocate_val()
+                grain_extra_projections.append((val_alias, col_expr.copy()))
+                alias_ref = exp.column(val_alias)
+                cte_select_columns.append(alias_ref.copy().as_(host_alias))
+                cte_group_by.append(alias_ref.copy())
+                cte_partition_exprs.append(col_expr.copy())
+            else:
+                cte_select_columns.append(col_expr.copy().as_(host_alias))
+                cte_group_by.append(col_expr.copy())
+                cte_partition_exprs.append(col_expr.copy())
             shared_grain_aliases.append(host_alias)
 
         # Aggregate column: synthesise an EnrichedMeasure ROOTED at the
@@ -7215,9 +7294,9 @@ class SQLGenerator:
         # as a side effect — the CTE's FROM is built from that set below, so a
         # crossed join can never be forgotten (replaces the ad-hoc
         # ``_add_cte_join_paths`` closure + per-carrier collectors). The scope
-        # shares the generation-wide allocator so ``_val_<n>`` materialisation
-        # names (Law 2, below) are unique across the host base and every CTE.
-        cte_allocator = self._gen_allocator or self._new_allocator()
+        # shares the generation-wide allocator (``cte_allocator``, hoisted above
+        # the grain loop) so ``_val_<n>`` materialisation names (Law 2) are
+        # unique across the host base, the grain projections, and every CTE.
         cte_scope = ScopeFrame(
             scope_id=cte_allocator.next_scope_id(target_relation),
             root_model=target_model,
@@ -7278,8 +7357,10 @@ class SQLGenerator:
         # relation). If even that is unset, raise the standard
         # "first/last requires a ranking time column" error rather than
         # silently emitting an agg_expr that references a non-existent
-        # ``_first_rn`` / ``_last_rn`` column.
-        is_first_or_last = local_agg_key.agg in ("first", "last")
+        # ``_first_rn`` / ``_last_rn`` column. (``is_first_or_last`` is computed
+        # once above the grain loop from ``agg_slot.key.agg`` — reroot preserves
+        # the aggregation name — so the grain materialisation and this branch
+        # agree.)
         time_col_sql: Optional[str] = synth.time_column
         if is_first_or_last and time_col_sql is None:
             if target_model.default_time_dimension:
@@ -7417,7 +7498,13 @@ class SQLGenerator:
             # ``_match_fN`` rank columns) and need no outer alias. A LOCAL source
             # value is already covered by ``target.*`` — no materialisation.
             outer_synth = synth
-            extra_projections: List[Tuple[str, exp.Expression]] = []
+            # DEV-1728: seed with the crossing-grain ``_val_<n>`` projections
+            # collected in the grain loop, so a first/last aggregate grouped by a
+            # crossing derived grain materialises that grain INSIDE the subquery
+            # too (the outer SELECT / GROUP BY reference the alias).
+            extra_projections: List[Tuple[str, exp.Expression]] = list(
+                grain_extra_projections,
+            )
             if synth.sql:
                 # DEV-1709: materialise the RESOLVED value (qualified +
                 # ``Column.type`` inner CAST for non-bare expressions) and
@@ -7446,7 +7533,7 @@ class SQLGenerator:
                 self._build_ranked_subquery_from_planned(
                     source_relation=target_relation,
                     default_time_col_sql=time_col_sql,
-                    partition_exprs=list(cte_group_by),
+                    partition_exprs=list(cte_partition_exprs),
                     extra_projections=extra_projections,
                     synth_specs=[synth],
                     from_clause=target_from,
