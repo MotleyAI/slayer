@@ -19,6 +19,8 @@ import pytest
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.engine.cardinality import CardinalityVerdict, JoinCardinalityReport
+from slayer.core.errors import ForcedFilterError
+from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -398,3 +400,108 @@ class TestPersistence:
         engine, _, _ = await _build_engine(workspace)
         report = await engine.detect_join_cardinality(data_source="ds", model="orders")
         assert {f.model for f in report.findings} == {"orders"}
+
+
+# ---------------------------------------------------------------------------
+# Row-level security: profiling must observe the tenant-scoped rows only
+# ---------------------------------------------------------------------------
+
+
+class TestSessionPolicyAppliedToProfiling:
+    """DEV-1688 x DEV-1578.
+
+    A configured SessionPolicy must scope the profiling scans too. Otherwise
+    detection full-scans every tenant's rows -- leaking cross-tenant
+    cardinality and reporting an arity that does not describe the caller's own
+    view. Same reasoning as the refresh-key scan.
+    """
+
+    async def test_profiling_sql_is_tenant_scoped(self, workspace: Path) -> None:
+        _, storage, _ = await _build_engine(workspace)
+        # `region` exists on customers but not orders; "pass" lets the tables
+        # that lack it through so we can observe the rewrite on the one that
+        # has it.
+        policy = SessionPolicy(
+            ruleset=ColumnFilterRuleset(
+                column="region", value="US", on_unapplicable="pass"
+            )
+        )
+        scoped = SlayerQueryEngine(storage=storage, policy=policy)
+
+        seen: list[str] = []
+        original = scoped._apply_policy
+
+        def _spy(*, sql, dialect, datasource):
+            out = original(sql=sql, dialect=dialect, datasource=datasource)
+            seen.append(out)
+            return out
+
+        scoped._apply_policy = _spy
+        report = await scoped.detect_join_cardinality(
+            data_source="ds", model="orders"
+        )
+
+        # Both scans per side, both sides -> at least 4 trips through the policy.
+        assert len(seen) >= 4
+        rewritten = [x for x in seen if "'US'" in x]
+        assert rewritten, f"policy never scoped any profiling SQL: {seen}"
+        # Only US customers are visible, so the target side shrinks to 1 row.
+        f = _find(report, "orders", "customers")
+        assert f.target_side.row_count == 1
+
+    async def test_policy_failure_is_not_bypassed(self, workspace: Path) -> None:
+        """Fail-closed must propagate — detection must not sidestep the policy.
+
+        Before the profiling scans were routed through ``_apply_policy`` this
+        silently succeeded, scanning every row regardless of the policy.
+        """
+        _, storage, _ = await _build_engine(workspace)
+        policy = SessionPolicy(
+            ruleset=ColumnFilterRuleset(column="tenant_id", value="t1")
+        )
+        scoped = SlayerQueryEngine(storage=storage, policy=policy)
+        with pytest.raises(ForcedFilterError):
+            await scoped.detect_join_cardinality(data_source="ds", model="orders")
+
+    async def test_no_policy_leaves_sql_untouched(self, workspace: Path) -> None:
+        engine, _, _ = await _build_engine(workspace)
+        report = await engine.detect_join_cardinality(
+            data_source="ds", model="orders"
+        )
+        # Unscoped engine still profiles normally (zero-overhead no-op path).
+        f = _find(report, "orders", "customers")
+        assert f.detected is JoinCardinality.MANY_TO_ONE
+
+
+class TestSideStatsSqlShape:
+    """The profiling SQL is built via sqlglot, not string concatenation."""
+
+    def test_identifiers_are_quoted_and_nulls_excluded(self) -> None:
+        rows_sql, dist_sql = SlayerQueryEngine._side_stats_sql(
+            table="public.orders", key_cols=["customer_id"], sqlglot_name="postgres",
+        )
+        for sql in (rows_sql, dist_sql):
+            assert 'NOT "customer_id" IS NULL' in sql
+            assert '"public"."orders"' in sql
+        assert "DISTINCT" in dist_sql
+        assert "DISTINCT" not in rows_sql
+
+    def test_composite_keys_exclude_nulls_on_every_column(self) -> None:
+        rows_sql, dist_sql = SlayerQueryEngine._side_stats_sql(
+            table="t", key_cols=["a", "b"], sqlglot_name="postgres",
+        )
+        for sql in (rows_sql, dist_sql):
+            assert 'NOT "a" IS NULL' in sql
+            assert 'NOT "b" IS NULL' in sql
+
+    def test_hostile_identifier_stays_a_single_identifier(self) -> None:
+        payload = 'a"; DROP TABLE users; --'
+        rows_sql, _ = SlayerQueryEngine._side_stats_sql(
+            table="t", key_cols=[payload, "b"], sqlglot_name="postgres",
+        )
+        # sqlglot doubles the embedded quote, so the payload cannot terminate
+        # the identifier and start a new statement.
+        assert 'a""; DROP TABLE users; --' in rows_sql
+        # The only statement is the SELECT: nothing escaped the quoting.
+        assert rows_sql.strip().startswith("SELECT")
+        assert 'NOT "b" IS NULL' in rows_sql

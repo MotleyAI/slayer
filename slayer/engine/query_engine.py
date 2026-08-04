@@ -2513,7 +2513,7 @@ class SlayerQueryEngine:
                     finding, detected = await self._detect_one_join(
                         model=m, join=join, by_name=by_name,
                         client=client, sqlglot_name=sqlglot_name,
-                        data_source=ds_name,
+                        data_source=ds_name, datasource_cfg=ds_cfg,
                     )
                     findings.append(finding)
                     if detected is not None:
@@ -2526,6 +2526,7 @@ class SlayerQueryEngine:
 
     async def _detect_one_join(
         self, *, model, join, by_name, client, sqlglot_name, data_source,
+        datasource_cfg,
     ) -> "tuple[JoinCardinalityFinding, JoinCardinality | None]":
         pairs = [[p[0], p[1]] for p in join.join_pairs]
         src_cols = [p[0] for p in join.join_pairs]
@@ -2546,10 +2547,12 @@ class SlayerQueryEngine:
         src_side = await self._side_stats(
             client=client, table=model.sql_table,
             key_cols=src_cols, sqlglot_name=sqlglot_name,
+            datasource=datasource_cfg,
         )
         tgt_side = await self._side_stats(
             client=client, table=target.sql_table,
             key_cols=tgt_cols, sqlglot_name=sqlglot_name,
+            datasource=datasource_cfg,
         )
         detected = classify_cardinality(
             source_unique=src_side.observed_unique,
@@ -2572,23 +2575,64 @@ class SlayerQueryEngine:
             verdict=verdict, unique_contradictions=contradictions,
         ), detected
 
+    @staticmethod
+    def _side_stats_sql(*, table, key_cols, sqlglot_name) -> tuple[str, str]:
+        """Build the (row-count, distinct-count) profiling SQL via sqlglot.
+
+        Built as an AST rather than by string concatenation, per the project
+        rule — the table and every key column go through sqlglot so identifiers
+        are quoted for the target dialect and can never break out of their
+        position. NULL key rows are excluded from BOTH counts so the two are
+        computed over the same population.
+        """
+        tbl = exp.to_table(table)
+        cols = [exp.column(c, quoted=True) for c in key_cols]
+        predicate = None
+        for col in cols:
+            term = exp.Not(this=exp.Is(this=col.copy(), expression=exp.null()))
+            predicate = term if predicate is None else exp.and_(predicate, term)
+
+        count_star = exp.func("COUNT", exp.Star()).as_("c")
+        rows_q = exp.select(count_star).from_(tbl.copy()).where(predicate)
+        inner = (
+            exp.select(*[c.copy() for c in cols])
+            .from_(tbl.copy())
+            .where(predicate.copy())
+            .distinct()
+        )
+        dist_q = exp.select(count_star.copy()).from_(inner.subquery("d"))
+        return (
+            rows_q.sql(dialect=sqlglot_name, identify=True),
+            dist_q.sql(dialect=sqlglot_name, identify=True),
+        )
+
     async def _side_stats(
-        self, *, client, table, key_cols, sqlglot_name,
+        self, *, client, table, key_cols, sqlglot_name, datasource,
     ) -> SideStats:
-        tbl = exp.to_table(table).sql(dialect=sqlglot_name, identify=True)
-        qcols = [
-            exp.to_identifier(c, quoted=True).sql(dialect=sqlglot_name)
-            for c in key_cols
-        ]
-        notnull = " AND ".join(f"{qc} IS NOT NULL" for qc in qcols)
-        keys = ", ".join(qcols)
-        row_rows = await client.execute(
-            sql=f"SELECT COUNT(*) AS c FROM {tbl} WHERE {notnull}"
+        """Full-scan one side of a join: non-null key rows vs distinct key-tuples.
+
+        DEV-1688 × DEV-1578: both scans go through ``_apply_policy`` so
+        profiling observes exactly the tenant-scoped rows the session is
+        allowed to see. Without it a configured ``SessionPolicy`` would be
+        bypassed — leaking cross-tenant cardinality and reporting an arity that
+        does not describe the caller's own view. Same reasoning as the
+        refresh-key scan. No-op (zero overhead) when no policy is configured.
+        """
+        rows_sql, dist_sql = self._side_stats_sql(
+            table=table, key_cols=key_cols, sqlglot_name=sqlglot_name,
         )
-        dist_rows = await client.execute(
-            sql=f"SELECT COUNT(*) AS c FROM "
-                f"(SELECT DISTINCT {keys} FROM {tbl} WHERE {notnull}) d"
+        # DEV-1627: give the correlated-subquery guard a version to gate on.
+        await self._preflight_clickhouse_correlated(
+            dialect=sqlglot_name, datasource=datasource
         )
+        rows_sql = self._apply_policy(
+            sql=rows_sql, dialect=sqlglot_name, datasource=datasource
+        )
+        dist_sql = self._apply_policy(
+            sql=dist_sql, dialect=sqlglot_name, datasource=datasource
+        )
+        row_rows = await client.execute(sql=rows_sql)
+        dist_rows = await client.execute(sql=dist_sql)
         row_count = int(next(iter(row_rows[0].values())))
         distinct_count = int(next(iter(dist_rows[0].values())))
         return SideStats(
