@@ -53,7 +53,7 @@ data dir, override with `$SLAYER_STORAGE`.
 - Dots denote join paths in queries (`customers.regions.name`); `__` denotes path aliases in model SQL (`customers__regions.name`)
 - Models are keyed by `(data_source, name)`; joins resolve within the parent model's datasource
 - Models/queries/datasource configs carry a `version` field; storage migrations run automatically on load (`slayer/storage/migrations.py`)
-- Filters support `{variable}` placeholders from `query.variables` (scalars, plus lists → injection-safe `IN`-list body: `region IN ({regions})`); datasource configs support `${ENV_VAR}`
+- Filters support `{variable}` placeholders from `query.variables` (scalars, plus lists → `IN`-list body: `region IN ({regions})`; trusted input, escaping not dialect-aware); datasource configs support `${ENV_VAR}`
 
 ## Database Support
 

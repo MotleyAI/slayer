@@ -107,8 +107,13 @@ def test_hidden_dirs_and_target_skipped(tmp_path):
     (tmp_path / ".hidden").mkdir()
     (tmp_path / ".hidden" / "x.yml").write_text(
         "cubes:\n  - name: ghost\n    sql_table: public.ghost\n")
+    # `target/` (dbt/Cube build output) is skipped too — cover both so the name
+    # matches the behavior.
+    (tmp_path / "target").mkdir()
+    (tmp_path / "target" / "y.yml").write_text(
+        "cubes:\n  - name: built\n    sql_table: public.built\n")
     project, _ = parse_cube_project(str(tmp_path))
-    assert all(c.name != "ghost" for c in project.cubes)
+    assert all(c.name not in ("ghost", "built") for c in project.cubes)
 
 
 def test_unreadable_file_is_reported_not_fatal(tmp_path):
@@ -119,6 +124,17 @@ def test_unreadable_file_is_reported_not_fatal(tmp_path):
         "cubes:\n  - name: ok\n    sql_table: public.ok\n")
     project, issues = parse_cube_project(str(tmp_path))
     assert any(c.name == "ok" for c in project.cubes)
+
+
+def test_invalid_utf8_file_is_reported_not_fatal(tmp_path):
+    # Invalid UTF-8 raises UnicodeDecodeError (a ValueError, not OSError) on
+    # read — it must be reported as a PARSE_ERROR, not abort the whole import.
+    (tmp_path / "bad.yml").write_bytes(b"cubes:\n  - name: \xff\n")
+    (tmp_path / "good.yml").write_text(
+        "cubes:\n  - name: ok\n    sql_table: public.ok\n")
+    project, issues = parse_cube_project(str(tmp_path))
+    assert any(c.name == "ok" for c in project.cubes)
+    assert any(i.category == CubeIssueCategory.PARSE_ERROR for i in issues)
     assert any(i.category == CubeIssueCategory.PARSE_ERROR for i in issues)
 
 

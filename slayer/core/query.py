@@ -80,9 +80,14 @@ def _escape_string_value(
     - ``"python"`` — Mode-B query filters are parsed by SLayer's Python-AST
       formula parser, where SQL quote-doubling would be read as adjacent-literal
       concatenation (``'O''Brien'`` → ``'OBrien'``). So backslash is doubled
-      FIRST, then both quote styles are backslash-escaped, then every C0 control
-      char is encoded, matching Python string-literal rules so ``ast.parse``
-      recovers the original value. ``backslash_escapes`` is ignored here.
+      FIRST, then both quote styles are backslash-escaped, then every C0
+      control char (U+0000–U+001F) is encoded, matching Python string-literal
+      rules so ``ast.parse`` recovers the original value. This matters because a
+      raw newline/CR/NUL in a single-quoted Python literal is a ``SyntaxError``
+      (or "null bytes" error), so leaving control chars unescaped would make
+      ``ast.parse`` reject an otherwise valid value. SQL literals permit raw
+      newlines, so the ``"sql"`` branch leaves them alone.
+      ``backslash_escapes`` is ignored here.
     """
     if escape == "sql":
         if backslash_escapes:

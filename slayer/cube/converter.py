@@ -335,7 +335,7 @@ class CubeToSlayerConverter:
         # falls through to the `_measure` suffix.
         final_name = names.take(meas.name, suffix="_measure")
         if meas.type in _CALC_TYPES and meas.sql:
-            self._convert_calc_measure(cube, meas, measures, final_name, info, report)
+            self._convert_calc_measure(cube, meas, measures, names, final_name, info, report)
             return
         self._convert_agg_measure(cube, meas, columns, measures, names, dedup, info, report, final_name)
 
@@ -352,7 +352,8 @@ class CubeToSlayerConverter:
 
         if meas.type == "count" and not meas.sql:
             formula = _STAR_COUNT + (f"(window='{window}')" if window else "")
-            if self._emit_measure(measures, names, final_name, formula, meas, report, cube.name):
+            if self._emit_measure(measures=measures, names=names, final_name=final_name,
+                                  formula=formula, meas=meas, report=report, cube_name=cube.name):
                 info[meas.name] = _MeasureInfo(kind="star_count", emitted_name=final_name)
             return
 
@@ -361,13 +362,18 @@ class CubeToSlayerConverter:
         col_name = self._get_or_create_column(
             meas, translated, filter_pred, columns, names, dedup, report, cube)
         formula = f"{col_name}:{agg}" + (f"(window='{window}')" if window else "")
-        if self._emit_measure(measures, names, final_name, formula, meas, report, cube.name):
+        if self._emit_measure(measures=measures, names=names, final_name=final_name,
+                              formula=formula, meas=meas, report=report, cube_name=cube.name):
             info[meas.name] = _MeasureInfo(
                 kind="agg", underlying_col=col_name, agg=agg, emitted_name=final_name)
 
-    def _convert_calc_measure(self, cube, meas, measures, final_name, info, report) -> None:
+    def _convert_calc_measure(self, cube, meas, measures, names, final_name, info, report) -> None:
         formula = translate_cube_refs(meas.sql, mode="dsl", cube=cube.name)
-        if self._emit_measure(measures, None, final_name, formula, meas, report, cube.name,
+        # Pass `names` (not None) so a failed calc measure releases its reserved
+        # name, matching the aggregate path — otherwise a later same-named member
+        # gets an unnecessary suffix.
+        if self._emit_measure(measures=measures, names=names, final_name=final_name,
+                              formula=formula, meas=meas, report=report, cube_name=cube.name,
                               result_type=_DIM_TYPE_MAP.get(meas.type)):
             info[meas.name] = _MeasureInfo(kind="calc", emitted_name=final_name)
 
@@ -625,19 +631,25 @@ class CubeToSlayerConverter:
     def _include_names(self, includes, exclude, view, report) -> list[str]:
         """Extract member names from an ``includes`` list. Cube's per-member
         override object form (``{name, format, meta, …}``) is accepted so it
-        doesn't crash the view; the overrides are reported as unsupported."""
+        doesn't crash the view; the overrides are reported as unsupported. An
+        entry with no valid ``name`` (Cube requires one) — e.g. ``{}`` or
+        ``{"alias": ...}`` — is reported as a parse error rather than silently
+        dropped or reported with a confusing ``member=None``."""
         names: list[str] = []
         for entry in includes:
-            if isinstance(entry, dict):
-                name = entry.get("name")
-                if any(k != "name" for k in entry):
-                    report.add(CubeConversionIssue(
-                        category=CubeIssueCategory.UNMAPPED_INFRA, severity="info",
-                        view=view.name, member=name,
-                        message=f"Per-member override on '{name}' is not applied (Stage 1)."))
-            else:
-                name = entry
-            if name and name not in exclude:
+            name = entry.get("name") if isinstance(entry, dict) else entry
+            if not isinstance(name, str) or not name:
+                report.add(CubeConversionIssue(
+                    category=CubeIssueCategory.PARSE_ERROR, severity="warning",
+                    view=view.name,
+                    message=f"View include entry {entry!r} has no valid 'name'; skipped."))
+                continue
+            if isinstance(entry, dict) and any(k != "name" for k in entry):
+                report.add(CubeConversionIssue(
+                    category=CubeIssueCategory.UNMAPPED_INFRA, severity="info",
+                    view=view.name, member=name,
+                    message=f"Per-member override on '{name}' is not applied (Stage 1)."))
+            if name not in exclude:
                 names.append(name)
         return names
 
