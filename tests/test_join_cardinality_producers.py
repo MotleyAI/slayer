@@ -245,3 +245,80 @@ class TestFacadeDynamicJoin:
         result = translate(sql=sql, catalog=_dyn_catalog(), dialect="postgres")
         ext = result.query.source_model
         assert ext.joins[0].cardinality is None
+
+    def test_dynamic_join_none_for_composite_pk_member(self) -> None:
+        """Joining ONE member of a composite PK does not make the target unique.
+
+        Every member of a composite primary key carries ``primary_key=True``,
+        but the join only constrains that single column, so the composite
+        key's uniqueness does not carry — same subset rule as
+        ``is_key_set_unique``.
+        """
+        orders = SlayerModel(
+            name="orders",
+            data_source="jaffle",
+            sql_table="orders",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="store_id", type=DataType.INT),
+            ],
+            joins=[],
+        )
+        # Composite PK (id, region) — neither column is unique on its own.
+        stores = SlayerModel(
+            name="stores",
+            data_source="jaffle",
+            sql_table="stores",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="region", type=DataType.TEXT, primary_key=True),
+                Column(name="name", type=DataType.TEXT),
+            ],
+        )
+        catalog = build_catalog(models_by_datasource={"jaffle": [orders, stores]})
+        sql = (
+            'SELECT "Stores"."name" AS "Stores__name" '
+            'FROM "public"."orders" '
+            'LEFT JOIN (SELECT "public"."stores"."id" AS "id", '
+            '"public"."stores"."name" AS "name" '
+            'FROM "public"."stores") AS "Stores" '
+            'ON "public"."orders"."store_id" = "Stores"."id"'
+        )
+        result = translate(sql=sql, catalog=catalog, dialect="postgres")
+        ext = result.query.source_model
+        assert ext.joins[0].cardinality is None
+
+    def test_dynamic_join_many_to_one_for_non_pk_unique_target(self) -> None:
+        """A non-PK column flagged ``unique`` is a solo uniqueness claim."""
+        orders = SlayerModel(
+            name="orders",
+            data_source="jaffle",
+            sql_table="orders",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="store_code", type=DataType.TEXT),
+            ],
+            joins=[],
+        )
+        stores = SlayerModel(
+            name="stores",
+            data_source="jaffle",
+            sql_table="stores",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="code", type=DataType.TEXT, unique=True),
+                Column(name="name", type=DataType.TEXT),
+            ],
+        )
+        catalog = build_catalog(models_by_datasource={"jaffle": [orders, stores]})
+        sql = (
+            'SELECT "Stores"."name" AS "Stores__name" '
+            'FROM "public"."orders" '
+            'LEFT JOIN (SELECT "public"."stores"."code" AS "code", '
+            '"public"."stores"."name" AS "name" '
+            'FROM "public"."stores") AS "Stores" '
+            'ON "public"."orders"."store_code" = "Stores"."code"'
+        )
+        result = translate(sql=sql, catalog=catalog, dialect="postgres")
+        ext = result.query.source_model
+        assert ext.joins[0].cardinality is JoinCardinality.MANY_TO_ONE

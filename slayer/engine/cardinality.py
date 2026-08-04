@@ -41,6 +41,21 @@ def is_key_set_unique(
     return False
 
 
+def declares_solo_unique(*, columns, column) -> bool:
+    """Does ``column`` ALONE carry a declared uniqueness among ``columns``?
+
+    ``Column.unique`` is single-column by definition. ``primary_key``, however,
+    is stamped on EVERY member of a composite primary key, and being one of
+    ``(id, sku)`` says nothing about ``sku`` on its own. This is the same
+    subset rule ``is_key_set_unique`` applies — ``(id, sku)`` is not a subset
+    of ``(sku)`` — so a PK column implies solo uniqueness only when it is the
+    whole primary key.
+    """
+    if column.unique:
+        return True
+    return column.primary_key and sum(1 for c in columns if c.primary_key) == 1
+
+
 def classify_cardinality(
     *, source_unique: bool, target_unique: bool
 ) -> JoinCardinality:

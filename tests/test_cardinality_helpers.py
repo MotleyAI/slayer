@@ -13,9 +13,11 @@ These functions are dialect/DB-free and encode the evidence model:
   relationship whose target isn't a known PK/unique must stay undetermined.
 """
 
-from slayer.core.enums import JoinCardinality
+from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.models import Column
 from slayer.engine.cardinality import (
     classify_cardinality,
+    declares_solo_unique,
     infer_structural_cardinality,
     is_key_set_unique,
 )
@@ -136,3 +138,37 @@ def test_structural_target_not_verified_returns_none() -> None:
         infer_structural_cardinality(source_unique=False, target_verified_unique=False)
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# declares_solo_unique — a composite-PK member claims nothing on its own
+# ---------------------------------------------------------------------------
+
+
+def _c(name: str, *, pk: bool = False, unique: bool = False) -> Column:
+    return Column(name=name, type=DataType.INT, primary_key=pk, unique=unique)
+
+
+def test_solo_pk_column_declares_uniqueness() -> None:
+    cols = [_c("id", pk=True), _c("amount")]
+    assert declares_solo_unique(columns=cols, column=cols[0]) is True
+
+
+def test_composite_pk_member_does_not_declare_uniqueness() -> None:
+    # PK (id, sku): every member is stamped primary_key, but neither is unique
+    # alone — the same subset rule is_key_set_unique applies.
+    cols = [_c("id", pk=True), _c("sku", pk=True), _c("cost")]
+    assert declares_solo_unique(columns=cols, column=cols[0]) is False
+    assert declares_solo_unique(columns=cols, column=cols[1]) is False
+
+
+def test_explicit_unique_flag_declares_uniqueness_even_with_composite_pk() -> None:
+    # `unique` is single-column by definition, so it stands on its own
+    # regardless of how many PK columns the model has.
+    cols = [_c("id", pk=True), _c("sku", pk=True), _c("email", unique=True)]
+    assert declares_solo_unique(columns=cols, column=cols[2]) is True
+
+
+def test_plain_column_declares_nothing() -> None:
+    cols = [_c("id", pk=True), _c("amount")]
+    assert declares_solo_unique(columns=cols, column=cols[1]) is False

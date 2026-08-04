@@ -415,6 +415,68 @@ def _get_fk_constraint_groups(
     return result
 
 
+def _safe_introspect(fn) -> list:
+    """Run a best-effort introspection call, yielding ``[]`` on failure.
+
+    Constraint/index reflection is unsupported or partial on several backends
+    (ClickHouse and BigQuery expose no FK metadata; duckdb-engine doesn't
+    reflect indices), so a raising call must degrade to "no evidence" rather
+    than abort ingestion.
+    """
+    try:
+        return list(fn())
+    except Exception:
+        return []
+
+
+def _pk_key_sets(
+    inspector: sa.engine.Inspector,
+    table_name: str,
+    schema: str | None,
+    sa_engine: sa.Engine | None,
+) -> list[list[str]]:
+    """The table's primary key as a single key-set (or none)."""
+    try:
+        if sa_engine is not None:
+            pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, schema)
+        else:
+            pk = inspector.get_pk_constraint(table_name, schema=schema)
+    except Exception:
+        return []
+    cols = pk.get("constrained_columns") if isinstance(pk, dict) else None
+    return [list(cols)] if cols else []
+
+
+def _unique_constraint_key_sets(
+    inspector: sa.engine.Inspector, table_name: str, schema: str | None,
+) -> list[list[str]]:
+    """Key-sets from declared UNIQUE constraints."""
+    out: list[list[str]] = []
+    for uc in _safe_introspect(
+        lambda: inspector.get_unique_constraints(table_name, schema=schema)
+    ):
+        cols = uc.get("column_names") or []
+        if cols and all(cols):
+            out.append(list(cols))
+    return out
+
+
+def _unique_index_key_sets(
+    inspector: sa.engine.Inspector, table_name: str, schema: str | None,
+) -> list[list[str]]:
+    """Key-sets from unique indexes."""
+    out: list[list[str]] = []
+    for idx in _safe_introspect(
+        lambda: inspector.get_indexes(table_name, schema=schema)
+    ):
+        if not idx.get("unique"):
+            continue
+        cols = [c for c in (idx.get("column_names") or []) if c]
+        if cols:
+            out.append(cols)
+    return out
+
+
 def _get_unique_key_sets(
     inspector: sa.engine.Inspector,
     table_name: str,
@@ -422,33 +484,11 @@ def _get_unique_key_sets(
     sa_engine: sa.Engine | None = None,
 ) -> list[list[str]]:
     """All PK + UNIQUE key-sets for a table, as ``list[list[str]]`` (DEV-1688)."""
-    sets: list[list[str]] = []
-    try:
-        if sa_engine is not None:
-            pk = _safe_get_pk_constraint(inspector, sa_engine, table_name, schema)
-        else:
-            pk = inspector.get_pk_constraint(table_name, schema=schema)
-    except Exception:
-        pk = {}
-    pk_cols = pk.get("constrained_columns") if isinstance(pk, dict) else None
-    if pk_cols:
-        sets.append(list(pk_cols))
-    try:
-        for uc in inspector.get_unique_constraints(table_name, schema=schema):
-            cols = uc.get("column_names") or []
-            if cols and all(cols):
-                sets.append(list(cols))
-    except Exception:
-        pass
-    try:
-        for idx in inspector.get_indexes(table_name, schema=schema):
-            if idx.get("unique"):
-                cols = [c for c in (idx.get("column_names") or []) if c]
-                if cols:
-                    sets.append(cols)
-    except Exception:
-        pass
-    return sets
+    return (
+        _pk_key_sets(inspector, table_name, schema, sa_engine)
+        + _unique_constraint_key_sets(inspector, table_name, schema)
+        + _unique_index_key_sets(inspector, table_name, schema)
+    )
 
 
 def _get_single_column_unique_names(
@@ -461,24 +501,16 @@ def _get_single_column_unique_names(
     """Names of columns that ALONE form a UNIQUE constraint / unique index.
 
     PK columns are excluded — ``primary_key`` is the canonical marker and
-    ``unique`` is not redundantly stamped on them (DEV-1688).
+    ``unique`` is not redundantly stamped on them (DEV-1688). Composite
+    key-sets are skipped here by design: uniqueness of ``(a, b)`` says nothing
+    about ``a`` alone, so it is evaluated per key-set during cardinality
+    inference instead of being flattened onto individual columns.
     """
-    names: set[str] = set()
-    try:
-        for uc in inspector.get_unique_constraints(table_name, schema=schema):
-            cols = uc.get("column_names") or []
-            if len(cols) == 1 and cols[0]:
-                names.add(cols[0])
-    except Exception:
-        pass
-    try:
-        for idx in inspector.get_indexes(table_name, schema=schema):
-            if idx.get("unique"):
-                cols = [c for c in (idx.get("column_names") or []) if c]
-                if len(cols) == 1:
-                    names.add(cols[0])
-    except Exception:
-        pass
+    key_sets = (
+        _unique_constraint_key_sets(inspector, table_name, schema)
+        + _unique_index_key_sets(inspector, table_name, schema)
+    )
+    names = {ks[0] for ks in key_sets if len(ks) == 1}
     return names - set(pk_cols)
 
 

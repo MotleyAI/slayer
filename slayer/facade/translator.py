@@ -46,6 +46,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType, JoinCardinality, JoinType, TimeGranularity
 from slayer.core.models import ModelJoin, SlayerModel
+from slayer.engine.cardinality import declares_solo_unique
 from slayer.core.query import (
     ColumnRef,
     ModelExtension,
@@ -2926,16 +2927,18 @@ def _build_source_model_from_join(
 
 
 def _dynamic_join_cardinality(plan: "_JoinPlan") -> JoinCardinality | None:
-    """A dynamic join is ``many_to_one`` only when the target column is a
+    """A dynamic join is ``many_to_one`` only when the target column ALONE is a
     PK/unique key on the target model — otherwise the arity is undetermined
-    (``None``). DEV-1688.
+    (``None``). A member of a COMPOSITE primary key does not qualify: the join
+    constrains only that one column, so the composite key's uniqueness does not
+    carry (same subset rule as ``is_key_set_unique``). DEV-1688.
     """
     model_ref = plan.target_table.model_ref
     if model_ref is None:
         return None
     for col in model_ref.columns:
         if col.name.lower() == plan.target_col.lower():
-            if col.primary_key or col.unique:
+            if declares_solo_unique(columns=model_ref.columns, column=col):
                 return JoinCardinality.MANY_TO_ONE
             return None
     return None

@@ -27,6 +27,7 @@ from slayer.engine.cardinality import (
     SideStats,
     classify_cardinality,
     compute_verdict,
+    declares_solo_unique,
 )
 from slayer.core.errors import AmbiguousModelError, ForcedFilterError
 from slayer.core.policy import JoinFilterRuleset, SessionPolicy
@@ -2457,34 +2458,14 @@ class SlayerQueryEngine:
         persist_map: dict[tuple[str, str], list[tuple]] = {}
 
         for ds_name in ds_names:
-            all_models = await _all_models_in_datasource(self.storage, ds_name)
-            by_name = {m.name: m for m in all_models}
-            if model is not None:
-                scope = [by_name[model]] if model in by_name else []
-            else:
-                scope = all_models
-            if not scope:
-                continue
-            ds_cfg = await self.storage.get_datasource(ds_name)
-            if ds_cfg is None:
-                continue
-            sqlglot_name = dialect_for_ds_type(ds_cfg.type).sqlglot_name
-            client = SlayerSQLClient(datasource=ds_cfg)
-            try:
-                for m in scope:
-                    for join in m.joins:
-                        finding, detected = await self._detect_one_join(
-                            model=m, join=join, by_name=by_name,
-                            client=client, sqlglot_name=sqlglot_name,
-                            data_source=ds_name,
-                        )
-                        findings.append(finding)
-                        if detected is not None:
-                            persist_map.setdefault((ds_name, m.name), []).append(
-                                (_join_signature(join), detected)
-                            )
-            finally:
-                await client.aclose()
+            ds_findings, ds_persist = await self._detect_datasource_joins(
+                ds_name=ds_name, model=model,
+            )
+            findings.extend(ds_findings)
+            for model_name, signature, detected in ds_persist:
+                persist_map.setdefault((ds_name, model_name), []).append(
+                    (signature, detected)
+                )
 
         if persist:
             for (ds_name, model_name), items in persist_map.items():
@@ -2492,6 +2473,56 @@ class SlayerQueryEngine:
                     data_source=ds_name, model_name=model_name, items=items,
                 )
         return JoinCardinalityReport(findings=findings)
+
+    async def _resolve_detection_scope(self, *, ds_name, model):
+        """In-scope models for one datasource, plus the name lookup for joins.
+
+        The lookup always spans the whole datasource even when ``model``
+        narrows the scope — join targets must still resolve.
+        """
+        all_models = await _all_models_in_datasource(self.storage, ds_name)
+        by_name = {m.name: m for m in all_models}
+        if model is None:
+            return all_models, by_name
+        return ([by_name[model]] if model in by_name else []), by_name
+
+    async def _detect_datasource_joins(
+        self, *, ds_name, model,
+    ) -> "tuple[list[JoinCardinalityFinding], list[tuple]]":
+        """Profile every join of every in-scope model in ONE datasource.
+
+        Returns ``(findings, persist_entries)``, each persist entry being
+        ``(model_name, join_signature, detected)``.
+        """
+        scope, by_name = await self._resolve_detection_scope(
+            ds_name=ds_name, model=model,
+        )
+        if not scope:
+            return [], []
+        ds_cfg = await self.storage.get_datasource(ds_name)
+        if ds_cfg is None:
+            return [], []
+
+        sqlglot_name = dialect_for_ds_type(ds_cfg.type).sqlglot_name
+        findings: list[JoinCardinalityFinding] = []
+        persist_entries: list[tuple] = []
+        client = SlayerSQLClient(datasource=ds_cfg)
+        try:
+            for m in scope:
+                for join in m.joins:
+                    finding, detected = await self._detect_one_join(
+                        model=m, join=join, by_name=by_name,
+                        client=client, sqlglot_name=sqlglot_name,
+                        data_source=ds_name,
+                    )
+                    findings.append(finding)
+                    if detected is not None:
+                        persist_entries.append(
+                            (m.name, _join_signature(join), detected)
+                        )
+        finally:
+            await client.aclose()
+        return findings, persist_entries
 
     async def _detect_one_join(
         self, *, model, join, by_name, client, sqlglot_name, data_source,
@@ -3972,21 +4003,6 @@ def _detection_skip_reason(*, model, target, src_cols, tgt_cols) -> str | None:
     return None
 
 
-def _declares_solo_unique(model, column) -> bool:
-    """Does ``column`` ALONE carry a declared uniqueness on ``model``?
-
-    ``unique`` is by definition single-column. ``primary_key``, however, is
-    stamped on every member of a COMPOSITE primary key, and a member of
-    ``(id, sku)`` says nothing about ``sku`` on its own — mirroring
-    ``is_key_set_unique``'s subset rule, where ``(id, sku)`` is not a subset of
-    ``(sku)``. So a PK column implies solo uniqueness only when it is the whole
-    primary key.
-    """
-    if column.unique:
-        return True
-    return column.primary_key and sum(1 for c in model.columns if c.primary_key) == 1
-
-
 def _unique_contradictions(
     *, model, target, src_cols, tgt_cols, src_side, tgt_side,
 ) -> list[str]:
@@ -4000,7 +4016,7 @@ def _unique_contradictions(
             continue
         c = cols[0]
         col = next((x for x in mdl.columns if x.name == c), None)
-        if col is not None and _declares_solo_unique(mdl, col):
+        if col is not None and declares_solo_unique(columns=mdl.columns, column=col):
             out.append(
                 f"{mdl.name}.{c} is declared unique but the data has duplicates"
             )
