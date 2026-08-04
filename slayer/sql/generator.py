@@ -1416,7 +1416,16 @@ class SQLGenerator:
         return sql
 
     def _apply_pagination_to_sql(self, enriched: EnrichedQuery, sql: str) -> str:
-        """Apply ORDER BY, LIMIT, OFFSET to a raw SQL string."""
+        """Apply ORDER BY, LIMIT, OFFSET to a raw SQL string.
+
+        This wrapper is only ever applied over the CTE-wrapped computed-column
+        assembly (its single caller builds ``WITH … SELECT … FROM <final_cte>``),
+        so the outer FROM is a CTE — a SPLIT ``<base_model>.<col>`` reference
+        would name a table unbound in this scope. An unprojected (non-alias)
+        sort key is therefore unresolvable here (unlike the base-SELECT applier
+        ``_apply_order_limit``, where the split IS bound). Reject it rather than
+        emit invalid SQL — consistent with the typed pipeline's plan-time guard.
+        """
         if enriched.order:
             order_parts = []
             for order_item in enriched.order:
@@ -1426,7 +1435,9 @@ class SQLGenerator:
                 if ref.is_alias:
                     order_parts.append(f'{self._quote_ident(ref.text)} {direction}')
                 else:
-                    order_parts.append(f'{self._order_split_sql(ref)} {direction}')
+                    raise UnresolvableOrderColumnError(
+                        column=ref.column, qualifier=ref.qualifier,
+                    )
             sql += "\nORDER BY " + ", ".join(order_parts)
         if enriched.limit is not None:
             sql += f"\nLIMIT {enriched.limit}"
