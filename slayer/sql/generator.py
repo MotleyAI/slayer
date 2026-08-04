@@ -694,7 +694,7 @@ _TRAILING_LIMIT_RE = re.compile(r"(?is)\s*LIMIT\s+\d+\s*\Z")
 # reserve star-exported physical names against ``_val_<n>`` collisions
 # (DEV-1728). Deliberately rejects dots: ``regions.population`` is a crossing
 # reference, not a column of the star-projected relation.
-_BARE_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 
 
 def _strip_trailing_pagination(sql: str) -> str:
