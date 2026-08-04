@@ -7,7 +7,8 @@ join-type-agnostic: it simply reads each model's outgoing ``joins``.
 INNER joins are kept symmetric by the storage layer
 (``slayer/storage/join_sync.py`` materialises a reverse ``B→A`` edge for
 every ``A→B`` INNER join) — the same invariant the query engine's own
-``_walk_join_chain`` relies on. So a symmetric INNER pair appears here as
+the query-time join walk in ``binding.py`` relies on. So a symmetric INNER
+pair appears here as
 two directed edges and is therefore traversable in both directions, and
 every path this primitive emits is walkable by the engine at query time.
 

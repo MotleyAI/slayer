@@ -45,7 +45,7 @@ The `Column._validate_name` validator allows `__` inside `Column.name`. This is 
 
 3. **No predicate promotion.** A query filter that names a windowed `Column` raises with a suggestion to use a rank-family transform (`rank` / `percent_rank` / `dense_rank` / `ntile`) or a multi-stage `source_queries` model. The rank-family transforms cover top-N filtering in pure DSL.
 
-4. **Single reference-resolution surface.** Identifier handling lives in `slayer/core/refs.py`; join walks live in `_walk_join_chain` in the engine.
+4. **Single reference-resolution surface.** Identifier handling lives in `slayer/core/refs.py`; join walks live in the binder (`slayer/engine/binding.py`), which resolves each hop against the resolved source bundle.
 
 ## Examples — accepted and rejected
 

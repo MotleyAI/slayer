@@ -2500,7 +2500,6 @@ class SlayerQueryEngine:
     async def _resolve_model(
         self,
         model_name: str,
-        named_queries: dict[str, SlayerQuery] = None,
         _resolving: set = None,
         outer_vars: Optional[Dict[str, Any]] = None,
         runtime_kwarg: Optional[Dict[str, Any]] = None,
@@ -2509,12 +2508,10 @@ class SlayerQueryEngine:
     ) -> SlayerModel:
         """Resolve a model by name from storage, expanding a query-backed one.
 
-        ``named_queries`` is accepted but unused: it is part of the
-        ``resolve_model`` callback contract that
-        :func:`slayer.engine.path_resolution.walk_join_chain` defines. Sibling
-        stages are resolved by the typed pipeline in ``source_bundle`` (via
-        ``_follow_sibling_chain``), never here — DEV-1485 Stage D deleted the
-        named-query branch along with the rest of the legacy stack.
+        Sibling stages are resolved by the typed pipeline in ``source_bundle``
+        (via ``_follow_sibling_chain``), never here — DEV-1485 Stage D deleted
+        the named-query branch along with the rest of the legacy stack, and
+        with it the ``named_queries`` parameter this used to thread through.
         """
         _resolving = _resolving if _resolving is not None else set()
 

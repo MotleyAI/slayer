@@ -336,7 +336,8 @@ class TestInnerJoins:
         storage symmetry invariant (INNER joins stored on both sides).
 
         DEV-1485 Stage D: this went through ``engine._walk_join_chain`` ->
-        ``path_resolution.walk_join_chain``. That was the query-time resolver
+        ``path_resolution.walk_join_chain`` (both now deleted). That was the
+        query-time resolver
         when the test was written, but it is not any more — the typed
         pipeline walks join hops in ``binding.py`` against the resolved
         bundle, and ``walk_join_chain``'s only callers were the legacy
