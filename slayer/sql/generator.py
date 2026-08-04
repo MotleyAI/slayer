@@ -11078,9 +11078,11 @@ class SQLGenerator:
                     )
                     scope.resolve(row_key)
                     if scope.join_paths:
-                        crossed = ".".join(sorted(scope.join_paths)[0])
+                        # The derived column IS local (``orders.cust_region``);
+                        # it merely depends on an unpulled join. Report its own
+                        # qualified name, not a fabricated ``customers.cust_region``.
                         raise UnresolvableOrderColumnError(
-                            column=row_key.column_name, qualifier=crossed,
+                            column=row_key.column_name, qualifier=source_relation,
                         )
                     # Non-crossing local derived column — emit through the
                     # planned-dim helper so the expansion is quoted identically

@@ -740,6 +740,25 @@ class TestPartitionByGuard:
             await _sql(engine, query)
         assert "ambiguous" in str(ei.value).lower()
 
+    async def test_partition_by_same_granularity_time_dim_not_flagged_ambiguous(self, engine) -> None:
+        """Two time-dimension declarations at the SAME granularity are one
+        bucket, not competing granularities — the partition-ambiguity guard must
+        NOT misfire (Codex round 4). The query is still invalid (the two
+        ``created_at`` columns collide on their downstream name), but the error
+        must be that collision, not a bogus 'ambiguous granularities'."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension="created_at", granularity="month", label="A"),
+                TimeDimension(dimension="created_at", granularity="month", label="B"),
+            ],
+            measures=[ModelMeasure(
+                formula="rank(amount:sum, partition_by=created_at)", name="rk")],
+        )
+        with pytest.raises(ValueError) as ei:
+            await _sql(engine, query)
+        assert "ambiguous" not in str(ei.value).lower()
+
     async def test_partition_by_non_dim_raises_ntile(self, engine) -> None:
         query = SlayerQuery(
             source_model="orders",

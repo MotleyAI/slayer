@@ -422,7 +422,7 @@ def rewrite_rank_partition_keys(  # NOSONAR(S3776) — sequential isinstance dis
     (comparisons are ``ArithmeticKey``).
     """
     def _rec(k: ValueKey) -> ValueKey:
-        return rewrite_rank_partition_keys(k, rewrite_fn=rewrite_fn)
+        return rewrite_rank_partition_keys(key=k, rewrite_fn=rewrite_fn)
 
     if isinstance(key, TransformKey):
         new_input = _rec(key.input)

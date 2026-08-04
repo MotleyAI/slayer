@@ -604,7 +604,10 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         vk = dm.bound.value_key
         if not isinstance(vk, TimeTruncKey):
             continue
-        if vk.column in _td_by_source:
+        # Ambiguous only when the SAME source column already mapped to a
+        # DIFFERENT bucket (a different granularity) — two identical
+        # ``created_at:month`` declarations resolve to one bucket, not a clash.
+        if vk.column in _td_by_source and _td_by_source[vk.column] != vk:
             _td_ambiguous_sources.add(vk.column)
         _td_by_source[vk.column] = vk
     _td_key_set = set(_td_by_source.values())
