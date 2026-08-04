@@ -1231,3 +1231,102 @@ async def test_integration_mysql_cross_model_derived_columnsql(
     assert response.row_count == 2
     assert float(response.data[0]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
     assert float(response.data[1]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
+
+
+# ---------------------------------------------------------------------------
+# DEV-1727 — dialect-aware Mode-A {var} escaping (MySQL is a Tier-1 backslash
+# dialect: the naive '' quote-doubling from DEV-1625 mis-parses a
+# backslash-bearing value; the hardened escaping must round-trip end-to-end).
+# ---------------------------------------------------------------------------
+
+# Distinct amounts per tricky status so a correct match is provable via the sum.
+_MYSQL_ESC_ROWS = [
+    (1, "a\\'b", 10.0),       # backslash + single quote — the naive-escape breakout
+    (2, "plain", 20.0),
+    (3, 'say "hi"', 30.0),    # embedded double quote (must NOT be escaped)
+    (4, "back\\slash", 40.0), # lone backslash
+]
+
+
+@pytest.fixture(scope="module")
+def _mysql_esc_storage(mysql_container, tmp_path_factory):
+    """Per-module MySQL DB with an ``esc`` table of tricky-status rows + a model
+    whose Mode-A filter carries a ``{v}`` placeholder."""
+    db_name = _create_module_db(mysql_container)
+    try:
+        conn = _admin_connect(mysql_container, dbname=db_name)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE esc (
+                        id INTEGER PRIMARY KEY,
+                        status VARCHAR(255) NOT NULL,
+                        amount DECIMAL(10,2) NOT NULL
+                    ) ENGINE=InnoDB
+                """)
+                # Bound params — the driver stores each value literally,
+                # independent of SLayer's own escaping.
+                cur.executemany("INSERT INTO esc VALUES (%s, %s, %s)", _MYSQL_ESC_ROWS)
+        finally:
+            conn.close()
+
+        tmpdir = str(tmp_path_factory.mktemp("mysql_esc"))
+        storage = YAMLStorage(base_dir=tmpdir)
+        run_sync(storage.save_datasource(_ds_config(mysql_container, db_name)))
+        run_sync(storage.save_model(SlayerModel(
+            name="esc",
+            sql_table="esc",
+            data_source="testmysql",
+            # Mode-A model filter with a {var} placeholder (escape="sql").
+            filters=["status = '{v}'"],
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )))
+        yield storage
+    finally:
+        _drop_module_db(mysql_container, db_name)
+
+
+@pytest.fixture
+def mysql_esc_env(_mysql_esc_storage) -> SlayerQueryEngine:
+    return SlayerQueryEngine(storage=_mysql_esc_storage)
+
+
+@pytest.mark.integration
+class TestMySQLModeAEscaping:
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("a\\'b", 10.0),        # backslash + quote breakout is neutralised
+            ('say "hi"', 30.0),     # double quote left intact
+            ("back\\slash", 40.0),  # lone backslash doubled correctly
+        ],
+    )
+    async def test_backslash_value_matches_only_its_row(
+        self, mysql_esc_env: SlayerQueryEngine, value: str, expected: float
+    ) -> None:
+        resp = await mysql_esc_env.execute(SlayerQuery(
+            source_model="esc",
+            measures=[{"formula": "amount:sum"}],
+            variables={"v": value},
+        ))
+        assert resp.row_count == 1
+        assert float(resp.data[0]["esc.amount_sum"]) == expected
+
+    async def test_breakout_attempt_matches_nothing(
+        self, mysql_esc_env: SlayerQueryEngine
+    ) -> None:
+        # A value engineered to break out of the literal via a trailing
+        # backslash + injected predicate must stay inside the string and match
+        # zero rows (not the whole table). Assert on the COUNT of matching rows
+        # (unambiguous) rather than a zero aggregate (SUM over the empty set is
+        # NULL on MySQL, 0 on ClickHouse — either way a weaker signal).
+        resp = await mysql_esc_env.execute(SlayerQuery(
+            source_model="esc",
+            measures=[{"formula": "*:count"}],
+            variables={"v": "x\\' OR '1'='1"},
+        ))
+        assert int(resp.data[0]["esc._count"]) == 0
