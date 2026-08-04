@@ -459,9 +459,11 @@ class TestWindowedSrcFrameBounds:
         )
         src = _extract_src_body(sql)
         base = _extract_cte_body(sql, r"_base")
-        assert "2024-06-01" not in src and "2024-12-31" not in src, src
+        assert "2024-06-01" not in src, src
+        assert "2024-12-31" not in src, src
         assert "'paid'" in src, src
-        assert "2024-06-01" in base and "2024-12-31" in base, base
+        assert "2024-06-01" in base, base
+        assert "2024-12-31" in base, base
 
     async def test_literal_on_the_left_is_stripped_from_src(self) -> None:
         sql = await _wm_sql(
@@ -485,7 +487,8 @@ class TestWindowedSrcFrameBounds:
         base = _extract_cte_body(sql, r"_base")
         assert "'paid'" in src, src
         assert "2024-06-01" not in src, src
-        assert "'paid'" in base and "2024-06-01" in base, base
+        assert "'paid'" in base, base
+        assert "2024-06-01" in base, base
 
     async def test_disjunction_is_applied_whole_inside_src(self) -> None:
         """A frame bound under ``or`` is kept whole — no sound split exists.
@@ -503,7 +506,8 @@ class TestWindowedSrcFrameBounds:
             _orders(),
         )
         src = _extract_src_body(sql)
-        assert "2024-06-01" in src and "'paid'" in src, src
+        assert "2024-06-01" in src, src
+        assert "'paid'" in src, src
         assert "2024-07-01" not in src, f"the bare sibling bound must strip.\n{src}"
 
     async def test_non_time_dimension_time_column_is_kept_in_src(self) -> None:
@@ -654,8 +658,11 @@ class TestWindowedSrcFrameBounds:
         aliases = _join_aliases(src)
         assert "2024-06-01" not in src, src
         assert "'North'" in src, src
-        assert "customers" in aliases and "customers__regions" in aliases, (
-            f"both joins must survive; got {aliases}.\n{src}"
+        assert "customers" in aliases, (
+            f"the joined TD's projection join must survive; got {aliases}.\n{src}"
+        )
+        assert "customers__regions" in aliases, (
+            f"the residual's join must survive; got {aliases}.\n{src}"
         )
 
     async def test_multi_hop_residual_keeps_its_full_join_chain(self) -> None:
@@ -672,8 +679,11 @@ class TestWindowedSrcFrameBounds:
         src = _extract_src_body(sql)
         aliases = _join_aliases(src)
         assert "2024-06-01" not in src, src
-        assert "customers" in aliases and "customers__regions" in aliases, (
-            f"multi-hop residual must keep its full chain; got {aliases}.\n{src}"
+        assert "customers" in aliases, (
+            f"multi-hop residual must keep its first hop; got {aliases}.\n{src}"
+        )
+        assert "customers__regions" in aliases, (
+            f"multi-hop residual must keep its second hop; got {aliases}.\n{src}"
         )
 
     async def test_two_windowed_measures_share_the_residual(self) -> None:
@@ -704,7 +714,8 @@ class TestWindowedSrcFrameBounds:
         )
         sql = await _wm_sql(query, _orders())
         src = _extract_src_body(sql)
-        assert "2024-06-01" not in src and "'paid'" in src, src
+        assert "2024-06-01" not in src, src
+        assert "'paid'" in src, src
         assert_scope_closed(sql, dialect="postgres")
 
     async def test_bound_on_unselected_time_column_survives_into_src(self) -> None:
@@ -850,7 +861,8 @@ class TestTimeShiftFrameBounds:
             ),
             _orders(),
         )
-        assert "2024-06-01" not in body and "2024-12-31" not in body, body
+        assert "2024-06-01" not in body, body
+        assert "2024-12-31" not in body, body
 
     async def test_mixed_conjunction_keeps_population_predicate(self) -> None:
         body = await _shifted_body(

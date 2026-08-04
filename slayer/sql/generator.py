@@ -8966,7 +8966,7 @@ class SQLGenerator:
 
     def _shifted_where_part(
         self, *, fp, source_relation: str, source_model, bundle,
-        time_columns: "AbstractSet[Any]" = frozenset(),
+        time_columns: "AbstractSet[Any]",
     ) -> "Optional[Tuple[str, List[Tuple[str, ...]]]]":
         """Render one ROW-phase filter for the shifted CTE, returning its SQL
         plus the join paths it crosses — or ``None`` to omit it entirely.
@@ -8981,6 +8981,11 @@ class SQLGenerator:
 
         Mode-A ``text`` filters are exempt from the analysis and always
         propagate (a model filter defines which rows EXIST, not the frame).
+
+        ``time_columns`` is REQUIRED, deliberately (Codex): ``strip_frame_bounds``
+        returns its input unchanged for an empty set, so a default would let a
+        future caller silently start rendering every ``date_range`` into the
+        shifted CTE — the exact 7b.3c regression this method exists to prevent.
 
         The join paths are collected per carrier kind (CodeRabbit): a TYPED
         filter is scanned STRUCTURALLY on its already-rendered AST via
@@ -10565,7 +10570,7 @@ class SQLGenerator:
             f"AggregateKey source {type(source).__name__} not supported.",
         )
 
-    def _build_where_having_from_planned(
+    def _build_where_having_from_planned(  # NOSONAR(S3776) — one cohesive pass over filters_by_phase routing each entry to WHERE / HAVING / POST by phase, with the per-carrier (typed vs Mode-A text) rendering and the HAVING grouped-column guard inline. The complexity is pre-existing; DEV-1732 added only the `filters_override` list selection. Splitting the phase routing from the rendering would thread slot_by_key / first_last_state / where_parts / having_parts through helpers without simplifying anything.
         self,
         *,
         planned_query,

@@ -149,11 +149,18 @@ def _extract_src_body(sql: str) -> str:
     Resilient when the outer query also contains other LEFT JOIN (...) blocks
     (e.g. cross-model measure subqueries): anchors on the unique ``\\n) AS _src``
     suffix and reverse-searches for the matching ``LEFT JOIN (\\n`` before it.
+
+    The missing-anchor assertion is not reachable with today's generator output
+    (CodeRabbit): without it ``rfind`` returns ``-1`` and the helper silently
+    returns a slice from an arbitrary offset, so a future change to the join
+    keyword or its formatting would surface as a confusing assertion against the
+    wrong text rather than a clear failure here.
     """
     end = sql.index("\n) AS _src")
     open_token = "LEFT JOIN (\n"
-    start = sql.rfind(open_token, 0, end) + len(open_token)
-    return sql[start:end]
+    open_at = sql.rfind(open_token, 0, end)
+    assert open_at != -1, f"No {open_token!r} opening the _src subquery in:\n{sql}"
+    return sql[open_at + len(open_token):end]
 
 
 def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:
