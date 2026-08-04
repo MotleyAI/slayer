@@ -357,15 +357,12 @@ class TestRlsIsolationCte:
 # currently-passing representative.
 # --------------------------------------------------------------------------- #
 class TestScopeDefectPins:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1714 (Stage 10): duration-windowed measures (sum(window=)) are "
-            "silently dropped on the typed pipeline; the intended _wm_ range-join "
-            "CTE is not emitted. Auto-promotes when Stage 10 lands."
-        ),
-    )
     async def test_windowed_measure_emits_wm_cte(self) -> None:
+        # DEV-1714 (Stage 10) landed: duration-windowed measures now emit the
+        # host-rooted `_wm_` range-join CTE on the typed pipeline, so this
+        # promoted from its strict-xfail pin. Rich coverage lives in
+        # tests/test_sql_generator.py (TestFields / TestWindowedMeasureGuards)
+        # and tests/integration/test_integration_windowed_measures.py.
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(

@@ -8,7 +8,7 @@ query engine's _enrich() step.
 import copy
 import logging
 import re
-from typing import Any, Dict, List, Literal, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Set, Tuple, Union
 
 import sqlglot
 from sqlglot import exp
@@ -22,10 +22,11 @@ from slayer.core.enums import (
 )
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.errors import AggregationNotAllowedError, UnresolvableOrderColumnError
 from slayer.core.keys import _reroot_path_ref, reroot_aggregate_key
 from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
+from slayer.core.window_duration import parse_window_duration as _parse_window_duration
 from slayer.engine.column_expansion import (
     _is_trivial_base,
     _walk_path_to_target_sync,
@@ -51,6 +52,24 @@ from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.scope import ScopeFrame
 from slayer.sql.scope_check import maybe_validate_scopes
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
+
+
+class _OrderColRef(NamedTuple):
+    """DEV-1645: resolved ORDER BY key. ``is_alias`` distinguishes a projected
+    output alias (emit whole-quoted, e.g. ``"orders.revenue_sum"``) from a
+    table.column fallback (emit SPLIT, e.g. ``ranked."time_mark"``), so a sort
+    on an unprojected/renamed column references the underlying FROM-scope column
+    instead of a nonexistent composite identifier.
+
+    Ported from ``origin/main`` for the LEGACY enrichment pipeline (this stack is
+    deleted in DEV-1485 Stage 11); the typed pipeline enforces the same policy
+    independently in ``_apply_order_limit_from_planned`` + the plan-time order
+    validation.
+    """
+    text: str               # whole resolved string (used for base_cols membership)
+    is_alias: bool          # True => projected output alias; False => table.column fallback
+    qualifier: str | None   # fallback only: FROM-scope alias
+    column: str | None      # fallback only: underlying column short name
 
 
 class ResolvedAggKwarg(BaseModel):
@@ -497,7 +516,6 @@ def _first_bare_column_name(key) -> Optional[str]:
     return None
 
 
-_WINDOW_DURATION_RE = re.compile(r"(?P<num>\d+)(?P<unit>min|[ymwdhs])")
 _WINDOW_UNIT_SQL = {
     "y": "year",
     "m": "month",
@@ -569,30 +587,6 @@ def _has_cross_model_filter(m: EnrichedMeasure) -> bool:
 
 def _is_windowed_measure(m: EnrichedMeasure) -> bool:
     return bool(m.window)
-
-
-def _parse_window_duration(value: str) -> list[tuple[int, str]]:
-    """Parse compact durations like 1y2m3w5d6h7min8s."""
-    if not value:
-        raise ValueError("Window duration cannot be empty")
-    pos = 0
-    parts: list[tuple[int, str]] = []
-    for match in _WINDOW_DURATION_RE.finditer(value):
-        if match.start() != pos:
-            raise ValueError(
-                f"Invalid window duration '{value}'. Use syntax like '1y2m3w5d6h7min8s'."
-            )
-        amount = int(match.group("num"))
-        unit = match.group("unit")
-        if amount <= 0:
-            raise ValueError(f"Window duration parts must be positive in '{value}'")
-        parts.append((amount, unit))
-        pos = match.end()
-    if pos != len(value) or not parts:
-        raise ValueError(
-            f"Invalid window duration '{value}'. Use syntax like '1y2m3w5d6h7min8s'."
-        )
-    return parts
 
 
 def _cte_name_from_alias(prefix: str, alias: str) -> str:
@@ -1422,13 +1416,14 @@ class SQLGenerator:
             }
             for order_item in enriched.order:
                 col = order_item.column
-                col_name = self._resolve_order_column(col=col, enriched=enriched)
+                ref = self._resolve_order_column(col=col, enriched=enriched)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
-                qcol = self._quote_ident(col_name)  # DEV-1716: dialect-quoted
-                if col_name in base_cols:
-                    order_parts.append(f'_base.{qcol} {direction}')
+                if ref.is_alias and ref.text in base_cols:
+                    order_parts.append(f'_base.{self._quote_ident(ref.text)} {direction}')
+                elif ref.is_alias:
+                    order_parts.append(f'{self._quote_ident(ref.text)} {direction}')
                 else:
-                    order_parts.append(f'{qcol} {direction}')
+                    order_parts.append(f'{self._order_split_sql(ref)} {direction}')
             sql += "\nORDER BY " + ", ".join(order_parts)
         if enriched.limit is not None:
             sql += f"\nLIMIT {enriched.limit}"
@@ -1438,14 +1433,28 @@ class SQLGenerator:
         return sql
 
     def _apply_pagination_to_sql(self, enriched: EnrichedQuery, sql: str) -> str:
-        """Apply ORDER BY, LIMIT, OFFSET to a raw SQL string."""
+        """Apply ORDER BY, LIMIT, OFFSET to a raw SQL string.
+
+        This wrapper is only ever applied over the CTE-wrapped computed-column
+        assembly (its single caller builds ``WITH … SELECT … FROM <final_cte>``),
+        so the outer FROM is a CTE — a SPLIT ``<base_model>.<col>`` reference
+        would name a table unbound in this scope. An unprojected (non-alias)
+        sort key is therefore unresolvable here (unlike the base-SELECT applier
+        ``_apply_order_limit``, where the split IS bound). Reject it rather than
+        emit invalid SQL — consistent with the typed pipeline's plan-time guard.
+        """
         if enriched.order:
             order_parts = []
             for order_item in enriched.order:
                 col = order_item.column
-                col_name = SQLGenerator._resolve_order_column(col=col, enriched=enriched)
+                ref = SQLGenerator._resolve_order_column(col=col, enriched=enriched)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
-                order_parts.append(f'{self._quote_ident(col_name)} {direction}')  # DEV-1716
+                if ref.is_alias:
+                    order_parts.append(f'{self._quote_ident(ref.text)} {direction}')
+                else:
+                    raise UnresolvableOrderColumnError(
+                        column=ref.column, qualifier=ref.qualifier,
+                    )
             sql += "\nORDER BY " + ", ".join(order_parts)
         if enriched.limit is not None:
             sql += f"\nLIMIT {enriched.limit}"
@@ -2362,8 +2371,14 @@ class SQLGenerator:
         if enriched.order:
             for order_item in enriched.order:
                 col = order_item.column
-                col_name = self._resolve_order_column(col=col, enriched=enriched)
-                order_col = exp.Column(this=exp.to_identifier(col_name, quoted=True))
+                ref = self._resolve_order_column(col=col, enriched=enriched)
+                if ref.is_alias:
+                    order_col = exp.Column(this=exp.to_identifier(ref.text, quoted=True))
+                else:
+                    order_col = exp.Column(
+                        this=self._to_ident(ref.column),
+                        table=exp.to_identifier(ref.qualifier),
+                    )
                 ascending = order_item.direction == "asc"
                 select = select.order_by(self._ordered(order_col, ascending=ascending))
 
@@ -2375,20 +2390,41 @@ class SQLGenerator:
 
         return select
 
+    def _order_split_sql(self, ref: _OrderColRef) -> str:
+        """DEV-1645: emit a non-projected ORDER BY key as a SPLIT
+        ``qualifier.column`` reference (mixed-case-quoted), not one
+        composite-quoted token."""
+        col = exp.Column(this=self._to_ident(ref.column), table=exp.to_identifier(ref.qualifier))
+        return col.sql(dialect=self.dialect)
+
     @staticmethod
-    def _resolve_order_column(col, enriched: EnrichedQuery) -> str:
-        """Resolve an order column reference to the correct enriched alias.
+    def _resolve_order_column(col, enriched: EnrichedQuery) -> _OrderColRef:
+        """Resolve an order column reference to a discriminated result (DEV-1645).
 
         Users refer to columns by their short name (e.g., ``count``,
         ``revenue_sum``).  The enriched query stores fully qualified aliases
         (e.g., ``orders._count``, ``orders.revenue_sum``).  This method
-        matches the user-provided name against all enriched columns and
-        returns the matching alias.  If no match is found, the name is
-        qualified with the model name as a fallback.
+        matches the user-provided name against all enriched columns.
 
-        For ``*:count`` results, the internal name is ``_count`` but users
-        refer to it as ``count``.  A fallback check for ``_name`` handles
-        this case.
+        When it matches a projected alias, the result carries ``is_alias=True``
+        and the caller emits it whole-quoted (``"orders.revenue_sum"`` — that IS
+        the real output column name via ``AS "orders.revenue_sum"``).
+
+        When no projected alias matches (renamed via ``columns:``, or an
+        inner-stage dim the outer stage dropped), the result carries
+        ``is_alias=False`` with ``qualifier``/``column`` set, and the caller
+        emits a SPLIT ``qualifier.column`` reference that resolves against the
+        FROM-scope table — instead of the old composite ``"<model>.<col>"``
+        token that Postgres rejects as UndefinedColumn.
+
+        A joined qualifier (anything other than the base model) is rejected with
+        ``UnresolvableOrderColumnError``: the compiler's outer-wrapping layers
+        (measure CTEs, pagination, the first/last ranked subquery, projection
+        trimming) relocate the ORDER BY into a scope where the joined table is
+        unbound, so emitting a reference there would produce invalid SQL.
+
+        For ``*:count`` results, the internal name is ``_count`` but users refer
+        to it as ``count``.  A fallback check for ``_name`` handles this case.
         """
         user_name = col.name
         model_prefix = col.model or enriched.model_name
@@ -2410,24 +2446,39 @@ class SQLGenerator:
         # Custom field names (e.g., {"formula": "x:count_distinct", "name": "my_name"})
         alias_lookup.update(enriched.field_name_aliases)
 
+        # A ref qualified with a FOREIGN model (``owners.status`` when the base
+        # model is ``orders``) must not resolve to a same-named local column via
+        # the bare-name / ``_name`` lookups — that silently sorts by the wrong
+        # field. Only unqualified refs, or refs qualified with the base model
+        # itself, take the bare shortcuts; a foreign qualifier falls through to
+        # the ``<model>.<col>`` qualified match and then the joined-qualifier
+        # rejection below. Mirrors the typed pipeline's plan-time guard.
+        host_local = model_prefix == enriched.model_name
+
         # Direct match on the user-provided name
-        if user_name in alias_lookup:
-            return alias_lookup[user_name]
+        if host_local and user_name in alias_lookup:
+            return _OrderColRef(alias_lookup[user_name], True, None, None)
 
         # Qualified match for cross-model measures:
         # col.model="customers", col.name="revenue_sum" → "customers.revenue_sum"
         if col.model:
             qualified = f"{col.model}.{col.name}"
             if qualified in alias_lookup:
-                return alias_lookup[qualified]
+                return _OrderColRef(alias_lookup[qualified], True, None, None)
 
         # Fallback for *:count → _count: user says "count", internal is "_count"
         prefixed = f"_{user_name}"
-        if prefixed in alias_lookup:
-            return alias_lookup[prefixed]
+        if host_local and prefixed in alias_lookup:
+            return _OrderColRef(alias_lookup[prefixed], True, None, None)
 
-        # Fallback: qualify with model prefix
-        return f"{model_prefix}.{user_name}"
+        # Fallback: a non-projected order key is only safe to emit as a split
+        # reference against the BASE-model alias. A joined qualifier (anything
+        # other than the base model) is rejected — even when a filter pulls the
+        # join into the base FROM, the outer-wrapping layers relocate the ORDER
+        # BY into a scope where the joined table is unbound.
+        if model_prefix != enriched.model_name:
+            raise UnresolvableOrderColumnError(column=user_name, qualifier=model_prefix)
+        return _OrderColRef(f"{model_prefix}.{user_name}", False, model_prefix, user_name)
 
     # ------------------------------------------------------------------
     # FROM / JOIN building
@@ -3218,7 +3269,10 @@ class SQLGenerator:
             )
         source_relation = planned_query.source_relation
 
-        if planned_query.cross_model_aggregate_plans:
+        if (
+            planned_query.cross_model_aggregate_plans
+            or planned_query.windowed_aggregate_plans
+        ):
             return self._render_with_cross_model_plans(
                 planned_query=planned_query, bundle=bundle,
             )
@@ -5511,6 +5565,194 @@ class SQLGenerator:
             f"{type(key).__name__} not supported."
         )
 
+    def _render_window_measure_cte_from_planned(  # NOSONAR(S3776) — one cohesive host-rooted range-join CTE build: ``_src`` projection (dims / other-time-dims / raw-window-time / value) with Law-1 join discovery, WHERE inheritance minus date_range, and the ``_base LEFT JOIN _src`` interval range join. Splitting scatters the shared scope / grain-alias / join-eq state.
+        self,
+        *,
+        plan,
+        agg_slot,
+        source_model,
+        source_relation: str,
+        bundle,
+        planned_query,
+        slots_by_id: Dict[str, Any],
+        aliases_by_slot_id: Dict[str, List[str]],
+        full_agg_alias: str,
+    ) -> Tuple[str, List[str]]:
+        """Render one ``_wm_`` duration-windowed-measure CTE (DEV-1714 Stage 10).
+
+        The CTE is host-rooted: ``FROM _base LEFT JOIN (<_src>) AS _src`` where
+        ``_src`` self-selects the host rows (dims → ``_w_dim_<n>``, other time
+        dims date-trunc'd → ``_w_td_<n>``, the raw window time column →
+        ``_w_time``, the value → ``_w_value``), and the join predicate pairs the
+        grain equalities with the trailing ``INTERVAL`` range
+        (``_src._w_time >= bucket_end - window`` / ``< bucket_end``). The result
+        is grouped at the host grain and LEFT-JOINed back to ``_base`` by the
+        caller. Returns ``(cte_sql, grain_aliases)``.
+        """
+        from slayer.core.keys import AggregateKey
+
+        key = agg_slot.key
+        assert isinstance(key, AggregateKey)
+
+        allocator = self._gen_allocator or self._new_allocator()
+        src_scope = ScopeFrame(
+            scope_id=allocator.next_scope_id(source_relation),
+            root_model=source_model,
+            root_relation=source_relation,
+            bundle=bundle,
+            dialect=self._dialect,
+            allocator=allocator,
+        )
+
+        def _base_col(alias: str) -> exp.Column:
+            return exp.Column(
+                this=exp.to_identifier(alias, quoted=True),
+                table=exp.to_identifier("_base"),
+            )
+
+        def _src_col(name: str) -> exp.Column:
+            return exp.Column(
+                this=exp.to_identifier(name), table=exp.to_identifier("_src"),
+            )
+
+        def _alias_of(sid: str) -> str:
+            al = aliases_by_slot_id.get(sid) or []
+            return al[0] if al else sid
+
+        src_cols: List[exp.Expression] = []
+        join_eqs: List[exp.Expression] = []
+        grain_aliases: List[str] = []
+
+        # Query dimensions → ``_w_dim_<n>`` (Law-1 resolve registers crossed
+        # joins into ``src_scope``).
+        for idx, sid in enumerate(plan.dimension_slot_ids):
+            dslot = slots_by_id.get(sid)
+            base_alias = _alias_of(sid)
+            expr = src_scope.resolve(dslot.key)
+            src_cols.append(expr.as_(f"_w_dim_{idx}"))
+            join_eqs.append(exp.EQ(
+                this=_src_col(f"_w_dim_{idx}"), expression=_base_col(base_alias),
+            ))
+            grain_aliases.append(base_alias)
+
+        # Non-window time dimensions → ``_w_td_<n>`` (date-trunc'd), equality-
+        # joined so the trailing window does not fan out across their values.
+        for idx, sid in enumerate(plan.other_time_dimension_slot_ids):
+            tslot = slots_by_id.get(sid)
+            base_alias = _alias_of(sid)
+            # Codex#1: register any join the time column crosses into the scope
+            # (a joined time dimension would otherwise reference an unbound alias
+            # in _src); the expression itself comes from the is_root/derived-aware
+            # helper below.
+            src_scope.resolve(tslot.key.column)
+            raw = self._raw_time_col_expr_for_planned(
+                time_column=tslot.key.column, source_model=source_model,
+                source_relation=source_relation, bundle=bundle,
+            )
+            trunc = self._build_date_trunc(
+                col_expr=raw, granularity=TimeGranularity(tslot.key.granularity),
+            )
+            src_cols.append(trunc.as_(f"_w_td_{idx}"))
+            join_eqs.append(exp.EQ(
+                this=_src_col(f"_w_td_{idx}"), expression=_base_col(base_alias),
+            ))
+            grain_aliases.append(base_alias)
+
+        # The window time dimension's RAW column → ``_w_time`` (the range axis).
+        wtd_slot = slots_by_id.get(plan.window_time_dimension_slot_id)
+        wtd_alias = _alias_of(plan.window_time_dimension_slot_id)
+        # Codex#1: register the window time column's crossed join (if any) too.
+        src_scope.resolve(wtd_slot.key.column)
+        raw_time = self._raw_time_col_expr_for_planned(
+            time_column=wtd_slot.key.column, source_model=source_model,
+            source_relation=source_relation, bundle=bundle,
+        )
+        src_cols.append(raw_time.copy().as_("_w_time"))
+        grain_aliases.append(wtd_alias)
+
+        # The measure value → ``_w_value`` (CASE-wrapped by ``Column.filter``).
+        val_expr = src_scope.resolve(key.source)
+        if key.column_filter_key is not None:
+            pred_sql = src_scope.resolve_predicate_sql(
+                key.column_filter_key.canonical_sql,
+            )
+            val_expr = exp.Case(
+                ifs=[exp.If(this=self._parse_predicate(pred_sql), true=val_expr)],
+            )
+        src_cols.append(val_expr.as_("_w_value"))
+
+        # WHERE-phase row filters (model + user) inherited into ``_src``, minus
+        # date_range (``plan.where_filter_ids``). Register their crossed joins
+        # into ``src_scope`` first (Law 1), then render.
+        all_filter_ids = {fp.id for fp in planned_query.filters_by_phase}
+        skip_for_src = all_filter_ids - set(plan.where_filter_ids)
+        self._resolve_where_filter_joins_via_scope(
+            planned_query=planned_query, scope=src_scope,
+            skip_filter_ids=skip_for_src,
+        )
+        src_where, _src_having = self._build_where_having_from_planned(
+            planned_query=planned_query, source_relation=source_relation,
+            source_model=source_model, bundle=bundle,
+            skip_filter_ids=skip_for_src,
+        )
+
+        # ``_src`` FROM + joins from the scope's discovered paths.
+        from_expr, src_joins = self._build_from_and_joins(
+            source_model=source_model, source_relation=source_relation,
+            joined_paths=src_scope.join_paths.as_list(), bundle=bundle,
+        )
+        src_select = exp.Select().select(*src_cols).from_(from_expr)
+        for join_expr, on_expr, join_type in src_joins:
+            src_select = src_select.join(
+                join_expr, on=on_expr, join_type=join_type,
+            )
+        if src_where is not None:
+            src_select = src_select.where(src_where)
+        src_subq = exp.Subquery(
+            this=src_select, alias=exp.TableAlias(this=exp.to_identifier("_src")),
+        )
+
+        # Trailing-window range predicate: ``_src._w_time`` in
+        # ``[bucket_end - window, bucket_end)`` where ``bucket_end`` is the
+        # host bucket's exclusive upper edge (grain + 1 grain).
+        frame_time = _base_col(wtd_alias)
+        bucket_end = self._add_intervals_expr(
+            frame_time,
+            self._granularity_interval_expr(
+                TimeGranularity(plan.window_granularity), sign=1,
+            ),
+            sign=1,
+        )
+        lower_bound = self._add_intervals_expr(
+            bucket_end,
+            self._dialect.duration_interval_exprs(
+                parts=[tuple(p) for p in plan.window_parts], sign=-1,
+            ),
+            sign=-1,
+        )
+        src_w_time = _src_col("_w_time")
+        on_range = exp.and_(
+            *join_eqs,
+            exp.GTE(this=src_w_time, expression=lower_bound),
+            exp.LT(this=src_w_time.copy(), expression=bucket_end.copy()),
+        )
+
+        agg_cls = exp.Sum if plan.agg == "sum" else exp.Avg
+        agg_expr = _wrap_cast_for_type(
+            agg_cls(this=_src_col("_w_value")), agg_slot.type,
+        )
+
+        outer = exp.Select()
+        for ga in grain_aliases:
+            outer = outer.select(_base_col(ga))
+        outer = outer.select(agg_expr.as_(exp.to_identifier(full_agg_alias, quoted=True)))
+        outer = outer.from_(exp.Table(this=exp.to_identifier("_base")))
+        outer = outer.join(src_subq, on=on_range, join_type="LEFT")
+        for ga in grain_aliases:
+            outer = outer.group_by(_base_col(ga))
+
+        return outer.sql(dialect=self.dialect, pretty=True), grain_aliases
+
     def _render_with_cross_model_plans(  # NOSONAR(S3776) — orchestration of host ``_base`` CTE + per-plan ``_cm_*`` CTEs + combined SELECT + transform-chain step CTEs + outer ORDER BY/LIMIT wrap. Each block is a coherent compilation stage sharing planned_query / slots_by_id / cma_slot_ids / seen_base_ids state; extracting per-stage helpers would scatter the cross-cutting state.
         self,
         *,
@@ -5565,6 +5807,12 @@ class SQLGenerator:
         # owns them. POST-phase slots aren't in scope (no transforms).
         cma_slot_ids = {
             p.aggregate_slot_id for p in planned_query.cross_model_aggregate_plans
+        }
+        # DEV-1714 Stage 10 — windowed aggregate slots render via their own
+        # host-rooted ``_wm_`` range-join CTEs (below); like cross-model slots
+        # they are excluded from ``_base`` and joined back on the shared grain.
+        windowed_slot_ids = {
+            p.aggregate_slot_id for p in planned_query.windowed_aggregate_plans
         }
 
         # DEV-1503 — outer combined-SELECT WHERE wrapper. Identify
@@ -5648,6 +5896,7 @@ class SQLGenerator:
             sid for sid in planned_query.projection
             if sid not in cma_slot_ids
             and sid not in outer_composite_slot_ids
+            and sid not in windowed_slot_ids
         ]
 
         # Hidden ORDER-BY-only LOCAL slots (``ORDER BY revenue:sum`` with
@@ -5663,8 +5912,13 @@ class SQLGenerator:
             if (
                 sid in cma_slot_ids
                 or sid in outer_composite_slot_ids
+                or sid in windowed_slot_ids
                 or sid in seen_base_ids
             ):
+                # DEV-1714: a windowed slot lives in its ``_wm_`` CTE, never
+                # ``_base`` — materialising it here as an order-only local slot
+                # would emit a dead plain aggregate in ``_base``. It resolves in
+                # the combined ORDER BY via its bare projected alias instead.
                 continue
             slot = slots_by_id.get(sid)
             if slot is None:
@@ -5980,6 +6234,46 @@ class SQLGenerator:
             joinback_pairs_for_plan[plan.aggregate_slot_id] = joinback_pairs
             agg_col_alias_for_plan[plan.aggregate_slot_id] = agg_col_alias
 
+        # DEV-1714 Stage 10 — per-plan ``_wm_`` windowed range-join CTEs. Each
+        # is host-rooted (``FROM _base LEFT JOIN _src``), grouped at the query
+        # grain, and joined back to ``_base`` on that grain (host alias == cte
+        # column alias, since the CTE projects the grain under the same alias).
+        wm_ctes: List[Tuple[str, str]] = []
+        wm_cte_name_for_plan: Dict[str, str] = {}
+        wm_agg_col_for_plan: Dict[str, str] = {}
+        wm_joinback_pairs_for_plan: Dict[str, List[Tuple[str, str]]] = {}
+        # Codex round 4: mint ``_wm_`` CTE names through the DEV-1726 collision-
+        # aware allocator so two measures whose aliases lossy-sanitise to the
+        # same name (``rev-a`` / ``rev_a``), or case-only variants on a
+        # case-folding dialect, get distinct auto-numbered names instead of
+        # tripping the CTE-name-collision belt.
+        wm_allocator = self._gen_allocator or self._new_allocator()
+        for plan in planned_query.windowed_aggregate_plans:
+            agg_slot = slots_by_id.get(plan.aggregate_slot_id)
+            if agg_slot is None or not isinstance(agg_slot.key, AggregateKey):
+                raise RuntimeError(
+                    f"WindowedAggregatePlan {plan.aggregate_slot_id!r} references "
+                    f"a missing or non-aggregate slot.",
+                )
+            full_agg_alias = self._full_alias_for_slot(
+                slot=agg_slot, source_relation=source_relation, alias_index={},
+            )
+            cte_name = wm_allocator.allocate_cte(
+                _cte_name_from_alias("_wm_", full_agg_alias),
+            )
+            cte_sql, grain_aliases = self._render_window_measure_cte_from_planned(
+                plan=plan, agg_slot=agg_slot, source_model=source_model,
+                source_relation=source_relation, bundle=bundle,
+                planned_query=planned_query, slots_by_id=slots_by_id,
+                aliases_by_slot_id=aliases_by_slot_id, full_agg_alias=full_agg_alias,
+            )
+            wm_ctes.append((cte_name, cte_sql))
+            wm_cte_name_for_plan[plan.aggregate_slot_id] = cte_name
+            wm_agg_col_for_plan[plan.aggregate_slot_id] = full_agg_alias
+            wm_joinback_pairs_for_plan[plan.aggregate_slot_id] = [
+                (a, a) for a in grain_aliases
+            ]
+
         # Codex MED fold-in: surface dropped-filter warnings from each
         # plan via Python ``warnings`` so callers using
         # ``warnings.catch_warnings()`` see what was dropped. The
@@ -6114,10 +6408,24 @@ class SQLGenerator:
             canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
             agg_col_alias = agg_col_alias_for_plan[plan.aggregate_slot_id]
             cte_name = _cte_name_from_alias("_cm_", canonical_alias)
-            public_aliases = self._public_aliases_for_cross_model_agg(
-                slot=agg_slot,
-                source_relation=source_relation,
-                canonical_alias=canonical_alias,
+            # DEV-1495 bug 2 / DEV-1712: an order-by-only (hidden) cross-model
+            # aggregate never surfaces in the combined projection — its CTE is
+            # still joined below, and the ORDER BY references it CTE-qualified
+            # (``hidden_cma_order_ref``). Trimming it keeps the outer SELECT to
+            # the user-declared columns (Law 2 projection boundary). Only when
+            # there is NO transform chain: a hidden CMA feeding a transform
+            # layer (``cumsum(customers.revenue:sum)``) must stay projected so
+            # the step CTE can consume it — the transform outer wrap does the
+            # public-vs-hidden trim in that path.
+            trim_hidden = plan.hidden and not planned_query.transform_layers
+            public_aliases = (
+                []
+                if trim_hidden
+                else self._public_aliases_for_cross_model_agg(
+                    slot=agg_slot,
+                    source_relation=source_relation,
+                    canonical_alias=canonical_alias,
+                )
             )
             for pub in public_aliases:
                 if pub == agg_col_alias:
@@ -6129,6 +6437,33 @@ class SQLGenerator:
             combined_aliases_by_slot_id[plan.aggregate_slot_id] = list(
                 public_aliases,
             )
+
+        # DEV-1714 Stage 10 — windowed side: project each ``_wm_`` CTE's
+        # aggregate column. Codex#2: one occurrence per declared user alias (C13
+        # lets the same windowed key be selected under multiple names — the CTE
+        # holds one aggregate column, remapped ``AS`` each public alias). The
+        # column name already IS the primary dotted result key, so that occurrence
+        # needs no remap. Like the cross-model ``_cm_`` columns above, windowed
+        # columns are grouped after the ``_base`` projection rather than woven
+        # into ``planned_query.projection`` order — deterministic (measure
+        # declaration order) and harmless because results are keyed by name, not
+        # position.
+        for plan in planned_query.windowed_aggregate_plans:
+            agg_slot = slots_by_id[plan.aggregate_slot_id]
+            cte_name = wm_cte_name_for_plan[plan.aggregate_slot_id]
+            agg_col = wm_agg_col_for_plan[plan.aggregate_slot_id]
+            public_names = list(agg_slot.public_aliases) or (
+                [agg_slot.public_name] if agg_slot.public_name else []
+            )
+            full_aliases = [f"{source_relation}.{p}" for p in public_names] or [agg_col]
+            for full in full_aliases:
+                if full == agg_col:
+                    combined_parts.append(f'{cte_name}.{self._quote_ident(agg_col)}')
+                else:
+                    combined_parts.append(
+                        f'{cte_name}.{self._quote_ident(agg_col)} AS {self._quote_ident(full)}',
+                    )
+            combined_aliases_by_slot_id[plan.aggregate_slot_id] = list(full_aliases)
 
         from_clause_str = "FROM _base"
         joined_cte_names: set = set()
@@ -6146,6 +6481,29 @@ class SQLGenerator:
                 # NULL-SAFE equality so NULL dimension values and nullable
                 # truncated time grains join back instead of dropping their
                 # aggregate (a plain ``=`` yields NULL for NULL = NULL).
+                join_parts = [
+                    self._null_safe_join_pair_sql(
+                        left_sql=f'_base.{self._quote_ident(host)}',
+                        right_sql=f'{cte_name}.{self._quote_ident(cte_col)}',
+                    )
+                    for host, cte_col in joinback_pairs
+                ]
+                from_clause_str += (
+                    f"\nLEFT JOIN {cte_name} ON " + _SQL_AND_JOINER.join(join_parts)
+                )
+            else:
+                from_clause_str += f"\nCROSS JOIN {cte_name}"
+
+        # DEV-1714 Stage 10 — LEFT JOIN each ``_wm_`` CTE back to ``_base`` on
+        # the shared grain (null-safe, so NULL-dim / nullable-grain groups keep
+        # a row; the windowed value for a NULL-dim group is NULL — the plain
+        # ``=`` inside the CTE never matches NULL, a documented consequence).
+        for plan in planned_query.windowed_aggregate_plans:
+            cte_name = wm_cte_name_for_plan[plan.aggregate_slot_id]
+            joinback_pairs = wm_joinback_pairs_for_plan.get(
+                plan.aggregate_slot_id, [],
+            )
+            if joinback_pairs:
                 join_parts = [
                     self._null_safe_join_pair_sql(
                         left_sql=f'_base.{self._quote_ident(host)}',
@@ -6202,11 +6560,52 @@ class SQLGenerator:
                 "\nWHERE " + _SQL_AND_JOINER.join(outer_where_parts)
             )
 
+        # DEV-1714 Stage 10 — POST-phase filters referencing a windowed measure
+        # render as an outer WHERE on the combined SELECT (never HAVING on the
+        # plain base aggregate), resolving each windowed slot to its ``_wm_``
+        # CTE's joined-back aggregate column.
+        if planned_query.windowed_aggregate_plans:
+            wm_slot_to_cte: Dict[str, Tuple[str, str]] = {
+                p.aggregate_slot_id: (
+                    wm_cte_name_for_plan[p.aggregate_slot_id],
+                    wm_agg_col_for_plan[p.aggregate_slot_id],
+                )
+                for p in planned_query.windowed_aggregate_plans
+            }
+            wm_post_parts: List[str] = []
+            for fp in planned_query.filters_by_phase:
+                if fp.phase != Phase.POST or fp.expression is None:
+                    continue
+                rendered = self._render_filter_for_outer_wrapper(
+                    key=fp.expression.value_key,
+                    slot_by_key=slot_by_key,
+                    cross_model_agg_slot_to_cm=wm_slot_to_cte,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                )
+                if isinstance(rendered, (exp.And, exp.Or)):
+                    rendered = exp.Paren(this=rendered)
+                wm_post_parts.append(rendered.sql(dialect=self.dialect))
+            if wm_post_parts:
+                connector = "\nAND " if outer_where_filters else "\nWHERE "
+                combined_select_sql += connector + _SQL_AND_JOINER.join(wm_post_parts)
+
         # DEV-1450 stage 7b.15e (C2): a transform layer over a cross-model
         # aggregate (``cumsum(customers.avg_score:avg)``) runs on TOP of the
         # combined cross-model result — the combined SELECT becomes the base
         # CTE and the window step CTEs / outer wrap are layered above it.
         if planned_query.transform_layers:
+            if wm_ctes:
+                # Unreachable today — guard G4 rejects a windowed measure that
+                # coexists with a transform — but the combined SELECT already
+                # projects/joins the _wm_ CTEs, which this prelude omits. Fail
+                # loudly so lifting G4 (DEV-1504) can't silently emit a statement
+                # referencing undefined _wm_ CTEs.
+                raise NotImplementedError(
+                    "DEV-1714 Stage 10: a windowed measure combined with a "
+                    "transform layer is not supported (guarded at plan time by "
+                    "G4); the cross-model transform chain does not carry `_wm_` "
+                    "CTEs.",
+                )
             return self._render_cross_model_transform_chain(
                 prelude_ctes=[("_base", base_cte_sql)] + cm_ctes,
                 combined_select_sql=combined_select_sql,
@@ -6216,7 +6615,7 @@ class SQLGenerator:
                 source_relation=source_relation,
             )
 
-        all_ctes = [("_base", base_cte_sql)] + cm_ctes + [("_combined", combined_select_sql)]
+        all_ctes = [("_base", base_cte_sql)] + cm_ctes + wm_ctes + [("_combined", combined_select_sql)]
 
         # Stitch the WITH chain together. Inner CTEs first; the final
         # ``_combined`` is the outermost FROM target.
@@ -6227,14 +6626,34 @@ class SQLGenerator:
         # level. ORDER BY columns must be qualified — ``_base`` columns
         # use ``_base."..."``, cross-model columns use the bare alias
         # (only present on one side).
+        # DEV-1712 / DEV-1495 bug 2: hidden (order-only) cross-model aggregates
+        # are trimmed from the projection above, so their ORDER BY term must be
+        # CTE-qualified (``_cm_*."<agg_col_alias>"``) rather than the bare
+        # combined-SELECT alias.
+        hidden_cma_order_ref: Dict[str, str] = {}
+        for plan in planned_query.cross_model_aggregate_plans:
+            # Only CMAs actually trimmed from the projection (hidden + no
+            # transform chain) need the CTE-qualified ORDER BY reference.
+            if not (plan.hidden and not planned_query.transform_layers):
+                continue
+            _canon = canonical_alias_for_plan[plan.aggregate_slot_id]
+            _agg_col = agg_col_alias_for_plan[plan.aggregate_slot_id]
+            _cte = _cte_name_from_alias("_cm_", _canon)
+            hidden_cma_order_ref[plan.aggregate_slot_id] = (
+                f'{_cte}.{self._quote_ident(_agg_col)}'
+            )
         order_sql = self._build_combined_order_by_sql(
             planned_query=planned_query,
             slots_by_id=slots_by_id,
             cma_slot_ids=cma_slot_ids,
             cm_alias_for_plan=canonical_alias_for_plan,
-            bare_order_slot_ids=set(order_only_local_ids),
+            # DEV-1714: windowed slots are referenced bare in the combined ORDER
+            # BY — they surface as a projected combined-SELECT column (from their
+            # ``_wm_`` CTE), so a ``_base.`` qualifier would dangle.
+            bare_order_slot_ids=set(order_only_local_ids) | windowed_slot_ids,
             outer_composite_aliases=outer_composite_order_alias_by_sid,
             outer_composite_expressions=outer_composite_order_expressions,
+            hidden_cma_order_ref=hidden_cma_order_ref,
         )
         if order_sql:
             sql += "\n" + order_sql
@@ -7646,6 +8065,7 @@ class SQLGenerator:
         bare_order_slot_ids: Optional[Set[str]] = None,
         outer_composite_aliases: Optional[Dict[str, str]] = None,
         outer_composite_expressions: Optional[Dict[str, str]] = None,
+        hidden_cma_order_ref: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Build the ORDER BY clause for the combined SELECT.
 
@@ -7673,6 +8093,7 @@ class SQLGenerator:
         bare_ids = bare_order_slot_ids or set()
         outer_aliases = outer_composite_aliases or {}
         outer_expressions = outer_composite_expressions or {}
+        hidden_cma_refs = hidden_cma_order_ref or {}
         parts: List[str] = []
         for entry in planned_query.order:
             slot = slots_by_id.get(entry.slot_id)
@@ -7687,6 +8108,7 @@ class SQLGenerator:
                 bare_ids=bare_ids,
                 outer_aliases=outer_aliases,
                 outer_expressions=outer_expressions,
+                hidden_cma_refs=hidden_cma_refs,
             )
             if term is not None:
                 parts.append(term)
@@ -7705,6 +8127,7 @@ class SQLGenerator:
         bare_ids: Set[str],
         outer_aliases: Dict[str, str],
         outer_expressions: Optional[Dict[str, str]] = None,
+        hidden_cma_refs: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Resolve one ``OrderEntry`` to its ``"alias" <direction>`` term.
 
@@ -7720,6 +8143,12 @@ class SQLGenerator:
         """
         direction = "ASC" if entry.direction == "asc" else "DESC"
         if entry.slot_id in cma_slot_ids:
+            # DEV-1712: a HIDDEN (order-only) cross-model aggregate is trimmed
+            # from the combined projection, so the bare alias no longer names a
+            # projected column — reference the CTE-qualified column instead.
+            hidden_ref = (hidden_cma_refs or {}).get(entry.slot_id)
+            if hidden_ref is not None:
+                return f'{hidden_ref} {direction}'
             alias = cm_alias_for_plan.get(entry.slot_id)
             if alias is None:
                 return None
@@ -10989,7 +11418,7 @@ class SQLGenerator:
         targets out of ``base_render_order``, preserving today's
         ``NotImplementedError``).
         """
-        from slayer.core.keys import AggregateKey
+        from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, TimeTruncKey
 
         for order_entry in planned_query.order:
             slot = slots_by_id.get(order_entry.slot_id)
@@ -11016,18 +11445,85 @@ class SQLGenerator:
                         self._ordered(order_col, ascending=ascending),
                     )
                     continue
-                # Hidden ROW / transform / cross-model / composite ORDER
-                # targets aren't materialised in the local-only SELECT —
-                # preserved as NotImplementedError. DEV-1501's
-                # ``aggregates_only=True`` keeps hidden ROW targets out
-                # of ``base_render_order``; hidden composite-aggregate
-                # ORDER BY is rejected at the ``OrderItem`` input
-                # validation layer.
+                # DEV-1712 (Law 2, split emission): a hidden LOCAL ROW column
+                # ordered in an UNGROUPED query. The plan-time order validation
+                # (``plan_query``) guarantees the only hidden ROW slot that
+                # reaches here is a local (empty-path) column in a query with no
+                # GROUP BY — grouped row columns and joined columns are rejected
+                # up front, aggregates take the branch above. Emit a SPLIT
+                # ``<relation>.<column>`` reference (mixed-case-aware) against
+                # the base FROM scope, identical to how the column would render
+                # if it were a projected dimension.
+                key = slot.key
+                row_key = key.column if isinstance(key, TimeTruncKey) else key
+                # A bare LOCAL column — split-emit the qualified column ref.
+                if (
+                    source_model is not None
+                    and isinstance(row_key, ColumnKey)
+                    and not row_key.path
+                ):
+                    order_col = self._joined_or_local_dim_expr(
+                        path=(), leaf=row_key.leaf, source_model=source_model,
+                        source_relation=source_relation, bundle=bundle,
+                    )
+                    ascending = order_entry.direction == "asc"
+                    select = select.order_by(
+                        self._ordered(order_col, ascending=ascending),
+                    )
+                    continue
+                # A LOCAL DERIVED column (``ColumnSqlKey``, path empty): resolve
+                # its ``Column.sql`` through a throwaway host scope. That both
+                # anchors the expansion AND surfaces whether the SQL crosses a
+                # join. A hidden order-only derived column is NOT projected, so
+                # its join was never pulled into the base FROM — ordering on it
+                # would reference an unbound table. Reject that (project it),
+                # rather than emit invalid SQL; a non-crossing derived column
+                # (e.g. a bare mixed-case identifier) orders on its expression.
+                if (
+                    source_model is not None
+                    and bundle is not None
+                    and isinstance(row_key, ColumnSqlKey)
+                    and not row_key.path
+                ):
+                    # Detect join crossing via a throwaway scope (register-only);
+                    # the resolved expr is discarded — its expansion lacks the
+                    # DEV-1645 mixed-case quoting the planned-dim helper applies.
+                    allocator = self._new_allocator()
+                    scope = ScopeFrame(
+                        scope_id=allocator.next_scope_id(source_relation),
+                        root_model=source_model,
+                        root_relation=source_relation,
+                        bundle=bundle,
+                        dialect=self._dialect,
+                        allocator=allocator,
+                    )
+                    scope.resolve(row_key)
+                    if scope.join_paths:
+                        # The derived column IS local (``orders.cust_region``);
+                        # it merely depends on an unpulled join. Report its own
+                        # qualified name, not a fabricated ``customers.cust_region``.
+                        raise UnresolvableOrderColumnError(
+                            column=row_key.column_name, qualifier=source_relation,
+                        )
+                    # Non-crossing local derived column — emit through the
+                    # planned-dim helper so the expansion is quoted identically
+                    # to a projected dimension (mixed-case-safe).
+                    order_col = self._joined_or_local_dim_expr(
+                        path=(), leaf=row_key.column_name,
+                        source_model=source_model,
+                        source_relation=source_relation, bundle=bundle,
+                    )
+                    ascending = order_entry.direction == "asc"
+                    select = select.order_by(
+                        self._ordered(order_col, ascending=ascending),
+                    )
+                    continue
+                # Defensive: any other hidden shape should have been rejected at
+                # plan time (transform / composite / joined / grouped-row).
                 raise NotImplementedError(
-                    f"DEV-1450 stage 7b.10+: ORDER BY references a "
-                    f"hidden slot (id={slot.id!r}, key="
-                    f"{type(slot.key).__name__}) not materialised in "
-                    f"the local-only SELECT. Deferred to a later slice."
+                    f"ORDER BY references a hidden slot (id={slot.id!r}, key="
+                    f"{type(slot.key).__name__}) that was not resolved at plan "
+                    f"time — this is an internal invariant violation."
                 )
             # DEV-1713: resolve to the SAME full alias the projection emits —
             # a joined ROW dimension projects under the DOTTED result key
