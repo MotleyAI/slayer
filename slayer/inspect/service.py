@@ -960,19 +960,26 @@ class InspectService:
         full_text = self._truncate_description_field(
             text=entry.text, max_chars=descriptions_max_chars,
         )
+        # Measures / aggregations carry no verbose sample data — their full text
+        # (formula / params / label / type) is essential, so include it even in
+        # compact mode. Columns stay gated: their text can carry sampled values
+        # (a DB read / verbose output).
+        show_full = bool(full_text) and (
+            not compact or entity_type in {"measure", "aggregation"}
+        )
         if fmt == "json":
             payload = {
                 "canonical_id": canonical,
                 "entity_type": entity_type,
                 "description": trunc_desc,
             }
-            # ``text`` present iff non-empty (DEV-1588 follow-up): compact mode
-            # omits it; full mode carries the entity render.
-            if not compact and full_text:
+            # ``text`` present iff non-empty (DEV-1588 follow-up): included in
+            # full mode, and for measures/aggregations in compact mode too.
+            if show_full:
                 payload["text"] = full_text
             payload["warnings"] = warnings
             return json.dumps(payload)
-        body = (trunc_desc or "") if compact else full_text
+        body = full_text if show_full else (trunc_desc or "")
         return self._markdown_with_warnings(body, warnings)
 
     @staticmethod

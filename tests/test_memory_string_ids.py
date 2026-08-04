@@ -14,6 +14,7 @@ from collections.abc import Iterator
 
 import pytest
 
+from slayer.core.errors import IdCollisionError
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_storage import SQLiteStorage
@@ -179,19 +180,22 @@ class TestUserSuppliedId:
         loaded = await storage.get_memory("kb.policy.42")
         assert loaded.learning == "x"
 
-    async def test_case_sensitive_ids(
-        self, storage: StorageBackend,
-    ) -> None:
+    async def test_case_variant_ids(self, storage: StorageBackend) -> None:
+        # YAML rejects (ids are filenames); SQLite stores both distinctly.
         await storage.save_memory(
             id="X", learning="upper", entities=["mydb.orders"],
         )
-        await storage.save_memory(
-            id="x", learning="lower", entities=["mydb.orders"],
-        )
-        upper = await storage.get_memory("X")
-        lower = await storage.get_memory("x")
-        assert upper.learning == "upper"
-        assert lower.learning == "lower"
+        if isinstance(storage, YAMLStorage):
+            with pytest.raises(IdCollisionError):
+                await storage.save_memory(
+                    id="x", learning="lower", entities=["mydb.orders"],
+                )
+        else:
+            await storage.save_memory(
+                id="x", learning="lower", entities=["mydb.orders"],
+            )
+            assert (await storage.get_memory("x")).learning == "lower"
+        assert (await storage.get_memory("X")).learning == "upper"
 
     async def test_zero_user_id_distinct_from_auto(
         self, storage: StorageBackend,

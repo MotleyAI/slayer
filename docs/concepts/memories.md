@@ -77,7 +77,10 @@ int-shaped id (`"1"`, `"2"`, ...). Supply a string for a stable
 user-controlled id (`"kb.policy.42"`) — useful for knowledge-base
 ingestion pipelines. Charset excludes `:`, `/`, `?`, `#`, whitespace,
 and ASCII control characters. Duplicate id → unconditional **upsert**,
-`created_at` preserved.
+`created_at` preserved. In the default YAML storage, an id that differs
+only by letter case from an existing one (`X` vs `x`) raises
+`IdCollisionError` — ids are filenames there, and case variants collide
+on macOS / Windows.
 
 `description` is optional (≤ 500 chars). When set, `search(compact=True)`
 and `inspect_model(compact=True)` surface this short preview instead of

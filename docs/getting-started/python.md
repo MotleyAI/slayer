@@ -82,10 +82,10 @@ every query to one tenant — joins, sub-queries, and sample data included. The
 agent cannot read, override, or disable it:
 
 ```python
-from slayer.core.policy import SessionPolicy, ColumnFilterRule
+from slayer.core.policy import SessionPolicy, ColumnFilterRuleset
 
 engine = SlayerQueryEngine(storage=storage, policy=SessionPolicy(
-    data_filters=[ColumnFilterRule(column="organization_uuid", value="7ef3...")],
+    ruleset=ColumnFilterRuleset(column="organization_uuid", value="7ef3..."),
 ))
 ```
 

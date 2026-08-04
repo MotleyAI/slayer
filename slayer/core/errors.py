@@ -116,22 +116,46 @@ class ColumnCycleError(SlayerError, ValueError):
         super().__init__(f"Circular column reference detected: {chain}")
 
 
+class IdCollisionError(SlayerError, ValueError):
+    """Raised by filename-backed (YAML) storage when saving an entity
+    whose id differs from an existing id only by letter case — such ids
+    collide as filenames on case-insensitive filesystems. ``kind`` is
+    ``"model"`` / ``"datasource"`` / ``"memory"``. Multi-inherits
+    ``ValueError`` so existing ``except ValueError`` call sites continue
+    to work unchanged.
+    """
+
+    _LABELS = {
+        "model": "Model name",
+        "datasource": "Datasource name",
+        "memory": "Memory id",
+    }
+
+    def __init__(
+        self,
+        *,
+        kind: str,
+        new_id: str,
+        existing_id: str,
+        data_source: str | None = None,
+    ) -> None:
+        self.kind = kind
+        self.new_id = new_id
+        self.existing_id = existing_id
+        self.data_source = data_source
+        label = self._LABELS.get(kind, "Id")
+        scope = f" in datasource '{data_source}'" if data_source else ""
+        super().__init__(
+            f"{label} '{new_id}' conflicts with existing '{existing_id}'"
+            f"{scope} (differs only by case). Rename or delete one."
+        )
+
+
 class ForcedFilterError(SlayerError):
-    """Raised by the session-policy forced-filter rewrite (DEV-1578).
+    """Raised when the session policy's ruleset cannot be safely applied to a query.
 
-    Fired when a configured ``ColumnFilterRule`` cannot be safely applied to a
-    physical table referenced by a query:
-
-    - the table **confirms it lacks** the rule's column and the rule's
-      ``on_unapplicable`` is ``"block"`` (the default), or
-    - the column's presence **cannot be confirmed** (introspection error) —
-      a fail-closed security control that blocks regardless of
-      ``on_unapplicable``, or
-    - the rewrite is asked to operate on a non-SELECT statement root.
-
-    Carries the offending ``table``, ``column``, and ``rule_name`` (the
-    rule's optional ``name``) for diagnostics; any may be ``None`` for the
-    statement-root guard.
+    Carries the offending ``table`` and ``column`` for diagnostics; either may be
+    ``None`` (``column`` is, for the unlisted-table and statement-root guards).
     """
 
     def __init__(
@@ -140,11 +164,9 @@ class ForcedFilterError(SlayerError):
         *,
         table: str | None = None,
         column: str | None = None,
-        rule_name: str | None = None,
     ) -> None:
         self.table = table
         self.column = column
-        self.rule_name = rule_name
         super().__init__(message)
 
 

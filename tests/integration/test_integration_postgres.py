@@ -1378,3 +1378,168 @@ class TestDev1645ValidPostgres:
         )
         result = await pg_dev1645.execute(query=query)
         assert result.row_count == 3
+
+
+# ---------------------------------------------------------------------------
+# DEV-1686: reserved-word model name executes live against Postgres.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _pg_reserved_storage(postgresql_proc, tmp_path_factory):
+    """Module-scoped Postgres DB with a reserved-word ("Grant") table joined to
+    "Merchant", plus a YAMLStorage with a `grant` model (reserved name) that
+    joins to `merchant`. Exercises DEV-1686 alias/qualifier + join_cond quoting
+    end-to-end."""
+    conn, db_name = _create_module_db(postgresql_proc)
+    try:
+        cur = conn.cursor()
+        cur.execute('CREATE TABLE "Merchant" (id INTEGER PRIMARY KEY, name TEXT NOT NULL)')
+        cur.execute("""
+            CREATE TABLE "Grant" (
+                id INTEGER PRIMARY KEY,
+                namespace TEXT NOT NULL,
+                amount NUMERIC(10,2) NOT NULL,
+                "merchantId" INTEGER REFERENCES "Merchant"(id),
+                created_at TIMESTAMP NOT NULL
+            )
+        """)
+        cur.executemany('INSERT INTO "Merchant" VALUES (%s, %s)',
+                        [(1, "Acme"), (2, "Globex")])
+        cur.executemany(
+            'INSERT INTO "Grant" VALUES (%s, %s, %s, %s, %s)',
+            [
+                (1, "org_a", 100, 1, "2024-01-15 10:00:00"),
+                (2, "org_a", 200, 1, "2024-01-20 11:00:00"),
+                (3, "org_b", 50, 2, "2024-02-10 09:00:00"),
+            ],
+        )
+        # A non-reserved root (usage) joining TO the reserved `grant` model —
+        # exercises join discovery + execution of a derived column that
+        # references a reserved joined model.
+        cur.execute("""
+            CREATE TABLE usage (
+                id INTEGER PRIMARY KEY,
+                grant_id INTEGER REFERENCES "Grant"(id),
+                qty INTEGER NOT NULL
+            )
+        """)
+        cur.executemany(
+            "INSERT INTO usage VALUES (%s, %s, %s)",
+            [(1, 1, 5), (2, 1, 3), (3, 3, 7)],
+        )
+        conn.commit()
+
+        tmpdir = str(tmp_path_factory.mktemp("pg_reserved"))
+        storage = YAMLStorage(base_dir=tmpdir)
+        info = postgresql_proc
+        run_sync(storage.save_datasource(DatasourceConfig(
+            name="testpg", type="postgres", host=info.host, port=info.port,
+            database=db_name, username=info.user, password="",
+        )))
+        merchant = SlayerModel(
+            name="merchant", sql_table='"Merchant"', data_source="testpg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+            ],
+        )
+        grant = SlayerModel(
+            name="grant", sql_table='"Grant"', data_source="testpg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="namespace", sql="namespace", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="merchantId", sql="merchantId", type=DataType.INT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+            joins=[ModelJoin(target_model="merchant", join_pairs=[["merchantId", "id"]])],
+        )
+        usage = SlayerModel(
+            name="usage", sql_table="usage", data_source="testpg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="grant_id", sql="grant_id", type=DataType.INT),
+                Column(name="qty", sql="qty", type=DataType.INT),
+                # derived column referencing the reserved joined model `grant`
+                Column(name="bumped", sql="grant.amount + 1", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="grant", join_pairs=[["grant_id", "id"]])],
+        )
+        run_sync(storage.save_model(merchant))
+        run_sync(storage.save_model(grant))
+        run_sync(storage.save_model(usage))
+        yield storage
+    finally:
+        conn.close()
+        _drop_module_db(postgresql_proc, db_name)
+
+
+@pytest.fixture
+def pg_reserved(_pg_reserved_storage):
+    return SlayerQueryEngine(storage=_pg_reserved_storage)
+
+
+@pytest.mark.integration
+class TestPostgresReservedWordModel:
+    async def test_standalone_grant_dims_count_executes(self, pg_reserved: SlayerQueryEngine) -> None:
+        """The exact DEV-1686 repro: a dims + *:count query on the `grant`
+        model must execute (previously: syntax error at or near "grant")."""
+        query = SlayerQuery(
+            source_model="grant", dimensions=["namespace"], measures=["*:count"],
+        )
+        result = await pg_reserved.execute(query=query)
+        assert result.row_count == 2  # org_a, org_b
+        assert sum(r["grant._count"] for r in result.data) == 3
+
+    async def test_join_from_grant_executes(self, pg_reserved: SlayerQueryEngine) -> None:
+        """Join FROM the reserved model on a camelCase FK (`merchantId`)."""
+        query = SlayerQuery(
+            source_model="grant", dimensions=["merchant.name"], measures=["*:count"],
+        )
+        result = await pg_reserved.execute(query=query)
+        by_merchant = {r["grant.merchant.name"]: r["grant._count"] for r in result.data}
+        assert by_merchant == {"Acme": 2, "Globex": 1}
+
+    async def test_grant_measure_and_filter_executes(self, pg_reserved: SlayerQueryEngine) -> None:
+        query = SlayerQuery(
+            source_model="grant", dimensions=["namespace"],
+            measures=[{"formula": "amount:sum"}], filters=["amount > 60"],
+        )
+        result = await pg_reserved.execute(query=query)
+        by_ns = {r["grant.namespace"]: float(r["grant.amount_sum"]) for r in result.data}
+        assert by_ns == {"org_a": 300}
+
+    async def test_query_backed_model_with_reserved_short_executes(
+        self, pg_reserved: SlayerQueryEngine,
+    ) -> None:
+        """DEV-1686 query_engine._query_as_model fix: a cross-model measure
+        renamed to a reserved word (``order``) becomes a virtual-model column
+        exposed via ``... AS "order"`` in the wrapped SQL; it must quote and
+        execute."""
+        query = SlayerQuery(
+            source_model="grant", dimensions=["namespace"],
+            measures=[{"formula": "merchant.id:count_distinct", "name": "order"}],
+        )
+        model = await pg_reserved.create_model_from_query(
+            query=query, name="grants_vm", save=True,
+        )
+        assert '"order"' in model.backing_query_sql, model.backing_query_sql
+        # Executing the stored backing query (which contains ``AS "order"``)
+        # must not raise a Postgres syntax error — that is the regression.
+        result = await pg_reserved.execute(query="grants_vm")
+        assert result.row_count == 2  # org_a, org_b
+        # the reserved-short column resolves (proves AS "order" round-tripped)
+        order_key = next(k for k in result.data[0] if k.endswith("order"))
+        assert all(isinstance(row[order_key], int) for row in result.data)
+
+    async def test_derived_column_referencing_reserved_join_executes(
+        self, pg_reserved: SlayerQueryEngine,
+    ) -> None:
+        """DEV-1686 (Codex review): a derived column on a non-reserved root that
+        references a reserved joined model (`grant.amount + 1`) must both DISCOVER
+        the join and execute — previously the join was silently dropped."""
+        query = SlayerQuery(source_model="usage", dimensions=["bumped"], measures=["*:count"])
+        result = await pg_reserved.execute(query=query)
+        # grant amounts 100 (usage 1) and 50 (usage 3) → bumped 101 and 51
+        by_bumped = {float(r["usage.bumped"]): r["usage._count"] for r in result.data}
+        assert by_bumped == {101.0: 2, 51.0: 1}

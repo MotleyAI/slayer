@@ -346,11 +346,21 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                   ``{"name": "ad_hoc", "sql_table": "things", "data_source": "test", "columns": [...]}``.
             measures: Aggregated values to return. Each is a formula: {"formula": "*:count"},
                 {"formula": "revenue:sum / *:count", "name": "aov"} (arithmetic),
-                {"formula": "cumsum(revenue:sum)"} (cumulative sum), {"formula": "change(revenue:sum)"} (diff from previous row),
-                {"formula": "change_pct(revenue:sum)"} (% change), {"formula": "time_shift(revenue:sum, -1)"} (previous period via self-join),
-                {"formula": "time_shift(revenue:sum, -1, 'year')"} (year-over-year), {"formula": "lag(revenue:sum, 1)"} (previous row via window function),
+                {"formula": "cumsum(revenue:sum)"} (cumulative sum),
+                {"formula": "change(revenue:sum)"} (period-over-period difference),
+                {"formula": "change_pct(revenue:sum)"} (period-over-period % change, e.g. month-over-month growth),
+                {"formula": "time_shift(revenue:sum, -1)"} (the shifted value itself, one time bucket back),
+                {"formula": "time_shift(revenue:sum, -1, 'year')"} (value from one year earlier, for custom arithmetic),
+                {"formula": "lag(revenue:sum, 1)"} (previous row via window function; shifts by row position, NULL at edges),
                 {"formula": "lead(revenue:sum, 1)"} (next row via window function), {"formula": "last(revenue:sum)"} (most recent),
                 {"formula": "rank(revenue:sum)"} (ranking). A bare name like {"formula": "aov"} resolves to a saved ModelMeasure on the model.
+                change / change_pct / time_shift are calendar-aware and partition-safe: change and change_pct compare
+                each row against the prior time bucket (one step back at the query's own granularity), while time_shift
+                compares at its explicitly requested offset and granularity. All three join on the same non-time
+                dimension values, so per-group series reset cleanly — safe for grouped queries like month-over-month
+                revenue by store.
+                For period-over-period growth, prefer change_pct (or change for the absolute delta); use time_shift
+                only when you need the shifted value itself as a term in your own arithmetic.
             dimensions: List of dimension names to group by, e.g. ["status", "region"].
             filters: Filter conditions as formula strings. Examples: "status == 'completed'",
                 "amount > 100", "status in ('a', 'b')", "status is None",
@@ -1333,7 +1343,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )
         ds = DatasourceConfig.model_validate(data)
         existed = await storage.get_datasource(name) is not None
-        await storage.save_datasource(ds)
+        try:
+            await storage.save_datasource(ds)
+        except ValueError as exc:
+            return f"Cannot create datasource: {exc}"
         verb = "replaced" if existed else "created"
 
         ok, msg = _test_connection(ds)
@@ -1354,20 +1367,32 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 return "\n".join(lines)
             raise
 
+        save_errors: list[str] = []
+        saved_models = []
         for model in models:
-            await storage.save_model(model)
+            try:
+                await storage.save_model(model)
+                saved_models.append(model)
+            except ValueError as exc:
+                # e.g. quoted case-variant tables — report and continue.
+                save_errors.append(f"- {model.name}: {exc}")
+        models = saved_models
 
-        if not models:
+        if not models and not save_errors:
             lines.append("No tables found to ingest.")
             schemas = _get_schemas(ds)
             if schemas:
                 lines.append(f"Available schemas: {', '.join(schemas)}")
-        else:
+        elif models:
             lines.append(f"Ingested {len(models)} model(s):")
             for m in models:
                 lines.append(f"- {m.name} ({len(m.columns)} columns, {len(m.measures)} measures)")
             lines.append("")
             lines.append("Use models_summary and inspect to explore, then query to fetch data.")
+
+        if save_errors:
+            lines.append(f"Failed to save {len(save_errors)} model(s):")
+            lines.extend(save_errors)
 
         return "\n".join(lines)
 

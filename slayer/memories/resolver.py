@@ -295,7 +295,11 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
         )
 
     segments = prefix.split(".")
-    if not all(re.match(r"^[a-zA-Z_]\w*$", s) for s in segments):
+    # Hyphens are permitted in a segment: a datasource name may embed a UUID
+    # (e.g. ``source_019f4323-cb59-77c3-...``), so the datasource segment can
+    # contain hyphens. Model/leaf segments that don't match a stored entity
+    # simply resolve to not-found below, so allowing the character is safe.
+    if not all(re.match(r"^[a-zA-Z_][\w-]*$", s) for s in segments):
         raise EntityResolutionError(
             f"'{raw}' contains an invalid identifier segment."
         )

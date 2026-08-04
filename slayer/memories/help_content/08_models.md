@@ -31,9 +31,10 @@ columns:
 ```
 
 Types: `string`, `number`, `boolean`, `time`, `date`. `label` is optional and
-propagates to query result metadata. A column's `sql` is a **row-level**
-expression, not an aggregate. Plain column names are fine; for complex
-expressions prefix with the model name:
+propagates to query result metadata. A column's `sql` is normally a
+**row-level** expression, not an aggregate (the one exception is the advanced
+window-expression escape hatch in `memory:help.transforms`). Plain column names
+are fine; for complex expressions prefix with the model name:
 
 ```yaml
 columns:

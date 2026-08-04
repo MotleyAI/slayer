@@ -3,7 +3,8 @@
 Three concerns:
 
 1. ``DATATYPE_TO_OID`` / ``datatype_to_oid`` — SLayer ``DataType`` → Postgres
-   type OID. Only the six built-in OIDs are ever emitted (unknown → text), so
+   type OID. Only the six built-in OIDs are ever emitted (opaque / unmapped
+   → text), so
    asyncpg never has to run its ``pg_type`` introspection path.
 2. ``value_to_text`` / ``value_to_binary`` — engine value → wire bytes for a
    ``DataRow``, in the per-column format the client requested in ``Bind``.
@@ -42,6 +43,8 @@ DATATYPE_TO_OID: dict[DataType, int] = {
     DataType.BOOLEAN: OID_BOOL,
     DataType.DATE: OID_DATE,
     DataType.TIMESTAMP: OID_TIMESTAMP,
+    # Opaque columns go out as text — see slayer.core.enums.DataType.is_opaque.
+    DataType.UNKNOWN: OID_TEXT,
 }
 
 # Postgres binary date/timestamp epoch.

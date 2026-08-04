@@ -1752,10 +1752,9 @@ def _run_datasources(args):
             print(f"Datasource '{args.name}' not found.")
             sys.exit(1)
         data = ds.model_dump(mode="json", exclude_none=True)
-        if "password" in data:
-            data["password"] = "********"
-        if "connection_string" in data:
-            data["connection_string"] = "********"
+        for secret_field in ("password", "connection_string", "credentials_json"):
+            if secret_field in data:
+                data[secret_field] = "********"
         print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
 
     elif args.datasources_command == "create":
@@ -1892,7 +1891,11 @@ def _persist_ingested_models(models, storage, *, assume_yes: bool, pre_save=None
     for model in models:
         if pre_save is not None:
             pre_save(model)
-        run_sync(storage.save_model(model))
+        try:
+            run_sync(storage.save_model(model))
+        except ValueError as e:
+            print(f"Skipped {model.name}: {e}")
+            continue
         print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
 
 
@@ -1926,7 +1929,11 @@ def _run_datasources_create(args, storage):
         print("Aborted.")
         sys.exit(1)
 
-    run_sync(storage.save_datasource(ds))
+    try:
+        run_sync(storage.save_datasource(ds))
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     print(f"Created datasource '{ds.name}' ({ds.type}).")
 
     if not args.ingest:
@@ -1994,7 +2001,11 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
         print("Aborted.")
         sys.exit(1)
 
-    run_sync(storage.save_datasource(ds))
+    try:
+        run_sync(storage.save_datasource(ds))
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     print(f"Created datasource '{ds.name}' (duckdb).")
 
     if not args.ingest:
