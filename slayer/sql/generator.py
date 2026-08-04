@@ -6211,6 +6211,12 @@ class SQLGenerator:
         wm_cte_name_for_plan: Dict[str, str] = {}
         wm_agg_col_for_plan: Dict[str, str] = {}
         wm_joinback_pairs_for_plan: Dict[str, List[Tuple[str, str]]] = {}
+        # Codex round 4: mint ``_wm_`` CTE names through the DEV-1726 collision-
+        # aware allocator so two measures whose aliases lossy-sanitise to the
+        # same name (``rev-a`` / ``rev_a``), or case-only variants on a
+        # case-folding dialect, get distinct auto-numbered names instead of
+        # tripping the CTE-name-collision belt.
+        wm_allocator = self._gen_allocator or self._new_allocator()
         for plan in planned_query.windowed_aggregate_plans:
             agg_slot = slots_by_id.get(plan.aggregate_slot_id)
             if agg_slot is None or not isinstance(agg_slot.key, AggregateKey):
@@ -6221,7 +6227,9 @@ class SQLGenerator:
             full_agg_alias = self._full_alias_for_slot(
                 slot=agg_slot, source_relation=source_relation, alias_index={},
             )
-            cte_name = _cte_name_from_alias("_wm_", full_agg_alias)
+            cte_name = wm_allocator.allocate_cte(
+                _cte_name_from_alias("_wm_", full_agg_alias),
+            )
             cte_sql, grain_aliases = self._render_window_measure_cte_from_planned(
                 plan=plan, agg_slot=agg_slot, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
@@ -6404,7 +6412,11 @@ class SQLGenerator:
         # lets the same windowed key be selected under multiple names — the CTE
         # holds one aggregate column, remapped ``AS`` each public alias). The
         # column name already IS the primary dotted result key, so that occurrence
-        # needs no remap.
+        # needs no remap. Like the cross-model ``_cm_`` columns above, windowed
+        # columns are grouped after the ``_base`` projection rather than woven
+        # into ``planned_query.projection`` order — deterministic (measure
+        # declaration order) and harmless because results are keyed by name, not
+        # position.
         for plan in planned_query.windowed_aggregate_plans:
             agg_slot = slots_by_id[plan.aggregate_slot_id]
             cte_name = wm_cte_name_for_plan[plan.aggregate_slot_id]
