@@ -556,6 +556,14 @@ def declared_variable_specs(model: SlayerModel) -> dict[str, dict]:
     apart from hand-written SQL that merely contains braces. ``meta`` is
     user-extensible, so every layer is shape-checked and a malformed bag
     degrades to "nothing declared" rather than raising during a query.
+
+    An entry counts as a declaration only if it carries a string ``member`` —
+    the shape every importer writes. That makes the bag SELF-IDENTIFYING, so a
+    hand-written ``meta`` that happens to reuse the ``cube_variables`` key for
+    something else (``{"cube_variables": {"note": {}}}``) is not mistaken for
+    generated SQL. The distinction matters: :func:`declares_variables` disables
+    the zero-variable brace-literal fast path, so a false positive would make a
+    previously-working model with raw braces start raising.
     """
     declared = (model.meta or {}).get("cube_variables")
     if not isinstance(declared, dict):
@@ -563,7 +571,9 @@ def declared_variable_specs(model: SlayerModel) -> dict[str, dict]:
     return {
         name: spec
         for name, spec in declared.items()
-        if isinstance(name, str) and isinstance(spec, dict)
+        if isinstance(name, str)
+        and isinstance(spec, dict)
+        and isinstance(spec.get("member"), str)
     }
 
 

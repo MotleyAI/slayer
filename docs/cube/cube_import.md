@@ -143,7 +143,10 @@ database.
 
 So the importer marks each string-form variable `list_valued` in
 `meta.cube_variables`, and the engine wraps a scalar into a one-element list
-before substituting. In `IN (...)` position a scalar and a one-element list mean
+before substituting. An entry counts as a declaration only when it carries a
+string `member` (the shape the importer always writes), so unrelated `meta`
+that happens to reuse the `cube_variables` key is never mistaken for generated
+SQL. In `IN (...)` position a scalar and a one-element list mean
 the same thing, so `{"brand": "Acme"}` and `{"brand": ["Acme"]}` are equivalent.
 This applies **only** to variables a model declares that way — hand-written
 model SQL keeps the author-written-quotes convention unchanged. An **empty list**

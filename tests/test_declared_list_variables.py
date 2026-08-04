@@ -85,16 +85,41 @@ def test_only_a_real_true_enables_coercion(flag):
     # even the string "false" — silently switch substitution semantics.
     model = _model(
         sql="SELECT 1",
-        meta={"cube_variables": {"regions": {"list_valued": flag}}},
+        meta={"cube_variables": {"regions": {"member": "r", "list_valued": flag}}},
     )
     assert list_valued_variable_names(model) == set()
 
 
 def test_true_flag_enables_coercion():
     model = _model(
-        sql="SELECT 1", meta={"cube_variables": {"regions": {"list_valued": True}}}
+        sql="SELECT 1",
+        meta={"cube_variables": {"regions": {"member": "r", "list_valued": True}}},
     )
     assert list_valued_variable_names(model) == {"regions"}
+
+
+@pytest.mark.parametrize(
+    "bag",
+    [
+        {"note": {}},                        # unrelated bag under the same key
+        {"note": {"text": "hi"}},            # dict entries, but no 'member'
+        {"note": {"member": 42}},            # 'member' present but not a string
+    ],
+)
+def test_unrelated_meta_under_the_same_key_is_not_a_declaration(bag):
+    """`meta` is free-form user data, so the bag must be SELF-IDENTIFYING.
+
+    A false positive here would be a regression, not a nit: declaring disables
+    the zero-variable fast path, so a hand-written model with raw brace literals
+    would start raising on a query that used to work.
+    """
+    model = _model(sql="SELECT * FROM t WHERE tags = '{1,2,3}'", meta={"cube_variables": bag})
+    assert declares_variables(model) is False
+    assert list_valued_variable_names(model) == set()
+    out = _substitute_model_sql_surfaces(
+        model=model, variables={}, dialect=SqliteDialect()
+    )
+    assert out.sql == "SELECT * FROM t WHERE tags = '{1,2,3}'"  # still protected
 
 
 # ── coerce_declared_list_variables ──────────────────────────────────────────
@@ -160,10 +185,9 @@ def test_declared_required_var_with_zero_variables_raises():
     model = _model(
         sql="SELECT * FROM orders WHERE d >= '{cutoff}'", meta=_meta(cutoff=False)
     )
+    dialect = SqliteDialect()  # hoisted: only one call may throw (sonar S5778)
     with pytest.raises(ValueError, match="Undefined variable 'cutoff'"):
-        _substitute_model_sql_surfaces(
-            model=model, variables={}, dialect=SqliteDialect()
-        )
+        _substitute_model_sql_surfaces(model=model, variables={}, dialect=dialect)
 
 
 def test_hand_written_model_keeps_the_brace_literal_protection():
