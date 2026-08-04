@@ -46,44 +46,73 @@ def _validate_query_filter_string(formula: str) -> None:
         raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")
 
 
-def _escape_string_value(value: str, escape: Literal["sql", "python"]) -> str:
+# C0 control characters (U+0000–U+001F) → Python string-literal escapes, used
+# by the ``"python"`` regime (DEV-1727). A raw newline / carriage return / NUL
+# inside a single-quoted literal makes ``ast.parse`` raise, so every C0 char is
+# encoded: ``\t``/``\n``/``\r`` as their named escape, the rest as ``\xNN``.
+# Encoding the whole C0 range (not just the three ast-breakers) keeps the
+# substituted filter single-line and printable, at zero behavioural cost —
+# ``ast.parse`` recovers the identical value either way.
+_C0_NAMED_ESCAPES = {"\t": "\\t", "\n": "\\n", "\r": "\\r"}
+_C0_ESCAPE_MAP = {
+    chr(codepoint): _C0_NAMED_ESCAPES.get(chr(codepoint), f"\\x{codepoint:02x}")
+    for codepoint in range(0x20)
+}
+_C0_RE = re.compile(r"[\x00-\x1f]")
+
+
+def _escape_string_value(
+    value: str, escape: Literal["sql", "python"], *, backslash_escapes: bool
+) -> str:
     """Escape a string variable value for the target expression layer.
 
     The value is inserted, unquoted, into a quoted literal the author already
     wrote (``status = '{v}'``); escaping keeps it from breaking out of that
-    literal. Two layers, two escaping regimes (DEV-1625):
+    literal. Two layers, two escaping regimes (DEV-1625, hardened in DEV-1727):
 
-    - ``"sql"`` — Mode-A raw-SQL surfaces are parsed by sqlglot. A single quote
-      is doubled (``'`` → ``''``); backslash is an ordinary character and is
-      left untouched.
+    - ``"sql"`` — Mode-A raw-SQL surfaces are parsed by sqlglot. The regime is
+      **dialect-aware** (``backslash_escapes``):
+
+      * ``False`` (standard dialects — SQLite/Postgres/DuckDB/T-SQL/Trino/
+        Presto/Oracle): a backslash is an ordinary literal char, so only the
+        single quote is doubled (``'`` → ``''``).
+      * ``True`` (backslash dialects — MySQL/ClickHouse/Snowflake/Redshift/
+        BigQuery/Databricks/Spark): a backslash escapes the next char, so it is
+        doubled FIRST (``\\`` → ``\\\\``) and the single quote is
+        backslash-escaped (``'`` → ``\\'``). The double quote is left untouched
+        — inside a single-quoted literal it is an ordinary char on every
+        dialect, and ``\\"`` is not a recognised escape on 6 of the 7 backslash
+        dialects (only MySQL), so escaping it would corrupt the value.
+
     - ``"python"`` — Mode-B query filters are parsed by SLayer's Python-AST
       formula parser, where SQL quote-doubling would be read as adjacent-literal
       concatenation (``'O''Brien'`` → ``'OBrien'``). So backslash is doubled
-      FIRST, then both quote styles are backslash-escaped, matching Python
-      string-literal rules so ``ast.parse`` recovers the original value.
-      Control characters (newline, carriage return, tab, NUL) are also converted
-      to their backslash escapes — a raw newline/CR/NUL in a single-quoted Python
-      literal is a ``SyntaxError`` (or "null bytes" error), so leaving them
-      unescaped would make ``ast.parse`` reject an otherwise valid value. (SQL
-      literals permit raw newlines, so the ``"sql"`` branch leaves them alone.)
+      FIRST, then both quote styles are backslash-escaped, then every C0
+      control char (U+0000–U+001F) is encoded, matching Python string-literal
+      rules so ``ast.parse`` recovers the original value. This matters because a
+      raw newline/CR/NUL in a single-quoted Python literal is a ``SyntaxError``
+      (or "null bytes" error), so leaving control chars unescaped would make
+      ``ast.parse`` reject an otherwise valid value. SQL literals permit raw
+      newlines, so the ``"sql"`` branch leaves them alone.
+      ``backslash_escapes`` is ignored here.
     """
     if escape == "sql":
+        if backslash_escapes:
+            # Double the backslash before escaping the quote (order matters).
+            return value.replace("\\", "\\\\").replace("'", "\\'")
         return value.replace("'", "''")
     # python: order matters — double the backslash before escaping quotes, then
-    # escape the control chars that can't sit in a single-line Python literal.
-    return (
-        value.replace("\\", "\\\\")
-        .replace("'", "\\'")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-        .replace("\t", "\\t")
-        .replace("\x00", "\\x00")
-    )
+    # encode C0 control chars so ast.parse recovers a single-line literal.
+    escaped = value.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
+    return _C0_RE.sub(lambda m: _C0_ESCAPE_MAP[m.group(0)], escaped)
 
 
 def _render_list_value(
-    name: str, value: "list | tuple", escape: Literal["sql", "python"]
+    name: str,
+    value: "list | tuple",
+    escape: Literal["sql", "python"],
+    *,
+    backslash_escapes: bool,
 ) -> str:
     """Render a ``list``/``tuple`` variable value into an ``IN``-list body
     (DEV-1730 multi-value pushdown).
@@ -115,7 +144,13 @@ def _render_list_value(
     rendered: list[str] = []
     for element in value:
         if isinstance(element, str):
-            rendered.append("'" + _escape_string_value(value=element, escape=escape) + "'")
+            rendered.append(
+                "'"
+                + _escape_string_value(
+                    value=element, escape=escape, backslash_escapes=backslash_escapes
+                )
+                + "'"
+            )
         # bool is an int subclass and is accepted (renders True/False).
         elif isinstance(element, (int, float)):
             if isinstance(element, float) and not math.isfinite(element):
@@ -135,7 +170,11 @@ def _render_list_value(
 
 
 def _render_variable_value(
-    name: str, value: Any, escape: Literal["sql", "python"]
+    name: str,
+    value: Any,
+    escape: Literal["sql", "python"],
+    *,
+    backslash_escapes: bool,
 ) -> str:
     """Render a single resolved variable value into substitution text.
 
@@ -147,9 +186,13 @@ def _render_variable_value(
     # list/tuple first: an IN-list body (DEV-1730). Checked before str so the
     # scalar path only ever sees a single value.
     if isinstance(value, (list, tuple)):
-        return _render_list_value(name=name, value=value, escape=escape)
+        return _render_list_value(
+            name=name, value=value, escape=escape, backslash_escapes=backslash_escapes
+        )
     if isinstance(value, str):
-        return _escape_string_value(value=value, escape=escape)
+        return _escape_string_value(
+            value=value, escape=escape, backslash_escapes=backslash_escapes
+        )
     # bool is an int subclass and is accepted (renders True/False).
     if isinstance(value, (int, float)):
         if isinstance(value, float) and not math.isfinite(value):
@@ -255,7 +298,11 @@ def _contains_block_delimiter(text: str) -> bool:
 
 
 def substitute_variables(
-    filter_str: str, variables: dict[str, Any], *, escape: Literal["sql", "python"]
+    filter_str: str,
+    variables: dict[str, Any],
+    *,
+    escape: Literal["sql", "python"],
+    backslash_escapes: bool | None = None,
 ) -> str:
     """Substitute {variable} placeholders in a filter or raw-SQL string.
 
@@ -270,25 +317,43 @@ def substitute_variables(
     Numbers (including ``bool``) pass through via ``str()``; non-finite floats
     (``nan``/``inf``) raise, since they can never render a valid literal.
 
+    ``backslash_escapes`` (keyword-only) is the **dialect-aware** signal for the
+    ``"sql"`` regime (DEV-1727) and is **fail-closed**: with ``escape="sql"`` it
+    is REQUIRED (``None`` raises), so a caller that renders raw SQL can never
+    silently under-escape on a backslash dialect. Derive it from
+    ``SqlDialect.backslash_escapes_strings``. It is ignored for
+    ``escape="python"`` (Mode-B escaping is dialect-independent).
+
     A ``list``/``tuple`` value renders an ``IN``-list body (DEV-1730). The
     template writes the parentheses (``col IN ({var})``) and each string element
     is **auto-quoted** — the opposite of the scalar-string convention where the
     author writes the quotes (``status = '{v}'``). See :func:`_render_list_value`.
 
     Example:
-        substitute_variables("status = '{status_val}'", {"status_val": "active"}, escape="sql")
+        substitute_variables("status = '{status_val}'", {"status_val": "active"}, escape="sql", backslash_escapes=False)
         → "status = 'active'"
 
-        substitute_variables("amount > {min_amount}", {"min_amount": 100}, escape="sql")
+        substitute_variables("amount > {min_amount}", {"min_amount": 100}, escape="sql", backslash_escapes=False)
         → "amount > 100"
 
-        substitute_variables("region IN ({regions})", {"regions": ["US", "CA"]}, escape="sql")
+        substitute_variables("region IN ({regions})", {"regions": ["US", "CA"]}, escape="sql", backslash_escapes=False)
         → "region IN ('US', 'CA')"
     """
     if escape not in ("sql", "python"):
         raise ValueError(
             f"Invalid escape mode {escape!r}; expected 'sql' or 'python'."
         )
+    if escape == "sql" and backslash_escapes is None:
+        raise ValueError(
+            "escape='sql' requires backslash_escapes to be specified: True on "
+            "backslash-escaping dialects (MySQL, ClickHouse, Snowflake, "
+            "Redshift, BigQuery, Databricks, Spark), False on standard dialects "
+            "(SQLite, Postgres, DuckDB, ...). Derive it from "
+            "SqlDialect.backslash_escapes_strings."
+        )
+    # Normalise to a concrete bool for the value renderers; python mode ignores
+    # the signal (Mode-B escaping is dialect-independent).
+    effective_backslash_escapes = bool(backslash_escapes) if escape == "sql" else False
 
     def _replace(match: re.Match) -> str:
         full = match.group(0)
@@ -305,7 +370,10 @@ def substitute_variables(
                     f"Available variables: {sorted(variables.keys())}"
                 )
             return _render_variable_value(
-                name=valid_name, value=variables[valid_name], escape=escape
+                name=valid_name,
+                value=variables[valid_name],
+                escape=escape,
+                backslash_escapes=effective_backslash_escapes,
             )
         # Group 2: invalid variable name (matched {something} but name was invalid)
         bad_name = match.group(2)

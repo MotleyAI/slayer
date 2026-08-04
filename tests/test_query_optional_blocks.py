@@ -19,7 +19,7 @@ def test_block_renders_parenthesised_when_var_present():
     out = substitute_variables(
         "WHERE 1=1 AND {? brand IN ({brand}) ?}",
         {"brand": ["acme", "zeta"]},
-        escape="sql",
+        escape="sql", backslash_escapes=False,
     )
     assert out == "WHERE 1=1 AND (brand IN ('acme', 'zeta'))"
 
@@ -28,7 +28,7 @@ def test_block_collapses_to_one_equals_one_when_var_missing():
     out = substitute_variables(
         "WHERE 1=1 AND {? brand IN ({brand}) ?}",
         {},
-        escape="sql",
+        escape="sql", backslash_escapes=False,
     )
     assert out == "WHERE 1=1 AND (1=1)"
 
@@ -38,7 +38,7 @@ def test_block_collapses_if_any_inner_var_missing():
     out = substitute_variables(
         "AND {? d >= '{d_from}' AND d <= '{d_to}' ?}",
         {"d_from": "2025-01-01"},
-        escape="sql",
+        escape="sql", backslash_escapes=False,
     )
     assert out == "AND (1=1)"
 
@@ -47,7 +47,7 @@ def test_block_renders_range_when_all_present():
     out = substitute_variables(
         "AND {? d >= '{d_from}' AND d <= '{d_to}' ?}",
         {"d_from": "2025-01-01", "d_to": "2025-12-31"},
-        escape="sql",
+        escape="sql", backslash_escapes=False,
     )
     assert out == "AND (d >= '2025-01-01' AND d <= '2025-12-31')"
 
@@ -55,7 +55,7 @@ def test_block_renders_range_when_all_present():
 def test_scalar_position_block_collapse_reproduces_cube_cast_shape():
     # Optional arrow in scalar position -> the (1=1)::TYPE Cube "booby-trap".
     out = substitute_variables(
-        "{? '{d_from}' ?}::TIMESTAMP AS d", {}, escape="sql"
+        "{? '{d_from}' ?}::TIMESTAMP AS d", {}, escape="sql", backslash_escapes=False
     )
     assert out == "(1=1)::TIMESTAMP AS d"
 
@@ -64,14 +64,14 @@ def test_multiple_independent_blocks_mix_present_and_missing():
     out = substitute_variables(
         "WHERE 1=1 AND {? a IN ({a}) ?} AND {? b IN ({b}) ?}",
         {"a": ["x"]},
-        escape="sql",
+        escape="sql", backslash_escapes=False,
     )
     assert out == "WHERE 1=1 AND (a IN ('x')) AND (1=1)"
 
 
 def test_string_value_inside_block_is_escaped():
     out = substitute_variables(
-        "{? name = '{name}' ?}", {"name": "O'Brien"}, escape="sql"
+        "{? name = '{name}' ?}", {"name": "O'Brien"}, escape="sql", backslash_escapes=False
     )
     assert out == "(name = 'O''Brien')"
 
@@ -82,7 +82,7 @@ def test_block_with_list_containing_apostrophe_and_comma():
     out = substitute_variables(
         "{? brand IN ({brand}) ?}",
         {"brand": ["O'Reilly", "ACME, Inc."]},
-        escape="sql",
+        escape="sql", backslash_escapes=False,
     )
     assert out == "(brand IN ('O''Reilly', 'ACME, Inc.'))"
 
@@ -91,14 +91,14 @@ def test_plain_vars_still_substitute_alongside_blocks():
     out = substitute_variables(
         "d >= '{d_from}' AND {? brand IN ({brand}) ?}",
         {"d_from": "2025-01-01", "brand": ["a"]},
-        escape="sql",
+        escape="sql", backslash_escapes=False,
     )
     assert out == "d >= '2025-01-01' AND (brand IN ('a'))"
 
 
 def test_brace_escapes_do_not_open_or_close_a_block():
     # {{ and }} stay literal; no block is parsed here.
-    out = substitute_variables("{{not a block}}", {}, escape="sql")
+    out = substitute_variables("{{not a block}}", {}, escape="sql", backslash_escapes=False)
     assert out == "{not a block}"
 
 
@@ -107,22 +107,22 @@ def test_brace_escapes_do_not_open_or_close_a_block():
 
 def test_nested_block_raises():
     with pytest.raises(ValueError, match="[Nn]est"):
-        substitute_variables("{? a {? {b} ?} ?}", {"b": "1"}, escape="sql")
+        substitute_variables("{? a {? {b} ?} ?}", {"b": "1"}, escape="sql", backslash_escapes=False)
 
 
 def test_unterminated_block_raises():
     with pytest.raises(ValueError, match="[Uu]nterminated|unclosed"):
-        substitute_variables("AND {? brand IN ({brand})", {"brand": ["a"]}, escape="sql")
+        substitute_variables("AND {? brand IN ({brand})", {"brand": ["a"]}, escape="sql", backslash_escapes=False)
 
 
 def test_stray_block_close_raises():
     with pytest.raises(ValueError):
-        substitute_variables("AND brand ?}", {}, escape="sql")
+        substitute_variables("AND brand ?}", {}, escape="sql", backslash_escapes=False)
 
 
 def test_block_with_no_variables_raises():
     with pytest.raises(ValueError, match="[Vv]ariable"):
-        substitute_variables("{? 1=1 ?}", {}, escape="sql")
+        substitute_variables("{? 1=1 ?}", {}, escape="sql", backslash_escapes=False)
 
 
 def test_block_in_python_mode_raises():

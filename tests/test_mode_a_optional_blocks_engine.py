@@ -16,6 +16,7 @@ from slayer.engine.query_engine import (
     SlayerQueryEngine,
     _substitute_model_sql_surfaces,
 )
+from slayer.sql.dialects import SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -150,7 +151,8 @@ def test_blockfree_empty_vars_leaves_model_untouched():
     model = SlayerModel(
         name="m", sql="SELECT * FROM t WHERE tags = '{1,2,3}'", data_source="ds",
     )
-    out = _substitute_model_sql_surfaces(model=model, variables={})
+    out = _substitute_model_sql_surfaces(
+        model=model, variables={}, dialect=SqliteDialect())
     assert out.sql == "SELECT * FROM t WHERE tags = '{1,2,3}'"
 
 
@@ -161,7 +163,8 @@ def test_blockfree_required_var_zero_vars_is_untouched_not_raised():
     model = SlayerModel(
         name="m", sql="SELECT * FROM t WHERE region = '{region}'", data_source="ds",
     )
-    out = _substitute_model_sql_surfaces(model=model, variables={})
+    out = _substitute_model_sql_surfaces(
+        model=model, variables={}, dialect=SqliteDialect())
     assert out.sql == "SELECT * FROM t WHERE region = '{region}'"
 
 
@@ -221,5 +224,6 @@ def test_block_bearing_empty_vars_collapses_block():
         sql="SELECT * FROM t WHERE 1=1 AND {? region IN ({regions}) ?}",
         data_source="ds",
     )
-    out = _substitute_model_sql_surfaces(model=model, variables={})
+    out = _substitute_model_sql_surfaces(
+        model=model, variables={}, dialect=SqliteDialect())
     assert out.sql == "SELECT * FROM t WHERE 1=1 AND (1=1)"
