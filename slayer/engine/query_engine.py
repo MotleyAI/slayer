@@ -2554,6 +2554,31 @@ class SlayerQueryEngine:
             key_cols=tgt_cols, sqlglot_name=sqlglot_name,
             datasource=datasource_cfg,
         )
+        # An EMPTY key population proves nothing. row_count == distinct_count
+        # == 0 would make observed_unique True on that side, so a join between
+        # two empty tables would "detect" one_to_one and persist=True would
+        # write it. Absence of rows is not weak evidence of uniqueness — it is
+        # NO evidence, so no value is detected and nothing is persisted. This
+        # is NO_EVIDENCE rather than SKIPPED_UNSUPPORTED: the shape profiled
+        # fine and is worth re-running once data lands.
+        empty_sides = [
+            name
+            for name, side in (("source", src_side), ("target", tgt_side))
+            if side.row_count == 0
+        ]
+        if empty_sides:
+            return JoinCardinalityFinding(
+                data_source=data_source, model=model.name,
+                target_model=join.target_model, join_pairs=pairs,
+                stored=join.cardinality, detected=None,
+                source_side=src_side, target_side=tgt_side,
+                verdict=CardinalityVerdict.NO_EVIDENCE,
+                note=(
+                    f"no non-null key rows on the {' and '.join(empty_sides)} "
+                    f"side; an empty scan is no evidence of arity"
+                ),
+            ), None
+
         detected = classify_cardinality(
             source_unique=src_side.observed_unique,
             target_unique=tgt_side.observed_unique,

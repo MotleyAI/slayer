@@ -238,7 +238,7 @@ slayer joins detect-cardinality --format json
 | `--persist` | off | Write the detected `cardinality` back onto each matching join. |
 | `--format` | `text` | `text` or `json` (full `JoinCardinalityReport`). |
 
-Each join reports a `verdict` — `fills_none`, `confirms`, `refines`, `contradicts_hard` (the data disproves a uniqueness the stored value asserted), or `skipped_unsupported` (non-`sql_table` model or expression-valued join key).
+Each join reports a `verdict` — `fills_none`, `confirms`, `refines`, `contradicts_hard` (the data disproves a uniqueness the stored value asserted), `skipped_unsupported` (non-`sql_table` model or expression-valued join key), or `no_evidence` (one side had no non-null key rows, so the scan proves nothing — re-run once data lands).
 
 ### `slayer memory`
 

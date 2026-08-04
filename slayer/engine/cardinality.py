@@ -97,6 +97,11 @@ class CardinalityVerdict(StrEnum):
     FILLS_NONE = "fills_none"
     CONTRADICTS_HARD = "contradicts_hard"
     SKIPPED_UNSUPPORTED = "skipped_unsupported"
+    #: Profiled fine, but the key population was empty — distinct from
+    #: SKIPPED_UNSUPPORTED, which means the shape can never be profiled. An
+    #: empty scan is not weak evidence of uniqueness, it is NO evidence, so no
+    #: value is detected and nothing is persisted. Re-run once data lands.
+    NO_EVIDENCE = "no_evidence"
 
 
 class SideStats(BaseModel):

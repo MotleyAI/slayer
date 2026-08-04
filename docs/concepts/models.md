@@ -311,6 +311,8 @@ slayer joins detect-cardinality --datasource mydb --persist  # write it back
 
 Detection full-scans each side of the join and reports the observed arity, a `verdict` (whether it confirms, refines, or hard-contradicts the stored value), and any column declared `unique` that the data shows has duplicates. It is a strong guess, not a guarantee — a duplicate disproves uniqueness with certainty, but the absence of duplicates only suggests it.
 
+A side with no non-null key rows reports `no_evidence` and detects nothing: an empty scan would trivially look unique, and that is not weak evidence — it is none. Re-run once the table has data.
+
 ### Path-based table aliases
 
 Joined tables use `__`-delimited path aliases in generated SQL so **diamond joins** stay unambiguous — when the same table is reachable via multiple paths. For example, if `orders` joins both `customers` and `warehouses`, each referencing `regions`:

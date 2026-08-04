@@ -298,6 +298,7 @@ Each finding carries a `verdict` against the stored value:
 | `refines` | Differs from the stored value, but the data does not disprove it — "no duplicates observed" only *suggests* uniqueness. |
 | `contradicts_hard` | The data **disproves** the stored value: a side it claimed unique has duplicates. |
 | `skipped_unsupported` | Not profilable — a non-`sql_table` model (sql-mode / query-backed) or an expression-valued join key. |
+| `no_evidence` | Profiled fine, but one side had no non-null key rows. An empty scan says nothing about arity, so nothing is detected or written. Worth re-running once data lands — unlike `skipped_unsupported`, which never becomes profilable. |
 
 Columns declared `unique` (or `primary_key`) that the data shows have duplicates are reported under `unique_contradictions`; detection never mutates `Column.unique`.
 

@@ -47,6 +47,9 @@ def _seed_db(db_path: str) -> None:
         CREATE TABLE right_tbl (k INTEGER, label TEXT);
         CREATE TABLE ck_parent (a INTEGER, b TEXT, PRIMARY KEY (a, b));
         CREATE TABLE ck_child (a INTEGER, b TEXT);
+        CREATE TABLE empty_src (k INTEGER);
+        CREATE TABLE empty_tgt (k INTEGER PRIMARY KEY);
+        CREATE TABLE all_null_src (k INTEGER);
 
         INSERT INTO customers VALUES (1,'US'),(2,'EU'),(3,'AP');
         -- customer_id has duplicates (1,1) and a NULL -> NOT unique.
@@ -61,6 +64,9 @@ def _seed_db(db_path: str) -> None:
         -- composite parent key is unique; child (a,b) has a dup + a NULL-key row.
         INSERT INTO ck_parent VALUES (1,'x'),(1,'y'),(2,'x');
         INSERT INTO ck_child VALUES (1,'x'),(1,'x'),(2,'x'),(1,NULL);
+        -- empty_src / empty_tgt stay empty on purpose.
+        -- all_null_src has rows, but every key is NULL -> empty population.
+        INSERT INTO all_null_src VALUES (NULL),(NULL);
         """
     )
     conn.commit()
@@ -104,6 +110,19 @@ def _models() -> list[SlayerModel]:
             "left_tbl",
             [_col("k")],
             [ModelJoin(target_model="right_m", join_pairs=[["k", "k"]])],
+        ),
+        m("empty_tgt", "empty_tgt", [_col("k", pk=True)]),
+        m(
+            "empty_src",
+            "empty_src",
+            [_col("k")],
+            [ModelJoin(target_model="empty_tgt", join_pairs=[["k", "k"]])],
+        ),
+        m(
+            "all_null_src",
+            "all_null_src",
+            [_col("k")],
+            [ModelJoin(target_model="customers", join_pairs=[["k", "id"]])],
         ),
         m("ck_parent", "ck_parent", [_col("a"), _col("b", dtype=DataType.TEXT)]),
         m(
@@ -505,3 +524,73 @@ class TestSideStatsSqlShape:
         # The only statement is the SELECT: nothing escaped the quoting.
         assert rows_sql.strip().startswith("SELECT")
         assert 'NOT "b" IS NULL' in rows_sql
+
+
+class TestEmptyPopulationIsNoEvidence:
+    """An empty key population proves nothing about arity.
+
+    row_count == distinct_count == 0 makes observed_unique True, so without a
+    guard a join between two empty tables would "detect" one_to_one and
+    persist=True would write it. Absence of rows is not weak evidence of
+    uniqueness -- it is no evidence.
+    """
+
+    async def test_empty_tables_detect_nothing(self, workspace: Path) -> None:
+        engine, _, _ = await _build_engine(workspace)
+        report = await engine.detect_join_cardinality(data_source="ds")
+        f = _find(report, "empty_src", "empty_tgt")
+        assert f.detected is None
+        assert f.verdict is CardinalityVerdict.NO_EVIDENCE
+        assert "no evidence" in (f.note or "")
+        # The observed stats are still reported for transparency.
+        assert f.source_side.row_count == 0
+        assert f.target_side.row_count == 0
+
+    async def test_all_null_keys_are_an_empty_population(
+        self, workspace: Path
+    ) -> None:
+        # The table HAS rows, but every key is NULL, so the profiled
+        # population is empty just the same.
+        engine, _, _ = await _build_engine(workspace)
+        report = await engine.detect_join_cardinality(data_source="ds")
+        f = _find(report, "all_null_src", "customers")
+        assert f.detected is None
+        assert f.verdict is CardinalityVerdict.NO_EVIDENCE
+        assert f.source_side.row_count == 0
+        # The non-empty target side is still profiled and reported.
+        assert f.target_side.row_count == 3
+
+    async def test_empty_side_is_never_persisted(self, workspace: Path) -> None:
+        engine, storage, _ = await _build_engine(workspace)
+        await engine.detect_join_cardinality(data_source="ds", persist=True)
+        reloaded = await storage.get_model("empty_src", data_source="ds")
+        j = next(j for j in reloaded.joins if j.target_model == "empty_tgt")
+        assert j.cardinality is None, "an empty scan must not write an arity"
+
+
+    async def test_no_evidence_is_distinct_from_skipped_unsupported(
+        self, workspace: Path
+    ) -> None:
+        """The two non-detecting verdicts must stay tellable apart.
+
+        `no_evidence` is retryable once data lands; `skipped_unsupported` is a
+        shape that can never be profiled.
+        """
+        engine, storage, _ = await _build_engine(workspace)
+        raw = SlayerModel(
+            name="raw_empty",
+            sql="SELECT k FROM empty_src",
+            data_source="ds",
+            columns=[_col("k")],
+            joins=[ModelJoin(target_model="empty_tgt", join_pairs=[["k", "k"]])],
+        )
+        await storage.save_model(raw)
+        report = await engine.detect_join_cardinality(data_source="ds")
+
+        empty = _find(report, "empty_src", "empty_tgt")
+        unsupported = _find(report, "raw_empty", "empty_tgt")
+        assert empty.verdict is CardinalityVerdict.NO_EVIDENCE
+        assert unsupported.verdict is CardinalityVerdict.SKIPPED_UNSUPPORTED
+        assert empty.verdict != unsupported.verdict
+        # Neither detects a value.
+        assert empty.detected is None and unsupported.detected is None
