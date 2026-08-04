@@ -7,7 +7,7 @@ query engine's _enrich() step.
 
 import logging
 import re
-from typing import AbstractSet, Any, Dict, List, Literal, NamedTuple, Optional, Set, Tuple, Union
+from typing import AbstractSet, Any, Dict, List, Literal, Optional, Set, Tuple, Union
 
 import sqlglot
 from sqlglot import exp
@@ -53,22 +53,6 @@ from slayer.sql.scope_check import maybe_validate_scopes
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 
 
-class _OrderColRef(NamedTuple):
-    """DEV-1645: resolved ORDER BY key. ``is_alias`` distinguishes a projected
-    output alias (emit whole-quoted, e.g. ``"orders.revenue_sum"``) from a
-    table.column fallback (emit SPLIT, e.g. ``ranked."time_mark"``), so a sort
-    on an unprojected/renamed column references the underlying FROM-scope column
-    instead of a nonexistent composite identifier.
-
-    Ported from ``origin/main`` for the LEGACY enrichment pipeline (this stack is
-    deleted in DEV-1485 Stage 11); the typed pipeline enforces the same policy
-    independently in ``_apply_order_limit_from_planned`` + the plan-time order
-    validation.
-    """
-    text: str               # whole resolved string (used for base_cols membership)
-    is_alias: bool          # True => projected output alias; False => table.column fallback
-    qualifier: str | None   # fallback only: FROM-scope alias
-    column: str | None      # fallback only: underlying column short name
 
 
 class ResolvedAggKwarg(BaseModel):
@@ -584,50 +568,12 @@ def _effective_src_filters(*, planned_query, plan) -> list:
     ]
 
 
-def _alias_prefixes(model_name: str) -> list:
-    """'a__b__c' → ['a', 'a__b', 'a__b__c']"""
-    parts = model_name.split("__")
-    return ["__".join(parts[: i + 1]) for i in range(len(parts))]
-
-
-def _filter_dotted_columns(filters) -> list[str]:
-    """Yield each "__"-joined path-alias prefix referenced by every non-post
-    filter's dotted column.
-
-    A filter on `a.b.c` produces ['a', 'a__b'] — the path-alias forms that
-    correspond to the joins required to evaluate the filter. Used by window
-    CTE pruning to keep filter-driven joins.
-    """
-    out: list[str] = []
-    for f in filters:
-        if getattr(f, "is_post_filter", False):
-            continue
-        for col in f.columns:
-            if "." not in col:
-                continue
-            parts = col.split(".")
-            for i in range(1, len(parts)):
-                out.append("__".join(parts[:i]))
-    return out
 
 
 
 
-def _filter_references_available(f, available_aliases: set) -> bool:
-    """Check if all table references in a filter's columns are within a CTE's join set.
 
-    Non-dotted columns (local to the base model) are always available.
-    Dotted columns like "warehouse.status" produce alias "warehouse" which
-    must be in available_aliases.
-    """
-    for col in f.columns:
-        if "." not in col:
-            continue
-        parts = col.split(".")
-        table_alias = "__".join(parts[:-1])
-        if table_alias not in available_aliases:
-            return False
-    return True
+
 
 
 # DEV-1444: digit-suffix tail patterns for OFFSET / LIMIT, each bounded
@@ -884,20 +830,6 @@ class SQLGenerator:
 
 
 
-    def _safe_parse_outer(self, sql: str):
-        """Parse ``sql`` via the generator's ``_parse`` (so AST rewrites
-        like LOG10/LOG2 alias preservation survive a round-trip).
-        Returns the ``exp.Select`` root or ``None`` when parsing fails
-        or the root isn't a Select — both signals tell the trim caller
-        to leave ``sql`` untouched.
-        """
-        try:
-            parsed = self._parse(sql)
-        except Exception:
-            return None
-        if not isinstance(parsed, exp.Select):
-            return None
-        return parsed
 
     def _build_outer_wrap(
         self,
@@ -1033,111 +965,7 @@ class SQLGenerator:
 
 
 
-    @staticmethod
-    def _deps_available(sql: str, available: set[str]) -> bool:
-        """Check if all quoted aliases referenced in SQL are in the available set."""
-        import re
-        refs = re.findall(r'"([^"]+)"', sql)
-        return all(ref in available for ref in refs)
 
-    def _build_consecutive_periods_ctes(
-        self,
-        transform,
-        source_cte: str,
-        available_aliases: set[str],
-        layer_num: int,
-    ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-        partition_aliases = getattr(transform, "partition_aliases", []) or []
-        reset_alias = _cte_name_from_alias("_cp_reset_", transform.alias)
-        reset_cte = _cte_name_from_alias(f"cp_reset_{layer_num}_", transform.alias)
-        value_cte = _cte_name_from_alias(f"cp_value_{layer_num}_", transform.alias)
-
-        def _quoted_col(name: str) -> exp.Column:
-            return exp.Column(this=exp.to_identifier(name, quoted=True))
-
-        measure_col = _quoted_col(transform.measure_alias)
-        time_col = _quoted_col(transform.time_alias)
-        # Bare column inside exp.Order, NOT wrapped in exp.Ordered — sqlglot
-        # otherwise injects `NULLS LAST` on SQLite (and Spark/Databricks),
-        # changing streak/reset semantics for any NULL time values vs the
-        # pre-AST string-built `ORDER BY <t>` output.
-        order = exp.Order(expressions=[time_col])
-        spec = exp.WindowSpec(
-            kind="ROWS",
-            start="UNBOUNDED",
-            start_side="PRECEDING",
-            end="CURRENT ROW",
-        )
-
-        # Wrap measure in an explicit boolean predicate so non-boolean argument
-        # expressions don't rely on dialect-specific truthiness coercion in
-        # CASE WHEN. Postgres rejects non-boolean WHEN outright; SQLite/MySQL
-        # coerce non-zero to true; ClickHouse has its own rules.
-        # When the inner expression is already boolean (e.g.
-        # `consecutive_periods(revenue:sum > 0)`), the numeric `<> 0` form
-        # is itself rejected by Postgres ("operator does not exist:
-        # boolean <> integer"), so we use the column directly inside CASE WHEN.
-        def _predicate() -> exp.Expression:
-            if getattr(transform, "predicate_is_boolean", False):
-                return exp.func("COALESCE", measure_col.copy(), exp.false())
-            return exp.and_(
-                exp.Is(this=measure_col.copy(), expression=exp.Not(this=exp.Null())),
-                exp.NEQ(this=measure_col.copy(), expression=exp.Literal.number(0)),
-            )
-
-        source_col_exprs = [_quoted_col(a) for a in sorted(available_aliases)]
-
-        # reset CTE: SELECT <available>, SUM(CASE WHEN pred THEN 0 ELSE 1 END)
-        #   OVER (PARTITION BY ... ORDER BY t ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
-        #   AS "<reset_alias>" FROM source_cte
-        reset_case = exp.Case(
-            ifs=[exp.If(this=_predicate(), true=exp.Literal.number(0))],
-            default=exp.Literal.number(1),
-        )
-        reset_window = exp.Window(
-            this=exp.Sum(this=reset_case),
-            partition_by=[_quoted_col(a) for a in partition_aliases] or None,
-            order=order,
-            spec=spec,
-        )
-        reset_select = (
-            exp.Select()
-            .select(*[c.copy() for c in source_col_exprs])
-            .select(reset_window.as_(reset_alias, quoted=True))
-            .from_(exp.Table(this=exp.to_identifier(source_cte)))
-        )
-
-        # value CTE: SELECT <available>,
-        #   CASE WHEN pred THEN SUM(CASE WHEN pred THEN 1 ELSE 0 END)
-        #     OVER (PARTITION BY ..., "<reset_alias>" ORDER BY t ROWS ...) ELSE 0 END
-        #   AS "<transform.alias>" FROM reset_cte
-        value_inner_case = exp.Case(
-            ifs=[exp.If(this=_predicate(), true=exp.Literal.number(1))],
-            default=exp.Literal.number(0),
-        )
-        value_partition = (
-            [_quoted_col(a) for a in partition_aliases] + [_quoted_col(reset_alias)]
-        )
-        value_window = exp.Window(
-            this=exp.Sum(this=value_inner_case),
-            partition_by=value_partition,
-            order=order.copy(),
-            spec=spec.copy(),
-        )
-        value_outer_case = exp.Case(
-            ifs=[exp.If(this=_predicate(), true=value_window)],
-            default=exp.Literal.number(0),
-        )
-        value_select = (
-            exp.Select()
-            .select(*[c.copy() for c in source_col_exprs])
-            .select(value_outer_case.as_(transform.alias, quoted=True))
-            .from_(exp.Table(this=exp.to_identifier(reset_cte)))
-        )
-
-        reset_sql = reset_select.sql(dialect=self.dialect, pretty=True)
-        value_sql = value_select.sql(dialect=self.dialect, pretty=True)
-        return [(reset_cte, reset_sql)], [(value_cte, value_sql)]
 
     def _build_date_trunc(self, col_expr: exp.Expression, granularity: TimeGranularity) -> exp.Expression:
         """Build a DATE_TRUNC expression. Dispatches to the dialect strategy
@@ -1211,25 +1039,8 @@ class SQLGenerator:
         else:
             raise ValueError(f"Unsupported transform: {t.transform}")
 
-    def _build_self_join_column(self, transform: str, right_table: str,
-                                measure_alias: str) -> str:
-        """Build the SELECT expression for a self-join transform.
-
-        DEV-1716: the column leaf is dialect-quoted so MySQL/T-SQL/BigQuery
-        get correct quoting (not ANSI ``"..."``).
-        """
-        prev = f'{right_table}.{self._quote_ident(measure_alias)}'
-        if transform == "time_shift":
-            return prev
-        raise ValueError(f"Unknown self-join transform: {transform}")
 
 
-    def _order_split_sql(self, ref: _OrderColRef) -> str:
-        """DEV-1645: emit a non-projected ORDER BY key as a SPLIT
-        ``qualifier.column`` reference (mixed-case-quoted), not one
-        composite-quoted token."""
-        col = exp.Column(this=self._to_ident(ref.column), table=exp.to_identifier(ref.qualifier))
-        return col.sql(dialect=self.dialect)
 
 
     # ------------------------------------------------------------------
@@ -7544,41 +7355,6 @@ class SQLGenerator:
             order_parts.append(f'{self._quote_ident(alias)} {direction}')
         return ", ".join(order_parts)
 
-    def _apply_order_limit_to_planned_sql_string(
-        self,
-        *,
-        sql: str,
-        planned_query,
-        slots_by_id: Dict[str, Any],
-        available_alias_by_slot_id: Dict[str, str],
-    ) -> str:
-        """Apply ORDER BY / LIMIT / OFFSET to a raw SQL string.
-
-        Mirrors legacy ``_apply_pagination_to_sql`` but resolves order
-        targets through the typed plan: each ``OrderEntry`` slot id is
-        looked up in ``available_alias_by_slot_id`` (which includes
-        every public + materialised alias).
-        """
-        order_parts: list[str] = []
-        for order_entry in planned_query.order:
-            slot = slots_by_id.get(order_entry.slot_id)
-            alias = available_alias_by_slot_id.get(order_entry.slot_id)
-            if slot is None or alias is None:
-                raise RuntimeError(
-                    f"ORDER BY references slot id={order_entry.slot_id!r} "
-                    f"not materialised in the CTE chain.",
-                )
-            direction = (
-                "ASC" if order_entry.direction == "asc" else "DESC"
-            )
-            order_parts.append(f'{self._quote_ident(alias)} {direction}')
-        if order_parts:
-            sql += "\nORDER BY " + ", ".join(order_parts)
-        if planned_query.limit is not None:
-            sql += f"\nLIMIT {planned_query.limit}"
-        if planned_query.offset is not None:
-            sql += f"\nOFFSET {planned_query.offset}"
-        return sql
 
     # -----------------------------------------------------------------
     # Stage 7b.11 helpers — self-join CTE transforms (time_shift,
@@ -8167,8 +7943,9 @@ class SQLGenerator:
         """Emit ``cp_reset_<alias>`` + ``cp_value_<alias>`` CTEs for one
         consecutive_periods transform slot.
 
-        Legacy reference: ``_build_consecutive_periods_ctes`` in this
-        file. The typed implementation differs in two principled ways:
+        Supersedes the legacy ``_build_consecutive_periods_ctes`` (deleted
+        with the enrichment stack in DEV-1485). The typed implementation
+        differs from it in two principled ways:
 
         * The predicate-shape decision (boolean vs numeric) is read
           from the TransformKey input shape (validated by

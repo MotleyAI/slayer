@@ -37,7 +37,6 @@ from slayer.core.recommend import (
 from slayer.core.refs import split_agg_suffix
 from slayer.core.query import (
     SlayerQuery,
-    extract_placeholder_names,
     substitute_variables,
 )
 from slayer.engine.cache import (
@@ -280,20 +279,6 @@ def _render_probe_model(model: SlayerModel) -> SlayerModel:
     return model
 
 
-def _apply_placeholder_fill(
-    query: SlayerQuery, effective: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Add ``{var: '0'}`` for any unresolved ``{var}`` placeholder in
-    ``query.filters`` so save-time dry-run SQL generation can proceed even
-    when a runtime variable has no default.
-
-    Existing values in ``effective`` are preserved.
-    """
-    placeholders = extract_placeholder_names(query)
-    missing = {p: _PLACEHOLDER_FILL_VALUE for p in placeholders if p not in effective}
-    if not missing:
-        return effective
-    return {**missing, **effective}
 
 
 def _build_explain_sql(dialect: str, sql: str) -> str:
