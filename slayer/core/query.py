@@ -297,6 +297,43 @@ def _contains_block_delimiter(text: str) -> bool:
     return _BLOCK_OPEN in text or _BLOCK_CLOSE in text
 
 
+def _make_var_replacer(
+    filter_str: str, variables: dict, escape: str, backslash_escapes: bool
+):
+    """Build the ``re.sub`` replacement callable for ``{var}`` / ``{{`` / ``}}``
+    tokens, closed over the resolved escaping regime. Extracted from
+    :func:`substitute_variables` to keep its cognitive complexity in check."""
+
+    def _replace(match: re.Match) -> str:
+        full = match.group(0)
+        if full == "{{":
+            return "{"
+        if full == "}}":
+            return "}"
+        # Group 1: valid variable name
+        valid_name = match.group(1)
+        if valid_name is not None:
+            if valid_name not in variables:
+                raise ValueError(
+                    f"Undefined variable '{valid_name}' in filter: {filter_str!r}. "
+                    f"Available variables: {sorted(variables.keys())}"
+                )
+            return _render_variable_value(
+                name=valid_name,
+                value=variables[valid_name],
+                escape=escape,
+                backslash_escapes=backslash_escapes,
+            )
+        # Group 2: invalid variable name (matched {something} but name was invalid)
+        bad_name = match.group(2)
+        raise ValueError(
+            f"Invalid variable name '{bad_name}' in filter: {filter_str!r}. "
+            f"Variable names must contain only letters, digits, and underscores."
+        )
+
+    return _replace
+
+
 def substitute_variables(
     filter_str: str,
     variables: dict[str, Any],
@@ -354,33 +391,9 @@ def substitute_variables(
     # Normalise to a concrete bool for the value renderers; python mode ignores
     # the signal (Mode-B escaping is dialect-independent).
     effective_backslash_escapes = bool(backslash_escapes) if escape == "sql" else False
-
-    def _replace(match: re.Match) -> str:
-        full = match.group(0)
-        if full == "{{":
-            return "{"
-        if full == "}}":
-            return "}"
-        # Group 1: valid variable name
-        valid_name = match.group(1)
-        if valid_name is not None:
-            if valid_name not in variables:
-                raise ValueError(
-                    f"Undefined variable '{valid_name}' in filter: {filter_str!r}. "
-                    f"Available variables: {sorted(variables.keys())}"
-                )
-            return _render_variable_value(
-                name=valid_name,
-                value=variables[valid_name],
-                escape=escape,
-                backslash_escapes=effective_backslash_escapes,
-            )
-        # Group 2: invalid variable name (matched {something} but name was invalid)
-        bad_name = match.group(2)
-        raise ValueError(
-            f"Invalid variable name '{bad_name}' in filter: {filter_str!r}. "
-            f"Variable names must contain only letters, digits, and underscores."
-        )
+    _replace = _make_var_replacer(
+        filter_str, variables, escape, effective_backslash_escapes
+    )
 
     # Optional blocks {? ... ?} are a Mode-A-only construct (DEV-1730). The
     # Mode-B Python-AST filter layer rejects them outright.
