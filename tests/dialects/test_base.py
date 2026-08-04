@@ -458,3 +458,100 @@ def test_duckdb_and_sqlite_rewrite_target_ast_leave_round_uncast() -> None:
         tree = sqlglot.parse_one("ROUND(x, 2)", dialect="postgres")
         out = d.rewrite_target_ast(tree).sql(dialect=d.sqlglot_name).upper()
         assert "CAST(" not in out
+
+
+# ---------------------------------------------------------------------------
+# backslash_escapes_strings — DEV-1727 dialect-aware Mode-A {var} escaping
+# ---------------------------------------------------------------------------
+
+from slayer.sql.dialects import (  # noqa: E402
+    ClickhouseDialect,
+    DuckdbDialect,
+    MysqlDialect,
+    PostgresDialect,
+    SnowflakeDialect,
+    SqliteDialect,
+    TsqlDialect,
+)
+from slayer.sql.dialects._tier2 import (  # noqa: E402
+    DatabricksDialect,
+    PrestoDialect,
+    RedshiftDialect,
+    SparkDialect,
+    TrinoDialect,
+)
+
+# Pin the expected backslash-escaping regime for every dialect class. This is
+# the single source of truth the DEV-1727 escaping keys off, DERIVED from
+# sqlglot's tokenizer (SqlDialect.backslash_escapes_strings). Freezing the
+# expected value here means a sqlglot upgrade that shifts a dialect's string
+# escaping fails THIS test loudly for review rather than silently changing how
+# {var} values are escaped in generated SQL.
+#
+# Standard (backslash is an ordinary literal char → only '' doubling):
+#   sqlite, postgres, duckdb, tsql, trino, presto, oracle
+# Backslash-escaping (a backslash escapes the next char in a string literal):
+#   mysql, clickhouse, snowflake, redshift, bigquery, databricks, spark
+_BACKSLASH_ESCAPES_PINS = [
+    (SqliteDialect(), False),
+    (PostgresDialect(), False),
+    (DuckdbDialect(), False),
+    (TsqlDialect(), False),
+    (TrinoDialect(), False),
+    (PrestoDialect(), False),
+    (OracleDialect(), False),
+    (MysqlDialect(), True),
+    (ClickhouseDialect(), True),
+    (SnowflakeDialect(), True),
+    (RedshiftDialect(), True),
+    (BigqueryDialect(), True),
+    (DatabricksDialect(), True),
+    (SparkDialect(), True),
+]
+
+
+@pytest.mark.parametrize(
+    "dialect,expected",
+    _BACKSLASH_ESCAPES_PINS,
+    ids=[d.sqlglot_name for d, _ in _BACKSLASH_ESCAPES_PINS],
+)
+def test_backslash_escapes_strings_pin(dialect: SqlDialect, expected: bool) -> None:
+    assert dialect.backslash_escapes_strings is expected
+
+
+def test_backslash_escapes_strings_matches_sqlglot_for_all_dialects() -> None:
+    """The property must agree with sqlglot's own tokenizer table for every
+    registered dialect — the derivation and the parser can never disagree."""
+    from sqlglot.dialects.dialect import Dialect
+
+    from slayer.sql.dialects import _ALL_DIALECTS
+
+    for d in _ALL_DIALECTS:
+        expected = "\\" in Dialect.get_or_raise(d.sqlglot_name).tokenizer_class.STRING_ESCAPES
+        assert d.backslash_escapes_strings is expected, d.sqlglot_name
+
+
+def test_backslash_escapes_strings_is_bool() -> None:
+    # Contract: a plain bool (not a truthy set/other), so callers can pass it
+    # straight into substitute_variables(backslash_escapes=...).
+    assert isinstance(MysqlDialect().backslash_escapes_strings, bool)
+    assert isinstance(SqliteDialect().backslash_escapes_strings, bool)
+
+
+def test_backslash_escapes_derivation_guards_missing_string_escapes(monkeypatch) -> None:
+    """If a future sqlglot reshapes/removes the tokenizer's STRING_ESCAPES
+    attribute, the derivation must raise a clear RuntimeError (not silently
+    mis-escape or blow up with an obscure error)."""
+    from sqlglot.dialects.dialect import Dialect
+
+    from slayer.sql.dialects import base as base_mod
+
+    base_mod._sqlglot_backslash_escapes.cache_clear()
+    tokenizer_cls = Dialect.get_or_raise("postgres").tokenizer_class
+    # Simulate the attribute changing shape (a str is not a collection).
+    monkeypatch.setattr(tokenizer_cls, "STRING_ESCAPES", "not-a-collection", raising=False)
+    try:
+        with pytest.raises(RuntimeError, match="STRING_ESCAPES"):
+            base_mod._sqlglot_backslash_escapes("postgres")
+    finally:
+        base_mod._sqlglot_backslash_escapes.cache_clear()

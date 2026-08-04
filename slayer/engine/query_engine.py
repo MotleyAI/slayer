@@ -67,7 +67,7 @@ from slayer.memories.resolver import (
     resolve_entity,
 )
 from slayer.sql.client import SlayerSQLClient
-from slayer.sql.dialects import dialect_for_ds_type, get_dialect
+from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import _runtime_fingerprint
 from slayer.sql.generator import SQLGenerator
@@ -261,25 +261,39 @@ def _merge_query_variables(
 
 
 def _substitute_model_sql_surfaces(
-    *, model: SlayerModel, variables: dict[str, Any]
+    *, model: SlayerModel, variables: dict[str, Any], dialect: SqlDialect
 ) -> SlayerModel:
     """Return a copy of ``model`` with ``{var}`` substituted into the four
     Mode-A (raw-SQL) surfaces: ``SlayerModel.sql``, ``SlayerModel.filters``,
     ``Column.sql``, and ``Column.filter`` (DEV-1625).
 
+    ``dialect`` is REQUIRED (DEV-1727 fail-closed): the Mode-A escaping regime
+    is dialect-aware, and deriving ``backslash_escapes`` from the resolved
+    dialect here — rather than accepting an optional bool — means no caller can
+    render raw SQL for a backslash dialect (MySQL/ClickHouse/...) while silently
+    under-escaping the value.
+
     No-op copy when ``variables`` is empty — so a model that uses no variables
     is never touched and raw brace literals (e.g. Postgres arrays ``'{1,2,3}'``)
     survive verbatim. Uses the hardened :func:`substitute_variables`
-    (raise-on-missing, string single-quote escaping). Never mutates the input
-    model — it may be a shared cached object. Only these four surfaces change;
-    Mode-B surfaces (``ModelMeasure.formula`` etc.) are copied through as-is.
+    (raise-on-missing, dialect-aware escaping). Never mutates the input model —
+    it may be a shared cached object. Only these four surfaces change; Mode-B
+    surfaces (``ModelMeasure.formula`` etc.) are copied through as-is.
     """
     if not variables:
         return model
 
+    backslash_escapes = dialect.backslash_escapes_strings
+
     def _sub(text: str) -> str:
-        # Mode-A surfaces are parsed by sqlglot → escape string values SQL-style.
-        return substitute_variables(filter_str=text, variables=variables, escape="sql")
+        # Mode-A surfaces are parsed by sqlglot → escape string values SQL-style
+        # in the target dialect's regime.
+        return substitute_variables(
+            filter_str=text,
+            variables=variables,
+            escape="sql",
+            backslash_escapes=backslash_escapes,
+        )
 
     new_columns = []
     for col in model.columns:
@@ -298,18 +312,20 @@ def _substitute_model_sql_surfaces(
     return model.model_copy(update=model_updates)
 
 
-def _render_probe_model(model: SlayerModel) -> SlayerModel:
+def _render_probe_model(model: SlayerModel, *, dialect: SqlDialect) -> SlayerModel:
     """Substitute a template model's OWN ``query_variables`` defaults into its
     Mode-A surfaces for type-probing (DEV-1625).
 
-    Defaults only — the probe has no caller variables and must honour the
-    no-dummy-fill decision. A rendered virtual model (``source_model_origin``
-    set) is returned unchanged. An undefaulted ``{var}`` raises here and is
-    caught by the probe's graceful-``{}`` handler in ``get_column_types``.
+    ``dialect`` is REQUIRED (DEV-1727 fail-closed) and threads into the
+    dialect-aware Mode-A escaping. Defaults only — the probe has no caller
+    variables and must honour the no-dummy-fill decision. A rendered virtual
+    model (``source_model_origin`` set) is returned unchanged. An undefaulted
+    ``{var}`` raises here and is caught by the probe's graceful-``{}`` handler
+    in ``get_column_types``.
     """
     if model.source_model_origin is None and model.query_variables:
         return _substitute_model_sql_surfaces(
-            model=model, variables=model.query_variables
+            model=model, variables=model.query_variables, dialect=dialect
         )
     return model
 
@@ -1115,8 +1131,13 @@ class SlayerQueryEngine:
         if model.source_model_origin is None:
             effective_vars = {**(model.query_variables or {}), **(query.variables or {})}
             if effective_vars:
+                # DEV-1727: escaping is dialect-aware — pass the resolved
+                # datasource's dialect so backslash dialects (MySQL/ClickHouse/…)
+                # get the hardened regime, standard dialects the '' doubling.
                 model = _substitute_model_sql_surfaces(
-                    model=model, variables=effective_vars
+                    model=model,
+                    variables=effective_vars,
+                    dialect=dialect_for_ds_type(datasource.type),
                 )
 
         # Enrich: SlayerQuery + model → EnrichedQuery
@@ -1930,8 +1951,13 @@ class SlayerQueryEngine:
             # rendered (from its own query_variables defaults) before probe SQL
             # is generated; an undefaulted {var} raises here and degrades to {}
             # via the surrounding except, so partially-defaulted models stay safe.
+            # DEV-1727: pass the resolved datasource's dialect so probe-SQL
+            # escaping matches the backend that parses it.
             enriched = await self._enrich(
-                query=probe_query, model=_render_probe_model(model)
+                query=probe_query,
+                model=_render_probe_model(
+                    model, dialect=dialect_for_ds_type(datasource.type)
+                ),
             )
             dialect = self._dialect_for_type(datasource.type)
             generator = SQLGenerator(dialect=dialect)

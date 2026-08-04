@@ -864,9 +864,11 @@ class TestSubstituteVariablesHardened:
     def test_sql_mode_string_value_doubles_single_quote(self) -> None:
         from slayer.core.query import substitute_variables
 
-        # Mode-A (sqlglot-parsed) surfaces double the single quote.
+        # Mode-A (sqlglot-parsed) surfaces double the single quote. Standard
+        # (non-backslash) dialect regime.
         result = substitute_variables(
-            filter_str="status = '{v}'", variables={"v": "O'Brien"}, escape="sql"
+            filter_str="status = '{v}'", variables={"v": "O'Brien"},
+            escape="sql", backslash_escapes=False,
         )
         assert result == "status = 'O''Brien'"
 
@@ -874,17 +876,20 @@ class TestSubstituteVariablesHardened:
         from slayer.core.query import substitute_variables
 
         result = substitute_variables(
-            filter_str="status = '{v}'", variables={"v": "active"}, escape="sql"
+            filter_str="status = '{v}'", variables={"v": "active"},
+            escape="sql", backslash_escapes=False,
         )
         assert result == "status = 'active'"
 
-    def test_sql_mode_backslash_untouched(self) -> None:
+    def test_sql_mode_backslash_untouched_standard_dialect(self) -> None:
         from slayer.core.query import substitute_variables
 
-        # sqlglot treats backslash as an ordinary char in a string literal, so
-        # SQL-mode must NOT touch it (only ' is special).
+        # On a STANDARD dialect (backslash_escapes=False) sqlglot treats
+        # backslash as an ordinary char, so SQL-mode must NOT touch it (only '
+        # is special). DEV-1727 backslash dialects are covered separately.
         result = substitute_variables(
-            filter_str="path = '{v}'", variables={"v": r"a\b"}, escape="sql"
+            filter_str="path = '{v}'", variables={"v": r"a\b"},
+            escape="sql", backslash_escapes=False,
         )
         assert result == r"path = 'a\b'"
 
@@ -967,7 +972,10 @@ class TestSubstituteVariablesHardened:
         from slayer.core.query import substitute_variables
 
         assert (
-            substitute_variables(filter_str="amount > {n}", variables={"n": 100}, escape="sql")
+            substitute_variables(
+                filter_str="amount > {n}", variables={"n": 100},
+                escape="sql", backslash_escapes=False,
+            )
             == "amount > 100"
         )
         assert (
@@ -979,7 +987,10 @@ class TestSubstituteVariablesHardened:
         from slayer.core.query import substitute_variables
 
         assert (
-            substitute_variables(filter_str="rate < {n}", variables={"n": 0.05}, escape="sql")
+            substitute_variables(
+                filter_str="rate < {n}", variables={"n": 0.05},
+                escape="sql", backslash_escapes=False,
+            )
             == "rate < 0.05"
         )
 
@@ -988,7 +999,10 @@ class TestSubstituteVariablesHardened:
 
         # bool is an int subclass; kept accepted (renders True/False).
         assert (
-            substitute_variables(filter_str="flag = {v}", variables={"v": True}, escape="sql")
+            substitute_variables(
+                filter_str="flag = {v}", variables={"v": True},
+                escape="sql", backslash_escapes=False,
+            )
             == "flag = True"
         )
         assert (
@@ -1001,7 +1015,8 @@ class TestSubstituteVariablesHardened:
 
         with pytest.raises(ValueError, match="finite"):
             substitute_variables(
-                filter_str="x = {v}", variables={"v": float("nan")}, escape="sql"
+                filter_str="x = {v}", variables={"v": float("nan")},
+                escape="sql", backslash_escapes=False,
             )
 
     def test_inf_value_raises(self) -> None:
@@ -1009,7 +1024,8 @@ class TestSubstituteVariablesHardened:
 
         with pytest.raises(ValueError, match="finite"):
             substitute_variables(
-                filter_str="x = {v}", variables={"v": float("inf")}, escape="sql"
+                filter_str="x = {v}", variables={"v": float("inf")},
+                escape="sql", backslash_escapes=False,
             )
         with pytest.raises(ValueError, match="finite"):
             substitute_variables(
@@ -1025,7 +1041,8 @@ class TestSubstituteVariablesHardened:
             ValueError, match="must be a string, number, or list/tuple"
         ):
             substitute_variables(
-                filter_str="x = '{v}'", variables={"v": {"a": 1}}, escape="sql"
+                filter_str="x = '{v}'", variables={"v": {"a": 1}},
+                escape="sql", backslash_escapes=False,
             )
 
     def test_set_value_raises(self) -> None:
@@ -1037,7 +1054,8 @@ class TestSubstituteVariablesHardened:
             ValueError, match="must be a string, number, or list/tuple"
         ):
             substitute_variables(
-                filter_str="x IN ({v})", variables={"v": {1, 2}}, escape="sql"
+                filter_str="x IN ({v})", variables={"v": {1, 2}},
+                escape="sql", backslash_escapes=False,
             )
 
     def test_escape_is_required_keyword_only(self) -> None:
@@ -1053,10 +1071,24 @@ class TestSubstituteVariablesHardened:
 
         # Literal gives no runtime enforcement; the implementation must reject
         # an unknown mode deterministically rather than silently pick a branch.
-        with pytest.raises(ValueError, match="escape"):
+        # The message must name the VALID modes — so a wrong ordering that hit
+        # the sql-mode ``backslash_escapes`` guard first (whose message also
+        # contains the word "escape") could not masquerade as a pass.
+        with pytest.raises(ValueError, match="sql.*python|python.*sql"):
             substitute_variables(
                 filter_str="x = '{v}'", variables={"v": "a"}, escape="other"
             )
+
+    def test_invalid_escape_takes_precedence_over_missing_flag(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        # An invalid escape mode is rejected BEFORE the sql-mode
+        # backslash_escapes guard — the error is about the mode, not the flag.
+        with pytest.raises(ValueError, match="sql.*python|python.*sql") as exc:
+            substitute_variables(
+                filter_str="x = '{v}'", variables={"v": "a"}, escape="bogus"
+            )
+        assert "backslash_escapes" not in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -1068,6 +1100,7 @@ class TestSubstituteHelperScope:
         # Introduced by DEV-1625; import inline so a missing symbol doesn't
         # break collection of the whole module during TDD phase 1.
         from slayer.engine.query_engine import _substitute_model_sql_surfaces
+        from slayer.sql.dialects import SqliteDialect
 
         from slayer.core.models import Aggregation
 
@@ -1098,7 +1131,8 @@ class TestSubstituteHelperScope:
             aggregations=[Aggregation(name="agg", formula="SUM({expr}) * {mult}")],
         )
         out = _substitute_model_sql_surfaces(
-            model=model, variables={"region": "US", "floor": 5, "mult": 2}
+            model=model, variables={"region": "US", "floor": 5, "mult": 2},
+            dialect=SqliteDialect(),
         )
         # The four Mode-A surfaces are substituted (hidden column included):
         assert out.sql == "SELECT * FROM t WHERE r = 'US'"
@@ -1118,6 +1152,7 @@ class TestSubstituteHelperScope:
 
     def test_empty_variables_is_noop(self) -> None:
         from slayer.engine.query_engine import _substitute_model_sql_surfaces
+        from slayer.sql.dialects import SqliteDialect
 
         model = SlayerModel(
             name="m",
@@ -1125,7 +1160,9 @@ class TestSubstituteHelperScope:
             data_source="ds",
             columns=[Column(name="j", sql="json_extract(x, '$.a')", type=DataType.DOUBLE)],
         )
-        out = _substitute_model_sql_surfaces(model=model, variables={})
+        out = _substitute_model_sql_surfaces(
+            model=model, variables={}, dialect=SqliteDialect()
+        )
         assert out.get_column("j").sql == "json_extract(x, '$.a')"
 
     def test_list_value_substituted_on_all_four_mode_a_surfaces(self) -> None:
@@ -1134,6 +1171,7 @@ class TestSubstituteHelperScope:
         Column.filter — proving every surface routes list values through
         ``_render_variable_value`` (all comma-joined, auto-quoted, sql-escape)."""
         from slayer.engine.query_engine import _substitute_model_sql_surfaces
+        from slayer.sql.dialects import SqliteDialect
 
         model = SlayerModel(
             name="m",
@@ -1151,7 +1189,7 @@ class TestSubstituteHelperScope:
             ],
         )
         out = _substitute_model_sql_surfaces(
-            model=model, variables={"regions": ["US", "CA"]}
+            model=model, variables={"regions": ["US", "CA"]}, dialect=SqliteDialect()
         )
         rendered = "region IN ('US', 'CA')"
         assert out.sql == f"SELECT * FROM t WHERE {rendered}"
@@ -1465,7 +1503,7 @@ class TestListValueRenderingSql:
         result = substitute_variables(
             filter_str="region IN ({v})",
             variables={"v": ["US", "CA"]},
-            escape="sql",
+            escape="sql", backslash_escapes=False,
         )
         assert result == "region IN ('US', 'CA')"
 
@@ -1476,7 +1514,7 @@ class TestListValueRenderingSql:
         result = substitute_variables(
             filter_str="name IN ({v})",
             variables={"v": ["A", "O'Brien", 3]},
-            escape="sql",
+            escape="sql", backslash_escapes=False,
         )
         assert result == "name IN ('A', 'O''Brien', 3)"
 
@@ -1486,7 +1524,7 @@ class TestListValueRenderingSql:
         result = substitute_variables(
             filter_str="x IN ({v})",
             variables={"v": [1, 2.5, True, False]},
-            escape="sql",
+            escape="sql", backslash_escapes=False,
         )
         assert result == "x IN (1, 2.5, True, False)"
 
@@ -1496,7 +1534,7 @@ class TestListValueRenderingSql:
         result = substitute_variables(
             filter_str="region IN ({v})",
             variables={"v": ["EU"]},
-            escape="sql",
+            escape="sql", backslash_escapes=False,
         )
         assert result == "region IN ('EU')"
 
@@ -1504,10 +1542,12 @@ class TestListValueRenderingSql:
         from slayer.core.query import substitute_variables
 
         from_list = substitute_variables(
-            filter_str="x IN ({v})", variables={"v": ["A", "B"]}, escape="sql"
+            filter_str="x IN ({v})", variables={"v": ["A", "B"]},
+            escape="sql", backslash_escapes=False,
         )
         from_tuple = substitute_variables(
-            filter_str="x IN ({v})", variables={"v": ("A", "B")}, escape="sql"
+            filter_str="x IN ({v})", variables={"v": ("A", "B")},
+            escape="sql", backslash_escapes=False,
         )
         assert from_list == from_tuple == "x IN ('A', 'B')"
 
@@ -1519,7 +1559,7 @@ class TestListValueRenderingSql:
         result = substitute_variables(
             filter_str="region IN ({v})",
             variables={"v": ["x') OR ('1'='1"]},
-            escape="sql",
+            escape="sql", backslash_escapes=False,
         )
         assert result == "region IN ('x'') OR (''1''=''1')"
 
@@ -1603,7 +1643,7 @@ class TestListValueRenderingErrors:
             substitute_variables(
                 filter_str="region IN ({regions})",
                 variables={"regions": []},
-                escape="sql",
+                escape="sql", backslash_escapes=False,
             )
         msg = str(exc.value).lower()
         assert "empty" in msg
@@ -1632,7 +1672,7 @@ class TestListValueRenderingErrors:
             substitute_variables(
                 filter_str="region IN ({regions})",
                 variables={"regions": ["A", ["B", "C"]]},
-                escape="sql",
+                escape="sql", backslash_escapes=False,
             )
         assert "regions" in str(exc.value)
 
@@ -1643,7 +1683,7 @@ class TestListValueRenderingErrors:
             substitute_variables(
                 filter_str="region IN ({regions})",
                 variables={"regions": ["A", None]},
-                escape="sql",
+                escape="sql", backslash_escapes=False,
             )
         assert "regions" in str(exc.value)
 
@@ -1655,7 +1695,7 @@ class TestListValueRenderingErrors:
             substitute_variables(
                 filter_str="x IN ({v})",
                 variables={"v": [1.0, bad]},
-                escape="sql",
+                escape="sql", backslash_escapes=False,
             )
         assert "v" in str(exc.value)
 
@@ -1869,5 +1909,560 @@ class TestListModeBEndToEnd:
             )
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 10.0  # row 6 only
+        finally:
+            tmp.cleanup()
+
+
+# ===========================================================================
+# DEV-1727 — dialect-aware / complete escaping for Mode-A {var} substitution
+# ===========================================================================
+
+import ast  # noqa: E402
+import sqlglot  # noqa: E402
+
+from slayer.core.query import substitute_variables  # noqa: E402
+from slayer.sql.dialects import _ALL_DIALECTS  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# 19. SQL regime is dialect-aware: backslash_escapes flag (Gap 1)
+# ---------------------------------------------------------------------------
+
+class TestSqlModeBackslashEscaping:
+    """``escape="sql"`` with ``backslash_escapes=`` selects the escaping regime.
+
+    - False (standard: SQLite/Postgres/DuckDB/…): backslash is an ordinary
+      char, ONLY the single quote is doubled (``'`` → ``''``). Unchanged from
+      DEV-1625.
+    - True (backslash dialects: MySQL/ClickHouse/Snowflake/…): backslash is an
+      escape char, so it is doubled FIRST (``\\`` → ``\\\\``) and the single
+      quote is backslash-escaped (``'`` → ``\\'``). The double quote is left
+      untouched (inside a single-quoted literal it is an ordinary char on every
+      dialect, and ``\\"`` is not a recognised escape on 6 of the 7).
+    """
+
+    def test_standard_regime_doubles_quote_leaves_backslash(self) -> None:
+        result = substitute_variables(
+            filter_str="p = '{v}'", variables={"v": "a\\'b"},
+            escape="sql", backslash_escapes=False,
+        )
+        # a \ ' b  →  double the quote only; backslash untouched.
+        assert result == "p = 'a\\''b'"
+
+    def test_backslash_regime_doubles_backslash_and_escapes_quote(self) -> None:
+        result = substitute_variables(
+            filter_str="p = '{v}'", variables={"v": "a\\'b"},
+            escape="sql", backslash_escapes=True,
+        )
+        # a \ ' b  →  \\ (doubled backslash) + \' (escaped quote).
+        assert result == "p = 'a\\\\\\'b'"
+
+    def test_backslash_regime_lone_backslash_doubled(self) -> None:
+        result = substitute_variables(
+            filter_str="p = '{v}'", variables={"v": "a\\b"},
+            escape="sql", backslash_escapes=True,
+        )
+        assert result == "p = 'a\\\\b'"
+
+    def test_backslash_regime_trailing_backslash_doubled(self) -> None:
+        # The classic breakout: a trailing backslash must not eat the closing
+        # quote — it is doubled so the literal stays closed.
+        result = substitute_variables(
+            filter_str="p = '{v}'", variables={"v": "abc\\"},
+            escape="sql", backslash_escapes=True,
+        )
+        assert result == "p = 'abc\\\\'"
+
+    def test_backslash_regime_single_quote_only(self) -> None:
+        result = substitute_variables(
+            filter_str="p = '{v}'", variables={"v": "O'Brien"},
+            escape="sql", backslash_escapes=True,
+        )
+        assert result == "p = 'O\\'Brien'"
+
+    def test_backslash_regime_double_quote_untouched(self) -> None:
+        # Inside a single-quoted literal a bare double quote is an ordinary
+        # char; escaping it (\") would CORRUPT the value on 6 of 7 backslash
+        # dialects (only MySQL treats \" as " there). So it stays as-is.
+        result = substitute_variables(
+            filter_str="p = '{v}'", variables={"v": 'say "hi"'},
+            escape="sql", backslash_escapes=True,
+        )
+        assert result == 'p = \'say "hi"\''
+
+    def test_backslash_regime_plain_value_unchanged(self) -> None:
+        result = substitute_variables(
+            filter_str="p = '{v}'", variables={"v": "active"},
+            escape="sql", backslash_escapes=True,
+        )
+        assert result == "p = 'active'"
+
+    def test_number_passthrough_both_regimes(self) -> None:
+        for be in (True, False):
+            assert substitute_variables(
+                filter_str="x > {n}", variables={"n": 100},
+                escape="sql", backslash_escapes=be,
+            ) == "x > 100"
+
+    def test_backslash_regime_list_elements_escaped(self) -> None:
+        # DEV-1730 list rendering must compose with the backslash regime:
+        # each string element is auto-quoted AND backslash-escaped.
+        result = substitute_variables(
+            filter_str="p IN ({v})", variables={"v": ["a\\b", "O'Brien"]},
+            escape="sql", backslash_escapes=True,
+        )
+        assert result == "p IN ('a\\\\b', 'O\\'Brien')"
+
+    def test_backslash_regime_list_elements_standard(self) -> None:
+        # Same list under the standard regime: quote-doubled, backslash raw.
+        result = substitute_variables(
+            filter_str="p IN ({v})", variables={"v": ["a\\b", "O'Brien"]},
+            escape="sql", backslash_escapes=False,
+        )
+        assert result == "p IN ('a\\b', 'O''Brien')"
+
+
+# ---------------------------------------------------------------------------
+# 20. Fail-closed: escape="sql" requires the backslash_escapes signal
+# ---------------------------------------------------------------------------
+
+class TestSqlModeFailClosed:
+    """A security-flavoured property (correct escaping) must not silently
+    default. ``escape="sql"`` requires ``backslash_escapes`` to be specified —
+    a new/overlooked SQL call site that forgets it FAILS instead of
+    under-escaping on MySQL/ClickHouse."""
+
+    def test_sql_without_backslash_escapes_raises(self) -> None:
+        with pytest.raises(ValueError, match="backslash_escapes"):
+            substitute_variables(
+                filter_str="p = '{v}'", variables={"v": "x"}, escape="sql"
+            )
+
+    def test_sql_without_flag_raises_even_for_number(self) -> None:
+        # The guard fires at the sql-mode boundary regardless of value type —
+        # so no caller can partially bypass it by happening to pass a number.
+        with pytest.raises(ValueError, match="backslash_escapes"):
+            substitute_variables(
+                filter_str="x > {n}", variables={"n": 1}, escape="sql"
+            )
+
+    def test_python_mode_ignores_backslash_escapes(self) -> None:
+        # python mode never needs the flag; passing it is accepted and ignored
+        # (both True and False yield the identical python-escaped result).
+        base = substitute_variables(
+            filter_str="p = '{v}'", variables={"v": "O'Brien"}, escape="python"
+        )
+        for be in (True, False, None):
+            assert substitute_variables(
+                filter_str="p = '{v}'", variables={"v": "O'Brien"},
+                escape="python", backslash_escapes=be,
+            ) == base
+
+
+# ---------------------------------------------------------------------------
+# 21. Python regime full C0-control pass (Gap 2)
+# ---------------------------------------------------------------------------
+
+def _python_literal_value(substituted_literal: str):
+    """Parse a single-quoted python literal string (as produced by the
+    escaping) and return the recovered value via ast.literal_eval."""
+    return ast.literal_eval(substituted_literal)
+
+
+class TestPythonModeControlChars:
+    """After backslash/quote escaping, ``escape="python"`` encodes every C0
+    control char (U+0000–U+001F) so SLayer's ast.parse-based Mode-B parser —
+    which rejects a raw newline / NUL inside a string literal — recovers the
+    original value."""
+
+    def test_newline_named_escape(self) -> None:
+        result = substitute_variables(
+            filter_str="'{v}'", variables={"v": "a\nb"}, escape="python"
+        )
+        assert result == "'a\\nb'"
+        # Recover from the ACTUAL produced literal (not a hard-coded one).
+        assert _python_literal_value(result) == "a\nb"
+
+    def test_carriage_return_named_escape(self) -> None:
+        result = substitute_variables(
+            filter_str="p = '{v}'", variables={"v": "a\rb"}, escape="python"
+        )
+        assert result == "p = 'a\\rb'"
+
+    def test_tab_named_escape(self) -> None:
+        result = substitute_variables(
+            filter_str="p = '{v}'", variables={"v": "a\tb"}, escape="python"
+        )
+        assert result == "p = 'a\\tb'"
+
+    def test_nul_hex_escape(self) -> None:
+        result = substitute_variables(
+            filter_str="p = '{v}'", variables={"v": "a\x00b"}, escape="python"
+        )
+        assert result == "p = 'a\\x00b'"
+
+    def test_other_c0_hex_escape(self) -> None:
+        # Vertical tab (0x0b) has no named escape → \x0b.
+        result = substitute_variables(
+            filter_str="p = '{v}'", variables={"v": "a\x0bb"}, escape="python"
+        )
+        assert result == "p = 'a\\x0bb'"
+
+    @pytest.mark.parametrize("codepoint", list(range(0x00, 0x20)))
+    def test_every_c0_char_roundtrips_through_ast(self, codepoint: int) -> None:
+        # The whole C0 range must round-trip: substitute → the produced literal
+        # is a valid python string literal recovering the original value.
+        value = f"x{chr(codepoint)}y"
+        substituted = substitute_variables(
+            filter_str="'{v}'", variables={"v": value}, escape="python"
+        )
+        # ast.parse must not raise, and the recovered value must be identical.
+        assert _python_literal_value(substituted) == value
+
+    @pytest.mark.parametrize("codepoint", list(range(0x00, 0x20)))
+    def test_every_c0_char_exact_rendering(self, codepoint: int) -> None:
+        # Pin the EXACT encoding (not merely "some valid escape"): \t\n\r use
+        # their named escape, every other C0 char uses lowercase \xNN. This
+        # locks the rendering contract so an implementation that used octal or
+        # \u would still be caught even though ast.parse would accept it.
+        char = chr(codepoint)
+        named = {"\t": "\\t", "\n": "\\n", "\r": "\\r"}
+        expected_escape = named.get(char, f"\\x{codepoint:02x}")
+        substituted = substitute_variables(
+            filter_str="'{v}'", variables={"v": char}, escape="python"
+        )
+        assert substituted == f"'{expected_escape}'"
+
+    @pytest.mark.parametrize("codepoint", list(range(0x00, 0x20)))
+    def test_every_c0_char_roundtrips_in_list_element(self, codepoint: int) -> None:
+        # DEV-1730 list elements go through the same escaping; a control char in
+        # an element must round-trip so the ast tuple recovers it.
+        value = f"x{chr(codepoint)}y"
+        substituted = substitute_variables(
+            filter_str="c in ({v})", variables={"v": [value]}, escape="python"
+        )
+        expr = ast.parse(substituted, mode="eval")
+        rhs = expr.body.comparators[0]
+        assert isinstance(rhs, ast.Tuple)
+        assert [e.value for e in rhs.elts] == [value]
+
+    def test_non_control_unicode_untouched(self) -> None:
+        # A non-C0 char (accented letter, U+2028 line separator) is NOT a C0
+        # control char, so the pass leaves it verbatim.
+        for value in ("café", "a b", "emoji😀"):
+            substituted = substitute_variables(
+                filter_str="'{v}'", variables={"v": value}, escape="python"
+            )
+            assert _python_literal_value(substituted) == value
+
+    @pytest.mark.parametrize(
+        "codepoint",
+        [0x2028, 0x2029, 0x0085, 0x00A0, 0x00E9, 0x1F600],
+        ids=["line-sep", "para-sep", "nel", "nbsp", "e-acute", "emoji"],
+    )
+    def test_non_c0_char_textually_untouched(self, codepoint: int) -> None:
+        # Non-C0 chars (incl. the deceptively line-break-looking U+2028/U+2029,
+        # U+0085 NEL) are NOT encoded — they are left in the output byte-for-byte
+        # AND still round-trip (ast recovers them). A weaker recovery-only check
+        # would also pass if we'd wrongly \\u-escaped them, so assert BOTH.
+        char = chr(codepoint)
+        value = f"x{char}y"
+        substituted = substitute_variables(
+            filter_str="'{v}'", variables={"v": value}, escape="python"
+        )
+        assert char in substituted            # textually present, not escaped
+        assert substituted == f"'{value}'"
+        assert _python_literal_value(substituted) == value
+
+    def test_backslash_before_control_char(self) -> None:
+        # Order: backslash doubled first, THEN the control char encoded — a
+        # value of backslash+newline must recover exactly.
+        value = "\\\n"
+        substituted = substitute_variables(
+            filter_str="'{v}'", variables={"v": value}, escape="python"
+        )
+        assert substituted == "'\\\\\\n'"
+        assert _python_literal_value(substituted) == value
+
+    def test_sql_mode_leaves_control_chars_raw(self) -> None:
+        # The C0 pass is python-only: SQL literals accept raw newlines and
+        # sqlglot re-emits them, so sql mode must NOT encode control chars.
+        result = substitute_variables(
+            filter_str="p = '{v}'", variables={"v": "a\nb"},
+            escape="sql", backslash_escapes=False,
+        )
+        assert result == "p = 'a\nb'"
+
+
+# ---------------------------------------------------------------------------
+# 22. Dialect matrix: escaping round-trips through the parser sqlglot uses
+# ---------------------------------------------------------------------------
+
+_MATRIX_VALUES = [
+    "O'Brien",              # single quote
+    'say "hi"',             # double quote
+    "a\\b",                 # backslash
+    "a\\'b",                # backslash + single quote
+    'a\\"b',                # backslash + double quote
+    "abc\\",                # trailing backslash (closing-quote eater)
+    "it's a \"mix\"",       # both quote styles
+    "line1\nline2",         # raw newline (legal in a SQL literal)
+    "tab\there",            # raw tab
+    "plain",                # nothing special
+]
+
+# (dialect, value) pairs — the escaping regime flag is read from the dialect's
+# own ``backslash_escapes_strings`` property AT TEST TIME (not here), so this
+# module still imports cleanly before the property is implemented.
+_MATRIX = [
+    (d, v) for d in _ALL_DIALECTS for v in _MATRIX_VALUES
+]
+
+
+class TestEscapingRegimeDialectMatrix:
+    """For every dialect, the sql-escaped literal produced by
+    ``substitute_variables`` — using the regime the dialect's OWN
+    ``backslash_escapes_strings`` selects — must round-trip through sqlglot's
+    parser for that dialect (the exact parser SLayer feeds the substituted
+    Mode-A SQL to), AND survive a parse → emit → re-parse cycle. This is the
+    core correctness guarantee that the derived flag matches the parser."""
+
+    @pytest.mark.parametrize(
+        "dialect,value",
+        _MATRIX,
+        ids=[f"{d.sqlglot_name}-{v!r}" for d, v in _MATRIX],
+    )
+    def test_sql_literal_roundtrips_through_dialect_parser(
+        self, dialect, value: str
+    ) -> None:
+        literal = substitute_variables(
+            filter_str="'{v}'", variables={"v": value},
+            escape="sql", backslash_escapes=dialect.backslash_escapes_strings,
+        )
+        parsed = sqlglot.parse_one(literal, dialect=dialect.sqlglot_name)
+        assert parsed.this == value, (dialect.sqlglot_name, repr(literal))
+        # parse → emit → re-parse must preserve the value too.
+        reparsed = sqlglot.parse_one(
+            parsed.sql(dialect=dialect.sqlglot_name), dialect=dialect.sqlglot_name
+        )
+        assert reparsed.this == value, (dialect.sqlglot_name, "roundtrip")
+
+    def test_matrix_covers_all_14_dialects(self) -> None:
+        assert len({d.sqlglot_name for d, _ in _MATRIX}) == 14
+
+
+# ---------------------------------------------------------------------------
+# 23. Engine threading: the resolved dialect reaches the sql escaping
+# ---------------------------------------------------------------------------
+
+class TestSubstituteModelSqlSurfacesDialect:
+    """``_substitute_model_sql_surfaces`` requires a dialect and derives the
+    escaping regime from it (fail-closed — no caller can under-escape by
+    forgetting a bool)."""
+
+    def _model(self) -> SlayerModel:
+        return SlayerModel(
+            name="m",
+            data_source="ds",
+            sql="SELECT * FROM t WHERE r = '{region}'",
+            columns=[Column(name="a", sql="amount", type=DataType.DOUBLE)],
+        )
+
+    def test_backslash_dialect_escapes_value(self) -> None:
+        from slayer.engine.query_engine import _substitute_model_sql_surfaces
+        from slayer.sql.dialects import MysqlDialect
+
+        out = _substitute_model_sql_surfaces(
+            model=self._model(), variables={"region": "a\\'b"},
+            dialect=MysqlDialect(),
+        )
+        assert out.sql == "SELECT * FROM t WHERE r = 'a\\\\\\'b'"
+
+    def test_standard_dialect_doubles_quote_only(self) -> None:
+        from slayer.engine.query_engine import _substitute_model_sql_surfaces
+        from slayer.sql.dialects import SqliteDialect
+
+        out = _substitute_model_sql_surfaces(
+            model=self._model(), variables={"region": "a\\'b"},
+            dialect=SqliteDialect(),
+        )
+        assert out.sql == "SELECT * FROM t WHERE r = 'a\\''b'"
+
+    def test_dialect_is_required(self) -> None:
+        from slayer.engine.query_engine import _substitute_model_sql_surfaces
+
+        with pytest.raises(TypeError):
+            _substitute_model_sql_surfaces(
+                model=self._model(), variables={"region": "x"}
+            )
+
+
+def _status_literal_from_sql(sql: str, dialect_name: str):
+    """Parse generated SQL for ``dialect_name`` and return the string value of
+    the ``status = '...'`` literal (the round-tripped variable value)."""
+    tree = sqlglot.parse_one(sql, dialect=dialect_name)
+    for eq in tree.find_all(sqlglot.exp.EQ):
+        lit = eq.expression
+        if isinstance(lit, sqlglot.exp.Literal) and lit.is_string:
+            return lit.this
+    return None
+
+
+class TestEngineDialectThreadingEndToEnd:
+    """Through the real engine (dry_run, no live backslash DB): the datasource's
+    dialect must reach the Mode-A escaping. The generated SQL is parsed+re-emitted
+    by sqlglot, so we assert the VALUE ROUND-TRIPS (the escaped literal recovers
+    the original), not a raw substring — the discriminating proof, since a
+    mis-threaded (standard) regime on MySQL would make sqlglot's MySQL parser
+    raise on ``'a\\''b'`` and the dry_run would fail outright."""
+
+    async def _dry_run_sql_for(self, ds_type: str, value: str) -> str:
+        """Build a one-model engine on a datasource of ``ds_type`` and return
+        the generated SQL for a Mode-A model filter carrying ``value``. Uses a
+        SQLite file as the actual backend but pins the datasource *type* so the
+        dialect (hence escaping regime) is exercised; dry_run skips execution."""
+        tmp = tempfile.TemporaryDirectory()
+        db_path = f"{tmp.name}/x.db"
+        _seed_orders_db_at(db_path)
+        storage = YAMLStorage(base_dir=tmp.name)
+        await storage.save_datasource(
+            DatasourceConfig(name="ds", type=ds_type, database=db_path)
+        )
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="ds",
+            filters=["status = '{v}'"],
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+        await storage.save_model(model)
+        engine = SlayerQueryEngine(storage=storage)
+        try:
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                variables={"v": value},
+            )
+            result = await engine.execute(q, dry_run=True)
+            return result.sql
+        finally:
+            tmp.cleanup()
+
+    async def test_backslash_dialect_threads_regime_so_value_roundtrips(self) -> None:
+        # A backslash+quote value on a mysql-type datasource: the dry_run only
+        # SUCCEEDS (and the literal round-trips) if the MySQL backslash regime
+        # was threaded — the naive/standard regime would emit ``'a\\''b'`` which
+        # sqlglot's MySQL parser rejects, raising before any SQL is returned.
+        sql = await self._dry_run_sql_for("mysql", "a\\'b")
+        assert _status_literal_from_sql(sql, "mysql") == "a\\'b"
+
+    async def test_standard_dialect_value_roundtrips(self) -> None:
+        # Standard (sqlite) path: a quote-bearing (backslash-free) value
+        # round-trips end-to-end. Backslash values are the pre-existing SQLite
+        # gap (see the strict-xfail above), so they are deliberately not used.
+        sql = await self._dry_run_sql_for("sqlite", "O'Brien")
+        assert _status_literal_from_sql(sql, "sqlite") == "O'Brien"
+
+
+class TestProbeModelDialectThreading:
+    """``_render_probe_model`` threads the dialect into the Mode-A surfaces it
+    renders from the model's own defaults."""
+
+    def _template_model(self) -> SlayerModel:
+        return SlayerModel(
+            name="m",
+            data_source="ds",
+            sql="SELECT * FROM t WHERE r = '{region}'",
+            query_variables={"region": "a\\'b"},
+            columns=[Column(name="a", sql="amount", type=DataType.DOUBLE)],
+        )
+
+    def test_probe_uses_backslash_dialect(self) -> None:
+        from slayer.engine.query_engine import _render_probe_model
+        from slayer.sql.dialects import MysqlDialect
+
+        out = _render_probe_model(self._template_model(), dialect=MysqlDialect())
+        assert out.sql == "SELECT * FROM t WHERE r = 'a\\\\\\'b'"
+
+    def test_probe_uses_standard_dialect(self) -> None:
+        from slayer.engine.query_engine import _render_probe_model
+        from slayer.sql.dialects import SqliteDialect
+
+        out = _render_probe_model(self._template_model(), dialect=SqliteDialect())
+        assert out.sql == "SELECT * FROM t WHERE r = 'a\\''b'"
+
+    def test_probe_dialect_required(self) -> None:
+        from slayer.engine.query_engine import _render_probe_model
+
+        with pytest.raises(TypeError):
+            _render_probe_model(self._template_model())
+
+
+# ---------------------------------------------------------------------------
+# 24. Mode-B end-to-end: control-char values round-trip through the parser
+# ---------------------------------------------------------------------------
+
+async def _engine_with_ctrl_status(model: SlayerModel) -> tuple:
+    """Seed a table whose status column carries control-char values, so a
+    Mode-B (python-escaped) query filter can be shown to match end-to-end."""
+    tmp = tempfile.TemporaryDirectory()
+    db_path = f"{tmp.name}/ctrl.db"
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT NOT NULL, amount REAL NOT NULL)"
+    )
+    cur.executemany(
+        "INSERT INTO t (status, amount) VALUES (?, ?)",
+        [("line1\nline2", 11.0), ("tab\there", 22.0), ("cr\rhere", 33.0), ("plain", 44.0)],
+    )
+    conn.commit()
+    conn.close()
+    storage = YAMLStorage(base_dir=tmp.name)
+    await storage.save_datasource(
+        DatasourceConfig(name="ds", type="sqlite", database=db_path)
+    )
+    await storage.save_model(model)
+    return SlayerQueryEngine(storage=storage), tmp
+
+
+class TestModeBControlCharsEndToEnd:
+    """Legitimate control-char values (Gap 2): a newline/tab/CR-bearing value in
+    a Mode-B query filter must parse (no ast.parse SyntaxError) and match ONLY
+    its row through the real SQLite pipeline."""
+
+    def _model(self) -> SlayerModel:
+        return SlayerModel(
+            name="t",
+            sql_table="t",
+            data_source="ds",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [("line1\nline2", 11.0), ("tab\there", 22.0), ("cr\rhere", 33.0)],
+    )
+    async def test_control_char_value_matches_only_its_row(
+        self, value: str, expected: float
+    ) -> None:
+        engine, tmp = await _engine_with_ctrl_status(self._model())
+        try:
+            q = SlayerQuery(
+                source_model="t",
+                measures=[{"formula": "amount:sum"}],
+                filters=["status = '{v}'"],
+                variables={"v": value},
+            )
+            resp = await engine.execute(q)
+            assert _sum(resp, "t.amount_sum") == expected
         finally:
             tmp.cleanup()

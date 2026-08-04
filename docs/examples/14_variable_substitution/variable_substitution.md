@@ -66,9 +66,12 @@ query or per call.
 - **Fully variable-free executions treat braces as literals**, so a raw brace
   literal such as a Postgres array `'{1,2,3}'` survives untouched. Use `{{` / `}}`
   for literal braces in a model that *does* use variables.
-- **Trusted input.** Values are treated as trusted, not attacker-controlled. The
-  Mode-A escaping is not dialect-aware, so avoid untrusted values on
-  backslash-escaping backends like MySQL.
+- **Trusted input.** Values are treated as trusted, not attacker-controlled —
+  prefer not to feed untrusted end-user input through `variables`. The Mode-A
+  escaping is dialect-aware (DEV-1727), so a quoted string value stays inside its
+  literal on every backend, including backslash-escaping ones like MySQL and
+  ClickHouse; only *quoted* literals are escaped, and a `{var}` in an unquoted
+  position is still raw substitution.
 
 Substitution currently applies to a query's **direct source model**; nested
 `source_queries` stages, join targets, and cross-model targets are a tracked
