@@ -269,10 +269,11 @@ class TestJoinedDimensionDottedKeys:
         DOTTED key iff both producers agree on the dotted form.
 
         Uses only LOCAL measures: a derived joined dim combined with a
-        cross-model measure is a separate, deliberately-deferred case (DEV-1708
-        raises ``NotImplementedError`` for a derived dim used as a cross-model
-        shared grain — full support tracked in DEV-1495-b1). The naming
-        agreement this test pins needs no cross-model measure."""
+        cross-model measure (a derived cross-model shared grain) now renders —
+        DEV-1728 removed the DEV-1708 raise; that combination is covered
+        end-to-end in tests/test_dev1728_derived_shared_grain.py. The naming
+        agreement this test pins needs no cross-model measure, so it stays
+        focused on the local-measure shape."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="customers.rev_x2")],  # labeled -> surfaces
@@ -300,11 +301,12 @@ class TestJoinedDimensionDottedKeys:
         decomposition helper unifies — must agree on the dotted form for every
         one.
 
-        Two queries, not one: a plain derived joined dim used as cross-model
-        shared grain deliberately raises (DEV-1708, user-approved; full
-        support = DEV-1495), and on this single-chain fixture every
-        cross-model measure's target path runs through ``customers`` — so the
-        derived dim and the cross-model aggregate cannot share a query."""
+        Two queries, not one: kept split for focused per-slot-type naming
+        coverage. The plain derived joined dim + cross-model aggregate
+        combination now renders (DEV-1728 removed the DEV-1708 raise) and is
+        covered end-to-end in tests/test_dev1728_derived_shared_grain.py; this
+        test stays split so each slot-type's key agreement is pinned in
+        isolation."""
 
         async def _check(query: SlayerQuery, expected: set) -> None:
             resp = await engine.execute(query, dry_run=True)

@@ -8,7 +8,7 @@ query engine's _enrich() step.
 import copy
 import logging
 import re
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Set, Tuple, Union
+from typing import AbstractSet, Any, Dict, List, Literal, NamedTuple, Optional, Set, Tuple, Union
 
 import sqlglot
 from sqlglot import exp
@@ -26,6 +26,7 @@ from slayer.core.errors import AggregationNotAllowedError, UnresolvableOrderColu
 from slayer.core.keys import _FrozenKey, _reroot_path_ref, reroot_aggregate_key
 from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
+from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration as _parse_window_duration
 from slayer.engine.column_expansion import (
     _is_trivial_base,
@@ -33,7 +34,6 @@ from slayer.engine.column_expansion import (
     collect_root_scope_joined_paths,
     expand_derived_refs_sync,
 )
-from slayer.engine.cross_model_planner import derived_shared_grain_not_implemented
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
 from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
@@ -607,6 +607,31 @@ def _cte_name_from_alias(prefix: str, alias: str) -> str:
     return prefix + sanitized
 
 
+def _effective_src_filters(*, planned_query, plan) -> list:
+    """``planned_query.filters_by_phase`` as the windowed ``_src`` scope sees it
+    (DEV-1732): frame-bound residuals substituted for the host's predicates.
+
+    Returned as ONE list that both ``_resolve_where_filter_joins_via_scope`` and
+    ``_build_where_having_from_planned`` consume, so join discovery and
+    rendering are structurally guaranteed to agree. Entries whose filter is
+    wholly a frame bound need no substitution here — the planner already left
+    their ids out of ``plan.where_filter_ids``, and the caller's
+    ``skip_filter_ids`` drops them.
+
+    Returns the original list unchanged when the plan carries no rewrites, so a
+    query without a split conjunction emits byte-identical SQL.
+    """
+    rewrites = getattr(plan, "src_filter_rewrites", None)
+    if not rewrites:
+        return planned_query.filters_by_phase
+    by_id = {r.filter_id: r.expression for r in rewrites}
+    return [
+        fp if fp.id not in by_id
+        else fp.model_copy(update={"expression": by_id[fp.id]})
+        for fp in planned_query.filters_by_phase
+    ]
+
+
 def _alias_prefixes(model_name: str) -> list:
     """'a__b__c' → ['a', 'a__b', 'a__b__c']"""
     parts = model_name.split("__")
@@ -684,6 +709,13 @@ _TRAILING_LIMIT_OFFSET_RE = re.compile(
 )
 _TRAILING_LIMIT_RE = re.compile(r"(?is)\s*LIMIT\s+\d+\s*\Z")
 
+# A ``Column.sql`` that is just an unqualified identifier — i.e. the column
+# renames a physical column rather than computing an expression. Used to
+# reserve star-exported physical names against ``_val_<n>`` collisions
+# (DEV-1728). Deliberately rejects dots: ``regions.population`` is a crossing
+# reference, not a column of the star-projected relation.
+_BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+
 
 def _strip_trailing_pagination(sql: str) -> str:
     """DEV-1444: remove trailing ORDER BY / LIMIT / OFFSET clauses that
@@ -760,6 +792,31 @@ class SQLGenerator:
         site in this module — pinned by test_dev1726_cte_case_folding — so a
         new allocation path cannot silently lose dialect awareness."""
         return AliasAllocator(folds_case=dialect_folds_case(self.dialect))
+
+    @staticmethod
+    def _reserve_model_column_names(allocator: AliasAllocator, model) -> None:
+        """Reserve every name a ``<relation>.*`` projection of ``model`` can
+        export, so a minted ``_val_<n>`` (Law-2 materialisation) never shadows a
+        real column (DEV-1728 / Codex F6).
+
+        Both the SEMANTIC name and — when ``Column.sql`` is a bare identifier —
+        the PHYSICAL column name are reserved: a star-projection exports the
+        physical names, and the two differ whenever a column renames its source
+        (``Column(name="value", sql="_val_0")``). A non-bare ``Column.sql`` is an
+        expression, not a star-exported column, so it contributes nothing.
+
+        Columns that exist in the database but not on the model are outside what
+        SLayer can see without reflection; a physical column literally named
+        ``_val_<n>`` is the only way to hit that residual, which the underscore
+        prefix makes vanishingly unlikely.
+        """
+        names: List[str] = []
+        for c in model.columns:
+            names.append(c.name)
+            sql = getattr(c, "sql", None)
+            if sql and _BARE_IDENT_RE.fullmatch(sql.strip()):
+                names.append(sql.strip())
+        allocator.reserve(*names)
 
     @staticmethod
     def _maybe_quote_ident(ident: Optional[exp.Expression]) -> None:
@@ -5215,7 +5272,7 @@ class SQLGenerator:
         # and never collapse onto one ``_val``; bare refs are type-agnostic
         # (no CAST) and sharing IS correct.
         allocator = self._gen_allocator or self._new_allocator()
-        allocator.reserve(*[c.name for c in source_model.columns])
+        self._reserve_model_column_names(allocator, source_model)
         value_alias_by_sql: Dict[str, str] = {}
 
         def _materialize_if_crossing(
@@ -5716,18 +5773,21 @@ class SQLGenerator:
         src_cols.append(val_expr.as_("_w_value"))
 
         # WHERE-phase row filters (model + user) inherited into ``_src``, minus
-        # date_range (``plan.where_filter_ids``). Register their crossed joins
-        # into ``src_scope`` first (Law 1), then render.
+        # their frame bounds (``plan.where_filter_ids`` /
+        # ``plan.src_filter_rewrites``, DEV-1714 + DEV-1732). ONE effective list
+        # feeds both join discovery (Law 1) and rendering, so the two can never
+        # disagree about what this CTE contains.
         all_filter_ids = {fp.id for fp in planned_query.filters_by_phase}
         skip_for_src = all_filter_ids - set(plan.where_filter_ids)
+        src_filters = _effective_src_filters(planned_query=planned_query, plan=plan)
         self._resolve_where_filter_joins_via_scope(
             planned_query=planned_query, scope=src_scope,
-            skip_filter_ids=skip_for_src,
+            skip_filter_ids=skip_for_src, filters_override=src_filters,
         )
         src_where, _src_having = self._build_where_having_from_planned(
             planned_query=planned_query, source_relation=source_relation,
             source_model=source_model, bundle=bundle,
-            skip_filter_ids=skip_for_src,
+            skip_filter_ids=skip_for_src, filters_override=src_filters,
         )
 
         # ``_src`` FROM + joins from the scope's discovered paths.
@@ -7183,12 +7243,31 @@ class SQLGenerator:
         # column on the left side). Intersect with the host's actual
         # projection ids so only projected slots flow into the CTE.
         cte_select_columns: List[exp.Expression] = []
+        # DEV-1728: two GROUP-BY lists — ``cte_group_by`` is the OUTER GROUP BY
+        # (an alias ref ``_val_<n>`` for a first/last-materialised crossing
+        # grain, the raw expression otherwise); ``cte_partition_exprs`` is the
+        # ranked-subquery PARTITION BY, always the RAW expression (valid inside
+        # the subquery where the crossed join is bound). They are identical for
+        # every non-first/last query and every non-crossing grain.
         cte_group_by: List[exp.Expression] = []
+        cte_partition_exprs: List[exp.Expression] = []
         shared_grain_aliases: List[str] = []
         # DEV-1701: join paths crossed by a shared-grain derived TIME dimension's
         # expanded ``Column.sql``. Collected during the loop (which runs before
         # the CTE scope's join set is assembled) and merged into it below.
         shared_grain_join_paths: List[Tuple[str, ...]] = []
+        # DEV-1728: first/last grain materialisations (``_val_<n>`` projections
+        # to inject INTO the ranked subquery for crossing derived grains). The
+        # generation-wide allocator is hoisted here so grain + source ``_val``s
+        # share one monotonic sequence. Reserve the target's physical column
+        # names (Codex F6): the ranked subquery re-exports ``target.*``, so a
+        # minted ``_val_<n>`` must never collide with a real target column of
+        # that name — mirrors the host-path reservation in
+        # ``_build_first_last_base_select``.
+        cte_allocator = self._gen_allocator or self._new_allocator()
+        self._reserve_model_column_names(cte_allocator, target_model)
+        is_first_or_last = agg_slot.key.agg in ("first", "last")
+        grain_extra_projections: List[Tuple[str, exp.Expression]] = []
         for sid in plan.shared_grain_slots:
             if sid not in base_projection_ids:
                 continue
@@ -7202,10 +7281,10 @@ class SQLGenerator:
             elif isinstance(key, TimeTruncKey):
                 path = key.column.path
             elif isinstance(key, ColumnSqlKey):
-                # DEV-1708: a plain derived (non-time) dim carries its own path;
-                # extracting it lets a path-bearing one reach the shared-grain
-                # raise below (host-local ``path == ()`` derived dims still fall
-                # through to the CROSS-JOIN broadcast, unchanged).
+                # DEV-1708 / DEV-1728: a plain derived (non-time) dim carries its
+                # own path; a path-bearing one renders here like any grain, a
+                # host-local ``path == ()`` one falls through to the CROSS-JOIN
+                # broadcast below (unchanged).
                 path = key.path
             if not path:
                 # Local-only host dim — broadcast via CROSS JOIN.
@@ -7235,21 +7314,11 @@ class SQLGenerator:
 
             grain_column = key.column if isinstance(key, TimeTruncKey) else key
             if isinstance(grain_column, _ColumnSqlKey):
-                # DEV-1708 (user-approved): a PLAIN derived (non-TIME) dimension
-                # used as cross-model shared grain is not yet supported — the
-                # host aliases it flattened (``customers_v2__deep_pop``) while the
-                # join-back builder assumes the dotted form (DEV-1495-b1, Stage
-                # 8/9). Rather than silently CROSS-JOIN-broadcast the GLOBAL
-                # aggregate across groups (wrong per-group values), raise loudly.
-                # A TimeTrunc-wrapped derived grain IS supported (below).
-                if not isinstance(key, TimeTruncKey):
-                    # Defensive backstop — the planner raises this first (a
-                    # plain derived shared-grain slot never reaches the emitted
-                    # ``shared_grain_slots``); shares the planner's message so
-                    # the two can't drift (DEV-1708).
-                    raise derived_shared_grain_not_implemented(
-                        grain_column.column_name,
-                    )
+                # DEV-1728: a derived (ColumnSqlKey) grain — plain dimension OR
+                # time dimension — expands its Column.sql rooted at the target and
+                # renders here. (The DEV-1708 raise for a PLAIN derived grain is
+                # gone: DEV-1713 fixed the naming half, so the host's dotted alias
+                # and the CTE join-back now agree.)
                 expanded_grain_sql = self._expand_derived_column_sql(
                     source_model=target_model,
                     source_relation=target_relation,
@@ -7258,7 +7327,22 @@ class SQLGenerator:
                 )
                 col_expr = self._parse(expanded_grain_sql)
                 leaf = grain_column.column_name
-                # DEV-1701: register every further join the derived TIME dim's
+                if not isinstance(key, TimeTruncKey):
+                    # DEV-1728: a PLAIN derived grain is CAST to its declared type
+                    # to match the host base's ``_wrap_cast_for_type`` (a bare
+                    # column ref / TEXT is skipped there and here identically), so
+                    # the join-back compares identically-typed values. A
+                    # TimeTrunc-wrapped grain keeps ``_build_date_trunc``'s own
+                    # temporal shape (no extra cast — parity with the host base).
+                    grain_col = next(
+                        (c for c in target_model.columns
+                         if c.name == grain_column.column_name),
+                        None,
+                    )
+                    col_expr = _wrap_cast_for_type(
+                        col_expr, grain_col.type if grain_col else None,
+                    )
+                # DEV-1701: register every further join the derived grain's
                 # expanded sql crosses (rooted at the target relation), so the
                 # CTE's FROM pulls it. Merged into the CTE join set below.
                 for _p in self._joined_paths_in_sql(
@@ -7284,8 +7368,32 @@ class SQLGenerator:
             # ``_build_base_select_for_planned`` already aliases that
             # way for joined ROW slots.
             host_alias = planned_query.source_relation + "." + ".".join(path) + f".{leaf}"
-            cte_select_columns.append(col_expr.copy().as_(host_alias))
-            cte_group_by.append(col_expr)
+            # DEV-1728 Law 2: for a first/last aggregate the CTE's FROM is a
+            # ROW_NUMBER-ranked subquery that re-exports only ``target.*`` + rank
+            # columns. A grain whose expression CROSSES a join references a table
+            # bound ONLY inside that subquery, so the outer SELECT / GROUP BY
+            # cannot name it — materialise it as a ``_val_<n>`` projection inside
+            # the subquery, group the outer SELECT on the alias, and keep the RAW
+            # expression for PARTITION BY (evaluated where the join is bound). A
+            # target-local grain (no crossing) needs no materialisation — it is
+            # re-exported by ``target.*``.
+            grain_crosses = is_first_or_last and bool(
+                self._joined_paths_in_sql(
+                    sql_expr=col_expr, source_relation=target_relation,
+                    source_model=target_model, bundle=bundle,
+                )
+            )
+            if grain_crosses:
+                val_alias = cte_allocator.allocate_val()
+                grain_extra_projections.append((val_alias, col_expr.copy()))
+                alias_ref = exp.column(val_alias)
+                cte_select_columns.append(alias_ref.copy().as_(host_alias))
+                cte_group_by.append(alias_ref.copy())
+                cte_partition_exprs.append(col_expr.copy())
+            else:
+                cte_select_columns.append(col_expr.copy().as_(host_alias))
+                cte_group_by.append(col_expr.copy())
+                cte_partition_exprs.append(col_expr.copy())
             shared_grain_aliases.append(host_alias)
 
         # Aggregate column: synthesise an EnrichedMeasure ROOTED at the
@@ -7327,9 +7435,9 @@ class SQLGenerator:
         # as a side effect — the CTE's FROM is built from that set below, so a
         # crossed join can never be forgotten (replaces the ad-hoc
         # ``_add_cte_join_paths`` closure + per-carrier collectors). The scope
-        # shares the generation-wide allocator so ``_val_<n>`` materialisation
-        # names (Law 2, below) are unique across the host base and every CTE.
-        cte_allocator = self._gen_allocator or self._new_allocator()
+        # shares the generation-wide allocator (``cte_allocator``, hoisted above
+        # the grain loop) so ``_val_<n>`` materialisation names (Law 2) are
+        # unique across the host base, the grain projections, and every CTE.
         cte_scope = ScopeFrame(
             scope_id=cte_allocator.next_scope_id(target_relation),
             root_model=target_model,
@@ -7390,8 +7498,10 @@ class SQLGenerator:
         # relation). If even that is unset, raise the standard
         # "first/last requires a ranking time column" error rather than
         # silently emitting an agg_expr that references a non-existent
-        # ``_first_rn`` / ``_last_rn`` column.
-        is_first_or_last = local_agg_key.agg in ("first", "last")
+        # ``_first_rn`` / ``_last_rn`` column. (``is_first_or_last`` is computed
+        # once above the grain loop from ``agg_slot.key.agg`` — reroot preserves
+        # the aggregation name — so the grain materialisation and this branch
+        # agree.)
         time_col_sql: Optional[str] = synth.time_column
         if is_first_or_last and time_col_sql is None:
             if target_model.default_time_dimension:
@@ -7529,7 +7639,13 @@ class SQLGenerator:
             # ``_match_fN`` rank columns) and need no outer alias. A LOCAL source
             # value is already covered by ``target.*`` — no materialisation.
             outer_synth = synth
-            extra_projections: List[Tuple[str, exp.Expression]] = []
+            # DEV-1728: seed with the crossing-grain ``_val_<n>`` projections
+            # collected in the grain loop, so a first/last aggregate grouped by a
+            # crossing derived grain materialises that grain INSIDE the subquery
+            # too (the outer SELECT / GROUP BY reference the alias).
+            extra_projections: List[Tuple[str, exp.Expression]] = list(
+                grain_extra_projections,
+            )
             if synth.sql:
                 # DEV-1709: materialise the RESOLVED value (qualified +
                 # ``Column.type`` inner CAST for non-bare expressions) and
@@ -7558,7 +7674,7 @@ class SQLGenerator:
                 self._build_ranked_subquery_from_planned(
                     source_relation=target_relation,
                     default_time_col_sql=time_col_sql,
-                    partition_exprs=list(cte_group_by),
+                    partition_exprs=list(cte_partition_exprs),
                     extra_projections=extra_projections,
                     synth_specs=[synth],
                     from_clause=target_from,
@@ -8918,12 +9034,16 @@ class SQLGenerator:
         """Build the WHERE clauses for the shifted CTE that re-aggregates
         the source relation, plus the join paths those clauses cross.
 
-        7b.3c invariant: ``BetweenKey`` filters (those derived from
-        ``TimeDimension.date_range``) MUST be omitted from the shifted
-        inner CTE so the earliest visible bucket can still carry a
-        non-null shifted value. Other ROW-phase filters
-        (e.g. ``status = 'active'``) are propagated unchanged so the
-        shifted aggregation runs over the same row population.
+        7b.3c invariant, generalised by DEV-1732: a FRAME BOUND must be omitted
+        from the shifted inner CTE so the earliest visible bucket can still
+        carry a non-null shifted value. That covers the ``BetweenKey`` a
+        ``date_range`` produces AND the explicit relational spelling of the same
+        intent (``created_at >= '2024-01-01'``), which used to be propagated —
+        so the two spellings gave different numbers. A filter that is only
+        PARTLY a frame bound propagates as its residual population predicate.
+
+        Other ROW-phase filters (e.g. ``status = 'active'``) are propagated
+        unchanged so the shifted aggregation runs over the same row population.
         AGGREGATE / POST phase filters never apply to the shifted CTE
         (they're outer-projection concerns).
 
@@ -8939,12 +9059,17 @@ class SQLGenerator:
 
         out: List[str] = []
         crossed_paths: List[Tuple[str, ...]] = []
+        # DEV-1732: the frame-bound column set is computed once by the planner
+        # and carried on the plan, so this path and the windowed ``_src`` path
+        # cannot drift apart.
+        time_cols = frozenset(planned_query.frame_bound_columns)
         for fp in planned_query.filters_by_phase:
             if fp.phase != Phase.ROW:
                 continue
             rendered = self._shifted_where_part(
                 fp=fp, source_relation=source_relation,
                 source_model=source_model, bundle=bundle,
+                time_columns=time_cols,
             )
             if rendered is None:
                 continue
@@ -8957,10 +9082,26 @@ class SQLGenerator:
 
     def _shifted_where_part(
         self, *, fp, source_relation: str, source_model, bundle,
+        time_columns: "AbstractSet[Any]",
     ) -> "Optional[Tuple[str, List[Tuple[str, ...]]]]":
         """Render one ROW-phase filter for the shifted CTE, returning its SQL
-        plus the join paths it crosses — or ``None`` to omit it (a
-        ``BetweenKey`` date_range filter, per the 7b.3c invariant).
+        plus the join paths it crosses — or ``None`` to omit it entirely.
+
+        A filter that is wholly a FRAME BOUND on one of ``time_columns`` is
+        omitted; one that is partly a frame bound renders as its residual
+        population predicate (DEV-1732). This subsumes the old
+        ``isinstance(..., BetweenKey)`` special case: a ``date_range``'s
+        ``BetweenKey`` column is always a query time dimension's raw column, so
+        ``strip_frame_bounds`` returns ``None`` for it — same behaviour, one
+        rule.
+
+        Mode-A ``text`` filters are exempt from the analysis and always
+        propagate (a model filter defines which rows EXIST, not the frame).
+
+        ``time_columns`` is REQUIRED, deliberately (Codex): ``strip_frame_bounds``
+        returns its input unchanged for an empty set, so a default would let a
+        future caller silently start rendering every ``date_range`` into the
+        shifted CTE — the exact 7b.3c regression this method exists to prevent.
 
         The join paths are collected per carrier kind (CodeRabbit): a TYPED
         filter is scanned STRUCTURALLY on its already-rendered AST via
@@ -8970,14 +9111,18 @@ class SQLGenerator:
         ``text`` filter has only its string form, so it keeps the
         ``_filter_join_paths`` dual raw + inline-expanded scan (the DEV-1494
         contract that surfaces a derived ref's expansion joins).
-        """
-        from slayer.core.keys import BetweenKey
 
+        Note the scan runs on the RESIDUAL, so the shifted CTE's join set
+        follows what it actually renders.
+        """
         if fp.expression is not None:
-            if isinstance(fp.expression.value_key, BetweenKey):
-                return None  # date_range filter — omit from inner shifted CTE.
+            residual = strip_frame_bounds(
+                key=fp.expression.value_key, time_columns=time_columns,
+            )
+            if residual is None:
+                return None  # wholly a frame bound — omit from the shifted CTE.
             rendered = self._render_value_key_for_filter(
-                key=fp.expression.value_key,
+                key=residual,
                 source_relation=source_relation,
                 source_model=source_model,
                 bundle=bundle,
@@ -10174,6 +10319,7 @@ class SQLGenerator:
     def _resolve_where_filter_joins_via_scope(
         self, *, planned_query, scope: ScopeFrame,
         skip_filter_ids: Optional[Set[str]] = None,
+        filters_override: "Optional[List[Any]]" = None,
     ) -> None:
         """Register into ``scope.join_paths`` the joins every WHERE-phase filter
         references (Law 1 — discovery is a side effect of resolving the filter
@@ -10194,11 +10340,19 @@ class SQLGenerator:
         Filters routed to a per-plan ``_cm_*`` CTE (``skip_filter_ids``) are
         applied there, not on the host base, so their joins are not registered
         here.
+
+        ``filters_override`` (DEV-1732) replaces the filter list being scanned —
+        the windowed ``_src`` scope passes the SAME rewritten list it renders, so
+        discovery and rendering can never disagree about what the CTE contains.
         """
         from slayer.core.keys import Phase
 
         skip = skip_filter_ids or set()
-        for fp in planned_query.filters_by_phase:
+        filters = (
+            planned_query.filters_by_phase
+            if filters_override is None else filters_override
+        )
+        for fp in filters:
             if fp.phase != Phase.ROW or fp.id in skip:
                 continue
             if fp.expression is not None:
@@ -10532,7 +10686,7 @@ class SQLGenerator:
             f"AggregateKey source {type(source).__name__} not supported.",
         )
 
-    def _build_where_having_from_planned(
+    def _build_where_having_from_planned(  # NOSONAR(S3776) — one cohesive pass over filters_by_phase routing each entry to WHERE / HAVING / POST by phase, with the per-carrier (typed vs Mode-A text) rendering and the HAVING grouped-column guard inline. The complexity is pre-existing; DEV-1732 added only the `filters_override` list selection. Splitting the phase routing from the rendering would thread slot_by_key / first_last_state / where_parts / having_parts through helpers without simplifying anything.
         self,
         *,
         planned_query,
@@ -10542,7 +10696,10 @@ class SQLGenerator:
         skip_filter_ids: Optional[Set[str]] = None,
         first_last_state: Optional[FirstLastRenderState] = None,
         aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
+        filters_override: "Optional[List[Any]]" = None,
     ):
+        """``filters_override`` (DEV-1732) replaces ``filters_by_phase`` as the
+        list being rendered — see ``_effective_src_filters``."""
         from slayer.core.keys import Phase
 
         skip = skip_filter_ids or set()
@@ -10558,7 +10715,11 @@ class SQLGenerator:
         }
         where_parts: list[str] = []
         having_parts: list[str] = []
-        for fp in planned_query.filters_by_phase:
+        filters = (
+            planned_query.filters_by_phase
+            if filters_override is None else filters_override
+        )
+        for fp in filters:
             if fp.id in skip:
                 # DEV-1450 stage 7b.12: filters routed into a per-plan
                 # cross-model CTE (where_filter_ids / having_filter_ids)

@@ -58,6 +58,7 @@ from slayer.core.query import (
     TimeDimension,
 )
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
+from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.aggregate_input_paths import (
@@ -83,6 +84,7 @@ from slayer.engine.planned import (
     FilterPhase,
     OrderEntry,
     PlannedQuery,
+    SrcFilterRewrite,
     TransformLayer,
     ValueSlot,
     WindowedAggregatePlan,
@@ -985,6 +987,26 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         active_td_slot_id=active_td_slot_id,
     )
 
+    # DEV-1714 (Codex round 5): a filter that references a windowed measure is
+    # reclassified WHOLE to Phase.POST (outer WHERE on the joined-back column).
+    # It must therefore reference ONLY windowed measures (+ literals). Mixing a
+    # windowed predicate with a row column or a plain aggregate in ONE filter
+    # can't be cleanly split — the windowed part is POST while the row part is a
+    # pre-aggregation WHERE — and would emit an outer-WHERE reference to an
+    # unprojected ``_base`` column. Reject it (the pre-projection G7 already
+    # catches the windowed+plain-aggregate half with a specific message; this
+    # also covers windowed+row-column, which G7's aggregate-only scan misses).
+    if windowed_slot_ids:
+        for bf in bound_filters:
+            refs = filter_referenced_slot_ids(bf, projection.registry)
+            if (refs & windowed_slot_ids) and (refs - windowed_slot_ids):
+                raise NotImplementedError(
+                    "A single filter that mixes a windowed measure (window='…') "
+                    "with another predicate (a row column or a plain aggregate) "
+                    "is not yet supported (DEV-1504). Put them in separate "
+                    "filters."
+                )
+
     # DEV-1712 (Law 2): plan-time classification of every ORDER BY target that
     # is not a declared/public slot. Order-only AGGREGATES (local or
     # cross-model) always materialise and order — never rejected. The rest:
@@ -1219,18 +1241,27 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # Stage 7b.10 — the active TD's slot id (``active_td_slot_id``) is resolved
     # right after projection above so the windowed-plan builder can use it.
 
-    # DEV-1714 Stage 10 — the ``_wm_`` ``_src`` scope inherits WHERE-phase row
-    # filters (model + user), EXCEPT the typed date_range (``f0..f{n-1}``): the
-    # trailing window must reach rows before the range start. POST-reclassified
-    # windowed-measure filters are already excluded (phase != ROW).
+    # DEV-1732 — the frame-bound column set: raw columns of this stage's
+    # NON-HIDDEN time dimensions. Computed once and carried on the plan so the
+    # windowed ``_src`` path (below) and the generator's ``time_shift``
+    # shifted-CTE path read the SAME set.
+    frame_bound_columns = _frame_bound_columns(row_slots=row_slots)
+
+    # DEV-1714 Stage 10 / DEV-1732 — the ``_wm_`` ``_src`` scope inherits
+    # WHERE-phase row filters (model + user) MINUS their frame bounds: the
+    # trailing window must reach rows before the visible frame starts.
+    # POST-reclassified windowed-measure filters are already excluded
+    # (phase != ROW).
     if windowed_plans:
         date_range_fids = {f"f{i}" for i in range(n_date_range)}
-        src_where_ids = [
-            fp.id for fp in filters_by_phase
-            if fp.phase == Phase.ROW and fp.id not in date_range_fids
-        ]
+        src_where_ids, src_rewrites = _plan_src_row_filters(
+            filters_by_phase=filters_by_phase,
+            date_range_fids=date_range_fids,
+            frame_bound_columns=frame_bound_columns,
+        )
         for wp in windowed_plans:
             wp.where_filter_ids = src_where_ids
+            wp.src_filter_rewrites = src_rewrites
 
     return PlannedQuery(
         source_relation=source_relation,
@@ -1249,7 +1280,86 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         active_time_dimension_slot_id=active_td_slot_id,
         render_source_model=render_source_model,
         distinct_dimension_values=query.distinct_dimension_values,
+        frame_bound_columns=frame_bound_columns,
     )
+
+
+def _frame_bound_columns(*, row_slots: list) -> List[ValueKey]:
+    """Raw column keys of the stage's NON-HIDDEN time dimensions (DEV-1732).
+
+    An explicit relational bound on one of these is a FRAME bound — the
+    caller restating what ``TimeDimension.date_range`` expresses — and is
+    stripped from CTEs that must read outside the frame. A bound on any other
+    column, temporal or not, is a population filter and is left alone.
+
+    Hidden ``TimeTruncKey`` slots are excluded deliberately, and the exclusion
+    is load-bearing rather than cosmetic: ``_build_windowed_plans`` skips hidden
+    row slots when building ``other_time_dimension_slot_ids``, so a hidden time
+    axis is never equality-joined into ``_src``. Stripping a bound on one would
+    leave that axis wholly unconstrained — an unbounded over-count — where
+    keeping it merely preserves the pre-DEV-1732 result.
+
+    Order-stable and de-duplicated: the same column carried at two
+    granularities contributes one entry.
+    """
+    out: List[ValueKey] = []
+    seen: set = set()
+    for rs in row_slots:
+        if rs.hidden or not isinstance(rs.key, TimeTruncKey):
+            continue
+        col = rs.key.column
+        if col in seen:
+            continue
+        seen.add(col)
+        out.append(col)
+    return out
+
+
+def _plan_src_row_filters(
+    *,
+    filters_by_phase: list,
+    date_range_fids: set,
+    frame_bound_columns: List[ValueKey],
+) -> "Tuple[List[str], List[SrcFilterRewrite]]":
+    """Partition ROW-phase filters for a windowed measure's ``_src`` scope.
+
+    Returns ``(where_filter_ids, src_filter_rewrites)``:
+
+    * a filter that is ENTIRELY a frame bound is omitted from the ids;
+    * a filter that is PARTLY one keeps its id and gains a rewrite carrying the
+      residual population predicate;
+    * everything else keeps its id with no rewrite.
+
+    Mode-A model filters (``FilterPhase.text``, no typed expression) are exempt
+    by design — a model filter defines which rows EXIST rather than which frame
+    the query looks at, there is no ``date_range`` spelling at model level, and
+    analysing raw dialect SQL would make a silent mis-strip possible.
+
+    ``date_range_fids`` is skipped up front. That is redundant with
+    ``strip_frame_bounds`` (which recognises ``BetweenKey`` too) and kept
+    deliberately: it makes a Stage-10 regression structurally impossible even if
+    a ``date_range`` ever binds to a shape the helper does not match.
+    """
+    time_cols = frozenset(frame_bound_columns)
+    where_ids: List[str] = []
+    rewrites: List[SrcFilterRewrite] = []
+    for fp in filters_by_phase:
+        if fp.phase != Phase.ROW or fp.id in date_range_fids:
+            continue
+        if fp.expression is None:
+            where_ids.append(fp.id)  # Mode-A model filter — exempt.
+            continue
+        residual = strip_frame_bounds(
+            key=fp.expression.value_key, time_columns=time_cols,
+        )
+        if residual is None:
+            continue  # wholly a frame bound
+        where_ids.append(fp.id)
+        if residual is not fp.expression.value_key:
+            rewrites.append(SrcFilterRewrite(
+                filter_id=fp.id, expression=PlannedBoundExpr(value_key=residual),
+            ))
+    return where_ids, rewrites
 
 
 def _coerce_extension(spec) -> ModelExtension:
