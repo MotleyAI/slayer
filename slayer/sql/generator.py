@@ -11088,7 +11088,7 @@ class SQLGenerator:
                     # Detect join crossing via a throwaway scope (register-only);
                     # the resolved expr is discarded — its expansion lacks the
                     # DEV-1645 mixed-case quoting the planned-dim helper applies.
-                    allocator = AliasAllocator()
+                    allocator = self._new_allocator()
                     scope = ScopeFrame(
                         scope_id=allocator.next_scope_id(source_relation),
                         root_model=source_model,
