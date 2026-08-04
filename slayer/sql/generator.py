@@ -26,6 +26,7 @@ from slayer.core.errors import AggregationNotAllowedError, UnresolvableOrderColu
 from slayer.core.keys import _reroot_path_ref, reroot_aggregate_key
 from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
+from slayer.core.window_duration import parse_window_duration as _parse_window_duration
 from slayer.engine.column_expansion import (
     _is_trivial_base,
     _walk_path_to_target_sync,
@@ -516,7 +517,6 @@ def _first_bare_column_name(key) -> Optional[str]:
     return None
 
 
-_WINDOW_DURATION_RE = re.compile(r"(?P<num>\d+)(?P<unit>min|[ymwdhs])")
 _WINDOW_UNIT_SQL = {
     "y": "year",
     "m": "month",
@@ -588,30 +588,6 @@ def _has_cross_model_filter(m: EnrichedMeasure) -> bool:
 
 def _is_windowed_measure(m: EnrichedMeasure) -> bool:
     return bool(m.window)
-
-
-def _parse_window_duration(value: str) -> list[tuple[int, str]]:
-    """Parse compact durations like 1y2m3w5d6h7min8s."""
-    if not value:
-        raise ValueError("Window duration cannot be empty")
-    pos = 0
-    parts: list[tuple[int, str]] = []
-    for match in _WINDOW_DURATION_RE.finditer(value):
-        if match.start() != pos:
-            raise ValueError(
-                f"Invalid window duration '{value}'. Use syntax like '1y2m3w5d6h7min8s'."
-            )
-        amount = int(match.group("num"))
-        unit = match.group("unit")
-        if amount <= 0:
-            raise ValueError(f"Window duration parts must be positive in '{value}'")
-        parts.append((amount, unit))
-        pos = match.end()
-    if pos != len(value) or not parts:
-        raise ValueError(
-            f"Invalid window duration '{value}'. Use syntax like '1y2m3w5d6h7min8s'."
-        )
-    return parts
 
 
 def _cte_name_from_alias(prefix: str, alias: str) -> str:
@@ -3262,7 +3238,10 @@ class SQLGenerator:
             )
         source_relation = planned_query.source_relation
 
-        if planned_query.cross_model_aggregate_plans:
+        if (
+            planned_query.cross_model_aggregate_plans
+            or planned_query.windowed_aggregate_plans
+        ):
             return self._render_with_cross_model_plans(
                 planned_query=planned_query, bundle=bundle,
             )
@@ -5555,6 +5534,194 @@ class SQLGenerator:
             f"{type(key).__name__} not supported."
         )
 
+    def _render_window_measure_cte_from_planned(  # NOSONAR(S3776) — one cohesive host-rooted range-join CTE build: ``_src`` projection (dims / other-time-dims / raw-window-time / value) with Law-1 join discovery, WHERE inheritance minus date_range, and the ``_base LEFT JOIN _src`` interval range join. Splitting scatters the shared scope / grain-alias / join-eq state.
+        self,
+        *,
+        plan,
+        agg_slot,
+        source_model,
+        source_relation: str,
+        bundle,
+        planned_query,
+        slots_by_id: Dict[str, Any],
+        aliases_by_slot_id: Dict[str, List[str]],
+        full_agg_alias: str,
+    ) -> Tuple[str, List[str]]:
+        """Render one ``_wm_`` duration-windowed-measure CTE (DEV-1714 Stage 10).
+
+        The CTE is host-rooted: ``FROM _base LEFT JOIN (<_src>) AS _src`` where
+        ``_src`` self-selects the host rows (dims → ``_w_dim_<n>``, other time
+        dims date-trunc'd → ``_w_td_<n>``, the raw window time column →
+        ``_w_time``, the value → ``_w_value``), and the join predicate pairs the
+        grain equalities with the trailing ``INTERVAL`` range
+        (``_src._w_time >= bucket_end - window`` / ``< bucket_end``). The result
+        is grouped at the host grain and LEFT-JOINed back to ``_base`` by the
+        caller. Returns ``(cte_sql, grain_aliases)``.
+        """
+        from slayer.core.keys import AggregateKey
+
+        key = agg_slot.key
+        assert isinstance(key, AggregateKey)
+
+        allocator = self._gen_allocator or self._new_allocator()
+        src_scope = ScopeFrame(
+            scope_id=allocator.next_scope_id(source_relation),
+            root_model=source_model,
+            root_relation=source_relation,
+            bundle=bundle,
+            dialect=self._dialect,
+            allocator=allocator,
+        )
+
+        def _base_col(alias: str) -> exp.Column:
+            return exp.Column(
+                this=exp.to_identifier(alias, quoted=True),
+                table=exp.to_identifier("_base"),
+            )
+
+        def _src_col(name: str) -> exp.Column:
+            return exp.Column(
+                this=exp.to_identifier(name), table=exp.to_identifier("_src"),
+            )
+
+        def _alias_of(sid: str) -> str:
+            al = aliases_by_slot_id.get(sid) or []
+            return al[0] if al else sid
+
+        src_cols: List[exp.Expression] = []
+        join_eqs: List[exp.Expression] = []
+        grain_aliases: List[str] = []
+
+        # Query dimensions → ``_w_dim_<n>`` (Law-1 resolve registers crossed
+        # joins into ``src_scope``).
+        for idx, sid in enumerate(plan.dimension_slot_ids):
+            dslot = slots_by_id.get(sid)
+            base_alias = _alias_of(sid)
+            expr = src_scope.resolve(dslot.key)
+            src_cols.append(expr.as_(f"_w_dim_{idx}"))
+            join_eqs.append(exp.EQ(
+                this=_src_col(f"_w_dim_{idx}"), expression=_base_col(base_alias),
+            ))
+            grain_aliases.append(base_alias)
+
+        # Non-window time dimensions → ``_w_td_<n>`` (date-trunc'd), equality-
+        # joined so the trailing window does not fan out across their values.
+        for idx, sid in enumerate(plan.other_time_dimension_slot_ids):
+            tslot = slots_by_id.get(sid)
+            base_alias = _alias_of(sid)
+            # Codex#1: register any join the time column crosses into the scope
+            # (a joined time dimension would otherwise reference an unbound alias
+            # in _src); the expression itself comes from the is_root/derived-aware
+            # helper below.
+            src_scope.resolve(tslot.key.column)
+            raw = self._raw_time_col_expr_for_planned(
+                time_column=tslot.key.column, source_model=source_model,
+                source_relation=source_relation, bundle=bundle,
+            )
+            trunc = self._build_date_trunc(
+                col_expr=raw, granularity=TimeGranularity(tslot.key.granularity),
+            )
+            src_cols.append(trunc.as_(f"_w_td_{idx}"))
+            join_eqs.append(exp.EQ(
+                this=_src_col(f"_w_td_{idx}"), expression=_base_col(base_alias),
+            ))
+            grain_aliases.append(base_alias)
+
+        # The window time dimension's RAW column → ``_w_time`` (the range axis).
+        wtd_slot = slots_by_id.get(plan.window_time_dimension_slot_id)
+        wtd_alias = _alias_of(plan.window_time_dimension_slot_id)
+        # Codex#1: register the window time column's crossed join (if any) too.
+        src_scope.resolve(wtd_slot.key.column)
+        raw_time = self._raw_time_col_expr_for_planned(
+            time_column=wtd_slot.key.column, source_model=source_model,
+            source_relation=source_relation, bundle=bundle,
+        )
+        src_cols.append(raw_time.copy().as_("_w_time"))
+        grain_aliases.append(wtd_alias)
+
+        # The measure value → ``_w_value`` (CASE-wrapped by ``Column.filter``).
+        val_expr = src_scope.resolve(key.source)
+        if key.column_filter_key is not None:
+            pred_sql = src_scope.resolve_predicate_sql(
+                key.column_filter_key.canonical_sql,
+            )
+            val_expr = exp.Case(
+                ifs=[exp.If(this=self._parse_predicate(pred_sql), true=val_expr)],
+            )
+        src_cols.append(val_expr.as_("_w_value"))
+
+        # WHERE-phase row filters (model + user) inherited into ``_src``, minus
+        # date_range (``plan.where_filter_ids``). Register their crossed joins
+        # into ``src_scope`` first (Law 1), then render.
+        all_filter_ids = {fp.id for fp in planned_query.filters_by_phase}
+        skip_for_src = all_filter_ids - set(plan.where_filter_ids)
+        self._resolve_where_filter_joins_via_scope(
+            planned_query=planned_query, scope=src_scope,
+            skip_filter_ids=skip_for_src,
+        )
+        src_where, _src_having = self._build_where_having_from_planned(
+            planned_query=planned_query, source_relation=source_relation,
+            source_model=source_model, bundle=bundle,
+            skip_filter_ids=skip_for_src,
+        )
+
+        # ``_src`` FROM + joins from the scope's discovered paths.
+        from_expr, src_joins = self._build_from_and_joins(
+            source_model=source_model, source_relation=source_relation,
+            joined_paths=src_scope.join_paths.as_list(), bundle=bundle,
+        )
+        src_select = exp.Select().select(*src_cols).from_(from_expr)
+        for join_expr, on_expr, join_type in src_joins:
+            src_select = src_select.join(
+                join_expr, on=on_expr, join_type=join_type,
+            )
+        if src_where is not None:
+            src_select = src_select.where(src_where)
+        src_subq = exp.Subquery(
+            this=src_select, alias=exp.TableAlias(this=exp.to_identifier("_src")),
+        )
+
+        # Trailing-window range predicate: ``_src._w_time`` in
+        # ``[bucket_end - window, bucket_end)`` where ``bucket_end`` is the
+        # host bucket's exclusive upper edge (grain + 1 grain).
+        frame_time = _base_col(wtd_alias)
+        bucket_end = self._add_intervals_expr(
+            frame_time,
+            self._granularity_interval_expr(
+                TimeGranularity(plan.window_granularity), sign=1,
+            ),
+            sign=1,
+        )
+        lower_bound = self._add_intervals_expr(
+            bucket_end,
+            self._dialect.duration_interval_exprs(
+                parts=[tuple(p) for p in plan.window_parts], sign=-1,
+            ),
+            sign=-1,
+        )
+        src_w_time = _src_col("_w_time")
+        on_range = exp.and_(
+            *join_eqs,
+            exp.GTE(this=src_w_time, expression=lower_bound),
+            exp.LT(this=src_w_time.copy(), expression=bucket_end.copy()),
+        )
+
+        agg_cls = exp.Sum if plan.agg == "sum" else exp.Avg
+        agg_expr = _wrap_cast_for_type(
+            agg_cls(this=_src_col("_w_value")), agg_slot.type,
+        )
+
+        outer = exp.Select()
+        for ga in grain_aliases:
+            outer = outer.select(_base_col(ga))
+        outer = outer.select(agg_expr.as_(exp.to_identifier(full_agg_alias, quoted=True)))
+        outer = outer.from_(exp.Table(this=exp.to_identifier("_base")))
+        outer = outer.join(src_subq, on=on_range, join_type="LEFT")
+        for ga in grain_aliases:
+            outer = outer.group_by(_base_col(ga))
+
+        return outer.sql(dialect=self.dialect, pretty=True), grain_aliases
+
     def _render_with_cross_model_plans(  # NOSONAR(S3776) — orchestration of host ``_base`` CTE + per-plan ``_cm_*`` CTEs + combined SELECT + transform-chain step CTEs + outer ORDER BY/LIMIT wrap. Each block is a coherent compilation stage sharing planned_query / slots_by_id / cma_slot_ids / seen_base_ids state; extracting per-stage helpers would scatter the cross-cutting state.
         self,
         *,
@@ -5609,6 +5776,12 @@ class SQLGenerator:
         # owns them. POST-phase slots aren't in scope (no transforms).
         cma_slot_ids = {
             p.aggregate_slot_id for p in planned_query.cross_model_aggregate_plans
+        }
+        # DEV-1714 Stage 10 — windowed aggregate slots render via their own
+        # host-rooted ``_wm_`` range-join CTEs (below); like cross-model slots
+        # they are excluded from ``_base`` and joined back on the shared grain.
+        windowed_slot_ids = {
+            p.aggregate_slot_id for p in planned_query.windowed_aggregate_plans
         }
 
         # DEV-1503 — outer combined-SELECT WHERE wrapper. Identify
@@ -5692,6 +5865,7 @@ class SQLGenerator:
             sid for sid in planned_query.projection
             if sid not in cma_slot_ids
             and sid not in outer_composite_slot_ids
+            and sid not in windowed_slot_ids
         ]
 
         # Hidden ORDER-BY-only LOCAL slots (``ORDER BY revenue:sum`` with
@@ -5707,8 +5881,13 @@ class SQLGenerator:
             if (
                 sid in cma_slot_ids
                 or sid in outer_composite_slot_ids
+                or sid in windowed_slot_ids
                 or sid in seen_base_ids
             ):
+                # DEV-1714: a windowed slot lives in its ``_wm_`` CTE, never
+                # ``_base`` — materialising it here as an order-only local slot
+                # would emit a dead plain aggregate in ``_base``. It resolves in
+                # the combined ORDER BY via its bare projected alias instead.
                 continue
             slot = slots_by_id.get(sid)
             if slot is None:
@@ -6024,6 +6203,46 @@ class SQLGenerator:
             joinback_pairs_for_plan[plan.aggregate_slot_id] = joinback_pairs
             agg_col_alias_for_plan[plan.aggregate_slot_id] = agg_col_alias
 
+        # DEV-1714 Stage 10 — per-plan ``_wm_`` windowed range-join CTEs. Each
+        # is host-rooted (``FROM _base LEFT JOIN _src``), grouped at the query
+        # grain, and joined back to ``_base`` on that grain (host alias == cte
+        # column alias, since the CTE projects the grain under the same alias).
+        wm_ctes: List[Tuple[str, str]] = []
+        wm_cte_name_for_plan: Dict[str, str] = {}
+        wm_agg_col_for_plan: Dict[str, str] = {}
+        wm_joinback_pairs_for_plan: Dict[str, List[Tuple[str, str]]] = {}
+        # Codex round 4: mint ``_wm_`` CTE names through the DEV-1726 collision-
+        # aware allocator so two measures whose aliases lossy-sanitise to the
+        # same name (``rev-a`` / ``rev_a``), or case-only variants on a
+        # case-folding dialect, get distinct auto-numbered names instead of
+        # tripping the CTE-name-collision belt.
+        wm_allocator = self._gen_allocator or self._new_allocator()
+        for plan in planned_query.windowed_aggregate_plans:
+            agg_slot = slots_by_id.get(plan.aggregate_slot_id)
+            if agg_slot is None or not isinstance(agg_slot.key, AggregateKey):
+                raise RuntimeError(
+                    f"WindowedAggregatePlan {plan.aggregate_slot_id!r} references "
+                    f"a missing or non-aggregate slot.",
+                )
+            full_agg_alias = self._full_alias_for_slot(
+                slot=agg_slot, source_relation=source_relation, alias_index={},
+            )
+            cte_name = wm_allocator.allocate_cte(
+                _cte_name_from_alias("_wm_", full_agg_alias),
+            )
+            cte_sql, grain_aliases = self._render_window_measure_cte_from_planned(
+                plan=plan, agg_slot=agg_slot, source_model=source_model,
+                source_relation=source_relation, bundle=bundle,
+                planned_query=planned_query, slots_by_id=slots_by_id,
+                aliases_by_slot_id=aliases_by_slot_id, full_agg_alias=full_agg_alias,
+            )
+            wm_ctes.append((cte_name, cte_sql))
+            wm_cte_name_for_plan[plan.aggregate_slot_id] = cte_name
+            wm_agg_col_for_plan[plan.aggregate_slot_id] = full_agg_alias
+            wm_joinback_pairs_for_plan[plan.aggregate_slot_id] = [
+                (a, a) for a in grain_aliases
+            ]
+
         # Codex MED fold-in: surface dropped-filter warnings from each
         # plan via Python ``warnings`` so callers using
         # ``warnings.catch_warnings()`` see what was dropped. The
@@ -6188,6 +6407,33 @@ class SQLGenerator:
                 public_aliases,
             )
 
+        # DEV-1714 Stage 10 — windowed side: project each ``_wm_`` CTE's
+        # aggregate column. Codex#2: one occurrence per declared user alias (C13
+        # lets the same windowed key be selected under multiple names — the CTE
+        # holds one aggregate column, remapped ``AS`` each public alias). The
+        # column name already IS the primary dotted result key, so that occurrence
+        # needs no remap. Like the cross-model ``_cm_`` columns above, windowed
+        # columns are grouped after the ``_base`` projection rather than woven
+        # into ``planned_query.projection`` order — deterministic (measure
+        # declaration order) and harmless because results are keyed by name, not
+        # position.
+        for plan in planned_query.windowed_aggregate_plans:
+            agg_slot = slots_by_id[plan.aggregate_slot_id]
+            cte_name = wm_cte_name_for_plan[plan.aggregate_slot_id]
+            agg_col = wm_agg_col_for_plan[plan.aggregate_slot_id]
+            public_names = list(agg_slot.public_aliases) or (
+                [agg_slot.public_name] if agg_slot.public_name else []
+            )
+            full_aliases = [f"{source_relation}.{p}" for p in public_names] or [agg_col]
+            for full in full_aliases:
+                if full == agg_col:
+                    combined_parts.append(f'{cte_name}.{self._quote_ident(agg_col)}')
+                else:
+                    combined_parts.append(
+                        f'{cte_name}.{self._quote_ident(agg_col)} AS {self._quote_ident(full)}',
+                    )
+            combined_aliases_by_slot_id[plan.aggregate_slot_id] = list(full_aliases)
+
         from_clause_str = "FROM _base"
         joined_cte_names: set = set()
         for plan in planned_query.cross_model_aggregate_plans:
@@ -6204,6 +6450,29 @@ class SQLGenerator:
                 # NULL-SAFE equality so NULL dimension values and nullable
                 # truncated time grains join back instead of dropping their
                 # aggregate (a plain ``=`` yields NULL for NULL = NULL).
+                join_parts = [
+                    self._null_safe_join_pair_sql(
+                        left_sql=f'_base.{self._quote_ident(host)}',
+                        right_sql=f'{cte_name}.{self._quote_ident(cte_col)}',
+                    )
+                    for host, cte_col in joinback_pairs
+                ]
+                from_clause_str += (
+                    f"\nLEFT JOIN {cte_name} ON " + _SQL_AND_JOINER.join(join_parts)
+                )
+            else:
+                from_clause_str += f"\nCROSS JOIN {cte_name}"
+
+        # DEV-1714 Stage 10 — LEFT JOIN each ``_wm_`` CTE back to ``_base`` on
+        # the shared grain (null-safe, so NULL-dim / nullable-grain groups keep
+        # a row; the windowed value for a NULL-dim group is NULL — the plain
+        # ``=`` inside the CTE never matches NULL, a documented consequence).
+        for plan in planned_query.windowed_aggregate_plans:
+            cte_name = wm_cte_name_for_plan[plan.aggregate_slot_id]
+            joinback_pairs = wm_joinback_pairs_for_plan.get(
+                plan.aggregate_slot_id, [],
+            )
+            if joinback_pairs:
                 join_parts = [
                     self._null_safe_join_pair_sql(
                         left_sql=f'_base.{self._quote_ident(host)}',
@@ -6260,11 +6529,52 @@ class SQLGenerator:
                 "\nWHERE " + _SQL_AND_JOINER.join(outer_where_parts)
             )
 
+        # DEV-1714 Stage 10 — POST-phase filters referencing a windowed measure
+        # render as an outer WHERE on the combined SELECT (never HAVING on the
+        # plain base aggregate), resolving each windowed slot to its ``_wm_``
+        # CTE's joined-back aggregate column.
+        if planned_query.windowed_aggregate_plans:
+            wm_slot_to_cte: Dict[str, Tuple[str, str]] = {
+                p.aggregate_slot_id: (
+                    wm_cte_name_for_plan[p.aggregate_slot_id],
+                    wm_agg_col_for_plan[p.aggregate_slot_id],
+                )
+                for p in planned_query.windowed_aggregate_plans
+            }
+            wm_post_parts: List[str] = []
+            for fp in planned_query.filters_by_phase:
+                if fp.phase != Phase.POST or fp.expression is None:
+                    continue
+                rendered = self._render_filter_for_outer_wrapper(
+                    key=fp.expression.value_key,
+                    slot_by_key=slot_by_key,
+                    cross_model_agg_slot_to_cm=wm_slot_to_cte,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                )
+                if isinstance(rendered, (exp.And, exp.Or)):
+                    rendered = exp.Paren(this=rendered)
+                wm_post_parts.append(rendered.sql(dialect=self.dialect))
+            if wm_post_parts:
+                connector = "\nAND " if outer_where_filters else "\nWHERE "
+                combined_select_sql += connector + _SQL_AND_JOINER.join(wm_post_parts)
+
         # DEV-1450 stage 7b.15e (C2): a transform layer over a cross-model
         # aggregate (``cumsum(customers.avg_score:avg)``) runs on TOP of the
         # combined cross-model result — the combined SELECT becomes the base
         # CTE and the window step CTEs / outer wrap are layered above it.
         if planned_query.transform_layers:
+            if wm_ctes:
+                # Unreachable today — guard G4 rejects a windowed measure that
+                # coexists with a transform — but the combined SELECT already
+                # projects/joins the _wm_ CTEs, which this prelude omits. Fail
+                # loudly so lifting G4 (DEV-1504) can't silently emit a statement
+                # referencing undefined _wm_ CTEs.
+                raise NotImplementedError(
+                    "DEV-1714 Stage 10: a windowed measure combined with a "
+                    "transform layer is not supported (guarded at plan time by "
+                    "G4); the cross-model transform chain does not carry `_wm_` "
+                    "CTEs.",
+                )
             return self._render_cross_model_transform_chain(
                 prelude_ctes=[("_base", base_cte_sql)] + cm_ctes,
                 combined_select_sql=combined_select_sql,
@@ -6274,7 +6584,7 @@ class SQLGenerator:
                 source_relation=source_relation,
             )
 
-        all_ctes = [("_base", base_cte_sql)] + cm_ctes + [("_combined", combined_select_sql)]
+        all_ctes = [("_base", base_cte_sql)] + cm_ctes + wm_ctes + [("_combined", combined_select_sql)]
 
         # Stitch the WITH chain together. Inner CTEs first; the final
         # ``_combined`` is the outermost FROM target.
@@ -6306,7 +6616,10 @@ class SQLGenerator:
             slots_by_id=slots_by_id,
             cma_slot_ids=cma_slot_ids,
             cm_alias_for_plan=canonical_alias_for_plan,
-            bare_order_slot_ids=set(order_only_local_ids),
+            # DEV-1714: windowed slots are referenced bare in the combined ORDER
+            # BY — they surface as a projected combined-SELECT column (from their
+            # ``_wm_`` CTE), so a ``_base.`` qualifier would dangle.
+            bare_order_slot_ids=set(order_only_local_ids) | windowed_slot_ids,
             outer_composite_aliases=outer_composite_order_alias_by_sid,
             outer_composite_expressions=outer_composite_order_expressions,
             hidden_cma_order_ref=hidden_cma_order_ref,
