@@ -19,6 +19,7 @@ SLayer has two distinct expression layers and the rules for what each one accept
 * User-supplied multi-dot input (`a.b.c`) is auto-rewritten to `a__b.c` at validation time with a warning.
 * Other derived columns of the same model (or of a joined model via `__`) are recursively expanded so chains like `A.ratio = "A.bar / B.foo_normalized"` (where `B.foo_normalized` is itself derived) work.
 * `ModelMeasure` names are not visible from SQL mode — saved measures are DSL-only.
+* `{variable}` placeholders are substituted into these Mode-A surfaces from the merged variable set (raise-on-missing once any variable is in play; a fully variable-free execution leaves braces as literals; Mode-A-aware string escaping). See [Variables in model SQL](models.md#variables-in-model-sql).
 
 ### DSL mode (queries + `ModelMeasure.formula`)
 

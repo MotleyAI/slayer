@@ -43,6 +43,7 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
     extract_placeholder_names,
+    substitute_variables,
 )
 from slayer.engine.cache import (
     CacheConfig,
@@ -261,6 +262,60 @@ def _merge_query_variables(
     invoking this helper.
     """
     return {**(outer or {}), **(stage or {}), **(runtime or {})}
+
+
+def _substitute_model_sql_surfaces(
+    *, model: SlayerModel, variables: dict[str, Any]
+) -> SlayerModel:
+    """Return a copy of ``model`` with ``{var}`` substituted into the four
+    Mode-A (raw-SQL) surfaces: ``SlayerModel.sql``, ``SlayerModel.filters``,
+    ``Column.sql``, and ``Column.filter`` (DEV-1625).
+
+    No-op copy when ``variables`` is empty — so a model that uses no variables
+    is never touched and raw brace literals (e.g. Postgres arrays ``'{1,2,3}'``)
+    survive verbatim. Uses the hardened :func:`substitute_variables`
+    (raise-on-missing, string single-quote escaping). Never mutates the input
+    model — it may be a shared cached object. Only these four surfaces change;
+    Mode-B surfaces (``ModelMeasure.formula`` etc.) are copied through as-is.
+    """
+    if not variables:
+        return model
+
+    def _sub(text: str) -> str:
+        # Mode-A surfaces are parsed by sqlglot → escape string values SQL-style.
+        return substitute_variables(filter_str=text, variables=variables, escape="sql")
+
+    new_columns = []
+    for col in model.columns:
+        updates: dict[str, Any] = {}
+        if col.sql is not None:
+            updates["sql"] = _sub(col.sql)
+        if col.filter is not None:
+            updates["filter"] = _sub(col.filter)
+        new_columns.append(col.model_copy(update=updates) if updates else col)
+
+    model_updates: dict[str, Any] = {"columns": new_columns}
+    if model.sql is not None:
+        model_updates["sql"] = _sub(model.sql)
+    if model.filters:
+        model_updates["filters"] = [_sub(f) for f in model.filters]
+    return model.model_copy(update=model_updates)
+
+
+def _render_probe_model(model: SlayerModel) -> SlayerModel:
+    """Substitute a template model's OWN ``query_variables`` defaults into its
+    Mode-A surfaces for type-probing (DEV-1625).
+
+    Defaults only — the probe has no caller variables and must honour the
+    no-dummy-fill decision. A rendered virtual model (``source_model_origin``
+    set) is returned unchanged. An undefaulted ``{var}`` raises here and is
+    caught by the probe's graceful-``{}`` handler in ``get_column_types``.
+    """
+    if model.source_model_origin is None and model.query_variables:
+        return _substitute_model_sql_surfaces(
+            model=model, variables=model.query_variables
+        )
+    return model
 
 
 def _apply_placeholder_fill(
@@ -892,6 +947,31 @@ class SlayerQueryEngine:
         # resolved, so ``source_model`` is always populated here.
         model = bundle.source_model
         assert model is not None
+
+        # DEV-1625: substitute {var} into the DIRECT source model's Mode-A
+        # raw-SQL surfaces (sql / filters / Column.sql / Column.filter) before
+        # anything parses them. The typed planner, binder and cross-model
+        # renderers all read models from the bundle, so the substituted copy
+        # replaces the model both as ``source_model`` and under its name in
+        # ``referenced_models``. A rendered virtual model
+        # (``source_model_origin`` set, from a query-backed source) is
+        # skipped; nested stages / join targets / cross-model targets are
+        # DEV-1678 scope. ``bundle.query_variables`` already merges
+        # runtime > stage > outer > model defaults.
+        if model.source_model_origin is None and bundle.query_variables:
+            substituted = _substitute_model_sql_surfaces(
+                model=model, variables=bundle.query_variables,
+            )
+            bundle = bundle.model_copy(
+                update={
+                    "source_model": substituted,
+                    "referenced_models": [
+                        substituted if m.name == model.name else m
+                        for m in bundle.referenced_models
+                    ],
+                }
+            )
+            model = substituted
 
         # P0 — slack-normalization pass. Rewrites slack-but-unambiguous agent
         # input (function-style aggs, misplaced bare measures) to canonical
@@ -1768,6 +1848,13 @@ class SlayerQueryEngine:
         if not model.source_queries:
             probe_query = probe_query.model_copy(update={"source_model": model})
         try:
+            # DEV-1625: a template source model's Mode-A {var} surfaces must be
+            # rendered (from its own query_variables defaults) before probe SQL
+            # is generated; an undefaulted {var} raises here and degrades to {}
+            # via the surrounding except, so partially-defaulted models stay safe.
+            model = _render_probe_model(model)
+            if not model.source_queries:
+                probe_query = probe_query.model_copy(update={"source_model": model})
             bundle = await build_resolved_source_bundle(
                 query=probe_query,
                 storage=self.storage,

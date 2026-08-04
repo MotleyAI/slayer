@@ -89,8 +89,11 @@ def apply_variables_to_query(
         for placeholder in extract_placeholder_names(query):
             effective.setdefault(placeholder, _PLACEHOLDER_FILL_VALUE)
 
+    # Mode-B (Python-AST) query filters take the ``python`` escaping regime —
+    # SQL quote-doubling would silently corrupt a value via adjacent-literal
+    # concatenation once the AST layer re-renders it (DEV-1625).
     substituted = [
-        substitute_variables(filter_str=f, variables=effective)
+        substitute_variables(filter_str=f, variables=effective, escape="python")
         for f in query.filters
     ]
     return query.model_copy(update={"filters": substituted})

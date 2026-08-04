@@ -104,6 +104,10 @@ nav = [
       { "Notebook (library)" = "examples/13_osi_import/osi_import_nb.ipynb" },
       { "Notebook (agent: CLI + MCP)" = "examples/13_osi_import/osi_import_agent_nb.ipynb" },
     ]},
+    { "Variable Substitution" = [
+      "examples/14_variable_substitution/variable_substitution.md",
+      { "Notebook" = "examples/14_variable_substitution/variable_substitution_nb.ipynb" },
+    ]},
     { "Schema Drift (worked example)" = "examples/schema-drift.md" },
   ]},
   { "Configuration" = [

@@ -274,9 +274,13 @@ Filters support `{variable_name}` placeholders, substituted from the query's `va
 This produces the filter `status = 'completed' AND amount > 100`.
 
 - Variable names must be alphanumeric + underscore (`[a-zA-Z_][a-zA-Z0-9_]*`)
-- Values must be strings or numbers (inserted as-is — strings should be quoted in the filter template)
+- Values must be strings or numbers. **You write the surrounding quotes** in the template (`status = '{status}'`); the string value is then automatically escaped so an embedded quote (e.g. `O'Brien`) can't break out of that literal. Numbers (including booleans) are inserted verbatim; non-finite floats (`nan`/`inf`) are rejected.
 - `{{` and `}}` produce literal `{` and `}`
 - Undefined variables raise an error
+- The same `{variable}` mechanism also works in the **raw-SQL (Mode A) surfaces** of a model — see [Variables in model SQL](models.md#variables-in-model-sql).
+
+!!! note "Trusted input"
+    Substituted values are treated as trusted. The automatic escaping keeps a string value inside the quoted literal you wrote, but a `{var}` placed in an **unquoted** position is still raw SQL/expression substitution — do not feed untrusted end-user input through `variables`.
 
 #### Variables passed as a runtime kwarg
 
