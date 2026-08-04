@@ -22,6 +22,8 @@ A `SlayerQuery` is a JSON/dict object. The same shape works across the REST API,
 
 `order[].column` is the short alias (`count`, `revenue_sum`) — not the colon form.
 
+**Ordering by something you don't project.** `order` may name an undeclared column/aggregate ("top-N by X, show only Y, Z"). An **aggregate** (`amount:sum`, `customers.revenue:sum`) is computed hidden, sorted on, and stripped from the result. A **raw row column** is orderable only in a raw-rows query (`distinct_dimension_values: false`); in a grouped/dedup query it's rejected (HTTP 400 — add it to `dimensions` or order by an aggregate of it). A **joined** row column and an inline **transform/composite** (`change(amount:sum)`) are also rejected — project it, or declare it as a measure and order by that.
+
 **Dim-only queries deduplicate.** A query with no measures and at least one dimension or time-dimension auto-emits `GROUP BY <dim/td aliases>` and returns the distinct combinations. The `GROUP BY` is applied before `LIMIT`, so a row cap can't silently drop unique tuples. To opt out, set `"distinct_dimension_values": false` on the query — emits raw rows (no top-level `GROUP BY`), with WHERE / ORDER BY / LIMIT applied as usual. Any measure reference in `measures` / `filters` / `order` raises `DistinctDimensionValuesError` in this mode.
 
 ## Measures — colon aggregation
