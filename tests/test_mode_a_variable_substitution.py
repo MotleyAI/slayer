@@ -2321,10 +2321,11 @@ class TestSubstituteModelSqlSurfacesDialect:
     def test_dialect_is_required(self) -> None:
         from slayer.engine.query_engine import _substitute_model_sql_surfaces
 
+        # Build the model outside the raises-block so only the call under test
+        # (missing the required `dialect`) can raise (Sonar S5778).
+        model = self._model()
         with pytest.raises(TypeError):
-            _substitute_model_sql_surfaces(
-                model=self._model(), variables={"region": "x"}
-            )
+            _substitute_model_sql_surfaces(model=model, variables={"region": "x"})
 
 
 def _status_literal_from_sql(sql: str, dialect_name: str):
@@ -2428,8 +2429,11 @@ class TestProbeModelDialectThreading:
     def test_probe_dialect_required(self) -> None:
         from slayer.engine.query_engine import _render_probe_model
 
+        # Build the model outside the raises-block so only the call under test
+        # (missing the required `dialect`) can raise (Sonar S5778).
+        model = self._template_model()
         with pytest.raises(TypeError):
-            _render_probe_model(self._template_model())
+            _render_probe_model(model)
 
 
 # ---------------------------------------------------------------------------
