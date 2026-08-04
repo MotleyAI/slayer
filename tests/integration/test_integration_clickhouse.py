@@ -231,6 +231,34 @@ class TestClickHouseQueries:
         result = await clickhouse_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
+    async def test_string_hygiene_functions_execute(
+        self, clickhouse_env: SlayerQueryEngine
+    ) -> None:
+        """DEV-1703 Phase 2: the typed pipeline emits string functions
+        UPPERCASE (``LOWER(...)`` / ``SUBSTR(...)``) where the legacy path
+        emitted ClickHouse's native lowercase spelling. ClickHouse function
+        names are case-sensitive in general, so this pins that the standard
+        SQL aliases really do resolve on a live server rather than trusting
+        that the emitted SQL merely looks plausible.
+        """
+        lowered = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count"}],
+            filters=["lower(status) = 'completed'"],
+        )
+        result = await clickhouse_env.execute(query=lowered)
+        assert result.data[0]["orders._count"] > 0
+        assert "LOWER(" in (result.sql or ""), result.sql
+
+        subs = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count"}],
+            filters=["substr(status, 1, 4) = 'comp'"],
+        )
+        result = await clickhouse_env.execute(query=subs)
+        assert result.data[0]["orders._count"] > 0
+        assert "SUBSTR(" in (result.sql or ""), result.sql
+
     async def test_avg_measure(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "avg_amount:avg"}])
         result = await clickhouse_env.execute(query=query)

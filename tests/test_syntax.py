@@ -188,6 +188,74 @@ class TestTransforms:
         assert result.op == "last"
         assert result.input == AggCall(source=Ref(name="revenue"), agg="sum")
 
+    # -- DEV-1484 backfills from the deleted TestFormulaParser --------------
+    # The legacy free-function parser asserted these shapes on its own AST
+    # node types (TransformField.args / .kwargs). The typed parser is the
+    # only parser now, so the same guarantees are pinned here.
+
+    @pytest.mark.parametrize(
+        "op", ["percent_rank", "dense_rank", "change_pct", "consecutive_periods"],
+    )
+    def test_transform_op_recognised(self, op):
+        # Every documented transform name parses as a TransformCall rather
+        # than falling through to the unknown-function rejection.
+        result = parse_expr(f"{op}(revenue:sum)")
+        assert isinstance(result, TransformCall)
+        assert result.op == op
+
+    def test_time_shift_positional_periods(self):
+        # time_shift(x, -1) — the row-based form; `periods` is positional in
+        # the documented DSL surface and stays a positional arg at parse time
+        # (the binder maps it onto the `periods` kwarg).
+        result = parse_expr("time_shift(revenue:sum, -1)")
+        assert isinstance(result, TransformCall)
+        assert result.op == "time_shift"
+        assert result.input == AggCall(source=Ref(name="revenue"), agg="sum")
+        assert result.args == (
+            UnaryOp(op="-", operand=Literal(value=Decimal(1))),
+        )
+
+    def test_time_shift_positional_periods_and_granularity(self):
+        # time_shift(x, -1, 'year') — the calendar-based form; both
+        # positionals survive parsing in order.
+        result = parse_expr("time_shift(revenue:sum, -1, 'year')")
+        assert isinstance(result, TransformCall)
+        assert result.op == "time_shift"
+        assert result.args == (
+            UnaryOp(op="-", operand=Literal(value=Decimal(1))),
+            Literal(value="year"),
+        )
+
+    def test_transform_over_arithmetic_input(self):
+        # cumsum(revenue:sum / *:count) — a transform whose INPUT is
+        # arithmetic (the mirror of test_transform_inside_arithmetic).
+        result = parse_expr("cumsum(revenue:sum / *:count)")
+        assert isinstance(result, TransformCall)
+        assert result.op == "cumsum"
+        assert isinstance(result.input, Arith)
+        assert result.input.op == "/"
+
+    def test_rank_partition_by_dotted_path(self):
+        # partition_by may name a joined column via a dotted path.
+        result = parse_expr("rank(revenue:sum, partition_by=customers.region)")
+        assert isinstance(result, TransformCall)
+        assert result.kwargs == (
+            ("partition_by", DottedRef(parts=("customers", "region"))),
+        )
+
+    def test_triple_nested_transforms(self):
+        # last(change(cumsum(revenue:sum))) — three levels deep.
+        result = parse_expr("last(change(cumsum(revenue:sum)))")
+        assert isinstance(result, TransformCall)
+        assert result.op == "last"
+        assert isinstance(result.input, TransformCall)
+        assert result.input.op == "change"
+        assert isinstance(result.input.input, TransformCall)
+        assert result.input.input.op == "cumsum"
+        assert result.input.input.input == AggCall(
+            source=Ref(name="revenue"), agg="sum",
+        )
+
 
 # ---------------------------------------------------------------------------
 # Scalar functions (closed allowlist)
@@ -230,6 +298,27 @@ class TestScalarFunctions:
         assert isinstance(result, ScalarCall)
         assert result.name == "like"
         assert result.args == (Ref(name="name"), Literal(value="%x%"))
+
+    def test_scalar_over_arithmetic_of_aggregates(self):
+        # DEV-1484 backfill from the deleted
+        # TestUnifiedScalarPassthrough::test_cto_repro_coalesce_nullif_arithmetic
+        # — the motivating Cube-translation shape
+        # ``COALESCE(((SUM(a)/NULLIF(SUM(b),0)) - 1), -999999)``. Scalars must
+        # nest over arithmetic over aggregates without losing either aggregate.
+        result = parse_expr("coalesce((a:sum / nullif(b:sum, 0)) - 1, -999999)")
+        assert isinstance(result, ScalarCall)
+        assert result.name == "coalesce"
+        outer_arith = result.args[0]
+        assert isinstance(outer_arith, Arith)
+        assert outer_arith.op == "-"
+        ratio = outer_arith.left
+        assert isinstance(ratio, Arith)
+        assert ratio.op == "/"
+        assert ratio.left == AggCall(source=Ref(name="a"), agg="sum")
+        inner_nullif = ratio.right
+        assert isinstance(inner_nullif, ScalarCall)
+        assert inner_nullif.name == "nullif"
+        assert inner_nullif.args[0] == AggCall(source=Ref(name="b"), agg="sum")
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +465,20 @@ class TestRejection:
         with pytest.raises(ValueError):
             parse_expr("revenue:sum +")
 
+    def test_transform_with_no_arguments_raises(self):
+        # DEV-1484 backfill from the deleted
+        # TestFormulaParser::test_no_args_raises — a transform needs the value
+        # to transform.
+        with pytest.raises(ValueError, match="at least one positional"):
+            parse_expr("cumsum()")
+
+    def test_unknown_function_inside_arithmetic_raises(self):
+        # DEV-1484 backfill from the deleted
+        # TestUnifiedScalarPassthrough::test_unknown_call_rejected_inside_arithmetic
+        # — the allowlist is enforced at every depth, not just the root.
+        with pytest.raises(UnknownFunctionError):
+            parse_expr("revenue:sum + magic_fn(other:sum)")
+
     def test_double_underscore_in_ref_raises(self):
         # Mode B rejects `__` in identifiers — `__` is reserved for
         # internal join-path aliases on the SQL side.
@@ -463,6 +566,24 @@ class TestCombinations:
         assert result.op == ">"
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "change"
+
+    def test_consecutive_periods_predicate_then_compared(self):
+        # DEV-1484 backfill from the deleted TestFormulaParser tests
+        # test_consecutive_periods_predicate / _comparison:
+        # ``consecutive_periods(revenue:sum > 0) >= 3`` — a predicate INSIDE
+        # the transform and a comparison OUTSIDE it in one expression.
+        result = parse_expr("consecutive_periods(revenue:sum > 0) >= 3")
+        assert isinstance(result, Cmp)
+        assert result.op == ">="
+        assert result.right == Literal(value=Decimal(3))
+        transform = result.left
+        assert isinstance(transform, TransformCall)
+        assert transform.op == "consecutive_periods"
+        inner = transform.input
+        assert isinstance(inner, Cmp)
+        assert inner.op == ">"
+        assert inner.left == AggCall(source=Ref(name="revenue"), agg="sum")
+        assert inner.right == Literal(value=Decimal(0))
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +692,68 @@ class TestFilterOperatorNormalization:
         assert result.left.op == "rank"
         assert result.left.kwargs == (
             ("partition_by", (Ref(name="region"), Ref(name="channel"))),
+        )
+
+    # -- Aggregation args/kwargs INSIDE a filter transform ------------------
+    # Backfilled from the legacy ``TestExtractFilterTransforms`` (which tested
+    # ``enrichment.extract_filter_transforms``, deleted with the legacy stack).
+    # Legacy extracted the inline transform to a hidden field by rebuilding its
+    # formula TEXT, so the risk was losing an argument in that round-trip. The
+    # typed parser keeps structure all the way through, so the equivalent
+    # guarantee is that every arg/kwarg survives parsing as a typed node.
+
+    def test_filter_transform_preserves_aggregation_positional_arg(self):
+        # change(revenue:last(ordered_at)) > 0 — the first/last ranking-time
+        # positional arg must survive on the inner AggCall.
+        result = parse_filter_expr("change(revenue:last(ordered_at)) > 0")
+        assert isinstance(result, Cmp)
+        inner = result.left
+        assert isinstance(inner, TransformCall)
+        assert inner.op == "change"
+        agg = inner.input
+        assert isinstance(agg, AggCall)
+        assert agg.agg == "last"
+        assert agg.args == (Ref(name="ordered_at"),)
+
+    def test_filter_transform_preserves_aggregation_kwarg(self):
+        # change(price:weighted_avg(weight=quantity)) > 0 — the aggregation's
+        # own kwarg must survive, distinct from the transform's kwargs.
+        result = parse_filter_expr(
+            "change(price:weighted_avg(weight=quantity)) > 0"
+        )
+        assert isinstance(result, Cmp)
+        inner = result.left
+        assert isinstance(inner, TransformCall)
+        agg = inner.input
+        assert isinstance(agg, AggCall)
+        assert agg.agg == "weighted_avg"
+        assert agg.kwargs == (("weight", Ref(name="quantity")),)
+
+    def test_filter_transform_preserves_mixed_agg_args_and_kwargs(self):
+        # change(price:weighted_avg(col1, weight=quantity)) > 0 — positional
+        # and keyword args on the same aggregation, both preserved.
+        result = parse_filter_expr(
+            "change(price:weighted_avg(col1, weight=quantity)) > 0"
+        )
+        inner = result.left
+        assert isinstance(inner, TransformCall)
+        agg = inner.input
+        assert isinstance(agg, AggCall)
+        assert agg.args == (Ref(name="col1"),)
+        assert agg.kwargs == (("weight", Ref(name="quantity")),)
+
+    def test_filter_ntile_preserves_both_n_and_partition_by(self):
+        # DEV-1353 regression shape: dropping partition_by would rank globally
+        # instead of within the partition; dropping n would fail to re-parse.
+        result = parse_filter_expr(
+            "ntile(revenue:sum, n=4, partition_by=cohort) <= 1"
+        )
+        inner = result.left
+        assert isinstance(inner, TransformCall)
+        assert inner.op == "ntile"
+        assert inner.kwargs == (
+            ("n", Literal(value=Decimal(4))),
+            ("partition_by", Ref(name="cohort")),
         )
 
     def test_grouping_paren_equality_still_rewritten(self):

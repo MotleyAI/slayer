@@ -58,7 +58,8 @@ from slayer.engine.enriched import (
     EnrichedMeasure,
     EnrichedQuery,
 )
-from slayer.engine.enrichment import _collect_reachable_agg_names, enrich_query
+from slayer.engine.agg_registry import collect_reachable_agg_names
+from slayer.engine.enrichment import enrich_query
 from slayer.engine.normalization import normalize_model, normalize_query
 from slayer.engine.path_resolution import NoJoinError as _NoJoinError
 from slayer.engine.path_resolution import walk_join_chain
@@ -2893,7 +2894,7 @@ class SlayerQueryEngine:
         self, data_source: Optional[str],
     ):
         """Build the best-effort `resolve_join_target` closure that
-        ``_collect_reachable_agg_names`` consumes — swallows absent targets
+        ``collect_reachable_agg_names`` consumes — swallows absent targets
         and storage errors (incl. ``AmbiguousModelError``) so a save never
         aborts on a flaky join-target lookup."""
         storage = self.storage
@@ -2923,8 +2924,8 @@ class SlayerQueryEngine:
         """One swallow-all BFS over ``walk_model``'s join graph collecting
         the reachable custom-aggregation names."""
         try:
-            got = await _collect_reachable_agg_names(
-                model=walk_model,
+            got = await collect_reachable_agg_names(
+                source_model=walk_model,
                 resolve_join_target=resolver,
                 named_queries={},
             )

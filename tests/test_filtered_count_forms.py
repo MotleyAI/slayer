@@ -19,12 +19,8 @@ import re
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.enrichment import enrich_query
-from slayer.sql.generator import SQLGenerator
 
-
-async def _noop(**k):  # NOSONAR(S7503) — must be a coroutine; awaited as an enrich_query resolver callback
-    return None
+from tests._engine_helpers import _engine_generate
 
 
 async def _gen(formula: str) -> str:
@@ -37,11 +33,7 @@ async def _gen(formula: str) -> str:
         ],
     )
     q = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula)])
-    enriched = await enrich_query(
-        query=q, model=model, resolve_dimension_via_joins=_noop,
-        resolve_cross_model_measure=_noop, resolve_join_target=_noop,
-    )
-    return SQLGenerator(dialect="postgres").generate(enriched=enriched)
+    return await _engine_generate(query=q, model=model, dialect="postgres")
 
 
 async def test_filtered_count_uses_case_inside_count() -> None:

@@ -1,8 +1,8 @@
 """DEV-1595: end-to-end ``count_distinct_approx`` aggregation.
 
 Covers enum membership / eligibility (incl. on primary-key columns) and the
-colon-form ``col:count_distinct_approx`` emission through enrichment + the SQL
-generator, on a native-supporting dialect (DuckDB) and an exact-fallback
+colon-form ``col:count_distinct_approx`` emission through the typed engine
+pipeline, on a native-supporting dialect (DuckDB) and an exact-fallback
 dialect (Postgres).
 """
 
@@ -16,24 +16,12 @@ from slayer.core.enums import (
 )
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.enrichment import enrich_query
-from slayer.sql.generator import SQLGenerator
 
-
-async def _noop_async(**kw):  # NOSONAR(S7503) — must be a coroutine; awaited as an enrich_query resolver callback
-    return None
+from tests._engine_helpers import _engine_generate
 
 
 async def _generate(dialect: str, query: SlayerQuery, model: SlayerModel) -> str:
-    gen = SQLGenerator(dialect=dialect)
-    enriched = await enrich_query(
-        query=query,
-        model=model,
-        resolve_dimension_via_joins=_noop_async,
-        resolve_cross_model_measure=_noop_async,
-        resolve_join_target=_noop_async,
-    )
-    return gen.generate(enriched=enriched)
+    return await _engine_generate(query=query, model=model, dialect=dialect)
 
 
 def _model() -> SlayerModel:

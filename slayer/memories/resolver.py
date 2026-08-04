@@ -41,7 +41,7 @@ from slayer.core.errors import (
 from slayer.core.models import SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.core.refs import strip_agg_suffix as _strip_agg_suffix
-from slayer.engine.enrichment import _collect_reachable_agg_names
+from slayer.engine.agg_registry import collect_reachable_agg_names
 from slayer.engine.normalization import func_style_agg_to_colon
 from slayer.engine.syntax import (
     AggCall,
@@ -583,8 +583,8 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
         return (None, target)
 
     try:
-        reachable_agg_names = await _collect_reachable_agg_names(
-            model=source_model,
+        reachable_agg_names = await collect_reachable_agg_names(
+            source_model=source_model,
             resolve_join_target=_resolve_join_target_for_resolver,
             named_queries={},
         )

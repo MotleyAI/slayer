@@ -3683,15 +3683,9 @@ class SQLGenerator:
             )
             outer_alias_index[sid] = idx + 1
             public_aliases_user_order.append(alias)
-        outer_sql = (
-            "SELECT\n    "
-            + _SQL_COL_SEP.join(self._quote_ident(a) for a in public_aliases_user_order)
-            + f"\nFROM (\n{chain_sql}\n) AS _outer"
-        )
-
-        # ORDER BY / LIMIT / OFFSET on the outermost wrap.
-        return self._apply_order_limit_to_planned_sql_string(
-            sql=outer_sql,
+        return self._emit_planned_outer_wrap(
+            chain_sql=chain_sql,
+            public_aliases=public_aliases_user_order,
             planned_query=planned_query,
             slots_by_id=slots_by_id,
             available_alias_by_slot_id=available_alias_by_slot_id,
@@ -5067,8 +5061,14 @@ class SQLGenerator:
                     )
                 elif isinstance(key, ColumnKey):
                     # Local dimension — available via ``source_relation.*``.
+                    # ``_to_ident`` (not bare ``to_identifier``) so a mixed-case
+                    # physical column is double-quoted: this expression is
+                    # emitted in the ranked subquery's PARTITION BY *and* in the
+                    # outer SELECT / GROUP BY, and an unquoted ``events.RegionCode``
+                    # out there folds to lowercase on Postgres -> UndefinedColumn
+                    # (DEV-1645 Flavor B).
                     local = exp.Column(
-                        this=exp.to_identifier(key.leaf),
+                        this=self._to_ident(key.leaf),
                         table=exp.to_identifier(source_relation),
                     )
                     partition_exprs.append(local.copy())
@@ -6867,14 +6867,9 @@ class SQLGenerator:
             )
             outer_alias_index[sid] = idx + 1
             public_aliases_user_order.append(alias)
-        outer_sql = (
-            "SELECT\n    "
-            + _SQL_COL_SEP.join(self._quote_ident(a) for a in public_aliases_user_order)
-            + f"\nFROM (\n{chain_sql}\n) AS _outer"
-        )
-
-        return self._apply_order_limit_to_planned_sql_string(
-            sql=outer_sql,
+        return self._emit_planned_outer_wrap(
+            chain_sql=chain_sql,
+            public_aliases=public_aliases_user_order,
             planned_query=planned_query,
             slots_by_id=slots_by_id,
             available_alias_by_slot_id=available_alias_by_slot_id,
@@ -8847,6 +8842,85 @@ class SQLGenerator:
             f"DEV-1450 stage 7b.10: arithmetic op {op!r} arity "
             f"{len(operands)} not supported in POST-filter rendering.",
         )
+
+    def _emit_planned_outer_wrap(
+        self,
+        *,
+        chain_sql: str,
+        public_aliases: List[str],
+        planned_query,
+        slots_by_id: Dict[str, Any],
+        available_alias_by_slot_id: Dict[str, str],
+    ) -> str:
+        """Wrap ``chain_sql`` in the public-projection outer SELECT, through
+        the dialect strategy (DEV-1716).
+
+        Delegates to ``SqlDialect.emit_outer_wrap`` rather than string-building
+        ``FROM (<chain>) AS _outer`` inline. T-SQL overrides that hook to hoist
+        the inner top-level CTEs onto the outer statement, because SQL Server
+        accepts ``WITH`` only as a statement prefix and rejects
+        ``FROM (WITH ... SELECT ...) AS _outer`` with "Incorrect syntax near
+        the keyword 'WITH'" (DEV-1571 Bug 1). Every other dialect gets the
+        base impl, whose output is byte-identical to the previous inline
+        string.
+
+        ORDER BY / LIMIT / OFFSET are resolved here from the typed plan (slot
+        id -> materialised alias) and handed to the hook as AST, since the
+        T-SQL override also transposes pagination to ``TOP`` /
+        ``FETCH NEXT n ROWS ONLY``.
+        """
+        order_sql = self._planned_order_by_sql(
+            planned_query=planned_query,
+            slots_by_id=slots_by_id,
+            available_alias_by_slot_id=available_alias_by_slot_id,
+        )
+        order_expr = (
+            self._parse(f"SELECT 1 ORDER BY {order_sql}").args.get("order")
+            if order_sql
+            else None
+        )
+        limit_expr = (
+            exp.Limit(expression=exp.Literal.number(planned_query.limit))
+            if planned_query.limit is not None
+            else None
+        )
+        offset_expr = (
+            exp.Offset(expression=exp.Literal.number(planned_query.offset))
+            if planned_query.offset is not None
+            else None
+        )
+        return self._dialect.emit_outer_wrap(
+            inner_sql=chain_sql,
+            public=public_aliases,
+            order=order_expr,
+            limit=limit_expr,
+            offset_arg=offset_expr,
+            parse=self._parse,
+        )
+
+    def _planned_order_by_sql(
+        self,
+        *,
+        planned_query,
+        slots_by_id: Dict[str, Any],
+        available_alias_by_slot_id: Dict[str, str],
+    ) -> str:
+        """Render the ORDER BY term list (without the keyword) for a planned
+        query whose sort keys resolve to CTE-chain aliases."""
+        order_parts: list[str] = []
+        for order_entry in planned_query.order:
+            slot = slots_by_id.get(order_entry.slot_id)
+            alias = available_alias_by_slot_id.get(order_entry.slot_id)
+            if slot is None or alias is None:
+                raise RuntimeError(
+                    f"ORDER BY references slot id={order_entry.slot_id!r} "
+                    f"not materialised in the CTE chain.",
+                )
+            direction = (
+                "ASC" if order_entry.direction == "asc" else "DESC"
+            )
+            order_parts.append(f'{self._quote_ident(alias)} {direction}')
+        return ", ".join(order_parts)
 
     def _apply_order_limit_to_planned_sql_string(
         self,

@@ -12,7 +12,6 @@ import sqlglot.errors
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, AggregationParam, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
@@ -29,10 +28,6 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._cross_model_chain import _extract_cte_body
 from tests._engine_helpers import _assert_valid_sql, _engine_generate
-
-
-async def _noop_async(**kw):
-    return None
 
 
 def _norm(s: str) -> str:
@@ -148,6 +143,59 @@ def _outer_from_node(sql: str, dialect: str = "postgres"):
     if fc is None:
         return None
     return fc.this
+
+
+def _alias_bodies(sql: str, alias: str, dialect: str = "postgres") -> list[str]:
+    """Rendered body of every ``<expr> AS "<alias>"`` projection in ``sql``.
+
+    Rendered-SQL equivalent of reading an expression's SQL off the legacy
+    enriched query (``{e.name: e.sql for e in enriched.expressions}``): the
+    computed measure ``growth`` is emitted exactly once as an aliased
+    projection, so its body is the expression the engine resolved it to.
+    """
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    return [
+        node.this.sql(dialect=dialect)
+        for node in tree.find_all(sqlglot.exp.Alias)
+        if node.alias == alias
+    ]
+
+
+def _hoisted_shift_aliases(sql: str, dialect: str = "postgres") -> set[str]:
+    """The hidden aliases each hoisted ``time_shift`` is projected under.
+
+    Rendered-SQL equivalent of the legacy enriched-query transform-alias set
+    (``{t.alias for t in enriched.transforms}``): every shift becomes a
+    ``shifted_*`` CTE that a ``sjoin_*`` CTE self-joins, projecting the
+    shifted measure under the hoisted transform's alias.
+    """
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    aliases: set[str] = set()
+    for cte in tree.find_all(sqlglot.exp.CTE):
+        if not cte.alias_or_name.startswith("sjoin_"):
+            continue
+        for proj in cte.this.expressions:
+            if (
+                isinstance(proj, sqlglot.exp.Alias)
+                and isinstance(proj.this, sqlglot.exp.Column)
+                and proj.this.table.startswith("shifted_")
+            ):
+                aliases.add(proj.alias)
+    return aliases
+
+
+def _outer_projection_names(sql: str, dialect: str = "postgres") -> set[str]:
+    """Result keys the OUTERMOST SELECT projects — the public projection.
+
+    Superset of the legacy enriched-query dimension/time-dimension/expression
+    alias sets (user-declared dimensions AND measures, and nothing hidden), so
+    asserting a hoisted transform alias is absent from it is at least as
+    strict as the legacy per-set disjointness checks.
+    """
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    if not isinstance(tree, sqlglot.exp.Select):
+        return set()
+    return {proj.alias_or_name for proj in tree.expressions}
 
 
 async def _generate(
@@ -1773,7 +1821,7 @@ class TestFields:
         assert len([c for c in ctes if c.startswith("shifted_")]) == 2
 
     async def test_multiple_time_shifts_resolve_to_distinct_aliases(
-        self, orders_model: SlayerModel
+        self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
         """DEV-1692: each shift keeps its own offset — no silent alias sharing.
 
@@ -1792,23 +1840,42 @@ class TestFields:
                 ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -2, 'month')", name="growth_2m"),
             ],
         )
-        enriched = await enrich_query(
-            query=query,
-            model=orders_model,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
+        sql = await _generate(generator, query, orders_model)
+
+        # Both shifts are hoisted, each under its OWN alias (legacy:
+        # ``len({t.alias for t in shifts}) == len(shifts)`` over the two
+        # ``time_shift`` transforms).
+        shift_aliases = _hoisted_shift_aliases(sql)
+        assert len(shift_aliases) == 2, (
+            f"expected two distinctly-aliased hoisted shifts, got "
+            f"{sorted(shift_aliases)} in:\n{sql}"
         )
 
-        shifts = [t for t in enriched.transforms if t.transform == "time_shift"]
-        assert len({t.alias for t in shifts}) == len(shifts)
-        assert {t.offset for t in shifts} == {-1, -2}
+        # Each shift keeps its own offset (legacy: ``{t.offset} == {-1, -2}``).
+        # Both are backwards shifts, so the emitted interval is ``+ 1``/``+ 2``
+        # months on the join side; the sign is captured too so a flipped
+        # direction can't pass.
+        offsets = set(
+            _re.findall(r"orders\.created_at ([+-]) INTERVAL '(\d+) MONTH'", sql)
+        )
+        assert offsets == {("+", "1"), ("+", "2")}, (
+            f"expected -1 and -2 month shifts, got {sorted(offsets)} in:\n{sql}"
+        )
 
-        by_name = {e.name: e.sql for e in enriched.expressions}
-        assert by_name["growth"] != by_name["growth_2m"]
+        # The two measures do NOT resolve to the same expression (legacy:
+        # ``by_name["growth"] != by_name["growth_2m"]``).
+        growth = _alias_bodies(sql, "orders.growth")
+        growth_2m = _alias_bodies(sql, "orders.growth_2m")
+        assert len(growth) == 1 and len(growth_2m) == 1, (
+            f"each computed measure must be emitted exactly once; got "
+            f"growth={growth}, growth_2m={growth_2m} in:\n{sql}"
+        )
+        assert growth[0] != growth_2m[0], (
+            f"growth and growth_2m share one shift expression: {growth[0]!r}"
+        )
 
     async def test_hidden_transform_name_avoids_user_measure_collision(
-        self, orders_model: SlayerModel
+        self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
         """DEV-1692: a hoisted transform must not land on a user measure's name.
 
@@ -1829,24 +1896,30 @@ class TestFields:
                 ModelMeasure(formula="revenue:sum * 2", name="_t0_growth"),
             ],
         )
-        enriched = await enrich_query(
-            query=query,
-            model=orders_model,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
+        sql = await _generate(generator, query, orders_model)
+
+        # The hoisted shift's alias must not be one of the user-declared
+        # result keys (legacy: ``transform_aliases & expression_aliases``
+        # empty — the outer projection is a superset of the expression
+        # aliases, so this is at least as strict).
+        transform_aliases = _hoisted_shift_aliases(sql)
+        assert transform_aliases, f"no hoisted shift alias found in:\n{sql}"
+        result_keys = _outer_projection_names(sql)
+        assert {"orders.growth", "orders._t0_growth"} <= result_keys, (
+            f"expected both user measures in the public projection, got "
+            f"{sorted(result_keys)} in:\n{sql}"
+        )
+        assert not (transform_aliases & result_keys), (
+            f"hoisted transform alias collides with a user-declared result "
+            f"key: {sorted(transform_aliases)} in:\n{sql}"
         )
 
-        transform_aliases = {t.alias for t in enriched.transforms}
-        expression_aliases = {e.alias for e in enriched.expressions}
-        assert not (transform_aliases & expression_aliases)
-
         # `growth` must reference the hoisted shift, not the user's measure.
-        growth_sql = next(e.sql for e in enriched.expressions if e.name == "growth")
+        growth_sql = _alias_bodies(sql, "orders.growth")[0]
         assert "orders._t0_growth" not in growth_sql.replace("orders._t0_growth_2", "")
 
     async def test_hidden_transform_name_avoids_dimension_collision(
-        self, orders_model: SlayerModel
+        self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
         """DEV-1692: dimensions alias as `<model>.<name>` too, so they're reserved.
 
@@ -1868,19 +1941,25 @@ class TestFields:
                 ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
             ],
         )
-        enriched = await enrich_query(
-            query=query,
-            model=orders_model,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
-        )
+        sql = await _generate(generator, query, orders_model)
 
-        dim_aliases = {d.alias for d in enriched.dimensions} | {
-            td.alias for td in enriched.time_dimensions
-        }
-        transform_aliases = {t.alias for t in enriched.transforms}
+        # Legacy: ``(dimension aliases | time-dimension aliases) &
+        # transform_aliases`` empty. The outer projection carries both
+        # declared dimensions (``orders._t0_growth``) and the time dimension
+        # (``orders.created_at``), so the disjointness check is preserved.
+        dim_aliases = _outer_projection_names(sql)
+        assert {"orders._t0_growth", "orders.created_at"} <= dim_aliases, (
+            f"expected both dimensions in the public projection, got "
+            f"{sorted(dim_aliases)} in:\n{sql}"
+        )
+        transform_aliases = _hoisted_shift_aliases(sql)
+        assert transform_aliases, f"no hoisted shift alias found in:\n{sql}"
         assert not (dim_aliases & transform_aliases)
+
+        # And the measure computes against the shift, not the same-named
+        # dimension (the corruption the alias collision caused).
+        growth_sql = _alias_bodies(sql, "orders.growth")[0]
+        assert "orders._t0_growth" not in growth_sql
 
     async def test_dev_1692_repro_shape(
         self, generator: SQLGenerator, orders_model: SlayerModel
@@ -11916,41 +11995,70 @@ class TestBigQueryAliasMangling:
         assert '"orders._count"' in sql
         assert "___" not in sql
 
-    async def test_wrapped_render_mode_also_mangles_aliases(
+    async def test_inner_stage_render_also_mangles_aliases(
         self, orders_model: SlayerModel,
     ) -> None:
-        """``render_mode="wrapped"`` (used for ``_query_as_model.inner_sql``
-        and inner stages of ``source_queries``) must mangle aliases too —
-        otherwise the outer stage's references to inner-CTE columns would
-        mismatch what the inner CTE actually emits.
+        """Inner-stage renders (``source_queries`` stages behind a
+        query-backed model) must mangle aliases too — otherwise the outer
+        stage's references to inner-stage columns would mismatch what the
+        inner stage actually emits.
 
         Pins Codex HIGH #1: the consistency of multi-stage BigQuery SQL
-        rests on the rewrite firing on BOTH render modes. The rewrite is
-        deterministic, so as long as it fires on both, the inner emit and
-        the outer reference resolve to the same ``___``-form alias.
+        rests on the rewrite firing on EVERY nesting level, not just the
+        terminal one. The rewrite is deterministic, so as long as it fires
+        on both, the inner emit and the outer reference resolve to the same
+        ``___``-form alias.
+
+        (Was ``test_wrapped_render_mode_also_mangles_aliases``, which drove
+        the legacy ``SQLGenerator.generate(enriched=..., render_mode=
+        "wrapped")`` entry point directly. The typed engine renders nested
+        stages through ``generate_planned_stages``; the invariant and the
+        assertions below are unchanged.)
         """
+        stages_model = SlayerModel(
+            name="qb_stage",
+            data_source="test",
+            source_queries=[
+                SlayerQuery(
+                    name="stg",
+                    source_model="orders",
+                    measures=[
+                        ModelMeasure(formula="*:count"),
+                        ModelMeasure(formula="revenue:sum"),
+                    ],
+                    dimensions=[ColumnRef(name="status")],
+                ),
+                SlayerQuery(
+                    source_model="stg",
+                    dimensions=[ColumnRef(name="status")],
+                    measures=[ModelMeasure(formula="revenue_sum:sum")],
+                ),
+            ],
+        )
         gen = SQLGenerator(dialect="bigquery")
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum")],
+            source_model="qb_stage",
             dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="revenue_sum_sum:sum")],
         )
-        enriched = await enrich_query(
-            query=query,
-            model=orders_model,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
+        sql = await _generate(
+            gen, query, orders_model, extra_models=[stages_model],
         )
-        sql = gen.generate(enriched=enriched, render_mode="wrapped")
-        # Wrapped mode keeps every alias (so the outer stage can reach
+        # The inner stage keeps every alias (so the outer stage can reach
         # them); all aliases must be mangled.
         for m in _re.findall(r"`([^`]+)`", sql):
             assert "." not in m, (
-                f"BigQuery wrapped-mode SQL still has dotted alias `{m}`:\n{sql}"
+                f"BigQuery inner-stage SQL still has dotted alias `{m}`:\n{sql}"
             )
         # And the mangle separator is present (the rewrite actually fired).
-        assert "___" in sql, f"wrapped-mode rewrite did not fire:\n{sql}"
+        assert "___" in sql, f"inner-stage rewrite did not fire:\n{sql}"
+        # Inner emit and outer reference agree on the SAME ``___`` alias:
+        # each appears at least twice (emitted once, referenced once).
+        for alias in ("stg___status", "stg___revenue_sum_sum"):
+            assert sql.count(f"`{alias}`") >= 2, (
+                f"inner-stage alias `{alias}` is not referenced by the outer "
+                f"stage under the same mangled name:\n{sql}"
+            )
 
     async def test_rewrite_fires_after_outer_projection_trim(
         self, orders_model: SlayerModel,
@@ -11965,6 +12073,15 @@ class TestBigQueryAliasMangling:
         and ``BigqueryDialect.rewrite_emitted_sql`` and assert the call
         order. Both wrappers delegate to the real implementations so the
         test verifies the production code path, not a stubbed substitute.
+
+        NOTE: ``_apply_outer_projection_trim`` exists only on the
+        ``SQLGenerator.generate(enriched=...)`` entry point — the typed
+        pipeline builds the public projection in the planner instead, so
+        there is no typed analogue of this ordering contract. The enriched
+        query is therefore built through ``engine._enrich`` (same as the
+        other ``generate(enriched=...)`` tests in this module) rather than
+        importing ``slayer.engine.enrichment`` directly; the contract this
+        test pins retires together with that entry point.
         """
         gen = SQLGenerator(dialect="bigquery")
         query = SlayerQuery(
@@ -11976,13 +12093,8 @@ class TestBigQueryAliasMangling:
             # a no-op on a trivial query).
             filters=["dense_rank(revenue:sum) <= 5"],
         )
-        enriched = await enrich_query(
-            query=query,
-            model=orders_model,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
-        )
+        async with _persist_and_engine(orders_model, ds_type="bigquery") as engine:
+            enriched = await engine._enrich(query=query, model=orders_model)
         call_order: list[str] = []
         real_trim = SQLGenerator._apply_outer_projection_trim
         real_rewrite = BigqueryDialect.rewrite_emitted_sql

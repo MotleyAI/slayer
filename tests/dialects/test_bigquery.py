@@ -21,8 +21,6 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery
-from slayer.engine.enriched import EnrichedQuery
-from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import (
     BigqueryDialect,
@@ -31,12 +29,9 @@ from slayer.sql.dialects import (
     dialect_for_ds_type,
     get_dialect,
 )
-from slayer.sql.generator import SQLGenerator
 from slayer.storage.yaml_storage import YAMLStorage
 
-
-async def _noop_async(**kw):  # NOSONAR(S7503) — must remain async for the resolver-callback contract
-    return None
+from tests._engine_helpers import _engine_generate
 
 
 # ---------------------------------------------------------------------------
@@ -399,9 +394,9 @@ def test_bigquery_emit_outer_wrap_uses_backticks_for_aliases() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _build_minimal_enriched_query() -> EnrichedQuery:
-    """Helper: produce an EnrichedQuery suitable for SQLGenerator.generate()."""
-    model = SlayerModel(
+def _minimal_orders_model() -> SlayerModel:
+    """Helper: the two-column model the generator-dispatch test renders."""
+    return SlayerModel(
         name="orders",
         sql_table="public.orders",
         data_source="test",
@@ -409,17 +404,6 @@ async def _build_minimal_enriched_query() -> EnrichedQuery:
             Column(name="id", sql="id", type=DataType.INT, primary_key=True),
             Column(name="status", sql="status", type=DataType.TEXT),
         ],
-    )
-    query = SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-    )
-    return await enrich_query(
-        query=query,
-        model=model,
-        resolve_dimension_via_joins=_noop_async,
-        resolve_cross_model_measure=_noop_async,
-        resolve_join_target=_noop_async,
     )
 
 
@@ -429,18 +413,25 @@ async def test_generator_dispatches_through_rewrite_emitted_sql_hook() -> None:
     branch. Pins the generic hook contract; a future regression that
     re-introduces a string-keyed dispatch in the generator would fail this.
 
-    Strategy: instantiate the generator with a non-BigQuery dialect
-    (Postgres) and assert the dialect's ``rewrite_emitted_sql`` is invoked.
+    Strategy: render a query on a non-BigQuery dialect (Postgres) and assert
+    that dialect class's ``rewrite_emitted_sql`` is invoked. ``SQLGenerator``
+    resolves ``self._dialect`` from the singleton registry, so patching
+    ``PostgresDialect`` patches exactly the object ``generate()`` dispatches
+    through.
     """
-    enriched = await _build_minimal_enriched_query()
-    gen = SQLGenerator(dialect="postgres")
+    query = SlayerQuery(
+        source_model="orders",
+        dimensions=[ColumnRef(name="status")],
+    )
     with patch.object(
-        type(gen._dialect),
+        PostgresDialect,
         "rewrite_emitted_sql",
         autospec=True,
         side_effect=lambda self, sql: sql,
     ) as spy:
-        gen.generate(enriched=enriched)
+        await _engine_generate(
+            query=query, model=_minimal_orders_model(), dialect="postgres",
+        )
     assert spy.called, (
         "SQLGenerator.generate() must dispatch through self._dialect."
         "rewrite_emitted_sql — a hard-coded `if dialect == ...:` would "

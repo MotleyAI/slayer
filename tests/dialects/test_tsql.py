@@ -15,7 +15,6 @@ T-SQL has the most divergent shape of any Tier-1 dialect:
 
 from __future__ import annotations
 
-import asyncio
 import re
 import tempfile
 from unittest.mock import patch
@@ -28,11 +27,11 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.generator import SQLGenerator
 from slayer.sql.dialects.tsql import TsqlDialect
 from slayer.storage.yaml_storage import YAMLStorage
+
+from tests._engine_helpers import _engine_generate
 
 
 def _parse_tsql(sql: str) -> exp.Expression:
@@ -827,22 +826,9 @@ async def test_tsql_explain_does_not_decode_data_rows() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _noop_resolver_tsql(**kw):  # noqa: ARG001  # NOSONAR(S7503) — resolver stub must remain async
-    return None
-
-
-def _tsql_generate(query: SlayerQuery, model: SlayerModel) -> str:
-    async def _run() -> str:
-        enriched = await enrich_query(
-            query=query, model=model,
-            resolve_dimension_via_joins=_noop_resolver_tsql,
-            resolve_cross_model_measure=_noop_resolver_tsql,
-            resolve_join_target=_noop_resolver_tsql,
-            dialect="tsql",
-        )
-        return SQLGenerator(dialect="tsql").generate(enriched=enriched)
-
-    return asyncio.run(_run())
+async def _tsql_generate(query: SlayerQuery, model: SlayerModel) -> str:
+    """Render ``query`` for T-SQL and return the full emitted SQL."""
+    return await _engine_generate(query=query, model=model, dialect="tsql")
 
 
 def _orders_model_tsql() -> SlayerModel:
@@ -858,7 +844,7 @@ def _orders_model_tsql() -> SlayerModel:
     )
 
 
-def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
+async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
     """``change_pct(total:sum)`` builds shifted/self-join/step CTEs.
     After DEV-1571 Bug 3 follow-up, every identifier in those CTEs uses
     T-SQL brackets AND Bug 2 mangling converts the dotted aliases to
@@ -880,7 +866,7 @@ def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    sql = _tsql_generate(q, _orders_model_tsql())
+    sql = await _tsql_generate(q, _orders_model_tsql())
     # No ANSI-quoted identifiers — they'd bypass Bug 2 mangling and the
     # literal-dot form would fail T-SQL's ORDER BY alias resolver.
     assert '"orders.' not in sql, (
@@ -892,20 +878,24 @@ def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
         f"T-SQL emission must not contain literal-dot bracketed aliases "
         f"(Bug 2 mangling didn't fire):\n{sql}"
     )
-    # Self-join CTE references the mangled form on both sides.
+    # Self-join CTE references the mangled form on both sides. (The typed
+    # pipeline names the shifted CTE ``shifted__time_shift_inner``; the
+    # legacy stack spelled it ``shifted__ts_pct``. Same CTE, same assertion.)
     assert (
-        "base.[orders___created_at] = shifted__ts_pct.[orders___created_at]"
+        "base.[orders___created_at] = "
+        "shifted__time_shift_inner.[orders___created_at]"
         in sql
     ), f"Self-join ON clause must use mangled bracketed identifiers:\n{sql}"
     # Outer ORDER BY references the mangled alias.
     assert "[orders___created_at]" in sql
     # Computed expression's column references in step2 use mangled brackets.
-    assert "[orders____ts_pct]" in sql, (
-        f"Inner CASE expression's column refs must be mangled-bracket form:\n{sql}"
+    assert "[orders____time_shift_inner]" in sql, (
+        f"Inner computed expression's column refs must be mangled-bracket "
+        f"form:\n{sql}"
     )
 
 
-def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() -> None:
+async def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() -> None:
     """T-SQL ORDER BY must reference the SELECT alias as a top-level
     expression, not inside a CASE WHEN NULLS-emulation sub-expression.
 
@@ -926,7 +916,7 @@ def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() -> Non
         dimensions=[ColumnRef(name="id"), ColumnRef(name="created_at")],
         order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
     )
-    sql = _tsql_generate(q, _orders_model_tsql())
+    sql = await _tsql_generate(q, _orders_model_tsql())
     assert "CASE WHEN" not in sql.upper() or "ORDER BY\n  CASE WHEN" not in sql, (
         f"T-SQL ORDER BY must not wrap the alias in a NULLS-emulation "
         f"CASE WHEN sub-expression — alias resolution fails inside it:\n{sql}"

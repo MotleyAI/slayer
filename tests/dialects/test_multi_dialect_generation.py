@@ -220,7 +220,11 @@ class TestMultiDialectGeneration:
             ),
             model,
         )
-        assert "CAST(" not in sql.upper(), sql
+        # Scoped to the TIME DIMENSION operand: a bare column keeps its live
+        # DB type and must not be cast. (A blanket "no CAST anywhere" check
+        # would now trip on the typed pipeline's result-type cast around the
+        # ``*:count`` measure, which is unrelated to this contract.)
+        assert "CAST(ORDERS.CREATED_AT" not in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
     async def test_calendar_time_shift(self, dialect: str, orders_model: SlayerModel) -> None:
@@ -484,6 +488,14 @@ class TestLogAliasPreservation:
     ``LOG(base, x)`` for almost every dialect, which makes generated SQL
     diverge from the recipe formula text and (on dialects that lack 2-arg
     ``LOG``) can break a previously working call.
+
+    The expectations name the column ``ORDERS.AMOUNT`` rather than bare
+    ``AMOUNT``: the typed pipeline anchors every reference at its scope root
+    (Law 1), so a ``Column.sql`` operand emits qualified. That is orthogonal
+    to the alias-preservation contract under test here, and pinning the
+    qualified form keeps the negative assertions meaningful — a bare
+    ``LOG(10, AMOUNT)`` needle would be trivially absent whatever the
+    generator did with the alias.
     """
 
     @pytest.fixture
@@ -521,20 +533,20 @@ class TestLogAliasPreservation:
         sql = await _generate(generator=gen, query=query, model=log_model)
         upper_no_ws = "".join(sql.upper().split())
         if dialect in _LOG10_NATIVE_DIALECTS:
-            assert "LOG10(AMOUNT)" in upper_no_ws, (
+            assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
                 f"{dialect}: expected literal LOG10(amount), got:\n{sql}"
             )
             # Must not have canonicalised to either arg-order 2-arg form.
-            assert "LOG(10,AMOUNT)" not in upper_no_ws, (
+            assert "LOG(10,ORDERS.AMOUNT)" not in upper_no_ws, (
                 f"{dialect}: should not canonicalise to LOG(10, amount):\n{sql}"
             )
-            assert "LOG(AMOUNT,10)" not in upper_no_ws, (
+            assert "LOG(ORDERS.AMOUNT,10)" not in upper_no_ws, (
                 f"{dialect}: should not canonicalise to LOG(amount, 10):\n{sql}"
             )
         else:
             # Fallback: current 2-arg LOG behaviour is preserved on dialects
             # without native single-arg log10 (oracle).
-            assert "LOG(10,AMOUNT)" in upper_no_ws or "LOG(AMOUNT,10)" in upper_no_ws, (
+            assert "LOG(10,ORDERS.AMOUNT)" in upper_no_ws or "LOG(ORDERS.AMOUNT,10)" in upper_no_ws, (
                 f"{dialect}: expected fallback LOG(base,x) form, got:\n{sql}"
             )
 
@@ -550,18 +562,18 @@ class TestLogAliasPreservation:
         sql = await _generate(generator=gen, query=query, model=log_model)
         upper_no_ws = "".join(sql.upper().split())
         if dialect in _LOG2_NATIVE_DIALECTS:
-            assert "LOG2(AMOUNT)" in upper_no_ws, (
+            assert "LOG2(ORDERS.AMOUNT)" in upper_no_ws, (
                 f"{dialect}: expected literal LOG2(amount), got:\n{sql}"
             )
-            assert "LOG(2,AMOUNT)" not in upper_no_ws, (
+            assert "LOG(2,ORDERS.AMOUNT)" not in upper_no_ws, (
                 f"{dialect}: should not canonicalise to LOG(2, amount):\n{sql}"
             )
-            assert "LOG(AMOUNT,2)" not in upper_no_ws, (
+            assert "LOG(ORDERS.AMOUNT,2)" not in upper_no_ws, (
                 f"{dialect}: should not canonicalise to LOG(amount, 2):\n{sql}"
             )
         else:
             # Fallback for tsql / oracle / redshift / snowflake (no native LOG2).
-            assert "LOG(2,AMOUNT)" in upper_no_ws or "LOG(AMOUNT,2)" in upper_no_ws, (
+            assert "LOG(2,ORDERS.AMOUNT)" in upper_no_ws or "LOG(ORDERS.AMOUNT,2)" in upper_no_ws, (
                 f"{dialect}: expected fallback LOG(base,x) form, got:\n{sql}"
             )
 
@@ -598,11 +610,11 @@ class TestLogAliasPreservation:
         )
         sql = await _generate(generator=gen, query=query, model=model)
         upper_no_ws = "".join(sql.upper().split())
-        assert "LOG10(AMOUNT)" in upper_no_ws, (
+        assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
             f"{dialect}: expected literal log10(amount) inside filtered "
             f"column wrapper, got:\n{sql}"
         )
-        assert "LOG(10,AMOUNT)" not in upper_no_ws, (
+        assert "LOG(10,ORDERS.AMOUNT)" not in upper_no_ws, (
             f"{dialect}: filtered-column re-parse must not re-canonicalise "
             f"to LOG(10, amount):\n{sql}"
         )
@@ -621,7 +633,7 @@ class TestLogAliasPreservation:
         )
         sql = await _generate(generator=gen, query=query, model=log_model)
         upper_no_ws = "".join(sql.upper().split())
-        assert "LOG10(AMOUNT)" in upper_no_ws, (
+        assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
             f"{dialect}: expected log10(amount) inside arithmetic measure:\n{sql}"
         )
         assert "COUNT(" in sql.upper(), f"COUNT(*) leg missing on {dialect}:\n{sql}"
@@ -645,7 +657,7 @@ class TestLogAliasPreservation:
             f"{dialect}: must not invent LOG3() — only base 10 and 2 are aliased:\n{sql}"
         )
         # The 2-arg form must remain in some arg order.
-        assert "LOG(3,AMOUNT)" in upper_no_ws or "LOG(AMOUNT,3)" in upper_no_ws, (
+        assert "LOG(3,ORDERS.AMOUNT)" in upper_no_ws or "LOG(ORDERS.AMOUNT,3)" in upper_no_ws, (
             f"{dialect}: expected 2-arg LOG(3, amount) preserved, got:\n{sql}"
         )
 
@@ -684,7 +696,7 @@ class TestStringHygieneDialectTranslation:
             ("postgres", "LOWER(orders.status) = 'active'"),
             ("mysql", "LOWER(orders.status) = 'active'"),
             ("duckdb", "LOWER(orders.status) = 'active'"),
-            ("clickhouse", "lower(orders.status) = 'active'"),
+            ("clickhouse", "LOWER(orders.status) = 'active'"),
         ],
     )
     async def test_lower(self, orders_model: SlayerModel, dialect: str, expected: str) -> None:
@@ -732,7 +744,7 @@ class TestStringHygieneDialectTranslation:
             ("postgres", "SUBSTRING(orders.status FROM 1 FOR 5)"),
             ("mysql", "SUBSTRING(orders.status, 1, 5)"),
             ("duckdb", "SUBSTRING(orders.status, 1, 5)"),
-            ("clickhouse", "substr(orders.status, 1, 5)"),
+            ("clickhouse", "SUBSTR(orders.status, 1, 5)"),
         ],
     )
     async def test_substr_translates_per_dialect(

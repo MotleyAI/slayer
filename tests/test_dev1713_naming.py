@@ -20,6 +20,7 @@ verified on real returned rows, not just the emitted SQL.
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import sqlite3
@@ -43,6 +44,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.source_bundle import build_resolved_source_bundle
 from slayer.engine.stage_planner import plan_stages
 from slayer.sql.generator import generate_planned_stages
+from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _engine_generate
@@ -486,29 +488,26 @@ class TestMultiStageNaming:
 # ---------------------------------------------------------------------------
 
 
-class TestLegacyFlattenerDelegation:
-    """Codex F7: the legacy virtual-model flatteners must DELEGATE to
-    ``flat_name`` (single owner), not keep their own ``.replace('.', '__')``
-    bodies. Both are closures (``_alias_to_short`` inside
-    ``SlayerQueryEngine._query_as_model``; ``_alias_to_short_local`` inside
-    ``enrich_query``), so this inspects the enclosing source to assert the
-    delegation call is present — a body that dropped it would fail here."""
+class TestFlattenerDelegation:
+    """Codex F7: every downstream-bind-name flattener must DELEGATE to
+    ``flat_name`` (single owner), not keep its own ``.replace('.', '__')``
+    body. The virtual-model one is a closure (``_alias_to_short`` inside
+    ``SlayerQueryEngine._query_as_model``), so this inspects the enclosing
+    source to assert the delegation call is present — a body that dropped it
+    would fail here. The typed pipeline's flattener is
+    ``build_flat_rename_wrapper`` (the ``_alias_to_short_local`` successor:
+    same strip-source-relation-then-``__``-flatten contract for stage CTEs
+    and the query-backed virtual-model wrap)."""
 
     def test_query_as_model_delegates_to_flat_name(self) -> None:
-        import inspect
-
-        from slayer.engine.query_engine import SlayerQueryEngine
-
         src = inspect.getsource(SlayerQueryEngine._query_as_model)
         assert "flat_name(" in src, "expected _query_as_model to call flat_name()"
 
-    def test_enrich_query_delegates_to_flat_name(self) -> None:
-        import inspect
-
-        from slayer.engine.enrichment import enrich_query
-
-        src = inspect.getsource(enrich_query)
-        assert "flat_name(" in src, "expected enrich_query to call flat_name()"
+    def test_stage_flat_rename_wrapper_delegates_to_flat_name(self) -> None:
+        src = inspect.getsource(build_flat_rename_wrapper)
+        assert "flat_name(" in src, (
+            "expected build_flat_rename_wrapper to call flat_name()"
+        )
 
 
 def _orders_named_model(measures=None) -> SlayerModel:
