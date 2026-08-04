@@ -205,27 +205,7 @@ class CubeToSlayerConverter:
         if source is None:
             return None
 
-        meta: dict = dict(cube.meta or {})
-        cube_vars = self._build_cube_variables(cube, refs)
-        if cube_vars:
-            meta["cube_variables"] = cube_vars
-        if cube.title:
-            meta["cube_title"] = cube.title
-        unmapped: dict = {}
-        if cube.data_source:
-            unmapped["data_source"] = cube.data_source
-        if cube.pre_aggregations:
-            unmapped["pre_aggregations"] = cube.pre_aggregations
-        for field in _CUBE_INFRA_FIELDS:
-            val = getattr(cube, field, None)
-            if val is not None:
-                unmapped[field] = val
-        for key in unmapped:
-            report.add(CubeConversionIssue(
-                category=CubeIssueCategory.UNMAPPED_INFRA, severity="warning",
-                cube=cube.name, message=f"'{key}' has no SLayer equivalent; stashed in meta.",
-                raw=str(unmapped[key]),
-            ))
+        meta, unmapped = self._build_meta_and_unmapped(cube, refs, report)
 
         names = _Names()
         columns: list[Column] = []
@@ -268,6 +248,34 @@ class CubeToSlayerConverter:
         self._measure_info[cube.name] = info
         self._report_filter_param_variables(cube, refs, report)
         return model
+
+    def _build_meta_and_unmapped(
+        self, cube: CubeCube, refs, report: CubeConversionReport
+    ) -> tuple[dict, dict]:
+        """Assemble the model ``meta`` (cube meta + title + FILTER_PARAMS
+        variables) and the ``unmapped`` infra bag, reporting each stashed field."""
+        meta: dict = dict(cube.meta or {})
+        cube_vars = self._build_cube_variables(cube, refs)
+        if cube_vars:
+            meta["cube_variables"] = cube_vars
+        if cube.title:
+            meta["cube_title"] = cube.title
+        unmapped: dict = {}
+        if cube.data_source:
+            unmapped["data_source"] = cube.data_source
+        if cube.pre_aggregations:
+            unmapped["pre_aggregations"] = cube.pre_aggregations
+        for field in _CUBE_INFRA_FIELDS:
+            val = getattr(cube, field, None)
+            if val is not None:
+                unmapped[field] = val
+        for key in unmapped:
+            report.add(CubeConversionIssue(
+                category=CubeIssueCategory.UNMAPPED_INFRA, severity="warning",
+                cube=cube.name, message=f"'{key}' has no SLayer equivalent; stashed in meta.",
+                raw=str(unmapped[key]),
+            ))
+        return meta, unmapped
 
     # ── FILTER_PARAMS (DEV-1730) ────────────────────────────────────────────
 

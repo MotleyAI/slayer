@@ -170,21 +170,13 @@ def _scan_balanced_arg(text: str, pos: int) -> tuple[str, int] | None:
     or ``,`` inside a literal doesn't truncate the argument."""
     arg_start = pos
     depth = 1
-    in_str = False
     n = len(text)
     while pos < n:
         c = text[pos]
-        if in_str:
-            if c == "'":
-                if pos + 1 < n and text[pos + 1] == "'":
-                    pos += 2
-                    continue
-                in_str = False
-            pos += 1
-            continue
         if c == "'":
-            in_str = True
-        elif c == "(":
+            pos = _skip_sq_literal(text, pos)
+            continue
+        if c == "(":
             depth += 1
         elif c == ")":
             depth -= 1
@@ -192,6 +184,21 @@ def _scan_balanced_arg(text: str, pos: int) -> tuple[str, int] | None:
                 return text[arg_start:pos], pos
         pos += 1
     return None
+
+
+def _skip_sq_literal(text: str, pos: int) -> int:
+    """``pos`` is at a single-quote opening a literal; return the index just past
+    its closing quote (``''`` is an escaped quote, not a close)."""
+    n = len(text)
+    pos += 1
+    while pos < n:
+        if text[pos] == "'":
+            if pos + 1 < n and text[pos + 1] == "'":
+                pos += 2
+                continue
+            return pos + 1
+        pos += 1
+    return pos
 
 
 def parse_string_filter_params(

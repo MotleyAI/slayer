@@ -410,20 +410,26 @@ class _Walker:
         if t == "Literal" and isinstance(node.value, str):
             segments.append(("lit", node.value))
         elif t == "Identifier":
-            if node.name not in suffix_by_name:
-                raise _DynamicValue(f"unknown arrow param '{node.name}'")
-            segments.append(("param", suffix_by_name[node.name]))
+            segments.append(("param", self._param_suffix(node, suffix_by_name)))
         elif t == "BinaryExpression" and node.operator == "+":
             self._collect_arrow_body(node.left, suffix_by_name, segments)
             self._collect_arrow_body(node.right, suffix_by_name, segments)
         elif t == "TemplateLiteral":
-            for i, quasi in enumerate(node.quasis):
-                if quasi.value.cooked:
-                    segments.append(("lit", quasi.value.cooked))
-                if i < len(node.expressions):
-                    self._collect_arrow_body(node.expressions[i], suffix_by_name, segments)
+            self._collect_template_body(node, suffix_by_name, segments)
         else:
             raise _DynamicValue(f"unsupported FILTER_PARAMS arrow body ({t})")
+
+    def _param_suffix(self, node, suffix_by_name) -> str:
+        if node.name not in suffix_by_name:
+            raise _DynamicValue(f"unknown arrow param '{node.name}'")
+        return suffix_by_name[node.name]
+
+    def _collect_template_body(self, node, suffix_by_name, segments) -> None:
+        for i, quasi in enumerate(node.quasis):
+            if quasi.value.cooked:
+                segments.append(("lit", quasi.value.cooked))
+            if i < len(node.expressions):
+                self._collect_arrow_body(node.expressions[i], suffix_by_name, segments)
 
 
 # ── dict post-processing (shape normalisation) ──────────────────────────────
