@@ -8,7 +8,7 @@ query engine's _enrich() step.
 import copy
 import logging
 import re
-from typing import Any, Dict, List, Literal, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Set, Tuple, Union
 
 import sqlglot
 from sqlglot import exp
@@ -22,7 +22,7 @@ from slayer.core.enums import (
 )
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.errors import AggregationNotAllowedError, UnresolvableOrderColumnError
 from slayer.core.keys import _reroot_path_ref, reroot_aggregate_key
 from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
@@ -42,6 +42,7 @@ from slayer.engine.source_bundle import (
 from slayer.sql.dialects import SqlDialect, get_dialect
 from slayer.sql.naming import (
     AliasAllocator,
+    dialect_folds_case,
     flat_name,
     maybe_quote_ident,
     quote_mixed_case_identifiers,
@@ -52,6 +53,24 @@ from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.scope import ScopeFrame
 from slayer.sql.scope_check import maybe_validate_scopes
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
+
+
+class _OrderColRef(NamedTuple):
+    """DEV-1645: resolved ORDER BY key. ``is_alias`` distinguishes a projected
+    output alias (emit whole-quoted, e.g. ``"orders.revenue_sum"``) from a
+    table.column fallback (emit SPLIT, e.g. ``ranked."time_mark"``), so a sort
+    on an unprojected/renamed column references the underlying FROM-scope column
+    instead of a nonexistent composite identifier.
+
+    Ported from ``origin/main`` for the LEGACY enrichment pipeline (this stack is
+    deleted in DEV-1485 Stage 11); the typed pipeline enforces the same policy
+    independently in ``_apply_order_limit_from_planned`` + the plan-time order
+    validation.
+    """
+    text: str               # whole resolved string (used for base_cols membership)
+    is_alias: bool          # True => projected output alias; False => table.column fallback
+    qualifier: str | None   # fallback only: FROM-scope alias
+    column: str | None      # fallback only: underlying column short name
 
 
 class ResolvedAggKwarg(BaseModel):
@@ -733,6 +752,15 @@ class SQLGenerator:
         strategy object from the string sqlglot consumes (DEV-1716)."""
         return self._dialect.sqlglot_name
 
+    def _new_allocator(self) -> AliasAllocator:
+        """Build an ``AliasAllocator`` carrying this generator's dialect
+        case-folding policy (DEV-1726): on case-folding dialects the
+        ``_taken`` comparison folds, so minted CTE / materialisation names can
+        never collide after the backend folds them. The ONLY construction
+        site in this module — pinned by test_dev1726_cte_case_folding — so a
+        new allocation path cannot silently lose dialect awareness."""
+        return AliasAllocator(folds_case=dialect_folds_case(self.dialect))
+
     @staticmethod
     def _maybe_quote_ident(ident: Optional[exp.Expression]) -> None:
         """Thin delegator to :func:`slayer.sql.naming.maybe_quote_ident`
@@ -1357,13 +1385,14 @@ class SQLGenerator:
             }
             for order_item in enriched.order:
                 col = order_item.column
-                col_name = self._resolve_order_column(col=col, enriched=enriched)
+                ref = self._resolve_order_column(col=col, enriched=enriched)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
-                qcol = self._quote_ident(col_name)  # DEV-1716: dialect-quoted
-                if col_name in base_cols:
-                    order_parts.append(f'_base.{qcol} {direction}')
+                if ref.is_alias and ref.text in base_cols:
+                    order_parts.append(f'_base.{self._quote_ident(ref.text)} {direction}')
+                elif ref.is_alias:
+                    order_parts.append(f'{self._quote_ident(ref.text)} {direction}')
                 else:
-                    order_parts.append(f'{qcol} {direction}')
+                    order_parts.append(f'{self._order_split_sql(ref)} {direction}')
             sql += "\nORDER BY " + ", ".join(order_parts)
         if enriched.limit is not None:
             sql += f"\nLIMIT {enriched.limit}"
@@ -1373,14 +1402,28 @@ class SQLGenerator:
         return sql
 
     def _apply_pagination_to_sql(self, enriched: EnrichedQuery, sql: str) -> str:
-        """Apply ORDER BY, LIMIT, OFFSET to a raw SQL string."""
+        """Apply ORDER BY, LIMIT, OFFSET to a raw SQL string.
+
+        This wrapper is only ever applied over the CTE-wrapped computed-column
+        assembly (its single caller builds ``WITH … SELECT … FROM <final_cte>``),
+        so the outer FROM is a CTE — a SPLIT ``<base_model>.<col>`` reference
+        would name a table unbound in this scope. An unprojected (non-alias)
+        sort key is therefore unresolvable here (unlike the base-SELECT applier
+        ``_apply_order_limit``, where the split IS bound). Reject it rather than
+        emit invalid SQL — consistent with the typed pipeline's plan-time guard.
+        """
         if enriched.order:
             order_parts = []
             for order_item in enriched.order:
                 col = order_item.column
-                col_name = SQLGenerator._resolve_order_column(col=col, enriched=enriched)
+                ref = SQLGenerator._resolve_order_column(col=col, enriched=enriched)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
-                order_parts.append(f'{self._quote_ident(col_name)} {direction}')  # DEV-1716
+                if ref.is_alias:
+                    order_parts.append(f'{self._quote_ident(ref.text)} {direction}')
+                else:
+                    raise UnresolvableOrderColumnError(
+                        column=ref.column, qualifier=ref.qualifier,
+                    )
             sql += "\nORDER BY " + ", ".join(order_parts)
         if enriched.limit is not None:
             sql += f"\nLIMIT {enriched.limit}"
@@ -1908,7 +1951,7 @@ class SQLGenerator:
         # deterministic CTE name is RESERVED; the ``shifted_`` / ``sjoin_``
         # families are ALLOCATED around them (reserve-not-rename keeps the
         # recompute-at-reference CTE families collision-free too — Codex F3).
-        cte_allocator = AliasAllocator()
+        cte_allocator = self._new_allocator()
         cte_allocator.reserve(*(name for name, _ in ctes), *base_aliases)
 
         # All transforms go into a unified layering loop. Each iteration tries
@@ -2297,8 +2340,14 @@ class SQLGenerator:
         if enriched.order:
             for order_item in enriched.order:
                 col = order_item.column
-                col_name = self._resolve_order_column(col=col, enriched=enriched)
-                order_col = exp.Column(this=exp.to_identifier(col_name, quoted=True))
+                ref = self._resolve_order_column(col=col, enriched=enriched)
+                if ref.is_alias:
+                    order_col = exp.Column(this=exp.to_identifier(ref.text, quoted=True))
+                else:
+                    order_col = exp.Column(
+                        this=self._to_ident(ref.column),
+                        table=exp.to_identifier(ref.qualifier),
+                    )
                 ascending = order_item.direction == "asc"
                 select = select.order_by(self._ordered(order_col, ascending=ascending))
 
@@ -2310,20 +2359,41 @@ class SQLGenerator:
 
         return select
 
+    def _order_split_sql(self, ref: _OrderColRef) -> str:
+        """DEV-1645: emit a non-projected ORDER BY key as a SPLIT
+        ``qualifier.column`` reference (mixed-case-quoted), not one
+        composite-quoted token."""
+        col = exp.Column(this=self._to_ident(ref.column), table=exp.to_identifier(ref.qualifier))
+        return col.sql(dialect=self.dialect)
+
     @staticmethod
-    def _resolve_order_column(col, enriched: EnrichedQuery) -> str:
-        """Resolve an order column reference to the correct enriched alias.
+    def _resolve_order_column(col, enriched: EnrichedQuery) -> _OrderColRef:
+        """Resolve an order column reference to a discriminated result (DEV-1645).
 
         Users refer to columns by their short name (e.g., ``count``,
         ``revenue_sum``).  The enriched query stores fully qualified aliases
         (e.g., ``orders._count``, ``orders.revenue_sum``).  This method
-        matches the user-provided name against all enriched columns and
-        returns the matching alias.  If no match is found, the name is
-        qualified with the model name as a fallback.
+        matches the user-provided name against all enriched columns.
 
-        For ``*:count`` results, the internal name is ``_count`` but users
-        refer to it as ``count``.  A fallback check for ``_name`` handles
-        this case.
+        When it matches a projected alias, the result carries ``is_alias=True``
+        and the caller emits it whole-quoted (``"orders.revenue_sum"`` — that IS
+        the real output column name via ``AS "orders.revenue_sum"``).
+
+        When no projected alias matches (renamed via ``columns:``, or an
+        inner-stage dim the outer stage dropped), the result carries
+        ``is_alias=False`` with ``qualifier``/``column`` set, and the caller
+        emits a SPLIT ``qualifier.column`` reference that resolves against the
+        FROM-scope table — instead of the old composite ``"<model>.<col>"``
+        token that Postgres rejects as UndefinedColumn.
+
+        A joined qualifier (anything other than the base model) is rejected with
+        ``UnresolvableOrderColumnError``: the compiler's outer-wrapping layers
+        (measure CTEs, pagination, the first/last ranked subquery, projection
+        trimming) relocate the ORDER BY into a scope where the joined table is
+        unbound, so emitting a reference there would produce invalid SQL.
+
+        For ``*:count`` results, the internal name is ``_count`` but users refer
+        to it as ``count``.  A fallback check for ``_name`` handles this case.
         """
         user_name = col.name
         model_prefix = col.model or enriched.model_name
@@ -2345,24 +2415,39 @@ class SQLGenerator:
         # Custom field names (e.g., {"formula": "x:count_distinct", "name": "my_name"})
         alias_lookup.update(enriched.field_name_aliases)
 
+        # A ref qualified with a FOREIGN model (``owners.status`` when the base
+        # model is ``orders``) must not resolve to a same-named local column via
+        # the bare-name / ``_name`` lookups — that silently sorts by the wrong
+        # field. Only unqualified refs, or refs qualified with the base model
+        # itself, take the bare shortcuts; a foreign qualifier falls through to
+        # the ``<model>.<col>`` qualified match and then the joined-qualifier
+        # rejection below. Mirrors the typed pipeline's plan-time guard.
+        host_local = model_prefix == enriched.model_name
+
         # Direct match on the user-provided name
-        if user_name in alias_lookup:
-            return alias_lookup[user_name]
+        if host_local and user_name in alias_lookup:
+            return _OrderColRef(alias_lookup[user_name], True, None, None)
 
         # Qualified match for cross-model measures:
         # col.model="customers", col.name="revenue_sum" → "customers.revenue_sum"
         if col.model:
             qualified = f"{col.model}.{col.name}"
             if qualified in alias_lookup:
-                return alias_lookup[qualified]
+                return _OrderColRef(alias_lookup[qualified], True, None, None)
 
         # Fallback for *:count → _count: user says "count", internal is "_count"
         prefixed = f"_{user_name}"
-        if prefixed in alias_lookup:
-            return alias_lookup[prefixed]
+        if host_local and prefixed in alias_lookup:
+            return _OrderColRef(alias_lookup[prefixed], True, None, None)
 
-        # Fallback: qualify with model prefix
-        return f"{model_prefix}.{user_name}"
+        # Fallback: a non-projected order key is only safe to emit as a split
+        # reference against the BASE-model alias. A joined qualifier (anything
+        # other than the base model) is rejected — even when a filter pulls the
+        # join into the base FROM, the outer-wrapping layers relocate the ORDER
+        # BY into a scope where the joined table is unbound.
+        if model_prefix != enriched.model_name:
+            raise UnresolvableOrderColumnError(column=user_name, qualifier=model_prefix)
+        return _OrderColRef(f"{model_prefix}.{user_name}", False, model_prefix, user_name)
 
     # ------------------------------------------------------------------
     # FROM / JOIN building
@@ -3104,7 +3189,7 @@ class SQLGenerator:
         own allocator, with the parent's restored afterwards.
         """
         prev_allocator = getattr(self, "_gen_allocator", None)
-        self._gen_allocator = AliasAllocator()
+        self._gen_allocator = self._new_allocator()
         try:
             return self._generate_from_planned_impl(
                 planned_query, bundle=bundle,
@@ -3314,7 +3399,7 @@ class SQLGenerator:
         # ``sjoin_`` pairs would otherwise share a name (duplicate WITH). Every
         # CTE name is reserved/allocated through this one allocator so the
         # ``step`` / ``shifted_`` / ``sjoin_`` / ``cp_`` families never collide.
-        cte_allocator = AliasAllocator()
+        cte_allocator = self._new_allocator()
         cte_allocator.reserve(*(name for name, _ in ctes))
         # Codex (PR #269): also reserve every already-projected column alias's
         # BARE form so a hidden transform alias minted below
@@ -4103,7 +4188,7 @@ class SQLGenerator:
         kwargs = getattr(key, "kwargs", None)
         if bundle is None or not kwargs:
             return None
-        allocator = AliasAllocator()
+        allocator = self._new_allocator()
         scope = ScopeFrame(
             scope_id=allocator.next_scope_id(source_relation),
             root_model=source_model,
@@ -4181,7 +4266,7 @@ class SQLGenerator:
         )
         # DEV-1708 (D-E): share the generation-wide allocator so host-base and
         # per-plan ``_cm_*`` CTE ``_val_<n>`` names are globally unique.
-        host_allocator = self._gen_allocator or AliasAllocator()
+        host_allocator = self._gen_allocator or self._new_allocator()
         host_scope = ScopeFrame(
             scope_id=host_allocator.next_scope_id(source_relation),
             root_model=source_model,
@@ -4615,7 +4700,7 @@ class SQLGenerator:
             # aggregate-input pass, which registers the same join); this call is
             # purely to reproduce the SAME anchored SQL the ORDER BY needs. Same
             # throwaway-frame pattern as ``_resolve_agg_kwargs_for_key``.
-            allocator = AliasAllocator()
+            allocator = self._new_allocator()
             scope = ScopeFrame(
                 scope_id=allocator.next_scope_id(source_relation),
                 root_model=source_model,
@@ -5073,7 +5158,7 @@ class SQLGenerator:
         # that resolved text: same sql + different type differ by the CAST
         # and never collapse onto one ``_val``; bare refs are type-agnostic
         # (no CAST) and sharing IS correct.
-        allocator = self._gen_allocator or AliasAllocator()
+        allocator = self._gen_allocator or self._new_allocator()
         allocator.reserve(*[c.name for c in source_model.columns])
         value_alias_by_sql: Dict[str, str] = {}
 
@@ -5478,7 +5563,7 @@ class SQLGenerator:
         key = agg_slot.key
         assert isinstance(key, AggregateKey)
 
-        allocator = self._gen_allocator or AliasAllocator()
+        allocator = self._gen_allocator or self._new_allocator()
         src_scope = ScopeFrame(
             scope_id=allocator.next_scope_id(source_relation),
             root_model=source_model,
@@ -5937,7 +6022,7 @@ class SQLGenerator:
                 # ``claim.claim_number = '...'`` references a joined alias
                 # that must be in scope; without the join, the WHERE
                 # references an undefined alias.
-                placeholder_allocator = AliasAllocator()
+                placeholder_allocator = self._gen_allocator or self._new_allocator()
                 placeholder_scope = ScopeFrame(
                     scope_id=placeholder_allocator.next_scope_id(source_relation),
                     root_model=source_model,
@@ -6284,10 +6369,24 @@ class SQLGenerator:
             canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
             agg_col_alias = agg_col_alias_for_plan[plan.aggregate_slot_id]
             cte_name = _cte_name_from_alias("_cm_", canonical_alias)
-            public_aliases = self._public_aliases_for_cross_model_agg(
-                slot=agg_slot,
-                source_relation=source_relation,
-                canonical_alias=canonical_alias,
+            # DEV-1495 bug 2 / DEV-1712: an order-by-only (hidden) cross-model
+            # aggregate never surfaces in the combined projection — its CTE is
+            # still joined below, and the ORDER BY references it CTE-qualified
+            # (``hidden_cma_order_ref``). Trimming it keeps the outer SELECT to
+            # the user-declared columns (Law 2 projection boundary). Only when
+            # there is NO transform chain: a hidden CMA feeding a transform
+            # layer (``cumsum(customers.revenue:sum)``) must stay projected so
+            # the step CTE can consume it — the transform outer wrap does the
+            # public-vs-hidden trim in that path.
+            trim_hidden = plan.hidden and not planned_query.transform_layers
+            public_aliases = (
+                []
+                if trim_hidden
+                else self._public_aliases_for_cross_model_agg(
+                    slot=agg_slot,
+                    source_relation=source_relation,
+                    canonical_alias=canonical_alias,
+                )
             )
             for pub in public_aliases:
                 if pub == agg_col_alias:
@@ -6484,6 +6583,22 @@ class SQLGenerator:
         # level. ORDER BY columns must be qualified — ``_base`` columns
         # use ``_base."..."``, cross-model columns use the bare alias
         # (only present on one side).
+        # DEV-1712 / DEV-1495 bug 2: hidden (order-only) cross-model aggregates
+        # are trimmed from the projection above, so their ORDER BY term must be
+        # CTE-qualified (``_cm_*."<agg_col_alias>"``) rather than the bare
+        # combined-SELECT alias.
+        hidden_cma_order_ref: Dict[str, str] = {}
+        for plan in planned_query.cross_model_aggregate_plans:
+            # Only CMAs actually trimmed from the projection (hidden + no
+            # transform chain) need the CTE-qualified ORDER BY reference.
+            if not (plan.hidden and not planned_query.transform_layers):
+                continue
+            _canon = canonical_alias_for_plan[plan.aggregate_slot_id]
+            _agg_col = agg_col_alias_for_plan[plan.aggregate_slot_id]
+            _cte = _cte_name_from_alias("_cm_", _canon)
+            hidden_cma_order_ref[plan.aggregate_slot_id] = (
+                f'{_cte}.{self._quote_ident(_agg_col)}'
+            )
         order_sql = self._build_combined_order_by_sql(
             planned_query=planned_query,
             slots_by_id=slots_by_id,
@@ -6495,6 +6610,7 @@ class SQLGenerator:
             bare_order_slot_ids=set(order_only_local_ids) | windowed_slot_ids,
             outer_composite_aliases=outer_composite_order_alias_by_sid,
             outer_composite_expressions=outer_composite_order_expressions,
+            hidden_cma_order_ref=hidden_cma_order_ref,
         )
         if order_sql:
             sql += "\n" + order_sql
@@ -7089,7 +7205,7 @@ class SQLGenerator:
         # ``_add_cte_join_paths`` closure + per-carrier collectors). The scope
         # shares the generation-wide allocator so ``_val_<n>`` materialisation
         # names (Law 2, below) are unique across the host base and every CTE.
-        cte_allocator = self._gen_allocator or AliasAllocator()
+        cte_allocator = self._gen_allocator or self._new_allocator()
         cte_scope = ScopeFrame(
             scope_id=cte_allocator.next_scope_id(target_relation),
             root_model=target_model,
@@ -7850,6 +7966,7 @@ class SQLGenerator:
         bare_order_slot_ids: Optional[Set[str]] = None,
         outer_composite_aliases: Optional[Dict[str, str]] = None,
         outer_composite_expressions: Optional[Dict[str, str]] = None,
+        hidden_cma_order_ref: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Build the ORDER BY clause for the combined SELECT.
 
@@ -7877,6 +7994,7 @@ class SQLGenerator:
         bare_ids = bare_order_slot_ids or set()
         outer_aliases = outer_composite_aliases or {}
         outer_expressions = outer_composite_expressions or {}
+        hidden_cma_refs = hidden_cma_order_ref or {}
         parts: List[str] = []
         for entry in planned_query.order:
             slot = slots_by_id.get(entry.slot_id)
@@ -7891,6 +8009,7 @@ class SQLGenerator:
                 bare_ids=bare_ids,
                 outer_aliases=outer_aliases,
                 outer_expressions=outer_expressions,
+                hidden_cma_refs=hidden_cma_refs,
             )
             if term is not None:
                 parts.append(term)
@@ -7909,6 +8028,7 @@ class SQLGenerator:
         bare_ids: Set[str],
         outer_aliases: Dict[str, str],
         outer_expressions: Optional[Dict[str, str]] = None,
+        hidden_cma_refs: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Resolve one ``OrderEntry`` to its ``"alias" <direction>`` term.
 
@@ -7924,6 +8044,12 @@ class SQLGenerator:
         """
         direction = "ASC" if entry.direction == "asc" else "DESC"
         if entry.slot_id in cma_slot_ids:
+            # DEV-1712: a HIDDEN (order-only) cross-model aggregate is trimmed
+            # from the combined projection, so the bare alias no longer names a
+            # projected column — reference the CTE-qualified column instead.
+            hidden_ref = (hidden_cma_refs or {}).get(entry.slot_id)
+            if hidden_ref is not None:
+                return f'{hidden_ref} {direction}'
             alias = cm_alias_for_plan.get(entry.slot_id)
             if alias is None:
                 return None
@@ -8750,7 +8876,7 @@ class SQLGenerator:
             return qualified, paths
         return None
 
-    def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — single conceptual unit for one time_shift slot: partition/time resolution through the shifted ScopeFrame + shifted-CTE body assembly + collision-safe CTE naming (cte_allocator) + sjoin grain join-back, all sharing tightly-coupled per-slot state (time_alias / input_alias / partition_specs / shifted_cte_name / carry aliases). Splitting forces that cross-cutting state through many-argument helpers without simplifying anything — same shape as the NOSONAR'd sibling _render_cross_model_cte.
+    def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — single conceptual unit for one time_shift slot: partition/time resolution through the shifted ScopeFrame + shifted-CTE body assembly + collision-safe CTE naming (cte_allocator) + sjoin grain join-back, all sharing tightly-coupled per-slot state (time_alias / input_alias / partition_specs / shifted_cte_name / carry aliases). Splitting forces that cross-cutting state through many-argument helpers without simplifying anything — same shape as the sibling _render_cross_model_cte's suppression.
         self,
         *,
         slot,
@@ -8884,7 +9010,7 @@ class SQLGenerator:
         # can never reference an unjoined table. The scope shares the
         # generation-wide allocator so any ``_val_<n>`` names stay unique
         # across the base and every CTE.
-        shifted_allocator = self._gen_allocator or AliasAllocator()
+        shifted_allocator = self._gen_allocator or self._new_allocator()
         shifted_scope = ScopeFrame(
             scope_id=shifted_allocator.next_scope_id(source_relation),
             root_model=source_model,
@@ -11193,7 +11319,7 @@ class SQLGenerator:
         targets out of ``base_render_order``, preserving today's
         ``NotImplementedError``).
         """
-        from slayer.core.keys import AggregateKey
+        from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, TimeTruncKey
 
         for order_entry in planned_query.order:
             slot = slots_by_id.get(order_entry.slot_id)
@@ -11220,18 +11346,85 @@ class SQLGenerator:
                         self._ordered(order_col, ascending=ascending),
                     )
                     continue
-                # Hidden ROW / transform / cross-model / composite ORDER
-                # targets aren't materialised in the local-only SELECT —
-                # preserved as NotImplementedError. DEV-1501's
-                # ``aggregates_only=True`` keeps hidden ROW targets out
-                # of ``base_render_order``; hidden composite-aggregate
-                # ORDER BY is rejected at the ``OrderItem`` input
-                # validation layer.
+                # DEV-1712 (Law 2, split emission): a hidden LOCAL ROW column
+                # ordered in an UNGROUPED query. The plan-time order validation
+                # (``plan_query``) guarantees the only hidden ROW slot that
+                # reaches here is a local (empty-path) column in a query with no
+                # GROUP BY — grouped row columns and joined columns are rejected
+                # up front, aggregates take the branch above. Emit a SPLIT
+                # ``<relation>.<column>`` reference (mixed-case-aware) against
+                # the base FROM scope, identical to how the column would render
+                # if it were a projected dimension.
+                key = slot.key
+                row_key = key.column if isinstance(key, TimeTruncKey) else key
+                # A bare LOCAL column — split-emit the qualified column ref.
+                if (
+                    source_model is not None
+                    and isinstance(row_key, ColumnKey)
+                    and not row_key.path
+                ):
+                    order_col = self._joined_or_local_dim_expr(
+                        path=(), leaf=row_key.leaf, source_model=source_model,
+                        source_relation=source_relation, bundle=bundle,
+                    )
+                    ascending = order_entry.direction == "asc"
+                    select = select.order_by(
+                        self._ordered(order_col, ascending=ascending),
+                    )
+                    continue
+                # A LOCAL DERIVED column (``ColumnSqlKey``, path empty): resolve
+                # its ``Column.sql`` through a throwaway host scope. That both
+                # anchors the expansion AND surfaces whether the SQL crosses a
+                # join. A hidden order-only derived column is NOT projected, so
+                # its join was never pulled into the base FROM — ordering on it
+                # would reference an unbound table. Reject that (project it),
+                # rather than emit invalid SQL; a non-crossing derived column
+                # (e.g. a bare mixed-case identifier) orders on its expression.
+                if (
+                    source_model is not None
+                    and bundle is not None
+                    and isinstance(row_key, ColumnSqlKey)
+                    and not row_key.path
+                ):
+                    # Detect join crossing via a throwaway scope (register-only);
+                    # the resolved expr is discarded — its expansion lacks the
+                    # DEV-1645 mixed-case quoting the planned-dim helper applies.
+                    allocator = self._new_allocator()
+                    scope = ScopeFrame(
+                        scope_id=allocator.next_scope_id(source_relation),
+                        root_model=source_model,
+                        root_relation=source_relation,
+                        bundle=bundle,
+                        dialect=self._dialect,
+                        allocator=allocator,
+                    )
+                    scope.resolve(row_key)
+                    if scope.join_paths:
+                        # The derived column IS local (``orders.cust_region``);
+                        # it merely depends on an unpulled join. Report its own
+                        # qualified name, not a fabricated ``customers.cust_region``.
+                        raise UnresolvableOrderColumnError(
+                            column=row_key.column_name, qualifier=source_relation,
+                        )
+                    # Non-crossing local derived column — emit through the
+                    # planned-dim helper so the expansion is quoted identically
+                    # to a projected dimension (mixed-case-safe).
+                    order_col = self._joined_or_local_dim_expr(
+                        path=(), leaf=row_key.column_name,
+                        source_model=source_model,
+                        source_relation=source_relation, bundle=bundle,
+                    )
+                    ascending = order_entry.direction == "asc"
+                    select = select.order_by(
+                        self._ordered(order_col, ascending=ascending),
+                    )
+                    continue
+                # Defensive: any other hidden shape should have been rejected at
+                # plan time (transform / composite / joined / grouped-row).
                 raise NotImplementedError(
-                    f"DEV-1450 stage 7b.10+: ORDER BY references a "
-                    f"hidden slot (id={slot.id!r}, key="
-                    f"{type(slot.key).__name__}) not materialised in "
-                    f"the local-only SELECT. Deferred to a later slice."
+                    f"ORDER BY references a hidden slot (id={slot.id!r}, key="
+                    f"{type(slot.key).__name__}) that was not resolved at plan "
+                    f"time — this is an internal invariant violation."
                 )
             # DEV-1713: resolve to the SAME full alias the projection emits —
             # a joined ROW dimension projects under the DOTTED result key

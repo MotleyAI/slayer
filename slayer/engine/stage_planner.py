@@ -32,6 +32,7 @@ from slayer.core.format import NumberFormat
 from slayer.core.errors import (
     AmbiguousReferenceError,
     UnknownReferenceError,
+    UnresolvableOrderColumnError,
 )
 from slayer.core.keys import (
     AggregateKey,
@@ -88,6 +89,7 @@ from slayer.engine.planning import (
     _iter_slot_deps,
     filter_referenced_slot_ids,
     lower_sugar_transforms,
+    rewrite_rank_partition_keys,
 )
 from slayer.engine.source_bundle import (
     ResolvedSourceBundle,
@@ -175,6 +177,27 @@ def _attach_time_keys(
             return key
         return InKey(column=nc, values=key.values, negated=key.negated)
     return key
+
+
+def _partition_key_display(pk: ValueKey) -> str:
+    """Human-readable name of a rank ``partition_by`` key for error messages
+    (DEV-1497). Local refs surface as the bare leaf; joined refs keep the
+    dotted path."""
+    if isinstance(pk, ColumnKey):
+        return ".".join([*pk.path, pk.leaf])
+    if isinstance(pk, ColumnSqlKey):
+        return ".".join([*pk.path, pk.column_name])
+    if isinstance(pk, TimeTruncKey):
+        return _partition_key_display(pk.column)
+    return str(pk)
+
+
+def _row_key_path(key: ValueKey) -> tuple:
+    """Join path of a ROW value key (``()`` for local, non-empty for joined).
+    Unwraps a ``TimeTruncKey`` to its underlying column."""
+    if isinstance(key, TimeTruncKey):
+        return _row_key_path(key.column)
+    return tuple(getattr(key, "path", ()))
 
 
 def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
@@ -583,9 +606,26 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         bound_filter_texts.append(f)
 
     order_specs = []
+    # Host identity for the qualifier check below — the source model for a
+    # ``ModelScope``, the stage relation name (``s1``) for a downstream
+    # ``StageSchema`` (so a self-qualified ``s1.metric`` order stays host-local,
+    # Codex). Same resolution ``_host_model_name`` uses everywhere else.
+    _order_host_name = _host_model_name(scope)
     for o in (query.order or []):
         col_name = o.column.name
         full_name = o.column.full_name
+        # An order ref qualified with a FOREIGN model (``owners.status`` when
+        # the host is ``orders``) must not resolve to a same-named local column
+        # via the bare-leaf shortcut — otherwise a joined sort key silently
+        # binds to the local column and sorts by the wrong field (Codex). The
+        # bare-name lookups below apply only to unqualified refs or refs
+        # qualified with the host itself; a foreign-qualified ref falls through
+        # to the dotted/flattened/`bind_expr` paths, where a truly-joined ref
+        # is then rejected by the plan-time order validation.
+        _order_qualifier = getattr(o.column, "model", None)
+        _order_host_local = (
+            _order_qualifier is None or _order_qualifier == _order_host_name
+        )
         # Prefer declared-measure alias resolution over model-scope
         # binding (DEV-1450 stage 7b.8 — gap fix): aggregate canonical
         # aliases like ``amount_sum`` are not columns on the model, so
@@ -600,7 +640,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         # fall back to binding the preserved colon/path ``raw_formula``
         # so the order key interns onto the same cross-model aggregate
         # slot (P2/P4) rather than raising.
-        if col_name in declared_alias_to_bound:
+        if _order_host_local and col_name in declared_alias_to_bound:
             bo = declared_alias_to_bound[col_name]
         elif full_name in declared_alias_to_bound:
             bo = declared_alias_to_bound[full_name]
@@ -611,7 +651,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             # written in dotted form must intern onto that same declared
             # slot rather than binding the raw column as a fresh slot.
             bo = declared_alias_to_bound[_flatten_dotted(full_name)]
-        elif f"_{col_name}" in declared_alias_to_bound:
+        elif _order_host_local and f"_{col_name}" in declared_alias_to_bound:
             # ``*:count`` surfaces as the alias ``_count`` (the ``*`` is
             # dropped, the leading ``_`` kept as a marker); users naturally
             # order by the bare ``count``. Mirror the legacy
@@ -759,6 +799,90 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         for spec in order_specs
     ]
 
+    # DEV-1497: validate that every rank-family ``partition_by`` column resolves
+    # to a query dimension / time-dimension, and rewrite a time-dimension source
+    # column to its truncated-bucket ``TimeTruncKey`` (partition by the bucket,
+    # not the raw timestamp — which would silently widen the grain). Runs BEFORE
+    # interning so a rewritten key never leaves a stale slot behind (identity is
+    # only touched on the rewritten rank transform).
+    _dim_dms = declared_measures[:n_dims]
+    _td_dms = declared_measures[n_dims:n_dims + n_tds]
+    _dim_key_set = {dm.bound.value_key for dm in _dim_dms}
+    # A source column carrying two time-dimension granularities (``created_at``
+    # at both month and day) maps to two distinct ``TimeTruncKey`` buckets — a
+    # bare ``partition_by=created_at`` is then ambiguous, so track those columns
+    # and reject rather than silently pick whichever bucket comes last.
+    _td_by_source: Dict[ValueKey, TimeTruncKey] = {}
+    _td_ambiguous_sources: set = set()
+    for dm in _td_dms:
+        vk = dm.bound.value_key
+        if not isinstance(vk, TimeTruncKey):
+            continue
+        # Ambiguous only when the SAME source column already mapped to a
+        # DIFFERENT bucket (a different granularity) — two identical
+        # ``created_at:month`` declarations resolve to one bucket, not a clash.
+        if vk.column in _td_by_source and _td_by_source[vk.column] != vk:
+            _td_ambiguous_sources.add(vk.column)
+        _td_by_source[vk.column] = vk
+    _td_key_set = set(_td_by_source.values())
+    _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
+
+    def _validate_partition_keys(tk: TransformKey) -> frozenset:
+        new_pks = []
+        for pk in tk.partition_keys:
+            if pk in _dim_key_set or pk in _td_key_set:
+                new_pks.append(pk)          # already a query dim / td bucket
+            elif pk in _td_ambiguous_sources:
+                raise ValueError(
+                    f"Transform '{tk.op}': partition_by column "
+                    f"'{_partition_key_display(pk)}' is ambiguous — it is a "
+                    f"time dimension at multiple granularities. Partition by a "
+                    f"single query dimension instead."
+                )
+            elif pk in _td_by_source:
+                new_pks.append(_td_by_source[pk])  # td source col -> bucket
+            else:
+                raise ValueError(
+                    f"Transform '{tk.op}': partition_by column "
+                    f"'{_partition_key_display(pk)}' is not a query dimension. "
+                    f"Add it to dimensions/time_dimensions, or choose one of: "
+                    f"{', '.join(_available_dims) or '(none)'}."
+                )
+        return frozenset(new_pks)
+
+    def _rw(vk: ValueKey) -> ValueKey:
+        return rewrite_rank_partition_keys(vk, rewrite_fn=_validate_partition_keys)
+
+    declared_measures = [
+        DeclaredMeasure(
+            bound=BinderBoundExpr(value_key=_rw(dm.bound.value_key)),
+            declared_name=dm.declared_name,
+            public_name=dm.public_name,
+            label=dm.label,
+            canonical_alias=dm.canonical_alias,
+            type=dm.type,
+            format=dm.format,
+            description=dm.description,
+        )
+        for dm in declared_measures
+    ]
+    _rewritten_filters = []
+    for bf in bound_filters:
+        bf_vk = _rw(bf.value_key)
+        _rewritten_filters.append(BoundFilter(
+            value_key=bf_vk,
+            phase=bf.phase,
+            referenced_keys=tuple(walk_value_keys(bf_vk)),
+        ))
+    bound_filters = _rewritten_filters
+    order_specs = [
+        OrderSpec(
+            bound=BinderBoundExpr(value_key=_rw(spec.bound.value_key)),
+            direction=spec.direction,
+        )
+        for spec in order_specs
+    ]
+
     source_col_names = _source_column_names(scope)
     host_model_name = _host_model_name(scope)
 
@@ -799,6 +923,56 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         active_td_key=active_td_key,
         active_td_slot_id=active_td_slot_id,
     )
+
+    # DEV-1712 (Law 2): plan-time classification of every ORDER BY target that
+    # is not a declared/public slot. Order-only AGGREGATES (local or
+    # cross-model) always materialise and order — never rejected. The rest:
+    #   * joined row column           -> UnresolvableOrderColumnError (the sort
+    #     scope is relocated where the joined table is unbound);
+    #   * local row column, grouped   -> ValueError (no valid SQL — the column
+    #     isn't in GROUP BY; add it to dims, or order by an aggregate of it);
+    #   * local row column, ungrouped -> allowed (split emission in the
+    #     generator, ``_apply_order_limit_from_planned``);
+    #   * transform / composite       -> ValueError (deferred to DEV-1733;
+    #     declare it as a measure and order by that).
+    _has_grouping = bool(agg_slots) or (
+        bool(query.dimensions or query.time_dimensions)
+        and query.distinct_dimension_values
+    )
+    for spec in order_specs:
+        okey = spec.bound.value_key
+        osid = projection.registry.find_by_key(okey)
+        if osid is not None and not projection.registry.get(osid).hidden:
+            continue  # declared / projected output — orders on a real column
+        if isinstance(okey, AggregateKey):
+            continue  # hidden aggregate (local base or cross-model CTE)
+        if isinstance(okey, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            disp = _partition_key_display(okey)
+            path = _row_key_path(okey)
+            if path:
+                # ``UnresolvableOrderColumnError`` formats ``qualifier.column``;
+                # pass the bare leaf as ``column`` and the joined path as the
+                # qualifier so the message reads ``customers.regions.name`` and
+                # not a duplicated ``customers.customers.regions.name``.
+                raise UnresolvableOrderColumnError(
+                    column=disp.rsplit(".", 1)[-1], qualifier=".".join(path),
+                )
+            if _has_grouping:
+                raise ValueError(
+                    f"ORDER BY column '{disp}' is a row column that this "
+                    f"aggregated query does not project, so it is not in the "
+                    f"GROUP BY. Add it to dimensions/time_dimensions, or order "
+                    f"by an aggregate of it (e.g. '{disp}:max')."
+                )
+            continue  # ungrouped local row column -> split emission
+        # TransformKey / ArithmeticKey / ScalarCallKey — an inline transform or
+        # composite expression that is only referenced in ORDER BY.
+        raise ValueError(
+            "ORDER BY references a transform / composite expression that is "
+            "not a declared measure. Declare it as a measure (optionally with "
+            "a name) and order by that measure. (DEV-1733: materialising inline "
+            "transform / composite ORDER BY targets is not yet supported.)"
+        )
 
     # Build filters_by_phase in legacy WHERE order:
     #   1. date_range bound filters (bound_filters[:n_date_range])

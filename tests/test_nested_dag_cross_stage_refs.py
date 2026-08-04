@@ -1240,18 +1240,15 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         finally:
             tmp.cleanup()
 
-    @pytest.mark.skip(
-        reason="DEV-1472: hidden-slot ORDER BY (order-only ref not in "
-        "dimensions/measures) is documented as deferred in the typed pipeline "
-        "(stage 7b.10+). Re-enable when the gap closes."
-    )
-    async def test_intercepted_cmm_order_only_no_qfield_registers_alias(
+    async def test_intercepted_cmm_order_only_reaggregated_resolves(
         self,
     ) -> None:
-        """DEV-1450 typed contract: outer ORDER BY may reference the
-        flat inner alias directly, even when the column is not
-        re-projected by the outer query. The order resolver must find
-        the flat column on s1 and emit a valid `s1.<col>` ref."""
+        """DEV-1712 (D-D variant 1): an AGGREGATED outer stage may order by
+        an EXPLICIT re-aggregation of an inner-stage column
+        (``customers__revenue_sum:max``) that is not re-projected. It
+        materialises as a hidden aggregate on s1 and orders at the outer
+        wrap — valid grouped SQL, resolving on s1, never a bare `customers`
+        table."""
         engine, tmp = await _engine_with_join_chain()
         try:
             inner = SlayerQuery(
@@ -1260,12 +1257,92 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 dimensions=["customers.regions.name"],
                 measures=[{"formula": "customers.revenue:sum"}],
             )
-            # Outer: order-only ref to the inner flat alias, NOT in
-            # the projection. Must still resolve.
             outer = SlayerQuery(
                 source_model="s1",
                 dimensions=["customers__regions__name"],
                 measures=[{"formula": "*:count"}],
+                order=[{"column": "customers__revenue_sum:max"}],
+            )
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            sql = resp.sql or ""
+            outer_select = _outermost_select(sql)
+            # Outer projects EXACTLY the two declared columns — the hidden
+            # re-aggregate must not surface.
+            projected = [p.alias_or_name for p in outer_select.expressions]
+            assert projected == ["s1.customers__regions__name", "s1._count"], (
+                f"outer projection leaked the hidden re-aggregate.\n"
+                f"got: {projected}\nSQL:\n{sql}"
+            )
+            # The outer ORDER BY names the hidden re-aggregate (a MAX over the
+            # inner column), never a bare `customers` table.
+            order = outer_select.args.get("order")
+            assert order is not None, f"Outer ORDER BY missing.\nSQL:\n{sql}"
+            order_cols = list(order.find_all(exp.Column))
+            assert "customers" not in {c.table for c in order_cols if c.table}, (
+                f"ORDER BY must not reference a bare `customers` table.\nSQL:\n{sql}"
+            )
+            order_names = {c.name for c in order_cols}
+            assert any("revenue_sum" in n and "max" in n.lower() for n in order_names), (
+                f"ORDER BY must reference the hidden MAX re-aggregate.\n"
+                f"got: {order_names}\nSQL:\n{sql}"
+            )
+        finally:
+            tmp.cleanup()
+
+    async def test_intercepted_cmm_order_only_bare_grouped_raises(
+        self,
+    ) -> None:
+        """DEV-1712 (D-D variant 2): an AGGREGATED outer stage ordering by a
+        BARE inner-stage row column (``customers__revenue_sum``, not
+        re-aggregated) is not in the outer GROUP BY — no valid SQL exists, so
+        the pipeline rejects it at plan time (the D-B row-column-under-grouping
+        contract)."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            outer = SlayerQuery(
+                source_model="s1",
+                dimensions=["customers__regions__name"],
+                measures=[{"formula": "*:count"}],
+                order=[{"column": "customers__revenue_sum"}],
+            )
+            with pytest.raises(ValueError) as ei:
+                await engine.execute(query=[inner, outer], dry_run=True)
+            msg = str(ei.value)
+            assert "customers__revenue_sum" in msg, (
+                f"error must name the offending order column.\ngot: {msg}"
+            )
+            assert "dimension" in msg.lower() or "aggregate" in msg.lower(), (
+                f"error must guide the user (add as dimension / order by an "
+                f"aggregate).\ngot: {msg}"
+            )
+        finally:
+            tmp.cleanup()
+
+    async def test_intercepted_cmm_order_only_bare_ungrouped_splits(
+        self,
+    ) -> None:
+        """DEV-1712 (D-D variant 3): a NON-aggregating outer stage (dedup off)
+        ordering by a bare inner-stage column emits a valid SPLIT reference
+        against the s1 rowset — resolving on s1, never a bare `customers`
+        table."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            outer = SlayerQuery(
+                source_model="s1",
+                dimensions=["customers__regions__name"],
+                distinct_dimension_values=False,
                 order=[{"column": "customers__revenue_sum"}],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -1274,14 +1351,50 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
             order = outer_select.args.get("order")
             assert order is not None, f"Outer ORDER BY missing.\nSQL:\n{sql}"
             order_cols = list(order.find_all(exp.Column))
-            order_col_names = {c.name for c in order_cols}
-            # Must resolve to a column on s1 (or a quoted projection
-            # alias) — NOT a bare `customers` table that doesn't exist
-            # in the outer scope.
-            assert "customers" not in {c.table for c in order_cols if c.table}, (
-                f"ORDER BY must not reference a bare `customers` table.\n"
-                f"got: {order_col_names}\nSQL:\n{sql}"
+            assert order_cols, f"ORDER BY has no column.\nSQL:\n{sql}"
+            # SPLIT reference qualified by the s1 stage rowset, single-identifier
+            # leaf — never a bare `customers` table, never a composite token.
+            col = order_cols[0]
+            split_msg = (
+                f"ORDER BY must be the split reference "
+                f"s1.customers__revenue_sum, got '{col.table}.{col.name}'.\n"
+                f"SQL:\n{sql}"
             )
+            assert col.table == "s1", split_msg
+            assert col.name == "customers__revenue_sum", split_msg
+        finally:
+            tmp.cleanup()
+
+    async def test_intercepted_cmm_order_only_self_qualified_resolves(
+        self,
+    ) -> None:
+        """DEV-1712 (Codex): a downstream stage may SELF-qualify an order ref
+        with its own stage name (``s1.customers__revenue_sum``). The
+        qualifier-aware host-local check must recognise the stage relation as
+        the host, so it resolves identically to the bare form — not
+        misclassified as a foreign-joined ref."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            outer = SlayerQuery(
+                source_model="s1",
+                dimensions=["customers__regions__name"],
+                distinct_dimension_values=False,
+                order=[{"column": "s1.customers__revenue_sum"}],
+            )
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            sql = resp.sql or ""
+            order = _outermost_select(sql).args.get("order")
+            assert order is not None, f"Outer ORDER BY missing.\nSQL:\n{sql}"
+            cols = list(order.find_all(exp.Column))
+            assert cols, f"ORDER BY has no column.\nSQL:\n{sql}"
+            assert cols[0].table == "s1", f"SQL:\n{sql}"
+            assert cols[0].name == "customers__revenue_sum", f"SQL:\n{sql}"
         finally:
             tmp.cleanup()
 

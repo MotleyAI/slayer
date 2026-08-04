@@ -243,7 +243,7 @@ Combine with a filter to get "top N":
 
 **Ranking within a partition (`partition_by=`):**
 
-To rank within groups instead of across the whole result set, pass `partition_by=` referencing one or more **query dimensions** (or time dimensions). The columns must already be grouped on — partitioning by a column that's not a dimension errors at enrichment time.
+To rank within groups instead of across the whole result set, pass `partition_by=` referencing one or more **query dimensions** (or time dimensions). The columns must already be grouped on — partitioning by a column that's not a dimension errors at plan time (HTTP 400). Naming a query time-dimension partitions by its truncated bucket, not the raw timestamp.
 
 ```json
 {

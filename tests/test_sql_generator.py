@@ -27,7 +27,7 @@ from slayer.sql.generator import (
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._engine_helpers import _engine_generate
+from tests._engine_helpers import _assert_valid_sql, _engine_generate
 
 
 async def _noop_async(**kw):
@@ -177,26 +177,6 @@ def _outer_from_node(sql: str, dialect: str = "postgres"):
     if fc is None:
         return None
     return fc.this
-
-
-def _assert_valid_sql(sql: str, dialect: str = "postgres"):
-    """Assert generated SQL is structurally valid (parses, no nested WITH).
-
-    DEV-1713 removed the BigQuery ``TypeError`` carve-out (finalised naming/
-    mangling no longer emits the dotted-alias shapes sqlglot choked on), so a
-    ``TypeError`` here is a real failure for every dialect.
-    """
-    try:
-        statements = sqlglot.parse(sql, dialect=dialect)
-        assert statements, f"SQL failed to parse:\n{sql}"
-        assert len(statements) == 1, f"Expected 1 SQL statement, got {len(statements)}:\n{sql}"
-    except TypeError as exc:
-        raise AssertionError(
-            f"sqlglot TypeError while validating {dialect} SQL:\n{sql}"
-        ) from exc
-    # No nested WITH — only one WITH keyword allowed at the start of a line
-    with_lines = [line for line in sql.split("\n") if line.strip().upper().startswith("WITH ")]
-    assert len(with_lines) <= 1, f"Nested WITH clauses detected:\n{sql}"
 
 
 async def _generate(
@@ -2370,15 +2350,6 @@ class TestRankFamilyTransforms:
             in _norm(sql)
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1497: the typed pipeline does not validate that a rank "
-            "partition_by column is a query dimension — it silently adds it "
-            "to the base GROUP BY (changing result grain) instead of raising. "
-            "Auto-promotes when the validation is restored."
-        ),
-    )
     async def test_partition_by_must_be_a_query_dimension(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
@@ -7476,11 +7447,12 @@ class TestDev1501BroadTriggerAndGuards:
     async def test_hidden_row_order_target_raises_nyi(
         self, generator: SQLGenerator
     ) -> None:
-        """ORDER BY a non-projected ROW column (e.g. ``customer_id``) is
-        not a supported shape and must raise NotImplementedError — both
-        today and after Change 2. Guards against broad ``include_order=
-        True`` accidentally materialising hidden row slots and silently
-        changing GROUP BY grain.
+        """ORDER BY a non-projected ROW column (e.g. ``customer_id``) in an
+        aggregated query is refused. DEV-1712 (Stage 8) replaced the earlier
+        ``NotImplementedError`` with a clear plan-time ``ValueError`` (the
+        column is not in the GROUP BY; add it to dimensions or order by an
+        aggregate of it) — the query is still rejected, never silently
+        grain-widened.
         """
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
@@ -7498,8 +7470,9 @@ class TestDev1501BroadTriggerAndGuards:
                 dimensions=[ColumnRef(name="status")],
                 order=[OrderItem(column="customer_id", direction="asc")],
             )
-            with pytest.raises(NotImplementedError):
+            with pytest.raises(ValueError) as ei:
                 await engine.execute(query, dry_run=True)
+            assert "customer_id" in str(ei.value)
 
     async def test_hidden_simple_aggregate_in_having(
         self, generator: SQLGenerator
