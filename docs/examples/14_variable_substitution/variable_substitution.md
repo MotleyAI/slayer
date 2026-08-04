@@ -48,6 +48,33 @@ The `{floor}` is substituted into the model's `WHERE` before the query runs.
 Write the surrounding quotes yourself for string values (`region = '{region}'`);
 SLayer escapes the value so an embedded quote can't break out of the literal.
 
+## Optional blocks — a filter that vanishes when its value is absent
+
+The surfaces above **require** their variables. But a Cube `FILTER_PARAMS`
+pushdown is *optional*: it filters when the caller supplies a value and becomes a
+no-op when they don't. SLayer expresses that with an **optional block**
+`{? ... ?}` on a Mode-A surface — it renders (parenthesised) when every `{var}`
+inside is supplied, and collapses to the neutral `(1=1)` otherwise. A **list**
+value renders an injection-safe `IN`-list (write the parens; per-element quotes
+are added for you). Open the `WHERE` with `1=1` so the collapse leaves valid SQL.
+
+```json
+{
+  "source_model": {
+    "name": "orders_by_store",
+    "data_source": "jaffle_shop",
+    "sql": "SELECT o.id, s.name AS store_name FROM orders o LEFT JOIN stores s ON o.store_id = s.id WHERE 1=1 AND {? s.name IN ({stores}) ?}"
+  },
+  "measures": ["*:count"],
+  "variables": {"stores": ["Brooklyn", "Philadelphia"]}
+}
+```
+
+With `stores` supplied this renders `... AND (s.name IN ('Brooklyn', 'Philadelphia'))`;
+omit `stores` and the whole block becomes `... AND (1=1)`, counting every order.
+This is exactly how `slayer import-cube` represents an optional Cube
+`FILTER_PARAMS` pushdown — see [Importing Cube definitions](../../cube/cube_import.md#filter_params-pushdowns).
+
 ## Precedence
 
 The same variable may be set in several places. Highest priority wins:
