@@ -212,7 +212,12 @@ def _walk_path_to_target_sync(
     resolve_model: SyncResolveModel,
     is_root: bool,
 ) -> Tuple[Optional[SlayerModel], Optional[str]]:
-    """Sync mirror of :func:`_walk_path_to_target`."""
+    """Walk a ``__``-delimited alias path to its terminal model.
+
+    Returns ``(target_model, canonical_alias)``, or ``(None, None)`` when any
+    hop is unresolvable — an opaque alias (a CTE / subquery reference) is not
+    an error here, the caller leaves it untouched.
+    """
     if table_alias == source_alias or table_alias == source_model.name:
         return source_model, source_alias
     parts = table_alias.split("__") if "__" in table_alias else [table_alias]
@@ -241,7 +246,11 @@ def _process_column_node_sync(
     is_root: bool,
     root_scope_ids: Set[int],
 ) -> None:
-    """Sync mirror of :func:`_process_column_node`."""
+    """Expand one ``exp.Column`` node in place if it names a derived column.
+
+    Returns ``True`` when the node was rewritten, ``False`` when it was left
+    alone (a physical column, or an unresolvable/opaque alias path).
+    """
     if col.args.get("db") or col.args.get("catalog"):
         return
     table_id = col.args.get("table")
@@ -293,7 +302,11 @@ def expand_derived_refs_sync(
     visited: Optional[Tuple[Tuple[str, str], ...]] = None,
     is_root: bool = True,
 ) -> Optional[str]:
-    """Sync mirror of :func:`expand_derived_refs` for the DEV-1450 pipeline.
+    """Inline every derived-column reference in ``sql`` to its definition.
+
+    Recurses through chains (``A.ratio`` -> ``A.bar / B.foo_normalized`` ->
+    …) with cycle detection via ``visited``, raising ``ColumnCycleError`` on a
+    self-referential chain.
 
     ``resolve_model`` is a plain ``name -> Optional[SlayerModel]`` lookup
     (typically ``bundle.get_referenced_model``); there is no

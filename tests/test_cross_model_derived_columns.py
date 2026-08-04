@@ -1627,9 +1627,14 @@ async def test_dev1334_filter_with_various_comparison_operators_on_derived_col(
 async def test_dev1334_filter_on_self_referential_derived_chain_raises_cycle_error(
     tmp_path,
 ) -> None:
-    """A filter on a column whose derived chain has a cycle must raise
-    the same chain-formatted ValueError that ``expand_derived_refs``
-    raises (DEV-1333). This pins reuse of cycle-detection ordering.
+    """A filter on a column whose derived chain has a cycle must raise a
+    chain-formatted ``ColumnCycleError`` (DEV-1333), naming the cycle in
+    traversal order rather than recursing until the stack blows.
+
+    Compile-time detection, through the typed pipeline's expander
+    (``expand_derived_refs_sync``). DEV-1485 deleted the async
+    ``expand_derived_refs`` this originally went through; the cycle-detection
+    contract it pins is unchanged.
     """
     storage = YAMLStorage(base_dir=str(tmp_path))
     orders = SlayerModel(
@@ -1641,8 +1646,8 @@ async def test_dev1334_filter_on_self_referential_derived_chain_raises_cycle_err
         ],
     )
     # DEV-1410 added save-time cycle validation; this test pre-dates it and
-    # specifically exercises COMPILE-TIME detection through ``_enrich``, so
-    # skip the save-time check to construct the cyclic state on disk.
+    # specifically exercises COMPILE-TIME detection at query time, so skip the
+    # save-time check to construct the cyclic state on disk.
     await storage.save_model(orders, _validate=False)
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
