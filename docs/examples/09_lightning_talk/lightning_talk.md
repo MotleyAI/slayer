@@ -55,7 +55,9 @@ The notebook saves two memories — one learning (Brooklyn POS) and one query-be
 - **tantivy** full-text over learning text plus canonical entities. Best for natural-language questions and entity discovery.
 - **embeddings** (dense cosine, via litellm). Optional — degrades gracefully without an API key; runs once added.
 
-Ranks are merged via Reciprocal Rank Fusion. The agent doesn't pick a channel.
+Ranks are merged via Reciprocal Rank Fusion into a single flat `results: List[SearchHit]`. Each hit carries a `kind` discriminator (`"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`); the agent splits the list itself rather than picking a channel.
+
+The same call also accepts `cypher_filter` — a graph pre-narrowing pass run before all three channels (full openCypher with `advanced_search` installed, naive `MATCH (n:Label) RETURN n.id AS id` kind-filter without).
 
 ## Try it in Claude Code
 
@@ -67,11 +69,9 @@ claude mcp add slayer -- uvx --from motley-slayer slayer mcp --demo
 
 Then ask Claude in any project: *"What stores are in jaffle_shop and which one has the highest revenue?"* — it will call the same tools used in the notebook.
 
-## What's here, what's coming
+## What's here
 
-**Here today:** MIT-licensed. Interfaces: MCP, CLI, REST, Python, Flight SQL. Auto-ingestion. Postgres, MySQL, Snowflake, BigQuery, DuckDB, ClickHouse, SQLite. Multistage queries, named measures, custom aggregations, memories with embedding search.
-
-**Coming next:** proper graph / Cypher support, so memories and entities form an explicit graph the agent can traverse.
+**Here today:** MIT-licensed. Interfaces: MCP, CLI, REST, Python, Flight SQL. Auto-ingestion. Postgres, MySQL, Snowflake, BigQuery, DuckDB, ClickHouse, SQLite. Multistage queries, named measures, custom aggregations, memories with embedding search. Graph-backed `cypher_filter` pre-filter — full openCypher with the `advanced_search` extra (Memory / Datasource / Model / ModelColumn / Measure / Aggregation nodes; MENTIONS / CONTAINS / JOINS edges), naive label-only fallback without.
 
 ## Links
 

@@ -139,30 +139,24 @@ not that each gets a patch. How structural identity achieves that:
 Each has an `engine.execute`-level acceptance test in
 `tests/test_dev1445_*.py` / `1446` / `1448` / `1449`.
 
-## Current state: two pipelines coexist
+## Current state: one pipeline
 
-The cutover (DEV-1450 stage 7b.15) routed **top-level query planning** through
-the new pipeline. It deliberately did **not** delete the legacy stack —
+The typed pipeline is the only rendering path. Top-level query planning,
+query-backed model expansion (execute *and* save), join-target rendering, and
+dialect SQL emission all run through it.
+
+The legacy enrichment stack is **deleted** (DEV-1485, Stage D of DEV-1703):
 `enrichment.py`, `enriched.py` (`EnrichedQuery` / `EnrichedMeasure`),
-`_query_as_model`, the legacy `SQLGenerator.generate`,
-`_rewrite_funcstyle_aggregations`, and the `ContextVar` machinery all still
-exist and, in some paths, **still run in production** (not just in tests):
+`_query_as_model`, the legacy `SQLGenerator.generate(enriched=…)`, and the
+`_forbidden_sibling_refs_var` / `_join_target_resolving_var` `ContextVar`s no
+longer exist. Sibling stages resolve through `_follow_sibling_chain` in
+`source_bundle.py`; forward / self / cycle references are caught up front by
+`topologically_order_stages`.
 
-- **Query-backed model expansion** (turning a model's `source_queries` into a
-  virtual `sql`-mode model whose `.sql` is the rendered backing query) runs
-  entirely on legacy `_query_as_model → enrich_query → SQLGenerator.generate`,
-  on **both** the execute path (`_expand_query_backed_model`) and the save path
-  (`_validate_and_populate_cache`). The new pipeline then plans/renders the
-  *outer* query against the resulting virtual model.
-- `generate_from_planned` reuses the legacy dialect helpers via a synthetic
-  `EnrichedMeasure` adapter (see [SQL generation](sql-generation.md)).
-
-Deleting the legacy stack — and migrating query-backed expansion onto the typed
-pipeline — is tracked as **DEV-1452**. Until then, treat the typed pipeline as
-the resolution path for the *outer* query and for the four acceptance bugs, and
-the legacy stack as still load-bearing for query-backed inner rendering and
-dialect SQL emission. See [Engine orchestration](engine-orchestration.md) for
-the exact call sites.
+Older documents, commit messages, and Linear issues describe a period when two
+pipelines coexisted and the legacy stack was load-bearing for query-backed
+inner rendering. That is history — see the note in
+[Engine orchestration](engine-orchestration.md).
 
 ## Deviations from the plan
 
@@ -171,12 +165,13 @@ They are documented here so reviewers don't mistake them for the intended end
 state. All are deliberate and tracked, but several reintroduce — temporarily —
 the kind of multi-path coupling the redesign set out to remove.
 
-1. **Legacy stack still load-bearing for query-backed models** (above). The
-   plan's stage-7b bullet said the cutover would "delete `EnrichedQuery`,
-   `EnrichedMeasure`, … `_query_as_model`, … legacy `SQLGenerator.generate`".
-   In practice every deletion is deferred to DEV-1452, and the legacy stack is
-   not merely "kept reachable for tests" — it renders the backing SQL of every
-   query-backed model. This is the largest gap between plan and reality.
+1. ~~**Legacy stack still load-bearing for query-backed models.**~~ **Resolved.**
+   This was the largest gap between plan and reality: the cutover deferred every
+   deletion, and the legacy stack rendered the backing SQL of every query-backed
+   model. DEV-1452 Stage B migrated expansion onto the typed pipeline and
+   DEV-1485 (Stage D) deleted the legacy stack, so the plan's stage-7b bullet
+   ("delete `EnrichedQuery`, `EnrichedMeasure`, … `_query_as_model`, … legacy
+   `SQLGenerator.generate`") is now satisfied in full.
 
 2. **A second cross-model rendering path was needed** (re-rooting). The plan's
    cross-model design was a single strategy: `IsolatedCteCrossModelPlanner` plus
@@ -194,13 +189,14 @@ the kind of multi-path coupling the redesign set out to remove.
    abstraction (P3) holds for identity but not for rendering. See
    [Cross-model aggregates](cross-model-aggregates.md).
 
-3. **The new generator adapts back to `EnrichedMeasure`.** The plan said
-   "rewrite `generator.py` to consume `PlannedQuery`". The implemented
-   `generate_from_planned` consumes `PlannedQuery` at the top but synthesizes
-   `EnrichedMeasure` objects (`_synthesize_enriched_measure_from_planned`) to
-   reuse the legacy dialect helpers (`_build_agg`, `_build_percentile`,
-   `_build_stat_agg`, …). The new path is therefore coupled to a type DEV-1452
-   wants to delete. See [SQL generation](sql-generation.md).
+3. ~~**The new generator adapts back to `EnrichedMeasure`.**~~ **Resolved.**
+   `generate_from_planned` briefly synthesized `EnrichedMeasure` objects to
+   reuse the dialect helpers (`_build_agg`, `_build_percentile`,
+   `_build_stat_agg`, …), coupling the new path to a legacy type. DEV-1452
+   Stage A retyped those helpers onto `AggRenderSpec`, built directly from
+   planned slots by `_build_agg_render_spec_from_planned`, and DEV-1485 removed
+   the last adapter (`_agg_render_spec_from_enriched`) along with `_build_agg`'s
+   `measure=` compat surface. See [SQL generation](sql-generation.md).
 
 4. **Derived-column parity with legacy restored (DEV-1450 follow-ups #4a / #4b).**
    Two cases that legacy handled, and the typed pipeline briefly narrowed to

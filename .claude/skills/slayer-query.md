@@ -22,7 +22,9 @@ A `SlayerQuery` is a JSON/dict object. The same shape works across the REST API,
 
 `order[].column` is the short alias (`count`, `revenue_sum`) — not the colon form.
 
-**Dim-only queries deduplicate.** A query with no measures and at least one dimension or time-dimension auto-emits `GROUP BY <dim/td aliases>` and returns the distinct combinations. The `GROUP BY` is applied before `LIMIT`, so a row cap can't silently drop unique tuples. There is no opt-out — if you want the raw row stream, query the underlying table outside the semantic layer.
+**Ordering by something you don't project.** `order` may name an undeclared column/aggregate/expression ("top-N by X, show only Y, Z"). Computed hidden, sorted on, and stripped from the result: an **aggregate** (`amount:sum`, `customers.revenue:sum`), an inline **transform** (`rank(amount:sum)`, `change(...)`, `cumsum`/`lag`/`lead`/`ntile`), an inline **composite** (`revenue:sum / cnt:sum`, `abs(amount:sum)`), and a **windowed** aggregate (`amount:sum(window='90d')`, alone or inside a composite). A **raw row column** is orderable only in a raw-rows query (`distinct_dimension_values: false`); in a grouped/dedup query it's rejected (HTTP 400 — add it to `dimensions` or order by an aggregate of it). A **joined** row column is rejected — project it. Order expressions must use formula syntax for their operands, not the `name`s of measures declared in the same query: `{"column": "revenue:sum / cnt:sum"}` works, `{"column": "rev / cnt"}` is rejected.
+
+**Dim-only queries deduplicate.** A query with no measures and at least one dimension or time-dimension auto-emits `GROUP BY <dim/td aliases>` and returns the distinct combinations. The `GROUP BY` is applied before `LIMIT`, so a row cap can't silently drop unique tuples. To opt out, set `"distinct_dimension_values": false` on the query — emits raw rows (no top-level `GROUP BY`), with WHERE / ORDER BY / LIMIT applied as usual. Any measure reference in `measures` / `filters` / `order` raises `DistinctDimensionValuesError` in this mode.
 
 ## Measures — colon aggregation
 
@@ -40,11 +42,15 @@ Each entry in `measures` is either a bare formula string or a `{"formula": ..., 
   "last(revenue:sum)",
   "time_shift(revenue:sum, -1, 'year')",
   "lag(revenue:sum, 1)",
-  "rank(revenue:sum)"
+  "rank(revenue:sum)",
+  "round(revenue:sum, 2)",
+  "abs(revenue:sum - cost:sum)"
 ]
 ```
 
-Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. Two-column `corr`/`covar_samp`/`covar_pop` take the second column as a named param: `price:corr(other=quantity)`. `sum` and `avg` accept an optional trailing-window: `revenue:sum(window='30d')`.
+Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. `count_distinct_approx` is dialect-aware (native approximate-distinct where available, exact `COUNT(DISTINCT)` fallback otherwise). Two-column `corr`/`covar_samp`/`covar_pop` take the second column as a named param: `price:corr(other=quantity)`. `sum` and `avg` accept an optional trailing-window: `revenue:sum(window='30d')`. A time bound narrows which buckets come back, not which rows the window may reach — so `date_range` and an equivalent explicit filter (`created_at >= '2025-01-01'`) give identical windowed numbers. Only `<`/`<=`/`>`/`>=` against a time dimension's own column and a literal counts; other operators, non-time-dimension columns, bounds under `or`/`not`, and model-level `filters` all restrict the window's input as usual. Same rule for `time_shift`.
+
+For month-over-month / period-over-period growth use `change_pct(x)` (absolute delta: `change(x)`) — both are calendar-aware and partition-safe (the underlying self-join matches on all non-time dimensions, so per-group series reset cleanly). Reach for `time_shift` only when you need the shifted value itself as a term in custom arithmetic or at a different grain (`time_shift(revenue:sum, -1, 'year')` for year-over-year).
 
 `*:count` is always available — no column definition needed. `col:count` counts non-nulls.
 
@@ -72,7 +78,7 @@ Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes unde
 
 **Top-N filtering**: use `"rank(<measure>) <= N"` (e.g. `"rank(revenue:sum) <= 10"`) — dialect-portable and auto-promoted to a post-filter on the outer query. Raw `OVER (...)` SQL inside a filter or `ModelMeasure.formula` is rejected with an actionable error. Filtering on a `Column` whose `sql` contains a window function is also rejected (DEV-1369): use `rank()` / `dense_rank()` / `percent_rank()` / `ntile(n=<N>)` for top-N, or factor the windowed expression into an earlier stage of a multi-stage `source_queries` model.
 
-**Variable substitution**: `{var}` placeholders in filter strings are substituted from the query's `variables` dict (or per-model defaults). Use `{{`/`}}` for literal braces.
+**Variable substitution**: `{var}` placeholders in filter strings are substituted from the query's `variables` dict (or per-model defaults). Use `{{`/`}}` for literal braces. Write the surrounding quotes yourself (`status = '{status}'`); string values are auto-escaped so an embedded quote, backslash, or control char (newline/tab) stays inside the literal and parses cleanly (DEV-1727). Numbers (incl. bool) insert verbatim; non-finite floats are rejected; undefined vars raise. A **list** value renders an injection-safe `IN`-list for an `in`/`not in` filter (`region in ({regions})` with `{"regions": ["US","CA"]}` → `region IN ('US', 'CA')`) — write the parens, omit per-element quotes (auto-quoted); empty list raises. The same `{var}` mechanism also fills the raw-SQL (Mode A) surfaces of the query's direct source model — `SlayerModel.sql`, `SlayerModel.filters`, `Column.sql`, `Column.filter` (DEV-1625) — which additionally support optional blocks `{? pred ?}` that collapse to `(1=1)` when their vars are absent (Cube `FILTER_PARAMS` form, DEV-1730). See slayer-models skill for details.
 
 ## Executing
 
@@ -115,6 +121,20 @@ Reference measures from joined models with dotted syntax + colon aggregation:
 ```
 
 A dotted reference may target a *derived* column on the joined model (a column whose own `sql` is itself an expression). The engine recursively inlines the chain at query time — `"B.foo_normalized:sum"` where `B.foo_normalized.sql = "foo_raw / 100.0"` emits `SUM(B.foo_raw / 100.0)`. The same chaining works inside `Column.sql`, `filters`, and `dimensions`. When a filter names a *bare* local derived column whose SQL crosses a join (e.g. `Column(name="is_eu", sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END")` referenced as `"filters": ["is_eu = 1"]`), the planner walks the column's chain and adds the joins the chain implies — no need to also list the column in `dimensions`.
+
+## Picking the root model
+
+Not sure which model to use as `source_model` for a set of columns/metrics? Call `recommend_root_model` with the `model.column` / `model.metric` items you want; it introspects the join graph and returns the recommended root plus each item's join-qualified path from it (aggregation suffixes preserved), ready to drop into a query.
+
+```python
+rec = client.recommend_root_model_sync(["customers.name", "products.category"])
+rec.root_model  # "orders"
+[ip.path for ip in rec.item_paths]  # ["customers.name", "products.category"]
+```
+
+Pass `root_hint` (a bare model name or `<data_source>.<model>`) to force an intended root — useful when the host is a bridge model that owns none of the items but matches your grain. It's honored when it reaches every item; otherwise the auto-pick is used and `warnings` says why.
+
+MCP: `recommend_root_model(items, data_source=None, root_hint=None, format="markdown")`. If no single model reaches every item, `root_model` is `None` and `coverage` lists the best partial roots — a hint to split into a multi-stage `source_queries` query.
 
 ## ModelExtension
 

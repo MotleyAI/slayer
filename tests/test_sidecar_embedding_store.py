@@ -13,7 +13,7 @@ import os
 import sqlite3
 import tempfile
 from datetime import datetime, timezone
-from typing import Iterator, List
+from collections.abc import Iterator
 
 import pytest
 
@@ -38,7 +38,7 @@ def _embed(
     model: str = "openai/test-embedding",
     kind: EntityKind = "memory",
     text_hash: str = "h0",
-    vector: List[float] | None = None,
+    vector: list[float] | None = None,
 ) -> Embedding:
     return Embedding(
         canonical_id=canonical_id,
@@ -166,7 +166,7 @@ async def test_save_many_empty_is_noop(
     from slayer.storage import sidecar_embedding_store as _mod
 
     real_connect = _mod.sqlite3.connect
-    connect_calls: List[tuple] = []
+    connect_calls: list[tuple] = []
 
     def _spy(*args, **kwargs):
         connect_calls.append(args)
@@ -266,7 +266,7 @@ async def test_get_many_empty_input_returns_empty(
     from slayer.storage import sidecar_embedding_store as _mod
 
     real_connect = _mod.sqlite3.connect
-    connect_calls: List[tuple] = []
+    connect_calls: list[tuple] = []
 
     def _spy(*args, **kwargs):
         connect_calls.append(args)

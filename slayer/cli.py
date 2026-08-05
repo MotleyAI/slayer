@@ -5,7 +5,7 @@ import copy
 import json
 import os
 import sys
-from typing import List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -14,6 +14,7 @@ from slayer.core.errors import (
     AmbiguousModelError,
     EntityResolutionError,
     MemoryNotFoundError,
+    SlayerError,
 )
 from slayer.core.models import SlayerModel
 from slayer.engine.ingestion import (
@@ -25,11 +26,14 @@ from slayer.engine.profiling import (
     refresh_table_backed_model_sampled,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.inspect.service import InspectService
+from slayer.memories.help_seed import seed_help_memories
 from slayer.search.service import SearchService
 from slayer.storage import migrations as _mig
 from slayer.storage.base import default_storage_path
 from slayer.storage.type_refinement import (
     has_refineable_columns,
+    has_sqlite_widenable_columns,
     refine_dict_with_live_schema,
 )
 
@@ -66,8 +70,8 @@ class RefreshSamplesResult(BaseModel):
     that didn't resolve in the requested scope — those are reported as
     a hard error so typos fail fast."""
 
-    errors: List[str] = Field(default_factory=list)
-    unresolved_models: List[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    unresolved_models: list[str] = Field(default_factory=list)
 
 
 def _add_storage_arg(parser):
@@ -88,7 +92,7 @@ def _resolve_storage(args):
     return resolve_storage(path)
 
 
-def main():
+def main():  # NOSONAR(S3776) — linear top-level CLI command dispatch (one elif per subcommand); splitting the dispatch chain would not improve readability
     parser = argparse.ArgumentParser(
         prog="slayer",
         description="SLayer — a lightweight semantic layer for AI agents",
@@ -108,7 +112,12 @@ common workflows:
   slayer serve --storage slayer.db
   slayer ingest --datasource my_pg --storage slayer.db
 
-docs: https://motley-slayer.readthedocs.io/
+conceptual help:
+  # SLayer's concepts ship as help memories — read them with inspect:
+  slayer inspect memory:help.intro --type memory
+  slayer search --question "how do transforms work"
+
+docs: https://docs.motley.ai/slayer/
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -303,6 +312,48 @@ examples:
     )
     _add_storage_arg(validate_parser)
 
+    # ── recommend-root-model ──────────────────────────────────────────
+    recommend_parser = subparsers.add_parser(
+        "recommend-root-model",
+        help="Recommend a query root model + join paths for a set of items",
+        epilog="""\
+examples:
+  slayer recommend-root-model orders.revenue customers.name
+  slayer recommend-root-model customers.name products.category --data-source my_pg
+  slayer recommend-root-model orders.revenue:sum regions.name --format json
+  slayer recommend-root-model customers.name products.category --root-hint orders
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    recommend_parser.add_argument(
+        "items",
+        nargs="+",
+        help="model.column / model.metric items (aggregation suffixes allowed)",
+    )
+    recommend_parser.add_argument(
+        "--data-source",
+        dest="data_source",
+        default=None,
+        help="Datasource scope. If omitted, names resolve via the priority list.",
+    )
+    recommend_parser.add_argument(
+        "--root-hint",
+        dest="root_hint",
+        default=None,
+        help=(
+            "Intended root model (bare name or '<data_source>.<model>'). "
+            "Honored when it reaches every item; otherwise the auto-pick is "
+            "used and a warning explains why."
+        ),
+    )
+    recommend_parser.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format (default: text).",
+    )
+    _add_storage_arg(recommend_parser)
+
     # ── import-dbt ────────────────────────────────────────────────────
     import_dbt_parser = subparsers.add_parser(
         "import-dbt",
@@ -326,6 +377,49 @@ examples:
         ),
     )
     _add_storage_arg(import_dbt_parser)
+
+    # ── import-cube ───────────────────────────────────────────────────
+    import_cube_parser = subparsers.add_parser(
+        "import-cube",
+        help="Import Cube (Cube.js / Cube.dev) YAML and JavaScript data models into SLayer models",
+        epilog="""\
+examples:
+  slayer import-cube ./cube_project --datasource my_postgres
+  slayer import-cube ./cube_project/model --datasource my_postgres --report ./report.json
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    import_cube_parser.add_argument("cube_project_path", help="Path to the Cube project (or its model directory)")
+    import_cube_parser.add_argument("--datasource", required=True, help="SLayer datasource name to file the imported models under")
+    import_cube_parser.add_argument("--report", default=None, help="Path for the JSON conversion report (default: <storage>/cube_import_report.json)")
+    import_cube_parser.add_argument("--include-hidden", action="store_true", help="Also print hidden (public: false) models in the summary")
+    import_cube_parser.add_argument(
+        "--ignore-required-meta", action="store_true",
+        help="Emit every FILTER_PARAMS pushdown as an optional filter (literal "
+             "Cube semantics), ignoring a member's meta.required marker. By "
+             "default a truthy meta.required makes that filter required "
+             "(raise-on-missing).")
+    _add_storage_arg(import_cube_parser)
+
+    # ── import-osi ────────────────────────────────────────────────────
+    import_osi_parser = subparsers.add_parser(
+        "import-osi",
+        help="Import OSI (Open Semantic Interchange) configs into SLayer models",
+        epilog="""\
+examples:
+  slayer import-osi ./osi_configs --datasource my_postgres
+  slayer import-osi ./model.yaml --datasource my_pg --dialect SNOWFLAKE
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    import_osi_parser.add_argument("osi_path", help="Path to an OSI file or directory (YAML/JSON)")
+    import_osi_parser.add_argument("--datasource", required=True, help="SLayer datasource name for the imported models")
+    import_osi_parser.add_argument(
+        "--dialect", default="ANSI_SQL",
+        help="OSI expression dialect to read (default: ANSI_SQL). Falls back to "
+             "another SQL dialect when the requested one is absent.",
+    )
+    _add_storage_arg(import_osi_parser)
 
     # ── models ────────────────────────────────────────────────────────
     models_parser = subparsers.add_parser(
@@ -501,6 +595,16 @@ examples:
             "Duplicate id → upsert."
         ),
     )
+    memory_save_parser.add_argument(
+        "--description",
+        default=None,
+        help=(
+            "Optional compact preview (<= 500 chars) surfaced by "
+            "`slayer search` and `inspect_model` when run in compact "
+            "mode (the default). Omit to let the renderer compute the "
+            "preview from the first paragraph of --learning."
+        ),
+    )
 
     memory_forget_parser = memory_subparsers.add_parser(
         "forget", help="Delete a memory by id"
@@ -538,6 +642,77 @@ examples:
         help="Report planned refinements without writing them back to storage.",
     )
     _add_storage_arg(migrate_types_parser)
+
+    # ── inspect (DEV-1588) ───────────────────────────────────────────
+    inspect_parser = subparsers.add_parser(
+        "inspect",
+        help=(
+            "Inspect one entity by reference and kind, or several of the same "
+            "kind at once (pass multiple references) (DEV-1588, DEV-1612)"
+        ),
+    )
+    inspect_parser.add_argument(
+        "reference",
+        nargs="*",
+        help=(
+            "Entity reference(s): canonical id (mydb.orders.amount), bare "
+            "name, join path, or memory:<id>. Pass two or more for a "
+            "homogeneous-kind batch (one --type for all). Omit entirely to "
+            "list the whole collection at --type (model / datasource only)."
+        ),
+    )
+    inspect_parser.add_argument(
+        "--type",
+        required=True,
+        dest="entity_type",
+        choices=[
+            "datasource", "model", "column", "measure", "aggregation",
+            "memory",
+        ],
+        help="Required. The entity kind to inspect.",
+    )
+    inspect_parser.add_argument(
+        "--no-compact",
+        action="store_false",
+        dest="compact",
+        default=True,
+        help="Return the full render instead of the compact description.",
+    )
+    inspect_parser.add_argument(
+        "--format",
+        choices=["markdown", "json"],
+        default="markdown",
+        help="Output format (default: markdown).",
+    )
+    inspect_parser.add_argument(
+        "--num-rows",
+        type=int,
+        default=3,
+        dest="num_rows",
+        help="Sample-data rows (model entity_type only; default 3).",
+    )
+    inspect_parser.add_argument(
+        "--show-sql",
+        action="store_true",
+        default=False,
+        dest="show_sql",
+        help="Include generated SQL (model entity_type only).",
+    )
+    inspect_parser.add_argument(
+        "--section",
+        action="append",
+        default=None,
+        dest="sections",
+        help="Section subset (model entity_type only; repeatable).",
+    )
+    inspect_parser.add_argument(
+        "--descriptions-max-chars",
+        type=int,
+        default=None,
+        dest="descriptions_max_chars",
+        help="Truncate description fields to this many characters.",
+    )
+    _add_storage_arg(inspect_parser)
 
     # ── search (DEV-1375) ────────────────────────────────────────────
     search_parser = subparsers.add_parser(
@@ -584,31 +759,43 @@ examples:
         ),
     )
     search_parser.add_argument(
-        "--max-memories",
+        "--max-results",
         type=int,
-        default=5,
-        dest="max_memories",
-        help="Cap on returned learning-only memory hits (default 5).",
+        default=10,
+        dest="max_results",
+        help="Maximum total number of hits to return (default 10).",
     )
     search_parser.add_argument(
-        "--max-example-queries",
-        type=int,
-        default=2,
-        dest="max_example_queries",
-        help="Cap on returned query-bearing memory hits (default 2 — bulky).",
-    )
-    search_parser.add_argument(
-        "--max-entities",
-        type=int,
-        default=5,
-        dest="max_entities",
-        help="Cap on returned entity hits (default 5).",
+        "--cypher-filter",
+        default=None,
+        dest="cypher_filter",
+        help=(
+            "openCypher MATCH query returning '… AS id' to pre-filter all "
+            "channels to matching canonical IDs. When advanced_search is not "
+            "installed, only simple MATCH (n:Label1:Label2) RETURN n.id AS id "
+            "patterns are supported as a kind filter (multi-label uses union "
+            "semantics; allowed labels: Memory, Datasource, Model, Column, "
+            "Measure, Aggregation)."
+        ),
     )
     search_parser.add_argument(
         "--format",
         choices=["json", "text"],
         default="text",
         help="Output format (default: text).",
+    )
+    search_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help=(
+            "Opt out of compact rendering (DEV-1549). Default is "
+            "compact: memory hits surface ``description`` (or a "
+            "first-paragraph fallback from ``learning``) and an "
+            "empty ``text``; entity hits surface ``entity.description`` "
+            "and an empty ``text``. With ``--verbose`` the full hit "
+            "text is restored."
+        ),
     )
     refresh_parser = search_subparsers.add_parser(
         "refresh-samples",
@@ -629,27 +816,9 @@ examples:
         help="Model name(s) to refresh (repeatable; default: all in scope).",
     )
 
-    # ── help ──────────────────────────────────────────────────────────
-    from slayer.help import TOPIC_SUMMARY_LINE
-
-    help_parser = subparsers.add_parser(
-        "help",
-        help="Show conceptual help on SLayer (concepts, query composition, transforms, joins, workflow)",
-        epilog=(
-            f"{TOPIC_SUMMARY_LINE}\n\n"
-            "examples:\n"
-            "  slayer help                  # intro\n"
-            "  slayer help queries          # deep dive on a topic\n"
-            "  slayer help transforms\n"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    help_parser.add_argument(
-        "topic",
-        nargs="?",
-        default=None,
-        help="Topic name (optional). If omitted, prints the intro.",
-    )
+    # DEV-1658: the standalone `slayer help` subcommand is removed. SLayer's
+    # concepts ship as help memories — read them with
+    # `slayer inspect memory:help.intro --type memory` (see the epilog above).
 
     args = parser.parse_args()
 
@@ -669,23 +838,64 @@ examples:
         _run_ingest(args)
     elif args.command == "validate-models":
         _run_validate_models(args)
+    elif args.command == "recommend-root-model":
+        _run_recommend_root_model(args)
     elif args.command == "import-dbt":
         _run_import_dbt(args)
+    elif args.command == "import-cube":
+        _run_import_cube(args)
+    elif args.command == "import-osi":
+        _run_import_osi(args)
     elif args.command == "models":
         _run_models(args)
     elif args.command == "datasources":
         _run_datasources(args)
     elif args.command == "memory":
         _run_memory(args)
+    elif args.command == "inspect":
+        _run_inspect(args=args, storage=_resolve_storage(args))
     elif args.command == "search":
         _run_search(args)
     elif args.command == "storage":
         _run_storage(args)
-    elif args.command == "help":
-        _run_help(args)
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def _run_inspect(*, args, storage) -> None:
+    """Run ``slayer inspect`` — a single-entity point-lookup (DEV-1588)."""
+    # DEV-1658: ensure the help.* memories exist so `inspect memory:help.intro`
+    # works on a fresh store (idempotent / warm no-op).
+    run_sync(seed_help_memories(storage=storage))
+    service = InspectService(
+        storage=storage, engine=SlayerQueryEngine(storage=storage),
+    )
+    # argparse ``nargs="*"`` always yields a list; map zero positionals to
+    # ``None`` (the collection sentinel, DEV-1667) and a single positional back
+    # to a bare str so single-id output stays byte-for-byte (DEV-1612). A direct
+    # str (older callers / tests) is passed through unchanged.
+    reference = args.reference
+    if isinstance(reference, list):
+        if len(reference) == 0:
+            reference = None
+        elif len(reference) == 1:
+            reference = reference[0]
+    try:
+        out = run_sync(service.inspect(
+            reference=reference,
+            entity_type=args.entity_type,
+            compact=args.compact,
+            format=args.format,
+            num_rows=args.num_rows,
+            show_sql=args.show_sql,
+            sections=args.sections,
+            descriptions_max_chars=args.descriptions_max_chars,
+        ))
+    except (SlayerError, ValueError) as exc:
+        _exit_with_error(exc)
+        return  # for type checkers; _exit_with_error never returns
+    print(out)
 
 
 def _run_search(args) -> None:
@@ -703,8 +913,8 @@ async def _refresh_samples_async(*, args, storage) -> "RefreshSamplesResult":
     and (optional) model filters, accumulate per-column errors and the
     names of any user-specified models that didn't resolve."""
     engine = SlayerQueryEngine(storage=storage)
-    errors: List[str] = []
-    unresolved_models: List[str] = []
+    errors: list[str] = []
+    unresolved_models: list[str] = []
     data_source = args.data_source
     models = args.models
     if data_source is None:
@@ -765,7 +975,15 @@ def _run_search_refresh_samples(*, args, storage) -> None:
 
 
 def _print_search_response_text(response) -> None:
-    """Pretty-print a ``SearchResponse`` for the default text format."""
+    """Pretty-print a ``SearchResponse`` for the default text format.
+
+    DEV-1549: under compact mode ``hit.text`` is empty and the preview
+    lives in ``hit.description``; under ``--verbose`` (compact=False)
+    ``hit.text`` carries the full body and is what the caller wants to
+    see. Prefer ``text`` when non-empty so ``--verbose`` actually shows
+    the restored body; fall back to ``description`` for compact
+    responses.
+    """
     for w in response.warnings:
         print(f"[warning] {w}")
     if response.resolved_input_entities:
@@ -773,22 +991,24 @@ def _print_search_response_text(response) -> None:
             "\nResolved input entities: "
             + ", ".join(response.resolved_input_entities)
         )
-    print(f"\nMemories ({len(response.memories)}):")
-    for hit in response.memories:
-        print(f"  M{hit.id} (score={hit.score:.4f})")
-        print(f"    {hit.text.splitlines()[0] if hit.text else ''}")
-    print(f"\nExample queries ({len(response.example_queries)}):")
-    for hit in response.example_queries:
-        print(f"  M{hit.id} (score={hit.score:.4f})")
-        print(f"    {hit.text.splitlines()[0] if hit.text else ''}")
-    print(f"\nEntities ({len(response.entities)}):")
-    for hit in response.entities:
-        print(f"  [{hit.kind}] {hit.id} (score={hit.score:.4f})")
+    print(f"\nResults ({len(response.results)}):")
+    for hit in response.results:
+        if hit.kind == "memory":
+            prefix = "Q" if hit.query is not None else "M"
+        else:
+            prefix = f"[{hit.kind}]"
+        print(f"  {prefix} {hit.id} (score={hit.score:.4f})")
+        preview = hit.text if hit.text else (hit.description or "")
+        preview_line = preview.splitlines()[0] if preview else ""
+        print(f"    {preview_line}")
 
 
 def _run_search_query(args, storage) -> None:
     """``slayer search [...]`` — call the SearchService and emit JSON or
     pretty text."""
+    # DEV-1658: seed help.* memories so concept searches surface them on a
+    # fresh store. Only on the query path — NOT `search refresh-samples`.
+    run_sync(seed_help_memories(storage=storage))
     service = SearchService(storage=storage)
     query_input = _load_query_arg(args.query) if args.query else None
     try:
@@ -797,11 +1017,11 @@ def _run_search_query(args, storage) -> None:
             query=query_input,
             question=args.question,
             datasource=args.datasource,
-            max_memories=args.max_memories,
-            max_example_queries=args.max_example_queries,
-            max_entities=args.max_entities,
+            max_results=args.max_results,
+            cypher_filter=args.cypher_filter,
+            compact=not getattr(args, "verbose", False),
         ))
-    except (EntityResolutionError, AmbiguousModelError, ValueError) as exc:
+    except (SlayerError, ValueError) as exc:
         _exit_with_error(exc)
         return
     if args.format == "json":
@@ -858,6 +1078,49 @@ def _run_storage_migrate_types(args) -> None:
         print(f"\nDone: refined {refined_total} model(s).")
 
 
+def _resolve_datasource_for_cli_refinement(
+    *, inner, ds_name: str, model_name: str, needs_double: bool,
+) -> Any | None:
+    """Resolve the datasource for ``slayer storage migrate-types``.
+
+    Returns the ``DatasourceConfig`` when present, ``None`` when missing
+    and the model is SQLite-INT-only (best-effort skip — prints a stderr
+    skip notice). Raises ``ValueError`` when the model has DOUBLE base
+    columns and the DS is missing (DEV-1361 hard-fail contract).
+    """
+    ds = run_sync(inner.get_datasource(ds_name))
+    if ds is not None:
+        return ds
+    if needs_double:
+        raise ValueError(
+            f"Cannot refine model {ds_name!r}.{model_name!r}: datasource "
+            f"{ds_name!r} is unavailable for type refinement. Restore the "
+            f"datasource entry or remove the stale model file."
+        )
+    print(
+        f"skipped {ds_name}.{model_name}: datasource {ds_name!r} unavailable "
+        f"for SQLite affinity probe (INT columns untouched). Restore the "
+        f"datasource and re-run.",
+        file=sys.stderr,
+    )
+    return None
+
+
+def _print_refinement_diff(
+    *, ds_name: str, model_name: str, upgraded: dict, types_before: dict[str, str],
+) -> None:
+    """Print before→after diffs for columns whose type changed during
+    refinement. Migration-only aliases are excluded because ``types_before``
+    is captured AFTER migration."""
+    print(f"refined {ds_name}.{model_name}:")
+    for col in upgraded.get("columns", []) or []:
+        name = col.get("name") or "?"
+        before = types_before.get(name, None)
+        after = col.get("type", "?")
+        if before != after:
+            print(f"  - {name}: {before or '?'} → {after}")
+
+
 def _refine_one_model_for_cli(
     *, inner, ds_name: str, model_name: str, dry_run: bool,
 ) -> bool:
@@ -871,38 +1134,39 @@ def _refine_one_model_for_cli(
     dict has refineable DOUBLE base columns AND the datasource entry is
     missing, raises ``ValueError`` rather than silently reporting "nothing
     to refine" for a model the CLI never had enough information to inspect.
-    Models with no refineable columns (text-only, query-backed, sql-mode,
+    DEV-1538 SQLite-INT widening is best-effort: a missing datasource for
+    an INT-only model logs a skip notice and returns False. Models with no
+    refineable or widenable columns (text-only, query-backed, sql-mode,
     already-narrowed) skip silently and don't require a live datasource.
     """
     raw = run_sync(_load_raw_model_dict(inner, ds_name, model_name))
     if raw is None:
         return False
-    # Snapshot the original column types before migration mutates the
-    # shared inner dicts, so we can show before/after diffs.
-    original_types = {
+    upgraded = _mig.migrate("SlayerModel", copy.deepcopy(raw))
+    # Snapshot column types AFTER migration but BEFORE refinement so the
+    # before/after diff reports only actual refinement changes — migration-
+    # only aliases like ``number → DOUBLE`` are not refinement events.
+    types_before_refinement = {
         (c.get("name") or "?"): c.get("type", "?")
-        for c in raw.get("columns", []) or []
+        for c in upgraded.get("columns", []) or []
         if isinstance(c, dict)
     }
-    upgraded = _mig.migrate("SlayerModel", copy.deepcopy(raw))
-    if not has_refineable_columns(upgraded):
+    needs_double = has_refineable_columns(upgraded)
+    needs_sqlite_int = has_sqlite_widenable_columns(upgraded)
+    if not (needs_double or needs_sqlite_int):
         return False
-    ds = run_sync(inner.get_datasource(ds_name))
+    ds = _resolve_datasource_for_cli_refinement(
+        inner=inner, ds_name=ds_name, model_name=model_name,
+        needs_double=needs_double,
+    )
     if ds is None:
-        raise ValueError(
-            f"Cannot refine model {ds_name!r}.{model_name!r}: datasource "
-            f"{ds_name!r} is unavailable for type refinement. Restore the "
-            f"datasource entry or remove the stale model file."
-        )
+        return False
     if not refine_dict_with_live_schema(upgraded, ds):
         return False
-    print(f"refined {ds_name}.{model_name}:")
-    for col in upgraded.get("columns", []) or []:
-        if col.get("type") != "INT":
-            continue
-        before = original_types.get(col.get("name") or "", None)
-        if before != "INT":
-            print(f"  - {col['name']}: {before or '?'} → INT")
+    _print_refinement_diff(
+        ds_name=ds_name, model_name=model_name,
+        upgraded=upgraded, types_before=types_before_refinement,
+    )
     if not dry_run:
         model = SlayerModel.model_validate(upgraded)
         # Save through inner so we don't re-trigger the load-time
@@ -911,7 +1175,7 @@ def _refine_one_model_for_cli(
     return True
 
 
-async def _load_raw_model_dict(storage, data_source: str, name: str) -> Optional[dict]:
+async def _load_raw_model_dict(storage, data_source: str, name: str) -> dict | None:
     """Read a model's raw on-disk dict bypassing Pydantic's validator chain."""
     import json as _json
     import os as _os
@@ -930,12 +1194,6 @@ async def _load_raw_model_dict(storage, data_source: str, name: str) -> Optional
         raw = await _asyncio.to_thread(storage._get_model_sync, data_source, name)
         return _json.loads(raw) if raw else None
     return None
-
-
-def _run_help(args):
-    from slayer.help import render_help
-
-    print(render_help(topic=args.topic))
 
 
 def _parse_cli_variables(args) -> dict:
@@ -1133,7 +1391,7 @@ _REMOVE_SECTIONS = (
 )
 
 
-def _format_edit_entry_lines(entry) -> List[str]:
+def _format_edit_entry_lines(entry) -> list[str]:
     lines = [f"EDIT MODEL: {entry.model_name} (datasource: {entry.data_source})"]
     for attr, label in _REMOVE_SECTIONS:
         values = getattr(entry.remove, attr)
@@ -1148,7 +1406,7 @@ def _format_validate_models_output(entries) -> str:
     """Render a List[ToDeleteEntry] as human-readable text for CLI output."""
     if not entries:
         return "No drift detected."
-    lines: List[str] = []
+    lines: list[str] = []
     for entry in entries:
         if entry.tool == "delete_model":
             lines.append(
@@ -1211,8 +1469,29 @@ def _run_validate_models(args):
     print("\n✓ no remaining drift")
 
 
+def _run_recommend_root_model(args):
+    import json as _json
+
+    from slayer.core.recommend import render_recommendation_markdown
+    from slayer.engine.query_engine import SlayerQueryEngine
+
+    storage = _resolve_storage(args)
+    engine = SlayerQueryEngine(storage=storage)
+    try:
+        rec = engine.recommend_root_model_sync(
+            args.items, data_source=args.data_source,
+            root_hint=getattr(args, "root_hint", None),
+        )
+    except Exception as exc:  # noqa: BLE001 — surface resolution/validation errors cleanly
+        print(f"recommend-root-model failed: {exc}")
+        sys.exit(1)
+    if args.format == "json":
+        print(_json.dumps(rec.model_dump(mode="json"), indent=2))
+    else:
+        print(render_recommendation_markdown(rec))
+
+
 def _run_import_dbt(args):
-    import sqlalchemy as sa
 
     from slayer.dbt.converter import DbtToSlayerConverter
     from slayer.dbt.parser import parse_dbt_project
@@ -1229,8 +1508,8 @@ def _run_import_dbt(args):
         sys.exit(1)
 
     sa_engine = None
+    ds = run_sync(storage.get_datasource(args.datasource))
     if include_hidden:
-        ds = run_sync(storage.get_datasource(args.datasource))
         if ds is None:
             storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
             print(
@@ -1238,19 +1517,22 @@ def _run_import_dbt(args):
                 "required for --include-hidden-models."
             )
             sys.exit(1)
-        sa_engine = sa.create_engine(ds.resolve_env_vars().get_connection_string())
+        from slayer.sql import engine_factory
+        sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
 
-    try:
-        converter = DbtToSlayerConverter(
-            project=project,
-            data_source=args.datasource,
-            sa_engine=sa_engine,
-            include_hidden_models=include_hidden,
-        )
-        result = converter.convert()
-    finally:
-        if sa_engine is not None:
-            sa_engine.dispose()
+    # DEV-1595: pass the datasource dialect (best-effort) so the converter can
+    # emit percentile/median caveats for dialects that lack them (MySQL/T-SQL).
+    target_dialect = ds.type if ds is not None else None
+
+    converter = DbtToSlayerConverter(
+        project=project,
+        data_source=args.datasource,
+        sa_engine=sa_engine,
+        include_hidden_models=include_hidden,
+        target_dialect=target_dialect,
+    )
+    result = converter.convert()
+    # Cached engine — engine_factory owns its lifecycle; don't dispose.
 
     hidden_count = 0
     for model in result.models:
@@ -1263,19 +1545,137 @@ def _run_import_dbt(args):
             f"({len(model.columns)} columns, {len(model.measures)} measures)"
         )
 
-    for u in result.unconverted_metrics:
-        context = u.model_name or u.metric_name or "general"
-        print(f"  UNCONVERTED [{context}]: {u.message}")
-
-    for w in result.warnings:
-        context = w.model_name or w.metric_name or "general"
-        print(f"  WARNING [{context}]: {w.message}")
+    # DEV-1595: grouped, category-keyed conversion report + a severity tally.
+    if result.unconverted_metrics or result.warnings:
+        print("\nConversion report:")
+        print(result.render_report())
 
     visible_count = len(result.models) - hidden_count
+    unconverted, dropped = result.tally()
     print(
         f"\nDone: {visible_count} models, {hidden_count} hidden, "
-        f"{len(result.unconverted_metrics)} unconverted metrics, "
-        f"{len(result.warnings)} warnings"
+        f"{unconverted} unconverted, {dropped} dropped"
+    )
+
+
+def _run_import_cube(args):
+    from slayer.cube.converter import CubeToSlayerConverter
+    from slayer.cube.parser import parse_cube_project
+    from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
+
+    storage = _resolve_storage(args)
+    project, parse_issues = parse_cube_project(args.cube_project_path)
+
+    if not project.cubes and not project.views:
+        print(f"No cubes or views found in {args.cube_project_path}")
+        sys.exit(1)
+
+    result = CubeToSlayerConverter(
+        project=project, data_source=args.datasource, parse_issues=parse_issues,
+        honor_required_meta=not args.ignore_required_meta,
+    ).convert()
+    saved = 0
+    for model in result.models:
+        try:
+            run_sync(storage.save_model(model))
+            saved += 1
+        except Exception as exc:  # noqa: BLE001 — one bad model shouldn't abort the import
+            result.report.add(CubeConversionIssue(
+                category=CubeIssueCategory.SAVE_FAILED, severity="error",
+                cube=model.name,
+                message=f"Failed to save model '{model.name}': {exc}"))
+
+    _print_cube_import_summary(result, include_hidden=args.include_hidden)
+    report_path = _write_cube_report(result, args)
+    print(
+        f"\nDone: {saved} of {result.report.model_count} models saved "
+        f"({result.report.hidden_count} hidden, {result.report.view_count} views), "
+        f"{len(result.report.issues)} report issues. Report: {report_path}"
+    )
+
+
+def _print_cube_import_summary(result, *, include_hidden):
+    for model in result.models:
+        if model.hidden and not include_hidden:
+            continue
+        suffix = " [hidden]" if model.hidden else ""
+        kind = " (view)" if (model.meta or {}).get("cube_kind") == "view" else ""
+        print(
+            f"Imported model: {model.name}{kind}{suffix} "
+            f"({len(model.columns)} columns, {len(model.measures)} measures)"
+        )
+    for severity in ("error", "warning", "info"):
+        for issue in result.report.by_severity(severity):
+            print(f"  {severity.upper()} [{issue.category.value}/{issue.context}]: {issue.message}")
+
+
+def _write_cube_report(result, args) -> str:
+    import os
+
+    storage_base = args.storage or args.models_dir or _STORAGE_DEFAULT
+    if storage_base.endswith(".db"):
+        storage_base = os.path.dirname(storage_base) or "."
+    report_path = args.report or os.path.join(storage_base, "cube_import_report.json")
+    # Report path is an intended, user-specified CLI output location.
+    os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)  # NOSONAR(S8707)
+    with open(report_path, "w", encoding="utf-8") as fh:  # NOSONAR(S8707)
+        fh.write(result.report.model_dump_json(indent=2))
+    return report_path
+
+
+def _run_import_osi(args):
+    from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
+    from slayer.osi.parser import parse_osi_path
+    from slayer.sql import engine_factory
+
+    storage = _resolve_storage(args)
+    try:
+        documents = parse_osi_path(args.osi_path)
+    except FileNotFoundError as exc:
+        print(str(exc))
+        sys.exit(1)
+    if not documents:
+        print(f"No OSI documents found in {args.osi_path}")
+        sys.exit(1)
+
+    ds = run_sync(storage.get_datasource(args.datasource))
+    if ds is None:
+        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+        print(
+            f"Datasource '{args.datasource}' not found in {storage_path}; "
+            "a reachable datasource is required (types come from live introspection)."
+        )
+        sys.exit(1)
+
+    sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
+    converter = OsiToSlayerConverter(
+        documents=documents,
+        data_source=args.datasource,
+        sa_engine=sa_engine,
+        dialect=args.dialect,
+        target_dialect=ds.type,
+    )
+    try:
+        result = converter.convert()
+    except OsiConversionError as exc:
+        print(str(exc))
+        sys.exit(1)
+
+    for model in result.models:
+        run_sync(storage.save_model(model))
+        print(
+            f"Imported model: {model.name} "
+            f"({len(model.columns)} columns, {len(model.measures)} measures)"
+        )
+
+    if result.unconverted_metrics or result.warnings:
+        print("\nConversion report:")
+        print(result.render_report())
+
+    unconverted, dropped = result.tally()
+    print(
+        f"\nDone: {len(result.models)} models, "
+        f"{unconverted} unconverted, {dropped} dropped"
     )
 
 
@@ -1356,10 +1756,9 @@ def _run_datasources(args):
             print(f"Datasource '{args.name}' not found.")
             sys.exit(1)
         data = ds.model_dump(mode="json", exclude_none=True)
-        if "password" in data:
-            data["password"] = "********"
-        if "connection_string" in data:
-            data["connection_string"] = "********"
+        for secret_field in ("password", "connection_string", "credentials_json"):
+            if secret_field in data:
+                data[secret_field] = "********"
         print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
 
     elif args.datasources_command == "create":
@@ -1379,12 +1778,13 @@ def _run_datasources(args):
             print(f"Datasource '{args.name}' not found.")
             sys.exit(1)
         import sqlalchemy as sa
+        from slayer.sql import engine_factory
 
         try:
-            engine = sa.create_engine(ds.resolve_env_vars().get_connection_string())
+            engine = engine_factory.get_engine(ds.resolve_env_vars())
             with engine.connect() as conn:
                 conn.execute(sa.text("SELECT 1"))
-            engine.dispose()
+            # Cached engine — engine_factory owns lifecycle; don't dispose.
             print(f"OK — connected to '{args.name}' ({ds.type}).")
         except Exception as e:
             print(f"FAILED — {e}")
@@ -1428,6 +1828,22 @@ def _parse_connection_string(url: str) -> tuple[str, str]:
                 f"Cannot derive a name from '{url}': empty filename. Pass --name explicitly."
             )
         return ds_type, stem
+
+    # DEV-1551: Snowflake connection_name sentinel URL has no path segment —
+    # all routing lives in the query string + the TOML profile. Use the
+    # connection_name itself as the derived datasource name fallback so
+    # ``slayer datasources create "snowflake://?connection_name=default"``
+    # works without --name.
+    if ds_type == "snowflake":
+        connection_name = ""
+        if parsed.query:
+            from urllib.parse import parse_qs  # noqa: PLC0415
+            params = parse_qs(parsed.query)
+            connection_name = (params.get("connection_name") or [""])[0]
+        if connection_name:
+            return ds_type, connection_name
+        # Inline form: snowflake://user:pw@account/db/schema?warehouse=... —
+        # take the first path segment (database) like other networked dialects.
 
     # Networked: take the first non-empty path segment (Postgres/MySQL/ClickHouse all put db there).
     segments = [s for s in parsed.path.split("/") if s]
@@ -1479,7 +1895,11 @@ def _persist_ingested_models(models, storage, *, assume_yes: bool, pre_save=None
     for model in models:
         if pre_save is not None:
             pre_save(model)
-        run_sync(storage.save_model(model))
+        try:
+            run_sync(storage.save_model(model))
+        except ValueError as e:
+            print(f"Skipped {model.name}: {e}")
+            continue
         print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
 
 
@@ -1513,7 +1933,11 @@ def _run_datasources_create(args, storage):
         print("Aborted.")
         sys.exit(1)
 
-    run_sync(storage.save_datasource(ds))
+    try:
+        run_sync(storage.save_datasource(ds))
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     print(f"Created datasource '{ds.name}' ({ds.type}).")
 
     if not args.ingest:
@@ -1581,7 +2005,11 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
         print("Aborted.")
         sys.exit(1)
 
-    run_sync(storage.save_datasource(ds))
+    try:
+        run_sync(storage.save_datasource(ds))
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     print(f"Created datasource '{ds.name}' (duckdb).")
 
     if not args.ingest:
@@ -1651,6 +2079,7 @@ def _run_memory_save(args, service):
                 learning=args.learning,
                 linked_entities=linked,
                 id=getattr(args, "id", None),
+                description=getattr(args, "description", None),
             )
         )
     except (EntityResolutionError, AmbiguousModelError, ValueError) as exc:

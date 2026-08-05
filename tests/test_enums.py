@@ -10,11 +10,12 @@ from slayer.core.enums import (
 
 
 class TestDataTypeShape:
-    """The new enum has exactly TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP."""
+    """The enum has exactly TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP —
+    plus the explicit opaque marker UNKNOWN."""
 
     def test_exact_member_set(self) -> None:
         assert {m.name for m in DataType} == {
-            "TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP",
+            "TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "UNKNOWN",
         }
 
     def test_no_legacy_string_member(self) -> None:
@@ -46,11 +47,32 @@ class TestDataTypeValuesMatchSqlglot:
 
     @pytest.mark.parametrize(
         "name",
-        ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP"],
+        ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "UNKNOWN"],
     )
     def test_value_equals_sqlglot_name(self, name: str) -> None:
         assert getattr(DataType, name).value == name
         assert exp.DataType.Type(getattr(DataType, name).value).name == name
+
+
+class TestDataTypeIsOpaque:
+    """``is_opaque`` is the single semantic hook for "stored + displayed, but
+    not operable on" — consumers must not compare against UNKNOWN directly."""
+
+    def test_unknown_is_opaque(self) -> None:
+        assert DataType.UNKNOWN.is_opaque is True
+
+    @pytest.mark.parametrize(
+        "dt",
+        [m for m in DataType if m is not DataType.UNKNOWN],
+        ids=lambda m: m.name,
+    )
+    def test_every_other_member_is_not_opaque(self, dt: DataType) -> None:
+        assert dt.is_opaque is False
+
+    def test_unknown_has_no_default_aggregations(self) -> None:
+        # An opaque column can't be aggregated at all, so it must not appear
+        # in the type-default eligibility table.
+        assert DataType.UNKNOWN not in DEFAULT_AGGREGATIONS_BY_TYPE
 
 
 class TestDefaultAggregationsByType:
@@ -62,9 +84,11 @@ class TestDefaultAggregationsByType:
         assert "avg" in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INT]
 
     def test_text_set_unchanged(self) -> None:
-        # Mirror of the old STRING set.
+        # Mirror of the old STRING set, plus DEV-1595's count_distinct_approx
+        # (eligible wherever count_distinct is — see DEFAULT_AGGREGATIONS_BY_TYPE).
         assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.TEXT] == frozenset({
-            "count", "count_distinct", "first", "last", "min", "max",
+            "count", "count_distinct", "count_distinct_approx",
+            "first", "last", "min", "max",
         })
 
     def test_no_pseudo_type_keys(self) -> None:

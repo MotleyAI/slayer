@@ -66,6 +66,15 @@ client.query_sync([
 
 # Run-by-name (query-backed model)
 client.query_sync("rev_by_region")
+
+# Raw rows — opt out of the dim-only auto-dedup. Per-stage in DAG queries.
+client.query_sync({
+    "source_model": "orders",
+    "dimensions": ["status", "amount"],
+    "filters": ["amount > 100"],
+    "limit": 100,
+    "distinct_dimension_values": False,
+})
 ```
 
 ### Other Methods
@@ -86,6 +95,98 @@ datasources = client.list_datasources()
 # Create a datasource
 client.create_datasource({"name": "mydb", "type": "postgres", ...})
 ```
+
+### Inspect
+
+`inspect` / `inspect_sync` is a point lookup (DEV-1588): the rendered detail for **exactly one** entity by `reference` + required `entity_type`. No fusion / ranking / bundled memories — use `search` for an entity *in context*. Same arguments as the MCP `inspect` tool and `POST /inspect`; returns the rendered string. **DEV-1612:** `reference` also accepts a **list** — a homogeneous-kind batch (one `entity_type` for every id), returning one block per id in input order with per-id error isolation. **DEV-1667:** `reference=None` (or `[]`) is the **collection** view — lists the whole kind (`model` grouped by datasource, or `datasource`); other kinds raise. Subsumes `models_summary` / `list_datasources`.
+
+```python
+# Compact default: schema skeleton for a model (column / measure / aggregation
+# names + joins, zero DB calls); description-only for the other kinds.
+print(client.inspect_sync(reference="mydb.orders", entity_type="model"))
+
+# Collection: all models grouped by datasource (one terse line per model).
+print(client.inspect_sync(reference=None, entity_type="model"))
+
+# Full render of one column (compact=False); join paths resolve to the owner.
+print(client.inspect_sync(
+    reference="mydb.orders.customers.region", entity_type="column",
+    compact=False,
+))
+
+# Batch: several same-kind columns in one round-trip (DEV-1612).
+print(client.inspect_sync(
+    reference=["mydb.orders.amount", "mydb.orders.customer_id"],
+    entity_type="column", compact=False,
+))
+
+# async form:  await client.inspect(reference="mydb.orders", entity_type="model")
+```
+
+`entity_type` is required (`datasource` / `model` / `column` / `measure` / `aggregation` / `memory`) and asserts the resolved kind. The model-only `num_rows` / `show_sql` / `sections` apply for `entity_type="model"`; `descriptions_max_chars` applies to every kind. `format="json"` returns a JSON string instead of Markdown.
+
+### Memories + Semantic Search
+
+`SlayerClient` exposes the same single retrieval surface as MCP / REST. All three are async (`run_sync` wraps them for synchronous use); local mode (`storage=`) goes through `SearchService` / `MemoryService` directly, remote mode (`url=`) POSTs to `/search` and `/memories`. See [Search](../concepts/search.md) and [Memories](../concepts/memories.md).
+
+```python
+from slayer.async_utils import run_sync
+
+# Save a learning
+run_sync(client.save_memory(
+    learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned",
+    linked_entities=["mydb.orders.is_returned"],
+    id="kb.returns.null-handling",   # optional; auto-allocated if omitted
+))
+
+# Save a query-bearing memory — pass a SlayerQuery / dict for linked_entities
+run_sync(client.save_memory(
+    learning="Top customers by lifetime spend",
+    linked_entities={
+        "source_model": "orders",
+        "measures": [{"formula": "amount:sum", "name": "lifetime_spend"}],
+        "dimensions": ["customers.name"],
+        "order": [{"column": "lifetime_spend", "direction": "desc"}],
+        "limit": 5,
+    },
+    id="kb.top-customers",
+))
+
+# Search
+resp = run_sync(client.search(
+    question="What should I know before comparing Brooklyn revenue to other stores?",
+    max_results=10,
+))
+
+for hit in resp.results:
+    if hit.kind == "memory":
+        kind = "example_query" if hit.query is not None else "learning"
+        print(f"[{kind}] {hit.id} score={hit.score:.3f}  {hit.text[:80]}")
+    else:
+        print(f"[{hit.kind}] {hit.id} score={hit.score:.3f}")
+
+# Forget by id (cascade-strips memory:<id> refs from other memories)
+run_sync(client.forget_memory("kb.returns.null-handling"))
+```
+
+`client.search` signature (keyword-only):
+
+```python
+async def search(
+    self,
+    *,
+    entities: Optional[List[str]] = None,
+    query: Optional[Union[SlayerQuery, Dict[str, Any]]] = None,
+    question: Optional[str] = None,
+    datasource: Optional[str] = None,
+    max_results: int = 10,
+    cypher_filter: Optional[str] = None,
+) -> SearchResponse: ...
+```
+
+`cypher_filter` accepts full openCypher when the `advanced_search` extra is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges; mutation clauses rejected). Without the extra, only the naive form `MATCH (n:Label1:Label2…) RETURN n.id AS id` is accepted as a label/kind filter — anything richer raises with an install hint.
+
+`SearchResponse` carries a single flat ranked list. Each `SearchHit` has `kind` (`"memory"` / `"datasource"` / `"model"` / `"column"` / `"measure"` / `"aggregation"`), `id`, `score`, `text`, `matched_entities`, and `query` (the attached `SlayerQuery` for query-bearing memories, else `None`). Unresolved input tokens land in `SearchResponse.warnings` instead of raising. Column hits include the structured `sampled_values` snapshot (top 50 by frequency, JSON-encoded; overflow columns are marked `50+ distinct` in the text snapshot); stale column profiles are refreshed lazily inside `search()`.
 
 ## Direct Engine Access
 

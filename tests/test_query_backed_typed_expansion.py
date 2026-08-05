@@ -13,7 +13,9 @@ behavioural breaks it INTENDS:
 * Shared ``expand_query_backed_models_in_bundle`` helper handles nested
   query-backed join targets, query-backed stage sources, and the root
   ``ModelExtension`` overlay re-apply (decision F).
-* ``get_column_types`` does not call ``SQLGenerator.generate(enriched=...)``.
+* ``get_column_types`` renders its probe through ``generate_planned_stages``
+  (DEV-1703: was "does not call ``SQLGenerator.generate(enriched=...)``";
+  that entry point no longer exists, so the positive form is what is pinned).
 * The two ContextVars (``_join_target_resolving_var`` /
   ``_forbidden_sibling_refs_var``) are NEVER touched by the migrated path.
 """
@@ -22,11 +24,12 @@ from __future__ import annotations
 import os
 import sqlite3
 import tempfile
-from typing import Tuple
+from typing import List, Tuple
 from unittest.mock import patch
 
 import pytest
 
+import slayer.engine.query_engine as query_engine_module
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
@@ -581,7 +584,7 @@ class TestSourceModelOriginDropped:
 
 
 # ---------------------------------------------------------------------------
-# get_column_types: NO legacy SQLGenerator.generate(enriched=) calls
+# get_column_types: renders through the typed generate_planned_stages
 # ---------------------------------------------------------------------------
 
 
@@ -642,10 +645,19 @@ class TestGetColumnTypesTypedPipeline:
         # produces — typically "number" for SQLite.
         assert types["amount_sum"], types["amount_sum"]
 
-    async def test_get_column_types_makes_zero_legacy_generate_calls(self) -> None:
-        """Patch ``SQLGenerator.generate`` and assert zero calls during
-        ``get_column_types``. Stage B's migration replaces the legacy probe
-        path with ``plan_stages + generate_planned_stages``.
+    async def test_get_column_types_renders_via_generate_planned_stages(self) -> None:
+        """Spy on ``generate_planned_stages`` and assert the query-backed
+        probe path renders through it.
+
+        (Was ``test_get_column_types_makes_zero_legacy_generate_calls``,
+        which patched ``SQLGenerator.generate`` with an
+        ``AssertionError`` side effect to prove the legacy probe path was
+        never taken. DEV-1703 deletes that entry point, so the negative
+        form is unpatchable — ``patch.object`` has no attribute left to
+        replace — and vacuous. Stage B's migration replaced the legacy
+        probe path with ``plan_stages + generate_planned_stages``, so the
+        positive half of the same contract is pinned instead: the probe
+        for a query-backed model goes through the planned-stage renderer.)
         """
         # Save a real query-backed model so the prelude branch runs too.
         m = SlayerModel(
@@ -660,28 +672,29 @@ class TestGetColumnTypesTypedPipeline:
         engine, tmp = await _engine()
         try:
             await engine.save_model(m)
-            from slayer.sql.generator import SQLGenerator
+            planned_calls: List[str] = []
+            original_generate = query_engine_module.generate_planned_stages
+
+            def _wrapper(*args, **kwargs):
+                sql = original_generate(*args, **kwargs)
+                planned_calls.append(sql)
+                return sql
 
             with patch.object(
-                SQLGenerator, "generate", autospec=True,
-                side_effect=AssertionError(
-                    "Stage B: get_column_types must not call legacy "
-                    "SQLGenerator.generate(enriched=...)."
-                ),
+                query_engine_module, "generate_planned_stages", _wrapper,
             ):
                 # The call may fail at the SQL-execute step (we don't have
-                # a real backing table), but the assertion is about the
-                # generate-path: if we got past the planned-render and the
-                # error comes from the SQL probe, that's fine.
+                # a real backing table); the assertion is about the
+                # render path, which runs before the probe executes.
                 try:
                     await engine.get_column_types("qb_for_types")
-                except AssertionError:
-                    raise
-                except Exception:
-                    # Probe-execute failure is expected (no real DB row);
-                    # the SQLGenerator.generate patch did not fire, so we
-                    # passed.
+                except Exception:  # noqa: BLE001 — probe-execute failure is expected
                     pass
+            assert planned_calls, (
+                "get_column_types must render the query-backed probe through "
+                "generate_planned_stages"
+            )
+            assert "SELECT" in planned_calls[0].upper(), planned_calls[0]
         finally:
             tmp.cleanup()
 
@@ -691,111 +704,14 @@ class TestGetColumnTypesTypedPipeline:
 # ---------------------------------------------------------------------------
 
 
-class _TrackingContextVar:
-    """Drop-in replacement for ``contextvars.ContextVar`` that records every
-    ``.set`` / ``.get`` / ``.reset`` call to a list. Used to assert the
-    migrated Stage B paths never touch the legacy ContextVars.
+# DEV-1485 Stage D: ``_TrackingContextVar`` + ``TestContextVarSafety`` were
+# deleted here. They pinned that the migrated path never set or read the two
+# legacy ContextVars (``_join_target_resolving_var`` /
+# ``_forbidden_sibling_refs_var``) while the legacy query-backed wrap still
+# used them. Both ContextVars are now gone with the legacy enrichment stack,
+# so there is no longer anything the migrated path could touch -- the
+# property is structural, not a behaviour needing a regression guard.
 
-    Inherits the read-only behaviour of real ``ContextVar.set`` by simply
-    tracking the call and storing the value; the migrated path does not
-    rely on actual ContextVar semantics so a no-op tracker suffices.
-    """
-
-    def __init__(self, name: str, *, default=None) -> None:
-        self.name = name
-        self._value = default
-        self._default = default
-        self.set_calls: list = []
-        self.get_calls: int = 0
-
-    def set(self, value):
-        self.set_calls.append(value)
-        prev, self._value = self._value, value
-        # Return a sentinel object that ``reset(token)`` can accept.
-        return ("token", prev)
-
-    def get(self, *args):
-        self.get_calls += 1
-        if self._value is None and args:
-            return args[0]
-        return self._value
-
-    def reset(self, token) -> None:
-        if token[0] == "token":
-            self._value = token[1]
-
-
-class TestContextVarSafety:
-    async def test_expand_query_backed_model_does_not_touch_contextvars(
-        self,
-    ) -> None:
-        """Migrated ``_expand_query_backed_model`` MUST NOT set / get the
-        two legacy ContextVars. They still exist for ``the legacy query-backed wrap``
-        until Stage D; this test pins that the migrated path is independent.
-        """
-        from slayer.engine import query_engine as qe
-
-        tracker_a = _TrackingContextVar("_join_target_resolving", default=None)
-        tracker_b = _TrackingContextVar("_forbidden_sibling_refs", default=None)
-
-        # Multi-stage with named non-final stages exercises the legacy
-        # ``_scope_named_queries_to_prior`` + ``_forbidden_sibling_refs_var``
-        # set path (and the engine's ``_join_target_resolving_var`` when a
-        # query-backed model is used as a join target).
-        kpi_qb = SlayerModel(
-            name="kpi_for_join",
-            data_source="ds",
-            source_queries=[SlayerQuery(
-                source_model="orders",
-                measures=[{"formula": "*:count"}],
-                dimensions=["customer_id"],
-            )],
-        )
-        m = SlayerModel(
-            name="qb_multistage",
-            data_source="ds",
-            source_queries=[
-                SlayerQuery(
-                    name="kpi",
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum"}],
-                    dimensions=["status"],
-                ),
-                SlayerQuery(
-                    source_model={
-                        "source_name": "orders",
-                        "joins": [{
-                            "target_model": "kpi_for_join",
-                            "join_pairs": [["customer_id", "customer_id"]],
-                        }],
-                    },
-                    dimensions=["status"],
-                ),
-            ],
-        )
-        engine, tmp = await _engine(kpi_qb)
-        try:
-            with patch.object(qe, "_join_target_resolving_var", tracker_a), \
-                 patch.object(qe, "_forbidden_sibling_refs_var", tracker_b):
-                await engine.save_model(m)
-            assert not tracker_a.set_calls, (
-                f"_join_target_resolving_var.set called by migrated path: "
-                f"{tracker_a.set_calls!r}"
-            )
-            assert not tracker_b.set_calls, (
-                f"_forbidden_sibling_refs_var.set called by migrated path: "
-                f"{tracker_b.set_calls!r}"
-            )
-            assert tracker_a.get_calls == 0, (
-                f"_join_target_resolving_var.get called by migrated path: "
-                f"{tracker_a.get_calls}"
-            )
-            assert tracker_b.get_calls == 0, (
-                f"_forbidden_sibling_refs_var.get called by migrated path: "
-                f"{tracker_b.get_calls}"
-            )
-        finally:
-            tmp.cleanup()
 
 
 # ---------------------------------------------------------------------------

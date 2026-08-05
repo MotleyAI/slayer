@@ -4,7 +4,6 @@ import decimal
 import math
 import numbers
 from enum import Enum
-from typing import Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -28,12 +27,12 @@ class NumberFormat(BaseModel):
         default=NumberFormatType.FLOAT,
         description="The format type for number display",
     )
-    precision: Optional[int] = Field(
+    precision: int | None = Field(
         default=None,
         ge=0,
         description="Number of decimal places to show",
     )
-    symbol: Optional[str] = Field(
+    symbol: str | None = Field(
         default=None,
         description="Currency symbol (defaults to $ for CURRENCY type, must be None otherwise)",
     )
@@ -51,8 +50,8 @@ class NumberFormat(BaseModel):
 def _format_with_notation(
     value: float,
     default_precision: int,
-    explicit_precision: Optional[int] = None,
-    max_precision: Optional[int] = None,
+    explicit_precision: int | None = None,
+    max_precision: int | None = None,
 ) -> tuple[float, str, int]:
     """Core formatting logic with K/M notation and dynamic precision calculation.
 

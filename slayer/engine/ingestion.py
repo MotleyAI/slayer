@@ -11,16 +11,22 @@ import asyncio
 import logging
 import sys
 from collections import defaultdict, deque
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, TextIO, Tuple
+from typing import TYPE_CHECKING, Any, TextIO
 
 import sqlalchemy as sa
+import sqlalchemy.dialects.mssql as _sqla_mssql
 from pydantic import BaseModel, Field
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.engine.profiling import refresh_all_table_backed_sampled
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.introspect_utils import (  # noqa: F401  (re-exported for back-compat)
+    _FLOAT_LIKE_INFO_SCHEMA_TYPES,
+    _INFO_SCHEMA_TYPE_MAP,
+    _get_columns_fallback,
+    _parse_info_schema_is_float,
+    _safe_get_columns,
+)
 from slayer.core.errors import AmbiguousModelError, EntityResolutionError
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.memories.resolver import (
@@ -31,16 +37,49 @@ from slayer.storage.base import StorageBackend
 
 if TYPE_CHECKING:
     # The runtime import lives inside ``_refresh_datasource_embeddings``
-    # so the embeddings module stays off the cold-start import graph
-    # when the optional extra isn't installed.
-    from slayer.embeddings.service import EmbeddingService
+    # so the search module stays off the cold-start import graph
+    # when the optional embedding extra isn't installed.
+    from slayer.search.service import SearchService
 
 
 logger = logging.getLogger(__name__)
 
 # Module-level dedup set for unrecognized SA type warnings (see
 # _sa_type_to_data_type). Keyed by upper-cased class name.
-_logged_unmapped_sa_types: Set[str] = set()
+_logged_unmapped_sa_types: set[str] = set()
+
+# Database types with no usable equality operator — grouping, DISTINCT or
+# aggregating them fails at the database ("could not identify an equality
+# operator for type point"). These map to ``DataType.UNKNOWN``: stored and
+# displayed, never operated on. To query inside one, define a derived Column
+# whose ``sql`` is a dialect-specific expression — e.g.
+# ``Column(name="status", sql="payload->>'status'", type=TEXT)`` — which is
+# emitted into the generated SQL and groups/filters like any other column.
+#
+# Deliberately a small allow-list of known-bad types rather than "everything
+# unrecognized": comparable-but-unmapped types (uuid, jsonb, bytea, arrays,
+# inet, citext, ...) are common and must keep working as TEXT. Marking one of
+# those opaque would tell an agent that a perfectly groupable column is
+# unusable — a worse failure than the query-time error opacity exists to
+# prevent, which the Data Profile fallback already degrades gracefully.
+# Membership verified against the Postgres catalog: a type is groupable iff it
+# has a *default* btree/hash operator class (that is exactly what GROUP BY and
+# DISTINCT require) —
+#   SELECT EXISTS (SELECT 1 FROM pg_opclass oc JOIN pg_am am ON am.oid = oc.opcmethod
+#                  WHERE oc.opcintype = t.oid AND am.amname IN ('btree','hash')
+#                    AND oc.opcdefault)
+# Note ``tsvector`` / ``tsquery`` ARE groupable and must not be listed here,
+# and ``jsonb`` is groupable while ``json`` is not.
+_OPAQUE_SA_TYPE_NAMES = frozenset({
+    "JSON",  # ``jsonb`` is groupable and deliberately absent
+    "XML",
+    "TXID_SNAPSHOT",
+    # Geometric / spatial — none have a default btree/hash opclass
+    "POINT", "LINE", "LSEG", "BOX", "PATH", "POLYGON", "CIRCLE",
+    "GEOMETRY", "GEOGRAPHY", "RASTER",
+    # Range types
+    "INT4RANGE", "INT8RANGE", "NUMRANGE", "TSRANGE", "TSTZRANGE", "DATERANGE",
+})
 
 # Map SQLAlchemy types to SLayer DataTypes.
 # DEV-1361: integer family → INT, floating family → DOUBLE, NUMERIC/DECIMAL
@@ -70,11 +109,16 @@ _SA_TYPE_MAP = {
     # Boolean
     "BOOLEAN": DataType.BOOLEAN,
     "BOOL": DataType.BOOLEAN,
+    "BIT": DataType.BOOLEAN,  # T-SQL (SQL Server) boolean type
     # Temporal
     "TIMESTAMP": DataType.TIMESTAMP,
     "DATETIME": DataType.TIMESTAMP,
     "TIMESTAMP WITHOUT TIME ZONE": DataType.TIMESTAMP,
     "TIMESTAMP WITH TIME ZONE": DataType.TIMESTAMP,
+    # Snowflake (DEV-1551) — three timestamp variants by timezone semantics.
+    "TIMESTAMP_NTZ": DataType.TIMESTAMP,
+    "TIMESTAMP_LTZ": DataType.TIMESTAMP,
+    "TIMESTAMP_TZ": DataType.TIMESTAMP,
     "DATE": DataType.DATE,
     "TIME": DataType.TIMESTAMP,
     # ClickHouse adapter integer types → INT
@@ -95,6 +139,18 @@ _SA_TYPE_MAP = {
     "FLOAT64": DataType.DOUBLE,
     "DATETIME64": DataType.TIMESTAMP,
     "DATE32": DataType.DATE,
+    # T-SQL (SQL Server) types; TINYINT also covers MySQL/MariaDB
+    "TINYINT": DataType.INT,
+    "DATETIME2": DataType.TIMESTAMP,
+    "SMALLDATETIME": DataType.TIMESTAMP,
+    "DATETIMEOFFSET": DataType.TIMESTAMP,
+    "NVARCHAR": DataType.TEXT,
+    "NCHAR": DataType.TEXT,
+    "NTEXT": DataType.TEXT,
+    "MONEY": DataType.DOUBLE,
+    "SMALLMONEY": DataType.DOUBLE,
+    # SQL Server rowversion — 8-byte binary counter, not temporal
+    "ROWVERSION": DataType.TEXT,
 }
 
 _NUMERIC_TYPES = {DataType.INT, DataType.DOUBLE}
@@ -111,6 +167,9 @@ _FLOAT_LIKE_SA_TYPES = frozenset(
         # ClickHouse adapter (clickhouse-sqlalchemy)
         "FLOAT32",
         "FLOAT64",
+        # T-SQL monetary types (fixed-precision decimal, no integer rounding)
+        "MONEY",
+        "SMALLMONEY",
     }
 )
 
@@ -122,39 +181,9 @@ _CLICKHOUSE_WRAPPER_MAX_DEPTH = 8
 # NUMERIC/DECIMAL type names — float-like only when scale > 0
 _NUMERIC_DECIMAL_TYPES = frozenset({"NUMERIC", "DECIMAL"})
 
-# Float-like INFORMATION_SCHEMA type names
-_FLOAT_LIKE_INFO_SCHEMA_TYPES = frozenset(
-    {
-        "FLOAT",
-        "DOUBLE",
-        "REAL",
-    }
-)
-
-# Map INFORMATION_SCHEMA type names to SLayer DataTypes (for DuckDB fallback).
-# DEV-1361: integer family → INT, floating family → DOUBLE.
-_INFO_SCHEMA_TYPE_MAP = {
-    # Integer family
-    "INTEGER": DataType.INT,
-    "BIGINT": DataType.INT,
-    "SMALLINT": DataType.INT,
-    "TINYINT": DataType.INT,
-    "HUGEINT": DataType.INT,
-    # Floating family
-    "FLOAT": DataType.DOUBLE,
-    "DOUBLE": DataType.DOUBLE,
-    "REAL": DataType.DOUBLE,
-    # Strings / boolean / temporal
-    "VARCHAR": DataType.TEXT,
-    "CHAR": DataType.TEXT,
-    "TEXT": DataType.TEXT,
-    "BOOLEAN": DataType.BOOLEAN,
-    "TIMESTAMP": DataType.TIMESTAMP,
-    "TIMESTAMP WITH TIME ZONE": DataType.TIMESTAMP,
-    "DATETIME": DataType.TIMESTAMP,
-    "DATE": DataType.DATE,
-    "TIME": DataType.TIMESTAMP,
-}
+# INFORMATION_SCHEMA type maps + ``_safe_get_columns`` / ``_get_columns_fallback``
+# now live in the dependency-free ``introspect_utils`` leaf module (DEV-1578);
+# imported + re-exported at the top of this file for back-compat.
 
 
 def _is_id_column(name: str) -> bool:
@@ -184,8 +213,17 @@ def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEn
 
 def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
     sa_type = _unwrap_clickhouse_wrappers(sa_type)
+    # mssql.TIMESTAMP is SQL Server's rowversion (8-byte binary counter), not
+    # a temporal type. Its class name collides with sa.TIMESTAMP, so we must
+    # check isinstance before the generic name-based _SA_TYPE_MAP lookup.
+    if isinstance(sa_type, _sqla_mssql.TIMESTAMP):
+        return DataType.TEXT
     type_name = type(sa_type).__name__.upper()
     type_str = str(sa_type).split("(")[0].upper().strip()
+    # Types with no equality operator are opaque: querying them fails at the
+    # database, so declare that explicitly instead of pretending they're TEXT.
+    if type_name in _OPAQUE_SA_TYPE_NAMES or type_str in _OPAQUE_SA_TYPE_NAMES:
+        return DataType.UNKNOWN
     # DEV-1361: NUMERIC/DECIMAL with scale=0 are integer-shaped → INT.
     # Anything float-like (scale>0 or unknown) → DOUBLE.
     if type_name in _NUMERIC_DECIMAL_TYPES or type_str in _NUMERIC_DECIMAL_TYPES:
@@ -198,11 +236,32 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
         _logged_unmapped_sa_types.add(type_name)
         logger.warning(
             "Unrecognized SQLAlchemy type %r (str=%r); falling back to "
-            "DataType.TEXT. Consider adding to _SA_TYPE_MAP.",
+            "DataType.TEXT. Most unmapped types (uuid, jsonb, bytea, arrays) "
+            "are comparable and work as TEXT; add genuinely non-comparable "
+            "ones to _OPAQUE_SA_TYPE_NAMES and the rest to _SA_TYPE_MAP.",
             type_name,
             str(sa_type),
         )
     return DataType.TEXT
+
+
+def _raw_db_type_str(sa_type: sa.types.TypeEngine) -> str | None:
+    """Best-effort raw database type string for ``Column.db_type``.
+
+    ``str(sa_type)`` renders the dialect-level spelling (``"point"``,
+    ``"jsonb"``, ``"geometry(Point,4326)"``). Some third-party types raise
+    when compiled without a dialect, so fall back to the SA class name and
+    finally to ``None`` — ``db_type`` is metadata, never worth aborting an
+    ingest over.
+    """
+    try:
+        text = str(sa_type).strip()
+    except Exception:
+        text = ""
+    if text:
+        return text
+    name = type(sa_type).__name__
+    return name or None
 
 
 def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
@@ -242,9 +301,9 @@ class RollupGraphError(Exception):
 def _get_fk_relationships(
     inspector: sa.engine.Inspector,
     table_name: str,
-    schema: Optional[str],
-    table_set: Set[str],
-) -> List[tuple]:
+    schema: str | None,
+    table_set: set[str],
+) -> list[tuple]:
     """Get FK relationships for a table, filtered to tables in table_set.
 
     Returns list of (source_column, target_table, target_column).
@@ -264,12 +323,12 @@ def _get_fk_relationships(
 
 def _build_fk_graph(
     inspector: sa.engine.Inspector,
-    table_names: List[str],
-    schema: Optional[str],
-) -> Dict[str, Set[str]]:
+    table_names: list[str],
+    schema: str | None,
+) -> dict[str, set[str]]:
     """Build directed graph: graph[table] = set of tables it references via FK."""
     table_set = set(table_names)
-    graph: Dict[str, Set[str]] = defaultdict(set)
+    graph: dict[str, set[str]] = defaultdict(set)
     for table_name in table_names:
         for _, ref_table, _ in _get_fk_relationships(
             inspector=inspector,
@@ -281,12 +340,12 @@ def _build_fk_graph(
     return dict(graph)
 
 
-def _check_acyclic(graph: Dict[str, Set[str]]) -> None:
+def _check_acyclic(graph: dict[str, set[str]]) -> None:
     """Check that FK graph is a DAG. Raises RollupGraphError if cycles found."""
-    visited: Set[str] = set()
-    rec_stack: Set[str] = set()
+    visited: set[str] = set()
+    rec_stack: set[str] = set()
 
-    def dfs(node: str, path: List[str]) -> None:
+    def dfs(node: str, path: list[str]) -> None:
         visited.add(node)
         rec_stack.add(node)
         path.append(node)
@@ -300,7 +359,7 @@ def _check_acyclic(graph: Dict[str, Set[str]]) -> None:
         path.pop()
         rec_stack.remove(node)
 
-    all_nodes: Set[str] = set(graph.keys())
+    all_nodes: set[str] = set(graph.keys())
     for neighbors in graph.values():
         all_nodes.update(neighbors)
     for node in all_nodes:
@@ -308,9 +367,9 @@ def _check_acyclic(graph: Dict[str, Set[str]]) -> None:
             dfs(node, [])
 
 
-def _compute_transitive_closure(graph: Dict[str, Set[str]], source: str) -> Set[str]:
+def _compute_transitive_closure(graph: dict[str, set[str]], source: str) -> set[str]:
     """BFS to find all tables transitively reachable from source (excluding source)."""
-    reachable: Set[str] = set()
+    reachable: set[str] = set()
     queue = deque([source])
     visited = {source}
     while queue:
@@ -331,10 +390,10 @@ def _compute_transitive_closure(graph: Dict[str, Set[str]], source: str) -> Set[
 def _generate_joins(
     inspector: sa.engine.Inspector,
     source_table: str,
-    referenced_tables: Set[str],
-    schema: Optional[str],
-    table_set: Set[str],
-) -> List[ModelJoin]:
+    referenced_tables: set[str],
+    schema: str | None,
+    table_set: set[str],
+) -> list[ModelJoin]:
     """Generate direct ModelJoin objects from the source table's own FK relationships.
 
     Only emits joins for FKs defined on ``source_table`` itself — multi-hop
@@ -349,7 +408,7 @@ def _generate_joins(
     )
 
     joins = []
-    seen_signatures: Set[Tuple[str, str, str]] = set()
+    seen_signatures: set[tuple[str, str, str]] = set()
     for src_col, ref_table, tgt_col in fk_rels:
         if ref_table not in referenced_tables:
             continue
@@ -373,75 +432,11 @@ def _generate_joins(
 # ---------------------------------------------------------------------------
 
 
-def _parse_info_schema_is_float(data_type_str: str) -> bool:
-    """Determine if a NUMERIC/DECIMAL info-schema type string is float-like.
-
-    Parses scale from strings like "DECIMAL(10,2)" or "NUMERIC(10,0)".
-    Scale > 0 means float-like; scale == 0 means integer-like; no scale
-    info defaults to float-like.
-    """
-    if "(" in data_type_str and "," in data_type_str:
-        try:
-            scale_str = data_type_str.split(",")[-1].rstrip(")").strip()
-            return int(scale_str) > 0
-        except (ValueError, IndexError):
-            return True  # Can't parse scale, default to float
-    return True  # No precision/scale info, default to float
-
-
-def _get_columns_fallback(
-    sa_engine: sa.Engine,
-    table_name: str,
-    schema: Optional[str],
-) -> List[Dict]:
-    """Get columns via INFORMATION_SCHEMA when Inspector.get_columns() fails."""
-    if schema:
-        sql = (
-            "SELECT column_name, data_type "
-            "FROM information_schema.columns "
-            "WHERE table_name = :table_name "
-            "AND table_schema = :schema "
-            "ORDER BY ordinal_position"
-        )
-        params = {"table_name": table_name, "schema": schema}
-    else:
-        sql = (
-            "SELECT column_name, data_type "
-            "FROM information_schema.columns "
-            "WHERE table_name = :table_name "
-            "ORDER BY ordinal_position"
-        )
-        params = {"table_name": table_name}
-    with sa_engine.connect() as conn:
-        rows = conn.execute(sa.text(sql), params).fetchall()
-    result = []
-    for col_name, data_type_str in rows:
-        # Strip precision info (e.g. "DECIMAL(10,2)" → "DECIMAL")
-        base_type = data_type_str.split("(")[0].upper().strip()
-        sa_type = _INFO_SCHEMA_TYPE_MAP.get(base_type)
-        is_float = base_type in _FLOAT_LIKE_INFO_SCHEMA_TYPES
-        # NUMERIC/DECIMAL: check scale to decide float vs integer
-        if base_type in ("NUMERIC", "DECIMAL") or (
-            sa_type is None and ("DECIMAL" in base_type or "NUMERIC" in base_type)
-        ):
-            sa_type = sa_type or DataType.DOUBLE
-            is_float = _parse_info_schema_is_float(data_type_str)
-        elif sa_type is None and "INT" in base_type:
-            # DEV-1361: integer-shaped types should narrow to INT, not the
-            # coarse DOUBLE fallback (e.g. MEDIUMINT, TINYINT variants not
-            # otherwise mapped).
-            sa_type = DataType.INT
-        elif sa_type is None and ("CHAR" in base_type or "TEXT" in base_type):
-            sa_type = DataType.TEXT
-        result.append({"name": col_name, "type": sa_type or DataType.TEXT, "is_float": is_float})
-    return result
-
-
 def _get_pk_constraint_fallback(
     sa_engine: sa.Engine,
     table_name: str,
-    schema: Optional[str],
-) -> Dict:
+    schema: str | None,
+) -> dict:
     """Get PK constraint via INFORMATION_SCHEMA when Inspector.get_pk_constraint() fails."""
     if schema:
         sql = (
@@ -471,25 +466,12 @@ def _get_pk_constraint_fallback(
     return {"constrained_columns": [row[0] for row in rows]}
 
 
-def _safe_get_columns(
-    inspector: sa.engine.Inspector,
-    sa_engine: sa.Engine,
-    table_name: str,
-    schema: Optional[str],
-) -> List[Dict]:
-    """Get columns, falling back to INFORMATION_SCHEMA on failure."""
-    try:
-        return inspector.get_columns(table_name, schema=schema)
-    except Exception:
-        return _get_columns_fallback(sa_engine, table_name, schema)
-
-
 def _safe_get_pk_constraint(
     inspector: sa.engine.Inspector,
     sa_engine: sa.Engine,
     table_name: str,
-    schema: Optional[str],
-) -> Dict:
+    schema: str | None,
+) -> dict:
     """Get PK constraint, falling back to INFORMATION_SCHEMA on failure.
 
     SQLite has no information_schema views; its stock inspector reads
@@ -515,15 +497,20 @@ def _introspect_query_columns_via_inspector(
     sa_engine: sa.Engine,
     inspector: sa.engine.Inspector,
     table_name: str,
-    schema: Optional[str],
-    rollup_sql: Optional[str],
-    referenced_tables: Set[str],
-    fk_columns_by_table: Dict[str, Set[str]],
-    joins: Optional[List[ModelJoin]] = None,
-) -> List[tuple]:
+    schema: str | None,
+    rollup_sql: str | None,
+    referenced_tables: set[str],
+    fk_columns_by_table: dict[str, set[str]],
+    joins: list[ModelJoin] | None = None,
+) -> list[tuple]:
     """Introspect columns from a rollup query or plain table.
 
-    Returns list of (column_name, DataType, is_primary_key, is_float) tuples.
+    Returns list of ``(column_name, DataType, is_primary_key, is_float,
+    db_type)`` tuples. ``db_type`` is the raw database type string and is only
+    populated when ``DataType`` came out opaque (``UNKNOWN``) — for mapped
+    types the declared ``DataType`` already carries everything, so leaving it
+    ``None`` keeps stored models and golden tests clean.
+
     For rollup queries, uses per-table inspector data since LIMIT 0
     type inference can be unreliable across databases.
     """
@@ -537,18 +524,21 @@ def _introspect_query_columns_via_inspector(
     for col in columns:
         col_name = col["name"]
         col_type = col["type"]
+        db_type: str | None = None
         if isinstance(col_type, DataType):
             data_type = col_type
             is_float = col.get("is_float", False)
         else:
             data_type = _sa_type_to_data_type(col_type)
             is_float = _sa_type_is_float(col_type)
+            if data_type.is_opaque:
+                db_type = _raw_db_type_str(col_type)
         is_pk = col_name in pk_columns
-        results.append((col_name, data_type, is_pk, is_float))
+        results.append((col_name, data_type, is_pk, is_float, db_type))
 
     # Build list of (ref_table, dotted_path) from joins — supports diamond joins
     # where the same table appears via multiple paths
-    table_path_pairs: List[tuple] = []
+    table_path_pairs: list[tuple] = []
     if joins:
         for mj in joins:
             if mj.join_pairs and "." in mj.join_pairs[0][0]:
@@ -574,14 +564,17 @@ def _introspect_query_columns_via_inspector(
                 continue
             alias = f"{path}.{col['name']}"
             col_type = col["type"]
+            ref_db_type: str | None = None
             if isinstance(col_type, DataType):
                 data_type = col_type
                 is_float = col.get("is_float", False)
             else:
                 data_type = _sa_type_to_data_type(col_type)
                 is_float = _sa_type_is_float(col_type)
+                if data_type.is_opaque:
+                    ref_db_type = _raw_db_type_str(col_type)
             is_pk = col["name"] in ref_pk_cols
-            results.append((alias, data_type, is_pk, is_float))
+            results.append((alias, data_type, is_pk, is_float, ref_db_type))
 
     return results
 
@@ -593,23 +586,25 @@ def _introspect_query_columns_via_inspector(
 
 def _columns_to_model(
     name: str,
-    columns: List[tuple],
+    columns: list[tuple],
     data_source: str,
-    sql_table: Optional[str] = None,
-    joins: Optional[List[ModelJoin]] = None,
+    sql_table: str | None = None,
+    joins: list[ModelJoin] | None = None,
 ) -> SlayerModel:
-    """Generate a SlayerModel from introspected (column_name, DataType, is_pk, is_float) tuples.
+    """Generate a SlayerModel from introspected ``(column_name, DataType,
+    is_pk, is_float, db_type)`` tuples.
 
     In v2 every Column is potentially both a dimension and a measure — what it's
     used as is decided per query. This function emits one Column per non-joined
-    column, with format inferred from the column's data type.
+    column, with format inferred from the column's data type. ``db_type`` is
+    carried through verbatim (set only for opaque ``UNKNOWN`` columns).
     """
-    cols: List[Column] = []
+    cols: list[Column] = []
 
     _INT_FORMAT = NumberFormat(type=NumberFormatType.INTEGER)
     _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
 
-    for col_name, data_type, is_pk, is_float in columns:
+    for col_name, data_type, is_pk, is_float, db_type in columns:
         # Skip joined columns — they live on the target model and are
         # resolved via the join graph at query time.
         if "." in col_name:
@@ -631,6 +626,7 @@ def _columns_to_model(
                 name=column_name,
                 sql=col_name,
                 type=data_type,
+                db_type=db_type,
                 primary_key=is_pk,
                 format=fmt,
             )
@@ -645,14 +641,92 @@ def _columns_to_model(
     )
 
 
+def _sqlite_probe_integer_columns(
+    *,
+    sa_engine: sa.Engine,
+    sql_table: str,
+    columns: list[tuple],
+) -> list[tuple]:
+    """DEV-1538: per-column SQLite affinity probe.
+
+    Walks the tuples ``(col_name, DataType, is_pk, is_float, db_type)`` produced by
+    :func:`_introspect_query_columns_via_inspector` and, for every base
+    column (alias without ``.``) that the SA inspector reported as
+    :class:`DataType.INT`, runs
+    :func:`slayer.sql.sqlite_introspect.probe_sqlite_integer_column` against
+    the actual storage classes. Mutates the tuple to the widened
+    :class:`DataType` whenever the probe disagrees with the declared
+    affinity.
+
+    No-op on non-SQLite engines.
+
+    Failure modes:
+    * Non-SQLite engine → input returned verbatim.
+    * Probe returns ``None`` (failure or saturation) → keep the SA-derived
+      INT type, leave the warning already logged by the probe in place.
+    * Joined-column alias (``"."`` in the name) → skipped; joined references
+      inherit their type from the target model's own probe pass.
+    """
+    if sa_engine.dialect.name != "sqlite":
+        return columns
+
+    from slayer.sql.sqlite_introspect import probe_sqlite_integer_column
+
+    schema, table = _parse_qualified_sql_table(sql_table)
+    out: list[tuple] = []
+    with sa_engine.connect() as conn:
+        for col_name, data_type, is_pk, is_float, db_type in columns:
+            if data_type is not DataType.INT or "." in col_name:
+                out.append((col_name, data_type, is_pk, is_float, db_type))
+                continue
+            try:
+                verdict = probe_sqlite_integer_column(
+                    conn=conn,
+                    table=table,
+                    column=col_name,
+                    schema=schema,
+                )
+            except Exception as exc:
+                # Defence-in-depth: the helper catches its own errors but a
+                # caller-level guard keeps ingest from aborting on unexpected
+                # exceptions outside the helper's scope (e.g. import-time
+                # failures on environments missing sqlite_introspect).
+                logger.warning(
+                    "probe call raised for %s.%s; keeping declared INT: %s",
+                    sql_table,
+                    col_name,
+                    exc,
+                )
+                verdict = None
+            if verdict is None or verdict is DataType.INT:
+                out.append((col_name, data_type, is_pk, is_float, db_type))
+                continue
+            new_is_float = verdict is DataType.DOUBLE
+            out.append((col_name, verdict, is_pk, new_is_float, db_type))
+    return out
+
+
+def _parse_qualified_sql_table(sql_table: str) -> tuple[str | None, str]:
+    """Split ``"schema.table"`` into ``(schema, table)`` or ``(None, table)``.
+
+    Only splits on a single dot — table/schema names containing dots are
+    out of scope for the auto-ingest path (the dotted form would never have
+    survived ``Inspector.get_table_names`` either).
+    """
+    if "." in sql_table:
+        schema, _, table = sql_table.partition(".")
+        return schema or None, table
+    return None, sql_table
+
+
 def introspect_table_to_model(
     *,
     sa_engine: sa.Engine,
     inspector: sa.engine.Inspector,
     table_name: str,
-    schema: Optional[str],
+    schema: str | None,
     data_source: str,
-    model_name: Optional[str] = None,
+    model_name: str | None = None,
 ) -> SlayerModel:
     """Introspect a single table (no FK rollup) and return a SlayerModel.
 
@@ -669,6 +743,11 @@ def introspect_table_to_model(
         fk_columns_by_table={},
     )
     sql_table = f"{schema}.{table_name}" if schema else table_name
+    columns = _sqlite_probe_integer_columns(
+        sa_engine=sa_engine,
+        sql_table=sql_table,
+        columns=columns,
+    )
     return _columns_to_model(
         name=model_name or table_name,
         columns=columns,
@@ -684,11 +763,12 @@ def introspect_table_to_model(
 
 def ingest_datasource(
     datasource: DatasourceConfig,
-    include_tables: Optional[List[str]] = None,
-    exclude_tables: Optional[List[str]] = None,
-    schema: Optional[str] = None,
-) -> List[SlayerModel]:
-    sa_engine = sa.create_engine(datasource.resolve_env_vars().get_connection_string())
+    include_tables: list[str] | None = None,
+    exclude_tables: list[str] | None = None,
+    schema: str | None = None,
+) -> list[SlayerModel]:
+    from slayer.sql import engine_factory
+    sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     inspector = sa.inspect(sa_engine)
 
     table_names = inspector.get_table_names(schema=schema)
@@ -709,7 +789,7 @@ def ingest_datasource(
         has_cycles = True
 
     # Collect FK columns per table (for excluding from rollup)
-    fk_columns_by_table: Dict[str, Set[str]] = defaultdict(set)
+    fk_columns_by_table: dict[str, set[str]] = defaultdict(set)
     for table_name in table_names:
         fks = inspector.get_foreign_keys(table_name, schema=schema)
         for fk in fks:
@@ -740,6 +820,11 @@ def ingest_datasource(
                 fk_columns_by_table=fk_columns_by_table,
                 joins=model_joins,
             )
+            columns = _sqlite_probe_integer_columns(
+                sa_engine=sa_engine,
+                sql_table=sql_table,
+                columns=columns,
+            )
             model = _columns_to_model(
                 name=table_name,
                 columns=columns,
@@ -758,6 +843,11 @@ def ingest_datasource(
                 referenced_tables=set(),
                 fk_columns_by_table=fk_columns_by_table,
             )
+            columns = _sqlite_probe_integer_columns(
+                sa_engine=sa_engine,
+                sql_table=sql_table,
+                columns=columns,
+            )
             model = _columns_to_model(
                 name=table_name,
                 columns=columns,
@@ -767,6 +857,12 @@ def ingest_datasource(
 
         models.append(model)
 
+    # ingest_datasource is a one-shot admin operation, not a hot query
+    # path. Disposing here releases the underlying connection so other
+    # consumers (notably ``duckdb.connect(file)`` in notebooks) can open
+    # the same file. The engine_factory cache will rebuild on the next
+    # call; the cost is one extra ``sa.create_engine`` per ingest, which
+    # is negligible compared to the actual schema-introspection work.
     sa_engine.dispose()
     return models
 
@@ -776,56 +872,89 @@ def ingest_datasource(
 # ---------------------------------------------------------------------------
 
 
-def _existing_join_signatures(model: SlayerModel) -> Set[Tuple[str, Tuple[Tuple[str, str], ...]]]:
+def _existing_join_signatures(model: SlayerModel) -> set[tuple[str, tuple[tuple[str, str], ...]]]:
     """Return the set of (target_model, sorted join_pair tuples) signatures
     for joins already on ``model``. Used to detect new joins.
     """
-    out: Set[Tuple[str, Tuple[Tuple[str, str], ...]]] = set()
+    out: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
     for j in model.joins:
         sig_pairs = tuple(sorted((p[0], p[1]) for p in j.join_pairs))
         out.add((j.target_model, sig_pairs))
     return out
 
 
-def _additive_merge_existing(
-    *,
-    persisted: SlayerModel,
-    fresh: SlayerModel,
-) -> Tuple[SlayerModel, List[str], List[str]]:
-    """Merge a freshly-ingested ``fresh`` model into ``persisted`` additively.
-
-    Returns ``(merged, new_column_names, new_join_target_names)``.
-
-    * Existing columns are preserved verbatim (description / label / format /
-      meta / allowed_aggregations / filter never overwritten).
-    * Live columns whose names are absent from ``persisted.columns`` are
-      appended from ``fresh.columns``.
-    * Joins with new ``(target_model, join_pairs)`` signatures are appended.
+def _is_auto_default_integer_format(fmt: NumberFormat | None) -> bool:
+    """Return True when ``fmt`` looks like the auto-ingested ``NumberFormat
+    (type=INTEGER)`` default (no custom precision / symbol set). Used by
+    DEV-1538's widening path to decide whether to flip the format alongside
+    the type; user-set custom formats are preserved verbatim.
     """
-    existing_col_names = {c.name for c in persisted.columns}
-    new_columns: List[Column] = list(persisted.columns)
-    new_column_names: List[str] = []
-    for c in fresh.columns:
-        if c.name in existing_col_names:
-            continue
-        new_columns.append(c)
-        new_column_names.append(c.name)
+    if fmt is None:
+        return False
+    if fmt.type != NumberFormatType.INTEGER:
+        return False
+    return fmt.precision is None and fmt.symbol is None
 
+
+def _format_for_widened_type(verdict: DataType) -> NumberFormat | None:
+    """Return the auto-default format for a probed widening verdict."""
+    if verdict is DataType.DOUBLE:
+        return NumberFormat(type=NumberFormatType.FLOAT)
+    return None  # TEXT clears format
+
+
+def _merge_persisted_column_with_probe(
+    *,
+    persisted_col: Column,
+    fresh_col: Column | None,
+    model_name: str,
+    sqlite_widen_enabled: bool,
+) -> tuple[Column, bool]:
+    """DEV-1538: decide whether a persisted column should be widened based
+    on a freshly-probed type, and return ``(merged_column, did_widen)``.
+
+    The widen branch only fires when ``sqlite_widen_enabled`` is True
+    (SQLite-only auto-heal), the fresh column exists, the persisted column
+    is ``DataType.INT``, and the fresh type is ``DataType.DOUBLE`` or
+    ``DataType.TEXT``. All other cases return ``persisted_col`` unchanged.
+    """
+    if not (
+        sqlite_widen_enabled
+        and fresh_col is not None
+        and persisted_col.type is DataType.INT
+        and fresh_col.type in (DataType.DOUBLE, DataType.TEXT)
+    ):
+        return persisted_col, False
+
+    updates: dict[str, Any] = {"type": fresh_col.type}
+    if _is_auto_default_integer_format(persisted_col.format):
+        updates["format"] = _format_for_widened_type(fresh_col.type)
+    else:
+        logger.info(
+            "Custom format on %s.%s preserved on SQLite probe widening "
+            "(persisted INT -> %s). Review whether the format still applies.",
+            model_name,
+            persisted_col.name,
+            fresh_col.type.value,
+        )
+    return persisted_col.model_copy(update=updates), True
+
+
+def _merge_joins_strict(
+    persisted: SlayerModel, fresh: SlayerModel,
+) -> tuple[list[ModelJoin], list[str]]:
+    """Append joins whose signature isn't already present. Raises on the
+    duplicate-target / different-pairs conflict so callers don't end up
+    with two joins pointing at the same target_model."""
     existing_join_sigs = _existing_join_signatures(persisted)
     existing_join_targets = {j.target_model for j in persisted.joins}
-    new_joins: List[ModelJoin] = list(persisted.joins)
-    new_join_targets: List[str] = []
+    new_joins: list[ModelJoin] = list(persisted.joins)
+    new_join_targets: list[str] = []
     for j in fresh.joins:
         sig = (j.target_model, tuple(sorted((p[0], p[1]) for p in j.join_pairs)))
         if sig in existing_join_sigs:
             continue
         if j.target_model in existing_join_targets:
-            # Same target_model already present with a different
-            # join_pairs signature. Downstream consumers key joins by
-            # target_model only — appending a second one would let the
-            # stale join shadow the live one and ``remove.joins=[name]``
-            # would wipe both. Surface the conflict so the user can
-            # decide instead of silently breaking.
             raise ValueError(
                 f"Model {persisted.name!r} already has a join targeting "
                 f"{j.target_model!r} with different join_pairs; the "
@@ -836,14 +965,67 @@ def _additive_merge_existing(
             )
         new_joins.append(j)
         new_join_targets.append(j.target_model)
+    return new_joins, new_join_targets
 
-    if not new_column_names and not new_join_targets:
-        return persisted, [], []
+
+def _additive_merge_existing(
+    *,
+    persisted: SlayerModel,
+    fresh: SlayerModel,
+    sqlite_widen_enabled: bool = False,
+) -> tuple[SlayerModel, list[str], list[str], list[str]]:
+    """Merge a freshly-ingested ``fresh`` model into ``persisted`` additively.
+
+    Returns ``(merged, new_column_names, new_join_target_names,
+    widened_column_names)``.
+
+    * Existing columns are preserved verbatim (description / label / format /
+      meta / allowed_aggregations / filter never overwritten).
+    * DEV-1538 carve-out (SQLite only — ``sqlite_widen_enabled=True``): a
+      fresh column whose type widened from the persisted ``DataType.INT``
+      (i.e. fresh type is ``DOUBLE`` or ``TEXT``) replaces ONLY the persisted
+      type — and the persisted ``format`` IF the persisted format is the
+      auto-ingested ``NumberFormat(INTEGER)`` default. Custom formats are
+      preserved verbatim and an INFO log line is emitted naming the column.
+      Widening never narrows DOUBLE → INT. On non-SQLite datasources the
+      additive contract stays strict — schema drift surfaces via
+      ``slayer validate-models``, not via silent re-ingest overwrites.
+    * Live columns whose names are absent from ``persisted.columns`` are
+      appended from ``fresh.columns``.
+    * Joins with new ``(target_model, join_pairs)`` signatures are appended.
+    """
+    existing_by_name: dict[str, Column] = {c.name: c for c in persisted.columns}
+    fresh_by_name: dict[str, Column] = {c.name: c for c in fresh.columns}
+
+    widened_column_names: list[str] = []
+    merged_columns: list[Column] = []
+    for persisted_col in persisted.columns:
+        merged_col, did_widen = _merge_persisted_column_with_probe(
+            persisted_col=persisted_col,
+            fresh_col=fresh_by_name.get(persisted_col.name),
+            model_name=persisted.name,
+            sqlite_widen_enabled=sqlite_widen_enabled,
+        )
+        merged_columns.append(merged_col)
+        if did_widen:
+            widened_column_names.append(persisted_col.name)
+
+    new_column_names: list[str] = []
+    for fresh_col in fresh.columns:
+        if fresh_col.name in existing_by_name:
+            continue
+        merged_columns.append(fresh_col)
+        new_column_names.append(fresh_col.name)
+
+    new_joins, new_join_targets = _merge_joins_strict(persisted, fresh)
+
+    if not new_column_names and not new_join_targets and not widened_column_names:
+        return persisted, [], [], []
 
     merged = persisted.model_copy(
-        update={"columns": new_columns, "joins": new_joins}
+        update={"columns": merged_columns, "joins": new_joins}
     )
-    return merged, new_column_names, new_join_targets
+    return merged, new_column_names, new_join_targets, widened_column_names
 
 
 async def _process_one_table(
@@ -873,10 +1055,12 @@ async def _process_one_table(
         # User-authored sql / query-backed model with the matching name —
         # leave it alone.
         return None
-    merged, new_cols, new_joins = _additive_merge_existing(
-        persisted=persisted, fresh=fresh
+    merged, new_cols, new_joins, widened_cols = _additive_merge_existing(
+        persisted=persisted,
+        fresh=fresh,
+        sqlite_widen_enabled=(datasource.type or "").lower() == "sqlite",
     )
-    if new_cols or new_joins:
+    if new_cols or new_joins or widened_cols:
         await storage.save_model(merged)
     return ModelAddition(
         model_name=table_name,
@@ -884,6 +1068,7 @@ async def _process_one_table(
         created=False,
         new_columns=new_cols,
         new_joins=new_joins,
+        widened_columns=widened_cols,
     )
 
 
@@ -896,8 +1081,8 @@ async def _scoped_models_for_validation(
     *,
     storage: StorageBackend,
     datasource: DatasourceConfig,
-    in_scope_table_names: Set[str],
-) -> List[SlayerModel]:
+    in_scope_table_names: set[str],
+) -> list[SlayerModel]:
     """Build the list of persisted models to feed to ``validate_datasource``.
 
     sql_table-mode models are included only when their live table is in
@@ -907,7 +1092,7 @@ async def _scoped_models_for_validation(
     """
     identities = await storage._list_all_model_identities()
     ds_model_names = [n for d, n in identities if d == datasource.name]
-    scoped: List[SlayerModel] = []
+    scoped: list[SlayerModel] = []
     for name in ds_model_names:
         m = await storage.get_model(name, data_source=datasource.name)
         if m is None:
@@ -924,9 +1109,9 @@ async def ingest_datasource_idempotent(
     *,
     datasource: DatasourceConfig,
     storage: StorageBackend,
-    include_tables: Optional[List[str]] = None,
-    exclude_tables: Optional[List[str]] = None,
-    schema: Optional[str] = None,
+    include_tables: list[str] | None = None,
+    exclude_tables: list[str] | None = None,
+    schema: str | None = None,
 ):
     """Idempotent re-ingestion (DEV-1356).
 
@@ -950,8 +1135,8 @@ async def ingest_datasource_idempotent(
         validate_datasource,
     )
 
-    additions: List[ModelAddition] = []
-    errors: List[IngestionError] = []
+    additions: list[ModelAddition] = []
+    errors: list[IngestionError] = []
 
     # ``ingest_datasource`` is sync (it drives SQLAlchemy ``Inspector``).
     # Offload to a thread so a slow / large datasource doesn't block the
@@ -964,7 +1149,7 @@ async def ingest_datasource_idempotent(
         schema=schema,
     )
     fresh_by_name = {m.name: m for m in fresh_models}
-    in_scope_table_names: Set[str] = set(fresh_by_name.keys())
+    in_scope_table_names: set[str] = set(fresh_by_name.keys())
 
     for table_name, fresh in fresh_by_name.items():
         try:
@@ -994,31 +1179,20 @@ async def ingest_datasource_idempotent(
         datasource=datasource, models=scoped_models
     )
 
-    # DEV-1375: refresh persisted Column.sampled values for every
-    # table-backed model in this datasource. Best-effort: per-column
-    # failures are accumulated as IngestionError entries; an unexpected
-    # raise is also caught so ingestion's idempotent contract holds.
-    refresh_engine = SlayerQueryEngine(storage=storage)
-    try:
-        refresh_errors = await refresh_all_table_backed_sampled(
-            engine=refresh_engine,
-            storage=storage,
-            data_source=datasource.name,
-        )
-    except Exception as exc:
-        refresh_errors = [f"{datasource.name}: {exc}"]
-    for err in refresh_errors:
-        errors.append(IngestionError(
-            model_name=err.split(".", 1)[0] if "." in err else "",
-            data_source=datasource.name,
-            error=f"sample-value refresh: {err}",
-        ))
+    # Column sample-value profiling is NOT run at ingest time — it fires a
+    # per-column full-table scan and, on a wide datasource (dozens of tables
+    # × ~10 columns each), would run hundreds of full scans and dominate
+    # ingest wall-clock. Samples are instead refreshed on demand on a cache
+    # miss by the async ``ensure_column_sample_fresh`` helper, invoked from
+    # the read paths that surface samples — ``inspect_model``, the ``inspect``
+    # point-lookup, and ``search()``. Use ``slayer search refresh-samples``
+    # to warm the cache explicitly.
 
     # DEV-1386: refresh persisted embeddings for the datasource doc plus
     # every visible model + its visible children. Best-effort: per-entity
     # failures are surfaced as IngestionError entries, never aborts
-    # ingestion. When the `embedding_search` extra is not installed,
-    # EmbeddingService returns a single warning and does no work.
+    # ingestion. When the `advanced_search` extra is not installed,
+    # EmbeddingRetriever returns a single warning and does no work.
     embedding_errors = await _refresh_datasource_embeddings(
         datasource_name=datasource.name, storage=storage,
     )
@@ -1081,7 +1255,7 @@ def _friendly_db_error(exc: Exception) -> str:
 
 
 def _print_ingest_addition(
-    addition, *, file: Optional[TextIO] = None
+    addition, *, file: TextIO | None = None
 ) -> None:
     out = file if file is not None else sys.stdout
     if addition.created:
@@ -1090,18 +1264,21 @@ def _print_ingest_addition(
             file=out,
         )
         return
-    if not (addition.new_columns or addition.new_joins):
+    widened = getattr(addition, "widened_columns", []) or []
+    if not (addition.new_columns or addition.new_joins or widened):
         return
     details = []
     if addition.new_columns:
         details.append(f"+columns: {', '.join(addition.new_columns)}")
     if addition.new_joins:
         details.append(f"+joins: {', '.join(addition.new_joins)}")
+    if widened:
+        details.append(f"widened: {', '.join(widened)}")
     print(f"Updated: {addition.model_name} ({'; '.join(details)})", file=out)
 
 
 def _print_ingest_drift_and_errors(
-    result, *, file: Optional[TextIO] = None
+    result, *, file: TextIO | None = None
 ) -> None:
     out = file if file is not None else sys.stdout
     if result.to_delete:
@@ -1136,15 +1313,15 @@ class StartupIngestSummary(BaseModel):
     ``EditModelDelete | WholeModelDelete``.
     """
 
-    succeeded: List[str] = Field(default_factory=list)
-    failures: List[StartupIngestFailure] = Field(default_factory=list)
-    drift_pending: List[Any] = Field(default_factory=list)
+    succeeded: list[str] = Field(default_factory=list)
+    failures: list[StartupIngestFailure] = Field(default_factory=list)
+    drift_pending: list[Any] = Field(default_factory=list)
 
 
 async def ingest_all_datasources_idempotent(
     *,
     storage: StorageBackend,
-    stream: Optional[TextIO] = None,
+    stream: TextIO | None = None,
 ) -> StartupIngestSummary:
     """Run idempotent auto-ingestion across every configured datasource.
 
@@ -1217,8 +1394,8 @@ async def _refresh_models_for_datasource(
     *,
     datasource_name: str,
     storage: StorageBackend,
-    service: "EmbeddingService",
-) -> Tuple[List[Tuple[str, str]], List[SlayerModel]]:
+    search: "SearchService",
+) -> tuple[list[tuple[str, str]], list[SlayerModel]]:
     """Refresh embeddings for every visible model in the datasource.
 
     Returns ``(warnings, models_in_ds)``. Each warning is tagged with
@@ -1226,8 +1403,8 @@ async def _refresh_models_for_datasource(
     right ``IngestionError.model_name``. ``models_in_ds`` is forwarded
     to the datasource-doc refresh that follows.
     """
-    warnings: List[Tuple[str, str]] = []
-    models_in_ds: List[SlayerModel] = []
+    warnings: list[tuple[str, str]] = []
+    models_in_ds: list[SlayerModel] = []
     try:
         identities = await storage._list_all_model_identities()
     except Exception as exc:  # noqa: BLE001 — defensive
@@ -1245,7 +1422,7 @@ async def _refresh_models_for_datasource(
             continue
         models_in_ds.append(m)
         try:
-            subtree_warnings = await service.refresh_model_subtree(m)
+            subtree_warnings = await search.refresh_model_subtree(m)
         except Exception as exc:  # noqa: BLE001 — defensive per-model
             subtree_warnings = [str(exc)]
         for w in subtree_warnings:
@@ -1256,14 +1433,21 @@ async def _refresh_models_for_datasource(
 async def _refresh_datasource_doc(
     *,
     datasource_name: str,
-    models: List[SlayerModel],
-    service: "EmbeddingService",
-) -> List[Tuple[str, str]]:
+    models: list[SlayerModel],
+    search: "SearchService",
+    storage: StorageBackend,
+) -> list[tuple[str, str]]:
     """Refresh the datasource doc embedding. Warnings are tagged with
-    an empty ``model_name`` since the doc has no specific entity name."""
+    an empty ``model_name`` since the doc has no specific entity name.
+
+    DEV-1549: ``DatasourceConfig.description`` is threaded through so
+    description text contributes to lexical + embedding recall.
+    """
+    cfg = await storage.get_datasource(datasource_name)
+    description = cfg.description if cfg is not None else None
     try:
-        doc_warnings = await service.refresh_datasource(
-            name=datasource_name, models=models,
+        doc_warnings = await search.refresh_datasource(
+            name=datasource_name, models=models, description=description,
         )
     except Exception as exc:  # noqa: BLE001 — defensive
         return [("", f"{datasource_name} (datasource doc): {exc}")]
@@ -1272,7 +1456,7 @@ async def _refresh_datasource_doc(
 
 async def _entity_ref_exists(
     *, entity: str, storage: StorageBackend,
-) -> Optional[bool]:
+) -> bool | None:
     """DEV-1428 defense-in-depth cleanup probe. Returns:
 
     * ``True`` when the canonical ref still resolves.
@@ -1322,8 +1506,8 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
     *,
     datasource_name: str,
     storage: StorageBackend,
-    service: "EmbeddingService",
-) -> List[Tuple[str, str]]:
+    search: "SearchService",
+) -> list[tuple[str, str]]:
     """Refresh embeddings for every memory whose canonical entities are
     rooted at this datasource. Each warning is tagged with
     ``memory:<id>`` so a startup log inspection can distinguish memory
@@ -1343,7 +1527,7 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
         memories = await storage.list_memories()
     except Exception as exc:  # noqa: BLE001 — defensive
         return [("", f"{datasource_name} (memories): {exc}")]
-    warnings: List[Tuple[str, str]] = []
+    warnings: list[tuple[str, str]] = []
     for memory in memories:
         rooted_at_ds = any(
             canonical_id_rooted_at(e, datasource_name)
@@ -1363,14 +1547,14 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
         tag = f"{_MEMORY_PREFIX}{memory.id}"
         if rooted_at_ds:
             try:
-                memory_warnings = await service.refresh_memory(memory)
+                memory_warnings = await search.upsert_memory(memory)
             except Exception as exc:  # noqa: BLE001 — defensive per-memory
                 memory_warnings = [str(exc)]
             for w in memory_warnings:
                 warnings.append((tag, w))
         # DEV-1428 cleanup pass: drop refs that resolve to False
         # (definitive not-found); keep refs that raise (transient).
-        cleaned: List[str] = []
+        cleaned: list[str] = []
         changed = False
         for entity in memory.entities:
             exists = await _entity_ref_exists(
@@ -1401,7 +1585,7 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
 
 async def _refresh_datasource_embeddings(
     *, datasource_name: str, storage: StorageBackend,
-) -> List[Tuple[str, str]]:
+) -> list[tuple[str, str]]:
     """Refresh persisted embeddings for everything reachable from this
     datasource: every visible model + its visible children, the
     datasource doc itself, and every memory whose canonical entities
@@ -1413,18 +1597,21 @@ async def _refresh_datasource_embeddings(
     doc) used by ``ingest_datasource_idempotent`` to route per-entity
     failures to the matching ``IngestionError``.
     """
-    # Local import to avoid pulling embeddings into ingestion's import
-    # graph on a cold start without the optional extra installed.
-    from slayer.embeddings.service import EmbeddingService
+    # Local import: keep the search module off the cold-start path
+    # when the optional embedding extra isn't installed.
+    from slayer.search.service import SearchService
 
-    service = EmbeddingService(storage=storage)
+    search = SearchService(storage=storage)
     model_warnings, models_in_ds = await _refresh_models_for_datasource(
-        datasource_name=datasource_name, storage=storage, service=service,
+        datasource_name=datasource_name, storage=storage, search=search,
     )
     doc_warnings = await _refresh_datasource_doc(
-        datasource_name=datasource_name, models=models_in_ds, service=service,
+        datasource_name=datasource_name,
+        models=models_in_ds,
+        search=search,
+        storage=storage,
     )
     memory_warnings = await _refresh_memories_for_datasource(
-        datasource_name=datasource_name, storage=storage, service=service,
+        datasource_name=datasource_name, storage=storage, search=search,
     )
     return model_warnings + doc_warnings + memory_warnings

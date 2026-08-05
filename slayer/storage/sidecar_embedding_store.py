@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from typing import Dict, List, Optional, Tuple
 
 from slayer.embeddings.models import Embedding
 
@@ -62,7 +61,7 @@ class SidecarEmbeddingStore:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _row_tuple(row: Embedding) -> Tuple[str, str, str, str, str, str]:
+    def _row_tuple(row: Embedding) -> tuple[str, str, str, str, str, str]:
         return (
             row.canonical_id,
             row.embedding_model_name,
@@ -73,7 +72,7 @@ class SidecarEmbeddingStore:
         )
 
     @staticmethod
-    def _row_from_db(raw: Tuple[str, str, str, str, str, str]) -> Embedding:
+    def _row_from_db(raw: tuple[str, str, str, str, str, str]) -> Embedding:
         return Embedding.model_validate({
             "canonical_id": raw[0],
             "embedding_model_name": raw[1],
@@ -93,7 +92,7 @@ class SidecarEmbeddingStore:
                 self._row_tuple(row),
             )
 
-    def _save_many_sync(self, rows: List[Embedding]) -> None:
+    def _save_many_sync(self, rows: list[Embedding]) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.executemany(
                 "INSERT OR REPLACE INTO embeddings "
@@ -105,7 +104,7 @@ class SidecarEmbeddingStore:
 
     def _get_sync(
         self, canonical_id: str, embedding_model_name: str,
-    ) -> Optional[Tuple[str, str, str, str, str, str]]:
+    ) -> tuple[str, str, str, str, str, str] | None:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
                 "SELECT canonical_id, embedding_model_name, entity_kind, "
@@ -125,10 +124,10 @@ class SidecarEmbeddingStore:
 
     def _get_many_sync(
         self,
-        canonical_ids: List[str],
+        canonical_ids: list[str],
         embedding_model_name: str,
-    ) -> List[Tuple[str, str, str, str, str, str]]:
-        rows: List[Tuple[str, str, str, str, str, str]] = []
+    ) -> list[tuple[str, str, str, str, str, str]]:
+        rows: list[tuple[str, str, str, str, str, str]] = []
         with sqlite3.connect(self.db_path) as conn:
             for start in range(0, len(canonical_ids), self._GET_MANY_CHUNK_SIZE):
                 chunk = canonical_ids[start : start + self._GET_MANY_CHUNK_SIZE]
@@ -144,7 +143,7 @@ class SidecarEmbeddingStore:
 
     def _list_sync(
         self, embedding_model_name: str,
-    ) -> List[Tuple[str, str, str, str, str, str]]:
+    ) -> list[tuple[str, str, str, str, str, str]]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT canonical_id, embedding_model_name, entity_kind, "
@@ -181,14 +180,14 @@ class SidecarEmbeddingStore:
     async def save(self, row: Embedding) -> None:
         await asyncio.to_thread(self._save_sync, row)
 
-    async def save_many(self, rows: List[Embedding]) -> None:
+    async def save_many(self, rows: list[Embedding]) -> None:
         if not rows:
             return
         await asyncio.to_thread(self._save_many_sync, list(rows))
 
     async def get(
         self, *, canonical_id: str, embedding_model_name: str,
-    ) -> Optional[Embedding]:
+    ) -> Embedding | None:
         raw = await asyncio.to_thread(
             self._get_sync, canonical_id, embedding_model_name,
         )
@@ -199,9 +198,9 @@ class SidecarEmbeddingStore:
     async def get_many(
         self,
         *,
-        canonical_ids: List[str],
+        canonical_ids: list[str],
         embedding_model_name: str,
-    ) -> Dict[str, Embedding]:
+    ) -> dict[str, Embedding]:
         if not canonical_ids:
             return {}
         raws = await asyncio.to_thread(
@@ -211,7 +210,7 @@ class SidecarEmbeddingStore:
 
     async def list_for_model(
         self, *, embedding_model_name: str,
-    ) -> List[Embedding]:
+    ) -> list[Embedding]:
         raws = await asyncio.to_thread(
             self._list_sync, embedding_model_name,
         )
@@ -243,12 +242,12 @@ class SidecarEmbeddingsMixin:
     async def save_embedding(self, row: Embedding) -> None:
         await self._embeddings_store.save(row)
 
-    async def save_embeddings(self, rows: List[Embedding]) -> None:
+    async def save_embeddings(self, rows: list[Embedding]) -> None:
         await self._embeddings_store.save_many(list(rows))
 
     async def get_embedding(
         self, *, canonical_id: str, embedding_model_name: str,
-    ) -> Optional[Embedding]:
+    ) -> Embedding | None:
         return await self._embeddings_store.get(
             canonical_id=canonical_id,
             embedding_model_name=embedding_model_name,
@@ -257,9 +256,9 @@ class SidecarEmbeddingsMixin:
     async def get_embeddings_for_canonical_ids(
         self,
         *,
-        canonical_ids: List[str],
+        canonical_ids: list[str],
         embedding_model_name: str,
-    ) -> Dict[str, Embedding]:
+    ) -> dict[str, Embedding]:
         return await self._embeddings_store.get_many(
             canonical_ids=list(canonical_ids),
             embedding_model_name=embedding_model_name,
@@ -267,7 +266,7 @@ class SidecarEmbeddingsMixin:
 
     async def list_embeddings(
         self, *, embedding_model_name: str,
-    ) -> List[Embedding]:
+    ) -> list[Embedding]:
         return await self._embeddings_store.list_for_model(
             embedding_model_name=embedding_model_name,
         )

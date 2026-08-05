@@ -80,8 +80,9 @@ claude mcp list
 
 | Tool | Description |
 |------|-------------|
-| `models_summary` | Brief summary of all non-hidden models in a datasource: each model's name, description, a table of its **columns** and **measures** (named formulas), and the list of models it joins to. The Markdown form (default) shows just `name` + `description` per column; the JSON form (`format="json"`) additionally includes the column `type`. Neither form includes distinct values, sample data, or joined-model field expansion — call `inspect_model` for those. Params: `datasource_name`, `format` (default `"markdown"`; also `"json"`). |
-| `inspect_model` | Complete view of a single model: metadata with row count (and a `**meta:**` bullet when the model has `meta` set), any model-level or column-level filters, **columns table** (with a `sampled` column — distinct values for string/boolean columns, `min .. max` for number/date/time columns — and a `meta` cell when set), **measures table** of named formulas (with `formula`, `label`, `description`, `meta`), custom aggregations (with `meta`), joins, all fields reachable via joins (default depth 5), and a sample-data table. Every Markdown table auto-prunes all-empty columns (so the `meta` column is hidden when no entity has meta) and collapses to a comma-separated backticked list when only one column remains. Params: `model_name`, `num_rows` (default 3), `show_sql` (default false — include SQL for the sample-data query, the custom-SQL block, model-level filters, the cached backing-query SQL, and aggregation formulas/param SQL), `format` (default `"markdown"`; also `"json"`), `sections` (subset of `["columns", "measures", "aggregations", "joins", "reachable_fields", "samples"]` — default `None`/`[]` renders all six; sections in the first four collapse to a one-line backticked CSV of names when omitted, `reachable_fields`/`samples` are dropped entirely, unknown names emit a footer warning. A non-empty list of *only* unknown names resolves to no sections — "all six" is reserved for `None`/`[]` so a typo can't silently trigger the full payload), `descriptions_max_chars` (when set, truncate each description longer than this with the suffix `"... [truncated]"` (prefixed by a space); applies to model, columns, measures, and aggregations; must be `>= 0`), `reachable_fields_depth` (max BFS depth in path segments — default 5, allowed range `[0, 20]`; ignored when `reachable_fields` is not in `sections`). When any section is trimmed, a quoted-Markdown footer at the end of the response lists what was shown / names-only / omitted, with a hint on how to fetch more. The JSON form mirrors this: trimmed sections appear as `<section>_names: [...]` siblings, fully omitted ones are absent, and top-level `omitted_sections`, `names_only_sections`, `unknown_sections` arrays are added when non-empty. |
+| `models_summary` | Brief summary of all non-hidden models in a datasource: each model's name, description, a table of its **columns** and **measures** (named formulas), and the list of models it joins to. The Markdown form (default) shows just `name` + `description` per column; the JSON form (`format="json"`) additionally includes the column `type`. Neither form includes distinct values or sample data — call `inspect_model` for those. For multi-hop discovery (fields reachable via joins from a given model), use the `search` tool with `cypher_filter` for graph queries. Params: `datasource_name`, `format` (default `"markdown"`; also `"json"`). |
+| `inspect` | Single-entity point lookup: returns the rendered detail for **exactly one** entity by `reference` + required `entity_type` (`datasource`/`model`/`column`/`measure`/`aggregation`/`memory`). No fusion/ranking/cypher and no bundled memories — use `search` instead when you want an entity surfaced *in context*. `reference` accepts canonical ids, bare names, join paths (`orders.customers.region` → resolved to the owning model), and `memory:<id>`; it is normalised via the shared resolver and the normalised id is echoed in the JSON shape. `entity_type` disambiguates the 3-part canonical collision (a name shared by, e.g., a column and an aggregation) and asserts the resolved kind (mismatch → detailed error). Renders hidden entities. Params: `reference`, `entity_type`, `compact` (default true), `format` (`"markdown"` default, `"json"`), and the model-only `num_rows`/`show_sql`/`sections`/`descriptions_max_chars` (applied for `entity_type="model"`; `descriptions_max_chars` applies to every kind; the others are ignored with a warning for non-model kinds, `show_sql` a silent no-op for column/measure/aggregation). **`compact=True`** renders description-only for leaf/datasource/memory kinds, and a cheap **schema skeleton** (column/measure/aggregation **names** + join targets, **zero DB calls**) for the `model` kind — markdown always emits the four `Columns:`/`Measures:`/`Aggregations:`/`Joins to:` lines (`_(none)_` when empty); JSON always carries `column_names`/`measure_names`/`aggregation_names`/`joins_to`. **`compact=False`** reuses the full `inspect_model` rendering (sample rows, SQL, sections) for the `model` kind, and renders a per-model skeleton for each visible model (sorted by name; `models: [...]` in JSON) for the `datasource` kind. JSON `text` is present **iff non-empty** (omitted under `compact=True` for every kind). Three-tier escalation: `models_summary(compact)` (column count) < `inspect(model, compact=True)` (column names) < `inspect(model, compact=False)` (full). **Batch (DEV-1612):** `reference` also accepts a **list** of ids — a homogeneous-kind batch (one `entity_type` for all). A single `str` keeps single-id output byte-for-byte; a list returns one block per id in input order, each echoing its resolved canonical id (a `## <canonical>` header per block in markdown, a JSON array under `format="json"`). A one-element list is still batch-framed. Per-id resolution errors are isolated (in JSON a failed id is a `{"reference", "error"}` object). **Collection (DEV-1667):** omit `reference` (or pass `null`/`[]`) to list a whole kind. `entity_type="model"` lists all models grouped by datasource — `compact=True` (default) is a terse one-liner per model (`- \`name\` (N cols; joins: ...)` under a `# Datasource: \`<ds>\` — <N> model(s)` header); `compact=False` is the full `models_summary` block per datasource. `entity_type="datasource"` lists all datasources (`compact=True` == `list_datasources`; `compact=False` adds descriptions + per-model skeletons). Only `model`/`datasource` support the collection view; other kinds raise. This subsumes `models_summary` / `list_datasources` (kept as thin aliases). JSON collection form is `{"entity_type", "collection": true, "datasources": [...], "warnings": []}`. |
+| `inspect_model` | **DEPRECATED — use `inspect`.** Complete view of a single model: metadata with row count (and a `**meta:**` bullet when the model has `meta` set), any model-level or column-level filters, **columns table** (with a `sampled` column — distinct values for string/boolean columns, `min .. max` for number/date/time columns — and a `meta` cell when set), **measures table** of named formulas (with `formula`, `label`, `description`, `meta`), custom aggregations (with `meta`), direct joins, and a sample-data table. Every Markdown table auto-prunes all-empty columns (so the `meta` column is hidden when no entity has meta) and collapses to a comma-separated backticked list when only one column remains. Params: `model_name`, `num_rows` (default 3), `show_sql` (default false — include SQL for the sample-data query, the custom-SQL block, model-level filters, the cached backing-query SQL, and aggregation formulas/param SQL), `format` (default `"markdown"`; also `"json"`), `sections` (subset of `["columns", "measures", "aggregations", "joins", "samples", "learnings"]` — default `None`/`[]` renders all six; sections in the first four collapse to a one-line backticked CSV of names when omitted, `samples`/`learnings` are dropped entirely, unknown names emit a footer warning. A non-empty list of *only* unknown names resolves to no sections — "all six" is reserved for `None`/`[]` so a typo can't silently trigger the full payload), `descriptions_max_chars` (when set, truncate each description longer than this with the suffix `"... [truncated]"` (prefixed by a space); applies to model, columns, measures, and aggregations; must be `>= 0`). When any section is trimmed, a quoted-Markdown footer at the end of the response lists what was shown / names-only / omitted, with a hint on how to fetch more. The JSON form mirrors this: trimmed sections appear as `<section>_names: [...]` siblings, fully omitted ones are absent, and top-level `omitted_sections`, `names_only_sections`, `unknown_sections` arrays are added when non-empty. For multi-hop reachability use the `search` tool. |
 | `create_model` | Create a model from a table/SQL definition or from a query. Pass `sql_table`/`sql` with `columns` (and optional named-formula `measures`) for table-based, or pass `query` (a SLayer query dict) to save it as a query-backed model whose `columns` + `backing_query_sql` are populated by a save-time dry-run. |
 | `edit_model` | Edit an existing model in one call. Supports upsert for columns, measures, aggregations, and joins (create if new, update if existing). Also manages scalar metadata and filters. See params below. |
 | `delete_model` | Delete a model entirely. |
@@ -91,6 +92,7 @@ claude mcp list
 | Tool | Description |
 |------|-------------|
 | `query` | Execute a semantic query. See [Queries](../concepts/queries.md) for format. |
+| `query_nested` | Execute a multi-stage DAG of named sub-queries that can reference one another via `source_model` or `joins.target_model`. Companion to `query`; the engine auto-sorts the list (Kahn's algorithm), so order doesn't matter. Params: `queries: List[Dict[str, Any]]`, plus `variables` / `show_sql` / `dry_run` / `explain` / `format` mirroring `query`. See [Multistage Queries](../examples/06_multistage_queries/multistage_queries.md). |
 
 **`query` parameters:**
 
@@ -105,10 +107,76 @@ claude mcp list
 | `limit` | int | Max rows |
 | `offset` | int | Skip rows |
 | `whole_periods_only` | bool | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
+| `distinct_dimension_values` | bool | Default `true` — auto-dedup dim-only queries (`GROUP BY <dim/td aliases>`). Set `false` to emit raw rows (no top-level `GROUP BY`); rejects any measure reference in `measures` / `filters` / `order`. |
 | `show_sql` | bool | Include the generated SQL in the response for debugging |
 | `dry_run` | bool | Generate and return the SQL without executing it |
 | `explain` | bool | Run EXPLAIN ANALYZE and return the query plan |
 | `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive |
+
+### Memories + semantic search
+
+Memories are free-form notes the agent saves against canonical entity strings (`<ds>`, `<ds>.<model>`, `<ds>.<model>.<leaf>`, or `memory:<id>`). `search` is the only retrieval surface and returns memories **and** entity discovery hits in one flat list. See [Memories](../concepts/memories.md) and [Search](../concepts/search.md).
+
+| Tool | Description |
+|------|-------------|
+| `search` | Up to three-channel retrieval over memories and canonical entities (datasource / model / column / measure / aggregation), RRF-fused (k=60) into a single ranked list. |
+| `save_memory` | Persist a free-form `learning` tagged with canonical entities or an inline `SlayerQuery`. |
+| `forget_memory` | Delete a memory by id. Cascade-strips every other memory's `memory:<id>` ref to it. |
+
+**`search` parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `entities` | list[str] | Canonical entity strings (`mydb.orders.amount`, `memory:42`, …) or aggregated colon forms (`revenue:sum` — the suffix is stripped). Drives the BM25 channel. Unresolved tokens emit warnings, not errors. |
+| `query` | dict \| SlayerQuery | Inline query; its `source_model`, dimensions, measures, time dims, and filters are walked for canonical entities. |
+| `question` | str | Free-text question. Drives the Tantivy full-text channel and (when available) the dense-embedding channel. |
+| `datasource` | str | When set, every channel pre-filters to canonical ids rooted at that datasource. Unknown name → error. |
+| `cypher_filter` | str | Graph pre-filter applied to all three channels. Full openCypher when the `advanced_search` extra is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges; read-only — `CREATE`, `MERGE`, `DELETE`, `SET`, `REMOVE`, `DROP`, `CALL` are rejected). Without the extra, only the naive form `MATCH (n:Label1:Label2…) RETURN n.id AS id` is accepted as a label/kind filter; anything richer raises with an install hint. |
+| `max_results` | int | Cap applied **after** RRF fusion and after the `cypher_filter` narrowing, so it counts surviving items only. Default `10`. |
+
+**Response shape (`SearchResponse`):**
+
+```json
+{
+  "results": [
+    {"kind": "memory",  "id": "42", "score": 0.13, "text": "...", "matched_entities": ["mydb.orders.amount"], "query": null},
+    {"kind": "column",  "id": "mydb.orders.amount", "score": 0.11, "text": "...", "matched_entities": [], "query": null},
+    {"kind": "model",   "id": "mydb.orders",        "score": 0.09, "text": "...", "matched_entities": [], "query": null}
+  ],
+  "resolved_input_entities": ["mydb.orders.amount"],
+  "warnings": []
+}
+```
+
+`kind` is one of `"memory"`, `"datasource"`, `"model"`, `"column"`, `"measure"`, `"aggregation"`. For memory hits, `id` is the raw memory id (suitable for `forget_memory`); `hit.query is not None` marks a saved example query. Column hits carry the column's structured sample-value snapshot — the top 50 `sampled_values` are rendered as a JSON array (so values containing commas survive); overflow columns (> 50 distinct) are marked `50+ distinct` in the text snapshot. `SearchService` refreshes any column hit whose profile is stale on the fly.
+
+**`save_memory` parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `learning` | str | The free-form note. |
+| `linked_entities` | list[str] \| dict (SlayerQuery) | Canonical entity strings (strict resolution; `memory:<id>` is valid for cross-memory refs) **or** an inline `SlayerQuery` dict whose entities are auto-extracted and which is persisted on the memory. |
+| `id` | str (optional) | User-pinned canonical memory id. Forbidden charset: `:`, `/`, `?`, `#`, whitespace, ASCII control. Omit to let the allocator assign the next int-shaped id (`max(int-shaped id) + 1`, never less than `"1"`). Duplicate id → unconditional upsert; `created_at` is preserved. |
+
+**`forget_memory` parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `id` | str | Memory id. Cascade strips every `memory:<id>` ref to it from every other memory's `entities` list and drops the matching embedding row. |
+
+**Cypher filter examples.** Naive form (always available):
+
+```
+MATCH (n:Memory) RETURN n.id AS id          # memory hits only
+MATCH (n:Column:Measure) RETURN n.id AS id  # column + named-measure hits only
+```
+
+Full openCypher (requires `advanced_search`):
+
+```
+MATCH (d:Datasource {name: 'mydb'})-[:CONTAINS]->(m:Model)-[:CONTAINS]->(c:ModelColumn)
+RETURN c.id AS id
+```
 
 ## Typical Agent Workflows
 

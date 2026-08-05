@@ -29,18 +29,19 @@ Two public entry points:
 from __future__ import annotations
 
 import re
-from typing import Iterable, List, Optional, Set, Tuple
+from collections.abc import Iterable
 
 from pydantic import BaseModel
 
 from slayer.core.errors import (
+    AmbiguousModelError,
     EntityResolutionError,
     UnknownFunctionError,
 )
 from slayer.core.models import SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.core.refs import strip_agg_suffix as _strip_agg_suffix
-from slayer.engine.enrichment import _collect_reachable_agg_names
+from slayer.engine.agg_registry import collect_reachable_agg_names
 from slayer.engine.normalization import func_style_agg_to_colon
 from slayer.engine.syntax import (
     AggCall,
@@ -108,8 +109,8 @@ class EntityResolution(BaseModel):
     datasource-vs-model collision; fatal failures raise instead.
     """
 
-    canonical_forms: List[str]
-    warnings: List[str] = []
+    canonical_forms: list[str]
+    warnings: list[str] = []
 
 
 def _model_has_leaf(model: SlayerModel, leaf: str) -> bool:
@@ -126,9 +127,9 @@ def _model_has_leaf(model: SlayerModel, leaf: str) -> bool:
 
 async def _all_models_in_datasource(
     storage: StorageBackend, data_source: str
-) -> List[SlayerModel]:
+) -> list[SlayerModel]:
     identities = await storage._list_all_model_identities()
-    out: List[SlayerModel] = []
+    out: list[SlayerModel] = []
     for ds, name in identities:
         if ds != data_source:
             continue
@@ -140,7 +141,7 @@ async def _all_models_in_datasource(
 
 async def _find_leaf_in_priority_winner(
     storage: StorageBackend, leaf: str
-) -> Tuple[Optional[str], List[SlayerModel]]:
+) -> tuple[str | None, list[SlayerModel]]:
     """Walk the priority list; return ``(data_source, matches)`` for the
     first datasource that has ≥1 model carrying ``leaf`` as a column /
     measure / custom aggregation. ``matches`` may have multiple models
@@ -160,7 +161,7 @@ async def _find_leaf_in_priority_winner(
 async def _resolve_join_path(
     storage: StorageBackend,
     starting_model: SlayerModel,
-    path: List[str],
+    path: list[str],
 ) -> SlayerModel:
     """Walk a chain of join targets, returning the leaf model.
 
@@ -192,7 +193,7 @@ async def _resolve_join_path(
 async def _resolve_dotted_against_model(
     storage: StorageBackend,
     starting_model: SlayerModel,
-    rest: List[str],
+    rest: list[str],
 ) -> str:
     """Apply the leaf rule to a path ``[hop, hop, ..., leaf?]`` rooted at
     ``starting_model``. Returns the canonical form."""
@@ -227,7 +228,7 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
     raw: str,
     *,
     storage: StorageBackend,
-    source_model: Optional[SlayerModel] = None,
+    source_model: SlayerModel | None = None,
 ) -> EntityResolution:
     """Resolve a single entity reference.
 
@@ -299,19 +300,30 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
         )
 
     segments = prefix.split(".")
-    if not all(re.match(r"^[a-zA-Z_]\w*$", s) for s in segments):
+    # Hyphens are permitted in a segment: a datasource name may embed a UUID
+    # (e.g. ``source_019f4323-cb59-77c3-...``), so the datasource segment can
+    # contain hyphens. Model/leaf segments that don't match a stored entity
+    # simply resolve to not-found below, so allowing the character is safe.
+    if not all(re.match(r"^[a-zA-Z_][\w-]*$", s) for s in segments):
         raise EntityResolutionError(
             f"'{raw}' contains an invalid identifier segment."
         )
 
-    warnings: List[str] = []
+    warnings: list[str] = []
     known_dses = set(await storage.list_datasources())
 
     # ----- step 3: datasource-prefix detection ---------------------------
     if segments[0] in known_dses:
         ds = segments[0]
-        # Case D: same name is also a model in some other datasource.
-        ds_as_model = await storage.resolve_model_identity(ds)
+        # Case D: same name is also a model in some other datasource. This
+        # probe is best-effort (it only drives a warning) — an *ambiguous*
+        # model leg (same name in ≥2 datasources, no priority winner) must
+        # NOT abort a perfectly valid datasource-prefixed reference, so we
+        # treat the ambiguity as "yes, also a model" and keep going.
+        try:
+            ds_as_model = await storage.resolve_model_identity(ds)
+        except AmbiguousModelError:
+            ds_as_model = (ds, ds)
         if ds_as_model is not None:
             warnings.append(
                 f"'{ds}' is both a datasource and a model; interpreted "
@@ -452,7 +464,7 @@ _FILTER_VAR_RE = re.compile(r"\{[^}]*\}")
 _FILTER_TOKEN_RE = re.compile(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*")
 
 
-def _extract_filter_tokens(filter_text: str) -> List[str]:
+def _extract_filter_tokens(filter_text: str) -> list[str]:
     """Extract identifier-shaped tokens from a filter expression that
     might be entity references.
 
@@ -463,7 +475,7 @@ def _extract_filter_tokens(filter_text: str) -> List[str]:
     cleaned = _FILTER_AGG_SUFFIX_RE.sub("", filter_text)
     cleaned = _FILTER_LITERAL_RE.sub("", cleaned)
     cleaned = _FILTER_VAR_RE.sub("", cleaned)
-    out: List[str] = []
+    out: list[str] = []
     for m in _FILTER_TOKEN_RE.finditer(cleaned):
         token = m.group(0)
         # Skip identifiers immediately followed by '(' — they're SQL
@@ -495,9 +507,9 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
     always tagged, even if no field references it explicitly.
     Resolution failures bubble up unchanged.
     """
-    canonical: List[str] = []
-    warnings: List[str] = []
-    seen: Set[str] = set()
+    canonical: list[str] = []
+    warnings: list[str] = []
+    seen: set[str] = set()
 
     def _add(forms: Iterable[str]) -> None:
         for f in forms:
@@ -571,8 +583,8 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
         return (None, target)
 
     try:
-        reachable_agg_names = await _collect_reachable_agg_names(
-            model=source_model,
+        reachable_agg_names = await collect_reachable_agg_names(
+            source_model=source_model,
             resolve_join_target=_resolve_join_target_for_resolver,
             named_queries={},
         )
@@ -621,7 +633,7 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
             warnings.extend(result.warnings)
 
     # Deduplicate warnings while preserving order.
-    seen_warn: Set[str] = set()
+    seen_warn: set[str] = set()
     deduped_warnings = []
     for w in warnings:
         if w not in seen_warn:

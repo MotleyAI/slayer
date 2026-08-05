@@ -3,6 +3,11 @@
 Currently hosts the Flight SQL demo-server fixture used by both
 ``test_integration_flight.py`` (JayDeBeAPI) and
 ``test_integration_flight_pyarrow_client.py``.
+
+Also re-exports the ``metabase_e2e_env`` fixture from
+``conftest_metabase.py`` so the live-Metabase suite (DEV-1562) can pick it
+up via pytest's auto-discovery without an explicit import (which would
+shadow it via parameter binding in every test).
 """
 
 from __future__ import annotations
@@ -14,9 +19,22 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional, Tuple
+from typing import Any
+from collections.abc import Callable, Iterator
 
 import pytest
+
+# Import the metabase fixture conditionally: ``conftest_metabase`` top-imports
+# ``requests``, which is in the ``all`` poetry extra but not in narrower dev
+# installs (e.g. ``-E postgres`` only). Failing to import here would break
+# collection of every integration test, not just the metabase_e2e ones. The
+# fallback makes the metabase fixture unavailable to pytest, which is fine —
+# the suite that uses it carries its own ``pytest.importorskip("requests")``
+# guard and would skip cleanly.
+try:
+    from tests.integration.conftest_metabase import metabase_e2e_env  # noqa: F401
+except ImportError:
+    pass
 
 JDBC_DRIVER_VERSION = "18.3.0"
 JDBC_DRIVER_URL = (
@@ -63,8 +81,8 @@ def _format_flight_jdbc_url(
     host: str,
     port: int,
     use_encryption: bool = False,
-    token: Optional[str] = None,
-    environment_id: Optional[str] = None,
+    token: str | None = None,
+    environment_id: str | None = None,
 ) -> str:
     params = [f"useEncryption={'true' if use_encryption else 'false'}"]
     if token is not None:
@@ -155,7 +173,7 @@ def jaydebeapi_connect(jdbc_jar: Path) -> Callable[..., Any]:
     return _connect
 
 
-def _start_flight_demo_server(*, token: Optional[str]):
+def _start_flight_demo_server(*, token: str | None):
     """Boot a Flight SQL server backed by the bundled Jaffle Shop demo.
 
     Returns ``(server, host, port)``. The caller is responsible for
@@ -187,7 +205,7 @@ def _start_flight_demo_server(*, token: Optional[str]):
 
 
 @pytest.fixture(scope="module")
-def flight_demo_server() -> Iterator[Tuple[str, int]]:
+def flight_demo_server() -> Iterator[tuple[str, int]]:
     """Yield ``(host, port)`` of a no-auth Flight SQL server backed by the Jaffle Shop demo."""
     server, host, port = _start_flight_demo_server(token=None)
     try:
@@ -198,7 +216,7 @@ def flight_demo_server() -> Iterator[Tuple[str, int]]:
 
 
 @pytest.fixture(scope="module")
-def flight_demo_server_with_token() -> Iterator[Tuple[str, int, str]]:
+def flight_demo_server_with_token() -> Iterator[tuple[str, int, str]]:
     """Same as ``flight_demo_server`` but with a bearer token enforced."""
     token = "s3cret"
     server, host, port = _start_flight_demo_server(token=token)

@@ -10,7 +10,6 @@ template method) so it fires for every save path uniformly — direct
 create/edit, and the migration write-back (the migration path passes
 ``_validate=False`` so legacy cyclic data remains loadable).
 """
-from typing import Tuple
 
 import pytest
 
@@ -53,7 +52,7 @@ def _abc_chain(
     a_foo_sql: str,
     c_x_sql: str,
     c_joins_back_to_a: bool = False,
-) -> Tuple[SlayerModel, SlayerModel, SlayerModel]:
+) -> tuple[SlayerModel, SlayerModel, SlayerModel]:
     """The canonical A → B → C three-model scaffold used by the strict
     alias-walk tests. ``foo`` on A and ``x`` on C are derived; their
     expressions are the per-test variable.
@@ -204,6 +203,26 @@ async def test_save_model_accepts_base_columns_only(tmp_path) -> None:
         ],
     )
     await storage.save_model(model)
+
+
+async def test_save_model_accepts_quoted_self_identity_column(tmp_path) -> None:
+    """A column whose sql is the double-quoted form of its own name is a base
+    reference, not a derived expression — required to reach a mixed-case
+    physical column on case-folding dialects (Prisma-style camelCase). It must
+    NOT be mistaken for a single-step self-cycle."""
+    storage = _yaml_storage(tmp_path)
+    model = SlayerModel(
+        name="merchant",
+        data_source="ds",
+        sql_table="merchant",
+        columns=[
+            Column(name="legalEntityType", sql='"legalEntityType"', type=DataType.TEXT),
+        ],
+    )
+    await storage.save_model(model)
+    reloaded = await storage.get_model("merchant", data_source="ds")
+    assert reloaded is not None
+    assert {c.name for c in reloaded.columns} == {"legalEntityType"}
 
 
 # ---------------------------------------------------------------------------

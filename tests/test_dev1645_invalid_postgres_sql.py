@@ -1,0 +1,736 @@
+"""DEV-1645: SLayer compiler must not emit invalid Postgres SQL.
+
+Two defect classes, both valid-on-SQLite / invalid-on-Postgres:
+
+* **Flavor A — ORDER BY on an unprojected/renamed column.** The sort key was
+  rendered as a single composite-quoted identifier ``"<model>.<col>"`` (the
+  projection-alias convention), which resolves only when the column is a
+  projected output alias. For a column that is not projected (renamed by a
+  ``columns:`` transform, or an inner-stage grouping dim the outer stage
+  dropped), that composite token is a nonexistent column -> ``UndefinedColumn``.
+  Fix: emit the fallback sort key as a real split ``table.column`` reference.
+
+* **Flavor B — mixed-case identifier not double-quoted.** Free-SQL identifiers
+  referencing mixed-case columns/tables were emitted unquoted; Postgres folds
+  them to lowercase and can't find them. Fix: quote any identifier containing
+  an uppercase letter (universal, all dialects), applied at every construction
+  site (``_parse``, ``_parse_predicate``, and direct ``exp.Column`` / table
+  builders).
+
+These are byte-level emission tests; execution against a real Postgres /
+Snowflake lives in the integration suites.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+import sqlglot
+
+from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.errors import UnresolvableOrderColumnError
+from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.sql.generator import SQLGenerator
+
+from tests._engine_helpers import _engine_generate
+
+
+def _norm(s: str) -> str:
+    return " ".join(s.split())
+
+
+def _orders_customers_regions() -> tuple[SlayerModel, list[SlayerModel]]:
+    """orders → customers → regions two-hop join graph. Returns
+    ``(orders_root, [customers, regions])`` — the root model plus the join
+    targets to register alongside it. Shared by the joined-ORDER-BY reject +
+    deferred xfail tests."""
+    regions = SlayerModel(
+        name="regions", sql_table="regions", data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
+        ],
+    )
+    customers = SlayerModel(
+        name="customers", sql_table="customers", data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+    )
+    orders = SlayerModel(
+        name="orders", sql_table="orders", data_source="test",
+        default_time_dimension="created_at",  # lets first/last + cumsum tests reuse this graph
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )
+    return orders, [customers, regions]
+
+
+# ----------------------------------------------------------------------------
+# Fixtures
+# ----------------------------------------------------------------------------
+
+@pytest.fixture
+def orders_model() -> SlayerModel:
+    return SlayerModel(
+        name="orders",
+        sql_table="public.orders",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+        ],
+    )
+
+
+@pytest.fixture
+def accounts_model() -> SlayerModel:
+    """Mirrors the ``fake_account_23`` repro: a derived boolean column whose SQL
+    references a mixed-case physical column ``StateFlag``."""
+    return SlayerModel(
+        name="accounts",
+        sql_table="public.accounts",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(
+                name="is_inactive",
+                type=DataType.BOOLEAN,
+                sql="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END",
+            ),
+            Column(
+                name="acct_form",
+                type=DataType.TEXT,
+                sql="acct_form",  # lowercase sibling — must stay unquoted
+            ),
+        ],
+    )
+
+
+# ============================================================================
+# Flavor A — ORDER BY on an unprojected / renamed column
+# ============================================================================
+
+class TestFlavorAOrderByUnprojected:
+    async def test_orderby_nonprojected_column_emits_split_not_composite(
+        self, orders_model: SlayerModel
+    ) -> None:
+        """A raw-row query ordering by a base column that is not projected must
+        emit a split ``orders.created_at`` reference, NOT the composite
+        ``"orders.created_at"`` (a nonexistent output column on Postgres)."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            distinct_dimension_values=False,
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="desc")],
+        )
+        sql = _norm(await _engine_generate(query=query, model=orders_model))
+        assert "ORDER BY orders.created_at DESC" in sql
+        assert '"orders.created_at"' not in sql
+
+    async def test_orderby_projected_alias_stays_composite_quoted(
+        self, orders_model: SlayerModel
+    ) -> None:
+        """Regression guard: ordering by a projected measure alias keeps the
+        whole-quoted composite ``"orders.rev"`` form (that IS the real output
+        column name via ``AS "orders.rev"``)."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[{"formula": "revenue:sum", "name": "rev"}],
+            order=[OrderItem(column=ColumnRef(name="rev"), direction="desc")],
+        )
+        sql = _norm(await _engine_generate(query=query, model=orders_model))
+        assert 'ORDER BY "orders.rev" DESC' in sql
+
+    async def test_orderby_nonprojected_mixed_case_column_split_and_quoted(
+        self, orders_model: SlayerModel
+    ) -> None:
+        """Flavor A + B together: a non-projected mixed-case sort column emits a
+        split reference whose column part is quoted: ``orders."CreatedAt"``."""
+        model = orders_model.model_copy(deep=True)
+        model.columns.append(Column(name="CreatedAt", sql="CreatedAt", type=DataType.TIMESTAMP))
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            distinct_dimension_values=False,
+            order=[OrderItem(column=ColumnRef(name="CreatedAt"), direction="desc")],
+        )
+        sql = _norm(await _engine_generate(query=query, model=model))
+        assert 'ORDER BY orders."CreatedAt" DESC' in sql
+        assert '"orders.CreatedAt"' not in sql
+
+    async def test_orderby_split_key_keeps_asc_limit_offset(
+        self, orders_model: SlayerModel
+    ) -> None:
+        """ASC direction plus LIMIT / OFFSET are still applied around the split
+        fallback sort key."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            distinct_dimension_values=False,
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+            limit=10,
+            offset=5,
+        )
+        sql = _norm(await _engine_generate(query=query, model=orders_model))
+        assert "ORDER BY orders.created_at ASC" in sql
+        assert "LIMIT 10" in sql
+        assert "OFFSET 5" in sql
+        assert '"orders.created_at"' not in sql
+
+    async def test_orderby_projected_alias_combined_cte_path_unchanged(self) -> None:
+        """Regression guard for the combined measure-CTE ORDER BY site
+        (`_assemble_combined_sql`): ordering by a projected cross-model measure
+        alias keeps the whole-quoted composite form."""
+        clusters = SlayerModel(
+            name="clusters", sql_table="clusters", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="score", sql="score", type=DataType.DOUBLE),
+            ],
+        )
+        accts = SlayerModel(
+            name="accts", sql_table="accts", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="clu_ref", sql="clu_ref", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
+            ],
+            joins=[ModelJoin(target_model="clusters", join_pairs=[["clu_ref", "id"]])],
+        )
+        query = SlayerQuery(
+            source_model="accts",
+            dimensions=[ColumnRef(name="status")],
+            measures=[{"formula": "clusters.score:sum", "name": "sc"}],
+            order=[OrderItem(column=ColumnRef(name="sc"), direction="desc")],
+        )
+        sql = _norm(await _engine_generate(
+            query=query, model=accts, extra_models=[clusters],
+        ))
+        # The typed pipeline sorts on the cross-model CTE's own canonical
+        # output column rather than the user's rename. Both name the same
+        # value (the outer SELECT projects that column AS "accts.sc"), and the
+        # CTE is CROSS JOINed into the combined SELECT, so Postgres resolves
+        # the reference against the FROM inputs. What this test guards is the
+        # WHOLE-QUOTED composite form at the combined-CTE ORDER BY site — a
+        # split ``_cm_x.accts.clusters.score_sum`` would be a nonexistent
+        # column — not which of the two equivalent names is chosen.
+        assert 'ORDER BY "accts.clusters.score_sum" DESC' in sql, sql
+        assert "ORDER BY accts." not in sql, sql
+
+    async def test_orderby_unresolvable_joined_column_rejected(self) -> None:
+        """Ordering by an unprojected multi-hop joined column whose join was
+        never pulled into scope cannot bind to any FROM table — reject at
+        compile time rather than emit invalid SQL (DEV-1645, user decision on
+        Codex review of PR #224)."""
+        orders, joined = _orders_customers_regions()
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "amount:sum", "name": "rev"}],
+            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        )
+        with pytest.raises(UnresolvableOrderColumnError):
+            await _engine_generate(query=query, model=orders, extra_models=joined)
+
+    async def test_orderby_joined_column_rejected_even_when_filter_pulls_join_in(self) -> None:
+        """An unprojected joined ORDER BY is rejected even when a filter pulls
+        the join into the base FROM: the compiler's outer-wrapping layers
+        (measure CTEs, pagination, first/last ranked, projection trim) relocate
+        the ORDER BY into a scope where the joined table is unbound, so resolving
+        it is unsafe. Project the column or order by a projected field instead."""
+        orders, joined = _orders_customers_regions()
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "amount:sum", "name": "rev"}],
+            filters=["customers.regions.name == 'US'"],
+            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        )
+        with pytest.raises(UnresolvableOrderColumnError):
+            await _engine_generate(query=query, model=orders, extra_models=joined)
+
+    async def test_orderby_joined_column_rejected_in_cte_wrapped_scope(self) -> None:
+        """A joined column can be resolved in the base SELECT (joins in FROM),
+        but NOT in a CTE-wrapped scope (measure CTEs / windowed measures order
+        from `_base`, where the join alias is unbound). Even when a filter pulls
+        the join in, ordering by that joined column in the combined-CTE path must
+        reject rather than emit an unbound reference (Codex review of PR #224)."""
+        orders, joined = _orders_customers_regions()
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],  # windowed -> combined CTE path
+            filters=["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
+            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        )
+        with pytest.raises(UnresolvableOrderColumnError):
+            await _engine_generate(query=query, model=orders, extra_models=joined)
+
+    async def test_orderby_joined_column_rejected_in_first_last_ranked_scope(self) -> None:
+        """first/last measures wrap the FROM (with its joins) in a ranked
+        subquery that only re-exposes model.* — so the outer ORDER BY can't see
+        a joined column even when a filter pulled the join in. Must reject, not
+        emit an unbound reference (Codex review of PR #224)."""
+        orders, joined = _orders_customers_regions()
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "amount:last(created_at)", "name": "latest"}],  # ranked-subquery wrap
+            filters=["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
+            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        )
+        with pytest.raises(UnresolvableOrderColumnError):
+            await _engine_generate(query=query, model=orders, extra_models=joined)
+
+
+# ============================================================================
+# Flavor A — DEFERRED capability: joined / cross-model ORDER BY resolution
+# ============================================================================
+
+class TestFlavorAJoinedOrderByDeferred:
+    """Ordering by an unprojected JOINED column in a GROUPED query.
+
+    DEV-1645 originally rejected every unprojected joined/cross-model ORDER BY
+    (``UnresolvableOrderColumnError``). DEV-1703 Phase 1 narrowed that: an
+    order-only ref now resolves like a filter ref, so a joined sort key in a
+    RAW-ROWS query pulls its join (Law 1) and split-emits, and a LOCAL row
+    column in a grouped query materialises a hidden ``:max`` wrap.
+
+    All three queries below are GROUPED with a JOINED sort key — the one shape
+    still rejected, because it has no host-rooted representation today (see
+    ``_REASON``). They stay ``strict=True`` so they flip to XPASS the moment
+    DEV-1735 lands, prompting removal of the xfail and the reject. The
+    companion tests in ``TestFlavorAOrderByUnprojected`` pin the reject
+    contract; ``tests/test_dev1712_order_only_hidden_slots.py`` pins the
+    resolved shapes."""
+
+    _REASON = (
+        "DEV-1735: joined ORDER BY resolution in a GROUPED query is deferred. "
+        "DEV-1703 Phase 1 resolved the raw-rows case (Law-1 join pull + split "
+        "emission) and the grouped LOCAL case (hidden ``:max`` wrap), but a "
+        "grouped JOINED sort key has no host-rooted representation — an "
+        "AggregateKey with a non-empty source.path always routes to a "
+        "target-rooted CTE, which degenerates to a scalar CROSS JOIN whose "
+        "value is constant per group, so the sort would silently do nothing. "
+        "Rejecting loudly is preferred until DEV-1735 lands host-rooted "
+        "crossing MAX."
+    )
+
+    @pytest.mark.xfail(strict=True, reason=_REASON)
+    async def test_joined_orderby_with_filter_in_scope_should_resolve(self) -> None:
+        """A filter pulls the join into the base FROM; ordering by that joined
+        column should resolve to the canonical ``__`` alias."""
+        orders, joined = _orders_customers_regions()
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "amount:sum", "name": "rev"}],
+            filters=["customers.regions.name == 'US'"],
+            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        )
+        sql = _norm(await _engine_generate(
+            query=query, model=orders, extra_models=joined,
+        ))
+        assert "ORDER BY customers__regions.name" in sql
+
+    @pytest.mark.xfail(strict=True, reason=_REASON)
+    async def test_joined_orderby_without_filter_should_pull_join_and_resolve(self) -> None:
+        """Ordering by a joined column with no other reference should pull the
+        join in (like filters do) and resolve, rather than reject."""
+        orders, joined = _orders_customers_regions()
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "amount:sum", "name": "rev"}],
+            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        )
+        sql = _norm(await _engine_generate(
+            query=query, model=orders, extra_models=joined,
+        ))
+        assert "ORDER BY customers__regions.name" in sql
+
+    @pytest.mark.xfail(strict=True, reason=_REASON)
+    async def test_joined_orderby_in_cte_wrapped_scope_should_resolve(self) -> None:
+        """A windowed-measure (combined-CTE) query that filters on and orders by
+        a joined column should eventually resolve it in the outer scope."""
+        orders, joined = _orders_customers_regions()
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "cumsum(amount:sum)", "name": "cs"}],
+            filters=["customers.regions.name == 'US'"],
+            order=[OrderItem(column=ColumnRef(name="name", model="customers.regions"), direction="desc")],
+        )
+        sql = _norm(await _engine_generate(
+            query=query, model=orders, extra_models=joined,
+        ))
+        # Assert on the ORDER BY clause specifically (not a bare substring that
+        # the ``== 'US'`` filter's WHERE would satisfy): the aspiration is that
+        # the joined sort key resolves to the ``__`` path alias. On the typed
+        # pipeline the ORDER BY still emits the unprojected dotted alias
+        # ``"customers.regions.name"`` (the DEV-1645 gap → Stages 8-9), so this
+        # correctly xfails until joined ORDER BY resolution lands.
+        assert "ORDER BY customers__regions.name" in sql
+
+
+# ============================================================================
+# Flavor B — mixed-case identifier quoting
+# ============================================================================
+
+class TestFlavorBMixedCaseQuoting:
+    async def test_column_sql_mixed_case_quoted(self, accounts_model: SlayerModel) -> None:
+        """Mixed-case ident inside ``Column.sql`` (CASE WHEN) is quoted; a
+        lowercase sibling column that IS projected stays unquoted.
+
+        The typed pipeline additionally anchors the expanded reference at the
+        scope root (Law 1), so the quoted ident arrives relation-qualified as
+        ``accounts."StateFlag"``. The defect this pins is the QUOTING — an
+        unquoted ``StateFlag`` folds to lowercase on Postgres and raises
+        UndefinedColumn — so the qualifier is incidental and the assertion
+        matches the quoted ident rather than a bare-prefix shape.
+        """
+        query = SlayerQuery(
+            source_model="accounts",
+            dimensions=[ColumnRef(name="is_inactive"), ColumnRef(name="acct_form")],
+            distinct_dimension_values=False,
+        )
+        sql = _norm(await _engine_generate(query=query, model=accounts_model))
+        assert 'CASE WHEN accounts."StateFlag" = \'Dormant\'' in sql, sql
+        # The bare unquoted form must never appear.
+        assert "CASE WHEN accounts.StateFlag" not in sql, sql
+        # lowercase sibling is emitted (projected) and stays unquoted
+        assert "accounts.acct_form" in sql
+        assert '"acct_form"' not in sql
+
+    async def test_filter_predicate_path_mixed_case_quoted(
+        self, accounts_model: SlayerModel
+    ) -> None:
+        """The headline ``fake_account_23`` repro: a filter referencing a
+        derived column whose SQL holds a mixed-case ident flows through
+        ``_parse_predicate`` and must emit the quoted form in the WHERE."""
+        query = SlayerQuery(
+            source_model="accounts",
+            measures=[{"formula": "*:count", "name": "cnt"}],
+            filters=["is_inactive == True"],
+        )
+        sql = _norm(await _engine_generate(query=query, model=accounts_model))
+        assert "WHERE" in sql
+        assert '"StateFlag"' in sql
+
+    async def test_model_filter_mixed_case_quoted(self) -> None:
+        """A model-level always-applied filter with a mixed-case ident is quoted."""
+        model = SlayerModel(
+            name="accounts",
+            sql_table="public.accounts",
+            data_source="test",
+            filters=["StateFlag IS NOT NULL"],
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
+        )
+        query = SlayerQuery(source_model="accounts", measures=[{"formula": "*:count"}])
+        sql = _norm(await _engine_generate(query=query, model=model))
+        assert "WHERE" in sql
+        assert '"StateFlag"' in sql
+
+    async def test_column_filter_mixed_case_quoted(self) -> None:
+        """A ``Column.filter`` (CASE-WHEN at aggregation time) with a mixed-case
+        ident is quoted."""
+        model = SlayerModel(
+            name="accounts",
+            sql_table="public.accounts",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(
+                    name="amount",
+                    sql="amount",
+                    type=DataType.DOUBLE,
+                    filter="StateFlag = 'Active'",
+                ),
+            ],
+        )
+        query = SlayerQuery(source_model="accounts", measures=[{"formula": "amount:sum"}])
+        sql = _norm(await _engine_generate(query=query, model=model))
+        assert '"StateFlag"' in sql
+
+    async def test_resolved_join_key_mixed_case_quoted(self) -> None:
+        """A join whose join_pairs reference a mixed-case key (``CLSTR_PIN``)
+        emits the quoted form in the ON clause (the ``fake_account_15`` repro)."""
+        cluster = SlayerModel(
+            name="cluster_analysis",
+            sql_table="cluster_analysis",
+            data_source="test",
+            columns=[
+                Column(name="CLSTR_PIN", sql="CLSTR_PIN", type=DataType.DOUBLE, primary_key=True),
+                Column(name="score", sql="score", type=DataType.DOUBLE),
+            ],
+        )
+        accounts = SlayerModel(
+            name="account_clusters",
+            sql_table="account_clusters",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="clu_ref", sql="clu_ref", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="cluster_analysis", join_pairs=[["clu_ref", "CLSTR_PIN"]])],
+        )
+        # A cross-model dimension forces a visible LEFT JOIN ... ON <keys>,
+        # matching the fake_account_15 shape (`ON ... = cluster_analysis.CLSTR_PIN`).
+        query = SlayerQuery(
+            source_model="account_clusters",
+            dimensions=[ColumnRef(name="score", model="cluster_analysis")],
+            distinct_dimension_values=False,
+        )
+        sql = await _engine_generate(
+            query=query, model=accounts, extra_models=[cluster],
+        )
+        assert "LEFT JOIN" in sql and " ON " in sql
+        assert '"CLSTR_PIN"' in _norm(sql)
+
+    async def test_bare_mixed_case_dimension_quoted(self) -> None:
+        """A dimension referencing a bare mixed-case column (``_resolve_sql``
+        direct-construction path) quotes both qualifier-free column and any
+        model qualifier consistently."""
+        model = SlayerModel(
+            name="accounts",
+            sql_table="public.accounts",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="StateFlag", sql="StateFlag", type=DataType.TEXT),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="accounts",
+            dimensions=[ColumnRef(name="StateFlag")],
+            distinct_dimension_values=False,
+        )
+        sql = _norm(await _engine_generate(query=query, model=model))
+        assert '"StateFlag"' in sql
+
+    async def test_first_last_ranked_mixed_case_dimension_quoted(self) -> None:
+        """The first/last ranked-subquery path references group-by dimensions by
+        bare name against the model.* subquery output; a mixed-case dimension
+        must be quoted there (DEV-1645, Codex review of PR #224)."""
+        model = SlayerModel(
+            name="events",
+            sql_table="public.events",
+            data_source="test",
+            default_time_dimension="ts",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="RegionCode", sql="RegionCode", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="ts", sql="ts", type=DataType.TIMESTAMP),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="events",
+            dimensions=[ColumnRef(name="RegionCode")],
+            measures=[{"formula": "amount:last(ts)", "name": "latest"}],
+        )
+        sql = _norm(await _engine_generate(query=query, model=model))
+        # The OUTER group-by / projection reference must be quoted so it
+        # matches the ranked subquery's ``model.*`` output column. The typed
+        # pipeline emits it relation-qualified (``events."RegionCode"``);
+        # unquoted, Postgres folds it to ``regioncode`` -> UndefinedColumn.
+        assert 'GROUP BY events."RegionCode"' in sql, sql
+        assert "GROUP BY events.RegionCode" not in sql, sql
+        # ...and the projection must agree with it.
+        assert 'events."RegionCode" AS "events.RegionCode"' in sql, sql
+
+    async def test_standard_agg_inner_mixed_case_column_quoted(self) -> None:
+        """A standard aggregation over a bare mixed-case column quotes the inner
+        column (the ``_resolve_sql`` / standard-agg inner construction path):
+        ``SUM(accounts."MixedAmt")``."""
+        model = SlayerModel(
+            name="accounts",
+            sql_table="public.accounts",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="MixedAmt", sql="MixedAmt", type=DataType.DOUBLE),
+            ],
+        )
+        query = SlayerQuery(source_model="accounts", measures=[{"formula": "MixedAmt:sum", "name": "s"}])
+        sql = _norm(await _engine_generate(query=query, model=model))
+        assert 'SUM(accounts."MixedAmt")' in sql
+
+    async def test_resolved_join_target_table_mixed_case_quoted(self) -> None:
+        """A join whose TARGET model has a mixed-case physical ``sql_table`` emits
+        a quoted table name in the LEFT JOIN."""
+        regions = SlayerModel(
+            name="regions", sql_table="MyRegions", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+            ],
+        )
+        cust = SlayerModel(
+            name="cust", sql_table="cust", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        )
+        query = SlayerQuery(
+            source_model="cust",
+            dimensions=[ColumnRef(name="name", model="regions")],
+            distinct_dimension_values=False,
+        )
+        sql = _norm(await _engine_generate(
+            query=query, model=cust, extra_models=[regions],
+        ))
+        assert 'LEFT JOIN "MyRegions"' in sql
+
+    async def test_physical_table_name_mixed_case_quoted(self) -> None:
+        """A mixed-case physical ``sql_table`` is quoted in the FROM clause."""
+        model = SlayerModel(
+            name="accounts",
+            sql_table="public.MyAccounts",
+            data_source="test",
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
+        )
+        query = SlayerQuery(source_model="accounts", measures=[{"formula": "*:count"}])
+        sql = _norm(await _engine_generate(query=query, model=model))
+        assert '"MyAccounts"' in sql
+
+    async def test_lowercase_only_expression_unchanged(self, orders_model: SlayerModel) -> None:
+        """No spurious quoting: an all-lowercase expression emits unchanged."""
+        query = SlayerQuery(source_model="orders", measures=[{"formula": "revenue:sum"}])
+        sql = _norm(await _engine_generate(query=query, model=orders_model))
+        assert "SUM(orders.amount)" in sql
+        assert '"amount"' not in sql
+
+    async def test_function_name_not_quoted(self) -> None:
+        """A function call whose name is mixed-case-ish stays a function — only
+        Identifier nodes are quoted, not Func/Anonymous names."""
+        model = SlayerModel(
+            name="accounts",
+            sql_table="public.accounts",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="j", sql="COALESCE(RawVal, 0)", type=DataType.DOUBLE),
+            ],
+        )
+        query = SlayerQuery(source_model="accounts", measures=[{"formula": "j:sum"}])
+        sql = _norm(await _engine_generate(query=query, model=model))
+        assert "COALESCE" in sql
+        assert '"COALESCE"' not in sql
+        assert '"RawVal"' in sql  # the mixed-case *argument* is quoted
+
+    async def test_mixed_case_join_target_alias_consistent(self) -> None:
+        """Def/ref consistency (Codex finding #4): when a join key is mixed-case,
+        the ON reference and the projected join column resolve consistently — the
+        emitted SQL parses and every quoted identifier is balanced."""
+        regions = SlayerModel(
+            name="regions",
+            sql_table="regions",
+            data_source="test",
+            columns=[
+                Column(name="RegionId", sql="RegionId", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+            ],
+        )
+        customers = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="RegionRef", sql="RegionRef", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["RegionRef", "RegionId"]])],
+        )
+        query = SlayerQuery(
+            source_model="customers",
+            dimensions=[ColumnRef(name="name", model="regions")],
+            distinct_dimension_values=False,
+        )
+        sql = await _engine_generate(
+            query=query, model=customers, extra_models=[regions],
+        )
+        # both mixed-case join keys quoted, and the SQL parses cleanly
+        assert '"RegionRef"' in sql
+        assert '"RegionId"' in sql
+        sqlglot.parse_one(sql, dialect="postgres")
+
+
+class TestMixedCaseHelperUnit:
+    """Direct policy tests for the shared quoting helper / constructors."""
+
+    def test_quote_mixed_case_identifiers_quotes_uppercase_only(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        tree = sqlglot.parse_one("CASE WHEN accounts.StateFlag = 'x' THEN 1 ELSE 0 END")
+        out = tree.transform(gen._quote_mixed_case_identifiers).sql(dialect="postgres")
+        assert '"StateFlag"' in out
+        assert "accounts" in out and '"accounts"' not in out  # lowercase qualifier untouched
+
+    def test_quote_mixed_case_idempotent_and_skips_prequoted(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        tree = sqlglot.parse_one('accounts."StateFlag" = 1')
+        once = tree.transform(gen._quote_mixed_case_identifiers)
+        twice = once.transform(gen._quote_mixed_case_identifiers)
+        assert twice.sql(dialect="postgres").count('"StateFlag"') == 1  # no double-quoting
+
+    def test_to_ident_quotes_mixed_case(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        assert gen._to_ident("StateFlag").sql(dialect="postgres") == '"StateFlag"'
+        assert gen._to_ident("state_flag").sql(dialect="postgres") == "state_flag"
+
+    def test_to_table_quotes_physical_name_not_alias(self) -> None:
+        """Physical table name is quoted when mixed-case; the SLayer-internal
+        alias is left unquoted (it folds consistently within the query)."""
+        gen = SQLGenerator(dialect="postgres")
+        out = gen._to_table("public.MyTable", alias="MyAlias").sql(dialect="postgres")
+        assert '"MyTable"' in out
+        assert '"MyAlias"' not in out
+        assert "AS MyAlias" in out
+
+
+# ============================================================================
+# Multi-dialect: universal quoting with per-dialect quote characters
+# ============================================================================
+
+class TestMixedCaseQuotingMultiDialect:
+    _QUOTE = {
+        "postgres": ('"', '"'),
+        "sqlite": ('"', '"'),
+        "duckdb": ('"', '"'),
+        "snowflake": ('"', '"'),
+        "mysql": ("`", "`"),
+        "tsql": ("[", "]"),
+    }
+
+    @pytest.mark.parametrize("dialect", list(_QUOTE))
+    async def test_mixed_case_column_quoted_per_dialect(self, dialect: str) -> None:
+        model = SlayerModel(
+            name="accounts",
+            sql_table="public.accounts",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(
+                    name="is_inactive",
+                    type=DataType.BOOLEAN,
+                    sql="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END",
+                ),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="accounts",
+            dimensions=[ColumnRef(name="is_inactive")],
+            distinct_dimension_values=False,
+        )
+        sql = _norm(await _engine_generate(query=query, model=model, dialect=dialect))
+        lq, rq = self._QUOTE[dialect]
+        assert f"{lq}StateFlag{rq}" in sql

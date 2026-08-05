@@ -20,8 +20,8 @@ from sqlglot import exp
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+import slayer.engine.query_engine as query_engine_module
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.generator import SQLGenerator
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import _engine_generate
@@ -36,7 +36,7 @@ def _norm(s: str) -> str:
     return " ".join(s.split())
 
 
-def _outer_select_columns(sql: str, *, dialect: str = "postgres") -> List[str]:
+def _outer_select_columns(sql: str, *, dialect: str = "postgres") -> list[str]:
     """Return the list of alias names projected by the OUTERMOST SELECT.
 
     For ``SELECT a, b FROM (...)`` the outer projection is ``[a, b]``.
@@ -47,14 +47,14 @@ def _outer_select_columns(sql: str, *, dialect: str = "postgres") -> List[str]:
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     if not isinstance(parsed, exp.Select):  # pragma: no cover — defensive
         return []
-    out: List[str] = []
+    out: list[str] = []
     for proj in parsed.expressions:
         # ``alias_or_name`` returns the alias if present, else the bare name.
         out.append(proj.alias_or_name)
     return out
 
 
-def _all_aliases_in_sql(sql: str) -> List[str]:
+def _all_aliases_in_sql(sql: str) -> list[str]:
     """Return every alias-name that appears as a quoted identifier in the SQL.
 
     Useful for "alias X appears in some CTE" assertions without committing
@@ -63,7 +63,7 @@ def _all_aliases_in_sql(sql: str) -> List[str]:
     return re.findall(r'"([^"]+)"', sql)
 
 
-def _outer_order_by_references(sql: str, *, dialect: str = "postgres") -> List[str]:
+def _outer_order_by_references(sql: str, *, dialect: str = "postgres") -> list[str]:
     """Return identifier names referenced by the outermost ORDER BY clause."""
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     if not isinstance(parsed, exp.Select):  # pragma: no cover
@@ -71,7 +71,7 @@ def _outer_order_by_references(sql: str, *, dialect: str = "postgres") -> List[s
     order = parsed.args.get("order")
     if order is None:
         return []
-    refs: List[str] = []
+    refs: list[str] = []
     for ordered in order.expressions:
         col = ordered.this
         if isinstance(col, exp.Column):
@@ -693,15 +693,6 @@ class TestEdgeCases:
             f"SQL:\n{sql}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1495 (Bug 1): a cross-model DIMENSION projects under the "
-            "flattened ``__`` key (``orders.customers__revenue``) instead of "
-            "the dotted form (``orders.customers.revenue``) that cross-model "
-            "MEASURES and CLAUDE.md use. Auto-promotes when DEV-1495 is fixed."
-        ),
-    )
     async def test_cross_model_dotted_dimension_projection(
         self, orders_customers_engine,
     ) -> None:
@@ -1132,15 +1123,6 @@ class TestWrapperLayering:
 # Group M — Cross-model / isolated ORDER BY hoisted, not projected.
 # ===========================================================================
 class TestCrossModelOrderBy:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1495 (Bug 2): an order-by-only cross-model aggregate "
-            "(``customers.revenue:sum``, no declared measure) LEAKS into the "
-            "outer projection as a malformed ``orders.customers._sum`` instead "
-            "of staying a hidden slot. Auto-promotes when DEV-1495 is fixed."
-        ),
-    )
     async def test_order_by_cross_model_agg_hoisted_not_projected(
         self, orders_customers_engine,
     ) -> None:
@@ -1259,37 +1241,45 @@ class TestWindowChainReuse:
 # Test 17 (revised), 38, 39, 40, 41 — call-site / contract pins.
 # ===========================================================================
 class TestCallSitesAndContractPins:
-    async def test_get_column_types_does_not_call_legacy_generate(
+    async def test_get_column_types_renders_through_planned_stages(
         self, orders_model: SlayerModel, tmp_path, monkeypatch,
     ) -> None:
-        """DEV-1452 Stage B — ``get_column_types`` no longer routes through
-        ``SQLGenerator.generate(enriched=...)``. Spy on the legacy entry
-        point; assert it's never invoked. (Pre-Stage-B this test pinned
-        ``render_mode='outer'`` on that call; the typed-pipeline migration
-        deletes the legacy path entirely, so the equivalent contract is
-        "zero legacy generate calls".)
+        """DEV-1452 Stage B — ``get_column_types`` renders its type-probe
+        SQL through the typed ``generate_planned_stages`` entry point.
+
+        (Was ``test_get_column_types_does_not_call_legacy_generate``, which
+        spied on ``SQLGenerator.generate`` and asserted it was never called
+        with an ``enriched=`` kwarg. DEV-1703 deletes that entry point
+        outright, so the negative form is both unspyable — there is no
+        attribute left to patch — and vacuous. The positive half of the
+        same contract is what is pinned here: the probe goes through the
+        planned-stage renderer, exactly once, and yields probe SQL.)
         """
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
         await storage.save_model(orders_model)
         engine = SlayerQueryEngine(storage=storage)
 
-        legacy_calls: List[dict] = []
-        original_generate = SQLGenerator.generate
+        planned_calls: List[str] = []
+        original_generate = query_engine_module.generate_planned_stages
 
-        def _wrapper(self, *args, **kwargs):
-            if "enriched" in kwargs:
-                legacy_calls.append(dict(kwargs))
-            return original_generate(self, *args, **kwargs)
+        def _wrapper(*args, **kwargs):
+            sql = original_generate(*args, **kwargs)
+            planned_calls.append(sql)
+            return sql
 
-        monkeypatch.setattr(SQLGenerator, "generate", _wrapper)
+        monkeypatch.setattr(
+            query_engine_module, "generate_planned_stages", _wrapper,
+        )
 
         await engine.get_column_types(model_name="orders")
 
-        assert not legacy_calls, (
-            f"get_column_types must NOT call legacy "
-            f"SQLGenerator.generate(enriched=...); captured: {legacy_calls}"
+        assert len(planned_calls) == 1, (
+            f"get_column_types must render the probe through "
+            f"generate_planned_stages exactly once; got {len(planned_calls)} "
+            f"call(s)"
         )
+        assert "SELECT" in planned_calls[0].upper(), planned_calls[0]
 
     async def test_outer_wrapper_owns_order_limit_offset(
         self, orders_model: SlayerModel,

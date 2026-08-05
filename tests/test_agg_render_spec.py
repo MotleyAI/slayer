@@ -55,8 +55,15 @@ from slayer.engine.planned import ValueSlot
 # tests instantiate the generator to invoke it (see ``_invoke`` below).
 from slayer.sql.generator import (  # type: ignore[attr-defined]
     AggRenderSpec,
+    ResolvedAggKwarg,
     SQLGenerator,
 )
+
+
+def _str_kwarg(value: str) -> ResolvedAggKwarg:
+    """DEV-1706: agg_kwargs values are now 2-kind tagged; a canonical-string
+    kwarg round-trips to ``kind="str"``."""
+    return ResolvedAggKwarg(kind="str", value=value)
 
 
 def _invoke(slot, key, *, source_model, source_relation, full_alias):
@@ -223,7 +230,7 @@ class TestAggRenderSpecConstruction:
         )
         assert spec.sql == "amount"
         assert spec.aggregation_def is agg_def
-        assert spec.agg_kwargs == {"p": "0.5"}
+        assert spec.agg_kwargs == {"p": _str_kwarg("0.5")}
         assert spec.filter_sql == "orders.status = 'paid'"
         assert spec.time_column == "orders.created_at"
         assert spec.type is DataType.DOUBLE
@@ -733,8 +740,8 @@ class TestBuilderCustomAggregation:
         assert spec.aggregation == "rolling_avg"
         assert spec.aggregation_def is not None
         assert spec.aggregation_def.name == "rolling_avg"
-        # Kwargs stringified via ``agg_kwarg_canonical_str``.
-        assert spec.agg_kwargs == {"window": "6"}
+        # Kwargs stringified via ``agg_kwarg_canonical_str`` → kind="str".
+        assert spec.agg_kwargs == {"window": _str_kwarg("6")}
 
     def test_unknown_aggregation_raises(self):
         key = AggregateKey(
@@ -839,7 +846,7 @@ class TestBuilderParametric:
             full_alias="orders.amount_percentile_p_0_5",
         )
         assert spec.aggregation == "percentile"
-        assert spec.agg_kwargs == {"p": "0.5"}
+        assert spec.agg_kwargs == {"p": _str_kwarg("0.5")}
         assert spec.sql == "amount"
 
     def test_stat_agg_with_other_kwarg(self):
@@ -865,9 +872,9 @@ class TestBuilderParametric:
         )
         assert spec.aggregation == "corr"
         # The ``other=`` column kwarg canonicalises to the qualified name
-        # (mirrors ``agg_kwarg_canonical_str`` for ColumnKey).
+        # (mirrors ``agg_kwarg_canonical_str`` for ColumnKey) → kind="str".
         assert "other" in spec.agg_kwargs
-        assert spec.agg_kwargs["other"] == "quantity"
+        assert spec.agg_kwargs["other"] == _str_kwarg("quantity")
 
 
 # ---------------------------------------------------------------------------
@@ -876,9 +883,12 @@ class TestBuilderParametric:
 
 
 class TestBuilderCrossModelKwargPath:
-    def test_kwarg_columnkey_path_mismatch_raises(self):
-        # Aggregate value column is local; kwarg ColumnKey carries a join
-        # path — that's a meaningless cross-model kwarg and must reject.
+    def test_local_source_pathed_kwarg_accepted(self):
+        # DEV-1709: a LOCAL aggregate with a structurally-crossing kwarg is
+        # now a supported crossing INPUT — the widened Law-3 trigger
+        # isolates the aggregate host-rooted, and inside that CTE's
+        # sub-render the kwarg resolves through the host scope. The spec
+        # builder therefore no longer rejects it.
         key = AggregateKey(
             source=ColumnKey(path=(), leaf="amount"),
             agg="weighted_avg",
@@ -892,21 +902,17 @@ class TestBuilderCrossModelKwargPath:
             public_name="amount_weighted_avg",
             slot_type=DataType.DOUBLE,
         )
-        with pytest.raises(AggregationNotAllowedError, match=r"kwarg .* references ColumnKey"):
-            _invoke(
-                slot=slot,
-                key=key,
-                source_model=_orders_model(),
-                source_relation="orders",
-                full_alias="orders.amount_weighted_avg",
-            )
+        spec = _invoke(
+            slot=slot,
+            key=key,
+            source_model=_orders_model(),
+            source_relation="orders",
+            full_alias="orders.amount_weighted_avg",
+        )
+        assert spec is not None
 
-    def test_kwarg_columnsqlkey_path_mismatch_raises(self):
-        # CodeRabbit fold-in: a ColumnSqlKey kwarg with a non-empty path
-        # against a local source must reject the same way ColumnKey does.
-        # Previously the isinstance check only matched ColumnKey, so a
-        # ColumnSqlKey kwarg slipped past and would have bound the
-        # derived expression against the wrong relation.
+    def test_local_source_pathed_columnsqlkey_kwarg_accepted(self):
+        # Same DEV-1709 relaxation for the ColumnSqlKey kwarg kind.
         key = AggregateKey(
             source=ColumnKey(path=(), leaf="amount"),
             agg="weighted_avg",
@@ -927,14 +933,40 @@ class TestBuilderCrossModelKwargPath:
             public_name="amount_weighted_avg",
             slot_type=DataType.DOUBLE,
         )
+        spec = _invoke(
+            slot=slot,
+            key=key,
+            source_model=_orders_model(),
+            source_relation="orders",
+            full_alias="orders.amount_weighted_avg",
+        )
+        assert spec is not None
+
+    def test_cross_model_source_kwarg_path_mismatch_still_raises(self):
+        # The gate survives for CROSS-MODEL aggregates: after reroot
+        # prefix-stripping, a kwarg on a DIFFERENT branch than the source
+        # would bind against the wrong model — still a hard error.
+        key = AggregateKey(
+            source=ColumnKey(path=("customers",), leaf="amount"),
+            agg="weighted_avg",
+            kwargs=(
+                ("weight", ColumnKey(path=("warehouses",), leaf="quantity")),
+            ),
+        )
+        slot = _slot(
+            key,
+            declared_name="amount_weighted_avg",
+            public_name="amount_weighted_avg",
+            slot_type=DataType.DOUBLE,
+        )
+        orders = _orders_model()
         with pytest.raises(
-            AggregationNotAllowedError,
-            match=r"kwarg .* references ColumnSqlKey",
+            AggregationNotAllowedError, match=r"kwarg .* references ColumnKey",
         ):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=_orders_model(),
+                source_model=orders,
                 source_relation="orders",
                 full_alias="orders.amount_weighted_avg",
             )
@@ -973,7 +1005,7 @@ class TestBuilderCrossModelKwargPath:
             source_relation="customers",
             full_alias="customers.amount_weighted_avg",
         )
-        assert spec.agg_kwargs == {"weight": "quantity"}
+        assert spec.agg_kwargs == {"weight": _str_kwarg("quantity")}
 
 
 # ---------------------------------------------------------------------------

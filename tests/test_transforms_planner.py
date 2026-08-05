@@ -209,6 +209,56 @@ class TestBindTransformValidation:
                 scope=_scope(), bundle=_bundle(),
             )
 
+    # -- DEV-1484 backfills from the deleted test_formula.py -----------------
+    # ``TestFormulaParser`` asserted these rejections against the legacy
+    # free-function parser (which validated transform args at parse time).
+    # The typed pipeline validates them at bind time, so the equivalent
+    # guarantees are pinned here.
+
+    def test_rank_rejects_extra_positional_arg(self) -> None:
+        # rank-family transforms are keyword-only after the value; an extra
+        # positional must fail fast rather than being silently dropped.
+        parsed = parse_expr("rank(amount:sum, 2)")
+        scope, bundle = _scope(), _bundle()
+        with pytest.raises(ValueError, match="exactly one positional"):
+            bind_expr(parsed, scope=scope, bundle=bundle)
+
+    def test_ntile_rejects_positional_n(self) -> None:
+        # ``ntile(x, 4)`` is rejected — n must be passed by keyword (n=4).
+        parsed = parse_expr("ntile(amount:sum, 4)")
+        scope, bundle = _scope(), _bundle()
+        with pytest.raises(ValueError, match="exactly one positional"):
+            bind_expr(parsed, scope=scope, bundle=bundle)
+
+    def test_rank_rejects_n_kwarg(self) -> None:
+        # ``n`` is ntile-only; rank must not silently accept it.
+        parsed = parse_expr("rank(amount:sum, n=4)")
+        scope, bundle = _scope(), _bundle()
+        with pytest.raises(ValueError, match="rank.*not.*accept.*'n'"):
+            bind_expr(parsed, scope=scope, bundle=bundle)
+
+    def test_time_shift_positional_periods_binds(self) -> None:
+        # ``time_shift(x, -1)`` — the row-based positional form maps onto the
+        # ``periods`` kwarg (parse shape pinned in test_syntax.py).
+        bound = bind_expr(
+            parse_expr("time_shift(amount:sum, -1)"),
+            scope=_scope(), bundle=_bundle(),
+        )
+        assert isinstance(bound.value_key, TransformKey)
+        assert dict(bound.value_key.kwargs)["periods"] == -1
+
+    def test_time_shift_positional_granularity_binds(self) -> None:
+        # ``time_shift(x, -1, 'year')`` — the calendar-based form maps the
+        # second positional onto ``granularity``.
+        bound = bind_expr(
+            parse_expr("time_shift(amount:sum, -1, 'year')"),
+            scope=_scope(), bundle=_bundle(),
+        )
+        assert isinstance(bound.value_key, TransformKey)
+        kw_dict = dict(bound.value_key.kwargs)
+        assert kw_dict["periods"] == -1
+        assert kw_dict["granularity"] == "year"
+
     def test_rank_with_partition_by_binds(self) -> None:
         bound = bind_expr(
             parse_expr("rank(amount:sum, partition_by=region)"),

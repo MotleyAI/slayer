@@ -13,87 +13,26 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, AggregationParam, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.engine.stage_planner import plan_query
 from slayer.sql.generator import (
     AggRenderSpec,
     SQLGenerator,
     _cte_name_from_alias,
     _validate_agg_param_value,
+    _wrap_cast_for_type,
 )
+from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._engine_helpers import _engine_generate
-
-
-async def _noop_async(**kw):
-    return None
-
-
-def _norm(s: str) -> str:
-    return " ".join(s.split())
-
-
-def _join_aliases(sql: str, *, dialect: str = "postgres") -> set[str]:
-    """The set of joined-table aliases in ``sql`` (the rendered-SQL
-    equivalent of the legacy enriched-query join-alias set).
-
-    Walks every ``JOIN`` node and collects the joined table's alias (or
-    bare name when unaliased) — e.g. ``LEFT JOIN customers AS customers``
-    yields ``customers``; ``LEFT JOIN regions AS customers__regions``
-    yields ``customers__regions``.
-    """
-    tree = sqlglot.parse_one(sql, dialect=dialect)
-    aliases: set[str] = set()
-    for join in tree.find_all(sqlglot.exp.Join):
-        target = join.this
-        if isinstance(target, sqlglot.exp.Table):
-            aliases.add(target.alias_or_name)
-    return aliases
-
-
-def _extract_src_body(sql: str) -> str:
-    """Pull out the `_src` subquery body from a generated window-measure SQL.
-
-    Resilient when the outer query also contains other LEFT JOIN (...) blocks
-    (e.g. cross-model measure subqueries): anchors on the unique `\\n) AS _src`
-    suffix and reverse-searches for the matching `LEFT JOIN (\\n` before it.
-    """
-    end = sql.index("\n) AS _src")
-    open_token = "LEFT JOIN (\n"
-    start = sql.rfind(open_token, 0, end) + len(open_token)
-    return sql[start:end]
-
-
-def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:
-    """Extract one CTE body by matching ``<cte_name> AS (`` and walking balanced
-    parentheses to its closing ``)``.
-
-    Robust against nested subqueries inside the CTE body (e.g. the ranked
-    ``FROM (SELECT ... ROW_NUMBER() …) AS …`` that first/last isolated CTEs
-    contain). ``cte_name_pattern`` is a regex matched against the CTE name —
-    typical use: ``r"_cm_\\w*loss_payment_amt\\w*"``. Raises ``AssertionError``
-    if no matching CTE is found.
-    """
-    name_match = _re.search(rf"({cte_name_pattern})\s+AS\s*\(", sql)
-    assert name_match, f"No CTE matching {cte_name_pattern!r} in:\n{sql}"
-    # Position just after the opening paren of ``<name> AS (``.
-    body_start = sql.index("(", name_match.start()) + 1
-    depth = 1
-    i = body_start
-    while i < len(sql) and depth > 0:
-        ch = sql[i]
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                return sql[body_start:i]
-        i += 1
-    raise AssertionError(
-        f"Unbalanced parens — no closing ) for CTE {name_match.group(1)!r}:\n{sql}"
-    )
-
-
-_SQLGLOT_TYPEERROR_DIALECTS = {"bigquery"}
+from tests._engine_helpers import (
+    _assert_valid_sql,
+    _engine_generate,
+    _extract_cte_body,
+    _extract_src_body,
+    _join_aliases,
+    _norm,
+)
 
 
 def _outer_order_terms(sql: str, dialect: str = "postgres") -> list[tuple[str, str]]:
@@ -176,21 +115,57 @@ def _outer_from_node(sql: str, dialect: str = "postgres"):
     return fc.this
 
 
-def _assert_valid_sql(sql: str, dialect: str = "postgres"):
-    """Assert generated SQL is structurally valid (parses, no nested WITH)."""
-    try:
-        statements = sqlglot.parse(sql, dialect=dialect)
-        assert statements, f"SQL failed to parse:\n{sql}"
-        assert len(statements) == 1, f"Expected 1 SQL statement, got {len(statements)}:\n{sql}"
-    except TypeError as exc:
-        if dialect not in _SQLGLOT_TYPEERROR_DIALECTS:
-            raise AssertionError(
-                f"sqlglot TypeError while validating {dialect} SQL:\n{sql}"
-            ) from exc
-        return  # Known sqlglot limitation for this dialect
-    # No nested WITH — only one WITH keyword allowed at the start of a line
-    with_lines = [line for line in sql.split("\n") if line.strip().upper().startswith("WITH ")]
-    assert len(with_lines) <= 1, f"Nested WITH clauses detected:\n{sql}"
+def _alias_bodies(sql: str, alias: str, dialect: str = "postgres") -> list[str]:
+    """Rendered body of every ``<expr> AS "<alias>"`` projection in ``sql``.
+
+    Rendered-SQL equivalent of reading an expression's SQL off the legacy
+    enriched query (``{e.name: e.sql for e in enriched.expressions}``): the
+    computed measure ``growth`` is emitted exactly once as an aliased
+    projection, so its body is the expression the engine resolved it to.
+    """
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    return [
+        node.this.sql(dialect=dialect)
+        for node in tree.find_all(sqlglot.exp.Alias)
+        if node.alias == alias
+    ]
+
+
+def _hoisted_shift_aliases(sql: str, dialect: str = "postgres") -> set[str]:
+    """The hidden aliases each hoisted ``time_shift`` is projected under.
+
+    Rendered-SQL equivalent of the legacy enriched-query transform-alias set
+    (``{t.alias for t in enriched.transforms}``): every shift becomes a
+    ``shifted_*`` CTE that a ``sjoin_*`` CTE self-joins, projecting the
+    shifted measure under the hoisted transform's alias.
+    """
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    aliases: set[str] = set()
+    for cte in tree.find_all(sqlglot.exp.CTE):
+        if not cte.alias_or_name.startswith("sjoin_"):
+            continue
+        for proj in cte.this.expressions:
+            if (
+                isinstance(proj, sqlglot.exp.Alias)
+                and isinstance(proj.this, sqlglot.exp.Column)
+                and proj.this.table.startswith("shifted_")
+            ):
+                aliases.add(proj.alias)
+    return aliases
+
+
+def _outer_projection_names(sql: str, dialect: str = "postgres") -> set[str]:
+    """Result keys the OUTERMOST SELECT projects — the public projection.
+
+    Superset of the legacy enriched-query dimension/time-dimension/expression
+    alias sets (user-declared dimensions AND measures, and nothing hidden), so
+    asserting a hoisted transform alias is absent from it is at least as
+    strict as the legacy per-set disjointness checks.
+    """
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    if not isinstance(tree, sqlglot.exp.Select):
+        return set()
+    return {proj.alias_or_name for proj in tree.expressions}
 
 
 async def _generate(
@@ -217,17 +192,13 @@ async def _generate(
     )
 
 
-_XFAIL_WINDOWED = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEV-1496: duration-windowed measures (sum(window='…')) are not yet "
-        "implemented on the typed pipeline — the window kwarg is dropped and "
-        "the measure degrades to a plain grouped aggregate. Auto-promotes when "
-        "the range-join primitive is reimplemented."
-    ),
-)
-
-
+# DEV-1496 / DEV-1714 Stage 10 landed: duration-windowed measures now emit the
+# `_wm_` range-join CTE and RAISE on unsupported shapes, so the former
+# `_XFAIL_WINDOWED` / `_DEV1496_STAGE10` strict-xfail pins were promoted to
+# plain tests (markers removed in the implementation commit).
+# DEV-1531 (first/last over a cross-join derived source) landed in DEV-1709
+# Stage 5; DEV-1526 (cross-model aggregate source crossing a further join)
+# landed in DEV-1708 Stage 4 — both likewise promoted to plain tests.
 @pytest.fixture
 def orders_model() -> SlayerModel:
     return SlayerModel(
@@ -369,6 +340,35 @@ class TestBasicQueries:
         sql = await _generate(generator, query, orders_model)
         assert "ORDER BY" in sql
         assert "DESC" in sql
+
+    async def test_order_by_shorthand_descending_reaches_sql(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        # DEV-1575: shorthand {col: "descending"} heals + normalizes and emits DESC.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+            order=[{"status": "descending"}],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "ORDER BY" in sql
+        assert "DESC" in sql.upper()
+
+    async def test_order_by_ascending_synonym_not_descending(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        # DEV-1575 regression: a canonical "ASCENDING" must normalize to asc so the
+        # generator's strict ``direction == "asc"`` check does NOT fall through to DESC.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+            order=[{"column": "status", "direction": "ASCENDING"}],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "ORDER BY" in sql
+        assert "DESC" not in sql.upper()
 
 
 class TestTimeDimensions:
@@ -662,20 +662,6 @@ class TestBareColumnNames:
         assert "amount" in sql.lower()
 
 
-class TestDialects:
-    async def test_mysql_dialect(self, orders_model: SlayerModel) -> None:
-        gen = SQLGenerator(dialect="mysql")
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="*:count")],
-            time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
-            ],
-        )
-        sql = await _generate(gen, query, orders_model)
-        assert "COUNT(*)" in sql  # Basic check — dialect-specific output
-
-
 class TestFields:
     async def test_arithmetic_field(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Arithmetic over aggregates is emitted inline in the SELECT (the
@@ -728,6 +714,60 @@ class TestFields:
         assert "OVER" in sql
         assert "ORDER BY" in sql
         assert "rev_running" in sql.lower()
+
+    async def test_cumsum_over_week_sunday_time_dim(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1572 (full enum wiring): a transform over a WEEK_SUNDAY time
+        dimension must generate valid SQL — the granularity must be wired into
+        the interval helpers, not crash with a KeyError on the 9th enum value.
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.WEEK_SUNDAY,
+            )],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="cumsum(revenue:sum)", name="rev_running"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "OVER" in sql
+        assert "rev_running" in sql.lower()
+        # The WEEK_SUNDAY time dim must compile to the Sunday-week truncation
+        # (the +1-day column-side shift is unique to WEEK_SUNDAY; plain Monday
+        # WEEK has no such shift), proving the granularity wasn't downgraded.
+        assert "+ INTERVAL '1 DAY'" in sql.upper()
+
+    async def test_time_shift_over_week_sunday_uses_one_week_interval(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """A time_shift over a WEEK_SUNDAY time dim (granularity derived from
+        the time dim, not passed explicitly) shifts by one week — exercising
+        ``build_time_offset_expr``'s ``"week_sunday"`` path. Must emit valid
+        date arithmetic, not blow up on the unknown granularity string."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.WEEK_SUNDAY,
+            )],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="time_shift(revenue:sum, -1)", name="rev_prev_week"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "shifted_" in sql
+        # The shift itself must use a one-WEEK interval (7 days). Target the
+        # shift's INTERVAL unit specifically — ``INTERVAL '1 WEEK'`` — so the
+        # assertion can't be satisfied by the ``DATE_TRUNC('WEEK', ...)`` in the
+        # truncation (which uses ``INTERVAL '1 DAY'``, not a WEEK interval).
+        assert "INTERVAL '1 WEEK'" in sql.upper()
 
     async def test_cumsum_partitions_by_dimensions(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -807,7 +847,6 @@ class TestFields:
         assert '>= 2' in norm
         assert '"orders.long_enough"' in norm
 
-    @_XFAIL_WINDOWED
     async def test_windowed_sum_uses_range_join_primitive(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -829,7 +868,6 @@ class TestFields:
         assert "INTERVAL '90 DAY'" in norm
         assert '_src._w_dim_0 = _base."orders.status"' in norm
 
-    @_XFAIL_WINDOWED
     async def test_windowed_sum_preserves_other_time_dim_grain(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
@@ -879,7 +917,6 @@ class TestFields:
         await storage.save_model(orders)
         return SlayerQueryEngine(storage=storage), orders
 
-    @_XFAIL_WINDOWED
     async def test_windowed_sum_excludes_unrelated_joins(
         self, generator: SQLGenerator, orders_with_customers_engine,
     ) -> None:
@@ -912,7 +949,6 @@ class TestFields:
             f"src_body:\n{src_body}"
         )
 
-    @_XFAIL_WINDOWED
     async def test_windowed_sum_keeps_joins_used_by_query_filter(
         self, generator: SQLGenerator, orders_with_customers_engine,
     ) -> None:
@@ -943,7 +979,6 @@ class TestFields:
             f"WHERE filter references customers.region_id.\nsrc_body:\n{src_body}"
         )
 
-    @_XFAIL_WINDOWED
     async def test_windowed_sum_keeps_transitive_joins_for_multi_hop_filter(
         self, generator: SQLGenerator, tmp_path,
     ) -> None:
@@ -1003,7 +1038,6 @@ class TestFields:
             f"src_body:\n{src_body}"
         )
 
-    @_XFAIL_WINDOWED
     async def test_filter_on_windowed_measure_is_post_filter(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
@@ -1045,7 +1079,6 @@ class TestFields:
             f"Windowed-measure filter must not be applied as HAVING on the base aggregate.\nsql:\n{sql}"
         )
 
-    @_XFAIL_WINDOWED
     async def test_window_duration_full_compact_syntax(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -1071,7 +1104,6 @@ class TestFields:
         ):
             assert piece in norm, f"missing per-unit interval clause '{piece}'\nsql:\n{sql}"
 
-    @_XFAIL_WINDOWED
     async def test_windowed_sum_sqlite_duration_modifiers(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -1089,6 +1121,332 @@ class TestFields:
         assert "'-3 hours'" in sql
         assert "'-4 minutes'" in sql
         assert "'-5 seconds'" in sql
+
+    # ------------------------------------------------------------------ #
+    # DEV-1714 Stage 10 — new coverage beyond the DEV-1496 harvest pins.
+    # Shape-gap tests: shapes no existing pin covers (two windowed measures
+    # in one query, Column.filter CASE-wrap, filter-carrier join discovery
+    # into _src, ORDER BY the windowed alias). Each asserts a window-specific
+    # artifact (``_wm_``/``_src``) now emitted by the Stage-10 range-join CTE.
+    # ------------------------------------------------------------------ #
+
+    async def test_two_windowed_measures_emit_distinct_ctes(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Two windowed measures in one query must each get their own
+        collision-safe ``_wm_`` CTE and both join back to the base grain."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[
+                {"formula": "revenue:sum(window='90d')", "name": "rev_90d"},
+                {"formula": "revenue:avg(window='30d')", "name": "rev_30d"},
+            ],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert "_wm_orders__rev_90d" in norm, sql
+        assert "_wm_orders__rev_30d" in norm, sql
+        # Each windowed CTE is defined exactly once (distinct, never collapsed).
+        assert norm.count("_wm_orders__rev_90d AS (") == 1, sql
+        assert norm.count("_wm_orders__rev_30d AS (") == 1, sql
+        # Codex round 3: deterministic order — CTEs follow measure declaration
+        # order (rev_90d before rev_30d), never set-iteration order.
+        assert norm.index("_wm_orders__rev_90d AS (") < norm.index("_wm_orders__rev_30d AS ("), sql
+        # Both CTEs join back to the base grain in the combined SELECT.
+        assert "LEFT JOIN _wm_orders__rev_90d" in norm, sql
+        assert "LEFT JOIN _wm_orders__rev_30d" in norm, sql
+        # Both surface in the public projection.
+        assert '"orders.rev_90d"' in norm, sql
+        assert '"orders.rev_30d"' in norm, sql
+
+    async def test_windowed_source_column_filter_wraps_case_in_src(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A windowed measure whose source ``Column`` carries a ``filter=``
+        must CASE-wrap the value inside ``_src`` (``_w_value``), mirroring the
+        legacy filtered-aggregate shape."""
+        model = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="paid_revenue", sql="amount", filter="status = 'paid'", type=DataType.DOUBLE),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "paid_revenue:sum(window='90d')", "name": "pr_90d"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=model)
+        assert "_wm_orders__pr_90d" in sql, sql
+        src_body = _extract_src_body(sql)
+        assert "CASE" in src_body.upper(), f"_w_value must CASE-wrap the Column.filter.\nsrc:\n{src_body}"
+        assert "'paid'" in src_body, src_body
+
+    async def test_windowed_source_column_filter_crossing_join_kept_in_src(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """DEV-1714 (Codex C3): a windowed measure whose source ``Column.filter``
+        crosses a join must pull that join INTO ``_src`` (predicate-carrier join
+        discovery via the resolver's filter path, not just a local CASE)."""
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="flagged_revenue", sql="amount", filter="customers.region_id = 5", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "flagged_revenue:sum(window='90d')", "name": "fr_90d"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
+        assert "_wm_" in sql, sql
+        src_body = _extract_src_body(sql)
+        # Assert a real JOIN was registered — not merely that the alias appears
+        # inside the CASE predicate text (which would pass even if discovery
+        # were broken).
+        assert "customers" in _join_aliases(src_body), (
+            f"_src must register the customers JOIN crossed by the Column.filter.\nsrc:\n{src_body}"
+        )
+
+    async def test_windowed_model_filter_crossing_join_kept_in_src(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """DEV-1714 (Codex C3): a model-level ``SlayerModel.filters`` entry that
+        crosses a join must pull that join INTO ``_src`` (the Mode-A filter-text
+        carrier path, distinct from the query-filter path already pinned)."""
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            filters=["customers.region_id = 5"],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
+        assert "_wm_" in sql, sql
+        src_body = _extract_src_body(sql)
+        # Assert a real JOIN was registered (walk the JOIN nodes), not just an
+        # alias appearing in the filter predicate text.
+        assert "customers" in _join_aliases(src_body), (
+            f"_src must register the customers JOIN crossed by the model filter.\nsrc:\n{src_body}"
+        )
+
+    async def test_order_by_windowed_alias_resolves(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """ORDER BY the windowed measure's public alias must resolve against the
+        combined SELECT (the ``_wm_`` join-back column), not the base."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
+            order=[{"column": {"name": "revenue_90d"}, "direction": "desc"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert "_wm_" in norm, sql
+        order_portion = norm.split("ORDER BY", 1)[1] if "ORDER BY" in norm else ""
+        assert '"orders.revenue_90d"' in order_portion, (
+            f"ORDER BY must reference the windowed public alias.\nsql:\n{sql}"
+        )
+        # The order term is the BARE combined-SELECT output column (the _wm_
+        # value), never a ``_base.`` qualifier — _base excludes the windowed
+        # measure, so ``_base."orders.revenue_90d"`` would dangle.
+        assert '_base."orders.revenue_90d"' not in order_portion, sql
+        # And the windowed measure must NOT be materialised in _base as a dead
+        # plain aggregate (Codex re-review round 2).
+        base_body = _extract_cte_body(sql, r"_base")
+        assert '"orders.revenue_90d"' not in base_body, (
+            f"windowed measure must not render as a plain aggregate in _base.\n"
+            f"_base:\n{base_body}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # DEV-1714 Stage 10 — parity / semantic pins (F1/F4 playbook): turn the
+    # spec-interview decisions into contracts.
+    # ------------------------------------------------------------------ #
+
+    async def test_windowed_row_filter_applied_inside_src(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """F4: a query WHERE-phase row filter constrains the ``_src`` scope
+        (host-rooted scope inherits host row filters)."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
+            filters=["status = 'completed'"],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        assert "_wm_" in sql, sql
+        src_body = _extract_src_body(sql)
+        assert "'completed'" in src_body, (
+            f"WHERE-phase row filter must be applied inside _src.\nsrc:\n{src_body}"
+        )
+
+    async def test_windowed_date_range_not_applied_inside_src(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """The typed ``date_range`` on the window time dim must be STRIPPED from
+        ``_src`` — the trailing window has to reach rows before the range start
+        — while still bounding the outer/base grain."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+                date_range=["2024-06-01", "2024-12-31"],
+            )],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        assert "_wm_" in sql, sql
+        src_body = _extract_src_body(sql)
+        # The range join itself is present in _src.
+        assert "_src._w_time >=" in _norm(sql), sql
+        # The date_range lower bound must NOT appear inside _src (stripped)…
+        assert "2024-06-01" not in src_body, (
+            f"date_range must be stripped from _src.\nsrc:\n{src_body}"
+        )
+        # …but must still bound the host grain somewhere in the statement.
+        assert "2024-06-01" in sql, sql
+
+    async def test_windowed_explicit_time_filter_does_not_truncate_src(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """DEV-1732: an EXPLICIT relational bound on the raw window time column
+        is a FRAME bound, not a population filter — so it bounds ``_base`` and is
+        stripped from ``_src``, exactly like the ``date_range`` spelling of the
+        same intent.
+
+        Stage 10 pinned the opposite (legacy parity, a documented truncation);
+        DEV-1732 inverted this pin. Rich coverage lives in
+        ``tests/test_dev1732_frame_bound_filters.py``.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
+            filters=["created_at >= '2024-06-01'"],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        assert "_wm_" in sql, sql
+        src_body = _extract_src_body(sql)
+        assert "2024-06-01" not in src_body, (
+            f"DEV-1732: an explicit raw-time-column frame bound must be stripped "
+            f"from _src.\nsrc:\n{src_body}"
+        )
+        # …but it must still bound the host grain.
+        assert "2024-06-01" in _extract_cte_body(sql, r"_base"), sql
+
+    async def test_windowed_output_is_scope_closed(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Acceptance: the emitted ``_wm_`` statement is scope-closed — every
+        alias referenced in a scope is bound in that scope's own FROM/JOINs.
+        Makes the ``assert_scope_closed`` guarantee an explicit contract rather
+        than only the autouse harness side effect."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_90d"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        assert "_wm_" in sql, sql
+        # Explicit validator pass (raises ScopeLeakError on any unbound ref).
+        assert_scope_closed(sql, dialect="postgres")
+
+    async def test_same_windowed_measure_two_aliases_both_surface(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Codex#2: the same windowed formula selected under two names interns to
+        ONE slot / ONE ``_wm_`` CTE, but BOTH public aliases must surface in the
+        combined projection (the CTE's single aggregate column is remapped ``AS``
+        each alias) — the later alias must not be dropped."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[
+                {"formula": "revenue:sum(window='90d')", "name": "rev_a"},
+                {"formula": "revenue:sum(window='90d')", "name": "rev_b"},
+            ],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert '"orders.rev_a"' in norm, sql
+        assert '"orders.rev_b"' in norm, sql
+        # One shared _wm_ CTE (same structural key), not two.
+        assert norm.count("_wm_orders__rev_a AS (") == 1, sql
+
+    async def test_windowed_joined_time_dimension_registers_join_in_src(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """Codex#1: a windowed measure whose window time dimension lives on a
+        JOINED model must pull that join INTO ``_src`` (registered through the
+        scope), not reference an unbound alias."""
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="signup_at", sql="signup_at", type=DataType.TIMESTAMP),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="customers.signup_at"), granularity=TimeGranularity.MONTH,
+            )],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
+        assert "_wm_" in sql, sql
+        src_body = _extract_src_body(sql)
+        assert "customers" in _join_aliases(src_body), (
+            f"_src must register the customers JOIN crossed by the window time "
+            f"dimension.\nsrc:\n{src_body}"
+        )
 
     async def test_time_shift_row_based(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """time_shift without explicit granularity uses the time dim's granularity (calendar-based)."""
@@ -1412,6 +1770,208 @@ class TestFields:
         assert "INTERVAL" in sql
         assert "MONTH" in sql
         assert "shifted_" in sql
+
+    async def test_multiple_time_shifts_in_arithmetic_unique_ctes(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: two arithmetic-wrapped time_shifts must not share a CTE name.
+
+        The `_t{n}` placeholder counter restarts per formula, so both measures
+        used to flatten as `_t0` — emitting `shifted__t0` twice (a duplicate-CTE
+        parser error) and silently aliasing the second shift onto the first.
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -2, 'month')", name="growth_2m"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+
+        ctes = _re.findall(r'(?:WITH|,)\s*"?(\w+)"?\s+AS\s*\(', sql)
+        assert len(ctes) == len(set(ctes)), f"duplicate CTE names: {ctes}"
+        assert len([c for c in ctes if c.startswith("shifted_")]) == 2
+
+    async def test_multiple_time_shifts_resolve_to_distinct_aliases(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: each shift keeps its own offset — no silent alias sharing.
+
+        Guards the corruption the duplicate name masked: both expressions
+        previously resolved to `orders._t0`, so `growth_2m` would have read
+        `growth`'s -1 month shift.
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -2, 'month')", name="growth_2m"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+
+        # Both shifts are hoisted, each under its OWN alias (legacy:
+        # ``len({t.alias for t in shifts}) == len(shifts)`` over the two
+        # ``time_shift`` transforms).
+        shift_aliases = _hoisted_shift_aliases(sql)
+        assert len(shift_aliases) == 2, (
+            f"expected two distinctly-aliased hoisted shifts, got "
+            f"{sorted(shift_aliases)} in:\n{sql}"
+        )
+
+        # Each shift keeps its own offset (legacy: ``{t.offset} == {-1, -2}``).
+        # Both are backwards shifts, so the emitted interval is ``+ 1``/``+ 2``
+        # months on the join side; the sign is captured too so a flipped
+        # direction can't pass.
+        offsets = set(
+            _re.findall(r"orders\.created_at ([+-]) INTERVAL '(\d+) MONTH'", sql)
+        )
+        assert offsets == {("+", "1"), ("+", "2")}, (
+            f"expected -1 and -2 month shifts, got {sorted(offsets)} in:\n{sql}"
+        )
+
+        # The two measures do NOT resolve to the same expression (legacy:
+        # ``by_name["growth"] != by_name["growth_2m"]``).
+        growth = _alias_bodies(sql, "orders.growth")
+        growth_2m = _alias_bodies(sql, "orders.growth_2m")
+        assert len(growth) == 1, (
+            f"'growth' must be emitted exactly once; got {growth} in:\n{sql}"
+        )
+        assert len(growth_2m) == 1, (
+            f"'growth_2m' must be emitted exactly once; got {growth_2m} in:\n{sql}"
+        )
+        assert growth[0] != growth_2m[0], (
+            f"growth and growth_2m share one shift expression: {growth[0]!r}"
+        )
+
+    async def test_hidden_transform_name_avoids_user_measure_collision(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: a hoisted transform must not land on a user measure's name.
+
+        Hidden names are built from the owning measure's field_name, so a user
+        measure literally named `_t0_growth` would otherwise claim the same
+        alias as the shift hoisted out of `growth` — the self-join CTE projects
+        both under that name and the shift silently resolves to the user's
+        measure (valid SQL, wrong numbers).
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+                ModelMeasure(formula="revenue:sum * 2", name="_t0_growth"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+
+        # The hoisted shift's alias must not be one of the user-declared
+        # result keys (legacy: ``transform_aliases & expression_aliases``
+        # empty — the outer projection is a superset of the expression
+        # aliases, so this is at least as strict).
+        transform_aliases = _hoisted_shift_aliases(sql)
+        assert transform_aliases, f"no hoisted shift alias found in:\n{sql}"
+        result_keys = _outer_projection_names(sql)
+        assert {"orders.growth", "orders._t0_growth"} <= result_keys, (
+            f"expected both user measures in the public projection, got "
+            f"{sorted(result_keys)} in:\n{sql}"
+        )
+        assert not (transform_aliases & result_keys), (
+            f"hoisted transform alias collides with a user-declared result "
+            f"key: {sorted(transform_aliases)} in:\n{sql}"
+        )
+
+        # `growth` must reference the hoisted shift, not the user's measure.
+        growth_sql = _alias_bodies(sql, "orders.growth")[0]
+        assert "orders._t0_growth" not in growth_sql.replace("orders._t0_growth_2", "")
+
+    async def test_hidden_transform_name_avoids_dimension_collision(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: dimensions alias as `<model>.<name>` too, so they're reserved.
+
+        A dimension named `_t0_growth` otherwise claims the same alias as the
+        shift hoisted out of `growth`, and the measure silently computes
+        `revenue - <dimension>` instead of the period difference.
+        """
+        orders_model.default_time_dimension = "created_at"
+        orders_model.columns.append(
+            Column(name="_t0_growth", sql="customer_id", type=DataType.DOUBLE)
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="_t0_growth")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+
+        # Legacy: ``(dimension aliases | time-dimension aliases) &
+        # transform_aliases`` empty. The outer projection carries both
+        # declared dimensions (``orders._t0_growth``) and the time dimension
+        # (``orders.created_at``), so the disjointness check is preserved.
+        dim_aliases = _outer_projection_names(sql)
+        assert {"orders._t0_growth", "orders.created_at"} <= dim_aliases, (
+            f"expected both dimensions in the public projection, got "
+            f"{sorted(dim_aliases)} in:\n{sql}"
+        )
+        transform_aliases = _hoisted_shift_aliases(sql)
+        assert transform_aliases, f"no hoisted shift alias found in:\n{sql}"
+        assert not (dim_aliases & transform_aliases)
+
+        # And the measure computes against the shift, not the same-named
+        # dimension (the corruption the alias collision caused).
+        growth_sql = _alias_bodies(sql, "orders.growth")[0]
+        assert "orders._t0_growth" not in growth_sql
+
+    async def test_dev_1692_repro_shape(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1692: the reported four-measure period-over-period shape.
+
+        `growth_pct` alone carries two time_shift calls, so uniquification has
+        to hold within a single formula as well as across measures.
+        """
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum", name="total_revenue"),
+                ModelMeasure(formula="time_shift(revenue:sum, -1, 'month')", name="prev_revenue"),
+                ModelMeasure(formula="revenue:sum - time_shift(revenue:sum, -1, 'month')", name="growth"),
+                ModelMeasure(
+                    formula=(
+                        "(revenue:sum - time_shift(revenue:sum, -1, 'month')) "
+                        "/ time_shift(revenue:sum, -1, 'month')"
+                    ),
+                    name="growth_pct",
+                ),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+
+        ctes = _re.findall(r'(?:WITH|,)\s*"?(\w+)"?\s+AS\s*\(', sql)
+        assert len(ctes) == len(set(ctes)), f"duplicate CTE names: {ctes}"
 
     async def test_nested_self_join_raises(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Nesting self-join transforms (e.g., change(time_shift(x))) should raise."""
@@ -1819,15 +2379,6 @@ class TestRankFamilyTransforms:
             in _norm(sql)
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1497: the typed pipeline does not validate that a rank "
-            "partition_by column is a query dimension — it silently adds it "
-            "to the base GROUP BY (changing result grain) instead of raising. "
-            "Auto-promotes when the validation is restored."
-        ),
-    )
     async def test_partition_by_must_be_a_query_dimension(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
@@ -2168,15 +2719,17 @@ class TestMultiDialectGeneration:
         assert "CAST(ORDERS.CREATED_AT" not in sql.upper(), sql
         assert "CAST(CREATED_AT" not in sql.upper(), sql
 
-    @pytest.mark.parametrize("dialect", ALL_DIALECTS)
+    # T-SQL excluded: it now emits DATEADD via the dialect strategy, covered by
+    # tests/dialects/test_multi_dialect_generation.py::test_calendar_time_shift
+    # (DEV-1716).
+    # DEV-1713: BigQuery is no longer excluded — the sqlglot round-trip
+    # TypeError on the calendar time_shift INTERVAL construct that the prior
+    # ``_SQLGLOT_TYPEERROR_DIALECTS`` carve-out worked around no longer
+    # reproduces (upstream sqlglot / DEV-1716 dialect routing), so BigQuery
+    # generator output is now validated like every other dialect.
+    @pytest.mark.parametrize("dialect", [d for d in ALL_DIALECTS if d != "tsql"])
     async def test_calendar_time_shift(self, dialect: str, orders_model: SlayerModel) -> None:
         """Calendar-based time_shift should produce dialect-appropriate date arithmetic in shifted CTE."""
-        if dialect == "bigquery":
-            pytest.skip(
-                "sqlglot's BigQuery parser raises TypeError round-tripping the "
-                "calendar time_shift INTERVAL construct (sqlglot limitation; "
-                "BigQuery is Tier-2). Same carve-out as _SQLGLOT_TYPEERROR_DIALECTS."
-            )
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
@@ -2195,7 +2748,6 @@ class TestMultiDialectGeneration:
             assert "INTERVAL" in sql_upper
 
     @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
-    @_XFAIL_WINDOWED
     async def test_window_measure_multi_unit_interval_dialect_correct(
         self, dialect: str, orders_model: SlayerModel,
     ) -> None:
@@ -2235,7 +2787,6 @@ class TestMultiDialectGeneration:
             )
 
     @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
-    @_XFAIL_WINDOWED
     async def test_window_measure_single_unit_interval_dialect_correct(
         self, dialect: str, orders_model: SlayerModel,
     ) -> None:
@@ -2305,10 +2856,13 @@ class TestMultiDialectGeneration:
             f"expected single-arg call (ORDERS.AMOUNT) in SQL for {formula!r} on {dialect}:\n{sql}"
         )
 
-    # corr / covar_samp / covar_pop are not supported on MySQL — the generator
-    # raises NotImplementedError there, so MySQL is filtered out of the matrix.
+    # corr / covar_samp / covar_pop: MySQL and T-SQL are excluded here. MySQL
+    # emits the variance-decomposition formula (not the single-arg call this
+    # test asserts) and T-SQL likewise routes through build_covar_2arg; both
+    # are covered correctly in tests/dialects/test_multi_dialect_generation.py
+    # (test_two_arg_stat_formula_dialects_generate_valid_sql) — DEV-1716.
     @pytest.mark.parametrize(
-        "dialect", [d for d in ALL_DIALECTS if d != "mysql"],
+        "dialect", [d for d in ALL_DIALECTS if d not in ("mysql", "tsql")],
     )
     @pytest.mark.parametrize(
         "formula",
@@ -2342,23 +2896,10 @@ class TestMultiDialectGeneration:
             f"on {dialect}:\n{sql}"
         )
 
-    @pytest.mark.parametrize(
-        "formula", [
-            "revenue:corr(other=quantity)",
-            "revenue:covar_samp(other=quantity)",
-            "revenue:covar_pop(other=quantity)",
-        ],
-    )
-    async def test_two_arg_stat_agg_mysql_raises(
-        self, formula: str, orders_model: SlayerModel,
-    ) -> None:
-        gen = SQLGenerator(dialect="mysql")
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula=formula)],
-        )
-        with pytest.raises(NotImplementedError, match="MySQL"):
-            await _generate(generator=gen, query=query, model=orders_model)
+    # DEV-1716: ``test_two_arg_stat_agg_mysql_raises`` removed — MySQL now
+    # emits the variance-decomposition formula for corr/covar (not
+    # NotImplementedError). Covered by tests/dialects/
+    # test_multi_dialect_generation.py::test_two_arg_stat_agg_mysql_emits_formula_valid_sql.
 
     @pytest.mark.parametrize(
         "dialect",
@@ -2894,14 +3435,11 @@ class TestStatAggsPerDialect:
         # ClickHouse casing is its own thing; assert the call shape only.
         assert sql.lower() == f"{agg.lower()}(orders.amount, orders.quantity)"
 
-    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
-    def test_build_two_arg_stat_mysql_raises(self, agg: str) -> None:
-        # MySQL has no native CORR / COVAR_SAMP / COVAR_POP and no Python-
-        # UDF mechanism, so all three raise at SQL generation time.
-        gen = SQLGenerator(dialect="mysql")
-        m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
-        with pytest.raises(NotImplementedError, match="MySQL"):
-            gen._build_agg(m)
+    # DEV-1716: ``test_build_two_arg_stat_mysql_raises`` removed — MySQL now
+    # emits the variance-decomposition formula (not NotImplementedError) via
+    # the dialect strategy. Covered by
+    # tests/dialects/test_generator_delegation.py::TestStatAggsPerDialect
+    # ::test_build_two_arg_stat_mysql_emits_formula.
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     def test_build_two_arg_stat_mysql_missing_other_prioritises_param_error(
@@ -3178,11 +3716,14 @@ class TestPathAliasJoinInference:
 
 
 class TestMeasureSourceSqlJoinInference:
-    """DEV-1502: an AGGREGATE slot whose source ``Column.sql`` contains
-    a ``__``-delimited join-path alias (or a sibling derived ref whose
-    own sql does) must pull the implied LEFT JOINs into the host base
-    FROM — symmetric to the dimension/time-dimension treatment
-    (DEV-1484) and the ``Column.filter`` treatment (DEV-1494).
+    """DEV-1502 → DEV-1709 (Stage 5): an AGGREGATE slot whose source
+    ``Column.sql`` contains a ``__``-delimited join-path alias (or a
+    sibling derived ref whose own sql does) ISOLATES into a host-rooted
+    ``_cm_*`` CTE that pulls the implied LEFT JOINs inside its own scope
+    (widened Law-3 trigger, D1) — so a measure-pulled join can never
+    multiply the host rows seen by sibling measures. Row-level carriers
+    (dimensions / WHERE filters) keep base-pulling their joins into the
+    host ``_base`` (DEV-1484 / DEV-1494 — Law-1 territory).
     """
 
     @pytest.fixture
@@ -3236,6 +3777,296 @@ class TestMeasureSourceSqlJoinInference:
         return SlayerQueryEngine(storage=storage)
 
     # ------------------------------------------------------------------
+    # DEV-1531 (landed Stage 5 / DEV-1709): a first/last over a cross-join
+    # derived source ISOLATES into a host-rooted `_cm_*` CTE (widened
+    # Law-3 trigger, D1); inside that CTE the crossed value is
+    # materialised as a `_val_<n>` projection in the ranked subquery
+    # (Law-2) instead of leaking the path-qualified ref into the outer
+    # aggregate body. The two no-op negatives stay green (local/bare
+    # sources need neither isolation nor materialisation).
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _assert_ref_only_in_val(sql: str, ref: str) -> None:
+        """Assert ``ref`` (a cross-table-qualified column) appears ONLY as
+        the source of a materialised ``<ref> AS _val_<n>`` projection inside
+        the ranked subquery — i.e. it never leaks into an outer-scope
+        aggregate body / HAVING / composite where it would fail at runtime
+        with ``no such column``.
+        """
+        norm = _norm(sql)
+        first_proj = _re.search(rf"{_re.escape(ref)} AS _val_\d+", norm)
+        assert first_proj is not None, (
+            f"DEV-1531: expected a materialised `{ref} AS _val_<n>` "
+            f"projection inside the ranked subquery:\n{norm}"
+        )
+        first_subquery = norm.find("FROM (")
+        assert first_subquery != -1, (
+            f"DEV-1531: no ranked subquery found at all in:\n{norm}"
+        )
+        assert first_proj.start() > first_subquery, (
+            f"DEV-1531: `_val` projection of `{ref}` is not inside the ranked "
+            f"subquery:\n{norm}"
+        )
+        stripped = _re.sub(rf"{_re.escape(ref)} AS _val_\d+", "", norm)
+        assert ref not in stripped, (
+            f"DEV-1531: `{ref}` leaked outside the ranked subquery's _val "
+            f"projection (would fail with `no such column`):\n{norm}"
+        )
+
+    async def test_local_last_with_path_aliased_derived_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        # Widened Law-3 (D1): the crossing source isolates host-rooted.
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers" in cm_body, cm_body
+        assert "customers__regions" in cm_body, cm_body
+        # The joins live ONLY inside the CTE — never in the host scope.
+        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        assert "THEN orders._val" in _norm(sql), sql
+
+    async def test_local_last_with_single_dot_derived_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        await engine.storage.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+                Column(name="balance", sql="balance", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        ))
+        model = self._orders_model(extra_columns=[
+            Column(name="cust_balance", sql="customers.balance", type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="cust_balance:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        assert "LEFT JOIN customers" in _extract_cte_body(sql, r"_cm_\w+"), sql
+        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
+        self._assert_ref_only_in_val(sql, "customers.balance")
+
+    async def test_filtered_last_cross_join_value_materialized(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE, filter="orders.amount > 100"),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        assert "_last_rn_f0" in sql, sql
+        assert "_match_f0" in sql, sql
+        assert "THEN orders._val" in _norm(sql), sql
+
+    async def test_two_last_sharing_value_dedupe(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """Two measures over the SAME crossing sql but DISTINCT derived
+        columns intern to distinct ``AggregateKey``s (identity carries the
+        column name), so each isolates into its OWN host-rooted CTE with
+        its own ``_val`` materialisation — per-slot isolation, no CTE
+        merging (DEV-1709 interview decision; merging is DEV-1688 /
+        ``may_inline`` territory). Dedupe is therefore per-CTE."""
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment_a", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+            Column(name="region_payment_b", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_payment_a:last(orders.created_at)"),
+                ModelMeasure(formula="region_payment_b:last(orders.created_at)"),
+            ],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        norm = _norm(sql)
+        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        assert len(cm_cte_names) == 2, (
+            f"expected one host-rooted CTE per distinct crossing aggregate; "
+            f"got {cm_cte_names}:\n{sql}"
+        )
+        # One _val materialisation per CTE, each consumed exactly once
+        # within its own scope (sibling CTEs are self-contained statements
+        # with scope-local ``_val`` numbering).
+        assert norm.count(" AS _val") == 2, sql
+        for cte_name in cm_cte_names:
+            body = _extract_cte_body(sql, _re.escape(cte_name))
+            body_norm = _norm(body)
+            assert body_norm.count(" AS _val") == 1, sql
+            assert body_norm.count("THEN orders._val") == 1, sql
+        assert '"orders.region_payment_a_last_created_at"' in norm, sql
+        assert '"orders.region_payment_b_last_created_at"' in norm, sql
+
+    async def test_same_sql_different_type_no_bad_dedupe(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        model = self._orders_model(extra_columns=[
+            Column(name="region_pay_d", sql="customers__regions.payment_amount * 2",
+                   type=DataType.DOUBLE),
+            Column(name="region_pay_i", sql="customers__regions.payment_amount * 2",
+                   type=DataType.INT),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_pay_d:last(orders.created_at)"),
+                ModelMeasure(formula="region_pay_i:last(orders.created_at)"),
+            ],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        norm = _norm(sql)
+        assert norm.count(" AS _val") == 2, (
+            f"same SQL, different type must not dedupe onto one _val:\n{sql}"
+        )
+        assert _re.search(r"AS DOUBLE PRECISION\) AS _val_\d+", norm), sql
+        assert _re.search(r"AS INT\) AS _val_\d+", norm), sql
+        # The raw crossing ref must never surface in the combined outer
+        # SELECT (after the last CTE closes) — only the CTE output columns.
+        outer = sql[sql.rfind("\n)") + 2:]
+        assert "customers__regions.payment_amount" not in outer, sql
+
+    async def test_composite_last_cross_join_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at) + 1")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        # Composite lowering (F3): the crossing first/last LEAF isolates;
+        # the `+ 1` composite renders in the combined SELECT via the CTE's
+        # projected alias.
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        outer = sql[sql.rfind("\n)") + 2:]
+        assert "+ 1" in outer, (
+            f"composite must render in the combined outer SELECT:\n{sql}"
+        )
+
+    async def test_having_last_cross_join_source(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """An aggregate-phase query filter referencing the isolated
+        first/last routes to the OUTER WHERE on the combined SELECT
+        (DEV-1503 rule; HAVING-into-the-CTE would surface host rows as
+        NULL instead of dropping them)."""
+        model = self._orders_model(extra_columns=[
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+            filters=["region_payment:last(orders.created_at) > 100"],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        norm = _norm(sql)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+        assert norm.count(" AS _val") == 1, sql
+        # Routed to the combined SELECT's WHERE — never HAVING.
+        assert "HAVING" not in norm, sql
+        outer = sql[sql.rfind("\n)") + 2:]
+        assert "> 100" in outer, (
+            f"aggregate filter must land in the combined outer WHERE:\n{sql}"
+        )
+        assert "WHERE" in outer, sql
+
+    async def test_val_alias_avoids_source_column_collision(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        model = self._orders_model(extra_columns=[
+            Column(name="_val_0", sql="amount", type=DataType.DOUBLE),
+            Column(name="region_payment", sql="customers__regions.payment_amount",
+                   type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        norm = _norm(sql)
+        # The model's real `_val_0` column must not be shadowed: whatever
+        # alias the allocator picks for the materialisation, it is never
+        # `_val_0`, and the outer aggregate references the allocated one.
+        allocated = _re.findall(r"AS (_val_\d+)", norm)
+        assert allocated, f"expected a _val materialisation:\n{sql}"
+        assert "_val_0" not in allocated, (
+            f"allocator must skip the model's own `_val_0` column:\n{sql}"
+        )
+        assert f"THEN orders.{allocated[0]}" in norm, sql
+        self._assert_ref_only_in_val(sql, "customers__regions.payment_amount")
+
+    async def test_local_only_derived_first_last_no_val(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """No-op negative (green): a LOCAL-only derived source (``amount * 2``)
+        crosses no join, so no ``_val`` materialisation happens."""
+        model = self._orders_model(extra_columns=[
+            Column(name="double_amount", sql="amount * 2", type=DataType.DOUBLE),
+        ])
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="double_amount:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        assert "_val" not in sql, sql
+        assert "_cm_" not in sql, sql
+        assert _join_aliases(sql) == set(), sql
+
+    async def test_bare_source_first_last_no_val(
+        self, engine: SlayerQueryEngine
+    ) -> None:
+        """No-op negative (green): a bare same-table source needs no
+        materialisation."""
+        model = self._orders_model()
+        await engine.storage.save_model(model)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:last(orders.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        assert "_val" not in sql, sql
+        assert "_cm_" not in sql, sql
+        assert "THEN orders.amount" in _norm(sql), sql
+
+    # ------------------------------------------------------------------
     # Core path-alias discovery
     # ------------------------------------------------------------------
 
@@ -3243,8 +4074,8 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """A single-hop ``customers.region_id`` alias in the measure source
-        SQL surfaces the ``customers`` join. The multi-hop case is the
-        existing tracking test; this pins the single-hop edge.
+        SQL isolates host-rooted; the ``customers`` join lives inside the
+        ``_cm_*`` CTE only.
         """
         model = self._orders_model(extra_columns=[
             Column(
@@ -3259,11 +4090,13 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="customer_region_count:count_distinct")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        # `customers__regions` is NOT needed here (single hop).
-        assert "customers__regions" not in join_aliases
-        assert "COUNT(DISTINCT customers.region_id)" in sql
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers" in cm_body, sql
+        assert "COUNT(DISTINCT customers.region_id)" in cm_body, sql
+        # The join lives ONLY inside the CTE; no deeper hop is pulled.
+        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
+        assert "customers__regions" not in _join_aliases(sql)
 
     async def test_composite_arithmetic_path_aliased_measure(
         self, engine: SlayerQueryEngine
@@ -3286,11 +4119,20 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="region_pop_sum:sum + amount:sum")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
-        assert "SUM(customers__regions.population)" in sql
+        # F3 composite lowering: the crossing leaf isolates into its own
+        # host-rooted CTE; the local leaf stays in the base; the `+`
+        # composite renders only in the combined SELECT.
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "SUM(customers__regions.population)" in cm_body, sql
+        assert "LEFT JOIN customers" in cm_body, sql
+        assert "SUM(orders.amount)" not in cm_body, sql
         assert "SUM(orders.amount)" in sql
+        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
+        outer = sql[sql.rfind("\n)") + 2:]
+        assert "+" in outer, (
+            f"composite must render in the combined outer SELECT:\n{sql}"
+        )
 
     async def test_composite_scalar_call_path_aliased_measure(
         self, engine: SlayerQueryEngine
@@ -3312,10 +4154,14 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="coalesce(region_pop_sum:sum, 0)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
-        assert "SUM(customers__regions.population)" in sql
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "SUM(customers__regions.population)" in cm_body, sql
+        assert "LEFT JOIN customers" in cm_body, sql
+        outer = sql[sql.rfind("\n)") + 2:]
+        assert "COALESCE" in outer.upper(), (
+            f"scalar-call composite must render in the combined outer SELECT:\n{sql}"
+        )
 
     async def test_mode_a_function_wrapping_path_alias_in_column_sql(
         self, engine: SlayerQueryEngine
@@ -3338,12 +4184,12 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="region_prop_x:sum")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers" in cm_body, sql
         # The aggregate body wraps the JSON-extract call, qualified to
         # the path alias (the bare alias `region_prop_x` would fail).
-        assert "customers__regions.props" in sql
+        assert "customers__regions.props" in cm_body, sql
 
     async def test_sibling_derived_chain_to_path_alias(
         self, engine: SlayerQueryEngine
@@ -3371,74 +4217,17 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="doubled_pop:sum")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers" in cm_body, sql
         # Sibling recursive inlining preserves the path alias.
-        assert "customers__regions.population" in sql
+        assert "customers__regions.population" in cm_body, sql
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1531: a LOCAL first/last aggregate whose SOURCE column "
-            "is a derived (ColumnSqlKey) column whose Column.sql crosses "
-            "a join emits invalid SQL at runtime — the inner ranked "
-            "subquery has the LEFT JOINs (DEV-1502 added them), but the "
-            "outer SELECT's MAX(CASE WHEN _last_rn = 1 THEN <expr> END) "
-            "still references the cross-table-qualified expression "
-            "(customers__regions.payment_amount) which is out of scope "
-            "outside the subquery (only the orders alias is). Pre-DEV-"
-            "1502 this also broke for plain dotted derived sources "
-            "(DEV-1410 territory). Fix lives in _build_first_last_base_"
-            "select at slayer/sql/generator.py:4247 — materialise the "
-            "expanded source expression inside the inner subquery as a "
-            "_val_<sid> alias and rewrite the outer body. Auto-promotes "
-            "when the materialisation fix lands."
-        ),
-    )
-    async def test_local_last_with_path_aliased_derived_source_xfail(
-        self, engine: SlayerQueryEngine
-    ) -> None:
-        """Tracks DEV-1531 — the first/last + cross-table derived source
-        runtime bug DEV-1502 unmasked. Uses ``execute`` (not dry-run) so
-        the actual ``no such column`` runtime failure surfaces, not just
-        the dry-run substring check.
-        """
-        model = self._orders_model(extra_columns=[
-            Column(
-                name="region_payment",
-                sql="customers__regions.payment_amount",
-                type=DataType.DOUBLE,
-            ),
-        ])
-        await engine.storage.save_model(model)
-        query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="region_payment:last(orders.created_at)")],
-        )
-        sql = (await engine.execute(query, dry_run=True)).sql
-        # Joins ARE pulled into the inner subquery via DEV-1502 — that
-        # part works. What's broken is the outer SELECT referencing the
-        # path-aliased ref out of scope. We pin the END STATE: the agg
-        # body must reference the path alias via a materialised inner-
-        # subquery projection (e.g. ``orders._val_<sid>``), not raw.
-        # Without the DEV-1531 fix, the dry-run still emits the raw
-        # ``customers__regions.payment_amount`` inside MAX(CASE...),
-        # so this assertion fails strict-xfail-style.
-        normalized = _norm(sql)
-        # The bug: outer MAX(...) references customers__regions.payment_amount.
-        # After the fix: the outer MAX should reference a materialised inner
-        # column (no cross-table qualifier inside the outer aggregate body).
-        outer_select_end = normalized.find("FROM (")
-        assert outer_select_end > 0, normalized
-        outer_select = normalized[:outer_select_end]
-        # End state we want: outer SELECT does NOT directly reference the
-        # path-aliased column (would be in scope only inside the subquery).
-        assert "customers__regions.payment_amount" not in outer_select, (
-            f"DEV-1531: outer SELECT references the path-aliased ref "
-            f"outside the ranked subquery's scope; would fail at runtime "
-            f"with `no such column`. Outer SELECT body:\n{outer_select}"
-        )
+    # DEV-1531 local first/last cross-join source materialisation is pinned by
+    # `test_local_last_with_path_aliased_derived_source` (in the DEV-1531 harvest
+    # block above, with the stronger `_assert_ref_only_in_val` assertion). The
+    # earlier tracking placeholder was consolidated into it (CodeRabbit, PR #264)
+    # so a single strict-xfail flips at Stage 5.
 
     async def test_post_transform_wrapping_path_aliased_measure(
         self, engine: SlayerQueryEngine
@@ -3467,22 +4256,24 @@ class TestMeasureSourceSqlJoinInference:
             ],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
-        # The inner aggregate is rendered in _base; cumsum wraps it in a
-        # step CTE. Either way the path-aliased ref must reach the
-        # emitted SQL via the base CTE.
-        assert "customers__regions.population" in sql
+        # The inner crossing aggregate isolates host-rooted; cumsum wraps
+        # the combined output. The path-aliased ref lives ONLY inside the
+        # `_cm_*` CTE body.
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "customers__regions.population" in cm_body, sql
+        assert "LEFT JOIN customers" in cm_body, sql
+        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
+        assert "OVER" in sql, f"cumsum window must survive isolation:\n{sql}"
 
     async def test_multiple_aggregate_sources_sharing_join_dedupe(
         self, engine: SlayerQueryEngine
     ) -> None:
-        """Two distinct AGGREGATE slots whose sources cross the SAME
-        ``customers__regions`` path must produce exactly one LEFT JOIN
-        for each hop. Exercises the new collector's own dedupe (the
-        wiring's ``if p not in needed_join_paths`` guard).
-        """
+        """Two DISTINCT crossing aggregates isolate into two separate
+        host-rooted CTEs (per-AggregateKey-slot isolation), each pulling
+        its own scope-local join set — so each hop's LEFT JOIN appears
+        exactly once PER CTE and never in the host scope. Cross-CTE join
+        sharing is optimizer territory (DEV-1688 / ``may_inline``)."""
         model = self._orders_model(extra_columns=[
             Column(
                 name="region_pop_sum",
@@ -3504,8 +4295,13 @@ class TestMeasureSourceSqlJoinInference:
             ],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
-        assert sql.count("LEFT JOIN regions AS customers__regions") == 1, sql
+        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        assert len(cm_cte_names) == 2, (
+            f"expected one host-rooted CTE per crossing aggregate; "
+            f"got {cm_cte_names}:\n{sql}"
+        )
+        assert sql.count("LEFT JOIN customers AS customers") == 2, sql
+        assert sql.count("LEFT JOIN regions AS customers__regions") == 2, sql
         assert "SUM(customers__regions.population)" in sql
         assert "SUM(customers__regions.weight)" in sql
 
@@ -3516,9 +4312,11 @@ class TestMeasureSourceSqlJoinInference:
     async def test_dim_and_measure_sharing_join_emits_join_once(
         self, engine: SlayerQueryEngine
     ) -> None:
-        """When a dimension AND a measure both pull in the same join,
-        ``_build_from_and_joins`` must emit it exactly once (the
-        ``emitted_aliases`` guard handles dedupe).
+        """A joined DIMENSION base-pulls its join into the host scope
+        (Law 1); the crossing MEASURE isolates with its own scope-local
+        join set (Law 3). Each scope emits its joins exactly once: the
+        ``customers`` hop appears once in the host and once inside the
+        CTE; the deeper ``customers__regions`` hop only inside the CTE.
         """
         model = self._orders_model(extra_columns=[
             Column(
@@ -3534,20 +4332,24 @@ class TestMeasureSourceSqlJoinInference:
             dimensions=[ColumnRef(name="customers.region_id")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        # Count occurrences of LEFT JOIN customers AS customers (single hop).
-        cust_joins = sql.count("LEFT JOIN customers AS customers")
-        assert cust_joins == 1, f"customers join not deduped:\n{sql}"
-        # And LEFT JOIN regions AS customers__regions appears exactly once.
-        reg_joins = sql.count("LEFT JOIN regions AS customers__regions")
-        assert reg_joins == 1, f"customers__regions join not deduped:\n{sql}"
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert cm_body.count("LEFT JOIN customers AS customers") == 1, sql
+        assert cm_body.count("LEFT JOIN regions AS customers__regions") == 1, sql
+        # Host scope: exactly one customers join (the dimension's), and
+        # never the deeper hop.
+        host_part = sql.replace(cm_body, "")
+        assert host_part.count("LEFT JOIN customers AS customers") == 1, sql
+        assert host_part.count("LEFT JOIN regions AS customers__regions") == 0, sql
 
     async def test_filter_and_source_cross_different_joins(
         self, engine: SlayerQueryEngine
     ) -> None:
         """Filter crosses the shallow join (customers) and source crosses
-        the deeper join (customers__regions). DEV-1494 alone would pull
-        only customers; DEV-1502 must pull customers__regions. The
-        shared customers join is emitted exactly once.
+        the deeper join (customers__regions): both are crossing INPUTS of
+        the same aggregate, so ONE host-rooted CTE owns both joins; the
+        shared customers hop is emitted exactly once inside it, and the
+        host scope stays join-free.
         """
         model = self._orders_model(extra_columns=[
             Column(
@@ -3566,20 +4368,20 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="region_pop_sum:sum")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
-        # customers join is emitted exactly once even though both DEV-1494
-        # (filter) and DEV-1502 (source) discovered it.
-        cust_joins = sql.count("LEFT JOIN customers AS customers")
-        assert cust_joins == 1
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        # customers join is emitted exactly once (inside the CTE) even
+        # though both the filter and the source discovered it.
+        assert sql.count("LEFT JOIN customers AS customers") == 1, sql
+        assert cm_body.count("LEFT JOIN customers AS customers") == 1, sql
+        assert "customers__regions" in cm_body, sql
         # The filter CASE-WHEN references the customers hop. sqlglot
         # may canonicalise ``IS NOT NULL`` to ``NOT ... IS NULL``, so
         # check structurally rather than for an exact text form.
-        assert "CASE WHEN" in sql
-        assert "customers.region_id" in sql
+        assert "CASE WHEN" in cm_body, sql
+        assert "customers.region_id" in cm_body, sql
         # The aggregate body references the deeper path-aliased ref.
-        assert "customers__regions.population" in sql
+        assert "customers__regions.population" in cm_body, sql
 
     async def test_no_path_alias_no_extra_join(
         self, engine: SlayerQueryEngine
@@ -3596,6 +4398,7 @@ class TestMeasureSourceSqlJoinInference:
         sql = (await engine.execute(query, dry_run=True)).sql
         join_aliases = _join_aliases(sql)
         assert join_aliases == set(), f"unexpected joins: {join_aliases}\n{sql}"
+        assert "_cm_" not in sql, f"local aggregate must not isolate:\n{sql}"
 
     # ------------------------------------------------------------------
     # Defensive scope skip + tracking xfails for follow-up tickets
@@ -3646,23 +4449,6 @@ class TestMeasureSourceSqlJoinInference:
         assert "customers__regions" not in join_aliases
         assert "regions" not in join_aliases
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1526 (sibling of DEV-1502 in cross-model space): a "
-            "cross-model aggregate (customers_v2.deep_pop:sum) whose "
-            "TARGET column's Column.sql is a joined-model ref "
-            "(regions.population, crossing the customers_v2 → regions "
-            "join) does not have that further join pulled into the "
-            "_cm_* CTE. The host-side collector added in DEV-1502 "
-            "explicitly skips source.path != () to avoid double-"
-            "emitting; the _cm_* CTE builder needs the symmetric fix. "
-            "File: cross_model_planner.py / "
-            "_render_cross_model_aggregate_cte_body at "
-            "slayer/sql/generator.py:5962. Auto-promotes when the CTE-"
-            "side collector lands."
-        ),
-    )
     async def test_cross_model_target_column_sql_crosses_further_join_xfail(
         self, storage
     ) -> None:
@@ -3703,22 +4489,11 @@ class TestMeasureSourceSqlJoinInference:
             f"expected JOIN to regions inside the _cm_* CTE; CTE body:\n{cm_body}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1527 (sibling of DEV-1502 in agg-param space): a "
-            "parametric aggregation kwarg whose value is a derived "
-            "column with a __-path alias in its Column.sql (e.g. "
-            "weighted_avg(weight=region_weight) where region_weight.sql "
-            "= 'customers__regions.weight') emits the bare model-"
-            "qualified ref (orders.region_weight, a non-existent column) "
-            "AND does not pull the customers / customers__regions joins. "
-            "Fix touches _resolve_agg_param, _validate_agg_param_value's "
-            "_SAFE_AGG_PARAM_RE allowlist, agg_kwarg_canonical_str, and "
-            "_build_agg_render_spec_from_planned. Auto-promotes when the "
-            "kwarg-expansion fix lands."
-        ),
-    )
+    # DEV-1706 Stage 2 promoted the DEV-1527 local half (typed kwargs);
+    # DEV-1709 Stage 5 widens it to ISOLATION — a crossing derived kwarg
+    # now routes the whole aggregate into a host-rooted CTE. Kept the
+    # ``_xfail`` name so tests/test_carrier_scope_matrix.py's harvest
+    # manifest reference stays valid.
     async def test_agg_param_derived_column_path_alias_xfail(
         self, engine: SlayerQueryEngine
     ) -> None:
@@ -3738,13 +4513,382 @@ class TestMeasureSourceSqlJoinInference:
             measures=[ModelMeasure(formula="amount:weighted_avg(weight=region_weight)")],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
-        join_aliases = _join_aliases(sql)
-        assert "customers" in join_aliases
-        assert "customers__regions" in join_aliases
-        # The kwarg should resolve to the EXPANDED sql, not the bare ident.
-        assert "customers__regions.weight" in sql
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers" in cm_body, sql
+        # The kwarg resolves to the EXPANDED sql inside the CTE, not the
+        # bare ident.
+        assert "customers__regions.weight" in cm_body, sql
         # And the broken form must not appear.
         assert "orders.region_weight" not in sql
+
+
+class TestDev1709WidenedIsolationShapes:
+    """DEV-1709 (Stage 5) — generator shapes for the widened Law-3 trigger:
+    co-occurrence with a local first/last (DEV-1702-B1), crossing explicit
+    time args (D2 / DEV-1501 shape update), F4 host-filter inheritance
+    into host-rooted CTEs, and the deferred implicit-time pin."""
+
+    @staticmethod
+    def _regions_model() -> SlayerModel:
+        return SlayerModel(
+            name="regions", sql_table="regions", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="population", sql="population", type=DataType.DOUBLE),
+                Column(name="weight", sql="weight", type=DataType.DOUBLE),
+            ],
+        )
+
+    @staticmethod
+    def _customers_model() -> SlayerModel:
+        return SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+                Column(name="signup_at", sql="signup_at", type=DataType.TIMESTAMP),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        )
+
+    @staticmethod
+    def _orders_model(
+        *, extra_columns=None, default_time_dimension=None, aggregations=None,
+    ) -> SlayerModel:
+        cols = [
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        ]
+        cols.extend(extra_columns or [])
+        return SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=cols,
+            joins=[ModelJoin(
+                target_model="customers", join_pairs=[["customer_id", "id"]],
+            )],
+            default_time_dimension=default_time_dimension,
+            aggregations=aggregations or [],
+        )
+
+    async def _sql(self, query: SlayerQuery, orders: SlayerModel) -> str:
+        return await _engine_generate(
+            query=query, model=orders,
+            extra_models=[self._customers_model(), self._regions_model()],
+        )
+
+    async def test_crossing_sum_coexists_with_local_last(self) -> None:
+        """DEV-1702-B1: a regular crossing aggregate next to a local
+        first/last isolates — it never renders in the ranked outer scope."""
+        orders = self._orders_model(extra_columns=[
+            Column(name="region_pop_sum", sql="customers__regions.population",
+                   type=DataType.DOUBLE),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_pop_sum:sum"),
+                ModelMeasure(formula="amount:last(orders.created_at)"),
+            ],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "SUM(customers__regions.population)" in cm_body, sql
+        # The crossing ref never appears outside the CTE (the ranked host
+        # scope only carries the local first/last).
+        host_part = sql.replace(cm_body, "")
+        assert "customers__regions.population" not in host_part, sql
+        assert "THEN orders.amount" in _norm(host_part), sql
+        assert "LEFT JOIN" not in host_part, (
+            f"host ranked scope must stay join-free:\n{host_part}"
+        )
+
+    async def test_crossing_kwarg_coexists_with_local_last(self) -> None:
+        """A crossing KWARG next to a local first/last isolates the
+        parametric aggregate the same way (Codex plan-review F4 fold-in:
+        kwarg expressions must never leak into the ranked outer scope)."""
+        orders = self._orders_model(extra_columns=[
+            Column(name="region_weight", sql="customers__regions.weight",
+                   type=DataType.DOUBLE),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="amount:weighted_avg(weight=region_weight)"),
+                ModelMeasure(formula="amount:last(orders.created_at)"),
+            ],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "customers__regions.weight" in cm_body, sql
+        host_part = sql.replace(cm_body, "")
+        assert "customers__regions.weight" not in host_part, sql
+        assert "LEFT JOIN" not in host_part, (
+            f"host ranked scope must stay join-free:\n{host_part}"
+        )
+
+    async def test_local_source_crossing_time_arg_isolates(self) -> None:
+        """D2: ``amount:last(customers.signup_at)`` — a local source with a
+        crossing explicit time arg isolates; the arg's join and ORDER BY
+        ref live inside the CTE's ranked subquery (DEV-1501 shape update)."""
+        orders = self._orders_model()
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:last(customers.signup_at)")],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "customers.signup_at" in cm_body, sql
+        assert "LEFT JOIN customers" in cm_body, sql
+        host_part = sql.replace(cm_body, "")
+        assert "customers.signup_at" not in host_part, sql
+        assert "LEFT JOIN" not in host_part, sql
+
+    async def test_derived_crossing_time_arg_isolates(self) -> None:
+        orders = self._orders_model(extra_columns=[
+            Column(name="cross_time", sql="customers.signup_at",
+                   type=DataType.TIMESTAMP),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:last(cross_time)")],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "customers.signup_at" in cm_body, sql
+        assert "LEFT JOIN customers" in cm_body, sql
+
+    async def test_user_template_fragment_kwarg_renders_join_in_cte(self) -> None:
+        """A crossing USER template-fragment kwarg
+        (``scale='customers__regions.weight'``) isolates AND the CTE
+        sub-render registers the fragment's joins — the fragment renders
+        qualified, so the LEFT JOINs must live inside the CTE body
+        (PR #271 Codex review: fragments triggered isolation but their
+        joins were never registered in the sub-render)."""
+        orders = self._orders_model(aggregations=[
+            Aggregation(
+                name="scaled_sum", formula="SUM({value}) / {scale}",
+                params=[AggregationParam(name="scale", sql="1")],
+            ),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(
+                formula="amount:scaled_sum(scale='customers__regions.weight')",
+            )],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers AS customers" in cm_body, sql
+        assert "LEFT JOIN regions AS customers__regions" in cm_body, sql
+        assert "customers__regions.weight" in cm_body, sql
+        host_part = sql.replace(cm_body, "")
+        assert "LEFT JOIN" not in host_part, sql
+
+    async def test_model_default_fragment_kwarg_renders_join_in_cte(self) -> None:
+        """Same for a crossing MODEL-DEFAULT ``AggregationParam.sql``
+        fragment — no user kwarg at all."""
+        orders = self._orders_model(aggregations=[
+            Aggregation(
+                name="wscaled_sum", formula="SUM({value} * {w})",
+                params=[AggregationParam(
+                    name="w", sql="customers__regions.weight",
+                )],
+            ),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:wscaled_sum")],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN customers AS customers" in cm_body, sql
+        assert "LEFT JOIN regions AS customers__regions" in cm_body, sql
+        assert "customers__regions.weight" in cm_body, sql
+        host_part = sql.replace(cm_body, "")
+        assert "LEFT JOIN" not in host_part, sql
+
+    async def test_pathed_host_row_filter_inherited_into_cte(self) -> None:
+        """F4 (Codex plan-review F5): a host ROW filter whose expression
+        crosses a join constrains the host-rooted scope — it renders in
+        BOTH the host base WHERE and the isolation CTE's scope, each with
+        its own join registration."""
+        orders = self._orders_model(extra_columns=[
+            Column(name="region_pop_sum", sql="customers__regions.population",
+                   type=DataType.DOUBLE),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_pop_sum:sum"),
+                ModelMeasure(formula="amount:sum"),
+            ],
+            filters=["customers.region_id > 0"],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "customers.region_id > 0" in cm_body, (
+            f"host ROW filter must be inherited into the host-rooted CTE:\n{sql}"
+        )
+        host_part = sql.replace(cm_body, "")
+        assert "customers.region_id > 0" in host_part, (
+            f"host ROW filter must still constrain the host base:\n{sql}"
+        )
+
+    async def test_order_only_crossing_aggregate_isolates(self) -> None:
+        """F3, hidden ORDER-only consumer: a crossing aggregate referenced
+        ONLY by ORDER BY (colon-form ``OrderItem``) still isolates as a
+        hidden slot; the ORDER BY reads the joined-back CTE column and the
+        crossing ref never leaves the CTE.
+
+        (A composite ORDER-only consumer is not constructible from the
+        query surface — ``OrderItem.column`` accepts single colon-form
+        refs only; composite lowering for filter-only and projected
+        consumers is pinned by the sibling tests.)"""
+        orders = self._orders_model(extra_columns=[
+            Column(name="region_pop_sum", sql="customers__regions.population",
+                   type=DataType.DOUBLE),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:sum")],
+            dimensions=[ColumnRef(name="customer_id")],
+            order=[OrderItem(column="region_pop_sum:sum", direction="desc")],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "customers__regions.population" in cm_body, sql
+        host_part = sql.replace(cm_body, "")
+        assert "customers__regions.population" not in host_part, sql
+        assert "ORDER BY" in sql, sql
+
+    async def test_filter_only_composite_with_crossing_leaf(self) -> None:
+        """F3, filter-only consumer: a composite referenced only by an
+        aggregate-phase filter lowers the same way — crossing leaf
+        isolates, the comparison lands in the combined outer WHERE (never
+        HAVING), local operand promoted into ``_base``."""
+        orders = self._orders_model(extra_columns=[
+            Column(name="region_pop_sum", sql="customers__regions.population",
+                   type=DataType.DOUBLE),
+        ])
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:sum")],
+            filters=["region_pop_sum:sum + amount:sum > 100"],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "customers__regions.population" in cm_body, sql
+        host_part = sql.replace(cm_body, "")
+        assert "customers__regions.population" not in host_part, sql
+        assert "HAVING" not in _norm(sql), sql
+        outer = sql[sql.rfind("\n)") + 2:]
+        assert "> 100" in outer, (
+            f"composite aggregate filter must land in the combined outer "
+            f"WHERE:\n{sql}"
+        )
+
+    async def test_standalone_law2_same_sql_different_type_one_scope(self) -> None:
+        """Standalone Law-2 contract for the path that runs INSIDE a
+        host-rooted CTE (Codex test-review #1): with isolation disabled —
+        exactly how the recursive sub-plan is built — two same-sql,
+        different-CAST-type crossing first/lasts share ONE ranked subquery
+        and must materialise two DISTINCT ``(sql, type)``-keyed ``_val``s."""
+        orders = self._orders_model(extra_columns=[
+            Column(name="region_pay_d", sql="customers__regions.population * 2",
+                   type=DataType.DOUBLE),
+            Column(name="region_pay_i", sql="customers__regions.population * 2",
+                   type=DataType.INT),
+        ])
+        bundle = ResolvedSourceBundle(
+            source_model=orders,
+            referenced_models=[self._customers_model(), self._regions_model()],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="region_pay_d:last(orders.created_at)"),
+                ModelMeasure(formula="region_pay_i:last(orders.created_at)"),
+            ],
+        )
+        planned = plan_query(
+            query=query, bundle=bundle, disable_host_rooted_isolation=True,
+        )
+        gen = SQLGenerator(dialect="postgres")
+        sql = gen.generate_from_planned(planned, bundle=bundle)
+        norm = _norm(sql)
+        assert norm.count(" AS _val") == 2, (
+            f"same SQL, different type must materialise two _vals in ONE "
+            f"ranked scope:\n{sql}"
+        )
+        assert _re.search(r"AS DOUBLE PRECISION\) AS _val_\d+", norm), sql
+        assert _re.search(r"AS INT\) AS _val_\d+", norm), sql
+        for val_alias in _re.findall(r"AS (_val_\d+)", norm):
+            assert f"THEN orders.{val_alias}" in norm, sql
+
+    async def test_standalone_law2_crossing_kwarg_materialized(self) -> None:
+        """Standalone Law-2 for a crossing KWARG expression (Codex
+        test-review #2): forced through the ranked path (co-occurring
+        local last) with isolation disabled, the kwarg's expanded
+        expression must materialise as its own ``_val`` inside the ranked
+        subquery and be consumed via the bare alias in the outer aggregate
+        body — never referenced out of scope."""
+        orders = self._orders_model(extra_columns=[
+            Column(name="region_weight", sql="customers__regions.weight",
+                   type=DataType.DOUBLE),
+        ])
+        bundle = ResolvedSourceBundle(
+            source_model=orders,
+            referenced_models=[self._customers_model(), self._regions_model()],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="amount:weighted_avg(weight=region_weight)"),
+                ModelMeasure(formula="amount:last(orders.created_at)"),
+            ],
+        )
+        planned = plan_query(
+            query=query, bundle=bundle, disable_host_rooted_isolation=True,
+        )
+        gen = SQLGenerator(dialect="postgres")
+        sql = gen.generate_from_planned(planned, bundle=bundle)
+        TestMeasureSourceSqlJoinInference._assert_ref_only_in_val(
+            sql, "customers__regions.weight",
+        )
+
+    @pytest.mark.xfail(strict=True, reason=(
+        "DEV-1729: an IMPLICITLY-resolved crossing time column (model "
+        "default_time_dimension pointing at a derived column whose "
+        "Column.sql crosses a join) does not yet trigger Law-3 isolation — "
+        "D2 covers explicit args only (DEV-1709 interview decision 3). "
+        "Auto-promotes when DEV-1729 lands."
+    ))
+    async def test_implicit_crossing_default_time_isolates_xfail(self) -> None:
+        orders = self._orders_model(
+            extra_columns=[
+                Column(name="cross_time", sql="customers.signup_at",
+                       type=DataType.TIMESTAMP),
+            ],
+            default_time_dimension="cross_time",
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="amount:last")],
+        )
+        sql = await self._sql(query, orders)
+        assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
 
 
 class TestAggParamSanitization:
@@ -4595,6 +5739,19 @@ Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         assert "AVG(" in sql.upper()
 
 
+# Join target for TestSelfReferencingPaths, shared by the fixture (which saves
+# it into the fixture's own store) and ``_engine_generate`` (which builds a
+# fresh store per call and needs it passed as an extra model).
+_CUSTOMERS_SELF_REF = SlayerModel(
+    name="customers", sql_table="customers", data_source="test",
+    columns=[
+        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+        Column(name="name", sql="name", type=DataType.TEXT),
+        Column(name="score", sql="score", type=DataType.DOUBLE),
+    ],
+)
+
+
 class TestSelfReferencingPaths:
     """LLMs sometimes prefix cross-model paths with the source model name.
 
@@ -4632,36 +5789,48 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
         return engine, orders
 
     async def test_self_ref_dimension_resolved_after_strip(self, engine_and_models) -> None:
-        """'orders.customers.name' is pre-stripped to 'customers.name', then resolves correctly."""
-        engine, model = engine_and_models
+        """'orders.customers.name' is pre-stripped to 'customers.name', then resolves correctly.
+
+        DEV-1485 Stage D: was two assertions against the legacy
+        ``engine._resolve_dimension_via_joins``. Now end-to-end through the
+        typed pipeline, which is strictly better coverage — ``execute`` applies
+        ``strip_source_model_prefix`` itself, so this exercises the real
+        user-facing path rather than an internal resolver.
+        """
+        _engine, model = engine_and_models
         query = SlayerQuery(source_model="orders", dimensions=["orders.customers.name"])
+        # The strip itself stays pinned directly — it is pure and deterministic.
         stripped = query.strip_source_model_prefix()
-        # After stripping, the dimension is "customers.name"
-        assert stripped.dimensions[0].model == "customers"
-        assert stripped.dimensions[0].name == "name"
-        # Verify the engine can resolve the stripped path
-        parts = stripped.dimensions[0].model.split(".") + [stripped.dimensions[0].name]
-        dim = await engine._resolve_dimension_via_joins(model=model, parts=parts)
-        assert dim is not None
-        assert dim.name == "name"
+        assert (stripped.dimensions[0].model, stripped.dimensions[0].name) == (
+            "customers", "name",
+        )
+        sql = await _engine_generate(
+            query=query, model=model, extra_models=[_CUSTOMERS_SELF_REF],
+        )
+        assert "LEFT JOIN" in sql, sql
+        assert "customers" in sql, sql
+        # Resolved as a JOINED dimension under the dotted result key, not as a
+        # bare local column that silently referenced the wrong table.
+        assert "orders.customers.name" in sql, sql
 
     async def test_self_ref_measure_resolved_after_strip(self, engine_and_models) -> None:
-        """'orders.customers.score:sum' is pre-stripped to 'customers.score:sum', then resolves."""
-        engine, model = engine_and_models
-        query = SlayerQuery(source_model="orders", measures=["orders.customers.score:sum"])
-        stripped = query.strip_source_model_prefix()
-        # After stripping, the formula is "customers.score:sum"
-        assert stripped.measures[0].formula == "customers.score:sum"
-        # Verify the engine can resolve the stripped cross-model measure
-        result = await engine._resolve_cross_model_measure(
-            spec_name="customers.score",
-            field_name="score",
-            model=model,
-            query=stripped,
-            dimensions=[], time_dimensions=[],
-            aggregation_name="sum",
+        """'orders.customers.score:sum' is pre-stripped to 'customers.score:sum', then resolves.
+
+        DEV-1485 Stage D: was an assertion against the legacy
+        ``engine._resolve_cross_model_measure``; now pins the emitted
+        cross-model aggregate end-to-end.
+        """
+        _engine, model = engine_and_models
+        query = SlayerQuery(
+            source_model="orders", measures=["orders.customers.score:sum"],
         )
-        assert result.target_model_name == "customers"
+        stripped = query.strip_source_model_prefix()
+        assert stripped.measures[0].formula == "customers.score:sum"
+        sql = await _engine_generate(
+            query=query, model=model, extra_models=[_CUSTOMERS_SELF_REF],
+        )
+        assert "SUM(" in sql.upper(), sql
+        assert "customers" in sql, sql
 
     def test_simple_self_ref_dimension_stripped(self) -> None:
         """'orders.status' on source_model=orders becomes local 'status'."""
@@ -6332,14 +7501,19 @@ class TestDev1501BroadTriggerAndGuards:
                 f"materialised. Counts: {group_counts}\nSQL:\n{sql}"
             )
 
-    async def test_hidden_row_order_target_raises_nyi(
+    async def test_hidden_row_order_target_max_wraps_without_widening_grain(
         self, generator: SQLGenerator
     ) -> None:
-        """ORDER BY a non-projected ROW column (e.g. ``customer_id``) is
-        not a supported shape and must raise NotImplementedError — both
-        today and after Change 2. Guards against broad ``include_order=
-        True`` accidentally materialising hidden row slots and silently
-        changing GROUP BY grain.
+        """ORDER BY a non-projected LOCAL ROW column (e.g. ``customer_id``) in
+        an aggregated query.
+
+        History: this raised ``NotImplementedError``, then (DEV-1712 Stage 8) a
+        plan-time ``ValueError``. DEV-1703 Phase 1 resolves it instead — the
+        column materialises as a hidden ``customer_id:max`` aggregate and the
+        ORDER BY names that alias. The invariant this test has always really
+        been about is preserved and pinned explicitly below: the sort key must
+        NEVER reach GROUP BY, because widening the grain would change both the
+        row count and every other measure's value.
         """
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
@@ -6357,8 +7531,15 @@ class TestDev1501BroadTriggerAndGuards:
                 dimensions=[ColumnRef(name="status")],
                 order=[OrderItem(column="customer_id", direction="asc")],
             )
-            with pytest.raises(NotImplementedError):
-                await engine.execute(query, dry_run=True)
+            resp = await engine.execute(query, dry_run=True)
+            sql = resp.sql
+            assert _re.search(r"MAX\(\s*orders\.customer_id\s*\)", sql), sql
+            # The sort key must not widen the grain: GROUP BY stays on status.
+            inner = sqlglot.parse_one(sql, dialect="postgres").find(sqlglot.exp.Group)
+            assert inner is not None, sql
+            group_sql = " ".join(e.sql() for e in inner.expressions)
+            assert "customer_id" not in group_sql, sql
+            assert "status" in group_sql, sql
 
     async def test_hidden_simple_aggregate_in_having(
         self, generator: SQLGenerator
@@ -6550,20 +7731,33 @@ class TestDev1501BroadTriggerAndGuards:
                 f"{group_counts}\nSQL:\n{sql}"
             )
 
-    def test_hidden_composite_order_rejected_at_input_validation(
+    def test_hidden_composite_order_accepted_at_input_validation(
         self, generator: SQLGenerator
     ) -> None:
-        """Composite-aggregate ORDER BY (an operator over aggregates) is
-        REJECTED at ``OrderItem`` input validation — the string syntax
-        ``"revenue:sum - cost:sum"`` becomes an invalid identifier and
-        Pydantic raises ``ValidationError`` before the query reaches the
-        planner. So hidden composite order is structurally unreachable
-        in the no-transform path, and Change 3 needs no explicit raise.
+        """DEV-1733 INVERTED this contract.
+
+        DEV-1501 pinned composite-aggregate ORDER BY as structurally
+        unreachable: ``"revenue:sum - cost:sum"`` canonicalised to an invalid
+        identifier and Pydantic rejected it before the planner ever saw it,
+        which is why the no-transform path needed no explicit raise.
+
+        The entry point now recognises it as a FORMULA rather than a column
+        reference: the ``ColumnRef`` becomes the ``_expr_pending`` placeholder
+        and ``raw_formula`` carries the original text for the planner to bind.
+        A composite over declared measure ALIASES (no colon, no func-style
+        call) is NOT a formula candidate and still raises here — alias
+        references inside expressions are unsupported everywhere in SLayer.
+
+        Full behaviour: ``tests/test_dev1733_order_only_transform_composite.py``.
         """
         from pydantic import ValidationError as PydanticValidationError
 
+        item = OrderItem(column="revenue:sum - cost:sum", direction="desc")
+        assert item.column.name == "_expr_pending"
+        assert item.raw_formula == "revenue:sum - cost:sum"
+
         with pytest.raises(PydanticValidationError):
-            OrderItem(column="revenue:sum - cost:sum", direction="desc")
+            OrderItem(column="revenue - cost", direction="desc")
 
 
 class TestMultiHopCrossModelMeasure:
@@ -8902,12 +10096,12 @@ class TestIsolatedFilteredMeasureCTEs:
         # Filtered measure isolated into its own _cm_ CTE; the subquery FROM
         # for the host renders inside it.
         assert "_cm_" in sql and "loss_payment_amt" in sql
-        # Host's ``sql=...`` subquery body renders verbatim somewhere in the
-        # SQL — sqlglot may pretty-print across multiple lines, so check
-        # whitespace-tolerantly (the host SELECT body is ``SELECT * FROM
-        # Claim_Amount`` regardless of formatting).
+        # Host's ``sql=...`` subquery body renders inside the _cm_ CTE — sqlglot
+        # may pretty-print across multiple lines, so check whitespace-tolerantly.
+        # DEV-1645 (landed early in DEV-1706 Stage 2): the mixed-case physical
+        # table ``Claim_Amount`` is now quoted on emit (``FROM "Claim_Amount"``).
         sql_collapsed = _re.sub(r"\s+", " ", sql)
-        assert "SELECT * FROM Claim_Amount" in sql_collapsed, (
+        assert 'SELECT * FROM "Claim_Amount"' in sql_collapsed, (
             f"host subquery FROM should render inside the _cm_ CTE:\n{sql}"
         )
         _assert_valid_sql(sql)
@@ -8960,7 +10154,7 @@ class TestGetColumnTypesSql:
 
                 mock_client = MagicMock()
                 mock_client.get_column_types = capture_sql
-                engine._sql_clients["sqlite://"] = mock_client
+                engine._sql_clients[("sqlite://", "")] = mock_client
 
                 await engine.get_column_types("orders")
 
@@ -9013,7 +10207,7 @@ class TestGetColumnTypesSql:
 
             mock_client = MagicMock()
             mock_client.get_column_types = capture_types
-            engine._sql_clients["sqlite://"] = mock_client
+            engine._sql_clients[("sqlite://", "")] = mock_client
 
             result = await engine.get_column_types("orders")
 
@@ -9474,6 +10668,99 @@ class TestCastEmissionColumn:
         assert "CAST(CAST(" not in sql.upper()
 
 
+class TestCastEmissionOpaqueType:
+    """``CAST(x AS UNKNOWN)`` is not valid SQL in any dialect, so opaque types
+    are skipped by ``_wrap_cast_for_type`` exactly like TEXT/None."""
+
+    def test_unknown_returns_expression_unchanged(self) -> None:
+        expr = sqlglot.parse_one("json_extract(blob, '$.x')")
+        assert _wrap_cast_for_type(expr, DataType.UNKNOWN) is expr
+
+    def test_operable_type_still_casts(self) -> None:
+        expr = sqlglot.parse_one("json_extract(blob, '$.x')")
+        wrapped = _wrap_cast_for_type(expr, DataType.DOUBLE)
+        assert isinstance(wrapped, sqlglot.exp.Cast)
+
+    async def test_opaque_column_rejected_as_dimension(self) -> None:
+        """An opaque column has no equality operator, so grouping by it would
+        emit SQL the database refuses. Reject it up front with an actionable
+        message rather than letting a raw driver error surface."""
+        model = SlayerModel(
+            name="places",
+            sql_table="public.places",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(
+                    name="loc",
+                    sql="coalesce(loc, home_loc)",
+                    type=DataType.UNKNOWN,
+                    db_type="point",
+                ),
+            ],
+        )
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(source_model="places", dimensions=[ColumnRef(name="loc")])
+        with pytest.raises(ValueError, match="cannot be used as a dimension"):
+            await _generate(gen, query, model)
+
+    async def test_opaque_column_emits_no_cast_when_projected(self) -> None:
+        """The CAST guard still holds for a query that doesn't group by the
+        opaque column: no ``CAST(... AS UNKNOWN)`` may reach the SQL."""
+        model = SlayerModel(
+            name="places",
+            sql_table="public.places",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="city", sql="city", type=DataType.TEXT),
+                Column(
+                    name="loc",
+                    sql="coalesce(loc, home_loc)",
+                    type=DataType.UNKNOWN,
+                    db_type="point",
+                ),
+            ],
+        )
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="places",
+            measures=["*:count"],
+            dimensions=[ColumnRef(name="city")],
+        )
+        sql = await _generate(gen, query, model)
+        # No opaque cast reaches the SQL (the docstring's real intent). The typed
+        # pipeline still legitimately emits CAST(COUNT(*) AS INT) for the count
+        # measure (DEV-1361/DEV-1484 — see TestCastEmissionMeasure), so assert the
+        # absence of UNKNOWN entirely (which subsumes "no AS UNKNOWN cast") rather
+        # than banning CAST( altogether.
+        assert "UNKNOWN" not in sql.upper()
+
+    async def test_opaque_column_allowed_as_raw_row_projection(self) -> None:
+        """Raw-row mode (``distinct_dimension_values=False``, no measures,
+        DEV-1543) emits no top-level GROUP BY, so projecting an opaque column
+        as a "dimension" is legal — only grouping is refused. Regression guard:
+        the opaque-dimension check must NOT fire when the query doesn't group."""
+        model = SlayerModel(
+            name="places",
+            sql_table="public.places",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="loc", type=DataType.UNKNOWN, db_type="point"),
+            ],
+        )
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="places",
+            dimensions=[ColumnRef(name="loc")],
+            distinct_dimension_values=False,
+        )
+        sql = await _generate(gen, query, model)
+        assert "GROUP BY" not in sql.upper()
+        assert "PLACES.LOC" in sql.upper()
+
+
 class TestCastEmissionMeasure:
     """``ModelMeasure.type`` (when set) wraps the aggregation expression in a
     final CAST. ``None`` (default) → no cast."""
@@ -9554,7 +10841,6 @@ class TestCastEmissionNonBasePaths:
             ],
         )
 
-    @_XFAIL_WINDOWED
     async def test_windowed_sum_with_measure_type_wraps_in_cast(
         self, orders_model_for_window: SlayerModel,
     ) -> None:
@@ -9588,12 +10874,15 @@ class TestCastEmissionNonBasePaths:
         assert "CAST(SUM(" in norm or "CAST (SUM(" in norm
         assert "DOUBLE" in norm
 
-    @_XFAIL_WINDOWED
-    async def test_windowed_sum_no_measure_type_skips_cast(
+    async def test_windowed_sum_no_measure_type_casts_inferred_type(
         self, orders_model_for_window: SlayerModel,
     ) -> None:
-        """Without a declared measure type, no CAST wrapper is emitted around
-        the windowed aggregation."""
+        """DEV-1714 decision: with no EXPLICIT measure type, the windowed
+        aggregation still CASTs on the type inferred from the source column
+        (``revenue`` is ``DOUBLE``) — exactly as a plain aggregate does in the
+        base path (DEV-1361). A windowed sum and a plain sum of the same no-type
+        measure must emit identical CAST behavior; the legacy explicit-only
+        distinction no longer exists on the typed pipeline."""
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(
             source_model="orders_for_window2",
@@ -9609,10 +10898,11 @@ class TestCastEmissionNonBasePaths:
         )
         orders_model_for_window.name = "orders_for_window2"
         sql = await _generate(gen, query, orders_model_for_window)
-        # Windowed CTE present but no CAST around SUM(_w_value).
         assert "_wm_orders_for_window2__rev_90d" in sql
         norm = _norm(sql).upper()
-        assert "CAST(SUM(_SRC._W_VALUE)" not in norm
+        # Inferred DOUBLE type drives a CAST around SUM(_src._w_value).
+        assert "CAST(SUM(" in norm or "CAST (SUM(" in norm
+        assert "DOUBLE" in norm
 
     async def test_percentile_uses_column_type_for_inner_cast(self) -> None:
         """``_resolve_value_sql`` must propagate ``column_type`` so that
@@ -9839,3 +11129,1632 @@ class TestReplaceFunctionInPredicate:
         # Function-call form, not Command.
         assert "REPLACE(" in sql.upper() or "replace(" in sql
         assert "REPLACE (" not in sql.upper()
+
+
+def _build_score_model_dev1539(*, name: str = "m", score_sql: str) -> SlayerModel:
+    """DEV-1539 test helper: build a minimal model with four numeric
+    columns (``a, b, c, d``) and a derived ``score`` column whose ``sql``
+    is the multi-term expression under test. Used by both the local-
+    branch positive test and the SQLite integration test so the model
+    setup boilerplate isn't duplicated across files (Sonar
+    ``new_duplicated_lines_density``).
+    """
+    return SlayerModel(
+        name=name,
+        sql_table=f"public.{name}",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="a", sql="a", type=DataType.DOUBLE),
+            Column(name="b", sql="b", type=DataType.DOUBLE),
+            Column(name="c", sql="c", type=DataType.DOUBLE),
+            Column(name="d", sql="d", type=DataType.DOUBLE),
+            Column(name="score", sql=score_sql, type=DataType.DOUBLE),
+        ],
+    )
+
+
+def _build_backslash_risk_model_dev1539(*, name: str = "m") -> tuple[SlayerModel, str]:
+    """DEV-1539 test helper: build a model with a ``risk`` column whose
+    ``sql`` contains a literal double-backslash inside a string literal.
+    Returns ``(model, double_backslash_literal)``. Used by both the
+    WHERE-side and HAVING-side backslash-safety tests.
+    """
+    backslash = chr(92)
+    double_bs = backslash * 2  # SQL literal `'\\'` (two backslashes)
+    model = SlayerModel(
+        name=name,
+        sql_table=f"public.{name}",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="tag", sql="tag", type=DataType.TEXT),
+            Column(
+                name="risk",
+                sql=f"LENGTH(REPLACE(tag, '{double_bs}', '')) + 0",
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    return model, double_bs
+
+
+async def _build_joined_customers_orders_engine_dev1539(
+    *, tmp_path, customers_score_sql: str,
+) -> SlayerQueryEngine:
+    """DEV-1539 test helper: spin up a storage-backed engine with an
+    ``orders`` model joined to a ``customers`` model whose ``score`` /
+    derived column carries ``customers_score_sql``. Used by the dotted
+    joined-column wrap test and the dotted-branch backslash-safety
+    test so the storage + join boilerplate isn't duplicated.
+
+    DEV-1703: a ``test`` datasource is registered so the two call sites can
+    render through ``engine.execute(dry_run=True)`` (they used to build an
+    ``EnrichedQuery`` by hand and feed the retired
+    ``SQLGenerator.generate(enriched=...)`` entry point).
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+    await storage.save_model(SlayerModel(
+        name="customers",
+        sql_table="customers",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="a", sql="a", type=DataType.DOUBLE),
+            Column(name="b", sql="b", type=DataType.DOUBLE),
+            Column(name="tag", sql="tag", type=DataType.TEXT),
+            Column(name="score", sql=customers_score_sql, type=DataType.DOUBLE),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    ))
+    return SlayerQueryEngine(storage=storage)
+
+
+class TestFilterOuterParenWrapDev1539:
+    """DEV-1539: defensive outer-paren wrapping at every site where a
+    multi-term expression gets plopped into a filter context.
+
+    Three sites:
+
+    1. ``resolve_filter_columns`` (local + dotted joined-column branches):
+       a non-bare ``Column.sql`` substituted into a filter's text must be
+       wrapped in ``(...)`` so the precedence of the surrounding comparator
+       is preserved by inspection, not only by SQL precedence rules.
+    2. ``_compare_to_sql`` (DSL filter parser): a Compare LHS / RHS that
+       is ``BinOp`` or ``BoolOp`` must be emitted with outer parens.
+       Chained comparisons (``a < b < c``) are rejected — their Python
+       semantics differ from SQL's left-associative comparison chaining.
+    3. ``_build_where_and_having`` HAVING measure-substitution: when the
+       substituted ``agg_expr`` is a Binary/Connector at the AST root,
+       wrap its emitted SQL string in ``(...)`` before ``re.sub``.
+
+    All three sites also gain ``re.sub(..., lambda _: replacement, ...)``
+    in place of bare string replacement so backslashes inside inlined
+    Column SQL aren't silently mutated as backref escapes.
+    """
+
+    async def test_filter_inlines_multiterm_local_column_with_outer_parens(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A query filter on a Column whose ``sql`` is a multi-term
+        arithmetic expression must surface the inlined body wrapped in
+        outer parens — ``(a + b) > 7``, not ``a + b > 7``.
+        """
+        model = _build_score_model_dev1539(
+            score_sql="a * 0.4 + b * 0.3 + c * 0.1 + d * 0.2",
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["score > 7"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        # The multi-term LHS of ``> 7`` must be enclosed so the comparator's
+        # precedence is unambiguous. The typed pipeline qualifies the refs and
+        # encloses the derived expression in its type CAST — ``CAST(m.a * 0.4
+        # + ... AS DOUBLE PRECISION) > 7`` — which is precedence-safe: the whole
+        # arithmetic sum binds to ``> 7``, not just the trailing term.
+        # Single bounded quantifier (`[^)]+`) avoids the S5852 backtracking shape.
+        assert "WHERE" in norm
+        where_clause = norm.split("WHERE", 1)[1]
+        m = _re.search(r"CAST\(\s*m\.a \* 0\.4[^)]+\)\s*>\s*7", where_clause)
+        assert m is not None, (
+            f"Expected the multi-term derived LHS enclosed before `> 7`; "
+            f"got: {where_clause}"
+        )
+        # All four weighted terms must survive inside the enclosed LHS — the
+        # single-quantifier regex alone would still match if a later term were
+        # dropped (CodeRabbit). Plain substring checks keep the S5852-safe shape.
+        for _term in ("m.a", "m.b", "m.c", "m.d"):
+            assert _term in m.group(0), (
+                f"Expected weighted term {_term} inside the enclosed LHS; "
+                f"got: {m.group(0)}"
+            )
+        # Negative: the trailing arithmetic term must NOT land bare next to
+        # ``> 7`` (the un-enclosed, precedence-broken shape).
+        assert "* 0.2 > 7" not in where_clause, (
+            f"Pre-wrap shape `d * 0.2 > 7` should not survive; got: {where_clause}"
+        )
+
+    async def test_filter_inlines_bare_column_no_parens(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """When a Column is a bare identifier (``sql == name`` or sql is a
+        single identifier), no extra parens are added around the qualified
+        reference. ``WHERE orders.customer_id > 100``, not
+        ``WHERE (orders.customer_id) > 100``.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["customer_id > 100"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        assert "orders.customer_id > 100" in norm
+        assert "(orders.customer_id) > 100" not in norm, (
+            f"Bare-identifier Column refs must not gain spurious parens; got:\n{sql}"
+        )
+
+    async def test_filter_inlines_multiterm_joined_column_with_outer_parens(
+        self, tmp_path,
+    ) -> None:
+        """The dotted joined-column filter branch must also wrap inlined
+        non-bare Column.sql bodies in outer parens. Filter
+        ``joined_model.score > 7`` where the joined column's sql is a
+        multi-term arithmetic expression.
+
+        DEV-1703: rendered through ``engine.execute(dry_run=True)``; was
+        ``engine._enrich`` + ``SQLGenerator.generate(enriched=...)``.
+        """
+        engine = await _build_joined_customers_orders_engine_dev1539(
+            tmp_path=tmp_path,
+            customers_score_sql="a * 0.6 + b * 0.4",
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["customers.score > 7"],
+        )
+        sql = (await engine.execute(query=query, dry_run=True)).sql or ""
+        norm = _norm(sql)
+        # The inlined joined-column expression must be ENCLOSED before `> 7`.
+        # Same shape as the local-column sibling above: the typed pipeline
+        # qualifies the refs and encloses the derived expression in its type
+        # CAST — ``CAST(customers.a * 0.6 + customers.b * 0.4 AS DOUBLE
+        # PRECISION) > 7`` — so the whole arithmetic sum binds to ``> 7``,
+        # not just the trailing term. Single bounded quantifier (`[^)]+`)
+        # keeps the S5852-safe regex shape.
+        assert "WHERE" in norm
+        where_clause = norm.split("WHERE", 1)[1]
+        m = _re.search(r"CAST\(\s*customers\.a \* 0\.6[^)]+\)\s*>\s*7", where_clause)
+        assert m is not None, (
+            f"Expected dotted joined-column multi-term sql enclosed before "
+            f"`> 7`; got: {where_clause}"
+        )
+        # Both weighted terms survive inside the enclosed LHS.
+        for _term in ("customers.a", "customers.b"):
+            assert _term in m.group(0), (
+                f"Expected weighted term {_term} inside the enclosed LHS; "
+                f"got: {m.group(0)}"
+            )
+        # Negative: the trailing arithmetic term must NOT land bare next to
+        # ``> 7`` (the un-enclosed, precedence-broken shape).
+        assert "* 0.4 > 7" not in where_clause, (
+            f"Pre-wrap shape `b * 0.4 > 7` should not survive; got: {where_clause}"
+        )
+
+    async def test_dsl_compare_lhs_binop_wrapped(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """A DSL filter ``a + b > 7`` must emit ``(a + b) > 7`` so the
+        precedence of the multi-term arithmetic LHS is explicit by
+        inspection, not only by SQL operator-precedence rules.
+        """
+        # Use two bare-name columns so the LHS is a Compare(BinOp(...), 7)
+        # and the BinOp wrap applies at the DSL layer, not at column
+        # inlining (both columns inline as bare qualified identifiers).
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["customer_id + id > 7"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        m = _re.search(
+            r"\(\s*orders\.customer_id\s*\+\s*orders\.id\s*\)\s*>\s*7",
+            norm,
+        )
+        assert m is not None, (
+            f"Expected DSL Compare LHS BinOp wrapped to `(a + b) > 7`; got:\n{norm}"
+        )
+
+    async def test_dsl_compare_rhs_binop_wrapped(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """A DSL filter ``x > a + b`` must emit ``x > (a + b)``."""
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["customer_id > id + 100"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        m = _re.search(
+            r"orders\.customer_id\s*>\s*\(\s*orders\.id\s*\+\s*100\s*\)",
+            norm,
+        )
+        assert m is not None, (
+            f"Expected DSL Compare RHS BinOp wrapped to `x > (a + b)`; got:\n{norm}"
+        )
+
+    async def test_dsl_compare_bare_lhs_not_wrapped(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """A DSL filter with a bare Name LHS (``x > 7``) must not gain
+        spurious parens: ``WHERE orders.x > 7``, not
+        ``WHERE (orders.x) > 7``.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["customer_id > 7"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        assert "orders.customer_id > 7" in norm
+        assert "(orders.customer_id) > 7" not in norm
+
+    async def test_dsl_compare_call_lhs_not_wrapped(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """A DSL filter whose LHS is a function call (``lower(status) == 'a'``)
+        must not gain spurious parens around the call. Only ``BinOp`` and
+        ``BoolOp`` LHSes get wrapped.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["lower(status) == 'active'"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        # LOWER(...) = 'active', not (LOWER(...)) = 'active'.
+        assert _re.search(r"LOWER\([^)]*\)\s*=\s*'active'", norm, _re.IGNORECASE), (
+            f"Call-LHS filter must not gain outer parens; got:\n{norm}"
+        )
+        assert "(LOWER(" not in norm.upper().replace("WHERE (LOWER(", ""), (
+            f"Spurious parens around LOWER(...) call; got:\n{norm}"
+        )
+
+    @pytest.mark.parametrize(
+        ["formula", "expected_sql"],
+        [
+            # IS NULL / IS NOT NULL stay as-is — `_compare_op_to_sql`
+            # returns the complete operator string when the RHS is None.
+            ("flag is None", "flag IS NULL"),
+            ("flag is not None", "flag IS NOT NULL"),
+            # Non-None IS / IS NOT: previously the `continue` in the
+            # IS/IsNot branch dropped the RHS and emitted broken SQL
+            # like `flag IS` / `flag IS NOT`. Fall-through must render
+            # `IS <rhs>` / `IS NOT <rhs>`.
+            ("flag is True", "flag IS True"),
+            ("flag is not False", "flag IS NOT False"),
+            # IS-non-None composed with another predicate still flows
+            # through `_boolop_to_sql`'s outer wrap.
+            ("flag is True and value > 0", "(flag IS True AND value > 0)"),
+        ],
+    )
+    def test_dsl_compare_is_isnot_with_non_none_rhs(
+        self, formula: str, expected_sql: str,
+    ) -> None:
+        """``is`` / ``is not`` against a non-None RHS used to drop the
+        RHS entirely and emit the broken ``IS`` / ``IS NOT`` operator
+        string. Fix: only the ``is None`` / ``is not None`` paths
+        short-circuit to the complete operator; everything else falls
+        through to the standard ``<op> <rhs>`` emission.
+        """
+        from slayer.core.formula import parse_filter
+
+        pf = parse_filter(formula)
+        assert pf.sql == expected_sql, (
+            f"parse_filter({formula!r}).sql == {pf.sql!r}, expected "
+            f"{expected_sql!r}"
+        )
+
+    def test_dsl_chained_compare_rejected(self) -> None:
+        """Chained comparisons (``a < b < c``) have different semantics
+        between Python and SQL. Python: ``(a < b) AND (b < c)``. SQL:
+        ``(a < b) < c`` (a boolean re-compared to c). The DSL parser
+        must reject chained comparisons with a clear, actionable error
+        rather than silently emit subtly wrong SQL.
+        """
+        from slayer.core.formula import parse_filter
+
+        with pytest.raises(ValueError, match=r"[Cc]hained comparison") as excinfo:
+            parse_filter("a < b < c")
+        # The error must point at the actionable alternative.
+        assert "AND" in str(excinfo.value) or "and" in str(excinfo.value), (
+            f"Chained-compare rejection should point at the `AND` rewrite; "
+            f"got: {excinfo.value!r}"
+        )
+
+    async def test_dsl_compare_lhs_boolop_wrapped(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """A DSL filter whose LHS is an ``ast.BoolOp`` (rare but valid)
+        — e.g. ``(a and b) > 7`` — must emit ``(a AND b) > 7``. Covers
+        the BoolOp half of the Site 2 wrap rule symmetrically with the
+        BinOp half.
+        """
+        # NB: customer_id and id are bare-identifier columns, so the
+        # only wrap on emit is the DSL-level BoolOp wrap under test.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["(customer_id and id) > 0"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        m = _re.search(
+            r"\(\s*orders\.customer_id\s+AND\s+orders\.id\s*\)\s*>\s*0",
+            norm,
+            _re.IGNORECASE,
+        )
+        assert m is not None, (
+            f"Expected DSL Compare LHS BoolOp wrapped to `(a AND b) > 0`; got:\n{norm}"
+        )
+
+    async def test_dsl_compare_rhs_boolop_wrapped(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """The RHS-side counterpart: ``x == (a or b)`` must emit
+        ``x = (a OR b)``.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["customer_id == (id or 0)"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        m = _re.search(
+            r"orders\.customer_id\s*=\s*\(\s*orders\.id\s+OR\s+0\s*\)",
+            norm,
+            _re.IGNORECASE,
+        )
+        assert m is not None, (
+            f"Expected DSL Compare RHS BoolOp wrapped to `x = (a OR 0)`; got:\n{norm}"
+        )
+
+    async def test_filter_inline_preserves_backslash_in_joined_column_sql(
+        self, tmp_path,
+    ) -> None:
+        """Site 1b backslash safety: the dotted joined-column inlining
+        branch must also use lambda-replacement in ``re.sub`` so
+        backslashes inside the joined column's SQL aren't silently halved
+        when substituted into the filter text.
+
+        DEV-1703: rendered through ``engine.execute(dry_run=True)``; was
+        ``engine._enrich`` + ``SQLGenerator.generate(enriched=...)``.
+        """
+        # The joined ``customers.risk`` column must be MULTI-TERM so
+        # the non-bare-identifier inlining branch fires AND contains a
+        # backslash literal. We piggy-back on the shared joined-engine
+        # helper by renaming the ``score`` column's body to a
+        # backslash-bearing expression.
+        backslash = chr(92)
+        double_bs = backslash * 2
+        risk_sql = f"LENGTH(REPLACE(tag, '{double_bs}', '')) + 0"
+        engine = await _build_joined_customers_orders_engine_dev1539(
+            tmp_path=tmp_path,
+            customers_score_sql=risk_sql,
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            # The joined column is named ``score`` in the helper; that's
+            # the alias under which the backslash-bearing sql lives.
+            filters=["customers.score > 0"],
+        )
+        sql = (await engine.execute(query=query, dry_run=True)).sql or ""
+        assert f"'{double_bs}'" in sql, (
+            f"Site 1b (dotted-path) backslash halving regression; got:\n{sql}"
+        )
+
+    async def test_having_substitution_preserves_backslash_in_agg_sql(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """Site 3 backslash safety: HAVING measure-substitution must use
+        lambda-replacement in ``re.sub`` so backslashes inside the
+        aggregated value's source SQL aren't silently halved when the
+        emitted ``agg_sql`` is substituted into the HAVING text.
+        """
+        model, double_bs = _build_backslash_risk_model_dev1539()
+        query = SlayerQuery(
+            source_model="m",
+            dimensions=[ColumnRef(name="id")],
+            measures=[ModelMeasure(formula="risk:sum")],
+            filters=["risk_sum > 0"],
+        )
+        sql = await _generate(generator, query, model)
+        assert "HAVING" in sql
+        having = sql.split("HAVING", 1)[1]
+        assert f"'{double_bs}'" in having, (
+            f"Site 3 (HAVING) backslash halving regression; got HAVING body:\n{having}"
+        )
+
+    async def test_having_multiterm_measure_wrapped(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """When a HAVING filter references a measure whose aggregation
+        expression is a multi-term form (e.g., ``SUM(x * w) / SUM(w)``
+        for a ``weighted_avg`` measure), the substituted expression in
+        the emitted HAVING must be wrapped in outer parens.
+        """
+        model = SlayerModel(
+            name="sales",
+            sql_table="public.sales",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region", sql="region", type=DataType.TEXT),
+                Column(name="price", sql="price", type=DataType.DOUBLE),
+                Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="sales",
+            dimensions=[ColumnRef(name="region")],
+            measures=[
+                ModelMeasure(
+                    formula="price:weighted_avg(weight=quantity)",
+                    name="wavg",
+                ),
+            ],
+            filters=["wavg > 0"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        assert "HAVING" in norm
+        # The substituted multi-term SUM(...) / NULLIF(SUM(...)) must
+        # appear wrapped in parens immediately before `> 0`. Per
+        # CodeRabbit feedback: a substring check like `"(SUM(" in upper
+        # and ") > 0" in upper` would pass even on the un-wrapped
+        # ``SUM(...) / NULLIF(SUM(...), 0) > 0`` because the `(SUM(`
+        # substring matches inside `NULLIF(SUM(`. Anchor on positional
+        # checks instead — find the comparator and verify the LHS as a
+        # whole is parenthesised.
+        having = norm.split("HAVING", 1)[1].strip()
+        gt_index = having.find(" > 0")
+        assert gt_index > 0, (
+            f"HAVING must end with `... > 0`; got:\n{having}"
+        )
+        assert having[gt_index - 1] == ")", (
+            f"Expected `)` immediately before `> 0` (the outer wrap's "
+            f"closer); got char {having[gt_index - 1]!r} at index "
+            f"{gt_index - 1} in:\n{having}"
+        )
+        # The HAVING expression must START with an open paren — the
+        # outer wrap. (After ``strip()`` above any pretty-print
+        # indentation is gone.)
+        assert having.startswith("("), (
+            f"Expected HAVING multi-term LHS to start with `(`; got:\n{having}"
+        )
+        # And the body contains a real top-level divide between two
+        # aggregate calls — not just the inner NULLIF.
+        assert "SUM(" in having.upper() and "/" in having and "NULLIF" in having.upper(), (
+            f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+        )
+
+    async def test_having_simple_measure_not_wrapped(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """A HAVING filter on a simple single-aggregation measure
+        (``revenue:sum > 0``) must NOT gain spurious outer parens:
+        ``HAVING SUM(...) > 0``, not ``HAVING (SUM(...)) > 0``.
+        Only multi-term ``Binary``/``Connector`` ``agg_expr`` shapes
+        warrant the wrap.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="revenue:sum")],
+            filters=["revenue_sum > 0"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        norm = _norm(sql)
+        assert "HAVING" in norm
+        having = norm.split("HAVING", 1)[1]
+        # Tight form: HAVING SUM(...) > 0
+        assert _re.search(r"HAVING\s*SUM\([^)]*\)\s*>\s*0", "HAVING" + having, _re.IGNORECASE) or \
+               _re.search(r"SUM\([^)]*\)\s*>\s*0", having, _re.IGNORECASE), (
+            f"Expected `SUM(...) > 0` without outer parens in HAVING; got:\n{having}"
+        )
+        assert _re.search(r"\(\s*SUM\([^)]*\)\s*\)\s*>\s*0", having, _re.IGNORECASE) is None, (
+            f"Single-aggregate HAVING must not gain spurious parens; got:\n{having}"
+        )
+
+    async def test_filter_inline_preserves_backslash_in_column_sql(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """``re.sub(pattern, repl, source)`` interprets backslashes in the
+        replacement string as escape sequences — a literal ``\\\\`` in
+        the inlined Column.sql gets silently halved to ``\\`` in the
+        emitted WHERE. Using ``lambda _: repl`` for the replacement
+        side-steps the bug. This test pins the fix.
+        """
+        model, double_bs = _build_backslash_risk_model_dev1539()
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["risk > 0"],
+        )
+        # Must not raise (e.g., ``re.error: bad escape \\b``) and must
+        # preserve the doubled backslash in the emitted SQL.
+        sql = await _generate(generator, query, model)
+        # The original SQL literal had two backslashes; after substitution
+        # via lambda replacement, both must survive.
+        assert f"'{double_bs}'" in sql, (
+            f"Backslash halving regression: expected '{double_bs}' literal "
+            f"preserved in emitted SQL; got:\n{sql}"
+        )
+
+    @pytest.mark.parametrize(
+        ["formula", "expected_sql"],
+        [
+            # Inner low-prec child under high-prec parent — left operand.
+            ("(a + b) * c > 10", "((a + b) * c) > 10"),
+            # Same shape — RHS of comparator.
+            ("a > (b + c) * d", "a > ((b + c) * d)"),
+            # Equal-precedence right child of /, must stay wrapped.
+            ("a / (b * c) > 0", "(a / (b * c)) > 0"),
+            # Equal-precedence right child of -, must stay wrapped to
+            # preserve right-grouping semantics.
+            ("a - (b - c) > 0", "(a - (b - c)) > 0"),
+            # Left-assoc, no source parens: no inner wrap needed.
+            ("a - b - c > 0", "(a - b - c) > 0"),
+            # Higher-precedence child under lower-precedence parent:
+            # no wrap needed — `a + b * c` reads correctly bare.
+            ("a + b * c > 10", "(a + b * c) > 10"),
+            # User-supplied parens around left equal-precedence are
+            # semantically a no-op (`(a + b) + c` == `a + b + c`) so
+            # we don't emit a stray inner wrap.
+            ("(a + b) + c > 0", "(a + b + c) > 0"),
+            # Pow is RIGHT-associative — the equal-precedence rule
+            # mirrors the others. `(a ** b) ** c` must keep its inner
+            # parens; without the fix it would re-emit as
+            # `a ** b ** c` which Python re-parses as `a ** (b ** c)`,
+            # giving a different result.
+            ("(a ** b) ** c > 0", "((a ** b) ** c) > 0"),
+            # `a ** b ** c` parses RIGHT-assoc; emission must preserve
+            # the grouping via explicit parens on the right operand.
+            ("a ** b ** c > 0", "(a ** (b ** c)) > 0"),
+        ],
+    )
+    def test_dsl_compare_preserves_nested_arithmetic_precedence(
+        self, formula: str, expected_sql: str,
+    ) -> None:
+        """DEV-1539: ``_binop_to_sql`` must wrap nested child operands so
+        the AST-encoded operator precedence survives serialisation.
+        Without this, ``(a + b) * c > 10`` and ``a + b * c > 10`` would
+        both emit as ``(a + b * c) > 10`` — semantically distinct
+        inputs collapse to the same output, silently changing results.
+        """
+        from slayer.core.formula import parse_filter
+
+        pf = parse_filter(formula)
+        assert pf.sql == expected_sql, (
+            f"parse_filter({formula!r}).sql == {pf.sql!r}, expected "
+            f"{expected_sql!r}"
+        )
+
+    @pytest.mark.parametrize(
+        ["body_sql", "connector"],
+        [
+            # sqlglot 30.4.3: ``exp.And`` is a subclass of ``exp.Func``,
+            # so a pure inverse-atomic check would mis-classify this as
+            # atomic and skip the wrap. The compound check must fire
+            # first.
+            ("archived AND deleted", "AND"),
+            ("archived OR deleted", "OR"),
+        ],
+    )
+    async def test_filter_inlines_and_or_connector_column_with_outer_parens(
+        self, generator: SQLGenerator, body_sql: str, connector: str,
+    ) -> None:
+        """Column.sql whose root is ``a AND b`` / ``a OR b`` (sqlglot
+        ``exp.And`` / ``exp.Or``) must be wrapped on inline. These
+        inherit from ``exp.Func`` in sqlglot 30.4.3, so the
+        inverse-atomic check at ``_filter_inline_needs_paren_wrap``
+        would skip them — the compound-types check has to fire first.
+        """
+        model = SlayerModel(
+            name="m",
+            sql_table="public.m",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="archived", sql="archived", type=DataType.BOOLEAN),
+                Column(name="deleted", sql="deleted", type=DataType.BOOLEAN),
+                Column(name="active", sql=body_sql, type=DataType.BOOLEAN),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["active IS NULL"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        # The typed pipeline qualifies the refs and encloses the connector-rooted
+        # derived expression in its type CAST — ``CAST(m.archived AND m.deleted
+        # AS BOOLEAN)`` — so the surrounding ``IS NULL`` binds to the whole
+        # connector, not just the trailing operand. Single bounded quantifier.
+        m = _re.search(
+            r"CAST\(\s*m\.archived\s+" + connector + r"\s+m\.deleted\s+AS BOOLEAN\)",
+            norm,
+            _re.IGNORECASE,
+        )
+        assert m is not None, (
+            f"{connector}-rooted Column.sql must be enclosed on inline; got:\n{norm}"
+        )
+        # And the wrap really protects the IS NULL precedence —
+        # the char before `IS NULL` must be `)`.
+        is_null_index = norm.find("IS NULL")
+        assert is_null_index > 0, f"WHERE must contain IS NULL; got:\n{norm}"
+        preceding = norm[:is_null_index].rstrip()
+        assert preceding.endswith(")"), (
+            f"Char before `IS NULL` must be `)` (outer wrap closer); "
+            f"got tail {preceding[-15:]!r} in:\n{norm}"
+        )
+
+    async def test_filter_inlines_not_predicate_column_with_outer_parens(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A Column.sql whose root is ``NOT <expr>`` (sqlglot ``exp.Not``)
+        must be wrapped on inline so a surrounding predicate like
+        ``IS NULL`` binds to the whole expression, not just the inner
+        operand. Without the wrap, ``NOT archived IS NULL`` reads as
+        ``NOT (archived IS NULL)`` — different semantics from the
+        intended ``(NOT archived) IS NULL``. The original
+        ``_filter_inline_needs_paren_wrap`` only matched ``Binary``/
+        ``Connector`` and missed this shape.
+        """
+        model = SlayerModel(
+            name="m",
+            sql_table="public.m",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="archived", sql="archived", type=DataType.BOOLEAN),
+                Column(name="active", sql="NOT archived", type=DataType.BOOLEAN),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["active IS NULL"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        # The typed pipeline encloses the NOT-rooted derived expression in its
+        # type CAST: ``CAST(NOT m.archived AS BOOLEAN) IS NULL`` — the NOT binds
+        # inside the CAST, so ``IS NULL`` applies to the whole predicate.
+        m = _re.search(
+            r"CAST\(\s*NOT\s+m\.archived\s+AS BOOLEAN\)\s+IS\s+NULL", norm, _re.IGNORECASE,
+        )
+        assert m is not None, (
+            f"NOT-predicate Column.sql must be enclosed on inline; got:\n{norm}"
+        )
+
+    async def test_filter_inlines_between_predicate_column_with_outer_parens(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A Column.sql whose root is ``BETWEEN`` (sqlglot ``exp.Between``)
+        must be wrapped on inline. ``exp.Between`` is NOT ``exp.Binary`` —
+        the original positive check missed it.
+        """
+        model = SlayerModel(
+            name="m",
+            sql_table="public.m",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="midrange", sql="amount BETWEEN 100 AND 500", type=DataType.BOOLEAN),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["midrange IS NULL"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        m = _re.search(
+            r"CAST\(\s*m\.amount\s+BETWEEN\s+100\s+AND\s+500\s+AS BOOLEAN\)\s+IS\s+NULL",
+            norm,
+            _re.IGNORECASE,
+        )
+        assert m is not None, (
+            f"BETWEEN-predicate Column.sql must be enclosed on inline; got:\n{norm}"
+        )
+
+    async def test_filter_inlines_in_predicate_column_with_outer_parens(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A Column.sql whose root is ``IN`` (sqlglot ``exp.In``) must
+        also be wrapped — same gap as ``Not`` / ``Between`` in the
+        original positive check.
+        """
+        model = SlayerModel(
+            name="m",
+            sql_table="public.m",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="active", sql="status IN ('a', 'b', 'c')", type=DataType.BOOLEAN),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["active IS NULL"],
+        )
+        sql = await _generate(generator, query, model)
+        norm = _norm(sql)
+        m = _re.search(
+            r"CAST\(\s*m\.status\s+IN\s*\([^)]*\)\s+AS BOOLEAN\)\s+IS\s+NULL",
+            norm,
+            _re.IGNORECASE,
+        )
+        assert m is not None, (
+            f"IN-predicate Column.sql must be enclosed on inline; got:\n{norm}"
+        )
+
+    def test_dotted_path_substitution_does_not_match_longer_path(self) -> None:
+        """Site 1b (dotted joined-column branch in
+        ``slayer/engine/enrichment.py``) must guard against substituting
+        a shorter dotted col_name (e.g. ``customers.score``) inside a
+        longer dotted reference (e.g. ``customers.score.extra``).
+        Without the trailing ``(?!\\.)`` lookahead — which the local and
+        HAVING branches both have — a 2-hop col_name mis-substitutes as
+        a prefix of a 3-hop ref, mangling the emitted SQL.
+        """
+        import re as _re_mod
+        col_name = "customers.score"
+        pattern = r"(?<!\.)(?<!\w)\b" + _re_mod.escape(col_name) + r"\b(?!\.)"
+        having_sql = "customers.score > 7 AND customers.score.extra > 0"
+        result = _re_mod.sub(pattern, lambda _m: "EXPANDED", having_sql)
+        # Only the standalone 2-hop ref is rewritten; the 3-hop ref is
+        # left intact for its own (later) substitution.
+        assert result == "EXPANDED > 7 AND customers.score.extra > 0", (
+            f"Post-fix dotted-path regex must skip dotted prefix matches; "
+            f"got: {result!r}"
+        )
+
+    def test_having_substitution_does_not_match_dotted_continuation(
+        self,
+    ) -> None:
+        """The HAVING-side measure substitution regex in
+        ``_build_where_and_having`` must guard against matching a
+        measure name when it appears as the prefix of a dotted
+        continuation. Without ``(?!\\.)`` after ``\\b``, a measure named
+        ``foo`` mis-substitutes inside a literal ``foo.bar`` in the
+        filter SQL.
+
+        This test constructs a case where a query measure's renamed
+        alias (``rev``) is a prefix of a dotted reference inside the
+        same query's HAVING filter SQL — and asserts the substitution
+        does not mangle the dotted form.
+        """
+        # We can't easily synthesise the exact `foo.bar` literal inside
+        # a HAVING string through normal DSL channels, since dotted refs
+        # parse as Attribute nodes. The regression risk is real for
+        # multi-stage / cross-model paths where post-DSL substitutions
+        # leave dotted refs in `having_sql`. This test checks the regex
+        # behaviour directly.
+        import re as _re_mod
+        col_name = "foo"
+        agg_sql = "SUM(amount)"
+        # CURRENT (buggy): no trailing `(?!\.)` guard
+        pattern_with_fix = rf"(?<!\.)(?<!\w)\b{_re_mod.escape(col_name)}\b(?!\.)"
+        # AFTER fix: the dotted continuation must NOT be substituted
+        having_sql = "foo > 100 AND foo.bar > 5"
+        result = _re_mod.sub(pattern_with_fix, lambda _: agg_sql, having_sql)
+        assert result == "SUM(amount) > 100 AND foo.bar > 5", (
+            f"Post-fix HAVING regex must skip dotted continuations; "
+            f"got: {result!r}"
+        )
+        # Also verify the inverse — that the bare `foo` IS substituted.
+        assert "SUM(amount)" in result
+
+
+class TestBigQueryAliasMangling:
+    """BigQuery rejects column names containing dots — SLayer's universal
+    ``<model>.<column>`` alias convention has to be mangled to ``___`` on the
+    way out (and reversed on the way back at the engine).
+
+    These two tests assert the SQLGenerator-level behavior (full SQL output
+    across dialects). Pure unit tests of BigqueryDialect.rewrite_emitted_sql
+    / decode_result_keys live in tests/dialects/test_bigquery.py.
+    """
+
+    async def test_no_dotted_aliases_in_bigquery_sql(self, orders_model: SlayerModel) -> None:
+        gen = SQLGenerator(dialect="bigquery")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="status")],
+            order=[{"column": "count", "direction": "desc"}],
+        )
+        sql = await _generate(gen, query, orders_model)
+        # Every backtick-quoted COLUMN ALIAS emitted by SLayer must NOT
+        # contain a dot — that's what BigQuery rejects. Scope to ``AS `...```
+        # and ORDER/GROUP BY positions so dotted table FQ refs (which use
+        # backticked SEGMENTS like ``\`bigquery-public-data\`.x.y``, not a
+        # single backticked-string with dots inside) don't trip the check.
+        ALIAS_PATTERNS = [
+            r"\bAS\s+`([^`]+)`",            # SELECT expr AS `<alias>`
+            r"\bORDER\s+BY[^\n]*`([^`]+)`",  # ORDER BY `<alias>`
+            r"\bGROUP\s+BY[^\n]*`([^`]+)`",  # GROUP BY `<alias>` (when sqlglot quotes it)
+        ]
+        found_any = False
+        for pat in ALIAS_PATTERNS:
+            for m in _re.findall(pat, sql, flags=_re.IGNORECASE):
+                found_any = True
+                assert "." not in m, (
+                    f"BigQuery output rejects dotted column aliases, but found "
+                    f"`{m}` in:\n{sql}"
+                )
+        assert found_any, f"expected at least one backticked alias in:\n{sql}"
+        # Cross-check the mangled separator made it through.
+        assert "___" in sql, f"expected ___ alias mangling in:\n{sql}"
+
+    async def test_other_dialects_keep_dotted_aliases(self, orders_model: SlayerModel) -> None:
+        # Mangling is bigquery-only; postgres / sqlite / etc. must keep
+        # the dotted alias form (which clients and ORDER BY resolvers
+        # depend on).
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        sql = await _generate(gen, query, orders_model)
+        assert '"orders._count"' in sql
+        assert "___" not in sql
+
+    async def test_inner_stage_render_also_mangles_aliases(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """Inner-stage renders (``source_queries`` stages behind a
+        query-backed model) must mangle aliases too — otherwise the outer
+        stage's references to inner-stage columns would mismatch what the
+        inner stage actually emits.
+
+        Pins Codex HIGH #1: the consistency of multi-stage BigQuery SQL
+        rests on the rewrite firing on EVERY nesting level, not just the
+        terminal one. The rewrite is deterministic, so as long as it fires
+        on both, the inner emit and the outer reference resolve to the same
+        ``___``-form alias.
+
+        (Was ``test_wrapped_render_mode_also_mangles_aliases``, which drove
+        the legacy ``SQLGenerator.generate(enriched=..., render_mode=
+        "wrapped")`` entry point directly. The typed engine renders nested
+        stages through ``generate_planned_stages``; the invariant and the
+        assertions below are unchanged.)
+        """
+        stages_model = SlayerModel(
+            name="qb_stage",
+            data_source="test",
+            source_queries=[
+                SlayerQuery(
+                    name="stg",
+                    source_model="orders",
+                    measures=[
+                        ModelMeasure(formula="*:count"),
+                        ModelMeasure(formula="revenue:sum"),
+                    ],
+                    dimensions=[ColumnRef(name="status")],
+                ),
+                SlayerQuery(
+                    source_model="stg",
+                    dimensions=[ColumnRef(name="status")],
+                    measures=[ModelMeasure(formula="revenue_sum:sum")],
+                ),
+            ],
+        )
+        gen = SQLGenerator(dialect="bigquery")
+        query = SlayerQuery(
+            source_model="qb_stage",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="revenue_sum_sum:sum")],
+        )
+        sql = await _generate(
+            gen, query, orders_model, extra_models=[stages_model],
+        )
+        # The inner stage keeps every alias (so the outer stage can reach
+        # them); all aliases must be mangled.
+        for m in _re.findall(r"`([^`]+)`", sql):
+            assert "." not in m, (
+                f"BigQuery inner-stage SQL still has dotted alias `{m}`:\n{sql}"
+            )
+        # And the mangle separator is present (the rewrite actually fired).
+        assert "___" in sql, f"inner-stage rewrite did not fire:\n{sql}"
+        # Inner emit and outer reference agree on the SAME ``___`` alias:
+        # each appears at least twice (emitted once, referenced once).
+        for alias in ("stg___status", "stg___revenue_sum_sum"):
+            assert sql.count(f"`{alias}`") >= 2, (
+                f"inner-stage alias `{alias}` is not referenced by the outer "
+                f"stage under the same mangled name:\n{sql}"
+            )
+
+    async def test_rewrite_mangles_the_final_public_projection(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """On BigQuery, the FINAL emitted SQL's public projection carries
+        ``___``-mangled aliases — the rewrite ran on SQL whose projection
+        had already been decided.
+
+        SUBSTITUTION (DEV-1703). This test replaces
+        ``test_rewrite_fires_after_outer_projection_trim``, which spied on
+        ``SQLGenerator._apply_outer_projection_trim`` and
+        ``BigqueryDialect.rewrite_emitted_sql`` and asserted the call order
+        ``["trim", "rewrite"]`` (Codex MEDIUM #5 — mangling before the trim
+        would let the trim's parser see already-mangled aliases and miss
+        public-projection columns). ``_apply_outer_projection_trim`` existed
+        only on the retired ``SQLGenerator.generate(enriched=...)`` entry
+        point: the typed pipeline has no trim pass at all, because the
+        planner BUILDS the public projection instead of trimming a wider one
+        down. The ordering contract is therefore unrepresentable — there is
+        no second call to order against.
+
+        What survives is the OBSERVABLE half of that contract, pinned below:
+        the mangling is applied to the finished, already-projected SQL. If
+        the rewrite fired before the projection was decided, the projection
+        layer emitted afterwards would carry dotted aliases and the outermost
+        SELECT would come back with ``orders.status`` rather than
+        ``orders___status``.
+
+        The same query as the retired test is used — the ``dense_rank``
+        filter forces a hidden hoisted column, so the public projection is a
+        real narrowing rather than a no-op on a trivial query.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+            # Filter using a windowed transform creates a hidden hoisted
+            # column, so the public projection is a real narrowing.
+            filters=["dense_rank(revenue:sum) <= 5"],
+        )
+        async with _persist_and_engine(orders_model, ds_type="bigquery") as engine:
+            resp = await engine.execute(query=query, dry_run=True)
+        sql = resp.sql or ""
+        # The outermost SELECT is exactly the public projection, mangled.
+        outer = _outer_projection_names(sql, dialect="bigquery")
+        assert outer == {"orders___status", "orders____count"}, (
+            f"final projection must be the mangled public keys; got "
+            f"{outer!r}\nSQL:\n{sql}"
+        )
+        # ...and the un-mangled dotted forms never reach the output.
+        for dotted in ("orders.status", "orders._count"):
+            assert dotted not in outer, (
+                f"dotted alias {dotted!r} survived into the final projection — "
+                f"the rewrite did not run on the projected SQL:\n{sql}"
+            )
+        # The hidden hoisted column was narrowed away by the projection (so
+        # the projection genuinely ran) yet is itself mangled where it does
+        # appear (so the rewrite covered the inner layers too).
+        assert "orders____dense_rank_inner" in sql, (
+            f"expected the hoisted dense_rank column, mangled, inside the "
+            f"query body:\n{sql}"
+        )
+        assert not any(name.endswith("_dense_rank_inner") for name in outer), (
+            f"hidden hoisted column must not reach the public projection; got "
+            f"{outer!r}\nSQL:\n{sql}"
+        )
+        # No backticked identifier anywhere retains a dot.
+        for ident in _re.findall(r"`([^`]+)`", sql):
+            assert "." not in ident, (
+                f"BigQuery output still has a dotted identifier `{ident}`:\n{sql}"
+            )
+        # The engine decodes the mangled keys back to the dotted result keys.
+        assert resp.columns == ["orders.status", "orders._count"], resp.columns
+
+
+class TestCrossModelAggregateSourceSqlJoinInference:
+    """DEV-1526 harvest (Stage 1): a CROSS-MODEL aggregate whose TARGET
+    column's ``Column.sql`` crosses a FURTHER join must pull the implied LEFT
+    JOINs into the per-plan ``_cm_*`` CTE body. The fix lands Stage 4 (Law-1
+    inside the CTE ScopeFrame); the discovery tests are pinned strict-xfail
+    until then. ``test_bare_target_column_no_spurious_join_in_cte`` stays green
+    (a bare cross-model aggregate already works). Chain:
+    ``orders_x → customers_v2 → regions → countries``.
+    """
+
+    @pytest.fixture
+    async def storage(self, tmp_path):
+        s = YAMLStorage(base_dir=str(tmp_path))
+        await s.save_datasource(DatasourceConfig(name="test", type="postgres"))
+        await s.save_model(SlayerModel(
+            name="countries", sql_table="countries", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="gdp", sql="gdp", type=DataType.DOUBLE),
+            ],
+        ))
+        await s.save_model(SlayerModel(
+            name="regions", sql_table="regions", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="population", sql="population", type=DataType.DOUBLE),
+                Column(name="weight", sql="weight", type=DataType.DOUBLE),
+                Column(name="props", sql="props", type=DataType.TEXT),
+                Column(name="country_id", sql="country_id", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="countries", join_pairs=[["country_id", "id"]])],
+        ))
+        return s
+
+    def _customers_v2(self, *, extra_columns=None, filters=None) -> SlayerModel:
+        cols = [
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+            Column(name="lifetime_value", sql="lifetime_value", type=DataType.DOUBLE),
+        ]
+        if extra_columns:
+            cols.extend(extra_columns)
+        return SlayerModel(
+            name="customers_v2", sql_table="customers", data_source="test",
+            columns=cols,
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+            filters=filters or [],
+        )
+
+    def _orders_x(self) -> SlayerModel:
+        return SlayerModel(
+            name="orders_x", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+            joins=[ModelJoin(target_model="customers_v2", join_pairs=[["customer_id", "id"]])],
+        )
+
+    async def _engine_with(self, storage, customers_v2) -> SlayerQueryEngine:
+        await storage.save_model(customers_v2)
+        await storage.save_model(self._orders_x())
+        return SlayerQueryEngine(storage=storage)
+
+    async def test_single_further_hop_source_sql(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "SUM(regions.population)" in cm_body, cm_body
+
+    async def test_multi_hop_further_join_source_sql(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_gdp", sql="regions__countries.gdp", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_gdp:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
+        assert "SUM(regions__countries.gdp)" in cm_body, cm_body
+
+    async def test_path_alias_source_sql(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_country_name", sql="regions__countries.name",
+                   type=DataType.TEXT),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_country_name:count_distinct")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
+        assert "COUNT(DISTINCT regions__countries.name)" in cm_body, cm_body
+
+    async def test_mode_a_function_wrapping_source_sql(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="region_prop_x",
+                   sql="json_extract(regions.props, '$.x')", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.region_prop_x:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "regions.props" in cm_body, cm_body
+
+    async def test_sibling_derived_chain_source_sql(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="pop_helper", sql="regions.population", type=DataType.DOUBLE),
+            Column(name="doubled_pop", sql="pop_helper * 2", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.doubled_pop:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "regions.population" in cm_body, cm_body
+
+    async def test_mixed_base_col_and_further_join_source_sql(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_score", sql="lifetime_value + regions.population",
+                   type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_score:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "customers_v2.lifetime_value" in cm_body, cm_body
+        assert "regions.population" in cm_body, cm_body
+        assert "countries" not in cm_body, cm_body
+
+    async def test_dedup_source_and_target_model_filter_same_join(self, storage) -> None:
+        # Green on my branch: the target model filter `regions.name IS NOT NULL`
+        # already pulls the `regions` join via the implemented filter-discovery
+        # path (DEV-1494), so the source ref resolves against it even before the
+        # DEV-1526 source-SQL fix. The pure source-only cases stay xfail above.
+        engine = await self._engine_with(storage, self._customers_v2(
+            extra_columns=[
+                Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+            ],
+            filters=["regions.name IS NOT NULL"],
+        ))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert cm_body.count("LEFT JOIN regions AS regions") == 1, cm_body
+        assert "SUM(regions.population)" in cm_body, cm_body
+
+    async def test_filter_and_source_cross_different_depths(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(
+            extra_columns=[
+                Column(name="deep_gdp", sql="regions__countries.gdp",
+                       type=DataType.DOUBLE),
+            ],
+            filters=["regions.name IS NOT NULL"],
+        ))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_gdp:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert cm_body.count("LEFT JOIN regions AS regions") == 1, cm_body
+        assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
+        assert "SUM(regions__countries.gdp)" in cm_body, cm_body
+
+    async def test_composite_two_operand_each_cte_pulls_join(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+            Column(name="deep_weight", sql="regions.weight", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(
+                formula="customers_v2.deep_pop:sum + customers_v2.deep_weight:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        pop_body = _extract_cte_body(sql, r"_cm_\w*deep_pop\w*")
+        weight_body = _extract_cte_body(sql, r"_cm_\w*deep_weight\w*")
+        assert pop_body.count("LEFT JOIN regions AS regions") == 1, pop_body
+        assert weight_body.count("LEFT JOIN regions AS regions") == 1, weight_body
+        assert "SUM(regions.population)" in pop_body, pop_body
+        assert "SUM(regions.weight)" in weight_body, weight_body
+
+    async def test_first_last_source_join_in_ranked_subquery(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(
+                formula="customers_v2.deep_pop:last(orders_x.created_at)")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "ROW_NUMBER()" in cm_body, cm_body
+        normalized = _norm(cm_body)
+        inner_start = normalized.find("FROM (")
+        assert inner_start > 0, normalized
+        inner_body = normalized[inner_start:]
+        assert "LEFT JOIN regions AS regions" in inner_body, inner_body
+
+    async def test_bare_target_column_no_spurious_join_in_cte(self, storage) -> None:
+        """Green: a bare cross-model aggregate already works — the ``_cm_*``
+        CTE has no spurious deeper join."""
+        engine = await self._engine_with(storage, self._customers_v2())
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.region_id:count_distinct")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "COUNT(DISTINCT customers_v2.region_id)" in cm_body, cm_body
+        assert "regions" not in cm_body, cm_body
+        assert "countries" not in cm_body, cm_body
+
+    async def test_deeper_join_only_in_cte_not_host_base(self, storage) -> None:
+        engine = await self._engine_with(storage, self._customers_v2(extra_columns=[
+            Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+        ]))
+        query = SlayerQuery(
+            source_model="orders_x",
+            measures=[ModelMeasure(formula="customers_v2.deep_pop:sum")],
+        )
+        sql = (await engine.execute(query, dry_run=True)).sql
+        base_body = _extract_cte_body(sql, r"_base")
+        cm_body = _extract_cte_body(sql, r"_cm_\w+")
+        assert "LEFT JOIN regions AS regions" in cm_body, cm_body
+        assert "regions" not in base_body, base_body
+
+
+class TestWindowedMeasureGuards:
+    """DEV-1496 harvest (Stage 1): windowed measures must emit a ``_wm_``
+    range-join CTE and RAISE loudly on shapes the primitive does not support,
+    rather than silently degrade to a plain grouped aggregate. Today the typed
+    pipeline drops ``window=`` silently, so every guard is pinned strict-xfail
+    to Stage 10 (DEV-1714). The composite/hidden/mixed guards are DEV-1504.
+    """
+
+    @pytest.fixture
+    def orders_model(self) -> SlayerModel:
+        return SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+
+    async def test_windowed_non_sum_avg_raises(self, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:min(window='30d')", "name": "rev_w"}],
+        )
+        with pytest.raises(ValueError, match="only supported for sum and avg"):
+            await _engine_generate(query=query, model=orders_model)
+
+    async def test_windowed_no_time_dimension_raises(self, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[{"formula": "revenue:sum(window='30d')", "name": "rev_w"}],
+        )
+        with pytest.raises(ValueError, match="could not resolve its time dimension"):
+            await _engine_generate(query=query, model=orders_model)
+
+    async def test_windowed_cross_model_raises(self, tmp_path) -> None:
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+        await storage.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+        ))
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        await storage.save_model(orders)
+        engine = SlayerQueryEngine(storage=storage)
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "customers.revenue:sum(window='30d')", "name": "rev_w"}],
+        )
+        with pytest.raises(NotImplementedError, match="cross-model"):
+            await engine.execute(query, dry_run=True)
+
+    async def test_windowed_with_transform_raises(self, orders_model: SlayerModel) -> None:
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[
+                {"formula": "revenue:sum(window='90d')", "name": "rev_w"},
+                {"formula": "time_shift(revenue:sum, -1)", "name": "rev_prev"},
+            ],
+        )
+        with pytest.raises(NotImplementedError, match="transform"):
+            await _engine_generate(query=query, model=orders_model)
+
+    async def test_windowed_as_transform_input_raises(self, orders_model: SlayerModel) -> None:
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "cumsum(revenue:sum(window='90d'))", "name": "cum_w"}],
+        )
+        with pytest.raises(NotImplementedError, match="transform"):
+            await _engine_generate(query=query, model=orders_model)
+
+    async def test_windowed_in_arithmetic_raises(self, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d') / 2", "name": "half_w"}],
+        )
+        with pytest.raises(NotImplementedError, match="arithmetic|composite|scalar"):
+            await _engine_generate(query=query, model=orders_model)
+
+    async def test_windowed_filter_only_hidden_raises(self, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum", "name": "rev"}],
+            filters=["revenue:sum(window='90d') > 100"],
+        )
+        with pytest.raises(NotImplementedError, match="selected"):
+            await _engine_generate(query=query, model=orders_model)
+
+    async def test_windowed_mixed_aggregate_filter_raises(self, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
+            filters=["revenue:sum(window='90d') > 100 and revenue:sum > 50"],
+        )
+        with pytest.raises(NotImplementedError, match="mix"):
+            await _engine_generate(query=query, model=orders_model)
+
+    # ------------------------------------------------------------------ #
+    # DEV-1714 Stage 10 — loud-error coverage beyond the DEV-1496/1504 pins:
+    # invalid durations must raise at plan time (never a silent degrade nor a
+    # TypeError), the ``window`` kwarg name is reserved for sum/avg only (even
+    # on custom aggregations), and guard PRECEDENCE (Codex C1) is contractual.
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.parametrize("bad", ["90x", "d90", "9z"])
+    async def test_windowed_malformed_duration_raises(
+        self, bad: str, orders_model: SlayerModel,
+    ) -> None:
+        """A malformed compact duration must raise a clear ``ValueError`` at
+        plan time, not silently degrade."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": f"revenue:sum(window='{bad}')", "name": "rev_w"}],
+        )
+        with pytest.raises(ValueError, match=r"Use syntax like '1y2m3w5d6h7min8s'"):
+            await _engine_generate(query=query, model=orders_model)
+
+    async def test_windowed_empty_duration_raises(self, orders_model: SlayerModel) -> None:
+        """An empty window duration must raise the distinct empty-duration error."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='')", "name": "rev_w"}],
+        )
+        with pytest.raises(ValueError, match="cannot be empty"):
+            await _engine_generate(query=query, model=orders_model)
+
+    async def test_windowed_non_string_duration_raises(self, orders_model: SlayerModel) -> None:
+        """Codex C4: a non-string ``window`` value (e.g. ``window=90``) must be
+        normalized to a ``ValueError`` — never a raw ``TypeError`` from feeding a
+        number to the compact-duration regex."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window=90)", "name": "rev_w"}],
+        )
+        with pytest.raises(ValueError):
+            await _engine_generate(query=query, model=orders_model)
+
+    async def test_custom_aggregation_with_window_raises(self) -> None:
+        """The ``window`` kwarg name is reserved for sum/avg; invoking a custom
+        aggregation with ``window=`` must raise G1 (legacy parity — legacy pops
+        ``window`` unconditionally before dispatch)."""
+        model = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="amount_col", sql="amount", type=DataType.DOUBLE),
+            ],
+            aggregations=[Aggregation(name="myagg", formula="SUM({value})")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "amount_col:myagg(window='90d')", "name": "w"}],
+        )
+        with pytest.raises(ValueError, match="only supported for sum and avg"):
+            await _engine_generate(query=query, model=model)
+
+    async def test_windowed_transform_input_precedence_not_selected(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """Codex C1: a windowed aggregate nested in a transform interns as a
+        HIDDEN dependency slot, so the transform guard (G4) must win over the
+        hidden-slot guard (G6) — the error says ``transform``, never
+        ``selected``."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "cumsum(revenue:sum(window='90d'))", "name": "cum_w"}],
+        )
+        with pytest.raises(NotImplementedError) as excinfo:
+            await _engine_generate(query=query, model=orders_model)
+        msg = str(excinfo.value).lower()
+        assert "transform" in msg, msg
+        assert "selected" not in msg, msg
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "g1_non_sum_avg", "g2_no_time_dim", "g3_cross_model", "g4_transform",
+            "g5_arithmetic", "g6_hidden", "g7_mixed", "g8_malformed",
+        ],
+    )
+    def test_windowed_guards_fire_at_plan_time(self, case: str) -> None:  # NOSONAR(S3776) — flat case dispatch for a parametrized guard matrix; each branch builds one (query, bundle, exc, match) tuple, kept inline so the guard scenario reads next to its expectation.
+        """Decision D-a / Codex C1+C2: every windowed guard raises in the PLANNER
+        (``plan_query``) — before any SQL is rendered. Proves the guards are
+        plan-time (a renderer-only guard would fail this by not raising here)."""
+        created_at = Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP)
+        base_cols = [
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            created_at,
+            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+        ]
+        td = [TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)]
+
+        def _plain() -> SlayerModel:
+            return SlayerModel(
+                name="orders", sql_table="public.orders", data_source="test",
+                columns=[c.model_copy() for c in base_cols],
+            )
+
+        def _bundle(model: SlayerModel, referenced=None) -> ResolvedSourceBundle:
+            return ResolvedSourceBundle(source_model=model, referenced_models=referenced or [])
+
+        if case == "g1_non_sum_avg":
+            q = SlayerQuery(source_model="orders", time_dimensions=td,
+                            measures=[{"formula": "revenue:min(window='30d')", "name": "rev_w"}])
+            bundle, exc, match = _bundle(_plain()), ValueError, "only supported for sum and avg"
+        elif case == "g2_no_time_dim":
+            q = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")],
+                            measures=[{"formula": "revenue:sum(window='30d')", "name": "rev_w"}])
+            bundle, exc, match = _bundle(_plain()), ValueError, "could not resolve its time dimension"
+        elif case == "g3_cross_model":
+            customers = SlayerModel(
+                name="customers", sql_table="customers", data_source="test",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+                ],
+            )
+            orders = SlayerModel(
+                name="orders", sql_table="orders", data_source="test",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                    created_at.model_copy(),
+                ],
+                joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            )
+            q = SlayerQuery(source_model="orders", time_dimensions=td,
+                            measures=[{"formula": "customers.revenue:sum(window='30d')", "name": "rev_w"}])
+            bundle, exc, match = _bundle(orders, [customers]), NotImplementedError, "cross-model"
+        elif case == "g4_transform":
+            model = _plain()
+            model.default_time_dimension = "created_at"
+            q = SlayerQuery(source_model="orders", time_dimensions=td, measures=[
+                {"formula": "revenue:sum(window='90d')", "name": "rev_w"},
+                {"formula": "time_shift(revenue:sum, -1)", "name": "rev_prev"},
+            ])
+            bundle, exc, match = _bundle(model), NotImplementedError, "transform"
+        elif case == "g5_arithmetic":
+            q = SlayerQuery(source_model="orders", time_dimensions=td,
+                            measures=[{"formula": "revenue:sum(window='90d') / 2", "name": "half_w"}])
+            bundle, exc, match = _bundle(_plain()), NotImplementedError, "arithmetic|composite|scalar"
+        elif case == "g6_hidden":
+            q = SlayerQuery(source_model="orders", time_dimensions=td,
+                            measures=[{"formula": "revenue:sum", "name": "rev"}],
+                            filters=["revenue:sum(window='90d') > 100"])
+            bundle, exc, match = _bundle(_plain()), NotImplementedError, "selected"
+        elif case == "g7_mixed":
+            q = SlayerQuery(source_model="orders", time_dimensions=td,
+                            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
+                            filters=["revenue:sum(window='90d') > 100 and revenue:sum > 50"])
+            bundle, exc, match = _bundle(_plain()), NotImplementedError, "mix"
+        else:  # g8_malformed
+            q = SlayerQuery(source_model="orders", time_dimensions=td,
+                            measures=[{"formula": "revenue:sum(window='90x')", "name": "rev_w"}])
+            bundle, exc, match = _bundle(_plain()), ValueError, "Use syntax like"
+
+        with pytest.raises(exc, match=match):
+            plan_query(query=q, bundle=bundle)
+
+    async def test_windowed_default_time_dimension_not_selected_raises(self) -> None:
+        """CR#3: a windowed measure whose only time dimension is the model's
+        ``default_time_dimension`` (never selected as a query ``time_dimensions``
+        entry, so never interned as a bucket-grain slot) must raise the clean G2
+        message — not crash on the required ``window_time_dimension_slot_id``."""
+        model = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+            default_time_dimension="created_at",
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
+        )
+        with pytest.raises(ValueError, match="could not resolve its time dimension"):
+            await _engine_generate(query=query, model=model)
+
+    async def test_windowed_mixed_row_filter_raises(self, orders_model: SlayerModel) -> None:
+        """Codex round 5: a single filter mixing a windowed measure with a ROW
+        predicate (not just a plain aggregate — G7's case) is reclassified whole
+        to POST, so the row part would neither filter pre-aggregation nor resolve
+        against an unprojected ``_base`` column. Reject it at plan time."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "rev_w"}],
+            filters=["revenue:sum(window='90d') > 100 and status = 'active'"],
+        )
+        with pytest.raises(NotImplementedError, match="mix"):
+            await _engine_generate(query=query, model=orders_model)
+

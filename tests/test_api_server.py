@@ -193,13 +193,21 @@ class TestDatasources:
         assert entries[0]["type"] == "postgres"
 
     def test_get_datasource(self, client: TestClient) -> None:
-        ds = {"name": "mydb", "type": "postgres", "host": "localhost", "password": "secret"}
+        ds = {
+            "name": "mydb",
+            "type": "bigquery",
+            "password": "PASSWORD_SENTINEL",
+            "connection_string": "bigquery://project",
+            "credentials_json": '{"private_key": "PRIVATE_KEY_SENTINEL"}',
+        }
         client.post("/datasources", json=ds)
         resp = client.get("/datasources/mydb")
         assert resp.status_code == 200
         data = resp.json()
         assert data["name"] == "mydb"
         assert data["password"] == "***"
+        assert data["connection_string"] == "***"
+        assert data["credentials_json"] == "***"
 
     def test_get_datasource_not_found(self, client: TestClient) -> None:
         resp = client.get("/datasources/nope")
@@ -215,6 +223,17 @@ class TestDatasources:
     def test_delete_nonexistent(self, client: TestClient) -> None:
         resp = client.delete("/datasources/nope")
         assert resp.status_code == 404
+
+    def test_case_variant_name_returns_400(self, client: TestClient) -> None:
+        resp = client.post(
+            "/datasources", json={"name": "mydb", "type": "postgres"},
+        )
+        assert resp.status_code == 200
+        resp = client.post(
+            "/datasources", json={"name": "MyDB", "type": "postgres"},
+        )
+        assert resp.status_code == 400
+        assert "differs only by case" in resp.json()["detail"]
 
 
 class TestIngestEndpoint:

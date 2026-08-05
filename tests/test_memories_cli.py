@@ -19,7 +19,6 @@ import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
-from typing import Optional
 
 import pytest
 
@@ -75,10 +74,10 @@ def _args(
     *,
     storage_path: str,
     memory_command: str,
-    learning: Optional[str] = None,
-    entities: Optional[str] = None,
-    query: Optional[str] = None,
-    id: Optional[int] = None,  # noqa: A002 — argparse arg
+    learning: str | None = None,
+    entities: str | None = None,
+    query: str | None = None,
+    id: int | None = None,  # noqa: A002 — argparse arg
 ) -> SimpleNamespace:
     return SimpleNamespace(
         storage=storage_path,

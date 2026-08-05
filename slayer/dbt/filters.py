@@ -12,7 +12,6 @@ SLayer uses plain SQL-like strings:
 
 import logging
 import re
-from typing import Dict, Optional
 
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.models import DbtSemanticModel
@@ -36,8 +35,8 @@ def convert_dbt_filter(
     filter_str: str,
     source_model_name: str,
     entity_registry: EntityRegistry,
-    model_entity_names: Optional[Dict[str, str]] = None,
-    all_semantic_models: Optional[Dict[str, DbtSemanticModel]] = None,
+    model_entity_names: dict[str, str] | None = None,
+    all_semantic_models: dict[str, DbtSemanticModel] | None = None,
 ) -> str:
     """Convert a dbt Jinja filter string to a SLayer filter string.
 

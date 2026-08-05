@@ -1,0 +1,39 @@
+cubes:
+  - name: orders
+    sql_table: public.orders
+    description: Customer orders
+    joins:
+      - name: customers
+        relationship: many_to_one
+        sql: "{CUBE}.customer_id = {customers.id}"
+    measures:
+      - name: count
+        type: count
+      - name: total_revenue
+        type: sum
+        sql: "{CUBE}.amount"
+        title: Total Revenue
+        format: currency
+      - name: completed_revenue
+        type: sum
+        sql: "{CUBE}.amount"
+        filters:
+          - sql: "{CUBE}.status = 'completed'"
+    dimensions:
+      - name: id
+        sql: "{CUBE}.id"
+        type: number
+        primary_key: true
+      - name: status
+        sql: "{CUBE}.status"
+        type: string
+      - name: created_at
+        sql: "{CUBE}.created_at"
+        type: time
+    segments:
+      - name: completed
+        sql: "{CUBE}.status = 'completed'"
+    pre_aggregations:
+      - name: main
+        measures:
+          - orders.count

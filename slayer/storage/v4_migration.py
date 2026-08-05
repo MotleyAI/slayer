@@ -28,7 +28,6 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from typing import List, Optional
 
 import yaml
 
@@ -70,7 +69,7 @@ def _model_v3_to_v4(data: dict) -> dict:
 def _resolve_orphan_data_source(
     *,
     name: str,
-    available_datasources: List[str],
+    available_datasources: list[str],
 ) -> str:
     """Either auto-fill from the only datasource present, or raise."""
     if len(available_datasources) == 1:
@@ -89,7 +88,7 @@ def _resolve_orphan_data_source(
 # ---------------------------------------------------------------------------
 
 
-def _yaml_list_datasource_names(datasources_dir: str) -> List[str]:
+def _yaml_list_datasource_names(datasources_dir: str) -> list[str]:
     if not os.path.isdir(datasources_dir):
         return []
     return [
@@ -97,6 +96,45 @@ def _yaml_list_datasource_names(datasources_dir: str) -> List[str]:
         for f in os.listdir(datasources_dir)
         if f.endswith((".yaml", ".yml"))
     ]
+
+
+def _check_layout_case_collisions(
+    *,
+    models_dir: str,
+    planned: list[tuple[str, dict, str, str]],
+) -> None:
+    """Refuse the migration when two targets differ only by case (the
+    second write would clobber the first). Checks planned targets against
+    each other and against existing v4 entries, before anything moves."""
+    ds_by_key: dict[str, str] = {}
+    file_by_key: dict[tuple[str, str], str] = {}
+    for entry in os.listdir(models_dir):
+        entry_path = os.path.join(models_dir, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        ds_by_key[entry.casefold()] = entry
+        for f in os.listdir(entry_path):
+            if f.endswith((".yaml", ".yml")):
+                file_by_key[(entry.casefold(), f.casefold())] = os.path.join(entry, f)
+    for path, _data, ds, filename in planned:
+        prior_ds = ds_by_key.get(ds.casefold())
+        if prior_ds is not None and prior_ds != ds:
+            raise ValueError(
+                f"Cannot migrate '{path}' to v4 layout: its datasource "
+                f"{ds!r} differs only by case from existing {prior_ds!r}. "
+                f"Rename one, then reopen storage."
+            )
+        ds_by_key[ds.casefold()] = ds
+        key = (ds.casefold(), filename.casefold())
+        target_rel = os.path.join(ds, filename)
+        prior_file = file_by_key.get(key)
+        if prior_file is not None and prior_file != target_rel:
+            raise ValueError(
+                f"Cannot migrate '{path}' to v4 layout: target "
+                f"'{target_rel}' differs only by case from existing "
+                f"'{prior_file}'. Rename one, then reopen storage."
+            )
+        file_by_key[key] = target_rel
 
 
 def migrate_yaml_layout(base_dir: str) -> None:
@@ -122,6 +160,9 @@ def migrate_yaml_layout(base_dir: str) -> None:
 
     available = _yaml_list_datasource_names(datasources_dir)
 
+    # Pass 1: resolve datasources without moving anything, so the
+    # collision check can veto the migration with flat files intact.
+    planned: list[tuple[str, dict, str, str]] = []
     for filename in flat_files:
         path = os.path.join(models_dir, filename)
         with open(path) as f:
@@ -130,6 +171,12 @@ def migrate_yaml_layout(base_dir: str) -> None:
         if not ds:
             ds = _resolve_orphan_data_source(name=filename, available_datasources=available)
             data["data_source"] = ds
+        planned.append((path, data, ds, filename))
+
+    _check_layout_case_collisions(models_dir=models_dir, planned=planned)
+
+    # Pass 2: perform the moves.
+    for path, data, ds, filename in planned:
         target_dir = os.path.join(models_dir, ds)
         os.makedirs(target_dir, exist_ok=True)
         target_path = os.path.join(target_dir, filename)
@@ -162,7 +209,7 @@ def _sqlite_models_has_data_source_column(conn: sqlite3.Connection) -> bool:
     return any(r[1] == "data_source" for r in rows)
 
 
-def _sqlite_list_datasource_names(conn: sqlite3.Connection) -> List[str]:
+def _sqlite_list_datasource_names(conn: sqlite3.Connection) -> list[str]:
     cur = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='datasources'"
     )
@@ -191,10 +238,10 @@ def migrate_sqlite_schema(db_path: str) -> None:
         rows = conn.execute("SELECT name, data FROM models").fetchall()
         available = _sqlite_list_datasource_names(conn)
 
-        migrated: List[tuple] = []
+        migrated: list[tuple] = []
         for name, blob in rows:
             data = json.loads(blob)
-            ds: Optional[str] = data.get("data_source") or None
+            ds: str | None = data.get("data_source") or None
             if not ds:
                 ds = _resolve_orphan_data_source(name=name, available_datasources=available)
                 data["data_source"] = ds

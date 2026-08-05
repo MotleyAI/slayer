@@ -1,12 +1,18 @@
 """Abstract storage protocol and factory."""
 
+import asyncio
 import os
 import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
+from collections.abc import Callable, Iterable
 
-from slayer.core.errors import AmbiguousModelError, MemoryNotFoundError
+from slayer.core.errors import (
+    AmbiguousModelError,
+    IdCollisionError,
+    MemoryNotFoundError,
+)
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
@@ -18,16 +24,17 @@ from slayer.memories.models import (
 from slayer.storage import migrations as _mig
 from slayer.storage.type_refinement import (
     has_refineable_columns,
+    has_sqlite_widenable_columns,
     refine_dict_with_live_schema,
 )
 
 
 def _write_sample_fields(
-    col: Dict[str, Any],
+    col: dict[str, Any],
     *,
-    sampled: Optional[str],
-    sampled_values: Optional[List[str]],
-    distinct_count: Optional[int],
+    sampled: str | None,
+    sampled_values: list[str] | None,
+    distinct_count: int | None,
 ) -> None:
     """Apply the DEV-1375 + DEV-1480 sample-field write convention to a
     column dict in place: ``None`` pops the corresponding key, non-None
@@ -110,6 +117,26 @@ def _entity_matches_cascade(
     return entry.startswith(f"{canonical_id}.")
 
 
+def _fs_equivalence_key(value: str) -> str:
+    """Key under which two ids collide on a case-insensitive filesystem."""
+    return value.casefold()
+
+
+def _find_case_colliding_id(
+    candidate: str, existing: Iterable[str],
+) -> str | None:
+    """Return an existing id that casefold-equals ``candidate`` but is
+    spelled differently, or ``None``. An exact match never counts
+    (upserts); a collider is reported even alongside an exact match so a
+    legacy store holding both spellings surfaces the pair.
+    """
+    key = _fs_equivalence_key(candidate)
+    for entry in existing:
+        if entry != candidate and _fs_equivalence_key(entry) == key:
+            return entry
+    return None
+
+
 def _validate_path_component(value: str, *, kind: str) -> None:
     """Reject strings that could traverse out of the storage tree or
     collide with canonical-id namespace boundaries.
@@ -164,6 +191,12 @@ class StorageBackend(ABC):
     across backends.
     """
 
+    #: Backends whose ids become filenames (YAML) set this to True: saves
+    #: then reject ids differing only by case, which would alias to the
+    #: same file on case-insensitive filesystems. Wrappers copy it from
+    #: the inner backend.
+    _ids_collide_as_filenames = False
+
     # ---- model CRUD (composite key) ----------------------------------------
 
     async def save_model(
@@ -171,21 +204,50 @@ class StorageBackend(ABC):
     ) -> None:
         """Persist a model.
 
-        Runs save-time validation (currently DEV-1410 derived-column cycle
-        detection) and then delegates to the backend-specific
-        :meth:`_save_model_impl`. The ``_validate=False`` escape hatch is
-        for trusted internal callers — currently only the migration
-        write-back in :meth:`_migrate_and_refine_on_load` — that must
-        persist legacy data which may not pass current invariants.
+        Runs save-time validation (case-collision rejection for
+        filename-backed stores, then derived-column cycle detection) and
+        delegates to the backend-specific :meth:`_save_model_impl`. The
+        ``_validate=False`` escape hatch is for trusted internal callers —
+        currently only the migration write-back in
+        :meth:`_migrate_and_refine_on_load` — that must persist legacy
+        data which may not pass current invariants.
 
         Validation rules live in this base class so every backend gets
         them uniformly without duplication; concrete backends must NOT
         override this method.
         """
         if _validate:
+            if self._ids_collide_as_filenames:
+                await self._check_model_identity_collision(model)
             from slayer.engine.column_dependency import validate_no_column_cycles
             await validate_no_column_cycles(model=model, storage=self)
         await self._save_model_impl(model)
+
+    async def _check_model_identity_collision(self, model: SlayerModel) -> None:
+        """Reject a model whose ``data_source`` or ``name`` differs only
+        by case from an existing one — both are filename components in
+        the YAML backend."""
+        identities = await self._list_all_model_identities()
+        known_ds = {ds for ds, _ in identities}
+        known_ds.update(await self.list_datasources())
+        collide = _find_case_colliding_id(
+            candidate=model.data_source, existing=known_ds,
+        )
+        if collide is not None:
+            raise IdCollisionError(
+                kind="datasource", new_id=model.data_source, existing_id=collide,
+            )
+        names_in_ds = [n for ds, n in identities if ds == model.data_source]
+        collide = _find_case_colliding_id(
+            candidate=model.name, existing=names_in_ds,
+        )
+        if collide is not None:
+            raise IdCollisionError(
+                kind="model",
+                new_id=model.name,
+                existing_id=collide,
+                data_source=model.data_source,
+            )
 
     @abstractmethod
     async def _save_model_impl(self, model: SlayerModel) -> None:
@@ -197,7 +259,7 @@ class StorageBackend(ABC):
         """
 
     @abstractmethod
-    async def _list_all_model_identities(self) -> List[Tuple[str, str]]:
+    async def _list_all_model_identities(self) -> list[tuple[str, str]]:
         """Return every saved ``(data_source, name)`` pair.
 
         Backends override this with whatever is cheapest (filesystem walk,
@@ -209,13 +271,13 @@ class StorageBackend(ABC):
     async def get_model(
         self,
         name: str,
-        data_source: Optional[str] = None,
-    ) -> Optional[SlayerModel]: ...
+        data_source: str | None = None,
+    ) -> SlayerModel | None: ...
 
     async def delete_model(
         self,
         name: str,
-        data_source: Optional[str] = None,
+        data_source: str | None = None,
     ) -> bool:
         """Delete one model by ``(data_source, name)`` and cascade-delete
         every embedding row tagged with that model's canonical prefix.
@@ -257,9 +319,9 @@ class StorageBackend(ABC):
         data_source: str,
         model_name: str,
         column_name: str,
-        sampled: Optional[str],
-        sampled_values: Optional[List[str]],
-        distinct_count: Optional[int],
+        sampled: str | None,
+        sampled_values: list[str] | None,
+        distinct_count: int | None,
     ) -> None:
         """Patch a single column's sample-value fields in-place (DEV-1375 +
         DEV-1480).
@@ -279,8 +341,8 @@ class StorageBackend(ABC):
         self,
         name: str,
         *,
-        data_source: Optional[str],
-    ) -> Optional[Tuple[str, str]]:
+        data_source: str | None,
+    ) -> tuple[str, str] | None:
         """Sanitize inputs and resolve a bare ``name`` to its
         ``(data_source, name)`` identity via the priority list.
 
@@ -298,6 +360,42 @@ class StorageBackend(ABC):
         if identity is None:
             return None
         return identity
+
+    async def _apply_refinement_or_raise(
+        self, *, name: str, data: dict, data_source: str,
+    ) -> None:
+        """Inner gate of :meth:`_migrate_and_refine_on_load`: decide whether
+        live introspection is needed for ``data`` and dispatch to it.
+
+        Hard-fails (``ValueError``) when the dict has DOUBLE base columns
+        and the datasource is missing. SQLite-INT widening with missing DS
+        is best-effort — logs a warning and skips. No-op when neither
+        predicate fires.
+        """
+        needs_double = has_refineable_columns(data)
+        needs_sqlite_int = has_sqlite_widenable_columns(data)
+        if not (needs_double or needs_sqlite_int):
+            return
+        ds = await self.get_datasource(data_source)
+        if ds is not None:
+            refine_dict_with_live_schema(data, ds)
+            return
+        if needs_double:
+            raise ValueError(
+                f"Cannot migrate model {name!r}: datasource "
+                f"{data_source!r} is unavailable for type "
+                f"refinement. Restore the datasource entry or "
+                f"remove the stale model file."
+            )
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "Datasource %r unavailable; skipping SQLite "
+            "affinity probe for INT base columns on %r. "
+            "Re-run `slayer ingest` once the datasource is "
+            "back to widen any mis-typed columns.",
+            data_source,
+            name,
+        )
 
     async def _migrate_and_refine_on_load(
         self,
@@ -318,26 +416,30 @@ class StorageBackend(ABC):
         Hard-fails with ``ValueError`` when a migration ran, the dict has
         refineable DOUBLE base columns, and the named datasource entry is
         missing — silently skipping refinement and persisting the v5 dict
-        would leave base integer columns stuck at ``DOUBLE`` forever. Models
-        with no refineable columns (text-only, query-backed, sql-mode, or
-        already-narrowed) load without needing a live datasource.
+        would leave base integer columns stuck at ``DOUBLE`` forever.
+        DEV-1538 SQLite-INT widening with missing DS is best-effort: logs
+        a warning and skips. Models with no refineable or widenable
+        columns load without needing a live datasource.
         """
+        if not isinstance(data, dict):
+            # e.g. a zero-byte YAML file (yaml.safe_load -> None) left behind
+            # by a full disk or interrupted write. Fail with the remediation
+            # instead of a bare Pydantic model_type error.
+            raise ValueError(
+                f"Model {name!r} in datasource {data_source!r} has an empty or "
+                f"corrupt stored definition (got {type(data).__name__} instead "
+                f"of a mapping). Delete the stored entry (YAML layout: "
+                f"models/{data_source}/{name}.yaml) and re-run `slayer ingest` "
+                f"to recreate it."
+            )
         write_back = False
-        if isinstance(data, dict):
-            pre_version = int(data.get("version", 1))
-            if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
-                data = _mig.migrate("SlayerModel", data)
-                write_back = True
-                if has_refineable_columns(data):
-                    ds = await self.get_datasource(data_source)
-                    if ds is None:
-                        raise ValueError(
-                            f"Cannot migrate model {name!r}: datasource "
-                            f"{data_source!r} is unavailable for type "
-                            f"refinement. Restore the datasource entry or "
-                            f"remove the stale model file."
-                        )
-                    refine_dict_with_live_schema(data, ds)
+        pre_version = int(data.get("version", 1))
+        if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
+            data = _mig.migrate("SlayerModel", data)
+            write_back = True
+            await self._apply_refinement_or_raise(
+                name=name, data=data, data_source=data_source,
+            )
         model = SlayerModel.model_validate(data)
         if write_back:
             # DEV-1410: legacy on-disk models may contain derived-column
@@ -350,13 +452,29 @@ class StorageBackend(ABC):
     # ---- datasource CRUD ---------------------------------------------------
 
     @abstractmethod
-    async def save_datasource(self, datasource: DatasourceConfig) -> None: ...
+    async def save_datasource(self, datasource: DatasourceConfig) -> None:
+        """Persist a datasource config (upsert by exact name).
+        Filename-backed implementations should call
+        :meth:`check_datasource_id_collision` before writing."""
+
+    async def check_datasource_id_collision(self, name: str) -> None:
+        """Raise :class:`IdCollisionError` when ``name`` differs only by
+        case from an existing datasource name or a saved model's
+        ``data_source``. Public so backends can call it from
+        ``save_datasource``."""
+        existing = set(await self.list_datasources())
+        existing.update(ds for ds, _ in await self._list_all_model_identities())
+        collide = _find_case_colliding_id(candidate=name, existing=existing)
+        if collide is not None:
+            raise IdCollisionError(
+                kind="datasource", new_id=name, existing_id=collide,
+            )
 
     @abstractmethod
-    async def get_datasource(self, name: str) -> Optional[DatasourceConfig]: ...
+    async def get_datasource(self, name: str) -> DatasourceConfig | None: ...
 
     @abstractmethod
-    async def list_datasources(self) -> List[str]: ...
+    async def list_datasources(self) -> list[str]: ...
 
     async def delete_datasource(self, name: str) -> bool:
         """Delete the datasource config and cascade-delete every embedding
@@ -392,7 +510,7 @@ class StorageBackend(ABC):
     # ---- datasource priority (bare-name disambiguation) -------------------
 
     @abstractmethod
-    async def get_datasource_priority(self) -> List[str]:
+    async def get_datasource_priority(self) -> list[str]:
         """Return the configured priority order (most-preferred first).
 
         Empty list = no priority configured; bare-name lookups raise
@@ -400,11 +518,11 @@ class StorageBackend(ABC):
         """
 
     @abstractmethod
-    async def _set_datasource_priority_raw(self, priority: List[str]) -> None:
+    async def _set_datasource_priority_raw(self, priority: list[str]) -> None:
         """Persist the priority list verbatim. Validation happens in the
         public ``set_datasource_priority`` wrapper below."""
 
-    async def set_datasource_priority(self, priority: List[str]) -> None:
+    async def set_datasource_priority(self, priority: list[str]) -> None:
         """Validate and persist the datasource priority list.
 
         Each entry must already exist as a saved ``DatasourceConfig``;
@@ -423,7 +541,7 @@ class StorageBackend(ABC):
 
     # ---- list_models with auto-detect or required arg ----------------------
 
-    async def list_models(self, data_source: Optional[str] = None) -> List[str]:
+    async def list_models(self, data_source: str | None = None) -> list[str]:
         """List model names within a single datasource.
 
         Resolution rules:
@@ -469,8 +587,8 @@ class StorageBackend(ABC):
         self,
         name: str,
         *,
-        prefer_data_source: Optional[str] = None,
-    ) -> Optional[Tuple[str, str]]:
+        prefer_data_source: str | None = None,
+    ) -> tuple[str, str] | None:
         """Resolve a bare model name to a ``(data_source, name)`` tuple.
 
         * No matches → ``None``.
@@ -518,10 +636,10 @@ class StorageBackend(ABC):
         be preserved when present."""
 
     @abstractmethod
-    async def _get_memory_row(self, memory_id: str) -> Optional[Memory]:
+    async def _get_memory_row(self, memory_id: str) -> Memory | None:
         """Read a ``Memory`` by id; return ``None`` when not present."""
 
-    async def get_memory_row(self, memory_id: str) -> Optional[Memory]:
+    async def get_memory_row(self, memory_id: str) -> Memory | None:
         """Non-raising existence check / fetch. Public so the resolver
         and the ingest-time cleanup pass can probe without catching
         ``MemoryNotFoundError``."""
@@ -529,8 +647,8 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def _list_memories_rows(
-        self, *, entities: Optional[List[str]]
-    ) -> List[Memory]:
+        self, *, entities: list[str] | None
+    ) -> list[Memory]:
         """Return every ``Memory`` whose stored entity set has non-empty
         intersection with ``entities``. ``entities=None`` returns all rows.
         ``entities=[]`` returns ``[]`` (intersection with the empty set is
@@ -552,19 +670,33 @@ class StorageBackend(ABC):
         self,
         *,
         learning: str,
-        entities: List[str],
-        query: Optional[SlayerQuery] = None,
-        id: Optional[str] = None,  # noqa: A002 — public kwarg matching MCP / REST
+        entities: list[str],
+        query: SlayerQuery | None = None,
+        id: str | None = None,  # noqa: A002 — public kwarg matching MCP / REST
+        description: str | None = None,
     ) -> Memory:
         """Persist a memory.
 
         * ``id=None`` → allocator picks the next int-shaped id (``str``).
         * ``id="some-string"`` → user-supplied; rejected on bad charset
           or empty. Duplicate id → unconditional upsert; ``created_at``
-          of the original row is preserved.
+          of the original row is preserved. On filename-backed (YAML)
+          storage an id differing only by case from an existing one
+          raises :class:`IdCollisionError`.
+
+        DEV-1549: ``description`` is an optional compact preview shown
+        by ``search(compact=True)`` and ``inspect_model(compact=True)``.
+        Length is hard-capped on the ``Memory`` model.
         """
         if id is not None:
             _validate_memory_id_charset(id)
+            if self._ids_collide_as_filenames:
+                ids = [m.id for m in await self._list_memories_rows(entities=None)]
+                collide = _find_case_colliding_id(candidate=id, existing=ids)
+                if collide is not None:
+                    raise IdCollisionError(
+                        kind="memory", new_id=id, existing_id=collide,
+                    )
             existing = await self._get_memory_row(id)
             assigned_id = id
             preserved_created_at = (
@@ -573,9 +705,10 @@ class StorageBackend(ABC):
         else:
             assigned_id = await self._next_memory_seq()
             preserved_created_at = None
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "id": assigned_id,
             "learning": learning,
+            "description": description,
             "entities": list(entities),
             "query": query,
         }
@@ -592,8 +725,8 @@ class StorageBackend(ABC):
         return row
 
     async def list_memories(
-        self, *, entities: Optional[List[str]] = None
-    ) -> List[Memory]:
+        self, *, entities: list[str] | None = None
+    ) -> list[Memory]:
         return await self._list_memories_rows(entities=entities)
 
     async def delete_memory(self, memory_id: str) -> None:
@@ -701,6 +834,24 @@ class StorageBackend(ABC):
         )
         return True
 
+    # ---- graph fingerprint (DEV-1464) -------------------------------------
+
+    async def graph_fingerprint(self) -> str:
+        """Return a string that changes whenever storage content changes.
+
+        Used by ``slayer.search.graph`` to decide whether to rebuild the
+        ephemeral in-memory LadybugDB property graph.  The default
+        implementation returns ``"0"``; concrete backends override this
+        to provide a meaningful fingerprint (e.g. the db file's mtime for
+        SQLiteStorage, or the max mtime across all YAML files for
+        YAMLStorage).
+
+        Implementations may raise ``OSError`` when the underlying files
+        are inaccessible; callers treat that as a forced rebuild.
+        """
+        await asyncio.sleep(0)
+        return "0"
+
     # ---- embeddings sidecar (DEV-1386) ------------------------------------
     #
     # One row per ``(canonical_id, embedding_model_name)`` pair. The active
@@ -716,13 +867,13 @@ class StorageBackend(ABC):
     @abstractmethod
     async def get_embedding(
         self, *, canonical_id: str, embedding_model_name: str,
-    ) -> Optional[Embedding]:
+    ) -> Embedding | None:
         """Fetch one embedding row; ``None`` when no row matches."""
 
     @abstractmethod
     async def list_embeddings(
         self, *, embedding_model_name: str,
-    ) -> List[Embedding]:
+    ) -> list[Embedding]:
         """Return every row for ``embedding_model_name``. Used by the
         search service to load the entire corpus into a numpy matrix."""
 
@@ -749,7 +900,7 @@ class StorageBackend(ABC):
     # working unchanged; the bundled backends override these to issue one
     # round-trip via :class:`SidecarEmbeddingStore`.
 
-    async def save_embeddings(self, rows: List[Embedding]) -> None:
+    async def save_embeddings(self, rows: list[Embedding]) -> None:
         """Persist many embedding rows in one round-trip. Default
         implementation calls :meth:`save_embedding` for each row."""
         for row in rows:
@@ -758,14 +909,14 @@ class StorageBackend(ABC):
     async def get_embeddings_for_canonical_ids(
         self,
         *,
-        canonical_ids: List[str],
+        canonical_ids: list[str],
         embedding_model_name: str,
-    ) -> Dict[str, "Embedding"]:
+    ) -> dict[str, "Embedding"]:
         """Fetch every embedding row in ``canonical_ids`` under the given
         ``embedding_model_name`` in one round-trip. Returns a dict keyed
         by ``canonical_id``; missing ids are simply absent from the dict.
         Default implementation calls :meth:`get_embedding` for each id."""
-        out: Dict[str, Embedding] = {}
+        out: dict[str, Embedding] = {}
         for canonical_id in canonical_ids:
             row = await self.get_embedding(
                 canonical_id=canonical_id,
@@ -780,7 +931,7 @@ class StorageBackend(ABC):
 # Storage factory with pluggable registry
 # ---------------------------------------------------------------------------
 
-_STORAGE_REGISTRY: Dict[str, Callable[[str], StorageBackend]] = {}
+_STORAGE_REGISTRY: dict[str, Callable[[str], StorageBackend]] = {}
 
 
 def register_storage(scheme: str, factory: Callable[[str], StorageBackend]) -> None:

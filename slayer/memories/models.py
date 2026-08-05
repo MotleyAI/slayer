@@ -19,7 +19,7 @@ must use the ``memory:<id>`` prefix.
 """
 
 from datetime import datetime, timezone
-from typing import Any, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -31,7 +31,9 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-_FORBIDDEN_ID_CHARS = (":", "/", "?", "#")
+# DEV-1658: ``\`` is forbidden too so a memory id is a safe single path
+# segment on every platform (YAMLStorage writes ``memories/<id>.md``).
+_FORBIDDEN_ID_CHARS = (":", "/", "?", "#", "\\")
 
 #: Canonical-id prefix for cross-memory references (`memory:<id>`).
 #: Re-exported from this module so the resolver, search service, and
@@ -74,6 +76,12 @@ def is_valid_memory_id(value: str) -> bool:
     return True
 
 
+#: DEV-1549: hard cap on Memory.description length. The compact-mode
+#: first-paragraph fallback of learning shares the same cap so the two
+#: code paths never disagree on payload size.
+MEMORY_DESCRIPTION_MAX_CHARS = 500
+
+
 class Memory(BaseModel):
     """A single agent memory: a note plus its canonical entity tags,
     optionally bundled with a ``SlayerQuery`` example."""
@@ -81,8 +89,9 @@ class Memory(BaseModel):
     version: int = 2
     id: str = ""
     learning: str
-    entities: List[str] = Field(default_factory=list)
-    query: Optional[SlayerQuery] = None
+    description: str | None = None
+    entities: list[str] = Field(default_factory=list)
+    query: SlayerQuery | None = None
     created_at: datetime = Field(default_factory=_utcnow)
 
     @model_validator(mode="before")
@@ -111,6 +120,41 @@ class Memory(BaseModel):
         _validate_memory_id_charset(value)
         return value
 
+    @field_validator("learning")
+    @classmethod
+    def _check_learning_non_whitespace(cls, value: str) -> str:
+        """DEV-1549 Codex#4: reject whitespace-only learning at the model
+        layer so direct construction can never persist an unusable
+        memory."""
+        if not value.strip():
+            raise ValueError("learning must be a non-empty string.")
+        return value
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _normalise_description(cls, value: Any) -> Any:
+        """DEV-1549 Codex#1: empty / whitespace-only ``description`` is
+        not a deliberate empty preview — coerce to ``None`` so the
+        downstream compact-mode renderer falls back to the first
+        paragraph of ``learning``."""
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def _check_description_length(cls, value: str | None) -> str | None:
+        """DEV-1549: hard cap so a single memory hit can never balloon
+        the search payload."""
+        if value is not None and len(value) > MEMORY_DESCRIPTION_MAX_CHARS:
+            raise ValueError(
+                f"description must be <= {MEMORY_DESCRIPTION_MAX_CHARS} "
+                f"chars; got {len(value)}."
+            )
+        return value
+
 
 # ---------------------------------------------------------------------------
 # Tool / endpoint response models
@@ -119,8 +163,8 @@ class Memory(BaseModel):
 
 class SaveMemoryResponse(BaseModel):
     memory_id: str
-    resolved_entities: List[str]
-    warnings: List[str] = Field(default_factory=list)
+    resolved_entities: list[str]
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ForgetMemoryResponse(BaseModel):

@@ -13,6 +13,7 @@ non-root stage, flat downstream binding, the DEV-1448/1449 contracts).
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import tempfile
 from typing import AsyncIterator, List, Tuple
@@ -327,3 +328,111 @@ async def test_dev1449_dotted_form_raises(harness):
     )
     with pytest.raises(IllegalScopeReferenceError):
         plan_stages(queries=[stage1, root], bundle=bundle)
+
+
+# ---------------------------------------------------------------------------
+# DEV-1716 (Codex test-review High 1) — the terminal emit of the module-level
+# ``generate_planned_stages`` (multi-stage root) must also route through the
+# dialect ``rewrite_emitted_sql`` hook. The BigQuery TestBigQueryAliasMangling
+# pins only exercise ``SQLGenerator.generate()`` / single-stage
+# ``generate_from_planned``; a missed rewrite on the multi-stage root would go
+# uncaught. These render the SAME plan on a mangling dialect.
+# ---------------------------------------------------------------------------
+
+
+async def _two_stage_bundle_and_plan(storage):
+    stage1 = SlayerQuery(
+        name="stage1",
+        source_model="orders",
+        dimensions=["customers.region"],
+        measures=[{"formula": "amount:sum"}],
+    )
+    root = SlayerQuery(
+        source_model="stage1",
+        dimensions=["customers__region"],
+        measures=[{"formula": "amount_sum:sum"}],
+    )
+    bundle = await build_resolved_source_bundle(
+        query=root, storage=storage, named_queries={"stage1": stage1}
+    )
+    planned = plan_stages(queries=[stage1, root], bundle=bundle)
+    return planned, bundle
+
+
+async def test_multistage_bigquery_root_emit_mangles_aliases(harness):
+    """``generate_planned_stages(..., dialect='bigquery')`` must emit NO dotted
+    backticked aliases (BigQuery rejects dots in column names) — the rewrite
+    hook must fire on the multi-stage root emit, not just single-stage."""
+    _, storage, _ = harness
+    planned, bundle = await _two_stage_bundle_and_plan(storage)
+    sql = generate_planned_stages(planned, bundle=bundle, dialect="bigquery")
+    for m in re.findall(r"`([^`]+)`", sql):
+        assert "." not in m, (
+            f"multi-stage BigQuery SQL leaks a dotted backticked alias `{m}`:\n{sql}"
+        )
+    assert "___" in sql, f"multi-stage BigQuery rewrite did not fire:\n{sql}"
+
+
+async def test_multistage_tsql_root_emit_mangles_bracketed_aliases(harness):
+    """``generate_planned_stages(..., dialect='tsql')`` must not leak
+    ANSI-double-quoted or literal-dot bracketed aliases from the multi-stage
+    root emit — identifiers are bracketed and dotted aliases are mangled."""
+    _, storage, _ = harness
+    planned, bundle = await _two_stage_bundle_and_plan(storage)
+    sql = generate_planned_stages(planned, bundle=bundle, dialect="tsql")
+    assert '"orders.' not in sql, (
+        f"multi-stage T-SQL SQL leaks an ANSI-quoted dotted 'orders.' identifier:\n{sql}"
+    )
+    assert '"stage1.' not in sql, (
+        f"multi-stage T-SQL SQL leaks an ANSI-quoted dotted 'stage1.' identifier:\n{sql}"
+    )
+    # And no BRACKETED dotted identifier (the T-SQL quote form) survives — a
+    # `[stage1.amount_sum]` would mean the mangle didn't fire on that alias.
+    for identifier in re.findall(r"\[([^\]]+)\]", sql):
+        assert "." not in identifier, (
+            f"multi-stage T-SQL SQL leaks a dotted bracketed identifier "
+            f"[{identifier}]:\n{sql}"
+        )
+    assert "___" in sql, f"multi-stage T-SQL mangling did not fire:\n{sql}"
+
+
+async def test_opaque_dim_grouped_in_downstream_stage_rejected(tmp_path):
+    """An opaque column projected raw in one stage and GROUPED in the next must
+    still be rejected — the opaque-dimension guard resolves the declared type
+    across the ``StageSchema`` boundary, not only at the ``ModelScope`` origin.
+
+    Regression for the downstream-grouping gap that allowing raw-row opaque
+    projection (``distinct_dimension_values=False``, DEV-1543) opened: stage 1
+    legally projects the opaque ``loc`` as a raw value, but the root stage groups
+    by it — which the database would reject (a ``point`` has no equality
+    operator), so generation must fail up front with an actionable message.
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_datasource(
+        DatasourceConfig(name="prod", type="sqlite", database=":memory:")
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="places",
+            sql_table="places",
+            data_source="prod",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="city", type=DataType.TEXT),
+                Column(name="loc", type=DataType.UNKNOWN, db_type="point"),
+            ],
+        )
+    )
+    stage1 = SlayerQuery(
+        name="s1",
+        source_model="places",
+        dimensions=["loc", "city"],
+        distinct_dimension_values=False,
+    )
+    root = SlayerQuery(
+        source_model="s1",
+        dimensions=["loc"],
+        measures=[{"formula": "city:count"}],
+    )
+    with pytest.raises(ValueError, match="cannot be used as a dimension"):
+        await _new_sql(storage=storage, stages=[stage1, root])

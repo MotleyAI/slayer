@@ -27,30 +27,55 @@ DEV-1480 changes:
 - Categorical query orders by per-value count desc (alphabetical tie-break
   in SQL) so the persisted top-N is "most common values first".
 - New ``Column.sampled_values: Optional[List[str]]`` carries the top-50
-  list verbatim (no ambiguous text split). Stays ``None`` for overflow >50
-  and for numeric/temporal columns.
-- New ``Column.distinct_count: Optional[int]`` carries the true total
-  cardinality; the overflow branch fires a second ``count_distinct`` query
-  via a transient ``ModelExtension`` (bypassing ``Column.allowed_aggregations``
-  and ``Column.filter``).
+  list verbatim (no ambiguous text split). For categorical columns it is
+  populated on ≤50 distinct AND on overflow (the top-50 is kept). It stays
+  ``None`` only for numeric/temporal columns.
+- New ``Column.distinct_count: Optional[int]`` carries the exact distinct
+  count when ≤50; on overflow it is ``None`` (see the single-scan note).
 - Text ``sampled`` format unchanged for ≤ 50 distinct (top-20 joined). For
-  overflow it becomes ``", ".join(top_20) + " ... (N distinct)"`` carrying
-  the true total — replacing the legacy ``"> 50 distinct"`` marker.
+  overflow it becomes ``", ".join(top_20) + " ... (50+ distinct)"`` — a
+  marker, not the exact total (see the single-scan note).
 - The internal ``_DimProfileEntry`` shape stays the same — overflow keeps
   ``values=None, distinct_count=None`` to signal "data omitted from the
   legacy entry". The richer DEV-1480 data only lives on ``ColumnSample``
   produced by ``profile_column``.
+
+Single-scan overflow (team decision, 2026-07): profiling never fires a
+secondary ``count_distinct`` query for the exact total on overflow — one
+full-table scan per categorical column is enough. The top-50 is still
+populated so ``_is_sample_cached`` marks the column cached (no re-scan on
+every read); ``distinct_count`` stays ``None`` on overflow. Sample
+profiling is also NOT run at ingest time — it is lazy, populated on the
+first ``inspect`` of a column (or explicitly via ``refresh-samples``).
+
+DEV-1516 additions:
+- :func:`ensure_column_sample_fresh` — shared cache-aware refresh helper
+  used by ``inspect_model``'s categorical loop, the search service's
+  post-fusion column-hit hook, and (DEV-1615) the single-entity ``inspect``
+  point-lookup. Returns the input column on cache hit / failure, and an
+  in-memory refreshed copy on success (after persisting via storage).
+
+DEV-1615 change:
+- :func:`ensure_column_sample_fresh` back-fills BOTH categorical (top-50 +
+  distinct_count) AND numeric/temporal (min/max range) uncached columns —
+  the prior categorical-only early-return was removed. Cached columns still
+  short-circuit at :func:`_is_sample_cached` (zero added cost), so the
+  common already-profiled case pays nothing.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
+import logging
+from typing import Any, NamedTuple
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -74,9 +99,9 @@ class ColumnSample(NamedTuple):
       ``None`` for numeric/temporal columns.
     """
 
-    sampled: Optional[str]
-    sampled_values: Optional[List[str]]
-    distinct_count: Optional[int]
+    sampled: str | None
+    sampled_values: list[str] | None
+    distinct_count: int | None
 
 
 # ---------------------------------------------------------------------------
@@ -95,10 +120,10 @@ class _DimProfileEntry(NamedTuple):
 
     name: str
     type_str: str
-    distinct_count: Optional[int]
-    values: Optional[List[Any]]
-    min_value: Optional[Any]
-    max_value: Optional[Any]
+    distinct_count: int | None
+    values: list[Any] | None
+    min_value: Any | None
+    max_value: Any | None
 
 
 def _format_dim_profile_value(entry: _DimProfileEntry) -> str:
@@ -135,7 +160,7 @@ async def _profile_categorical_column(
     column: Column,
     engine: SlayerQueryEngine,
     max_values: int,
-) -> Optional[_DimProfileEntry]:
+) -> _DimProfileEntry | None:
     """Profile one string/boolean column.
 
     DEV-1480: orders by per-value count desc with alphabetical tie-break in
@@ -145,8 +170,9 @@ async def _profile_categorical_column(
 
     Returns ``None`` when the column query fails — caller skips the column.
     The returned entry uses the legacy shape (``values=None, distinct_count=None``
-    signals overflow); DEV-1480's true-total ``distinct_count`` is filled
-    by ``profile_column``.
+    signals overflow). The structured top-50 + ``distinct_count`` live on the
+    ``ColumnSample`` produced by ``profile_column`` (which routes categorical
+    columns through ``_profile_categorical_with_total``, not this entry path).
     """
     try:
         q = SlayerQuery.model_validate({
@@ -165,7 +191,7 @@ async def _profile_categorical_column(
     value_key = f"{model.name}.{column.name}"
     # Filter NULL values out — they map to ``col IS NULL`` predicates, not
     # to literal-equality use cases the validator cares about.
-    raw_pairs: List[Tuple[Any, Any]] = []
+    raw_pairs: list[tuple[Any, Any]] = []
     count_key = f"{model.name}._count"
     for row in r.data:
         v = row.get(value_key)
@@ -177,7 +203,7 @@ async def _profile_categorical_column(
     # equally-ranked rows in arbitrary order. NB: this only re-orders what
     # we received — the LIMIT cutoff is the SQL's responsibility.
     raw_pairs.sort(key=lambda p: (-(p[1] or 0), str(p[0])))
-    values: List[str] = [str(v) for v, _ in raw_pairs]
+    values: list[str] = [str(v) for v, _ in raw_pairs]
     overflow = len(values) > max_values
     return _DimProfileEntry(
         name=column.name,
@@ -192,9 +218,9 @@ async def _profile_categorical_column(
 async def _profile_numeric_temporal_columns(
     *,
     model: SlayerModel,
-    columns: List[Column],
+    columns: list[Column],
     engine: SlayerQueryEngine,
-) -> Dict[str, _DimProfileEntry]:
+) -> dict[str, _DimProfileEntry]:
     """Profile every numeric/temporal column in a single batched min/max query."""
     if not columns:
         return {}
@@ -208,11 +234,11 @@ async def _profile_numeric_temporal_columns(
         {"name": f"_slayer_range_{c.name}", "sql": c.sql if c.sql else c.name}
         for c in columns
     ]
-    measures_payload: List[Dict[str, str]] = []
+    measures_payload: list[dict[str, str]] = []
     for c in columns:
         measures_payload.append({"formula": f"_slayer_range_{c.name}:min"})
         measures_payload.append({"formula": f"_slayer_range_{c.name}:max"})
-    row: Dict[str, Any] = {}
+    row: dict[str, Any] = {}
     try:
         q = SlayerQuery.model_validate({
             "source_model": {"source_name": model.name, "columns": ext_columns},
@@ -223,7 +249,7 @@ async def _profile_numeric_temporal_columns(
             row = r.data[0]
     except Exception:
         row = {}
-    out: Dict[str, _DimProfileEntry] = {}
+    out: dict[str, _DimProfileEntry] = {}
     for c in columns:
         mn = row.get(f"{model.name}._slayer_range_{c.name}_min")
         mx = row.get(f"{model.name}._slayer_range_{c.name}_max")
@@ -246,8 +272,8 @@ async def _collect_dim_profile(
     engine: SlayerQueryEngine,
     max_values: int = _MAX_CATEGORICAL_VALUES,
     max_dims: int = 10,
-    only_columns: Optional[Set[str]] = None,
-) -> List[_DimProfileEntry]:
+    only_columns: set[str] | None = None,
+) -> list[_DimProfileEntry]:
     """Produce one profile entry per eligible column (non-hidden, non-pk).
 
     - string/boolean columns: distinct values (or overflow marker) via one
@@ -262,9 +288,10 @@ async def _collect_dim_profile(
     with the set, so callers can profile a single column cheaply.
 
     DEV-1480: ``max_values`` defaults to 50 (was 20). Callers that need
-    the structured top-50 + true total should use :func:`profile_column`
-    per column, which fires the secondary ``count_distinct`` query on
-    overflow and returns a :class:`ColumnSample`.
+    the structured top-50 list should use :func:`profile_column` per
+    column, which returns a :class:`ColumnSample`. On overflow that path
+    keeps the top-50 and reports ``distinct_count=None`` — one scan only,
+    no secondary ``count_distinct`` query for the exact total.
     """
     eligible = [
         c for c in model.columns
@@ -277,7 +304,7 @@ async def _collect_dim_profile(
         if c.type in (DataType.INT, DataType.DOUBLE, DataType.DATE, DataType.TIMESTAMP)
     ]
 
-    entries: Dict[str, _DimProfileEntry] = {}
+    entries: dict[str, _DimProfileEntry] = {}
     for c in categorical:
         entry = await _profile_categorical_column(
             model=model, column=c, engine=engine, max_values=max_values,
@@ -318,6 +345,11 @@ def _is_sample_cached(column: Column) -> bool:
     """
     if column.hidden or column.primary_key:
         return True
+    if column.type.is_opaque:
+        # Opaque columns are never profiled (DISTINCT / min / max fail on the
+        # underlying DB type), so report them as "cached" — same convention as
+        # hidden / PK columns — and keep callers from re-querying every read.
+        return True
     if column.type in _CATEGORICAL_TYPES:
         return column.sampled_values is not None
     return column.sampled is not None
@@ -337,64 +369,18 @@ def _is_table_backed(model: SlayerModel) -> bool:
     return bool(model.sql_table) and not model.sql and not model.source_queries
 
 
-async def _count_distinct_via_model_extension(
-    *,
-    model: SlayerModel,
-    column: Column,
-    engine: SlayerQueryEngine,
-) -> Optional[int]:
-    """Fire a secondary ``count_distinct`` query via a transient
-    ``ModelExtension`` column.
-
-    Bypasses both ``Column.allowed_aggregations`` (which might omit
-    ``count_distinct``) and ``Column.filter`` (which would otherwise apply
-    a CASE-WHEN at aggregation time and under-count). Mirrors the existing
-    ``_profile_numeric_temporal_columns`` pattern.
-
-    Returns ``None`` when the query fails.
-    """
-    try:
-        ext_q = SlayerQuery.model_validate({
-            "source_model": {
-                "source_name": model.name,
-                "columns": [{
-                    "name": "_slayer_distinct_probe",
-                    "sql": column.sql if column.sql else column.name,
-                    "type": str(column.type),
-                }],
-            },
-            "measures": [{
-                "formula": "_slayer_distinct_probe:count_distinct",
-            }],
-        })
-        r = await engine.execute(query=ext_q, data_source=model.data_source or None)
-    except Exception:  # NOSONAR(S112) — best-effort: see module docstring
-        return None
-    if not r.data:
-        return None
-    raw = r.data[0].get(
-        f"{model.name}._slayer_distinct_probe_count_distinct",
-    )
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
-
-
 async def _profile_categorical_with_total(
     *,
     model: SlayerModel,
     column: Column,
     engine: SlayerQueryEngine,
-) -> Optional[ColumnSample]:
-    """DEV-1480 categorical profile: top-50 by frequency + true total on
-    overflow.
+) -> ColumnSample | None:
+    """DEV-1480 categorical profile: top-50 values by frequency in a SINGLE
+    full-table scan.
 
-    Re-runs the query without the post-overflow path of
-    ``_profile_categorical_column`` so we can keep the top-50 list when
-    overflow is detected (the legacy entry shape would have discarded it).
+    On overflow (> 50 distinct) we keep the top-50 and report the total as
+    unknown rather than firing a second ``count_distinct`` scan — one scan
+    is enough; the exact distinct count isn't worth a second full scan.
     """
     # Run the top-values query directly (instead of going through
     # ``_profile_categorical_column``) so we retain the values list even
@@ -415,14 +401,14 @@ async def _profile_categorical_with_total(
         return None
     value_key = f"{model.name}.{column.name}"
     count_key = f"{model.name}._count"
-    raw_pairs: List[Tuple[Any, Any]] = []
+    raw_pairs: list[tuple[Any, Any]] = []
     for row in r.data:
         v = row.get(value_key)
         if v is None:
             continue
         raw_pairs.append((v, row.get(count_key)))
     raw_pairs.sort(key=lambda p: (-(p[1] or 0), str(p[0])))
-    values: List[str] = [str(v) for v, _ in raw_pairs]
+    values: list[str] = [str(v) for v, _ in raw_pairs]
     overflow = len(values) > _MAX_CATEGORICAL_VALUES
     if not overflow:
         text = ", ".join(values[:_TEXT_SAMPLE_CAP])
@@ -431,29 +417,18 @@ async def _profile_categorical_with_total(
             sampled_values=values,
             distinct_count=len(values),
         )
-    # Overflow: fire the secondary count_distinct query for the true total.
-    total = await _count_distinct_via_model_extension(
-        model=model, column=column, engine=engine,
-    )
+    # Overflow (> _MAX_CATEGORICAL_VALUES distinct). We deliberately do NOT
+    # fire a secondary count_distinct query for the exact total — one full
+    # scan is enough. Keep the top-50 and report the total as unknown
+    # (``distinct_count=None``, sampled text carries a "50+" marker). The
+    # top-50 is still populated so ``_is_sample_cached`` marks the column
+    # cached and we don't re-scan on every read.
     top_50 = values[:_MAX_CATEGORICAL_VALUES]
     top_20_text = ", ".join(top_50[:_TEXT_SAMPLE_CAP])
-    if total is None:
-        # Defensive: count_distinct query failed (transient backend error,
-        # missing permission, etc.). Persist ``sampled_values=None`` rather
-        # than the top-50 list so ``_is_sample_cached`` classifies the
-        # column as a cache miss and the next ``inspect_model`` /
-        # ``refresh-samples`` call retries the secondary query. Persisting
-        # the top-50 here would mark the column "cached" forever despite
-        # ``distinct_count`` being permanently None.
-        return ColumnSample(
-            sampled=f"> {_MAX_CATEGORICAL_VALUES} distinct",
-            sampled_values=None,
-            distinct_count=None,
-        )
     return ColumnSample(
-        sampled=f"{top_20_text} ... ({total} distinct)",
+        sampled=f"{top_20_text} ... ({_MAX_CATEGORICAL_VALUES}+ distinct)",
         sampled_values=top_50,
-        distinct_count=total,
+        distinct_count=None,
     )
 
 
@@ -462,18 +437,23 @@ async def profile_column(
     model: SlayerModel,
     column: Column,
     engine: SlayerQueryEngine,
-) -> Optional[ColumnSample]:
+) -> ColumnSample | None:
     """Return the :class:`ColumnSample` for ``column`` on ``model``.
 
-    Returns ``None`` for primary-key / hidden columns and when the
-    profile query fails or yields no data. Caller decides whether to
-    persist the ``None`` (clearing any stale value) or skip it.
+    Returns ``None`` for primary-key / hidden / opaque (``UNKNOWN``) columns
+    and when the profile query fails or yields no data. Caller decides whether
+    to persist the ``None`` (clearing any stale value) or skip it.
 
     DEV-1480: signature widened from ``Optional[str]`` to
     ``Optional[ColumnSample]`` so the structured ``sampled_values`` and
     ``distinct_count`` are returned alongside the legacy text.
     """
     if column.hidden or column.primary_key:
+        return None
+    if column.type.is_opaque:
+        # No equality operator / no orderable comparison on the underlying DB
+        # type — both the categorical top-values scan and the batched min/max
+        # query would raise. Skip sample-value profiling entirely.
         return None
     if column.type in _CATEGORICAL_TYPES:
         return await _profile_categorical_with_total(
@@ -502,14 +482,14 @@ async def _refresh_one_column(
     column: Column,
     engine: SlayerQueryEngine,
     storage: StorageBackend,
-) -> List[str]:
+) -> list[str]:
     """Profile + persist a single column. Best-effort — returns the list of
     error strings produced (empty on full success). Extracted from
     ``refresh_table_backed_model_sampled`` to keep that function's cognitive
     complexity low.
     """
-    errors: List[str] = []
-    sample: Optional[ColumnSample] = None
+    errors: list[str] = []
+    sample: ColumnSample | None = None
     try:
         sample = await profile_column(model=model, column=column, engine=engine)
     except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
@@ -539,8 +519,8 @@ async def refresh_table_backed_model_sampled(
     model: SlayerModel,
     engine: SlayerQueryEngine,
     storage: StorageBackend,
-    only_columns: Optional[Set[str]] = None,
-) -> List[str]:
+    only_columns: set[str] | None = None,
+) -> list[str]:
     """Refresh ``Column.sampled``, ``Column.sampled_values``, and
     ``Column.distinct_count`` for each eligible column on ``model``.
 
@@ -551,7 +531,7 @@ async def refresh_table_backed_model_sampled(
     """
     if not _is_table_backed(model):
         return []
-    errors: List[str] = []
+    errors: list[str] = []
     for column in model.columns:
         if column.hidden or column.primary_key:
             continue
@@ -568,10 +548,10 @@ async def refresh_all_table_backed_sampled(
     engine: SlayerQueryEngine,
     storage: StorageBackend,
     data_source: str,
-) -> List[str]:
+) -> list[str]:
     """Refresh ``Column.sampled`` for every table-backed model in
     ``data_source``. Best-effort across all models."""
-    errors: List[str] = []
+    errors: list[str] = []
     identities = await storage._list_all_model_identities()
     for ds, name in identities:
         if ds != data_source:
@@ -593,9 +573,9 @@ async def handle_edit_refresh(
     storage: StorageBackend,
     data_source: str,
     model_name: str,
-    changed_columns: Set[str],
+    changed_columns: set[str],
     model_level_change: bool,
-) -> List[str]:
+) -> list[str]:
     """Refresh entry point for ``edit_model``.
 
     * ``model_level_change=True`` → refresh every non-hidden column on
@@ -622,18 +602,123 @@ async def handle_edit_refresh(
     # match the new content_hash.
     reloaded = await storage.get_model(model_name, data_source=data_source)
     if reloaded is not None:
-        # Local import: keep embeddings off the cold-start path when the
-        # extra is not installed.
-        from slayer.embeddings.service import EmbeddingService
+        # DEV-1514: fan out through SearchService so every registered
+        # retriever sees the refresh. SearchService isolates per-retriever
+        # exceptions as prefixed warnings.
+        # Local import: keep the search module off the cold-start path.
+        from slayer.search.service import SearchService
 
-        try:
-            warnings.extend(
-                await EmbeddingService(storage=storage).refresh_model_subtree(
-                    reloaded,
-                )
+        warnings.extend(
+            await SearchService(storage=storage).refresh_model_subtree(
+                reloaded,
             )
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            warnings.append(
-                f"{model_name}: embedding refresh failed: {exc}"
-            )
+        )
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# DEV-1516: shared cache-aware refresh helper
+# ---------------------------------------------------------------------------
+
+
+async def ensure_column_sample_fresh(
+    *,
+    model: SlayerModel,
+    column: Column,
+    engine: SlayerQueryEngine,
+    storage: StorageBackend,
+) -> Column:
+    """Best-effort refresh of a stale column's persisted sample.
+
+    Used by ``inspect_model`` (categorical cache-miss path),
+    :class:`slayer.search.service.SearchService` (post-fusion column-hit
+    hook), and — DEV-1615 — the single-entity ``inspect`` point-lookup
+    (`slayer.inspect.service.InspectService`), so the "stale columns
+    auto-refresh on the spot" contract has a single source of truth.
+
+    DEV-1615: back-fills BOTH categorical (top-50 + distinct_count) AND
+    numeric/temporal (min/max range) columns — :func:`profile_column`
+    already handles both kinds. The prior numeric/temporal early-return was
+    removed (see the inline note below).
+
+    Returns the **input column unchanged** when:
+
+    - ``_is_sample_cached(column)`` is True (cache hit; includes hidden /
+      primary-key / opaque ``UNKNOWN`` columns by convention),
+    - :func:`profile_column` returns ``None`` (e.g. transient query failure
+      or no rows),
+    - :func:`profile_column` raises (logged + swallowed),
+    - ``storage.update_column_sampled`` raises (logged + swallowed; the
+      in-memory refresh is still returned so the caller can render fresh
+      data this call).
+
+    Returns a Pydantic ``model_copy``'d column with refreshed
+    ``sampled`` / ``sampled_values`` / ``distinct_count`` fields on
+    success (after persisting via storage).
+
+    Logs ``WARNING`` on profile + persist failures with
+    ``(data_source, model_name, column_name)`` context so observability
+    matches the pre-DEV-1516 inline implementation in ``inspect_model``.
+    """
+    if _is_sample_cached(column):
+        return column
+    # DEV-1615: no categorical-only gate here. ``profile_column`` handles
+    # BOTH categorical (top-50 + distinct_count) AND numeric/temporal
+    # (min/max range) columns, so an uncached column of either kind is
+    # back-filled. The previous early-return for numeric/temporal existed
+    # only so the search post-fusion hook would skip ranges; that skip was
+    # an assumption (numeric is reliably profiled at ingest), not a
+    # correctness requirement. ``inspect`` and ``search`` both now fill
+    # ranges on read. Already-profiled columns short-circuit above via
+    # ``_is_sample_cached`` so the common case stays free.
+    try:
+        sample = await profile_column(
+            model=model, column=column, engine=engine,
+        )
+    except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
+        logger.warning(
+            "ensure_column_sample_fresh: failed to profile %s.%s.%s: %s",
+            model.data_source, model.name, column.name, exc,
+        )
+        return column
+    if sample is None:
+        # No data to persist (e.g. PK / hidden / no rows). Helper short-
+        # circuits without writing — keeps cache predicate from flipping.
+        return column
+    if (
+        sample.sampled_values is None
+        and sample.distinct_count is None
+        and column.sampled
+    ):
+        # Overflow-retry path failed to recover structured data: the
+        # ``ColumnSample`` carries only the generic ``"> 50 distinct"``
+        # marker. The column already has a richer ``sampled`` text
+        # (e.g. v6 legacy ``"a, b, c ... (1234 distinct)"`` or a
+        # previous successful-overflow run). Skip the persist + return
+        # the input so the rich text survives — cache predicate still
+        # flags the column stale so the next call retries.
+        return column
+    try:
+        await storage.update_column_sampled(
+            data_source=model.data_source,
+            model_name=model.name,
+            column_name=column.name,
+            sampled=sample.sampled,
+            sampled_values=sample.sampled_values,
+            distinct_count=sample.distinct_count,
+        )
+    except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
+        logger.warning(
+            "ensure_column_sample_fresh: failed to persist sample for "
+            "%s.%s.%s via update_column_sampled: %s",
+            model.data_source, model.name, column.name, exc,
+        )
+        # Fall through: surface the in-memory refresh so the caller can
+        # still render fresh data this call. Next call will retry — the
+        # cache predicate still flags the column stale because the persist
+        # never landed.
+    return column.model_copy(update={
+        "sampled": sample.sampled,
+        "sampled_values": sample.sampled_values,
+        "distinct_count": sample.distinct_count,
+    })

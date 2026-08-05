@@ -1,8 +1,8 @@
 """Unit tests for the synchronous derived-column expander
 (``expand_derived_refs_sync``) used by the DEV-1450 planned-query generator.
 
-The async ``expand_derived_refs`` (legacy enrichment path) is covered by
-``test_cross_model_derived_columns.py``. These tests pin the sync twin's
+(DEV-1485 deleted the async ``expand_derived_refs`` twin along with the legacy
+enrichment path it served, so this is now the only expander.) These tests pin its
 behavior directly against an in-memory ``name -> SlayerModel`` resolver,
 mirroring how the generator drives it via ``bundle.get_referenced_model``.
 """

@@ -120,6 +120,30 @@ async def test_cross_model_dim_derived_column_via_query(tmp_path) -> None:
     assert "B.foo_raw / 100.0" in _norm(sql), f"Expected qualified B.foo_raw, got:\n{sql}"
 
 
+async def test_quoted_self_identity_column_emits_quoted_and_no_cycle(tmp_path) -> None:
+    """A column whose sql is the double-quoted form of its own name
+    (``"legalEntityType"`` for a mixed-case physical column) is a base
+    reference, not a derived one. It must resolve without a false
+    ColumnCycleError and emit the quoted identifier so case-folding dialects
+    reach the right physical column."""
+    engine, storage = _engine_with_storage(tmp_path)
+    model = SlayerModel(
+        name="merchant",
+        data_source="test",
+        sql_table="merchant",
+        columns=[
+            Column(name="legalEntityType", sql='"legalEntityType"', type=DataType.TEXT),
+        ],
+    )
+    await storage.save_model(model)
+    query = SlayerQuery(
+        source_model="merchant",
+        dimensions=[ColumnRef(name="legalEntityType")],
+    )
+    sql = await _gen_sql(engine, query, model)
+    assert '"legalEntityType"' in sql, f"Expected quoted identifier preserved, got:\n{sql}"
+
+
 # ---------------------------------------------------------------------------
 # 2. The original DEV-1333 bug: A.Column.sql references B's derived column.
 # ---------------------------------------------------------------------------
@@ -268,8 +292,15 @@ async def test_joined_model_derived_referencing_further_joined(tmp_path) -> None
     assert "B__C.name" in norm, (
         f"Expected canonical B__C alias, got:\n{sql}"
     )
-    # And the C join must actually be present in the FROM.
-    assert "JOIN C AS B__C" in norm or "JOIN \"C\" AS \"B__C\"" in norm or "JOIN C B__C" in norm, (
+    # And the C join must actually be present in the FROM. DEV-1645 quotes the
+    # mixed-case physical table name but not the SLayer-internal alias, so the
+    # asymmetric `JOIN "C" AS B__C` is the current (correct) emitted form.
+    assert (
+        "JOIN C AS B__C" in norm
+        or 'JOIN "C" AS "B__C"' in norm
+        or 'JOIN "C" AS B__C' in norm
+        or "JOIN C B__C" in norm
+    ), (
         f"C join missing from FROM clause:\n{sql}"
     )
 
@@ -1596,9 +1627,14 @@ async def test_dev1334_filter_with_various_comparison_operators_on_derived_col(
 async def test_dev1334_filter_on_self_referential_derived_chain_raises_cycle_error(
     tmp_path,
 ) -> None:
-    """A filter on a column whose derived chain has a cycle must raise
-    the same chain-formatted ValueError that ``expand_derived_refs``
-    raises (DEV-1333). This pins reuse of cycle-detection ordering.
+    """A filter on a column whose derived chain has a cycle must raise a
+    chain-formatted ``ColumnCycleError`` (DEV-1333), naming the cycle in
+    traversal order rather than recursing until the stack blows.
+
+    Compile-time detection, through the typed pipeline's expander
+    (``expand_derived_refs_sync``). DEV-1485 deleted the async
+    ``expand_derived_refs`` this originally went through; the cycle-detection
+    contract it pins is unchanged.
     """
     storage = YAMLStorage(base_dir=str(tmp_path))
     orders = SlayerModel(
@@ -1610,8 +1646,8 @@ async def test_dev1334_filter_on_self_referential_derived_chain_raises_cycle_err
         ],
     )
     # DEV-1410 added save-time cycle validation; this test pre-dates it and
-    # specifically exercises COMPILE-TIME detection through ``_enrich``, so
-    # skip the save-time check to construct the cyclic state on disk.
+    # specifically exercises COMPILE-TIME detection at query time, so skip the
+    # save-time check to construct the cyclic state on disk.
     await storage.save_model(orders, _validate=False)
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(

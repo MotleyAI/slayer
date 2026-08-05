@@ -909,43 +909,53 @@ class TestJoinTargetIsQueryBacked:
         finally:
             tmp.cleanup()
 
-    async def test_join_target_resolving_set_is_per_context(self) -> None:
-        """The recursion guard set must be isolated per asyncio task / request,
-        not shared on the engine instance. Two tasks each push a unique name
-        into the set and assert they only see their own.
+    async def test_concurrent_expansions_do_not_share_recursion_state(self) -> None:
+        """Two concurrent expansions must not see each other's in-flight names.
+
+        DEV-1485 Stage D: this replaces
+        ``test_join_target_resolving_set_is_per_context``, which asserted the
+        legacy ``_join_target_resolving_var`` ContextVar was per-task rather
+        than an engine instance attribute. That guard is deleted with the
+        legacy stack — the typed path threads its ``_resolving`` set through
+        the call as an explicit PARAMETER, so isolation is structural rather
+        than something a ContextVar has to provide.
+
+        The property that actually matters is unchanged and is what this pins:
+        two expansions running concurrently on ONE engine each produce their
+        own correct SQL. If recursion state were shared, the second would
+        either short-circuit on the first's name or deadlock.
         """
         import asyncio
 
         engine, tmp = await _engine_with_orders()
         try:
-            both_started = asyncio.Event()
-            checked = asyncio.Event()
-
-            async def task(my_name: str, started: asyncio.Event) -> set:
-                s = engine._get_join_target_resolving()
-                s.add(my_name)
-                started.set()
-                # Wait until both tasks have populated their own sets, then
-                # observe — if the set were instance-shared, each task would
-                # see both names.
-                await both_started.wait()
-                snapshot = set(engine._get_join_target_resolving())
-                checked.set()
-                return snapshot
-
-            e1 = asyncio.Event()
-            e2 = asyncio.Event()
-
-            async def gate():
-                await asyncio.gather(e1.wait(), e2.wait())
-                both_started.set()
-
-            t1 = asyncio.create_task(task("alpha", e1))
-            t2 = asyncio.create_task(task("beta", e2))
-            await gate()
-            s1, s2 = await asyncio.gather(t1, t2)
-            assert s1 == {"alpha"}, f"task 1 leaked sibling state: {s1}"
-            assert s2 == {"beta"}, f"task 2 leaked sibling state: {s2}"
+            alpha, beta = await asyncio.gather(
+                _expand_stage_as_model(
+                    engine=engine,
+                    stage=SlayerQuery(
+                        source_model="orders",
+                        measures=[{"formula": "amount:sum"}],
+                        dimensions=["region"],
+                    ),
+                    name="alpha",
+                ),
+                _expand_stage_as_model(
+                    engine=engine,
+                    stage=SlayerQuery(
+                        source_model="orders",
+                        measures=[{"formula": "*:count"}],
+                        dimensions=["status"],
+                    ),
+                    name="beta",
+                ),
+            )
+            assert "SUM(" in alpha.sql.upper(), alpha.sql
+            assert "region" in alpha.sql, alpha.sql
+            assert "COUNT(" in beta.sql.upper(), beta.sql
+            assert "status" in beta.sql, beta.sql
+            # Neither expansion leaked the other's projection into its own.
+            assert "status" not in alpha.sql, alpha.sql
+            assert "region" not in beta.sql, beta.sql
         finally:
             tmp.cleanup()
 

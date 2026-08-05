@@ -1,0 +1,118 @@
+name: Integration - MySQL
+
+# DEV-1564: per-dialect CI for MySQL — runs both the testcontainers-based
+# pytest suite and the verify.py end-to-end check. Path-gated so it only
+# fires on changes that could affect MySQL output (the dialect file, the
+# shared SQL generator + dialect base, the MySQL example, or this file).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'slayer/sql/dialects/mysql.py'
+      - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/generator.py'
+      - 'examples/mysql/**'
+      - 'tests/integration/test_integration_mysql.py'
+      - '.github/workflows/integration-mysql.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'slayer/sql/dialects/mysql.py'
+      - 'slayer/sql/dialects/base.py'
+      - 'slayer/sql/generator.py'
+      - 'examples/mysql/**'
+      - 'tests/integration/test_integration_mysql.py'
+      - '.github/workflows/integration-mysql.yml'
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Install dependencies
+        run: poetry install -E all --with dev
+
+      - name: Verify testcontainers[mysql] extra is importable
+        # DEV-1564: surface a missing extra as a CI failure rather than as a
+        # silent `importorskip` skip — the suite's value is gone if the dep
+        # is absent.
+        run: poetry run python -c "import testcontainers.mysql"
+
+      - name: Run MySQL integration tests
+        timeout-minutes: 20
+        run: |
+          poetry run pytest tests/integration/test_integration_mysql.py \
+            -v -m integration --timeout=300
+
+  verify-example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install verify.py dependencies
+        run: pip install sqlalchemy
+
+      - name: Make slayer_data writable for container user
+        working-directory: examples/mysql
+        run: chmod -R 777 slayer_data
+
+      - name: Build images
+        working-directory: examples/mysql
+        run: docker compose build
+
+      - name: Start DB + seed
+        working-directory: examples/mysql
+        run: docker compose up -d --wait --wait-timeout 180 seed
+
+      - name: Start slayer service
+        working-directory: examples/mysql
+        run: docker compose up -d slayer
+
+      - name: Wait for SLayer API to accept connections
+        working-directory: examples/mysql
+        run: |
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:5143/datasources >/dev/null; then
+              echo "SLayer API ready after ${i} attempts"
+              exit 0
+            fi
+            if [ "$(docker compose ps -q slayer | xargs -r docker inspect -f '{{.State.Running}}')" = "false" ]; then
+              echo "slayer container exited before becoming ready — logs:" >&2
+              docker compose logs --no-color slayer
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "SLayer API never came up — logs:" >&2
+          docker compose logs --no-color slayer
+          exit 1
+
+      - name: Run verify.py
+        timeout-minutes: 5
+        run: python examples/mysql/verify.py
+
+      - name: Dump all container logs
+        if: always()
+        working-directory: examples/mysql
+        run: docker compose logs --no-color
+
+      - name: Tear down stack
+        if: always()
+        working-directory: examples/mysql
+        run: docker compose down -v

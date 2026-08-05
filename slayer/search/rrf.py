@@ -13,14 +13,15 @@ Hand-rolled (~10 lines) to avoid pulling in a heavy fusion library.
 
 from __future__ import annotations
 
-from typing import Hashable, List, TypeVar
+from typing import TypeVar
+from collections.abc import Hashable
 
 K = TypeVar("K", bound=Hashable)
 
 
 def rrf_fuse(
     *,
-    rankings: List[List[K]],
+    rankings: list[list[K]],
     k: int = 60,
 ) -> dict[K, float]:
     """Fuse multiple ranked lists into one score map.

@@ -50,23 +50,28 @@ It builds its own `slot_id_by_key` map (the `PlannedQuery` doesn't carry the
 registry), materializes hidden aux slots referenced as transform inputs /
 partition keys / time keys / POST-filter operands, and renders.
 
-### The synthetic-`EnrichedMeasure` adapter (deviation)
+### `AggRenderSpec` — the dialect-helper interface
 
-To render aggregations identically to legacy across all dialects, the new path
-**reuses the legacy dialect helpers** (`_build_agg`, `_build_percentile`,
-`_build_stat_agg`, `_wrap_cast_for_type`, `_resolve_sql`, `_build_date_trunc`).
-It does so by synthesizing `EnrichedMeasure` objects from planned slots
-(`_synthesize_enriched_measure_from_planned`) and feeding them to those helpers.
+To render aggregations identically across all dialects, the shared dialect
+helpers (`_build_agg`, `_build_percentile`, `_build_stat_agg`,
+`_wrap_cast_for_type`, `_resolve_sql`, `_build_date_trunc`) consume a single
+typed input: `AggRenderSpec`, built directly from planned slots by
+`_build_agg_render_spec_from_planned`.
 
-This is a real coupling: `generate_from_planned` consumes `PlannedQuery` at the
-top but adapts back to `EnrichedMeasure` — a type DEV-1452 wants to delete — to
-emit aggregate SQL. The plan said "rewrite `generator.py` to consume
-`PlannedQuery`"; the implemented path is a hybrid. It is flagged in
-[the deviations list](index.md#deviations-from-the-plan). The upside is that
-dialect-specific behavior (SQLite UDFs, ClickHouse `quantile`, the MySQL
-`median` `NotImplementedError`, etc.) is rendered by exactly one code path,
-shared with legacy — so the two pipelines can't drift on dialect SQL while both
-exist.
+Dialect-specific behavior (SQLite UDFs, ClickHouse `quantile`, the MySQL
+`median` `NotImplementedError`, and so on) is therefore emitted by exactly one
+code path.
+
+!!! note "Historical: the synthetic-`EnrichedMeasure` adapter"
+
+    `generate_from_planned` originally consumed `PlannedQuery` at the top but
+    adapted *back* to `EnrichedMeasure` (`_synthesize_enriched_measure_from_planned`)
+    to reach the dialect helpers — a hybrid that coupled the new path to a
+    legacy type, kept deliberately so the two coexisting pipelines could not
+    drift on dialect SQL. DEV-1452 Stage A retyped the helpers onto
+    `AggRenderSpec`; DEV-1485 deleted the last adapter
+    (`_agg_render_spec_from_enriched`) and `_build_agg`'s `measure=` compat
+    surface with the rest of the legacy stack.
 
 ## Multi-stage chaining (`generate_planned_stages`)
 
@@ -96,6 +101,51 @@ forward-path CTE renders (FROM bare target, grouped at the forward dims).
 `Column.filter` on the aggregated column renders as
 `SUM(CASE WHEN <filter> THEN <col> END)`. See
 [Cross-model aggregates](cross-model-aggregates.md).
+
+The same renderer also emits one `_wm_*` CTE per `WindowedAggregatePlan` — a
+duration-windowed measure (`revenue:sum(window='90d')`). Unlike `_cm_*` (rooted
+at the join target), a `_wm_*` CTE is **host-rooted**: an inner `_src` subquery
+self-selects the host rows (dimensions → `_w_dim_<n>`, other time dims →
+`_w_td_<n>`, the raw window time column → `_w_time`, the value → `_w_value`)
+with its joins discovered through a host `ScopeFrame`, and
+`FROM _base LEFT JOIN _src`
+pairs the grain equalities with a trailing `INTERVAL` range predicate
+(`_src._w_time >= bucket_end − window` / `< bucket_end`). The result groups at
+the query grain and joins back to `_base` null-safe, exactly like a `_cm_*` CTE,
+so windowed and cross-model measures coexist in one query. Windowed-measure
+filters route to the combined-SELECT outer `WHERE` (`Phase.POST`). `sum`/`avg`
+local measures only; other shapes raise at plan time (`_guard_windowed_measures`
+in `stage_planner.py`).
+
+### Frame bounds vs population filters (DEV-1732)
+
+`_src` inherits the host's ROW-phase filters **minus their frame bounds** — a
+relational comparison (`<`, `<=`, `>`, `>=`) between a non-hidden time
+dimension's raw column and a temporal literal. Without that, the trailing window
+cannot reach rows before the earliest visible bucket and that bucket
+under-counts; with it, `date_range` and the explicit spelling of the same intent
+produce identical numbers.
+
+`slayer/core/time_bounds.py` owns the analysis (dependency-free, so planner and
+generator share it). `stage_planner.plan_query` computes the strippable column
+set once into `PlannedQuery.frame_bound_columns` and partitions the filters into
+`WindowedAggregatePlan.where_filter_ids` (applied) plus `src_filter_rewrites`
+(applied as a residual — a top-level `and` is split so only its frame-bound
+conjuncts drop; `or`/`not` are never descended into). The generator's
+`_effective_src_filters` materialises that view **once** and feeds the same list
+to both join discovery and rendering, so the two cannot disagree about what the
+CTE contains.
+
+Hidden `TimeTruncKey` slots are excluded from `frame_bound_columns` on purpose:
+`_build_windowed_plans` skips hidden row slots, so a hidden time axis is never
+equality-joined into `_src` and stripping its bound would leave it
+unconstrained. Mode-A `SlayerModel.filters` are exempt entirely — they define
+which rows exist, not which frame the query looks at.
+
+The `time_shift` shifted CTE (`_shifted_where_part`) applies the same rule,
+reading the same `frame_bound_columns`; its former
+`isinstance(..., BetweenKey)` special case is subsumed, since a `date_range`'s
+`BetweenKey` column is always a query time dimension's raw column.
 
 ## Mode-A filter inlining and join discovery (DEV-1494)
 
@@ -153,14 +203,20 @@ call chain just before `_build_from_and_joins`:
 
 All three collectors restrict to **local** aggregate sources (empty
 `AggregateKey.source.path`); cross-model aggregates own their own join
-discovery inside the per-plan `_cm_*` CTE for the `Column.filter` side
-(DEV-1494 / DEV-1503). The symmetric source-`Column.sql` discovery inside
-the `_cm_*` CTE is a known gap (DEV-1526) — a cross-model aggregate whose
-target column's `Column.sql` crosses a further join does not yet have that
-join pulled into the CTE FROM. All three host-side collectors feed the
-shared `needed_join_paths` list, so repeated paths surfaced by different
-sources dedupe naturally via `_build_from_and_joins`'s `emitted_aliases`
-guard.
+discovery inside the per-plan `_cm_*` CTE — for the `Column.filter` side
+(DEV-1494 / DEV-1503) and, since Stage 4 (DEV-1708 closed DEV-1526), for a
+target column's `Column.sql` that crosses a further join. All three
+host-side collectors feed the shared `needed_join_paths` list, so repeated
+paths surfaced by different sources dedupe naturally via
+`_build_from_and_joins`'s `emitted_aliases` guard.
+
+Since Stage 5 (DEV-1709, widened Law-3 trigger), a LOCAL aggregate with
+any crossing input — source `Column.sql`, `Column.filter`, positional
+args, kwargs — never renders in the top-level host base at all: it
+isolates into a host-rooted `_cm_*` CTE, and the discovery above runs
+inside that CTE's sub-render (see
+[cross-model-aggregates.md](cross-model-aggregates.md#strategy-3-host-rooted-isolation--any-crossing-input-dev-1503-widened-by-dev-1709)).
+The host base only ever contains purely-local aggregates.
 
 ## Result-key contract (P10)
 
@@ -177,9 +233,9 @@ materialised aliases (`orders.revenue_last_created_at`,
 
 ## Response metadata (`response_meta.py`)
 
-The legacy engine derived `SlayerResponse.attributes` and `expected_columns` from
-an `EnrichedQuery`. The typed pipeline has none, so `build_response_metadata`
-rebuilds both from the root `PlannedQuery` plus the rendered SQL:
+`build_response_metadata` builds `SlayerResponse.attributes` and
+`expected_columns` from the root `PlannedQuery` plus the rendered SQL (the
+retired legacy engine derived both from an `EnrichedQuery`):
 
 - **`expected_columns`** comes from the final SQL's `named_selects` — the literal
   result-key columns rows come back under. Reading them from the SQL (rather than
@@ -200,12 +256,13 @@ in `query_engine`) so the module imports nothing from the engine;
 
 ## Design rationale
 
-- **Why reuse legacy dialect helpers instead of reimplementing aggregation SQL?**
-  Dialect coverage (SQLite UDFs, ClickHouse parametric quantiles, MySQL's
-  unsupported-function `NotImplementedError`, the `log10`/`log2` literal
-  preservation, JSON-extract rewriting) is large and well-tested. Sharing one
-  emitter keeps the two pipelines from drifting on dialect SQL while both exist —
-  at the cost of the `EnrichedMeasure` coupling, which DEV-1452 removes.
+- **Why one shared dialect emitter?** Dialect coverage (SQLite UDFs, ClickHouse
+  parametric quantiles, MySQL's unsupported-function `NotImplementedError`, the
+  `log10`/`log2` literal preservation, JSON-extract rewriting) is large and
+  well-tested. Routing every caller through one emitter keeps that behaviour in
+  a single place. This originally also kept the two coexisting pipelines from
+  drifting on dialect SQL, at the cost of an `EnrichedMeasure` coupling that
+  DEV-1452 / DEV-1485 removed.
 - **Why derive `expected_columns` from the SQL?** Because the SQL is the ground
   truth for what rows come back keyed by. Re-deriving from slots risks a subtle
   mismatch; reading `named_selects` cannot.

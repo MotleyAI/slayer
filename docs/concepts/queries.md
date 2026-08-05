@@ -21,6 +21,8 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
 
+A query carries no tenant scoping of its own. To force every query through an engine to one tenant's rows — joins and sub-queries included — configure a policy at engine construction; see [Row-Level Security](row-level-security.md).
+
 ## Dimensions
 
 Each entry in `dimensions` is either a bare string (the canonical short form for a column without a custom label) or a `ColumnRef` dict with `name` and optional `label`. Both styles support dotted paths for joined models, auto-resolved via the join graph.
@@ -51,6 +53,33 @@ A query with no measures and at least one dimension or time-dimension returns th
 
 Emits `SELECT orders.status FROM orders GROUP BY orders.status LIMIT 100`.
 
+### Raw rows (`distinct_dimension_values`)
+
+Set `distinct_dimension_values: false` on a query to opt out of the auto-dedup and project raw rows instead. No top-level `GROUP BY`; the usual `WHERE` / `ORDER BY` / `LIMIT` / `OFFSET` still apply.
+
+```json
+{
+  "source_model": "orders",
+  "dimensions": ["status", "amount"],
+  "filters": ["amount > 100"],
+  "order": [{"column": "amount", "direction": "desc"}],
+  "limit": 100,
+  "distinct_dimension_values": false
+}
+```
+
+Emits roughly `SELECT orders.status, orders.amount FROM orders WHERE orders.amount > 100 ORDER BY orders.amount DESC LIMIT 100` — one row per source row.
+
+**Rules** when `distinct_dimension_values=False`:
+
+- `measures` must be empty — `DistinctDimensionValuesError` otherwise.
+- At least one of `dimensions` / `time_dimensions` must be non-empty (nothing to project otherwise).
+- Filters / order items must not reference any measure — neither colon-form (`amount:sum > 100`, `*:count > 0`), transform calls (`rank(amount:sum) <= 5`), nor a bare saved-`ModelMeasure` name.
+
+**Time dimensions** are allowed: each one emits its `DATE_TRUNC` truncation as a projected column without aggregating. For raw column values (no truncation), put the time column in `dimensions` instead.
+
+**Multi-stage**: the flag is per-stage in DAG queries — an inner stage with `false` produces a flat raw-row sub-query that the outer stage can aggregate over.
+
 ## TimeDimension
 
 A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time column without truncation, add it as a regular dimension instead.
@@ -64,15 +93,57 @@ A time dimension with a required granularity and an optional date range. Support
 }
 ```
 
-**Granularities**: `second`, `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year`
+**Granularities**: `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`
+
+`week` is Monday-anchored (ISO-8601); `week_sunday` is Sunday-anchored (weeks start Sunday, end Saturday) for tools that use Sunday weeks. Both are model granularities you set on a `TimeDimension` — `week_sunday` is the SLayer value, not a wire keyword sent by a BI tool.
+
+`date_range` and an equivalent explicit filter (`"created_at >= '2024-01-01' and created_at <= '2024-12-31'"`) are interchangeable — including for trailing-window measures and `time_shift`, which still read rows from before the range so the earliest bucket isn't short-changed. See [Time bounds do not clip the window](formulas.md#time-bounds-do-not-clip-the-window) for exactly which predicates count as a time bound.
 
 ## OrderItem
+
+A sort specification: `column` is the short alias (`status`, `revenue_sum`, `*:count`), `direction` is `asc` or `desc`.
 
 ```json
 {"column": "*:count", "direction": "desc"}
 ```
 
 Via MCP: `{"column": "*:count", "direction": "desc"}`
+
+### Ordering by something you don't project
+
+`order` may reference a column or aggregate that is **not** declared as a dimension/measure — the classic "top-N by metric X, display only Y, Z" pattern:
+
+```json
+{"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "*:count"}],
+ "order": [{"column": "amount:sum", "direction": "desc"}], "limit": 10}
+```
+
+The `amount:sum` aggregate is computed as a hidden column, sorted on, and **stripped from the result** — the response projects only `status` and `_count`. This works for local aggregates, cross-model aggregates (`customers.revenue:sum`), and inner-stage columns re-aggregated in a later DAG stage (`customers__revenue_sum:max`).
+
+What each shape of an *undeclared* order target does:
+
+| Order target | Behavior |
+| --- | --- |
+| An aggregate (`amount:sum`, `customers.revenue:sum`) | Computed hidden, sorted on, stripped from the result. Always allowed. |
+| An inline **transform** (`rank(amount:sum)`, `cumsum(...)`, `change(...)`, `lag`/`lead`/`ntile`) | Computed hidden, sorted on, stripped. |
+| An inline **composite** (`revenue:sum / cnt:sum`, `abs(amount:sum)`, `change(amount:sum) / 2`) | Computed hidden, sorted on, stripped. |
+| A **windowed** aggregate (`amount:sum(window='90d')`), alone or inside a composite | Computed hidden in its own rolling-window CTE, sorted on, stripped. |
+| A raw row column, in a **raw-rows** query (`distinct_dimension_values: false`, no measures) | Sorted on directly (`ORDER BY orders.created_at`). |
+| A raw row column, in an **aggregated / dedup** query | Rejected (HTTP 400): it isn't in the `GROUP BY`. Add it to `dimensions`, or order by an aggregate of it (`created_at:max`). |
+| A **joined** row column (`customers.regions.name`) not projected | Rejected (HTTP 400): project it (add to `dimensions`) or order by a projected field. |
+
+Transform and composite order targets accept the full formula syntax, so
+`{"column": "revenue:sum / cnt:sum"}` and `{"column": "change(revenue:sum)"}` both
+work without declaring a measure. One limit: the operands must be written as
+formulas, not as the *names* of measures you declared in the same query —
+`{"column": "rev / cnt"}` is rejected at validation, because referencing a
+declared measure by its alias inside an expression is not supported anywhere in
+SLayer. Write `{"column": "revenue:sum / cnt:sum"}` instead.
+
+A windowed measure inside a **declared** composite measure
+(`{"formula": "revenue:sum(window='90d') / cnt:sum"}`), and any combination of a
+windowed measure with a transform, are still rejected — see
+[formulas](formulas.md#windowed-sum-and-average).
 
 ## Response
 
@@ -241,9 +312,25 @@ Filters support `{variable_name}` placeholders, substituted from the query's `va
 This produces the filter `status = 'completed' AND amount > 100`.
 
 - Variable names must be alphanumeric + underscore (`[a-zA-Z_][a-zA-Z0-9_]*`)
-- Values must be strings or numbers (inserted as-is — strings should be quoted in the filter template)
+- Values must be strings, numbers, or **lists**. **You write the surrounding quotes** in the template (`status = '{status}'`); the string value is then automatically escaped so an embedded quote (e.g. `O'Brien`), backslash, or control character (newline, tab) can't break out of that literal or the filter parser (DEV-1727). Numbers (including booleans) are inserted verbatim; non-finite floats (`nan`/`inf`) are rejected.
+- **List values render an `IN`-list.** A list variable powers an `in` / `not in` filter — write the parentheses and omit per-element quotes (each string element is auto-quoted):
+
+    ```json
+    {
+      "source_model": "orders",
+      "measures": ["*:count"],
+      "filters": ["region in ({regions})"],
+      "variables": {"regions": ["US", "CA"]}
+    }
+    ```
+
+    An empty list raises (`IN ()` is invalid SQL). Under the hood a list renders as a Python tuple (with a trailing comma, e.g. `('US',)`) so that even a single-element list is treated as membership rather than a bare value — you may see that trailing comma in `show_sql` output; it is not a typo.
 - `{{` and `}}` produce literal `{` and `}`
 - Undefined variables raise an error
+- The same `{variable}` mechanism also works in the **raw-SQL (Mode A) surfaces** of a model — see [Variables in model SQL](models.md#variables-in-model-sql).
+
+!!! note "Trusted input"
+    Substituted values are treated as trusted. The automatic escaping keeps a string value inside the quoted literal you wrote, but a `{var}` placed in an **unquoted** position is still raw SQL/expression substitution — do not feed untrusted end-user input through `variables`.
 
 #### Variables passed as a runtime kwarg
 
@@ -291,6 +378,38 @@ REST equivalent: `POST /query` with `{"name": "<model>", "variables": {...}}`. R
 CLI equivalent: `slayer query <model_name> [--variables k=v ...] [--dry-run] [--explain]` — when the positional argument doesn't look like JSON (doesn't start with `{` or `[`) and isn't a `@file` reference, it's interpreted as a model name.
 
 MCP equivalent: `query(source_model="<model>", variables={...}, dry_run=True/False, explain=True/False)` — when only `source_model` (and optional flags) is supplied, the call dispatches through the run-by-name shortcut.
+
+---
+
+## Choosing a root model
+
+When you know the columns and metrics you want but not which model to use as `source_model`, `recommend_root_model` introspects the join graph and picks it for you. Give it the `model.column` / `model.metric` items (aggregation suffixes allowed) and it returns the recommended root plus each item's join-qualified reference path from that root — ready to paste into a query.
+
+```python
+rec = engine.recommend_root_model_sync(["customers.name", "products.category"])
+rec.root_model          # "orders"  (the bridge model that reaches both)
+{ip.input_item: ip.path for ip in rec.item_paths}
+# {"customers.name": "customers.name", "products.category": "products.category"}
+```
+
+A root is valid when every requested item is reachable from it over the join graph — LEFT joins are directional (source → target), INNER joins traverse both ways. Among valid roots, the one with the fewest total join hops wins. Root-owned items come back as a bare leaf (`status`); joined items as a dotted path (`customers.regions.name`); aggregation suffixes are preserved (`revenue:sum`).
+
+When no single model reaches everything, `root_model` is `None`, `reachable` is `False`, and `coverage` lists the best partial roots (each with its reachable / unreachable items) so you can split the request into a multi-stage [`source_queries`](models.md#query-backed-models) query.
+
+### Forcing a root with `root_hint`
+
+Sometimes you already know the host you want — often a **bridge** model that owns none of the requested items but matches the grain you're building on. Pass `root_hint` (a bare model name or `<data_source>.<model>`) to force it:
+
+```python
+rec = engine.recommend_root_model_sync(
+    ["customers.name", "regions.name"], root_hint="orders"
+)
+rec.root_model   # "orders"  (honored — it reaches both, overriding the closer auto-pick)
+```
+
+When the hint reaches every item it's honored outright, overriding the fewest-hops pick. When it can't reach everything, the auto-pick is used instead and `warnings` explains which owning models the hint missed and which root was chosen. If no model reaches everything (`reachable` is `False`), the hint's own row is included in `coverage` too, so you can see exactly what it reaches. `root_hint` is resolved after the datasource is fixed from the items, so it names a model *within* that datasource — it can't choose the datasource. A hint that isn't a model in the resolved datasource raises.
+
+Surfaces: MCP `recommend_root_model(items, data_source=None, root_hint=None, format="markdown")`, REST `POST /recommend-root-model` (`{"items": [...], "data_source": null, "root_hint": null}`), CLI `slayer recommend-root-model ITEM... [--data-source X] [--root-hint M] [--format json|text]`, and `SlayerClient.recommend_root_model(_sync)`. The optional `data_source` scopes name resolution to one datasource; all items must resolve to a single datasource.
 
 ---
 

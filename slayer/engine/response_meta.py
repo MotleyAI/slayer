@@ -42,6 +42,8 @@ from slayer.core.keys import (
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.planned import PlannedQuery, ValueSlot
 from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.sql.dialects import get_dialect
+from slayer.sql.naming import result_key, result_key_from_alias
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +77,7 @@ def _infer_aggregated_format(
     """Infer NumberFormat for an aggregated measure based on aggregation type and source measure format.
 
     Rules:
-    - count, count_distinct: always INTEGER
+    - count, count_distinct, count_distinct_approx: always INTEGER
     - avg, weighted_avg, median: always FLOAT
     - sum, min, max, first, last: inherit from source measure
     - *:count (measure_name="*"): INTEGER
@@ -83,7 +85,7 @@ def _infer_aggregated_format(
     if measure_name == "*":
         return NumberFormat(type=NumberFormatType.INTEGER)
 
-    if aggregation in ("count", "count_distinct"):
+    if aggregation in ("count", "count_distinct", "count_distinct_approx"):
         return NumberFormat(type=NumberFormatType.INTEGER)
 
     if aggregation in ("avg", "weighted_avg", "median"):
@@ -129,23 +131,37 @@ def _model_for_path(
 def _slot_result_keys(*, slot: ValueSlot, source_relation: str) -> List[str]:
     """The public result-key alias(es) for ``slot``.
 
-    Mirrors ``SQLGenerator._full_alias_for_slot``: joined ROW slots emit the
-    full dotted path (``orders.customers.region``); everything else uses the
-    slot's public alias(es) — multiple for a C13 multi-name interned slot —
-    prefixed by the stage's source relation.
+    Mirrors ``SQLGenerator._full_alias_for_slot`` via the SAME naming builders
+    (``slayer.sql.naming.result_key`` / ``result_key_from_alias``) so the SQL
+    alias and the response result key cannot drift. Joined ROW slots — base
+    ``ColumnKey``, derived ``ColumnSqlKey`` (DEV-1713 D3 / DEV-1495 bug 1), and
+    ``TimeTruncKey`` over either — emit the full dotted path
+    (``orders.customers.region``); everything else uses the slot's public
+    alias(es) — multiple for a C13 multi-name interned slot.
     """
     key = slot.key
     if slot.phase == Phase.ROW:
         if isinstance(key, ColumnKey) and key.path:
-            return [f"{source_relation}." + ".".join(key.path) + f".{key.leaf}"]
+            return [result_key(
+                source_relation=source_relation, path=key.path, leaf=key.leaf,
+            )]
+        if isinstance(key, ColumnSqlKey) and key.path:
+            return [result_key(
+                source_relation=source_relation,
+                path=key.path,
+                leaf=key.column_name,
+            )]
         if isinstance(key, TimeTruncKey) and column_path(key.column):
-            return [
-                f"{source_relation}."
-                + ".".join(column_path(key.column))
-                + f".{column_leaf(key.column)}"
-            ]
+            return [result_key(
+                source_relation=source_relation,
+                path=column_path(key.column),
+                leaf=column_leaf(key.column),
+            )]
     aliases = slot.public_aliases or [slot.declared_name]
-    return [f"{source_relation}.{a}" for a in aliases]
+    return [
+        result_key_from_alias(source_relation=source_relation, alias=a)
+        for a in aliases
+    ]
 
 
 def _column_for_row_slot(
@@ -237,7 +253,7 @@ def _measure_label(
     return None
 
 
-def build_response_metadata(
+def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classification (dimension vs measure, TimeTruncKey, label/format lookup) over one candidate-slot loop; complexity is inherent to the projection-to-metadata mapping and pre-dates this change. Splitting the loop body out would scatter the shared public_keys / source_relation state without improving readability.
     *,
     root_planned: PlannedQuery,
     bundle: ResolvedSourceBundle,
@@ -253,6 +269,16 @@ def build_response_metadata(
     a guard against any divergence between this derivation and the generator.
     """
     expected_columns = expected_columns_from_sql(sql=sql, dialect=dialect)
+    # DEV-1716: on BigQuery / T-SQL the rendered SQL carries alias-mangled
+    # projection names (``orders___status``); decode them back to the canonical
+    # dotted form so ``expected_columns`` and the attribute-matching below
+    # operate in the same space as the plan's slot result keys. Reuses the
+    # dialect read-side hook (identity for every non-mangling dialect) via a
+    # synthetic-row wrap — no ``decode_columns`` method needed.
+    if expected_columns:
+        expected_columns = list(
+            get_dialect(dialect).decode_result_keys([dict.fromkeys(expected_columns)])[0]
+        )
     public_keys = set(expected_columns)
     source_relation = root_planned.source_relation
 

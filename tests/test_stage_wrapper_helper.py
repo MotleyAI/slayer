@@ -16,6 +16,8 @@ from __future__ import annotations
 import pytest
 import sqlglot
 
+from slayer.sql.stage_wrapper import build_flat_rename_wrapper
+
 
 def test_module_surface_exists() -> None:
     from slayer.sql.stage_wrapper import build_flat_rename_wrapper  # noqa: F401
@@ -83,3 +85,47 @@ def test_keeps_unprefixed_aliases_verbatim() -> None:
     )
     parsed = sqlglot.parse_one(ast.sql(dialect="postgres"), dialect="postgres")
     assert sorted(parsed.named_selects) == ["amount_sum", "bare_synth"]
+
+
+def test_decodes_bigquery_mangled_aliases() -> None:
+    """DEV-1716 (Codex review): BigQuery/T-SQL rendered stage SQL exposes
+    alias-mangled output names (``orders___status``); the wrapper must decode
+    them to the canonical dotted form to strip the ``orders.`` prefix and match
+    the expected flat schema, while still referencing the ACTUAL mangled inner
+    column. Without the decode the prefix-strip misses and the produced/expected
+    assertion raises for BigQuery/T-SQL query-backed models."""
+    # ``orders.status`` -> ``orders___status``; ``orders._count`` -> ``orders____count``.
+    stage_sql = (
+        "SELECT status AS `orders___status`, COUNT(*) AS `orders____count`\n"
+        "FROM orders AS orders\nGROUP BY status"
+    )
+    ast = build_flat_rename_wrapper(
+        source_relation="orders",
+        stage_sql=stage_sql,
+        expected_columns=["status", "_count"],
+        dialect="bigquery",
+    )
+    sql = ast.sql(dialect="bigquery")
+    # Flat output names produced from the decoded canonical form.
+    parsed = sqlglot.parse_one(sql, dialect="bigquery")
+    assert sorted(parsed.named_selects) == ["_count", "status"]
+    # And the wrapper references the ACTUAL mangled inner columns.
+    assert "orders___status" in sql
+    assert "orders____count" in sql
+
+
+def test_non_mangling_dialect_unaffected_by_decode() -> None:
+    """The decode is identity for Postgres — dotted aliases still strip/flatten
+    exactly as before (guards against the decode altering non-mangled input)."""
+    stage_sql = (
+        'SELECT status AS "orders.status", COUNT(*) AS "orders._count" '
+        "FROM orders_t AS orders"
+    )
+    ast = build_flat_rename_wrapper(
+        source_relation="orders",
+        stage_sql=stage_sql,
+        expected_columns=["status", "_count"],
+        dialect="postgres",
+    )
+    parsed = sqlglot.parse_one(ast.sql(dialect="postgres"), dialect="postgres")
+    assert sorted(parsed.named_selects) == ["_count", "status"]

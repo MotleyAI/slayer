@@ -7,18 +7,17 @@ call costs O(N*dim) memory + one matmul; both are negligible at this
 scale and avoid the operational burden of a persistent ANN index.
 
 Imports numpy at module top — this module is only imported behind the
-``embedding_search`` extra's gate, so a missing numpy is a programming
+``advanced_search`` extra's gate, so a missing numpy is a programming
 error here, not a runtime fallback.
 """
 
 from __future__ import annotations
 
-from typing import List, Tuple
 
 import numpy as np
 
 
-def normalise(vector: List[float]) -> np.ndarray:
+def normalise(vector: list[float]) -> np.ndarray:
     """Return a unit-L2 numpy view of ``vector``. Zero vectors come back
     unchanged so we never divide by zero."""
     arr = np.asarray(vector, dtype=np.float32)
@@ -42,7 +41,7 @@ def top_k_cosine(
     query: np.ndarray,
     matrix: np.ndarray,
     k: int,
-) -> List[Tuple[int, float]]:
+) -> list[tuple[int, float]]:
     """Return the top-``k`` ``(row_index, cosine_similarity)`` pairs.
 
     Assumes ``query`` is already unit-normalised (1D shape ``(dim,)``) and

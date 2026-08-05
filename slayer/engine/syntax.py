@@ -159,6 +159,31 @@ _OVER_RE = re.compile(r"\bOVER\s*\(", re.IGNORECASE)
 # (Codex). Used by ``_normalize_sql_filter_operators``, ``_preprocess_colons``,
 # and the raw-``OVER(`` pre-scan.
 _PY_STRING_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
+# SQL ``LIKE`` / ``NOT LIKE`` operator → the ``like(col, pattern)`` scalar the
+# Mode-B DSL already accepts (DEV-1484 emits it as SQL ``LIKE``). Mirrors
+# ``formula._preprocess_like`` so the typed filter parser accepts the same LIKE
+# spelling as the documented Mode-B filter grammar — a pg-facade WHERE
+# ``col LIKE 'p%'`` (or ``NOT LIKE``) lands here as a verbatim filter (DEV-1704).
+# LHS is a bare/dotted identifier or a single scalar call; RHS a quoted pattern.
+# Applied to the whole expression (the pattern is a string literal), same as
+# ``formula._preprocess_like``.
+_SQL_LIKE_RE = re.compile(
+    r"\b(\w+\([^()]*\)|(?:\w+\.)*\w+)\s+(not\s+)?like\s+('[^']*')",
+    flags=re.IGNORECASE,
+)
+
+
+def _rewrite_sql_like(text: str) -> str:
+    """``col LIKE 'p%'`` → ``like(col, 'p%')``; ``col NOT LIKE 'p%'`` →
+    ``not like(col, 'p%')`` — outside/inside handling matches
+    ``formula._preprocess_like``."""
+
+    def _sub(m: "re.Match[str]") -> str:
+        lhs, neg, pat = m.group(1), m.group(2), m.group(3)
+        call = f"like({lhs}, {pat})"
+        return f"not {call}" if neg else call
+
+    return _SQL_LIKE_RE.sub(_sub, text)
 _COLON_AGG_RE = re.compile(
     r"(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)"  # source: * / ident / dotted
     r":"
@@ -283,10 +308,14 @@ def _normalize_sql_filter_operators(text: str) -> str:
     """Rewrite SQL operator spellings to Python ones outside string literals.
 
     ``NULL`` → ``None``; ``IS`` / ``NOT`` / ``AND`` / ``OR`` / ``IN`` →
-    lowercase; standalone ``=`` → ``==``; ``<>`` → ``!=``. Replicated from the
-    legacy ``slayer.core.formula._preprocess_sql_operators`` so the typed
-    pipeline doesn't depend on the module DEV-1452 deletes.
+    lowercase; standalone ``=`` → ``==``; ``<>`` → ``!=``; ``col [NOT] LIKE
+    'p%'`` → ``[not ]like(col, 'p%')``. Replicated from the legacy
+    ``slayer.core.formula._preprocess_sql_operators`` / ``_preprocess_like`` so
+    the typed pipeline doesn't depend on the module DEV-1452 deletes.
     """
+    # LIKE runs first, on the whole string: its pattern is a quoted literal, so
+    # it can't be rewritten per-non-literal-part like the other operators.
+    text = _rewrite_sql_like(text)
     # CR review: use the escape-aware Python-string matcher so backslash-
     # escaped quotes don't leak ``IS`` / ``IN`` / ``AND`` rewrites into
     # the string body (``"x \" IN ("``).
@@ -368,7 +397,8 @@ def _is_kwarg_equals(
     if top is None or not top[0]:
         return False
     callee = top[1]
-    if callee is not None and callee in SCALAR_FUNCTIONS:
+    # Case-insensitive, matching the scalar-call parse branch below.
+    if callee is not None and callee.lower() in SCALAR_FUNCTIONS:
         return False
     prev_kind = hist[-1][0] if hist else None
     if prev_kind != "NAME":
@@ -924,15 +954,21 @@ def _convert_call(
             kwargs=kwargs,
         )
 
-    # Scalar function?
-    if func_name in SCALAR_FUNCTIONS:
+    # Scalar function? Matched case-INSENSITIVELY: SQL function names are
+    # case-insensitive and users write ``COALESCE(x, 0)`` as readily as
+    # ``coalesce(x, 0)``. The legacy parser lowercased before the allowlist
+    # lookup; matching exactly here rejected every SQL-cased formula. The
+    # name is normalised to lower case on the way into ``ScalarCall`` so the
+    # two spellings intern to ONE key rather than two slots computing the
+    # same value.
+    if func_name.lower() in SCALAR_FUNCTIONS:
         if kwargs:
             raise ValueError(
                 f"Invalid Mode-B expression {original!r}: scalar function "
                 f"{func_name!r} does not accept keyword arguments. Pass "
                 f"values positionally."
             )
-        return ScalarCall(name=func_name, args=args)
+        return ScalarCall(name=func_name.lower(), args=args)
 
     # Otherwise — unknown.
     raise UnknownFunctionError(

@@ -14,11 +14,12 @@ SLayer has two distinct expression layers and the rules for what each one accept
 ### SQL mode (`Column.sql`, `Column.filter`, `SlayerModel.filters`)
 
 * A bare identifier `col` resolves to the column named `col` on the underlying table or SQL of this model.
-* A path `a__b__c.col` resolves through the join graph: `a__b__c` is the SQL table alias produced by walking `model → a → b → c`, and `.col` is the leaf column on the final model. **`__` separates join hops only**; the leaf column always follows a single dot. The flattened form `a__b__c__col` does **not** exist in SQL mode — it appears only inside virtual-model column names produced by `_query_as_model` (see below).
+* A path `a__b__c.col` resolves through the join graph: `a__b__c` is the SQL table alias produced by walking `model → a → b → c`, and `.col` is the leaf column on the final model. **`__` separates join hops only**; the leaf column always follows a single dot. The flattened form `a__b__c__col` does **not** exist in SQL mode — it appears only inside virtual-model column names produced by the query-backed model wrap (see below).
 * Single-dot `t.col` is a literal `<table>.<column>` SQL reference (sqlglot's normal behavior).
 * User-supplied multi-dot input (`a.b.c`) is auto-rewritten to `a__b.c` at validation time with a warning.
 * Other derived columns of the same model (or of a joined model via `__`) are recursively expanded so chains like `A.ratio = "A.bar / B.foo_normalized"` (where `B.foo_normalized` is itself derived) work.
 * `ModelMeasure` names are not visible from SQL mode — saved measures are DSL-only.
+* `{variable}` placeholders are substituted into these Mode-A surfaces from the merged variable set (raise-on-missing once any variable is in play; a fully variable-free execution leaves braces as literals; Mode-A- and dialect-aware string escaping, so quoted values round-trip on backslash-escaping backends like MySQL/ClickHouse — DEV-1727). See [Variables in model SQL](models.md#variables-in-model-sql).
 
 ### DSL mode (queries + `ModelMeasure.formula`)
 
@@ -30,9 +31,9 @@ SLayer has two distinct expression layers and the rules for what each one accept
 
 ## The internal `__` carve-out
 
-The `Column._validate_name` validator allows `__` inside `Column.name`. This is required by `_query_as_model`, which flattens joined-model columns into virtual-model column names like `stores__name` or `customers__regions__name` — the entire dotted path becomes one SQL identifier on the synthetic table.
+The `Column._validate_name` validator allows `__` inside `Column.name`. This is required by the query-backed model wrap (`_expand_query_backed_model`, via `flat_name` in `slayer/sql/naming.py`), which flattens joined-model columns into virtual-model column names like `stores__name` or `customers__regions__name` — the entire dotted path becomes one SQL identifier on the synthetic table.
 
-`__` is **not** rejected at SlayerQuery / ModelMeasure construction. A user-authored DSL formula or filter that references such a virtual column by name (e.g. a downstream stage filtering on `kpis__total_amount_sum`) needs to remain constructible. Instead, **strict resolution at enrichment time** catches the cases that are actually wrong: any bare name in a query measure / filter / dimension that doesn't resolve to a `Column` / `ModelMeasure` / custom aggregation / canonical agg alias / query-level alias on the source model raises `ReferenceError`. Typos like `customers__region` (against a model that has `customers` joined to `region`, but no virtual column with that flattened name) are surfaced at execution time, not at construction.
+`__` is **not** rejected at SlayerQuery / ModelMeasure construction. A user-authored DSL formula or filter that references such a virtual column by name (e.g. a downstream stage filtering on `kpis__total_amount_sum`) needs to remain constructible. Instead, **strict resolution at binding time** catches the cases that are actually wrong: any bare name in a query measure / filter / dimension that doesn't resolve to a `Column` / `ModelMeasure` / custom aggregation / canonical agg alias / query-level alias on the source model raises `ReferenceError`. Typos like `customers__region` (against a model that has `customers` joined to `region`, but no virtual column with that flattened name) are surfaced at execution time, not at construction.
 
 `reject_user_dunder` in `slayer/core/refs.py` is retained as a helper for narrow contexts where `__` is unambiguously wrong (e.g. `SlayerQuery.name`, where `__` would clash with the SQL alias namespace) — it is not applied to free-form formula / filter strings.
 
@@ -44,7 +45,7 @@ The `Column._validate_name` validator allows `__` inside `Column.name`. This is 
 
 3. **No predicate promotion.** A query filter that names a windowed `Column` raises with a suggestion to use a rank-family transform (`rank` / `percent_rank` / `dense_rank` / `ntile`) or a multi-stage `source_queries` model. The rank-family transforms cover top-N filtering in pure DSL.
 
-4. **Single reference-resolution surface.** Identifier handling lives in `slayer/core/refs.py`; join walks live in `_walk_join_chain` in the engine.
+4. **Single reference-resolution surface.** Identifier handling lives in `slayer/core/refs.py`; join walks live in the binder (`slayer/engine/binding.py`), which resolves each hop against the resolved source bundle.
 
 ## Examples — accepted and rejected
 

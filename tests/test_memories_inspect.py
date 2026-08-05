@@ -12,7 +12,8 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from typing import Any, Generator, Optional
+from typing import Any
+from collections.abc import Generator
 
 import pytest
 
@@ -40,7 +41,7 @@ def _shared_mcp_server(_shared_storage: YAMLStorage):
 
 
 def _reset_storage(storage: YAMLStorage) -> None:
-    for sub in ("models", "datasources"):
+    for sub in ("models", "datasources", "memories"):
         d = os.path.join(storage.base_dir, sub)
         if os.path.isdir(d):
             for entry in os.listdir(d):
@@ -120,7 +121,7 @@ async def _call(
     mcp_server,
     *,
     name: str,
-    arguments: Optional[dict[str, Any]] = None,
+    arguments: dict[str, Any] | None = None,
 ) -> str:
     content_blocks, _ = await mcp_server.call_tool(
         name=name, arguments=arguments or {}
@@ -257,6 +258,9 @@ class TestInspectModelLearningsSection:
             learning="amount is in cents",
             entities=["mydb.orders.amount"],
         )
+        # DEV-1549: compact-by-default JSON Learnings emits ``description``
+        # (with first-paragraph fallback). Opt out with compact=False to
+        # exercise the verbose ``learning`` contract this test pins.
         result = await _call(
             mcp_server,
             name="inspect_model",
@@ -265,6 +269,7 @@ class TestInspectModelLearningsSection:
                 "data_source": "mydb",
                 "format": "json",
                 "sections": ["learnings"],
+                "compact": False,
             },
         )
         payload = json.loads(result)

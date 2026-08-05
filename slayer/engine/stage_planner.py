@@ -31,7 +31,9 @@ from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
 from slayer.core.errors import (
     AmbiguousReferenceError,
+    DistinctDimensionValuesError,
     UnknownReferenceError,
+    UnresolvableOrderColumnError,
 )
 from slayer.core.keys import (
     AggregateKey,
@@ -50,9 +52,19 @@ from slayer.core.keys import (
     normalize_scalar,
 )
 from slayer.core.models import SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery, TimeDimension
+from slayer.core.query import (
+    ORDER_PLACEHOLDER_NAMES,
+    ModelExtension,
+    SlayerQuery,
+    TimeDimension,
+)
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
+from slayer.core.time_bounds import strip_frame_bounds
+from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
+from slayer.engine.aggregate_input_paths import (
+    compute_aggregate_input_join_paths,
+)
 from slayer.engine.binding import (
     BoundExpr as BinderBoundExpr,
     BoundFilter,
@@ -73,16 +85,20 @@ from slayer.engine.planned import (
     FilterPhase,
     OrderEntry,
     PlannedQuery,
+    SrcFilterRewrite,
     TransformLayer,
     ValueSlot,
+    WindowedAggregatePlan,
 )
 from slayer.engine.planning import (
     DeclaredMeasure,
     OrderSpec,
     ProjectionPlanner,
+    _canonical_name,
     _iter_slot_deps,
     filter_referenced_slot_ids,
     lower_sugar_transforms,
+    rewrite_rank_partition_keys,
 )
 from slayer.engine.source_bundle import (
     ResolvedSourceBundle,
@@ -91,7 +107,9 @@ from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
 )
+from slayer.engine.normalization import func_style_agg_to_colon
 from slayer.engine.syntax import parse_expr, parse_filter_expr
+from slayer.sql.naming import flat_name
 from slayer.sql.sql_expr import has_window_function
 from slayer.sql.sql_predicate import parse_sql_predicate
 
@@ -171,6 +189,27 @@ def _attach_time_keys(
     return key
 
 
+def _partition_key_display(pk: ValueKey) -> str:
+    """Human-readable name of a rank ``partition_by`` key for error messages
+    (DEV-1497). Local refs surface as the bare leaf; joined refs keep the
+    dotted path."""
+    if isinstance(pk, ColumnKey):
+        return ".".join([*pk.path, pk.leaf])
+    if isinstance(pk, ColumnSqlKey):
+        return ".".join([*pk.path, pk.column_name])
+    if isinstance(pk, TimeTruncKey):
+        return _partition_key_display(pk.column)
+    return str(pk)
+
+
+def _row_key_path(key: ValueKey) -> tuple:
+    """Join path of a ROW value key (``()`` for local, non-empty for joined).
+    Unwraps a ``TimeTruncKey`` to its underlying column."""
+    if isinstance(key, TimeTruncKey):
+        return _row_key_path(key.column)
+    return tuple(getattr(key, "path", ()))
+
+
 def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
     """Return the op name of the first time-needing TransformKey reached
     that has ``time_key is None``, or ``None`` if every time-needing
@@ -208,6 +247,394 @@ def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# DEV-1714 Stage 10 — duration-windowed measures (``window='90d'``).
+# ---------------------------------------------------------------------------
+
+
+def _window_kwarg_of(key: ValueKey):
+    """The ``window`` kwarg value of an ``AggregateKey``, or ``None``.
+
+    ``window`` is a globally reserved aggregation kwarg name (legacy parity —
+    the legacy enrichment pipeline popped it unconditionally before dispatch), so its
+    presence marks a windowed measure regardless of the aggregation.
+    """
+    if isinstance(key, AggregateKey):
+        for k, v in key.kwargs:
+            if k == "window":
+                return v
+    return None
+
+
+def _windowed_agg_keys(vk: ValueKey) -> list:
+    """Every windowed ``AggregateKey`` in ``vk``'s value-key tree."""
+    return [k for k in walk_value_keys(vk) if _window_kwarg_of(k) is not None]
+
+
+def _reject_unsupported_windowed_key(key: AggregateKey) -> None:
+    """Per-key guards shared by selected and filter/order-referenced windowed
+    aggregates: sum/avg-only (G1), string duration + compact syntax (G8), and
+    no cross-model source (G3). Raises with the pinned-message contract."""
+    if key.agg not in ("sum", "avg"):
+        raise ValueError(
+            f"Aggregation parameter 'window' is only supported for sum and avg, "
+            f"not '{key.agg}'."
+        )
+    window_val = _window_kwarg_of(key)
+    if not isinstance(window_val, str):
+        raise ValueError(
+            f"Window duration must be a compact duration string like '90d', got "
+            f"{window_val!r}. Use syntax like '1y2m3w5d6h7min8s'."
+        )
+    parse_window_duration(window_val)  # G8 — raises on empty / malformed
+    if getattr(key.source, "path", ()):  # G3
+        raise NotImplementedError(
+            "Windowed cross-model aggregates (e.g. customers.revenue:sum("
+            "window='90d')) are not yet supported (DEV-1504)."
+        )
+
+
+def _guard_windowed_measures(  # NOSONAR(S3776) — one cohesive ordered guard pass (G1→G8→G3→G4→G5→G7→G6→G2) over the original value-key trees; each branch is a distinct unsupported-shape rejection sharing the windowed-key scan, and splitting would scatter the precedence contract.
+    *,
+    measure_vks: list,
+    filter_vks: list,
+    order_vks: list,
+    active_td_key,
+) -> dict:
+    """Reject unsupported windowed-measure shapes at plan time and return the
+    cleanly-SELECTED windowed ``AggregateKey``s (the ones that get a
+    ``WindowedAggregatePlan``) as an insertion-ordered mapping in measure
+    declaration order — so the emitted ``_wm_`` CTEs and combined-SELECT columns
+    are DETERMINISTIC (a set made the SQL output order vary across runs, which
+    breaks the SQL-text cache key of DEV-1587).
+
+    Runs on the ORIGINAL declared-measure / filter / order value-key trees —
+    before projection interning would hide a transform / composite dependency
+    slot — so the transform (G4) and composite (G5) guards win over the
+    hidden-slot guard (G6). Precedence: G1 → G8 → G3 → G4 → G5 → G7 → G6 → G2.
+    """
+    all_vks = [*measure_vks, *filter_vks, *order_vks]
+    if not any(_windowed_agg_keys(vk) for vk in all_vks):
+        return {}
+
+    # G1 / G8 / G3 — per-key validation runs FIRST (documented precedence), so a
+    # windowed key with an invalid aggregation / malformed duration / cross-model
+    # source reports its specific error even when it is also wrapped in a
+    # transform (G4) or composite (G5).
+    for vk in all_vks:
+        for key in _windowed_agg_keys(vk):
+            _reject_unsupported_windowed_key(key)
+
+    # G4 — a windowed measure cannot coexist with (or be the input of) any
+    # transform. Checked before the hidden-slot guard so
+    # ``cumsum(revenue:sum(window='90d'))`` reports 'transform', never 'selected'.
+    if any(isinstance(k, TransformKey) for vk in all_vks for k in walk_value_keys(vk)):
+        raise NotImplementedError(
+            "Windowed measures (window='…') combined with transforms are not yet "
+            "supported (DEV-1504). Compute the windowed measure in a separate "
+            "query stage."
+        )
+
+    # G5 — a top-level declared measure that IS a windowed AggregateKey is
+    # cleanly selected; a windowed key nested in an arithmetic / scalar composite
+    # measure is rejected. ``dict`` (not ``set``) preserves measure order; the
+    # value is the slot's ``hidden`` flag (DEV-1733) — False for a declared
+    # measure, True for an order-only target.
+    selected_windowed: dict = {}
+    for vk in measure_vks:
+        if not _windowed_agg_keys(vk):
+            continue
+        if _window_kwarg_of(vk) is not None:
+            selected_windowed.setdefault(vk, False)
+        else:
+            raise NotImplementedError(  # G5
+                "Windowed measures (window='…') inside arithmetic / composite / "
+                "scalar expressions are not yet supported (DEV-1504)."
+            )
+
+    # G7 (mixed) then G6 (hidden) for filter-referenced windowed measures.
+    for vk in filter_vks:
+        wkeys = _windowed_agg_keys(vk)
+        if not wkeys:
+            continue
+        has_plain_agg = any(
+            isinstance(k, AggregateKey) and _window_kwarg_of(k) is None
+            for k in walk_value_keys(vk)
+        )
+        if has_plain_agg:
+            raise NotImplementedError(  # G7
+                "A single filter that mixes a windowed measure (window='…') with "
+                "a plain aggregate is not yet supported (DEV-1504)."
+            )
+        if any(k not in selected_windowed for k in wkeys):
+            raise NotImplementedError(  # G6
+                "Filtering on a windowed measure (window='…') requires that "
+                "measure to also be selected (DEV-1504)."
+            )
+    # DEV-1733 — order-only windowed targets. This IS a reachable shape (the
+    # pre-DEV-1733 comment here claimed otherwise): ``OrderItem`` canonicalises
+    # ``revenue:sum(window='90d')`` to the column name ``revenue_sum``, but
+    # ``OrderItem.raw_formula`` preserves the original text and the planner
+    # binds from it whenever the canonical name matches no declared measure. It
+    # used to fall through with no ``WindowedAggregatePlan``, materialising a
+    # PLAIN ``SUM`` in the base and ordering by it — the window silently gone.
+    #
+    # A windowed key referenced ONLY by ORDER BY is registered here as a HIDDEN
+    # plan (S-a top-level, S-b nested in a composite). Registering it after the
+    # measure loop means an also-declared key keeps ``hidden=False``.
+    for vk in order_vks:
+        for key in _windowed_agg_keys(vk):
+            selected_windowed.setdefault(key, True)
+
+    # G2 — a windowed measure needs a resolvable time dimension.
+    if active_td_key is None:
+        raise ValueError(
+            "Windowed measure could not resolve its time dimension. Add a single "
+            "time_dimensions entry, or set main_time_dimension to select among "
+            "multiple time dimensions."
+        )
+    return selected_windowed
+
+
+def _windowed_grain_partition(
+    *,
+    row_slots: list,
+    active_td_slot_id,
+) -> Tuple[list, list, list]:
+    """Split the PROJECTED (non-hidden) ROW slots into the ``_wm_`` grain roles.
+
+    Returns ``(dim_slot_ids, other_td_slot_ids, grain_slot_ids)`` — plain
+    dimensions render as ``_w_dim_<n>`` in the ``_src`` subquery, non-window
+    time dimensions as ``_w_td_<n>``, and ``grain_slot_ids`` is the join-back
+    key order (dims, then the window TD, then the other TDs).
+
+    HIDDEN row slots are excluded by design: the window buckets at the grain
+    the query actually projects, so an order-only (hidden) target must not
+    widen or narrow it.
+    """
+    dim_slot_ids: list = []
+    other_td_slot_ids: list = []
+    for rs in row_slots:
+        if rs.hidden:
+            continue
+        if isinstance(rs.key, TimeTruncKey):
+            if rs.id != active_td_slot_id:
+                other_td_slot_ids.append(rs.id)
+        else:
+            dim_slot_ids.append(rs.id)
+    grain_slot_ids = (
+        dim_slot_ids
+        + ([active_td_slot_id] if active_td_slot_id is not None else [])
+        + other_td_slot_ids
+    )
+    return dim_slot_ids, other_td_slot_ids, grain_slot_ids
+
+
+def _build_windowed_plans(
+    *,
+    selected_windowed: dict,
+    registry,
+    row_slots: list,
+    active_td_key,
+    active_td_slot_id,
+) -> Tuple[list, set]:
+    """Build one ``WindowedAggregatePlan`` per selected windowed measure and
+    return ``(plans, windowed_slot_ids)``. The window time dimension is the
+    query's resolved main/active TD (same one first/last/time_shift use)."""
+    plans: list = []
+    windowed_slot_ids: set = set()
+    if not selected_windowed:
+        return plans, windowed_slot_ids
+
+    # CR#3 / G2 (post-projection): the window time dimension must be a SELECTED
+    # query time dimension (interned as a row slot so it becomes part of the
+    # bucket grain). A model ``default_time_dimension`` the query does not select
+    # resolves ``active_td_key`` (so the pre-projection G2 passes) but is never
+    # interned — ``active_td_slot_id`` is then None. Raise the G2 message rather
+    # than crash on the required ``window_time_dimension_slot_id: SlotId`` field.
+    if active_td_slot_id is None:
+        raise ValueError(
+            "Windowed measure could not resolve its time dimension. Add a single "
+            "time_dimensions entry, or set main_time_dimension to select among "
+            "multiple time dimensions."
+        )
+
+    dim_slot_ids, other_td_slot_ids, grain_slot_ids = _windowed_grain_partition(
+        row_slots=row_slots, active_td_slot_id=active_td_slot_id,
+    )
+
+    for key, is_hidden in selected_windowed.items():
+        sid = registry.find_by_key(key)
+        if sid is None:
+            # CR#4: the guard pass already proved this is a cleanly-selected
+            # top-level windowed measure, so a missing slot is planner/projection
+            # drift — fail loudly rather than let the measure degrade to a plain
+            # (non-windowed) aggregate in the base (the silent-wrong-results mode
+            # the guards exist to prevent).
+            raise RuntimeError(
+                f"Windowed measure {key!r} was selected but has no projection "
+                f"slot; planner/projection drift (DEV-1714).",
+            )
+        window_raw = _window_kwarg_of(key)
+        # DEV-1733: the slot is the authority on visibility — a key registered
+        # hidden by the order pass may still have been promoted to public by a
+        # declared measure sharing it (same key -> one slot).
+        slot = registry.get(sid)
+        hidden = bool(is_hidden and slot.hidden)
+        plans.append(WindowedAggregatePlan(
+            aggregate_slot_id=sid,
+            agg=key.agg,
+            window_raw=window_raw,
+            window_parts=parse_window_duration(window_raw),
+            window_time_dimension_slot_id=active_td_slot_id,
+            window_granularity=active_td_key.granularity,
+            dimension_slot_ids=dim_slot_ids,
+            other_time_dimension_slot_ids=other_td_slot_ids,
+            grain_slot_ids=grain_slot_ids,
+            hidden=hidden,
+            public_alias=None if hidden else slot.public_name,
+        ))
+        windowed_slot_ids.add(sid)
+    return plans, windowed_slot_ids
+
+
+_RAW_ROW_FIX_HINT = (
+    "Either remove the measure reference, or set "
+    "distinct_dimension_values=True (the default) to keep the "
+    "auto-aggregating behaviour."
+)
+
+
+def _iter_expr_children(node):
+    """Yield the child nodes of a parsed Mode-B expression node.
+
+    Attribute-driven rather than type-driven so one walker covers every node
+    shape the typed parser emits. ``str`` / ``bool`` scalars are skipped —
+    they are leaf payloads (an operator name, a flag), never child nodes.
+    """
+    for attr in ("input", "left", "right", "this", "operand"):
+        child = getattr(node, attr, None)
+        if child is not None and not isinstance(child, (str, bool)):
+            yield child
+    for attr in ("args", "operands", "kwargs"):
+        for item in getattr(node, attr, None) or ():
+            # kwargs come through as (name, value) pairs; take the value.
+            yield item[1] if isinstance(item, tuple) and len(item) == 2 else item
+
+
+def _expr_has_measure_ref(node, *, measure_names: FrozenSet[str]) -> bool:
+    """True if a parsed Mode-B expression references an aggregation, a
+    transform, or a saved ``ModelMeasure`` by bare name.
+
+    Structural walk over the typed parser's AST — the legacy check re-parsed
+    the raw text with the enrichment parsers, which no longer exist.
+    """
+    from slayer.engine.syntax import AggCall, Ref, TransformCall
+
+    if node is None:
+        return False
+    if isinstance(node, (AggCall, TransformCall)):
+        return True
+    if isinstance(node, Ref) and node.name in measure_names:
+        return True
+    return any(
+        _expr_has_measure_ref(child, measure_names=measure_names)
+        for child in _iter_expr_children(node)
+    )
+
+
+def _reject_measure_refs_for_raw_rows(*, query: SlayerQuery, scope) -> None:
+    """DEV-1543: with ``distinct_dimension_values=False`` the caller asked for
+    RAW ROWS, so no measure reference may appear in ``filters`` or ``order``.
+
+    ``SlayerQuery``'s validator already rejects the model-free cases (a
+    non-empty ``measures``, no dimensions at all). This is the half that needs
+    the resolved model: a bare ``aov`` is only a measure reference if ``aov``
+    is a saved ``ModelMeasure``. Unparseable text is left alone — the binder
+    raises on it downstream with a message tied to the original string.
+    """
+    src = getattr(scope, "source_model", None)
+    measure_names: FrozenSet[str] = frozenset(
+        m.name for m in (getattr(src, "measures", None) or []) if m.name
+    )
+    custom_agg_names: FrozenSet[str] = frozenset(
+        a.name for a in (getattr(src, "aggregations", None) or []) if a.name
+    )
+    _reject_measure_refs_in_filters(query=query, measure_names=measure_names)
+    _reject_measure_refs_in_order(
+        query=query,
+        measure_names=measure_names,
+        custom_agg_names=custom_agg_names,
+        source_name=getattr(src, "name", None),
+    )
+
+
+def _reject_measure_refs_in_filters(
+    *, query: SlayerQuery, measure_names: FrozenSet[str],
+) -> None:
+    """Filter half of :func:`_reject_measure_refs_for_raw_rows`."""
+    for f in (query.filters or []):
+        if not isinstance(f, str):
+            continue
+        try:
+            parsed = parse_filter_expr(f)
+        except Exception:  # noqa: BLE001 — binder reports parse errors properly
+            continue
+        if _expr_has_measure_ref(parsed, measure_names=measure_names):
+            raise DistinctDimensionValuesError(
+                f"distinct_dimension_values=False rejects measure references, "
+                f"but filter {f!r} contains one. {_RAW_ROW_FIX_HINT}"
+            )
+
+
+def _parse_order_formula(raw: str, *, custom_agg_names: FrozenSet[str]):
+    """Parse an ``OrderItem.raw_formula`` to a Mode-B AST, or ``None``.
+
+    Function-style aggregations (``sum(amount)``) are not valid Mode-B; the
+    slack layer rewrites them to colon form, so do the same here — otherwise
+    this check would miss the aggregation and let the binder report a generic
+    "function not allowed" instead.
+    """
+    try:
+        text = func_style_agg_to_colon(raw, custom_agg_names=custom_agg_names)
+    except Exception:  # noqa: BLE001 — fall back to the original text
+        text = raw
+    try:
+        return parse_expr(text)
+    except Exception:  # noqa: BLE001 — binder reports parse errors properly
+        return None
+
+
+def _reject_measure_refs_in_order(
+    *,
+    query: SlayerQuery,
+    measure_names: FrozenSet[str],
+    custom_agg_names: FrozenSet[str],
+    source_name: Optional[str],
+) -> None:
+    """ORDER BY half of :func:`_reject_measure_refs_for_raw_rows`."""
+    for item in (query.order or []):
+        raw = getattr(item, "raw_formula", None)
+        if raw:
+            parsed = _parse_order_formula(raw, custom_agg_names=custom_agg_names)
+            if parsed is not None and _expr_has_measure_ref(
+                parsed, measure_names=measure_names,
+            ):
+                raise DistinctDimensionValuesError(
+                    f"distinct_dimension_values=False rejects measure "
+                    f"references, but order item {raw!r} contains one. "
+                    f"{_RAW_ROW_FIX_HINT}"
+                )
+        name = getattr(getattr(item, "column", None), "name", None)
+        if name and name in measure_names:
+            raise DistinctDimensionValuesError(
+                f"distinct_dimension_values=False rejects measure references, "
+                f"but order item {name!r} resolves to a saved measure on "
+                f"{source_name or 'the source model'!r}. "
+                f"{_RAW_ROW_FIX_HINT}"
+            )
+
+
 def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-1503 addition is a small trigger-predicate branch + a kwarg pass-through; the function's pre-existing complexity is owned by the multi-stage scope / bundle / projection / filter-routing wiring it orchestrates and is tracked as a separate refactor.
     *,
     query: SlayerQuery,
@@ -215,7 +642,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     scope: Optional[Union[ModelScope, StageSchema]] = None,
     cross_model_planner: Optional[CrossModelPlanner] = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
-    disable_dev1503_isolation: bool = False,
+    disable_host_rooted_isolation: bool = False,
 ) -> PlannedQuery:
     """Compile one ``SlayerQuery`` into a typed ``PlannedQuery``.
 
@@ -224,13 +651,16 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     ``stage_schemas`` is a name → StageSchema map used by
     ``plan_stages`` to wire multi-stage references.
 
-    ``disable_dev1503_isolation`` (DEV-1503) suppresses the trigger that
-    isolates cross-model-FILTERED local measures into a per-measure CTE.
+    ``disable_host_rooted_isolation`` (DEV-1503; renamed and widened by
+    DEV-1709) suppresses the HOST-ROOTED half of the Law-3 trigger — the
+    isolation of a LOCAL aggregate whose ``Column.filter`` or any other
+    input (source ``Column.sql``, positional args, kwargs) crosses a join.
+    It never affects target-rooted isolation (``source.path`` non-empty).
     Threaded through ``subplan_builder`` whenever a cross-model strategy
     recurses for a host-rooted (or target-rooted) nested sub-plan, so the
-    sub-plan's same filtered measure is rendered inline (not infinitely
+    sub-plan's same crossing measure is rendered inline (not infinitely
     re-isolated) and so re-rooting of a genuine cross-model aggregate
-    doesn't redundantly DEV-1503-isolate the target's own filter joins.
+    doesn't redundantly isolate the target's own filter joins.
     """
     stage_schemas = stage_schemas or {}
     cross_model_planner = (
@@ -251,6 +681,13 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     render_source_model = (
         scope.source_model if isinstance(scope, ModelScope) else None
     )
+
+    # DEV-1543: raw-rows mode rejects measure references in filters / order.
+    # Runs BEFORE binding so the targeted, actionable error wins over the
+    # binder's generic "cannot resolve reference" / "function not allowed"
+    # for a saved-measure or function-style-aggregate reference.
+    if query.distinct_dimension_values is False:
+        _reject_measure_refs_for_raw_rows(query=query, scope=scope)
 
     # Downstream stages bind against a flat StageSchema — ``__`` is legal
     # in their refs (the upstream's flattened multi-hop aliases); model-
@@ -362,9 +799,43 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         bound_filter_texts.append(f)
 
     order_specs = []
+    # Host identity for the qualifier check below — the source model for a
+    # ``ModelScope``, the stage relation name (``s1``) for a downstream
+    # ``StageSchema`` (so a self-qualified ``s1.metric`` order stays host-local,
+    # Codex). Same resolution ``_host_model_name`` uses everywhere else.
+    _order_host_name = _host_model_name(scope)
     for o in (query.order or []):
         col_name = o.column.name
         full_name = o.column.full_name
+        # DEV-1733: a placeholder ColumnRef means the item is an EXPRESSION,
+        # not a column reference — bind ``raw_formula`` and skip the
+        # declared-alias lookups below (which could otherwise match a real
+        # model column that happens to share the sentinel's name). BOTH the
+        # sentinel AND a captured ``raw_formula`` are required, so a model with
+        # a genuine ``_expr_pending`` column, or a hand-built / deserialized
+        # ``OrderItem``, still resolves through the normal path.
+        if col_name in ORDER_PLACEHOLDER_NAMES and o.raw_formula:
+            order_specs.append(OrderSpec(
+                bound=bind_expr(
+                    parsed=parse_expr(o.raw_formula, allow_dunder=flat_scope),
+                    scope=scope,
+                    bundle=bundle,
+                ),
+                direction=o.direction,
+            ))
+            continue
+        # An order ref qualified with a FOREIGN model (``owners.status`` when
+        # the host is ``orders``) must not resolve to a same-named local column
+        # via the bare-leaf shortcut — otherwise a joined sort key silently
+        # binds to the local column and sorts by the wrong field (Codex). The
+        # bare-name lookups below apply only to unqualified refs or refs
+        # qualified with the host itself; a foreign-qualified ref falls through
+        # to the dotted/flattened/`bind_expr` paths, where a truly-joined ref
+        # is then rejected by the plan-time order validation.
+        _order_qualifier = getattr(o.column, "model", None)
+        _order_host_local = (
+            _order_qualifier is None or _order_qualifier == _order_host_name
+        )
         # Prefer declared-measure alias resolution over model-scope
         # binding (DEV-1450 stage 7b.8 — gap fix): aggregate canonical
         # aliases like ``amount_sum`` are not columns on the model, so
@@ -379,7 +850,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         # fall back to binding the preserved colon/path ``raw_formula``
         # so the order key interns onto the same cross-model aggregate
         # slot (P2/P4) rather than raising.
-        if col_name in declared_alias_to_bound:
+        if _order_host_local and col_name in declared_alias_to_bound:
             bo = declared_alias_to_bound[col_name]
         elif full_name in declared_alias_to_bound:
             bo = declared_alias_to_bound[full_name]
@@ -390,7 +861,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             # written in dotted form must intern onto that same declared
             # slot rather than binding the raw column as a fresh slot.
             bo = declared_alias_to_bound[_flatten_dotted(full_name)]
-        elif f"_{col_name}" in declared_alias_to_bound:
+        elif _order_host_local and f"_{col_name}" in declared_alias_to_bound:
             # ``*:count`` surfaces as the alias ``_count`` (the ``*`` is
             # dropped, the leading ``_`` kept as a marker); users naturally
             # order by the bare ``count``. Mirror the legacy
@@ -538,8 +1009,103 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         for spec in order_specs
     ]
 
+    # DEV-1497: validate that every rank-family ``partition_by`` column resolves
+    # to a query dimension / time-dimension, and rewrite a time-dimension source
+    # column to its truncated-bucket ``TimeTruncKey`` (partition by the bucket,
+    # not the raw timestamp — which would silently widen the grain). Runs BEFORE
+    # interning so a rewritten key never leaves a stale slot behind (identity is
+    # only touched on the rewritten rank transform).
+    _dim_dms = declared_measures[:n_dims]
+    _td_dms = declared_measures[n_dims:n_dims + n_tds]
+    _dim_key_set = {dm.bound.value_key for dm in _dim_dms}
+    # A source column carrying two time-dimension granularities (``created_at``
+    # at both month and day) maps to two distinct ``TimeTruncKey`` buckets — a
+    # bare ``partition_by=created_at`` is then ambiguous, so track those columns
+    # and reject rather than silently pick whichever bucket comes last.
+    _td_by_source: Dict[ValueKey, TimeTruncKey] = {}
+    _td_ambiguous_sources: set = set()
+    for dm in _td_dms:
+        vk = dm.bound.value_key
+        if not isinstance(vk, TimeTruncKey):
+            continue
+        # Ambiguous only when the SAME source column already mapped to a
+        # DIFFERENT bucket (a different granularity) — two identical
+        # ``created_at:month`` declarations resolve to one bucket, not a clash.
+        if vk.column in _td_by_source and _td_by_source[vk.column] != vk:
+            _td_ambiguous_sources.add(vk.column)
+        _td_by_source[vk.column] = vk
+    _td_key_set = set(_td_by_source.values())
+    _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
+
+    def _validate_partition_keys(tk: TransformKey) -> frozenset:
+        new_pks = []
+        for pk in tk.partition_keys:
+            if pk in _dim_key_set or pk in _td_key_set:
+                new_pks.append(pk)          # already a query dim / td bucket
+            elif pk in _td_ambiguous_sources:
+                raise ValueError(
+                    f"Transform '{tk.op}': partition_by column "
+                    f"'{_partition_key_display(pk)}' is ambiguous — it is a "
+                    f"time dimension at multiple granularities. Partition by a "
+                    f"single query dimension instead."
+                )
+            elif pk in _td_by_source:
+                new_pks.append(_td_by_source[pk])  # td source col -> bucket
+            else:
+                raise ValueError(
+                    f"Transform '{tk.op}': partition_by column "
+                    f"'{_partition_key_display(pk)}' is not a query dimension. "
+                    f"Add it to dimensions/time_dimensions, or choose one of: "
+                    f"{', '.join(_available_dims) or '(none)'}."
+                )
+        return frozenset(new_pks)
+
+    def _rw(vk: ValueKey) -> ValueKey:
+        return rewrite_rank_partition_keys(vk, rewrite_fn=_validate_partition_keys)
+
+    declared_measures = [
+        DeclaredMeasure(
+            bound=BinderBoundExpr(value_key=_rw(dm.bound.value_key)),
+            declared_name=dm.declared_name,
+            public_name=dm.public_name,
+            label=dm.label,
+            canonical_alias=dm.canonical_alias,
+            type=dm.type,
+            format=dm.format,
+            description=dm.description,
+        )
+        for dm in declared_measures
+    ]
+    _rewritten_filters = []
+    for bf in bound_filters:
+        bf_vk = _rw(bf.value_key)
+        _rewritten_filters.append(BoundFilter(
+            value_key=bf_vk,
+            phase=bf.phase,
+            referenced_keys=tuple(walk_value_keys(bf_vk)),
+        ))
+    bound_filters = _rewritten_filters
+    order_specs = [
+        OrderSpec(
+            bound=BinderBoundExpr(value_key=_rw(spec.bound.value_key)),
+            direction=spec.direction,
+        )
+        for spec in order_specs
+    ]
+
     source_col_names = _source_column_names(scope)
     host_model_name = _host_model_name(scope)
+
+    # DEV-1714 Stage 10 — windowed-measure guards on the ORIGINAL (pre-
+    # projection) value-key trees. Raises on unsupported shapes (non-sum/avg,
+    # no time dim, cross-model, transform, composite, hidden, mixed, malformed
+    # duration); returns the set of cleanly-selected windowed AggregateKeys.
+    selected_windowed = _guard_windowed_measures(
+        measure_vks=[dm.bound.value_key for dm in declared_measures],
+        filter_vks=[bf.value_key for bf in bound_filters],
+        order_vks=[sp.bound.value_key for sp in order_specs],
+        active_td_key=active_td_key,
+    )
 
     projection = ProjectionPlanner().plan(
         measures=declared_measures,
@@ -553,6 +1119,156 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         projection.registry.slots,
     )
 
+    # DEV-1543: ``distinct_dimension_values=False`` asks for RAW ROWS, so no
+    # measure reference may appear anywhere in the query. ``SlayerQuery``'s
+    # validator already rejects the cheap structural cases (a non-empty
+    # ``measures``, or no dimensions at all) without needing a model; the
+    # remaining references hide in ``filters`` and ``order``, which only
+    # resolve once bound.
+    #
+    # The typed pipeline checks this structurally instead of re-parsing the
+    # filter/order TEXT the way the legacy stack did: after binding, ANY
+    # aggregate-phase slot in a raw-rows query can only have come from a
+    # filter or an order item, since measures were rejected upstream. Without
+    # this the query silently aggregates — a ``filters=["amount:sum > 100"]``
+    # raw-rows query materialised a hidden aggregate and emitted
+    # ``GROUP BY ... HAVING ...``, the exact auto-aggregation the flag exists
+    # to turn off.
+    if query.distinct_dimension_values is False and agg_slots:
+        offender = _canonical_name(agg_slots[0].key)
+        raise DistinctDimensionValuesError(
+            f"distinct_dimension_values=False rejects measure references, but "
+            f"this query references the aggregation {offender!r} in its "
+            f"filters or order. Either remove the measure reference, or set "
+            f"distinct_dimension_values=True (the default) to keep the "
+            f"auto-aggregating behaviour."
+        )
+
+    # DEV-1714 Stage 10 — build one WindowedAggregatePlan per selected windowed
+    # measure. The window time dimension is the query's resolved active TD.
+    active_td_slot_id = (
+        projection.registry.find_by_key(active_td_key)
+        if active_td_key is not None
+        else None
+    )
+    windowed_plans, windowed_slot_ids = _build_windowed_plans(
+        selected_windowed=selected_windowed,
+        registry=projection.registry,
+        row_slots=row_slots,
+        active_td_key=active_td_key,
+        active_td_slot_id=active_td_slot_id,
+    )
+
+    # DEV-1714 (Codex round 5): a filter that references a windowed measure is
+    # reclassified WHOLE to Phase.POST (outer WHERE on the joined-back column).
+    # It must therefore reference ONLY windowed measures (+ literals). Mixing a
+    # windowed predicate with a row column or a plain aggregate in ONE filter
+    # can't be cleanly split — the windowed part is POST while the row part is a
+    # pre-aggregation WHERE — and would emit an outer-WHERE reference to an
+    # unprojected ``_base`` column. Reject it (the pre-projection G7 already
+    # catches the windowed+plain-aggregate half with a specific message; this
+    # also covers windowed+row-column, which G7's aggregate-only scan misses).
+    if windowed_slot_ids:
+        for bf in bound_filters:
+            refs = filter_referenced_slot_ids(bf, projection.registry)
+            if (refs & windowed_slot_ids) and (refs - windowed_slot_ids):
+                raise NotImplementedError(
+                    "A single filter that mixes a windowed measure (window='…') "
+                    "with another predicate (a row column or a plain aggregate) "
+                    "is not yet supported (DEV-1504). Put them in separate "
+                    "filters."
+                )
+
+    # DEV-1712 (Law 2) / DEV-1703 Phase 1: plan-time classification of every
+    # ORDER BY target that is not a declared/public slot.
+    #
+    # ONE RULE: an order-only ref resolves exactly like a filter ref. Law 1
+    # pulls whatever joins it crosses into the scope that owns its rows — even
+    # when ORDER BY is the only thing referencing it — and the ref is then
+    # emitted in whatever form that scope makes legal:
+    #   * order-only AGGREGATE (local or cross-model) -> hidden materialised
+    #     slot, ordered by its alias (unchanged);
+    #   * row column, UNGROUPED query -> split ``orders.created_at`` /
+    #     ``customers__regions.name`` emission in the generator's
+    #     ``_apply_order_limit_from_planned`` (the row IS the grain, so the
+    #     bare reference is legal);
+    #   * LOCAL row column, GROUPED query -> the bare reference is NOT legal
+    #     (the column is not in GROUP BY), so it materialises as a hidden
+    #     ``<col>:max`` aggregate slot and the order entry is repointed at it.
+    #     MAX is order-preserving per group and portable across every Tier-1
+    #     dialect;
+    #   * JOINED row column, GROUPED query -> still
+    #     ``UnresolvableOrderColumnError``. A host-rooted MAX over a joined
+    #     column is not expressible today: an ``AggregateKey`` with a
+    #     non-empty ``source.path`` always routes to a TARGET-rooted CTE
+    #     (Law 3), which for a host-grain sort key degenerates to a scalar
+    #     CROSS JOIN — every group would get the same global value and the
+    #     sort would silently do nothing. Failing loudly beats sorting by a
+    #     constant. Full support (host-rooted crossing MAX) is DEV-1735;
+    #   * transform / composite -> materialised as a hidden slot and ordered at
+    #     the outer wrap (DEV-1733), same Law-2 discipline as aggregates.
+    #
+    # The hidden MAX is interned post-bind, so the bind-time aggregation gate
+    # (PK columns, ``allowed_aggregations``, per-type defaults) deliberately
+    # does not apply: the caller asked to SORT by a column, not to aggregate
+    # it, and a sort must not fail because ``max`` is not whitelisted on the
+    # column being sorted.
+    _has_grouping = bool(agg_slots) or (
+        bool(query.dimensions or query.time_dimensions)
+        and query.distinct_dimension_values
+    )
+    # ORDER BY targets rewritten to a hidden aggregate: original key -> MAX key.
+    order_key_remap: Dict[ValueKey, ValueKey] = {}
+    for spec in order_specs:
+        okey = spec.bound.value_key
+        osid = projection.registry.find_by_key(okey)
+        if osid is not None and not projection.registry.get(osid).hidden:
+            continue  # declared / projected output — orders on a real column
+        if isinstance(okey, AggregateKey):
+            continue  # hidden aggregate (local base or cross-model CTE)
+        if isinstance(okey, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+            if not _has_grouping:
+                continue  # raw-rows query -> split emission, no wrap needed
+            path = _row_key_path(okey)
+            if path:
+                # ``UnresolvableOrderColumnError`` formats ``qualifier.column``;
+                # pass the bare leaf as ``column`` and the joined path as the
+                # qualifier so the message reads ``customers.regions.name`` and
+                # not a duplicated ``customers.customers.regions.name``.
+                disp = _partition_key_display(okey)
+                raise UnresolvableOrderColumnError(
+                    column=disp.rsplit(".", 1)[-1], qualifier=".".join(path),
+                )
+            # A TimeTruncKey is not a legal aggregate source; wrap its
+            # underlying column instead. DATE_TRUNC is monotonic
+            # non-decreasing, so MAX(col) and MAX(trunc(col)) sort a group
+            # identically.
+            src = okey.column if isinstance(okey, TimeTruncKey) else okey
+            max_key = AggregateKey(source=src, agg="max")
+            if projection.registry.find_by_key(max_key) is None:
+                projection.registry.intern(
+                    key=max_key,
+                    declared_name=_canonical_name(max_key),
+                    hidden=True,
+                    phase=max_key.phase,
+                )
+            order_key_remap[okey] = max_key
+        # DEV-1733: TransformKey / ArithmeticKey / ScalarCallKey — an inline
+        # transform or composite expression referenced only in ORDER BY. These
+        # materialise as hidden slots (a step CTE on the transform path, a
+        # trimmed base-SELECT column on the no-transform path, an inline
+        # combined-SELECT term when an operand is cross-model or windowed) and
+        # order at the outer wrap. Stage 8 rejected them here; nothing left to
+        # reject.
+
+    # Re-bucket: the pass above may have interned hidden ``:max`` order slots,
+    # which must reach the PlannedQuery's aggregate bucket (and hence the
+    # generator's slot maps) like any other aggregate.
+    if order_key_remap:
+        row_slots, agg_slots, combined_slots = _bucket_slots(
+            projection.registry.slots,
+        )
+
     # Build filters_by_phase in legacy WHERE order:
     #   1. date_range bound filters (bound_filters[:n_date_range])
     #   2. model.filters (text_filter_entries)
@@ -560,13 +1276,24 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # bound_filter_ids preserves the mapping back to bound_filters for
     # the cross-model routing pass that follows (text_filter_entries
     # are excluded — model filters never feed cross-model routing).
+    # DEV-1714 Stage 10 — a filter referencing a windowed slot is reclassified
+    # to Phase.POST: the windowed value is computed in the ``_wm_`` CTE and
+    # joined back, so the predicate must apply on the combined SELECT (outer
+    # WHERE), never as a HAVING on the plain base aggregate.
+    def _windowed_phase(bf: BoundFilter) -> Phase:
+        if windowed_slot_ids and (
+            filter_referenced_slot_ids(bf, projection.registry) & windowed_slot_ids
+        ):
+            return Phase.POST
+        return bf.phase
+
     filters_by_phase: List[FilterPhase] = []
     bound_filter_ids: List[str] = []
     for i, bf in enumerate(bound_filters[:n_date_range]):
         fid = f"f{i}"
         filters_by_phase.append(
             FilterPhase(
-                id=fid, phase=bf.phase, text=None,
+                id=fid, phase=_windowed_phase(bf), text=None,
                 expression=PlannedBoundExpr(value_key=bf.value_key),
             ),
         )
@@ -576,7 +1303,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         fid = f"f{i}"
         filters_by_phase.append(
             FilterPhase(
-                id=fid, phase=bf.phase, text=None,
+                id=fid, phase=_windowed_phase(bf), text=None,
                 expression=PlannedBoundExpr(value_key=bf.value_key),
             ),
         )
@@ -608,23 +1335,47 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     cross_model_plans = []
     host_slots_for_classifier = projection.registry.slots
     for slot in agg_slots:
+        # DEV-1714 Stage 10 — a windowed slot renders via its own ``_wm_`` CTE
+        # (host-rooted range join), never a cross-model ``_cm_`` CTE, even when
+        # its ``Column.filter`` crosses a join (which would otherwise trip the
+        # host-rooted isolation trigger below).
+        if slot.id in windowed_slot_ids:
+            continue
         key = slot.key
         if not isinstance(key, AggregateKey):
             continue
         agg_path = getattr(key.source, "path", ())
-        # DEV-1503 — extended trigger predicate. Invoke the cross-model planner
-        # when the aggregate's source carries a non-empty join path (cross-
-        # model aggregate, existing behaviour) OR when the aggregate's
-        # ``column_filter_key`` references a non-anchor join path (cross-
-        # model-FILTERED local measure — the new filtered-local isolation
-        # case). The typed ``referenced_join_paths`` field is computed at
-        # binder time by ``compute_column_filter_join_paths``.
-        has_cross_model_filter = (
-            not disable_dev1503_isolation
-            and key.column_filter_key is not None
+        # DEV-1503 / DEV-1709 — Law-3 trigger predicate. Invoke the
+        # cross-model planner when the aggregate's source carries a
+        # non-empty join path (target-rooted, existing behaviour) OR when
+        # ANY other input of a LOCAL aggregate crosses a join (host-rooted
+        # isolation): ``Column.filter`` (typed ``referenced_join_paths``
+        # from binder time — DEV-1503), source ``Column.sql``, positional
+        # args incl. the explicit first/last time arg, kwargs (column
+        # refs, user template fragments, and non-overridden model-default
+        # ``AggregationParam`` fragments) — DEV-1709's widened trigger,
+        # computed plan-time by ``compute_aggregate_input_join_paths``.
+        has_crossing_filter = (
+            key.column_filter_key is not None
             and bool(key.column_filter_key.referenced_join_paths)
         )
-        if not agg_path and not has_cross_model_filter:
+        has_crossing_input = (
+            not disable_host_rooted_isolation
+            and not agg_path
+            and (
+                has_crossing_filter
+                or bool(compute_aggregate_input_join_paths(
+                    key=key,
+                    anchor_model=bundle.source_model,
+                    anchor_relation=(
+                        bundle.source_model.name
+                        if bundle.source_model is not None else ""
+                    ),
+                    bundle=bundle,
+                ))
+            )
+        )
+        if not agg_path and not has_crossing_input:
             continue
         # DEV-1450 #2: re-rooting (C1) is owned by the strategy. We hand it
         # the host query, the public projection, and a sub-plan builder so it
@@ -634,12 +1385,14 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         # same ``plan_query`` recursion the post-hoc pass used, injected here
         # so cross_model_planner.py needn't import stage_planner.
         #
-        # DEV-1503 — the subplan_builder ALWAYS suppresses DEV-1503 isolation:
-        # for filtered-local isolation, the host-rooted sub-plan contains the
-        # same filtered measure and would otherwise recurse infinitely; for
-        # the existing cross-model re-rooting case, the sub-plan's target-
-        # rooted local aggregate would redundantly DEV-1503-isolate its own
-        # filter joins (already handled by the surrounding cross-model CTE).
+        # DEV-1503 / DEV-1709 — the subplan_builder ALWAYS suppresses
+        # host-rooted isolation: the host-rooted sub-plan contains the same
+        # crossing measure and would otherwise recurse infinitely; for the
+        # existing cross-model re-rooting case, the sub-plan's target-rooted
+        # local aggregate would redundantly isolate its own crossing inputs
+        # (already handled by the surrounding cross-model CTE). Inside the
+        # sub-plan, crossing inputs render INLINE (base-pull) — legal there
+        # because the CTE is the aggregate's own scope.
         reroot_enabled = (
             isinstance(scope, ModelScope) and scope.source_model is not None
         )
@@ -658,7 +1411,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             subplan_builder=(
                 (lambda q, b: plan_query(
                     query=q, bundle=b, cross_model_planner=cross_model_planner,
-                    disable_dev1503_isolation=True,
+                    disable_host_rooted_isolation=True,
                 ))
                 if reroot_enabled else None
             ),
@@ -667,11 +1420,29 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
 
     order_entries = []
     for spec in order_specs:
-        sid = projection.registry.find_by_key(spec.bound.value_key)
-        if sid is not None:
-            order_entries.append(
-                OrderEntry(slot_id=sid, direction=spec.direction),
+        # A grouped row-column sort key was rewritten to a hidden ``:max``
+        # aggregate above; order on that slot, not the bare row key.
+        okey = order_key_remap.get(spec.bound.value_key, spec.bound.value_key)
+        sid = projection.registry.find_by_key(okey)
+        if sid is None:
+            # DEV-1733: an order target that reached here without a slot would
+            # be SILENTLY DROPPED — the query runs unsorted and returns wrong
+            # rows with no error. That was the original `change(...)` /
+            # scalar-call bug, and the entry-point relaxation makes new key
+            # shapes reachable (e.g. a top-level `IN` / `BETWEEN` predicate,
+            # which `_iter_slot_deps` treats as WHERE-inlined and never slots).
+            # Fail loudly for ANY unslotted shape rather than enumerating them,
+            # so this whole bug class cannot come back.
+            raise ValueError(
+                f"ORDER BY expression is not supported: "
+                f"{type(spec.bound.value_key).__name__} has no materialisable "
+                f"slot. Order by an aggregate, a transform, a composite "
+                f"arithmetic / scalar expression, a dimension, or declare the "
+                f"expression as a measure and order by its name."
             )
+        order_entries.append(
+            OrderEntry(slot_id=sid, direction=spec.direction),
+        )
 
     transform_layers = _emit_transform_layers(slots=projection.registry.slots)
     stage_schema = _emit_stage_schema(
@@ -683,21 +1454,37 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         else host_model_name
     )
 
-    # Stage 7b.10 — surface the active TD's slot id so the generator can
-    # render ``ORDER BY <td-alias>`` in OVER clauses without re-walking
-    # the model graph. ``None`` when there is no TD (validation already
-    # ran above; we only reach here if no time-needing transform exists).
-    active_td_slot_id = (
-        projection.registry.find_by_key(active_td_key)
-        if active_td_key is not None
-        else None
-    )
+    # Stage 7b.10 — the active TD's slot id (``active_td_slot_id``) is resolved
+    # right after projection above so the windowed-plan builder can use it.
+
+    # DEV-1732 — the frame-bound column set: raw columns of this stage's
+    # NON-HIDDEN time dimensions. Computed once and carried on the plan so the
+    # windowed ``_src`` path (below) and the generator's ``time_shift``
+    # shifted-CTE path read the SAME set.
+    frame_bound_columns = _frame_bound_columns(row_slots=row_slots)
+
+    # DEV-1714 Stage 10 / DEV-1732 — the ``_wm_`` ``_src`` scope inherits
+    # WHERE-phase row filters (model + user) MINUS their frame bounds: the
+    # trailing window must reach rows before the visible frame starts.
+    # POST-reclassified windowed-measure filters are already excluded
+    # (phase != ROW).
+    if windowed_plans:
+        date_range_fids = {f"f{i}" for i in range(n_date_range)}
+        src_where_ids, src_rewrites = _plan_src_row_filters(
+            filters_by_phase=filters_by_phase,
+            date_range_fids=date_range_fids,
+            frame_bound_columns=frame_bound_columns,
+        )
+        for wp in windowed_plans:
+            wp.where_filter_ids = src_where_ids
+            wp.src_filter_rewrites = src_rewrites
 
     return PlannedQuery(
         source_relation=source_relation,
         row_slots=row_slots,
         aggregate_slots=agg_slots,
         cross_model_aggregate_plans=cross_model_plans,
+        windowed_aggregate_plans=windowed_plans,
         combined_expression_slots=combined_slots,
         transform_layers=transform_layers,
         filters_by_phase=filters_by_phase,
@@ -708,7 +1495,87 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         stage_schema=stage_schema,
         active_time_dimension_slot_id=active_td_slot_id,
         render_source_model=render_source_model,
+        distinct_dimension_values=query.distinct_dimension_values,
+        frame_bound_columns=frame_bound_columns,
     )
+
+
+def _frame_bound_columns(*, row_slots: list) -> List[ValueKey]:
+    """Raw column keys of the stage's NON-HIDDEN time dimensions (DEV-1732).
+
+    An explicit relational bound on one of these is a FRAME bound — the
+    caller restating what ``TimeDimension.date_range`` expresses — and is
+    stripped from CTEs that must read outside the frame. A bound on any other
+    column, temporal or not, is a population filter and is left alone.
+
+    Hidden ``TimeTruncKey`` slots are excluded deliberately, and the exclusion
+    is load-bearing rather than cosmetic: ``_build_windowed_plans`` skips hidden
+    row slots when building ``other_time_dimension_slot_ids``, so a hidden time
+    axis is never equality-joined into ``_src``. Stripping a bound on one would
+    leave that axis wholly unconstrained — an unbounded over-count — where
+    keeping it merely preserves the pre-DEV-1732 result.
+
+    Order-stable and de-duplicated: the same column carried at two
+    granularities contributes one entry.
+    """
+    out: List[ValueKey] = []
+    seen: set = set()
+    for rs in row_slots:
+        if rs.hidden or not isinstance(rs.key, TimeTruncKey):
+            continue
+        col = rs.key.column
+        if col in seen:
+            continue
+        seen.add(col)
+        out.append(col)
+    return out
+
+
+def _plan_src_row_filters(
+    *,
+    filters_by_phase: list,
+    date_range_fids: set,
+    frame_bound_columns: List[ValueKey],
+) -> "Tuple[List[str], List[SrcFilterRewrite]]":
+    """Partition ROW-phase filters for a windowed measure's ``_src`` scope.
+
+    Returns ``(where_filter_ids, src_filter_rewrites)``:
+
+    * a filter that is ENTIRELY a frame bound is omitted from the ids;
+    * a filter that is PARTLY one keeps its id and gains a rewrite carrying the
+      residual population predicate;
+    * everything else keeps its id with no rewrite.
+
+    Mode-A model filters (``FilterPhase.text``, no typed expression) are exempt
+    by design — a model filter defines which rows EXIST rather than which frame
+    the query looks at, there is no ``date_range`` spelling at model level, and
+    analysing raw dialect SQL would make a silent mis-strip possible.
+
+    ``date_range_fids`` is skipped up front. That is redundant with
+    ``strip_frame_bounds`` (which recognises ``BetweenKey`` too) and kept
+    deliberately: it makes a Stage-10 regression structurally impossible even if
+    a ``date_range`` ever binds to a shape the helper does not match.
+    """
+    time_cols = frozenset(frame_bound_columns)
+    where_ids: List[str] = []
+    rewrites: List[SrcFilterRewrite] = []
+    for fp in filters_by_phase:
+        if fp.phase != Phase.ROW or fp.id in date_range_fids:
+            continue
+        if fp.expression is None:
+            where_ids.append(fp.id)  # Mode-A model filter — exempt.
+            continue
+        residual = strip_frame_bounds(
+            key=fp.expression.value_key, time_columns=time_cols,
+        )
+        if residual is None:
+            continue  # wholly a frame bound
+        where_ids.append(fp.id)
+        if residual is not fp.expression.value_key:
+            rewrites.append(SrcFilterRewrite(
+                filter_id=fp.id, expression=PlannedBoundExpr(value_key=residual),
+            ))
+    return where_ids, rewrites
 
 
 def _coerce_extension(spec) -> ModelExtension:
@@ -852,7 +1719,9 @@ def _format_description_for_dimension(
     return col.format, col.description
 
 
-_COUNT_AGGREGATIONS: FrozenSet[str] = frozenset({"count", "count_distinct"})
+_COUNT_AGGREGATIONS: FrozenSet[str] = frozenset(
+    {"count", "count_distinct", "count_distinct_approx"}
+)
 _FLOAT_AGGREGATIONS: FrozenSet[str] = frozenset({
     "avg", "weighted_avg", "median",
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
@@ -870,7 +1739,7 @@ def _infer_aggregated_type(
     ``_infer_aggregated_format`` (decision #2 of the Stage B plan):
 
     * ``*:count`` (measure_name=``"*"``) → ``INT``
-    * ``count`` / ``count_distinct`` → ``INT``
+    * ``count`` / ``count_distinct`` / ``count_distinct_approx`` → ``INT``
     * ``avg`` / ``weighted_avg`` / ``median`` / parametric / stat aggs →
       ``DOUBLE``
     * ``sum`` / ``min`` / ``max`` / ``first`` / ``last`` → inherit from
@@ -1007,9 +1876,10 @@ def _type_for_dimension(
 ) -> Optional[DataType]:
     """Lift ``type`` for a dimension. Local refs read the source column;
     joined (dotted) refs walk the join chain to the terminal column's
-    type. Returning ``None`` for joined refs (the old behaviour) made
-    ``_query_as_model`` coerce them to ``DOUBLE``, mistyping joined
-    string / temporal dimensions on the persisted virtual model.
+    type. Returning ``None`` for joined refs (the old behaviour) made the
+    query-backed virtual-model wrap coerce them to ``DOUBLE`` (its
+    ``sc.type or DataType.DOUBLE`` fallback), mistyping joined string /
+    temporal dimensions on the persisted virtual model.
     """
     if not isinstance(scope, ModelScope) or scope.source_model is None:
         return None
@@ -1019,6 +1889,63 @@ def _type_for_dimension(
         )
     col = scope.source_model.get_column(full_name)
     return col.type if col is not None else None
+
+
+def _opaque_dim_type(
+    *,
+    scope: Union[ModelScope, StageSchema],
+    full_name: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[DataType]:
+    """Declared type of a query dimension, for the opaque-grouping guard only.
+
+    Resolves BOTH a ``ModelScope`` origin (via ``_type_for_dimension``) AND a
+    downstream ``StageSchema`` (via its typed ``columns``). ``_type_for_dimension``
+    deliberately returns ``None`` for a StageSchema — that ``None`` is load-bearing
+    for downstream typing (the virtual-model ``DOUBLE`` coercion) and must not
+    change — so
+    the guard needs its own resolver to catch an opaque column projected in one
+    stage and grouped in the next.
+    """
+    if isinstance(scope, StageSchema):
+        col = scope.get(full_name)
+        return col.type if col is not None else None
+    return _type_for_dimension(scope=scope, full_name=full_name, bundle=bundle)
+
+
+def _reject_opaque_grouping_dim(
+    *,
+    query: SlayerQuery,
+    scope: Union[ModelScope, StageSchema],
+    full_name: str,
+    bundle: ResolvedSourceBundle,
+) -> None:
+    """Raise if ``full_name`` is an opaque dimension this query will GROUP BY.
+
+    Grouping by an opaque column (``DataType.UNKNOWN`` — e.g. a PostGIS ``point``
+    or any type with no equality operator) emits SQL the database rejects, so we
+    fail with an actionable message instead of a raw driver error. Only an
+    *actually grouped* dimension is refused: aggregating queries and dim-only
+    DISTINCT queries group, but raw-row mode (``distinct_dimension_values=False``
+    with no measures, DEV-1543) projects dimensions without a top-level GROUP BY,
+    so an opaque column is legal there — and a downstream stage that groups such a
+    projected value is still caught via the StageSchema (see ``_opaque_dim_type``).
+    Checked on the declared type *before* ``bind_expr`` expands the column's
+    ``sql``, so an opaque *derived* column is caught by its type rather than
+    tripping the DEV-1410 cycle check first. (PR #259 "Unknown type" main-parity:
+    the legacy guard lived in ``enrichment._resolve_dimensions``, which the typed
+    pipeline bypasses.)
+    """
+    if not (bool(query.measures) or query.distinct_dimension_values):
+        return
+    dim_type = _opaque_dim_type(scope=scope, full_name=full_name, bundle=bundle)
+    if dim_type is not None and dim_type.is_opaque:
+        raise ValueError(
+            f"Column '{full_name}' cannot be used as a dimension: its type does "
+            f"not support the GROUP BY / DISTINCT this query requires. Define a "
+            f"derived column that extracts a comparable value instead, e.g. "
+            f"sql=\"payload->>'status'\" with type TEXT."
+        )
 
 
 def _saved_model_measure_type(
@@ -1050,6 +1977,29 @@ def _saved_model_measure_type(
     return saved.type if saved is not None else None
 
 
+def _bare_saved_measure_name(
+    *, scope: Union[ModelScope, StageSchema], formula: str,
+) -> Optional[str]:
+    """The saved ``ModelMeasure.name`` when the query formula is a BARE
+    reference to one (DEV-1713 / DEV-1495 bare-named-measure aliasing).
+
+    ``expand_model_measures`` rewrites ``rev_total`` to the saved measure's
+    underlying formula AST, so without this the measure would surface under
+    the formula-derived canonical (``revenue_sum``) instead of the name the
+    user referenced (``rev_total``). Fires ONLY for a bare identifier matching
+    a ``ModelMeasure.name`` on the source model — the same gate as
+    :func:`_saved_model_measure_type`; qualified / arithmetic / colon-suffix
+    formulas fall through (name-preservation is scoped to the bare form).
+    """
+    if not isinstance(scope, ModelScope) or scope.source_model is None:
+        return None
+    bare = formula.strip()
+    if not bare.isidentifier():
+        return None
+    saved = scope.source_model.get_measure(bare)
+    return saved.name if saved is not None else None
+
+
 def _declared_measures_from_query(
     *,
     query: SlayerQuery,
@@ -1064,6 +2014,9 @@ def _declared_measures_from_query(
     declared: List[DeclaredMeasure] = []
     for d in (query.dimensions or []):
         full = d.full_name
+        _reject_opaque_grouping_dim(
+            query=query, scope=scope, full_name=full, bundle=bundle,
+        )
         bound = bind_expr(
             parsed=parse_expr(full, allow_dunder=flat_scope),
             scope=scope,
@@ -1122,8 +2075,13 @@ def _declared_measures_from_query(
         # (DEV-1446) still holds — ``lower_sugar_transforms`` keeps the
         # inner ``AggregateKey`` instance unchanged.
         canonical = _canonical_alias_for_formula(formula, bound=bound)
-        declared_name = explicit_name or canonical
-        public_name = explicit_name or canonical
+        # DEV-1713: a bare reference to a saved ModelMeasure surfaces under the
+        # measure NAME, not the formula-derived canonical. Explicit query
+        # ``name`` still wins; the saved name is an implicit ``name``.
+        saved_name = _bare_saved_measure_name(scope=scope, formula=formula)
+        alias_name = explicit_name or saved_name
+        declared_name = alias_name or canonical
+        public_name = alias_name or canonical
         fmt, desc = _format_description_for_measure_formula(
             scope=scope, bound=bound,
         )
@@ -1147,7 +2105,10 @@ def _declared_measures_from_query(
             declared_name=declared_name,
             public_name=public_name,
             label=m.label,
-            canonical_alias=canonical if explicit_name else None,
+            # DEV-1443: keep the canonical alias whenever the surfaced name
+            # differs from it (explicit ``name`` OR an implicit saved-measure
+            # name) so a colon-form filter / ORDER BY still resolves.
+            canonical_alias=canonical if alias_name else None,
             type=m_type,
             format=fmt,
             description=desc,
@@ -1209,7 +2170,8 @@ def _topo_sort(queries: List[SlayerQuery]) -> List[SlayerQuery]:
 
 
 def _flatten_dotted(name: str) -> str:
-    return name.replace(".", "__")
+    # DEV-1713: the ``__``-flatten is owned by the naming module.
+    return flat_name(name)
 
 
 def _canonical_alias_for_formula(

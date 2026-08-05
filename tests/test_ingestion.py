@@ -6,9 +6,28 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.dialects.mssql import (
+    BIT,
+    DATETIME2,
+    DATETIMEOFFSET,
+    MONEY,
+    NCHAR,
+    NTEXT,
+    NVARCHAR,
+    SMALLDATETIME,
+    SMALLMONEY,
+    TIMESTAMP as MSSQL_TIMESTAMP,
+    TINYINT,
+)
+from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
+from sqlalchemy.dialects.postgresql import JSON as PG_JSON
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 from slayer.core.enums import DataType
+from slayer.core.models import DatasourceConfig
 from slayer.engine.ingestion import (
+    ingest_datasource,
     _generate_joins,
     _get_columns_fallback,
     _get_pk_constraint_fallback,
@@ -340,6 +359,109 @@ class TestSaTypeToDataTypeIntDouble:
     def test_datetime_maps_to_timestamp(self) -> None:
         assert _sa_type_to_data_type(sa.DateTime()) is DataType.TIMESTAMP
 
+    # --- T-SQL (SQL Server) specific types ---
+
+    def test_tsql_tinyint_maps_to_int(self) -> None:
+        assert _sa_type_to_data_type(TINYINT()) is DataType.INT
+
+    def test_tsql_datetime2_maps_to_timestamp(self) -> None:
+        assert _sa_type_to_data_type(DATETIME2()) is DataType.TIMESTAMP
+
+    def test_tsql_smalldatetime_maps_to_timestamp(self) -> None:
+        assert _sa_type_to_data_type(SMALLDATETIME()) is DataType.TIMESTAMP
+
+    def test_tsql_datetimeoffset_maps_to_timestamp(self) -> None:
+        assert _sa_type_to_data_type(DATETIMEOFFSET()) is DataType.TIMESTAMP
+
+    def test_tsql_nvarchar_maps_to_text(self) -> None:
+        assert _sa_type_to_data_type(NVARCHAR()) is DataType.TEXT
+
+    def test_tsql_nchar_maps_to_text(self) -> None:
+        assert _sa_type_to_data_type(NCHAR()) is DataType.TEXT
+
+    def test_tsql_ntext_maps_to_text(self) -> None:
+        assert _sa_type_to_data_type(NTEXT()) is DataType.TEXT
+
+    def test_tsql_money_maps_to_double(self) -> None:
+        assert _sa_type_to_data_type(MONEY()) is DataType.DOUBLE
+
+    def test_tsql_smallmoney_maps_to_double(self) -> None:
+        assert _sa_type_to_data_type(SMALLMONEY()) is DataType.DOUBLE
+
+    def test_tsql_bit_maps_to_boolean(self) -> None:
+        assert _sa_type_to_data_type(BIT()) is DataType.BOOLEAN
+
+    def test_tsql_mssql_timestamp_rowversion_maps_to_text(self) -> None:
+        # mssql.TIMESTAMP is SQL Server's rowversion (8-byte binary counter),
+        # not a temporal type. Its class name is "TIMESTAMP", same as
+        # sa.TIMESTAMP, so without the isinstance guard it would incorrectly
+        # land on DataType.TIMESTAMP.
+        assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
+
+
+class TestUnmappedTypeBecomesOpaque:
+    """DB types with no equality operator map to the explicit opaque
+    ``UNKNOWN`` type, and the raw type string is retained on
+    ``Column.db_type``. Comparable types — including unmapped ones — keep
+    working as TEXT."""
+
+    def test_non_comparable_sa_type_maps_to_unknown(self) -> None:
+        assert _sa_type_to_data_type(PG_JSON()) is DataType.UNKNOWN
+        assert _sa_type_to_data_type(PG_JSON()).is_opaque is True
+
+    @pytest.mark.parametrize(
+        "sa_type",
+        [
+            JSONB(),  # jsonb HAS ``=`` in Postgres, unlike json
+            PG_UUID(),
+            sa.LargeBinary(),  # bytea
+            PG_ARRAY(sa.Text()),
+        ],
+        ids=["jsonb", "uuid", "bytea", "array"],
+    )
+    def test_comparable_unmapped_types_stay_text(self, sa_type) -> None:
+        """Regression: these are groupable/joinable and must not be marked
+        opaque — doing so would tell an agent a usable column is unusable."""
+        mapped = _sa_type_to_data_type(sa_type)
+        assert mapped is DataType.TEXT
+        assert mapped.is_opaque is False
+
+    def test_mapped_sa_type_unaffected(self) -> None:
+        assert _sa_type_to_data_type(sa.VARCHAR(32)) is DataType.TEXT
+
+    def test_mssql_rowversion_special_case_still_text(self) -> None:
+        # The explicit isinstance guard must survive the UNKNOWN fallback.
+        assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
+
+    def test_ingest_populates_db_type_only_for_opaque_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "opaque.db")
+            engine = sa.create_engine(f"sqlite:///{db_path}")
+            with engine.connect() as c:
+                c.execute(sa.text(
+                    "CREATE TABLE t (id INTEGER PRIMARY KEY, "
+                    "name VARCHAR(64), payload JSON, blob_col BLOB)"
+                ))
+                c.commit()
+            engine.dispose()
+
+            ds = DatasourceConfig(name="opaque_ds", type="sqlite", database=db_path)
+            model = next(m for m in ingest_datasource(datasource=ds) if m.name == "t")
+            by_name = {c.name: c for c in model.columns}
+
+            # Opaque: explicit UNKNOWN + raw DB type retained.
+            assert by_name["payload"].type is DataType.UNKNOWN
+            assert by_name["payload"].db_type == "JSON"
+
+            # Mapped types are untouched and carry no db_type.
+            assert by_name["name"].type is DataType.TEXT
+            assert by_name["name"].db_type is None
+            assert by_name["id"].type is DataType.INT
+            assert by_name["id"].db_type is None
+            # bytea/BLOB is comparable — it must NOT be marked opaque.
+            assert by_name["blob_col"].type is DataType.TEXT
+            assert by_name["blob_col"].db_type is None
+
 
 class TestSqliteIngestionRoundTrip:
     """End-to-end: introspect a real SQLite table and confirm narrow types."""
@@ -367,3 +489,278 @@ class TestSqliteIngestionRoundTrip:
             assert cols["ts"] is DataType.TIMESTAMP
             assert cols["d"] is DataType.DATE
             assert cols["b"] is DataType.BOOLEAN
+
+
+# ---------------------------------------------------------------------------
+# DEV-1538: SQLite affinity probe — fresh-ingest path
+# ---------------------------------------------------------------------------
+
+
+def _create_sqlite_db_with_typed_data(
+    tmpdir: str, schema_sql: str, inserts: list[tuple[str, list]]
+) -> str:
+    """Helper: build a SQLite file with the given DDL plus per-row typed
+    inserts. ``inserts`` is a list of ``(insert_sql, [params, ...])`` pairs
+    executed one row at a time so SQLite preserves the storage class.
+    """
+    import sqlite3
+
+    db_path = os.path.join(tmpdir, "live.db")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(schema_sql)
+        for sql, rows in inserts:
+            for row in rows:
+                conn.execute(sql, row if isinstance(row, tuple) else (row,))
+        conn.commit()
+    finally:
+        conn.close()
+    return db_path
+
+
+class TestSqliteIngestionProbe:
+    """DEV-1538: ingest-time probe widens INT → DOUBLE/TEXT based on actual
+    stored values, not declared affinity."""
+
+    def test_widens_int_to_double_on_mixed_real_storage(self) -> None:
+        from slayer.core.format import NumberFormatType
+        from slayer.core.models import DatasourceConfig
+        from slayer.engine.ingestion import ingest_datasource
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = _create_sqlite_db_with_typed_data(
+                tmpdir,
+                'CREATE TABLE sensordata (id INTEGER PRIMARY KEY, tempstabidx INTEGER);',
+                [
+                    ('INSERT INTO sensordata VALUES (?, ?)', [
+                        (1, 1), (2, 2), (3, 3),
+                        (4, 0.99), (5, 0.943), (6, 0.969),
+                    ]),
+                ],
+            )
+            ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+            models = ingest_datasource(datasource=ds)
+            model = next(m for m in models if m.name == "sensordata")
+            col = next(c for c in model.columns if c.name == "tempstabidx")
+            assert col.type is DataType.DOUBLE
+            assert col.format is not None
+            assert col.format.type is NumberFormatType.FLOAT
+
+    def test_keeps_int_on_pure_integer_storage(self) -> None:
+        from slayer.core.format import NumberFormatType
+        from slayer.core.models import DatasourceConfig
+        from slayer.engine.ingestion import ingest_datasource
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = _create_sqlite_db_with_typed_data(
+                tmpdir,
+                'CREATE TABLE t (id INTEGER PRIMARY KEY, qty INTEGER);',
+                [
+                    ('INSERT INTO t VALUES (?, ?)', [
+                        (1, 10), (2, 20), (3, 30),
+                    ]),
+                ],
+            )
+            ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+            models = ingest_datasource(datasource=ds)
+            model = next(m for m in models if m.name == "t")
+            col = next(c for c in model.columns if c.name == "qty")
+            assert col.type is DataType.INT
+            assert col.format is not None
+            assert col.format.type is NumberFormatType.INTEGER
+
+    def test_widens_int_to_text_on_non_coercible_text_storage(self) -> None:
+        from slayer.core.models import DatasourceConfig
+        from slayer.engine.ingestion import ingest_datasource
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = _create_sqlite_db_with_typed_data(
+                tmpdir,
+                'CREATE TABLE t (id INTEGER PRIMARY KEY, status INTEGER);',
+                [
+                    ('INSERT INTO t VALUES (?, ?)', [
+                        (1, 1), (2, "abc"), (3, "xyz"),
+                    ]),
+                ],
+            )
+            ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+            models = ingest_datasource(datasource=ds)
+            model = next(m for m in models if m.name == "t")
+            col = next(c for c in model.columns if c.name == "status")
+            assert col.type is DataType.TEXT
+            assert col.format is None
+
+    def test_widens_int_to_double_on_coercible_text_storage(self) -> None:
+        from slayer.core.format import NumberFormatType
+        from slayer.core.models import DatasourceConfig
+        from slayer.engine.ingestion import ingest_datasource
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = _create_sqlite_db_with_typed_data(
+                tmpdir,
+                'CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER);',
+                [
+                    ('INSERT INTO t VALUES (?, ?)', [
+                        (1, "1"), (2, "2.5"), (3, "1e3"),
+                    ]),
+                ],
+            )
+            ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+            models = ingest_datasource(datasource=ds)
+            model = next(m for m in models if m.name == "t")
+            col = next(c for c in model.columns if c.name == "v")
+            assert col.type is DataType.DOUBLE
+            assert col.format is not None
+            assert col.format.type is NumberFormatType.FLOAT
+
+    def test_non_sqlite_ingest_skips_probe(self) -> None:
+        """For a DuckDB-backed datasource the probe must never fire, even
+        when the SA-derived type lands on INT. We assert this by patching
+        the probe helper to raise — if the probe runs, the test errors;
+        if it's correctly skipped, ingest succeeds."""
+        from unittest.mock import patch
+
+        from slayer.core.models import DatasourceConfig
+        from slayer.engine.ingestion import ingest_datasource
+
+        pytest.importorskip("duckdb")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "live.duckdb")
+            import duckdb
+            con = duckdb.connect(db_path)
+            con.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, qty INTEGER)")
+            con.execute("INSERT INTO t VALUES (1, 10), (2, 20)")
+            con.close()
+
+            ds = DatasourceConfig(
+                name="ds", type="duckdb", database=db_path,
+            )
+            with patch(
+                "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+                side_effect=AssertionError("probe must not run on DuckDB"),
+            ):
+                models = ingest_datasource(datasource=ds)
+            assert any(m.name == "t" for m in models)
+
+    def test_probe_failure_keeps_int_logs_warning(self, caplog) -> None:
+        """If the probe raises for any reason, fall back to the SA-derived
+        INT type and log one WARNING. Ingest does not abort.
+
+        The probe contract: ``probe_sqlite_integer_column`` itself catches
+        exceptions and returns None after logging WARNING. We exercise that
+        path by patching the inner query executor so the probe SQL raises.
+        """
+        from unittest.mock import patch
+        import logging as _logging
+
+        from slayer.core.models import DatasourceConfig
+        from slayer.engine.ingestion import ingest_datasource
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = _create_sqlite_db_with_typed_data(
+                tmpdir,
+                'CREATE TABLE t (id INTEGER PRIMARY KEY, qty INTEGER);',
+                [
+                    ('INSERT INTO t VALUES (?, ?)', [(1, 10), (2, 20)]),
+                ],
+            )
+            ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+            # Make the probe actually fail (not pretend by returning None).
+            # The contract: the helper itself catches + warns + returns None,
+            # so the caller never sees an exception.
+            models = []
+            with patch(
+                "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+                side_effect=RuntimeError("simulated probe failure"),
+            ):
+                with caplog.at_level(_logging.WARNING):
+                    try:
+                        models = ingest_datasource(datasource=ds)
+                    except RuntimeError as exc:
+                        pytest.fail(
+                            f"ingest_datasource must tolerate probe exceptions "
+                            f"(catch + warn + keep declared INT). Got: {exc}"
+                        )
+            model = next(m for m in models if m.name == "t")
+            col = next(c for c in model.columns if c.name == "qty")
+            assert col.type is DataType.INT
+            warnings = [r for r in caplog.records if r.levelno == _logging.WARNING]
+            assert any("probe" in r.getMessage().lower() for r in warnings)
+
+    def test_dotted_alias_not_passed_to_probe(self) -> None:
+        """``_sqlite_probe_integer_columns`` must skip aliases containing
+        '.' — dotted aliases are joined-column references that belong to
+        the target model's own probe pass, not the source table's."""
+        from unittest.mock import patch
+
+        from slayer.engine.ingestion import _sqlite_probe_integer_columns
+
+        # Build a dummy SA engine just so the helper's dialect check passes.
+        sa_engine = sa.create_engine("sqlite:///:memory:")
+        with sa_engine.connect() as conn:
+            conn.execute(sa.text('CREATE TABLE t (qty INTEGER)'))
+            conn.commit()
+
+        seen_columns: list[str] = []
+
+        def _capture(*, conn, table, column, schema=None):
+            seen_columns.append(column)
+            return DataType.INT
+
+        with patch(
+            "slayer.sql.sqlite_introspect.probe_sqlite_integer_column",
+            side_effect=_capture,
+        ):
+            # Mixed bag: one base column (no '.') and one dotted alias.
+            columns = [
+                ("qty", DataType.INT, False, False, None),
+                ("customers.region_id", DataType.INT, False, False, None),
+            ]
+            _sqlite_probe_integer_columns(
+                sa_engine=sa_engine,
+                sql_table="t",
+                columns=columns,
+            )
+
+        # The dotted alias must never be passed to the probe.
+        assert "qty" in seen_columns
+        assert "customers.region_id" not in seen_columns
+        sa_engine.dispose()
+
+    def test_joined_column_probed_via_owning_model(self) -> None:
+        """DEV-1538 + Codex #9 restated: each table's columns are probed
+        when that table is ingested as its own model. Joined references to
+        another table's column inherit the probed type via the FK target's
+        persisted column — they aren't re-probed on the source side."""
+        from slayer.core.models import DatasourceConfig
+        from slayer.engine.ingestion import ingest_datasource
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = _create_sqlite_db_with_typed_data(
+                tmpdir,
+                """
+                CREATE TABLE measurements (
+                    id INTEGER PRIMARY KEY,
+                    weight INTEGER  -- declared INT, stores mostly REAL
+                );
+                CREATE TABLE observations (
+                    id INTEGER PRIMARY KEY,
+                    measurement_id INTEGER REFERENCES measurements(id)
+                );
+                """,
+                [
+                    ('INSERT INTO measurements VALUES (?, ?)', [
+                        (1, 0.5), (2, 0.7), (3, 0.9), (4, 1),
+                    ]),
+                    ('INSERT INTO observations VALUES (?, ?)', [
+                        (1, 1), (2, 2),
+                    ]),
+                ],
+            )
+            ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+            models = ingest_datasource(datasource=ds)
+            measurements = next(m for m in models if m.name == "measurements")
+            weight_col = next(c for c in measurements.columns if c.name == "weight")
+            # FK target's own model carries the probed type.
+            assert weight_col.type is DataType.DOUBLE

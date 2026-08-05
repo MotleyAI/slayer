@@ -63,6 +63,26 @@ goes through host-filter classification. `shared_grain_slots` is the set of host
 dimension/time-dimension slots reachable from the target, used to LEFT JOIN the
 CTE back without changing cardinality.
 
+### Rerooting the aggregate's embedded references (`reroot_aggregate_key`)
+
+When the forward `_cm_*` CTE (`_render_cross_model_cte`), its HAVING route, and
+the re-rooted-plan formula (`_local_agg_formula`) render a cross-model aggregate
+in its target scope, every reference embedded in the `AggregateKey` — the
+`source`, positional `args` (e.g. the `first`/`last` explicit time arg), keyword
+`kwargs` values (e.g. `weighted_avg(weight=…)`), and `column_filter_key` — must
+be re-anchored from the query root's coordinate system to the target's. This is
+one symmetric transform, `slayer.core.keys.reroot_aggregate_key(key, *,
+target_path)` (DEV-1707), which prefix-strips `target_path` off each ref's join
+path and keeps the residual (`('customers','regions')` under target
+`('customers',)` → `('regions',)`; an exact match → local). `column_filter_key`
+is owner-anchored (stamped against the model that owns the filtered column) and
+therefore invariant under reroot — it is carried through unchanged. A time arg
+left with a *residual* path after reroot (a hop past the target) is a
+[DEV-1526](https://linear.app/motley-ai/issue/DEV-1526) Stage-4 gap: the isolated
+CTE does not yet pull that deeper join, so `_resolve_explicit_time_col` raises
+for the derived-column case and the scope-closure validator catches the
+bare-column case.
+
 ## Strategy 2: re-rooting (the deviation)
 
 `IsolatedCteCrossModelPlanner` alone is insufficient. When the host query carries
@@ -117,41 +137,91 @@ path for a permutation" the redesign set out to eliminate. It works and is
 tested, but it is the place a future reviewer should look first when reasoning
 about cross-model behavior.
 
-## Strategy 3: filtered-local isolation (DEV-1503)
+## Strategy 3: host-rooted isolation — any crossing input (DEV-1503, widened by DEV-1709)
 
-A **cross-model-FILTERED local measure** is a host aggregate whose `Column.filter`
-references a joined table — `loss_payment_amt:sum` where `loss_payment_amt` has
-`filter="loss_payment.has_flag = 1"`. The aggregate's `source.path` is empty
-(it's a local column), but its `column_filter_key.referenced_join_paths` is
-non-empty, so emitting it inline in the host base SELECT would pull the
-filter-target join into the host's FROM. With **two** such measures whose
-filter targets are different INNER joins, the host base would intersect to
-only the rows present in BOTH targets — silently corrupting both aggregates.
+A LOCAL aggregate (empty `source.path`) isolates into a **host-rooted** CTE
+when **any** of its inputs crosses a join (Law 3, DEV-1703 D1/D2):
+
+- its `Column.filter` references a joined table — the original DEV-1503
+  case (`loss_payment_amt:sum` with `filter="loss_payment.has_flag = 1"`),
+  read from the bind-time `column_filter_key.referenced_join_paths`;
+- its **source `Column.sql`** crosses a join (`region_pay` with
+  `sql="customers__regions.payment_amount"`, single-dot forms, and sibling
+  derived chains);
+- a **positional arg** crosses — including the explicit first/last time arg
+  (`amount:last(customers.signup_at)` and derived variants);
+- a **kwarg** crosses — a column ref (`weighted_avg(weight=customers.w)` or
+  a crossing derived column), a user-supplied template-fragment string, or
+  a non-overridden model-default `AggregationParam.sql` fragment.
+
+The non-filter kinds are computed plan-time by
+`slayer/engine/aggregate_input_paths.py::compute_aggregate_input_join_paths`
+(the same parse → derived-expansion → root-scope-walk pipeline the filter
+scan uses; an unparseable template fragment contributes nothing — parity
+with the filter scan's defensive fallback). Without isolation, a crossing
+input emitted inline in the host base SELECT would pull its join into the
+host's FROM: two measures whose filter targets are different INNER joins
+would intersect the base to rows present in BOTH targets, and any 1:N
+crossing join would **multiply the host rows seen by sibling measures** —
+the sibling-protection guarantee is the point of Law 3. The crossing
+measure itself keeps multiply-per-match semantics inside its CTE (F1
+decision — 1:N semantics unchanged, only the scope moved).
 
 The trigger predicate is structural:
-`agg_path` non-empty (forward cross-model) **OR**
-`column_filter_key.referenced_join_paths` non-empty (filtered-local). Both
-route through `IsolatedCteCrossModelPlanner.plan`; the filtered-local branch
-calls `_plan_filtered_local`, which builds a **host-rooted** nested
-`PlannedQuery` (same `source_model`, same dims/TDs, only the filtered measure
-as the single aggregate) and attaches it via the same
-`rerooted_plan` / `rerooted_grain_pairs` / `rerooted_agg_slot_id` slots the
-re-rooted path uses. The plan carries `cte_root_model = host_model.name` as
-the disambiguator the renderer reads; `_render_rerooted_cross_model_cte`
-short-circuits the source-model swap when `cte_root_model` is set.
+`agg_path` non-empty (forward cross-model, target-rooted) **OR** any
+crossing input (host-rooted). Both route through
+`IsolatedCteCrossModelPlanner.plan`; the host-rooted branch
+calls `_plan_filtered_local`, which rebuilds the measure's formula text
+via `_local_agg_formula` (round-trip-tested for every input shape) into a
+**host-rooted** nested `PlannedQuery` (same `source_model`, same dims/TDs,
+only the crossing measure as the single aggregate) and attaches it via the
+same `rerooted_plan` / `rerooted_grain_pairs` / `rerooted_agg_slot_id`
+slots the re-rooted path uses. The plan carries
+`cte_root_model = host_model.name` as the disambiguator the renderer
+reads; `_render_rerooted_cross_model_cte` short-circuits the source-model
+swap when `cte_root_model` is set. Isolation is strictly
+per-`AggregateKey`-slot: identical keys intern to one slot and share one
+CTE; distinct keys get distinct CTEs (cross-CTE merging is DEV-1688 /
+`may_inline` territory).
 
 ```mermaid
 flowchart TB
-    detect["column_filter_key.referenced_join_paths non-empty?"]
+    detect["any crossing input?\n(filter / source sql / arg / kwarg)"]
     detect -->|yes| build["_plan_filtered_local builds host-rooted SlayerQuery"]
     build --> replan["subplan_builder(rerooted_query, bundle)"]
     replan --> attach["attach with cte_root_model = host.name"]
     attach --> gen["generator: _render_rerooted_cross_model_cte (host-rooted branch)"]
 ```
 
-`subplan_builder` always passes `disable_dev1503_isolation=True` so the
-recursive `plan_query` call inside the sub-plan does NOT re-trigger isolation
-on the same measure.
+`subplan_builder` always passes `disable_host_rooted_isolation=True`
+(DEV-1709 rename of `disable_dev1503_isolation`) so the recursive
+`plan_query` call inside the sub-plan does NOT re-trigger isolation on the
+same measure — inside the CTE the crossing inputs render inline
+(base-pull), which is legal there because the CTE is the aggregate's own
+scope. The flag never affects target-rooted isolation.
+
+### Composite lowering (F3)
+
+In an AGGREGATE-phase composite (`a:sum + b:sum`, `coalesce(a:sum, 0)`),
+each **crossing leaf** isolates individually (the leaves are hidden
+aggregate slots that traverse the same trigger loop); local leaves stay in
+`_base`; the composite expression renders only in the combined SELECT via
+the leaves' projected aliases. This holds for projected composites,
+filter-only composites (routed to the outer WHERE), and order-only
+aggregate refs.
+
+### Law 2 inside the ranked scope
+
+The first/last ranked subquery re-exports only `source_relation.*` plus
+rank/`_td`/`_dim` columns, so any crossing expression the outer SELECT
+consumes — an aggregate SOURCE or a column-ref KWARG value — is
+materialised as a `_val_<n>` projection inside the subquery
+(`_build_first_last_base_select`, mirroring the Stage-4 CTE path). The
+projection is the **resolved** value (qualified, with the `Column.type`
+inner CAST for non-bare expressions), so `SUM(CAST(x AS t))` semantics are
+preserved and same-sql-different-type aggregates keep distinct
+materialisations; HAVING and composite consumers bind to the same alias
+via `FirstLastRenderState.value_alias_by_sql` (keyed by resolved text).
 
 ### Filter routing for filtered-local
 
@@ -191,6 +261,67 @@ public projection trims them out.
 aggregated column renders as `SUM(CASE WHEN <filter> THEN <col> END)`. See
 [SQL generation](sql-generation.md).
 
+### The forward CTE is a `ScopeFrame` (DEV-1708, DEV-1703 Stage 4)
+
+`_render_cross_model_cte` builds one `ScopeFrame` rooted at the target relation
+and routes **every** expression it renders — the rerooted aggregate source,
+positional args, column-ref kwargs, `Column.filter`, shared-grain dimensions,
+target-model filters, and routed host WHERE/HAVING filters — through
+`resolve()` (Law 1). Each `resolve` anchors the ref at the target and registers
+the joins it crosses into the CTE's single ordered `join_paths` set, from which
+the CTE `FROM` is built. Discovery can no longer be forgotten per carrier: a
+cross-model aggregate whose target column's `Column.sql` crosses a *further*
+join (`customers.deep_pop:sum` where `deep_pop` is `regions.population`) now
+pulls that `LEFT JOIN regions` into the `_cm_*` CTE, and a parametric-agg
+column-ref kwarg naming a derived target column expands through the scope
+instead of emitting a bare, non-existent column. Routed WHERE/HAVING filters
+register their joins in a **pre-pass** that walks the full `ValueKey` tree
+(nested arithmetic/boolean/IN operands + aggregate leaves' source/args/kwargs/
+`column_filter`) before the `FROM` is built, so a HAVING — rendered later, once
+the ranked-subquery rank columns exist — still contributes its joins.
+
+**First/last value materialization (Law 2).** When the CTE wraps its rows in a
+`ROW_NUMBER`-ranked subquery and the first/last **source value** crosses a join,
+the crossing value is materialized as a `_val_<n>` projection *inside* the
+subquery and the outer `MAX(CASE WHEN _last_rn = 1 THEN _val_<n> END)` references
+the alias — a raw crossing ref there is bound only inside the subquery. A HAVING
+on the same aggregate binds the same alias. The **shared grain** obeys the same
+law (DEV-1728): a crossing derived grain is materialized as a `_val_<n>`
+projection inside the subquery, the outer `SELECT`/`GROUP BY` reference the
+alias, and `PARTITION BY` keeps the raw expression (evaluated where the join is
+bound). `generate_from_planned` installs one generation-wide `AliasAllocator`
+(save/restore) so inline forward CTEs, grain projections, and the host base
+never collide on `_val_<n>`; the CTE reserves the target's physical column names
+so a minted alias never shadows a `target.*` column.
+
+### Derived shared-grain rendering (DEV-1728)
+
+A cross-model aggregate can be grouped by a joined **derived** dimension
+(`{"dimensions": ["customers.rev_x2"], "measures": ["customers.revenue:sum"]}`,
+where `rev_x2` is a `Column.sql` on `customers`). The grain loop expands the
+derived column's `Column.sql` rooted at the target relation, adds it to the CTE
+`SELECT` + `GROUP BY` under the **dotted** host alias
+(`orders.customers.rev_x2` — the same alias the host base projects since
+DEV-1713), and joins back null-safe. A derived expression that crosses a
+*further* join (`deep_pop` = `regions.population`) pulls that join into the CTE
+`FROM` via the same `ScopeFrame` machinery the derived-time-dimension grain uses;
+a plain derived grain is wrapped in the same `CAST(... AS <type>)` the host base
+applies so the join-back compares identically-typed values. Only an
+**intermediate-hop** grain (a grain on a middle hop of a multi-hop aggregate
+target path) is still unrendered — it raises the same 7b.12 `NotImplementedError`
+a base column on an intermediate hop does.
+
+### Null-safe grain join-back
+
+The combined-SELECT `LEFT JOIN _cm_* ON` grain equality uses a dialect-aware
+null-safe predicate (`SqlDialect.build_null_safe_eq`): `IS NOT DISTINCT FROM`
+on Postgres/DuckDB/Snowflake/BigQuery/Trino/Presto/Databricks/Spark/ClickHouse,
+`<=>` on MySQL, bare `IS` on SQLite (the native form needs SQLite ≥3.39), and
+the expanded `a = b OR (a IS NULL AND b IS NULL)` on T-SQL/Oracle/Redshift. A
+plain `=` would yield `NULL` for `NULL = NULL`, so a NULL dimension value or a
+nullable truncated time grain would drop its joined-back aggregate; the
+null-safe form retains it.
+
 ## Known limitations (documented, not blocking)
 
 - A host-local filter on a **no-dimension** cross-model-agg query is applied
@@ -205,8 +336,17 @@ aggregated column renders as `SUM(CASE WHEN <filter> THEN <col> END)`. See
   collision bug; the new path keeps the suffix. This violates **P10** for this
   one combination and is tested structurally, not by parity. See
   [the deviations list](index.md#deviations-from-the-plan).
-- `weighted_avg(weight=qty)` / `corr(other=qty)` cross-model semantics (a
-  host-local weight column evaluated inside the target CTE) are not supported.
+- A cross-model parametric-agg kwarg naming a **target** column
+  (`customers.revenue:weighted_avg(weight=customers.qty)`) is supported and
+  expands through the CTE `ScopeFrame` (DEV-1708). The kwarg must be
+  **relation-qualified** — a bare `weight=qty` resolves against the host by DSL
+  rule and raises at bind time. A *host-local* weight column evaluated inside
+  the target CTE remains unsupported.
+- A **shared-grain dimension on an intermediate hop** of a multi-hop aggregate
+  target path (base or derived) raises the 7b.12 `NotImplementedError` — use the
+  terminal-target path or pull the dimension to the host base. (A plain derived
+  grain on the *terminal* target path is fully rendered — see
+  [Derived shared-grain rendering](#derived-shared-grain-rendering-dev-1728).)
 
 ## Design rationale
 

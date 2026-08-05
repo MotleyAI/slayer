@@ -8,6 +8,7 @@ when the typed pipeline took over; their coverage now lives in
 ``test_transforms_planner.py`` (bind-time validation),
 ``test_transform_lowerer.py`` (change/change_pct desugar),
 ``test_named_measures.py`` (named-measure expansion, end-to-end),
+``test_model_measure_expansion.py`` (bind-time expansion, cycles, scoping),
 ``test_measure_expansion.py`` (expansion eligibility), and
 ``test_schema_drift_typed.py`` / ``test_memories_resolver_typed.py`` (typed
 ref-walk path extraction).
@@ -173,21 +174,20 @@ class TestParseFilterInjection:
         result = parse_filter("customers.email not like '%spam.com'")
         assert "customers.email NOT LIKE '%spam.com'" in result.sql
 
-    # --- DEV-1378: hygiene-call LHS for LIKE / NOT LIKE ---------------------
+    # --- Scalar-call LHS for LIKE / NOT LIKE --------------------------------
 
-    def test_like_hygiene_call_lhs(self) -> None:
-        """``lower(name) like 'a%'`` and friends must parse — DEV-1378
-        added hygiene scalars but the LIKE preprocessor only matched
-        bare/dotted identifiers, so call LHS surfaced as a syntax error."""
+    def test_like_scalar_call_lhs(self) -> None:
+        """``lower(name) like 'a%'`` and friends — LIKE preprocessor must
+        match scalar calls on the LHS, not just bare/dotted identifiers."""
         result = parse_filter("lower(name) like 'a%'")
         assert "lower(name) LIKE 'a%'" in result.sql
 
-    def test_not_like_hygiene_call_lhs(self) -> None:
+    def test_not_like_scalar_call_lhs(self) -> None:
         result = parse_filter("trim(email) not like '%@test.com'")
         assert "trim(email) NOT LIKE '%@test.com'" in result.sql
 
-    def test_like_hygiene_call_dotted_arg(self) -> None:
-        """The hygiene call's argument itself can be a dotted ref."""
+    def test_like_scalar_call_dotted_arg(self) -> None:
+        """The scalar call's argument can be a dotted ref."""
         result = parse_filter("lower(customers.email) like '%@motley.ai'")
         assert "lower(customers.email) LIKE '%@motley.ai'" in result.sql
 
@@ -543,13 +543,29 @@ class TestStringHygieneFilters:
         pf = parse_filter("note = 'lower(x)'")
         assert pf.sql == "note = 'lower(x)'"
 
-    def test_uppercase_function_name_rejected(self) -> None:
-        # Casing is lowercase-only — consistent with existing transform names.
-        with pytest.raises(ValueError, match="Unknown filter function 'LOWER'"):
-            parse_filter("LOWER(name) = 'eu'")
+    def test_uppercase_function_name_accepted(self) -> None:
+        # SCALAR_PASSTHROUGH lookup is case-insensitive, matching the
+        # formula-side policy. The user-written casing is preserved on
+        # emission so sqlglot can re-spell per dialect.
+        pf = parse_filter("LOWER(name) = 'eu'")
+        assert "LOWER(name)" in pf.sql
 
-    def test_substring_synonym_rejected(self) -> None:
-        # The canonical name is ``substr`` (SQLite spelling); ``substring``
-        # is an unknown DSL function.
-        with pytest.raises(ValueError, match="Unknown filter function 'substring'"):
-            parse_filter("substring(s, 1, 5) = 'abcde'")
+    def test_substring_synonym_accepted(self) -> None:
+        # Both ``substr`` (SQLite) and ``substring`` (Postgres/ANSI) are
+        # in the unified SCALAR_PASSTHROUGH set.
+        pf = parse_filter("substring(s, 1, 5) = 'abcde'")
+        assert "substring(s, 1, 5)" in pf.sql
+
+
+class TestUnifiedScalarPassthrough:
+    """The canonical SCALAR_PASSTHROUGH set drives the retained filter
+    surface. The formula-side half of this class was deleted with the legacy
+    parser; the typed parser's allowlist is covered by
+    ``test_syntax.py::TestScalarFunctions`` and
+    ``test_keys.py::TestScalarFunctionsAllowlist``."""
+
+    def test_filter_uses_same_set(self) -> None:
+        # The filter walker consults SCALAR_PASSTHROUGH so things like
+        # coalesce / greatest are accepted in filters too.
+        pf = parse_filter("coalesce(name, 'unknown') = 'foo'")
+        assert "coalesce" in pf.sql.lower()

@@ -1,7 +1,7 @@
 """DEV-1428: all response models carry str ids.
 
 ``SaveMemoryResponse.memory_id`` and ``ForgetMemoryResponse.deleted_id``
-flip to ``str``; ``MemoryHit.id`` / ``ExampleQueryHit.id`` also flip.
+flip to ``str``; ``SearchHit.id`` also carries a str id for memory hits.
 """
 
 from __future__ import annotations
@@ -49,9 +49,10 @@ class TestStringIds:
             learning="orders revenue", entities=["mydb.orders.amount"],
         )
         svc = SearchService(storage=storage)
-        resp = await svc.search(entities=["mydb.orders.amount"])
-        assert resp.memories
-        assert isinstance(resp.memories[0].id, str)
+        resp = await svc.search(entities=["mydb.orders.amount"], max_results=20)
+        memory_hits = [h for h in resp.results if h.kind == "memory" and h.query is None]
+        assert memory_hits
+        assert isinstance(memory_hits[0].id, str)
 
     async def test_example_query_hit_id_is_str(
         self, storage: StorageBackend,
@@ -66,6 +67,7 @@ class TestStringIds:
             query=attached,
         )
         svc = SearchService(storage=storage)
-        resp = await svc.search(entities=["mydb.orders.amount"])
-        assert resp.example_queries
-        assert isinstance(resp.example_queries[0].id, str)
+        resp = await svc.search(entities=["mydb.orders.amount"], max_results=20)
+        example_query_hits = [h for h in resp.results if h.kind == "memory" and h.query is not None]
+        assert example_query_hits
+        assert isinstance(example_query_hits[0].id, str)

@@ -136,17 +136,53 @@ Nothing to add — the underlying measure is already directly queryable.
 
 All three fold into a `ModelMeasure` on the source semantic model. Inputs are referenced by **bare ModelMeasure name**, so the formula parser resolves them locally:
 
-- **Derived**: `formula: "metric_a + metric_b"`
-- **Ratio**: `formula: "numerator / denominator"`
-- **Cumulative (unbounded)**: `formula: "cumsum(measure_name)"`
+- **Derived**: `formula: "metric_a + metric_b"`. An `offset_window` on a single-aggregate input (a measure or simple metric) lowers to a `time_shift`: a `1 month` offset becomes `time_shift(metric_a, -1, 'month')`.
+- **Ratio**: `formula: "numerator / nullif(denominator, 0)"` — the denominator is NULL-guarded to prevent divide-by-zero.
+- **Cumulative (unbounded)**: `formula: "cumsum(measure_name)"`.
 
-#### Unconverted metrics
+#### Supported mappings
 
-Some dbt metrics cannot be expressed as a `ModelMeasure`. They are reported in `ConversionResult.unconverted_metrics` and printed with an `UNCONVERTED` tag. Categories:
+Every legal dbt construct that reaches the importer is either represented exactly or [failed cleanly](#clean-fail-and-unsupported). Represented exactly:
 
-- **Cumulative with window or grain_to_date**: SLayer's `cumsum` is unbounded.
-- **Conversion metrics**: entity-based sequential event tracking is not supported.
-- **Transform-name shadowing**: a dbt measure or metric named after a SLayer transform (`cumsum`, `lag`, `lead`, `change`, `change_pct`, `time_shift`, `rank`, `percent_rank`, `dense_rank`, `ntile`, `first`, `last`) is rejected — using it bare in a formula would shadow the transform.
+| dbt construct | SLayer representation |
+| --- | --- |
+| Measure `agg: sum/avg/min/max/count/count_distinct/median` | `ModelMeasure` `col:<agg>` |
+| Measure `agg: percentile` (continuous) | `col:percentile(p=<value>)` |
+| Measure `agg: count_distinct_approx` | `col:count_distinct_approx` (dialect-aware) |
+| Measure `agg: sum_boolean` | `Column.sql = "CASE WHEN (<expr>) THEN 1 ELSE 0 END"`, type `INT`, `col:sum` |
+| Metric-level / per-input `filter` | pushed down into a leaf `Column.filter` (CASE-inside-aggregate) |
+| Filter as string **or** list (`WhereFilterIntersection`) | AND-joined into one filter |
+| Ratio metric | `num / nullif(den, 0)` |
+| Derived metric | `ModelMeasure` formula over inputs |
+| Derived input `offset_window` (single aggregate) | `time_shift(input, -<count>, '<grain>')` (plural grains normalized) |
+| Unbounded cumulative | `cumsum(measure)` |
+| `config.meta`, semantic-model `label` | carried onto the corresponding entity's `meta` |
+
+#### Clean-fail and unsupported
+
+Constructs that cannot be expressed exactly are **failed cleanly** — never converted to approximate or wrong SQL. Each is routed to the conversion report with a category, severity, and documented workaround, and the raw construct is stashed into the owning entity's `meta` so nothing is silently lost.
+
+| dbt construct | Why | Workaround |
+| --- | --- | --- |
+| Cumulative `window` (rolling) | Query-grain-dependent re-aggregation | Use `cumsum(measure)` for an unbounded total |
+| Cumulative `grain_to_date` | Reset-at-grain can't bake into a saved measure | `cumsum(measure)` + put the grain dimension in the query |
+| Cumulative `period_agg` ≠ `first` | Only the default running total is exact | Use the default `period_agg` |
+| Derived input `offset_to_grain` | No truncate-to-grain shift transform | Use `cumsum(...)` + grain dimension |
+| `offset_window` on a ratio/derived input | Multi-aggregate offset isn't exactly expressible | Restructure as a multi-stage `source_queries` model |
+| Non-standard granularity (e.g. `fortnight`) | Not a SLayer granularity | Use day/week/month/quarter/year |
+| `non_additive_dimension` (semi-additive) | Not exactly expressible | `balance:last(<time>)` / `first(...)`, or a multi-stage query |
+| Discrete / approximate percentile flags | Only continuous-exact `PERCENTILE_CONT` is supported | Drop `use_discrete_percentile` / `use_approximate_percentile` |
+| Conversion metrics (funnel) | Sequential-event SQL unsupported | Express the funnel as a multi-stage query |
+| `join_to_timespine` / `fill_nulls_with` | No time-spine gap-filling | Remove the gap-fill request |
+| Measure-less simple metric (`metric_aggregation_params`) | Unsupported shape | Define an explicit measure |
+| Cross-model filter on an unreachable model | No join from the source model | Add the required join, or filter locally |
+| Transform-name shadowing | A measure/metric named after a transform (`cumsum`, `lag`, `lead`, `change`, `change_pct`, `time_shift`, `rank`, `percent_rank`, `dense_rank`, `ntile`, `first`, `last`) would shadow it | Rename the dbt measure/metric |
+
+Percentile/median measures on a dialect that lacks them (MySQL / T-SQL) import fine but get an **info** caveat — pass `target_dialect=` to surface it at import time.
+
+#### Conversion report
+
+`ConversionResult.render_report()` groups every clean-fail and caveat by category, each with the entity, severity (`unconverted` / `dropped` / `info`), reason, and workaround. `slayer import-dbt` prints this report plus a final tally (`N models, M unconverted, K dropped`).
 
 ## Filter Syntax Conversion
 
@@ -168,7 +204,7 @@ The converter resolves these to plain SLayer filter strings:
 
 The converter produces:
 1. **Model YAML files** (or rows in SQLite storage) — one per dbt semantic model. Every metric folds into a `ModelMeasure` on its source model.
-2. **Console report** — summary of models imported, unconverted metrics, and warnings.
+2. **Console report** — the [conversion report](#conversion-report) grouped by category, plus a final tally (`N models, M unconverted, K dropped`).
 
 ## Regular dbt Models (Hidden Import)
 

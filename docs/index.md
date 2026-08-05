@@ -57,6 +57,7 @@ One query, and SLayer handles:
 - **Cross-model measures** — Query measures from [joined models](examples/05_joined_measures/joined_measures.md) with dot syntax: `"customers.score:avg"`. Joins are auto-resolved by walking the model graph ([tutorial](examples/05_joins/joins.md)).
 - **[Multistage queries](examples/06_multistage_queries/multistage_queries.md)** — Use one query as the source for another, or save any query as a permanent model.
 - **Runtime model editing** — Add measures, dimensions, and joins through any interface. No rebuild, no restart.
+- **[Memories + semantic search](concepts/search.md)** — Persist free-form learnings tagged with canonical entities (`<datasource>.<model>.<column>`) and retrieve them alongside model / column discovery hits via a single `search` call. Three retrieval channels (BM25 over memory tags + Tantivy full-text + optional dense embeddings) are RRF-fused into one flat ranked list. Optional graph pre-filter via `cypher_filter` ([memories concept](concepts/memories.md)).
 - **Broad database support** — Integration-tested against Postgres, MySQL, ClickHouse, DuckDB, and SQLite. Others via sqlglot.
 
 ## Get started
@@ -74,7 +75,7 @@ Agent --> MCP / REST API / Python SDK
               |
          SlayerQueryEngine (resolves model definitions from storage)
               |
-         EnrichedQuery (resolved SQL expressions, model metadata)
+         PlannedQuery (typed value keys, slots, join paths, phases)
               |
          SQLGenerator (sqlglot AST --> dialect-aware SQL)
               |
@@ -83,6 +84,6 @@ Agent --> MCP / REST API / Python SDK
          SlayerResponse (data, columns, sql)
 ```
 
-**SlayerQuery** is what the user sends — names and references, no SQL. **EnrichedQuery** is the engine-internal form where every measure and dimension carries its resolved SQL, aggregation, and model context. New datasource adapters only need to translate EnrichedQuery.
+**SlayerQuery** is what the user sends — names and references, no SQL. **PlannedQuery** is the engine-internal form: every measure and dimension is a typed *value key* interned into a slot, carrying its resolved expression, aggregation, join path, and phase. New datasource adapters only need to translate PlannedQuery.
 
 Full concept docs: [Models](concepts/models.md) | [Queries](concepts/queries.md) | [Formulas](concepts/formulas.md)

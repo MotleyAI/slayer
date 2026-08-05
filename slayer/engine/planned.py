@@ -68,6 +68,7 @@ __all__ = [
     "SlotId",
     "TransformLayer",
     "ValueSlot",
+    "WindowedAggregatePlan",
 ]
 
 
@@ -243,6 +244,81 @@ class CrossModelAggregatePlan(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# WindowedAggregatePlan
+# ---------------------------------------------------------------------------
+
+
+class WindowedAggregatePlan(BaseModel):
+    """Plan for one duration-windowed aggregate slot (DEV-1714 Stage 10).
+
+    A windowed measure (``revenue:sum(window='90d')``) is a trailing rolling
+    aggregate: for each output bucket, SLayer sums source rows in the trailing
+    ``window`` interval ending at that bucket's end. It renders as a HOST-ROOTED
+    ``_wm_<model>__<measure>`` CTE — an inner ``_src`` self-join subquery joined
+    to ``_base`` on the query grain with an ``INTERVAL`` range predicate — then
+    LEFT-JOINed back to ``_base`` on the shared grain (same join-back machinery
+    as the cross-model ``_cm_*`` CTEs, so adding a windowed measure never
+    changes host cardinality).
+
+    The renderer looks up the aggregate ``ValueSlot`` (source column, ``agg``,
+    result ``type``, ``column_filter_key``) and the grain ``ValueSlot``s by id
+    from the owning ``PlannedQuery``; this plan carries the window duration, the
+    resolved window time-dimension slot + its granularity, the per-role grain
+    slot partition, and the WHERE-phase filter ids inherited into ``_src``.
+
+    Frame bounds are excluded from ``where_filter_ids`` so the trailing window
+    reaches rows before the visible frame starts (DEV-1732). A filter that is
+    only PARTLY a frame bound (``created_at >= X and status = 'paid'``) stays in
+    ``where_filter_ids`` and gets a ``src_filter_rewrites`` entry carrying the
+    residual — the population half — which the renderer substitutes for the
+    host's predicate.
+
+    Scope for Stage 10 is ``sum``/``avg`` local measures only; cross-model,
+    transform-combined, composite, hidden, and mixed-filter windowed shapes are
+    guarded loudly at plan time (DEV-1504 lifts those guards).
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    aggregate_slot_id: SlotId
+    agg: str
+    window_raw: str
+    window_parts: List[Tuple[int, str]]
+    window_time_dimension_slot_id: SlotId
+    window_granularity: str
+    dimension_slot_ids: List[SlotId] = Field(default_factory=list)
+    other_time_dimension_slot_ids: List[SlotId] = Field(default_factory=list)
+    grain_slot_ids: List[SlotId] = Field(default_factory=list)
+    where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    src_filter_rewrites: List["SrcFilterRewrite"] = Field(default_factory=list)
+    public_alias: Optional[str] = None
+    hidden: bool = False
+
+
+# ---------------------------------------------------------------------------
+# SrcFilterRewrite — DEV-1732
+# ---------------------------------------------------------------------------
+
+
+class SrcFilterRewrite(BaseModel):
+    """A ROW filter whose CTE-local form differs from the host's (DEV-1732).
+
+    Emitted when a filter is only PARTLY a frame bound, so it must still apply
+    inside the CTE but with its frame-bound conjuncts removed:
+    ``created_at >= '2024-06-01' and status = 'paid'`` becomes ``status =
+    'paid'``.
+
+    A filter that is ENTIRELY a frame bound needs no rewrite — the planner just
+    leaves its id out of ``where_filter_ids``.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    filter_id: BoundFilterId
+    expression: BoundExpr
+
+
+# ---------------------------------------------------------------------------
 # TransformLayer
 # ---------------------------------------------------------------------------
 
@@ -339,6 +415,7 @@ class PlannedQuery(BaseModel):
     row_slots: List[ValueSlot] = Field(default_factory=list)
     aggregate_slots: List[ValueSlot] = Field(default_factory=list)
     cross_model_aggregate_plans: List[CrossModelAggregatePlan] = Field(default_factory=list)
+    windowed_aggregate_plans: List["WindowedAggregatePlan"] = Field(default_factory=list)
     combined_expression_slots: List[ValueSlot] = Field(default_factory=list)
     transform_layers: List[TransformLayer] = Field(default_factory=list)
     filters_by_phase: List[FilterPhase] = Field(default_factory=list)
@@ -363,9 +440,26 @@ class PlannedQuery(BaseModel):
     # generator builds a synthetic model from the upstream schema) and for a
     # plain single-model query (the generator uses ``bundle.source_model``).
     render_source_model: Optional[SlayerModel] = None
+    # DEV-1543 — pass-through of ``SlayerQuery.distinct_dimension_values``. When
+    # ``False`` the generator skips the dim-only dedup GROUP BY and emits raw
+    # rows for a measure-less dimension query.
+    distinct_dimension_values: bool = True
+    # DEV-1732 — raw column keys of this stage's NON-HIDDEN time dimensions: the
+    # set of columns on which an explicit relational bound counts as a FRAME
+    # bound rather than a population filter. Computed once here so the windowed
+    # ``_src`` path (planner) and the ``time_shift`` shifted-CTE path
+    # (generator) cannot drift apart.
+    #
+    # Hidden ``TimeTruncKey`` slots are excluded deliberately: they are not
+    # equality-joined into ``_src`` (``_build_windowed_plans`` skips them), so
+    # stripping a bound on one would leave that axis unconstrained.
+    frame_bound_columns: List[ValueKey] = Field(default_factory=list)
 
 
 # ``CrossModelAggregatePlan.rerooted_plan`` is a forward reference to
 # ``PlannedQuery`` (defined above only after the CMA plan). Resolve it now
 # that both classes exist (DEV-1450 stage 7b.15e, C1).
 CrossModelAggregatePlan.model_rebuild()
+# ``WindowedAggregatePlan.src_filter_rewrites`` forward-references
+# ``SrcFilterRewrite``, declared just after it (DEV-1732).
+WindowedAggregatePlan.model_rebuild()

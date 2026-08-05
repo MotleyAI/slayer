@@ -11,7 +11,7 @@ import psycopg
 from pytest_postgresql import factories
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -129,6 +129,13 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
 
                 Column(name="total", sql="amount", type=DataType.DOUBLE),
                 Column(name="avg_amount", sql="amount", type=DataType.DOUBLE),
+                # DEV-1576: a genuine DOUBLE PRECISION expression column.
+                # ``amount`` is NUMERIC, so ``round(amount:sum, 2)`` works on
+                # Postgres natively; the non-bare DOUBLE-typed sql gets wrapped
+                # in CAST(... AS DOUBLE PRECISION), so SUM yields double and
+                # ``round(double precision, int)`` would fail without the
+                # PostgresDialect numeric-cast rewrite.
+                Column(name="amount_d", sql="amount * 1.0", type=DataType.DOUBLE),
             ],
         )
         customers_model = SlayerModel(
@@ -1182,3 +1189,403 @@ async def test_integration_postgres_cross_model_derived_columnsql(
     assert response.row_count == 2
     assert float(response.data[0]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
     assert float(response.data[1]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
+
+
+@pytest.mark.integration
+class TestPostgresDev1576Heals:
+    """DEV-1576 — round()/abs() execution (incl. the double-precision cast
+    path) and aggregation-alias healing against a real Postgres."""
+
+    async def test_round_two_args_over_double_executes(
+        self, pg_env: SlayerQueryEngine,
+    ) -> None:
+        # SUM(amount_d) = 875.0 (double precision); /8.0 = 109.375 → round 2.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "round(amount_d:sum / 8.0, 2)", "name": "r"}],
+        )
+        result = await pg_env.execute(query=query)
+        assert float(result.data[0]["orders.r"]) == pytest.approx(109.38)
+
+    async def test_round_one_arg_over_double_executes(
+        self, pg_env: SlayerQueryEngine,
+    ) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "round(amount_d:sum / 8.0)", "name": "r"}],
+        )
+        result = await pg_env.execute(query=query)
+        assert float(result.data[0]["orders.r"]) == pytest.approx(109.0)
+
+    async def test_abs_over_double_executes(self, pg_env: SlayerQueryEngine) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "abs(amount_d:sum - 1000.0)", "name": "a"}],
+        )
+        result = await pg_env.execute(query=query)
+        assert float(result.data[0]["orders.a"]) == pytest.approx(125.0)
+
+    async def test_count_distinct_alias_executes(
+        self, pg_env: SlayerQueryEngine,
+    ) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "status:countd"}],
+        )
+        result = await pg_env.execute(query=query)
+        assert result.data[0]["orders.status_count_distinct"] == 3
+
+    async def test_stddev_alias_executes(self, pg_env: SlayerQueryEngine) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "total:stddev"}],
+        )
+        result = await pg_env.execute(query=query)
+        # Sample stddev of [100,200,50,150,75,300] (mean 145.83) ≈ 92.76.
+        assert float(result.data[0]["orders.total_stddev_samp"]) == pytest.approx(
+            92.76, abs=0.1
+        )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1645: compiler must emit valid Postgres SQL.
+#   Flavor A — ORDER BY on an unprojected/renamed column.
+#   Flavor B — mixed-case identifiers (Column.sql, filters, JOIN ON) must be
+#              double-quoted so Postgres does not fold them to lowercase.
+# The models below deliberately write identifiers UNQUOTED (as an OTF agent
+# naturally would); the fix is what makes these queries execute.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _pg_dev1645_storage(postgresql_proc, tmp_path_factory):
+    conn, db_name = _create_module_db(postgresql_proc)
+    try:
+        cur = conn.cursor()
+        # Mixed-case column + mixed-case PK created via QUOTED DDL so their true
+        # stored case is genuinely mixed (Postgres would otherwise fold to lower).
+        cur.execute("""
+            CREATE TABLE clusters (
+                "CLSTR_PIN" INTEGER PRIMARY KEY,
+                score NUMERIC(10,2) NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE accounts (
+                id INTEGER PRIMARY KEY,
+                "StateFlag" TEXT NOT NULL,
+                acct_form TEXT NOT NULL,
+                clu_ref INTEGER REFERENCES clusters("CLSTR_PIN"),
+                created_at TIMESTAMP NOT NULL
+            )
+        """)
+        cur.executemany(
+            'INSERT INTO clusters ("CLSTR_PIN", score) VALUES (%s, %s)',
+            [(10, 1.5), (20, 2.5)],
+        )
+        cur.executemany(
+            "INSERT INTO accounts VALUES (%s, %s, %s, %s, %s)",
+            [
+                (1, "Dormant", "Bot", 10, "2024-01-15 10:00:00"),
+                (2, "Active", "Human", 20, "2024-02-20 11:00:00"),
+                (3, "Dormant", "Human", 10, "2024-03-01 09:00:00"),
+            ],
+        )
+        conn.commit()
+
+        storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("pg_dev1645")))
+        info = postgresql_proc
+        run_sync(storage.save_datasource(DatasourceConfig(
+            name="testpg", type="postgres", host=info.host, port=info.port,
+            database=db_name, username=info.user, password="",
+        )))
+
+        clusters_model = SlayerModel(
+            name="clusters", sql_table="clusters", data_source="testpg",
+            columns=[
+                # PK column name is mixed-case and written UNQUOTED in the model.
+                Column(name="CLSTR_PIN", sql="CLSTR_PIN", type=DataType.INT, primary_key=True),
+                Column(name="score", sql="score", type=DataType.DOUBLE),
+            ],
+        )
+        accounts_model = SlayerModel(
+            name="accounts", sql_table="accounts", data_source="testpg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                # Derived boolean referencing mixed-case StateFlag UNQUOTED (the
+                # fake_account_23 repro). Fix must emit "StateFlag".
+                Column(name="is_inactive", type=DataType.BOOLEAN,
+                       sql="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END"),
+                Column(name="acct_form", sql="acct_form", type=DataType.TEXT),
+                Column(name="clu_ref", sql="clu_ref", type=DataType.INT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+            # Join key CLSTR_PIN written UNQUOTED (the fake_account_15 repro).
+            joins=[ModelJoin(target_model="clusters", join_pairs=[["clu_ref", "CLSTR_PIN"]])],
+        )
+        run_sync(storage.save_model(clusters_model))
+        run_sync(storage.save_model(accounts_model))
+        yield storage
+    finally:
+        conn.close()
+        _drop_module_db(postgresql_proc, db_name)
+
+
+@pytest.fixture
+def pg_dev1645(_pg_dev1645_storage):
+    return SlayerQueryEngine(storage=_pg_dev1645_storage)
+
+
+@pytest.mark.integration
+class TestDev1645ValidPostgres:
+    async def test_flavor_b_mixed_case_column_sql_executes(
+        self, pg_dev1645: SlayerQueryEngine,
+    ) -> None:
+        """Filter on a derived column whose SQL references mixed-case StateFlag
+        (the fake_account_23 repro) — must execute, not raise UndefinedColumn."""
+        query = SlayerQuery(
+            source_model="accounts",
+            measures=[{"formula": "*:count", "name": "cnt"}],
+            filters=["is_inactive == True"],
+        )
+        result = await pg_dev1645.execute(query=query)
+        assert result.data[0]["accounts.cnt"] == 2  # two Dormant rows
+
+    async def test_flavor_b_mixed_case_join_key_executes(
+        self, pg_dev1645: SlayerQueryEngine,
+    ) -> None:
+        """Cross-model dimension across a join whose key is mixed-case CLSTR_PIN
+        (the fake_account_15 repro) — must execute."""
+        query = SlayerQuery(
+            source_model="accounts",
+            dimensions=[ColumnRef(name="score", model="clusters")],
+            measures=[{"formula": "*:count", "name": "cnt"}],
+        )
+        result = await pg_dev1645.execute(query=query)
+        by_score = {float(r["accounts.clusters.score"]): r["accounts.cnt"] for r in result.data}
+        assert by_score[1.5] == 2
+        assert by_score[2.5] == 1
+
+    async def test_flavor_a_orderby_nonprojected_column_executes(
+        self, pg_dev1645: SlayerQueryEngine,
+    ) -> None:
+        """Raw-row query ordering by a base column that is not in the projection
+        (the mental_healths_1 / organ_transplant_13 repro) — must execute."""
+        query = SlayerQuery(
+            source_model="accounts",
+            dimensions=[ColumnRef(name="acct_form")],
+            distinct_dimension_values=False,
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="desc")],
+        )
+        result = await pg_dev1645.execute(query=query)
+        assert result.row_count == 3
+
+    async def test_grouped_row_column_order_max_wrap_executes(
+        self, pg_dev1645: SlayerQueryEngine,
+    ) -> None:
+        """DEV-1703 Phase 1: a GROUPED query ordering by an unprojected LOCAL
+        row column materialises a hidden ``created_at:max`` wrap. Verified on
+        real Postgres — the shape must both execute and sort correctly.
+
+        Latest created_at per acct_form: Human 2024-03-01, Bot 2024-01-15 —
+        so descending puts Human first. The grain must stay one row per
+        acct_form, and the wrap must not surface in the response.
+        """
+        query = SlayerQuery(
+            source_model="accounts",
+            dimensions=[ColumnRef(name="acct_form")],
+            measures=[{"formula": "*:count", "name": "cnt"}],
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="desc")],
+        )
+        result = await pg_dev1645.execute(query=query)
+        assert [r["accounts.acct_form"] for r in result.data] == ["Human", "Bot"]
+        assert result.row_count == 2
+        assert all("created_at" not in c for c in result.columns), result.columns
+
+    async def test_ungrouped_joined_column_order_executes(
+        self, pg_dev1645: SlayerQueryEngine,
+    ) -> None:
+        """DEV-1703 Phase 1: a RAW-ROWS query ordering by a JOINED column pulls
+        the join (Law 1) and split-emits ``clusters.score``. Verified on real
+        Postgres — the split reference must bind, which is exactly what the
+        composite ``"clusters.score"`` form failed to do.
+
+        scores: account 1 -> 1.5, 2 -> 2.5, 3 -> 1.5; ascending by score then
+        id gives 1, 3, 2.
+        """
+        query = SlayerQuery(
+            source_model="accounts",
+            dimensions=[ColumnRef(name="id")],
+            distinct_dimension_values=False,
+            order=[
+                OrderItem(column=ColumnRef(name="score", model="clusters"), direction="asc"),
+                OrderItem(column=ColumnRef(name="id"), direction="asc"),
+            ],
+        )
+        result = await pg_dev1645.execute(query=query)
+        assert [r["accounts.id"] for r in result.data] == [1, 3, 2]
+        assert all("score" not in c for c in result.columns), result.columns
+
+
+# ---------------------------------------------------------------------------
+# DEV-1686: reserved-word model name executes live against Postgres.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _pg_reserved_storage(postgresql_proc, tmp_path_factory):
+    """Module-scoped Postgres DB with a reserved-word ("Grant") table joined to
+    "Merchant", plus a YAMLStorage with a `grant` model (reserved name) that
+    joins to `merchant`. Exercises DEV-1686 alias/qualifier + join_cond quoting
+    end-to-end."""
+    conn, db_name = _create_module_db(postgresql_proc)
+    try:
+        cur = conn.cursor()
+        cur.execute('CREATE TABLE "Merchant" (id INTEGER PRIMARY KEY, name TEXT NOT NULL)')
+        cur.execute("""
+            CREATE TABLE "Grant" (
+                id INTEGER PRIMARY KEY,
+                namespace TEXT NOT NULL,
+                amount NUMERIC(10,2) NOT NULL,
+                "merchantId" INTEGER REFERENCES "Merchant"(id),
+                created_at TIMESTAMP NOT NULL
+            )
+        """)
+        cur.executemany('INSERT INTO "Merchant" VALUES (%s, %s)',
+                        [(1, "Acme"), (2, "Globex")])
+        cur.executemany(
+            'INSERT INTO "Grant" VALUES (%s, %s, %s, %s, %s)',
+            [
+                (1, "org_a", 100, 1, "2024-01-15 10:00:00"),
+                (2, "org_a", 200, 1, "2024-01-20 11:00:00"),
+                (3, "org_b", 50, 2, "2024-02-10 09:00:00"),
+            ],
+        )
+        # A non-reserved root (usage) joining TO the reserved `grant` model —
+        # exercises join discovery + execution of a derived column that
+        # references a reserved joined model.
+        cur.execute("""
+            CREATE TABLE usage (
+                id INTEGER PRIMARY KEY,
+                grant_id INTEGER REFERENCES "Grant"(id),
+                qty INTEGER NOT NULL
+            )
+        """)
+        cur.executemany(
+            "INSERT INTO usage VALUES (%s, %s, %s)",
+            [(1, 1, 5), (2, 1, 3), (3, 3, 7)],
+        )
+        conn.commit()
+
+        tmpdir = str(tmp_path_factory.mktemp("pg_reserved"))
+        storage = YAMLStorage(base_dir=tmpdir)
+        info = postgresql_proc
+        run_sync(storage.save_datasource(DatasourceConfig(
+            name="testpg", type="postgres", host=info.host, port=info.port,
+            database=db_name, username=info.user, password="",
+        )))
+        merchant = SlayerModel(
+            name="merchant", sql_table='"Merchant"', data_source="testpg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+            ],
+        )
+        grant = SlayerModel(
+            name="grant", sql_table='"Grant"', data_source="testpg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="namespace", sql="namespace", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="merchantId", sql="merchantId", type=DataType.INT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+            joins=[ModelJoin(target_model="merchant", join_pairs=[["merchantId", "id"]])],
+        )
+        usage = SlayerModel(
+            name="usage", sql_table="usage", data_source="testpg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="grant_id", sql="grant_id", type=DataType.INT),
+                Column(name="qty", sql="qty", type=DataType.INT),
+                # derived column referencing the reserved joined model `grant`
+                Column(name="bumped", sql="grant.amount + 1", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="grant", join_pairs=[["grant_id", "id"]])],
+        )
+        run_sync(storage.save_model(merchant))
+        run_sync(storage.save_model(grant))
+        run_sync(storage.save_model(usage))
+        yield storage
+    finally:
+        conn.close()
+        _drop_module_db(postgresql_proc, db_name)
+
+
+@pytest.fixture
+def pg_reserved(_pg_reserved_storage):
+    return SlayerQueryEngine(storage=_pg_reserved_storage)
+
+
+@pytest.mark.integration
+class TestPostgresReservedWordModel:
+    async def test_standalone_grant_dims_count_executes(self, pg_reserved: SlayerQueryEngine) -> None:
+        """The exact DEV-1686 repro: a dims + *:count query on the `grant`
+        model must execute (previously: syntax error at or near "grant")."""
+        query = SlayerQuery(
+            source_model="grant", dimensions=["namespace"], measures=["*:count"],
+        )
+        result = await pg_reserved.execute(query=query)
+        assert result.row_count == 2  # org_a, org_b
+        assert sum(r["grant._count"] for r in result.data) == 3
+
+    async def test_join_from_grant_executes(self, pg_reserved: SlayerQueryEngine) -> None:
+        """Join FROM the reserved model on a camelCase FK (`merchantId`)."""
+        query = SlayerQuery(
+            source_model="grant", dimensions=["merchant.name"], measures=["*:count"],
+        )
+        result = await pg_reserved.execute(query=query)
+        by_merchant = {r["grant.merchant.name"]: r["grant._count"] for r in result.data}
+        assert by_merchant == {"Acme": 2, "Globex": 1}
+
+    async def test_grant_measure_and_filter_executes(self, pg_reserved: SlayerQueryEngine) -> None:
+        query = SlayerQuery(
+            source_model="grant", dimensions=["namespace"],
+            measures=[{"formula": "amount:sum"}], filters=["amount > 60"],
+        )
+        result = await pg_reserved.execute(query=query)
+        by_ns = {r["grant.namespace"]: float(r["grant.amount_sum"]) for r in result.data}
+        assert by_ns == {"org_a": 300}
+
+    async def test_query_backed_model_with_reserved_short_executes(
+        self, pg_reserved: SlayerQueryEngine,
+    ) -> None:
+        """DEV-1686 query_engine._query_as_model fix: a cross-model measure
+        renamed to a reserved word (``order``) becomes a virtual-model column
+        exposed via ``... AS "order"`` in the wrapped SQL; it must quote and
+        execute."""
+        query = SlayerQuery(
+            source_model="grant", dimensions=["namespace"],
+            measures=[{"formula": "merchant.id:count_distinct", "name": "order"}],
+        )
+        model = await pg_reserved.create_model_from_query(
+            query=query, name="grants_vm", save=True,
+        )
+        assert '"order"' in model.backing_query_sql, model.backing_query_sql
+        # Executing the stored backing query (which contains ``AS "order"``)
+        # must not raise a Postgres syntax error — that is the regression.
+        result = await pg_reserved.execute(query="grants_vm")
+        assert result.row_count == 2  # org_a, org_b
+        # the reserved-short column resolves (proves AS "order" round-tripped)
+        order_key = next(k for k in result.data[0] if k.endswith("order"))
+        assert all(isinstance(row[order_key], int) for row in result.data)
+
+    async def test_derived_column_referencing_reserved_join_executes(
+        self, pg_reserved: SlayerQueryEngine,
+    ) -> None:
+        """DEV-1686 (Codex review): a derived column on a non-reserved root that
+        references a reserved joined model (`grant.amount + 1`) must both DISCOVER
+        the join and execute — previously the join was silently dropped."""
+        query = SlayerQuery(source_model="usage", dimensions=["bumped"], measures=["*:count"])
+        result = await pg_reserved.execute(query=query)
+        # grant amounts 100 (usage 1) and 50 (usage 3) → bumped 101 and 51
+        by_bumped = {float(r["usage.bumped"]): r["usage._count"] for r in result.data}
+        assert by_bumped == {101.0: 2, 51.0: 1}

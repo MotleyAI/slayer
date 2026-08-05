@@ -75,7 +75,7 @@ class ResolvedSourceBundle(BaseModel):
         """Custom aggregation names reachable from ``start`` via the join
         graph, resolved against this bundle's pre-loaded
         ``referenced_models``. Sync mirror of
-        ``enrichment._collect_reachable_agg_names`` — used by the slack
+        ``agg_registry.collect_reachable_agg_names`` — used by the slack
         FUNC_STYLE_AGG normalizer so a custom aggregation defined on a
         joined model (e.g. ``rolling_avg(customers.score)``) is recognised
         and rewritten to colon form.

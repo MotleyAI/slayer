@@ -45,9 +45,12 @@ from slayer.core.errors import (
     UnknownReferenceError,
 )
 from slayer.core.enums import (
+    BUILTIN_AGGREGATIONS,
     DEFAULT_AGGREGATIONS_BY_TYPE,
     PRIMARY_KEY_AGGREGATIONS,
     DataType,
+    format_unknown_aggregation,
+    normalize_aggregation_name,
 )
 from slayer.core.keys import (
     SCALAR_FUNCTIONS,
@@ -831,12 +834,15 @@ def _bind_agg(
     # silently in the typed pipeline. The check is best-effort against
     # the bundle — sources whose target model can't be resolved (e.g.
     # an unreferenced join target) skip the check.
-    _validate_agg_eligibility(
+    # DEV-1576 / DEV-1717: heal alias + gate, then store the EFFECTIVE
+    # (healed) name on the key so the generator resolves the canonical
+    # aggregation rather than the raw parser token.
+    effective_agg = _validate_agg_eligibility(
         source=source, agg=parsed.agg, bundle=bundle,
     )
     return AggregateKey(
         source=source,
-        agg=parsed.agg,
+        agg=effective_agg,
         args=args,
         kwargs=kwargs,
         column_filter_key=column_filter_key,
@@ -891,20 +897,59 @@ def _resolve_column_filter_key(
     return SqlExprKey(canonical_sql=col.filter, referenced_join_paths=paths)
 
 
+def _resolve_gate_owner(
+    source, bundle: ResolvedSourceBundle,
+) -> "Optional[tuple[SlayerModel, str]]":
+    """Resolve the ``(owning_model, leaf)`` an aggregation gate applies to.
+
+    Returns ``None`` when the target can't be confirmed — a ``StarKey``
+    (``*:count`` has no column), a source with no leaf, no host model, or an
+    unresolved join hop — so the caller best-effort skips the gate (the
+    compile-time path validator catches truly broken refs).
+    """
+    if isinstance(source, StarKey):
+        return None
+    leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
+    if leaf is None:
+        return None
+    host = bundle.source_model
+    if host is None:
+        return None
+    current: SlayerModel = host
+    for hop in tuple(getattr(source, "path", ())):
+        nxt = bundle.get_referenced_model(hop)
+        if nxt is None:
+            return None
+        current = nxt
+    return current, leaf
+
+
 def _validate_agg_eligibility(
     *, source, agg: str, bundle: ResolvedSourceBundle,
-) -> None:
-    """Enforce per-column aggregation eligibility gates.
+) -> str:
+    """Heal the aggregation name and enforce per-column eligibility gates.
 
-    Mirrors the legacy ``enrichment.py:401-417`` v2 contract:
+    Returns the **effective** (alias-healed) aggregation name, which the
+    caller stores on ``AggregateKey.agg`` (DEV-1576 / DEV-1717) — the typed
+    colon parser (``syntax.py``) does not normalise, so healing must land
+    here, after the owning model is resolved, or the generator later fails on
+    the raw token at ``_resolve_aggregation_def``.
 
-    1. Primary-key columns are always restricted to ``count`` /
-       ``count_distinct`` regardless of type or explicit whitelist.
+    Healing (:func:`normalize_aggregation_name`) is **skipped** when the raw
+    token exactly matches a custom aggregation registered on the owning model,
+    so a custom ``countd`` wins over the ``countd -> count_distinct`` alias.
+
+    Gate order (mirrors the legacy ``enrichment.py`` v2 contract):
+
+    0. Unknown-name-first: a name that is neither a built-in nor a model
+       custom aggregation raises ``"Unknown aggregation ..."`` **before** the
+       PK / whitelist / type gates, so a misspelled agg on an otherwise
+       aggregatable column is not mislabelled as a type restriction.
+    1. Primary-key columns are restricted to ``count`` / ``count_distinct``.
     2. An explicit ``Column.allowed_aggregations`` whitelist overrides
        type defaults.
     3. Otherwise, built-in aggregations are gated by
-       ``DEFAULT_AGGREGATIONS_BY_TYPE``; model-custom aggregations
-       (registered in ``SlayerModel.aggregations``) are exempt.
+       ``DEFAULT_AGGREGATIONS_BY_TYPE``; model-custom aggregations are exempt.
 
     ``StarKey`` sources (``*:count`` / ``customers.*:count``) have no
     column to attach a whitelist to and pass through. Cross-model and
@@ -913,60 +958,57 @@ def _validate_agg_eligibility(
     target) the gate is skipped — the compile-time path validator would
     have raised earlier on a truly broken ref.
     """
-    if isinstance(source, StarKey):
-        return
-    path = tuple(getattr(source, "path", ()))
-    leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
-    if leaf is None:
-        return
-    host = bundle.source_model
-    if host is None:
-        return
-    current: SlayerModel = host
-    for hop in path:
-        nxt = bundle.get_referenced_model(hop)
-        if nxt is None:
-            return
-        current = nxt
+    owner = _resolve_gate_owner(source, bundle)
+    if owner is None:
+        return normalize_aggregation_name(agg)
+    current, leaf = owner
+    # DEV-1576 alias healing — custom aggregation named like an alias wins.
+    custom_names = {a.name for a in (current.aggregations or [])}
+    effective = agg if agg in custom_names else normalize_aggregation_name(agg)
+    # Gate 0: unknown-name-first (precedence over PK / whitelist / type).
+    known = BUILTIN_AGGREGATIONS | custom_names
+    if effective not in known:
+        raise ValueError(format_unknown_aggregation(effective, known))
     col = next((c for c in current.columns if c.name == leaf), None)
     if col is None:
-        return
+        return effective
     if col.primary_key:
-        if agg not in PRIMARY_KEY_AGGREGATIONS:
+        if effective not in PRIMARY_KEY_AGGREGATIONS:
             raise AggregationNotAllowedError(
                 column=leaf,
-                agg=agg,
+                agg=effective,
                 reason=(
                     f"primary-key column {leaf!r} restricted to "
-                    f"{sorted(PRIMARY_KEY_AGGREGATIONS)}; got {agg!r}."
+                    f"{sorted(PRIMARY_KEY_AGGREGATIONS)}; got {effective!r}."
                 ),
             )
-        return
+        return effective
     if col.allowed_aggregations is not None:
-        if agg not in col.allowed_aggregations:
+        if effective not in col.allowed_aggregations:
             raise AggregationNotAllowedError(
                 column=leaf,
-                agg=agg,
+                agg=effective,
                 reason=(
                     f"column {leaf!r} restricts allowed_aggregations to "
-                    f"{sorted(col.allowed_aggregations)}; got {agg!r}."
+                    f"{sorted(col.allowed_aggregations)}; got {effective!r}."
                 ),
             )
-        return
+        return effective
     # Model-custom aggregations are exempt from the type-default gate.
-    if any(a.name == agg for a in (current.aggregations or [])):
-        return
+    if effective in custom_names:
+        return effective
     allowed = DEFAULT_AGGREGATIONS_BY_TYPE.get(col.type, frozenset())
-    if agg not in allowed:
+    if effective not in allowed:
         raise AggregationNotAllowedError(
             column=leaf,
-            agg=agg,
+            agg=effective,
             reason=(
-                f"aggregation {agg!r} is not applicable to "
+                f"aggregation {effective!r} is not applicable to "
                 f"{col.type} column {leaf!r}; default aggregations are "
                 f"{sorted(allowed)}."
             ),
         )
+    return effective
 
 
 def _bind_agg_arg(

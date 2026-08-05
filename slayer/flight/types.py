@@ -4,19 +4,21 @@ The pyarrow-bound half of the facade type system. The pyarrow-free half
 (``SUPPORTED_DATATYPES`` + ``datatype_to_jdbc``) lives in
 ``slayer.facade.datatypes`` and is re-exported here for backward compat.
 
-* SLayer's ``DataType`` (``slayer.core.enums``) — six canonical values.
+* SLayer's ``DataType`` (``slayer.core.enums``) — six operable values plus
+  the opaque ``UNKNOWN`` marker.
 * Apache Arrow ``DataType`` — the wire encoding the Flight SQL gRPC
   server emits to clients.
 
-The forward direction (``DataType → Arrow``) is total over the six
-supported values. The reverse (``Arrow → DataType``) collapses Arrow's
-wider type space onto the six SLayer types; ``arrow_to_datatype``
-returns ``None`` for genuinely unmappable Arrow types.
+The forward direction (``DataType → Arrow``) is total over every value.
+The reverse (``Arrow → DataType``) collapses Arrow's wider type space onto
+the six operable SLayer types; ``arrow_to_datatype`` returns ``None`` for
+genuinely unmappable Arrow types. The round trip is lossy for ``UNKNOWN``
+(it goes out as ``utf8`` and comes back as ``TEXT``) — Arrow has no
+"unclassified" type to preserve it.
 """
 
 from __future__ import annotations
 
-from typing import Optional
 
 import pyarrow as pa
 
@@ -31,6 +33,10 @@ _DATATYPE_TO_ARROW: dict[DataType, pa.DataType] = {
     DataType.BOOLEAN: pa.bool_(),
     DataType.DATE: pa.date32(),
     DataType.TIMESTAMP: pa.timestamp("us"),
+    # Opaque columns travel as Arrow strings — see DataType.is_opaque. The
+    # forward map is intentionally lossy here: UNKNOWN -> utf8 -> TEXT does
+    # not round-trip back to UNKNOWN.
+    DataType.UNKNOWN: pa.utf8(),
 }
 
 
@@ -39,7 +45,7 @@ def datatype_to_arrow(dt: DataType) -> pa.DataType:
     return _DATATYPE_TO_ARROW[dt]
 
 
-def arrow_to_datatype(at: pa.DataType) -> Optional[DataType]:
+def arrow_to_datatype(at: pa.DataType) -> DataType | None:
     """Best-effort reverse map.
 
     Returns ``None`` if ``at`` cannot be coerced into one of the six

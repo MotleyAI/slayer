@@ -63,11 +63,15 @@ from slayer.core.keys import (
     TimeTruncKey,
     ValueKey,
     column_path,
+    reroot_aggregate_key,
 )
 from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
+from slayer.engine.aggregate_input_paths import (
+    compute_aggregate_input_join_paths,
+)
 from slayer.engine.binding import (
     bind_expr,
     bind_filter,
@@ -528,6 +532,84 @@ def _classify_subplan_filters(
     return sub_filter_texts or None
 
 
+def _route_host_filters(
+    *,
+    host_filters: List[HostFilterRouting],
+    host_slots: List[ValueSlot],
+    target_path: Tuple[str, ...],
+    host_model: SlayerModel,
+    terminal_model: SlayerModel,
+) -> Tuple[
+    List[BoundFilterId], List[BoundFilterId], List[BoundFilterId],
+    List[UnreachableFilterDroppedWarning],
+]:
+    """Classify each host filter via the ``inherited_filter_policy`` decision
+    table (``classify_host_filter``) into ``(applied, where_ids, having_ids,
+    dropped)`` — extracted from ``IsolatedCteCrossModelPlanner.plan`` (DEV-1708)
+    to keep that method focused. ``DROP_HOST_LOCAL`` / ``STAY_AT_HOST_POST`` are
+    neither propagated nor warned."""
+    applied: List[BoundFilterId] = []
+    where_ids: List[BoundFilterId] = []
+    having_ids: List[BoundFilterId] = []
+    dropped: List[UnreachableFilterDroppedWarning] = []
+    for hf in host_filters:
+        route = classify_host_filter(
+            host_filter=hf,
+            host_slots=host_slots,
+            target_path=target_path,
+            host_model_name=host_model.name,
+        )
+        if route is FilterRoute.PROPAGATE_WHERE:
+            where_ids.append(hf.filter_id)
+            applied.append(hf.filter_id)
+        elif route is FilterRoute.PROPAGATE_HAVING:
+            having_ids.append(hf.filter_id)
+            applied.append(hf.filter_id)
+        elif route is FilterRoute.DROP_UNREACHABLE:
+            dropped.append(UnreachableFilterDroppedWarning(
+                filter_text=hf.text or hf.filter_id,
+                reason=(
+                    f"filter {hf.filter_id!r} references slot(s) outside "
+                    f"the join path to {terminal_model.name!r}; "
+                    f"unreachable filters are dropped."
+                ),
+            ))
+    return applied, where_ids, having_ids, dropped
+
+
+def _compute_shared_grain_slots(
+    *, host_slots: List[ValueSlot], target_path: Tuple[str, ...],
+) -> List[SlotId]:
+    """Host ROW slots (dimensions / time-dimensions) whose path lies on the
+    target's join chain flow through as the cross-model CTE's shared grain
+    (extracted from ``IsolatedCteCrossModelPlanner.plan`` — DEV-1708). Cross-
+    branch and aggregate/transform slots do not.
+
+    A path-bearing **plain derived** (``ColumnSqlKey``) dimension on the target
+    path flows through identically to a base ``ColumnKey`` dim (DEV-1728): the
+    generator expands its ``Column.sql`` inside the ``_cm_*`` CTE, groups by it,
+    and joins back on the DOTTED host alias (the DEV-1708 raise is gone now that
+    DEV-1713 fixed the naming half). ``path == ()`` (a host-local derived dim)
+    still broadcasts by design — the generator's grain loop skips empty-path
+    slots — and a hidden filter-only derived ref is excluded there via the
+    ``base_projection_ids`` intersection, so no ``not s.hidden`` guard is needed.
+    """
+    shared_grain: List[SlotId] = []
+    for s in host_slots:
+        # Base and derived dims carry their path directly; a time dimension
+        # carries it on the wrapped column. One prefix test then serves all
+        # three kinds — the DEV-1728 merge of what were two identical branches.
+        if isinstance(s.key, (ColumnKey, ColumnSqlKey)):
+            p = s.key.path
+        elif isinstance(s.key, TimeTruncKey):
+            p = column_path(s.key.column)
+        else:
+            continue
+        if not p or p == target_path[: len(p)]:
+            shared_grain.append(s.id)
+    return shared_grain
+
+
 class IsolatedCteCrossModelPlanner:
     """Default impl — one CTE per (target_model, shared_grain) tuple.
 
@@ -595,54 +677,22 @@ class IsolatedCteCrossModelPlanner:
                 ))
 
         target_path = path
-        applied: List[BoundFilterId] = []
-        where_ids: List[BoundFilterId] = []
-        having_ids: List[BoundFilterId] = []
-        dropped: List[UnreachableFilterDroppedWarning] = []
-        for hf in host_filters:
-            route = classify_host_filter(
-                host_filter=hf,
-                host_slots=host_slots,
-                target_path=target_path,
-                host_model_name=host_model.name,
-            )
-            if route is FilterRoute.PROPAGATE_WHERE:
-                where_ids.append(hf.filter_id)
-                applied.append(hf.filter_id)
-            elif route is FilterRoute.PROPAGATE_HAVING:
-                having_ids.append(hf.filter_id)
-                applied.append(hf.filter_id)
-            elif route is FilterRoute.DROP_UNREACHABLE:
-                dropped.append(UnreachableFilterDroppedWarning(
-                    filter_text=hf.text or hf.filter_id,
-                    reason=(
-                        f"filter {hf.filter_id!r} references slot(s) outside "
-                        f"the join path to {terminal_model.name!r}; "
-                        f"unreachable filters are dropped."
-                    ),
-                ))
-            # DROP_HOST_LOCAL and STAY_AT_HOST_POST: not propagated, not warned.
+        applied, where_ids, having_ids, dropped = _route_host_filters(
+            host_filters=host_filters,
+            host_slots=host_slots,
+            target_path=target_path,
+            host_model=host_model,
+            terminal_model=terminal_model,
+        )
 
         target_model_filters = list(terminal_model.filters or [])
 
-        # Shared grain: local ROW slots on host (dimensions) flow through.
-        # Cross-branch ROW slots and aggregate / transform slots do not.
-        # DEV-1450 stage 7b.12: ``TimeTruncKey`` slots count as grain
-        # candidates too — a joined TD (``customers.created_at`` MONTH)
-        # whose column path lies on the target's join chain is shared
-        # between the host base and the cross-model CTE, so legacy
-        # ``LEFT JOIN`` on the truncated alias replaces the global
-        # ``CROSS JOIN``.
-        shared_grain: List[SlotId] = []
-        for s in host_slots:
-            if isinstance(s.key, ColumnKey):
-                p = s.key.path
-                if not p or p == target_path[: len(p)]:
-                    shared_grain.append(s.id)
-            elif isinstance(s.key, TimeTruncKey):
-                td_path = column_path(s.key.column)
-                if not td_path or td_path == target_path[: len(td_path)]:
-                    shared_grain.append(s.id)
+        # Shared grain: host ROW dimensions / time-dimensions on the target's
+        # join chain flow through (a plain derived one on the target path
+        # raises — DEV-1708). Extracted to keep this method focused.
+        shared_grain = _compute_shared_grain_slots(
+            host_slots=host_slots, target_path=target_path,
+        )
 
         first_hop = join_chain[0]
         first_hop_target = (
@@ -710,19 +760,32 @@ class IsolatedCteCrossModelPlanner:
             Callable[[SlayerQuery, ResolvedSourceBundle], PlannedQuery]
         ],
     ) -> CrossModelAggregatePlan:
-        """Validate the filtered-local trigger preconditions and dispatch
+        """Validate the host-rooted trigger preconditions and dispatch
         into ``_plan_filtered_local`` — the aggregate is on a HOST column
-        but its ``Column.filter`` crosses a join, so a host-rooted nested
-        sub-plan owns the aggregation and the host base LEFT JOINs back.
+        but at least one of its inputs crosses a join (``Column.filter``
+        per DEV-1503; source ``Column.sql`` / positional args / kwargs per
+        DEV-1709), so a host-rooted nested sub-plan owns the aggregation
+        and the host base LEFT JOINs back.
         """
         agg_source = aggregate_key.source
         cfk = aggregate_key.column_filter_key
-        if cfk is None or not cfk.referenced_join_paths:
+        has_crossing_filter = cfk is not None and bool(
+            cfk.referenced_join_paths,
+        )
+        has_crossing_input = has_crossing_filter or bool(
+            compute_aggregate_input_join_paths(
+                key=aggregate_key,
+                anchor_model=host_model,
+                anchor_relation=host_model.name,
+                bundle=bundle,
+            ),
+        )
+        if not has_crossing_input:
             raise ValueError(
-                f"AggregateKey on {agg_source!r} has empty source.path "
-                f"AND no cross-model column_filter_key — this is a plain "
-                f"local aggregate. The cross-model planner should not "
-                f"have been invoked."
+                f"AggregateKey on {agg_source!r} has empty source.path, "
+                f"no cross-model column_filter_key, AND no other crossing "
+                f"input — this is a plain local aggregate. The cross-model "
+                f"planner should not have been invoked."
             )
         if subplan_builder is None or host_query is None:
             # The DEV-1503 strategy requires a sub-plan builder + the host
@@ -917,53 +980,47 @@ def _filter_ref_paths(value_key: ValueKey) -> List[Tuple[str, ...]]:
     return paths
 
 
+def _render_ref_formula(ref) -> str:
+    """Render one already-rerooted embedded reference back into formula text.
+
+    Column-like refs dot-join their (residual) path with the leaf; scalars
+    fall through to ``_scalar_formula_literal``. Contains NO path-stripping
+    decisions — the reroot has already happened (DEV-1707).
+    """
+    if isinstance(ref, ColumnSqlKey):
+        return ".".join((*ref.path, ref.column_name))
+    if isinstance(ref, ColumnKey):
+        return ".".join((*ref.path, ref.leaf))
+    return _scalar_formula_literal(ref)
+
+
 def _local_agg_formula(key: AggregateKey) -> str:
     """Reconstruct the LOCAL colon-formula for a cross-model aggregate
     (``customers.revenue:sum`` -> ``revenue:sum``) so it can be re-planned
     against the target model as a plain local measure.
 
-    Column-valued kwargs (``corr(other=customers.region_id)``) are
-    re-rooted too: their join path is bound from the HOST, so the leading
-    agg-source (target) prefix is stripped to express the ref in the
-    target's local scope (``other=region_id``; a deeper hop keeps its
-    residual path, ``other=regions.code``). Dropping the path outright
-    would mis-bind or fail to bind the nested sub-query (CR review)."""
-    src = key.source
-    target_path = tuple(getattr(src, "path", ()))
+    Every embedded reference — source, positional args, and column-valued
+    kwargs — is re-anchored symmetrically via the unified
+    ``reroot_aggregate_key`` (DEV-1707), then rendered by the path-free
+    ``_render_ref_formula``. A kwarg / arg one hop past the target keeps its
+    residual path (``other=regions.code``); an exact match becomes local
+    (``other=region_id``). The public string contract is unchanged — the
+    strip logic simply no longer lives here.
+    """
+    local = reroot_aggregate_key(
+        key, target_path=tuple(getattr(key.source, "path", ())),
+    )
+    src = local.source
     if isinstance(src, StarKey):
         base = "*"
     elif isinstance(src, ColumnSqlKey):
-        base = src.column_name
+        base = ".".join((*src.path, src.column_name))
     else:  # ColumnKey
-        base = src.leaf
+        base = ".".join((*src.path, src.leaf))
 
-    def _reroot_col_kwarg(v) -> str:
-        leaf = v.leaf if isinstance(v, ColumnKey) else v.column_name
-        vpath = tuple(getattr(v, "path", ()))
-        # Strip the agg-source (target) prefix so the ref is target-local.
-        residual = (
-            vpath[len(target_path):]
-            if vpath[: len(target_path)] == target_path
-            else vpath
-        )
-        return ".".join((*residual, leaf))
-
-    formula = f"{base}:{key.agg}"
-    parts: List[str] = []
-    # Positional args may carry ColumnKey / ColumnSqlKey just like kwargs do
-    # (rerooting needs path-aware handling on both — CR review). Falling
-    # through to ``_scalar_formula_literal`` would emit Pydantic-repr noise
-    # for a column-valued positional arg, mis-binding the nested sub-query.
-    for a in key.args:
-        if isinstance(a, (ColumnKey, ColumnSqlKey)):
-            parts.append(_reroot_col_kwarg(a))
-        else:
-            parts.append(_scalar_formula_literal(a))
-    for k, v in key.kwargs:
-        if isinstance(v, (ColumnKey, ColumnSqlKey)):
-            parts.append(f"{k}={_reroot_col_kwarg(v)}")
-        else:
-            parts.append(f"{k}={_scalar_formula_literal(v)}")
+    formula = f"{base}:{local.agg}"
+    parts: List[str] = [_render_ref_formula(a) for a in local.args]
+    parts += [f"{k}={_render_ref_formula(v)}" for k, v in local.kwargs]
     if parts:
         formula += "(" + ", ".join(parts) + ")"
     return formula

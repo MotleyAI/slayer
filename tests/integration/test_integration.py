@@ -3,12 +3,15 @@
 Run with: pytest tests/integration/test_integration.py -m integration
 """
 
+import re
 import sqlite3
 
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
+    Aggregation,
+    AggregationParam,
     Column,
     DatasourceConfig,
     ModelJoin,
@@ -505,8 +508,15 @@ async def test_arithmetic_expression(integration_env):
     assert response.data[0]["orders.avg_amount"] == pytest.approx(125.0)
 
 
-async def test_time_shift_row_based(integration_env):
-    """time_shift(x, -1) without granularity → LAG (previous row)."""
+async def test_time_shift_default_granularity_calendar(integration_env):
+    """time_shift(x, n) without granularity → calendar self-join at the query's time grain.
+
+    Filtering to completed orders leaves a gap: Jan(300) and Mar(300), no
+    completed orders in Feb. Calendar shifting matches on the actual month,
+    so the gap yields NULLs where row-based LAG/LEAD would return the
+    adjacent row's value — and reaches across the gap where LAG(2) on a
+    two-row result would fall off the edge.
+    """
     engine = integration_env
 
     query = SlayerQuery(
@@ -518,24 +528,30 @@ async def test_time_shift_row_based(integration_env):
         measures=[
             ModelMeasure(formula="total_amount:sum"),
             ModelMeasure(formula="time_shift(total_amount:sum, -1)", name="prev"),
+            ModelMeasure(formula="time_shift(total_amount:sum, -2)", name="prev2"),
             ModelMeasure(formula="time_shift(total_amount:sum, 1)", name="next"),
         ],
+        filters=["status == 'completed'"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
-    # 3 months: Jan(300), Feb(125), Mar(325)
-    assert response.row_count == 3
+    # 2 months with completed orders: Jan(300), Mar(300) — Feb is a gap
+    assert response.row_count == 2
 
-    # Row-based backward shift (LAG): first row has no previous
-    assert response.data[0]["orders.prev"] is None
-    assert response.data[1]["orders.prev"] == pytest.approx(300.0)  # Feb's prev = Jan
-    assert response.data[2]["orders.prev"] == pytest.approx(125.0)  # Mar's prev = Feb
+    # Calendar backward shift: Mar - 1 month = Feb, which has no data → NULL
+    # (row-based LAG(1) would have returned Jan's 300)
+    assert response.data[0]["orders.prev"] is None  # Jan - 1 = Dec, no data
+    assert response.data[1]["orders.prev"] is None  # Mar - 1 = Feb, gap
 
-    # Row-based forward shift (LEAD): last row has no next
-    assert response.data[0]["orders.next"] == pytest.approx(125.0)  # Jan's next = Feb
-    assert response.data[1]["orders.next"] == pytest.approx(325.0)  # Feb's next = Mar
-    assert response.data[2]["orders.next"] is None
+    # Calendar shift reaches across the gap: Mar - 2 months = Jan → 300
+    # (row-based LAG(2) on a two-row result would have returned NULL)
+    assert response.data[1]["orders.prev2"] == pytest.approx(300.0)
+
+    # Calendar forward shift: Jan + 1 month = Feb, gap → NULL
+    # (row-based LEAD(1) would have returned Mar's 300)
+    assert response.data[0]["orders.next"] is None
+    assert response.data[1]["orders.next"] is None  # Mar + 1 = Apr, no data
 
 
 async def test_time_shift_calendar_based(integration_env):
@@ -565,6 +581,52 @@ async def test_time_shift_calendar_based(integration_env):
     assert response.data[1]["orders.prev_month"] == pytest.approx(300.0)
     # Mar's previous month is Feb
     assert response.data[2]["orders.prev_month"] == pytest.approx(125.0)
+
+
+async def test_multiple_time_shifts_in_one_query(integration_env):
+    """DEV-1692: two arithmetic-wrapped time_shifts in one query.
+
+    Used to fail outright with a duplicate-CTE error; the offsets are kept
+    distinct here (-1 vs -2) so a regression that re-collapses them onto one
+    shared CTE shows up as wrong values rather than just a parser error.
+    """
+    engine = integration_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        measures=[
+            ModelMeasure(formula="total_amount:sum"),
+            ModelMeasure(
+                formula="total_amount:sum - time_shift(total_amount:sum, -1, 'month')",
+                name="growth_1m",
+            ),
+            ModelMeasure(
+                formula="total_amount:sum - time_shift(total_amount:sum, -2, 'month')",
+                name="growth_2m",
+            ),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = await engine.execute(query)
+
+    # 3 months: Jan(300), Feb(125), Mar(325)
+    assert response.row_count == 3
+
+    # No month two back from Jan/Feb, and none one back from Jan → NULL
+    assert response.data[0]["orders.growth_1m"] is None
+    assert response.data[0]["orders.growth_2m"] is None
+    assert response.data[1]["orders.growth_2m"] is None
+
+    # Feb vs Jan
+    assert response.data[1]["orders.growth_1m"] == pytest.approx(125.0 - 300.0)
+    # Mar vs Feb (-1) and Mar vs Jan (-2) must differ — same-CTE collapse
+    # would make both read the -1 shift.
+    assert response.data[2]["orders.growth_1m"] == pytest.approx(325.0 - 125.0)
+    assert response.data[2]["orders.growth_2m"] == pytest.approx(325.0 - 300.0)
 
 
 async def test_time_shift_with_date_range(integration_env):
@@ -2082,7 +2144,7 @@ async def test_label_propagation_enrichment(integration_env):
 # Median / percentile via SQLite Python UDFs
 #
 # SQLite has no native MEDIAN/PERCENTILE_CONT. SLayer registers Python
-# aggregates on each new SQLite connection (slayer/sql/sqlite_udfs.py); these
+# aggregates on each new SQLite connection (slayer/sql/dialects/sqlite.py); these
 # tests exercise them end-to-end through the engine.
 # ---------------------------------------------------------------------------
 
@@ -3133,22 +3195,32 @@ async def search_env(tmp_path):
     return engine, storage
 
 
-async def test_search_ingest_populates_sampled(search_env):
-    """``slayer ingest`` writes ``Column.sampled`` for every non-pk column
-    on every table-backed model. Categorical and numeric columns get
-    different formats — spot-check one of each."""
-    _engine, storage = search_env
+async def test_refresh_samples_populates_sampled(search_env):
+    """Ingest no longer profiles columns (samples are lazy). An explicit
+    ``refresh-samples`` pass writes ``Column.sampled`` for every non-pk
+    column. Categorical and numeric columns get different formats —
+    spot-check one of each."""
+    from slayer.engine.profiling import refresh_all_table_backed_sampled
+
+    engine, storage = search_env
+    # After ingest alone, samples are unpopulated.
+    orders = await storage.get_model("orders", data_source="test_sqlite")
+    assert next(c for c in orders.columns if c.name == "status").sampled is None
+
+    # Explicit refresh populates them.
+    errors = await refresh_all_table_backed_sampled(
+        engine=engine, storage=storage, data_source="test_sqlite",
+    )
+    assert errors == [], f"Unexpected refresh errors: {errors}"
+
     orders = await storage.get_model("orders", data_source="test_sqlite")
     customers = await storage.get_model("customers", data_source="test_sqlite")
-    assert orders is not None
-    assert customers is not None
-
     for model in (orders, customers):
         for col in model.columns:
             if col.primary_key or col.hidden:
                 continue
             assert col.sampled is not None, (
-                f"{model.name}.{col.name} sampled was not populated by ingest"
+                f"{model.name}.{col.name} sampled was not populated by refresh"
             )
 
     status = next(c for c in orders.columns if c.name == "status")
@@ -3162,26 +3234,25 @@ async def test_search_ingest_populates_sampled(search_env):
 
 
 async def test_search_question_finds_column(search_env):
-    """``search(question="amount")`` returns a column EntityHit pointing at
+    """``search(question="amount")`` returns a column hit pointing at
     one of the seeded ``amount``-named columns."""
     from slayer.search.service import SearchService
 
     _engine, storage = search_env
     response = await SearchService(storage=storage).search(
         question="amount",
-        max_entities=10,
-        max_memories=0,
+        max_results=20,
     )
-    column_hits = [e for e in response.entities if e.kind == "column"]
+    column_hits = [h for h in response.results if h.kind == "column"]
     assert column_hits, (
-        "expected at least one column EntityHit; got entities="
-        f"{[(e.id, e.kind) for e in response.entities]}"
+        "expected at least one column hit; got results="
+        f"{[(h.id, h.kind) for h in response.results]}"
     )
     # The question is "amount" — only ``*.amount`` columns are
     # acceptable. Accepting any column hit (e.g. ``customers.region``)
     # would mask a relevance regression in the search ranker.
     assert any(h.id.endswith(".amount") for h in column_hits), (
-        "expected an `.amount` column EntityHit; got column hits="
+        "expected an `.amount` column hit; got column hits="
         f"{[h.id for h in column_hits]}"
     )
 
@@ -3192,12 +3263,16 @@ async def test_search_entity_filter_finds_memory(search_env):
     from slayer.search.service import SearchService
 
     _engine, storage = search_env
+    # DEV-1549: opt out of compact-by-default — this test pins the full
+    # learning body in ``hit.text``.
     response = await SearchService(storage=storage).search(
         entities=["test_sqlite.orders"],
-        max_memories=5,
+        max_results=10,
+        compact=False,
     )
-    assert len(response.memories) >= 1
-    hit = response.memories[0]
+    memory_hits = [h for h in response.results if h.kind == "memory"]
+    assert len(memory_hits) >= 1
+    hit = memory_hits[0]
     assert "test_sqlite.orders" in hit.matched_entities
     assert "refunds" in hit.text
 
@@ -3451,8 +3526,8 @@ async def test_model_filter_with_json_extract_runs(tmp_path):
 
 
 async def test_query_filter_with_lower_function_runs(integration_env):
-    """DEV-1378: ``SlayerQuery.filters`` accepts ``lower(...)`` from the
-    string-hygiene allowlist and matches case-insensitively at runtime."""
+    """``SlayerQuery.filters`` accepts ``lower(...)`` via SCALAR_PASSTHROUGH
+    and matches case-insensitively at runtime."""
     engine = integration_env
 
     # The integration_env's ``orders`` table has statuses
@@ -3690,3 +3765,317 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
         f"{response.data[0]!r}"
     )
     _sync_engines.clear()
+# ---------------------------------------------------------------------------
+# DEV-1538: end-to-end SQLite affinity probe — vaccine-style fixture.
+#
+# Reproduces the Linear issue's vaccine_3 failure mode: a column declared
+# ``INTEGER`` storing mostly REAL values. Pre-fix, the auto-ingested
+# Column.type=INT propagates through downstream SQL generation and produces
+# AVG values ~0 instead of ~0.9. Post-fix, the affinity probe widens to
+# DOUBLE at ingest time and the AVG is correct.
+# ---------------------------------------------------------------------------
+
+
+async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
+    """End-to-end vaccine-style: ingest a SQLite DB whose INTEGER-declared
+    column actually stores REAL values, then run a SUM/AVG measure and
+    confirm the result reflects the REAL values (not zero-truncated)."""
+    from slayer.engine.ingestion import ingest_datasource_idempotent
+
+    db_path = tmp_path / "vaccine.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE sensordata ("
+        "  id INTEGER PRIMARY KEY,"
+        "  tempstabidx INTEGER"  # declared INTEGER affinity
+        ")"
+    )
+    # 3 INT rows + 9 REAL rows. AVG of the actual stored values is
+    # (1+2+3 + 0.99+0.943+0.969+0.85+0.92+0.91+0.83+0.96+0.88) / 12 ≈ 1.10.
+    rows = [
+        (1, 1), (2, 2), (3, 3),
+        (4, 0.99), (5, 0.943), (6, 0.969),
+        (7, 0.85), (8, 0.92), (9, 0.91),
+        (10, 0.83), (11, 0.96), (12, 0.88),
+    ]
+    for r in rows:
+        cur.execute("INSERT INTO sensordata VALUES (?, ?)", r)
+    conn.commit()
+    conn.close()
+
+    storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+    ds = DatasourceConfig(name="vac", type="sqlite", database=str(db_path))
+    await storage.save_datasource(ds)
+    await ingest_datasource_idempotent(datasource=ds, storage=storage)
+    engine = SlayerQueryEngine(storage=storage)
+
+    # Persisted model carries Column.type=DOUBLE for tempstabidx.
+    persisted = await storage.get_model("sensordata", data_source="vac")
+    col = next(c for c in persisted.columns if c.name == "tempstabidx")
+    assert col.type is DataType.DOUBLE
+
+    # AVG query — the canonical AVG result should be ~1.10 (the mean of
+    # the actual stored values), not zero-truncated to ~0.
+    query = SlayerQuery(
+        source_model="sensordata",
+        measures=[
+            ModelMeasure(formula="tempstabidx:avg", name="avg_temp"),
+        ],
+    )
+    response = await engine.execute(query)
+    assert len(response.data) == 1
+    avg = response.data[0]["sensordata.avg_temp"]
+    assert avg > 0.5, (
+        f"AVG was zero-truncated ({avg!r}); the probe should have widened "
+        f"tempstabidx to DOUBLE so SUM/AVG run over REAL storage"
+    )
+
+
+@pytest.fixture
+async def composite_score_env(tmp_path):
+    """DEV-1539 fixture: a model whose ``Column.sql`` is a multi-term
+    arithmetic expression. Used by both the WHERE-side and HAVING-side
+    paren-wrap integration tests.
+    """
+    db_path = tmp_path / "score.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE entities (id INTEGER PRIMARY KEY, a REAL, b REAL, c REAL, d REAL)"
+    )
+    rows = [
+        # Two rows engineered so that the weighted-sum semantics and the
+        # "compare binds to last term" misreading would return different
+        # row sets — defending against precedence regression even on
+        # dialects that handle the unparenthesised form correctly today.
+        (1, 10.0, 10.0, 10.0, 10.0),  # weighted sum = 10 → passes > 7
+        (2, 0.0, 0.0, 0.0, 5.0),      # weighted sum = 1 → fails > 7
+    ]
+    cur.executemany("INSERT INTO entities VALUES (?, ?, ?, ?, ?)", rows)
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(DatasourceConfig(
+        name="score_sqlite", type="sqlite", database=str(db_path),
+    ))
+    # Build the columns list via a small helper so the unit-test-side
+    # equivalent (``_build_score_model_dev1539``) and this fixture
+    # don't duplicate the column-list boilerplate (Sonar
+    # ``new_duplicated_lines_density``). Score body is the canonical
+    # multi-term arithmetic shape from the bug report.
+    bare_cols = [Column(name=n, sql=n, type=DataType.DOUBLE) for n in ("a", "b", "c", "d")]
+    model = SlayerModel(
+        name="entities",
+        sql_table="entities",
+        data_source="score_sqlite",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            *bare_cols,
+            Column(
+                name="score",
+                sql="a * 0.4 + b * 0.3 + c * 0.1 + d * 0.2",
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    await storage.save_model(model)
+    return SlayerQueryEngine(storage=storage)
+
+
+async def test_dev1539_where_multiterm_filter_emits_outer_parens(composite_score_env):
+    """DEV-1539: the SQL emitted for a filter on a multi-term Column.sql
+    must wrap the inlined arithmetic expression in outer parens.
+
+    Asserts both:
+
+    * Row-set correctness — only the row whose weighted sum truly
+      exceeds the threshold survives. Even where standard SQL precedence
+      handles the unparenthesised form correctly, this row count is the
+      ground truth.
+    * Emitted SQL shape — ``last_sql`` contains explicit parens around
+      the multi-term LHS of the comparator. This is what catches a
+      future regression where someone strips the wrap thinking the
+      generator's output is "already correct".
+    """
+    engine = composite_score_env
+
+    # First, the executable shape — confirms semantic correctness.
+    query = SlayerQuery(
+        source_model="entities",
+        dimensions=[ColumnRef(name="id")],
+        filters=["score > 7"],
+    )
+    response = await engine.execute(query)
+    surviving_ids = {row["entities.id"] for row in response.data}
+    assert surviving_ids == {1}, (
+        f"Expected only row id=1 (weighted_sum=10 > 7); got {surviving_ids}"
+    )
+
+    # Then, the SQL-shape assertion via dry_run.
+    dry = await engine.execute(query, dry_run=True)
+    assert dry.sql is not None
+    norm = " ".join(dry.sql.split())
+    # The multi-term LHS of `> 7` must be enclosed so the comparator binds to
+    # the whole arithmetic sum. The typed pipeline qualifies the refs and
+    # encloses the derived expression in its type CAST — precedence-safe.
+    # Single bounded quantifier (`[^)]+`) avoids the S5852 backtracking shape.
+    m = re.search(r"CAST\(\s*entities\.a \* 0\.4[^)]+\)\s*>\s*7", norm)
+    assert m is not None, (
+        f"Expected the multi-term derived LHS enclosed before `> 7`; "
+        f"got:\n{dry.sql}"
+    )
+    # All four weighted terms must survive inside the enclosed LHS (CodeRabbit) —
+    # plain substring checks keep the S5852-safe single-quantifier regex shape.
+    for _term in ("entities.a", "entities.b", "entities.c", "entities.d"):
+        assert _term in m.group(0), (
+            f"Expected weighted term {_term} inside the enclosed LHS; got:\n{dry.sql}"
+        )
+
+
+async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_score_env):
+    """DEV-1539 HAVING-side: when a custom multi-term aggregation is
+    referenced by name in a HAVING filter, the substituted SQL must be
+    wrapped in outer parens before the comparator.
+    """
+    # We piggy-back on the entities fixture but use a multi-term custom
+    # aggregation (``SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)``)
+    # so the substituted ``agg_sql`` is a Binary at the AST root.
+    engine = composite_score_env
+    # Re-fetch and edit the model to add the custom aggregation.
+    model = await engine.storage.get_model("entities", data_source="score_sqlite")
+    model.aggregations = [
+        Aggregation(
+            name="wavg",
+            formula="SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
+            params=[AggregationParam(name="weight", sql="d")],
+        ),
+    ]
+    await engine.storage.save_model(model)
+
+    query = SlayerQuery(
+        source_model="entities",
+        dimensions=[ColumnRef(name="id")],
+        measures=[ModelMeasure(formula="a:wavg", name="wavg_a")],
+        filters=["wavg_a > 0"],
+    )
+    response = await engine.execute(query)
+    # Row 1: SUM(10*10)/NULLIF(SUM(10),0) = 100/10 = 10 > 0 ✓
+    # Row 2: SUM(0*5)/NULLIF(SUM(5),0)   = 0/5 = 0   not > 0 ✗
+    surviving_ids = {row["entities.id"] for row in response.data}
+    assert surviving_ids == {1}, (
+        f"Expected only row id=1 (wavg=10 > 0); got {surviving_ids}"
+    )
+
+    dry = await engine.execute(query, dry_run=True)
+    assert dry.sql is not None
+    norm = " ".join(dry.sql.split())
+    assert "HAVING" in norm
+    having = norm.split("HAVING", 1)[1].strip()
+    # The substituted multi-term ``SUM(...) / NULLIF(SUM(...))`` must
+    # be wrapped before ``> 0``. Anchor on positional checks (mirror
+    # of the strengthened unit-side assertion) rather than substring
+    # containment: ``"(SUM(" in having`` would otherwise also match
+    # the inner ``NULLIF(SUM(`` and the assertion would silently pass
+    # on the un-wrapped regression shape.
+    gt_index = having.find(" > 0")
+    assert gt_index > 0, (
+        f"HAVING must end with `... > 0`; got:\n{having}"
+    )
+    assert having[gt_index - 1] == ")", (
+        f"Expected `)` immediately before `> 0` (the outer wrap's "
+        f"closer); got char {having[gt_index - 1]!r} in:\n{having}"
+    )
+    assert having.startswith("("), (
+        f"Expected HAVING body to start with `(` (outer wrap); got:\n{having}"
+    )
+    assert "SUM(" in having.upper() and "/" in having and "NULLIF" in having.upper(), (
+        f"Expected HAVING body to combine SUM/NULLIF via `/`; got:\n{having}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1576 — round()/abs() execution + aggregation-alias healing (SQLite)
+# ---------------------------------------------------------------------------
+
+
+async def test_round_two_args_executes(integration_env):
+    """round(expr, ndigits) compiles and rounds the value."""
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="round(total_amount:sum / 7.0, 2)", name="r")],
+    )
+    response = await engine.execute(query)
+    assert response.data[0]["orders.r"] == pytest.approx(107.14)
+
+
+async def test_round_zero_ndigits_executes(integration_env):
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="round(total_amount:sum / 7.0, 0)", name="r")],
+    )
+    response = await engine.execute(query)
+    assert response.data[0]["orders.r"] == pytest.approx(107.0)
+
+
+async def test_abs_executes(integration_env):
+    """abs(expr) compiles and returns the magnitude."""
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="abs(total_amount:sum - 1000.0)", name="a")],
+    )
+    response = await engine.execute(query)
+    assert response.data[0]["orders.a"] == pytest.approx(250.0)
+
+
+async def test_count_distinct_alias_executes(integration_env):
+    """``status:countd`` heals to count_distinct and executes."""
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="status:countd")],
+    )
+    response = await engine.execute(query)
+    # completed / pending / cancelled → 3 distinct statuses.
+    assert response.data[0]["orders.status_count_distinct"] == 3
+
+
+async def test_stddev_alias_maps_to_sample_variant(integration_env):
+    """``amount:stddev`` heals to stddev_samp (sample, not population)."""
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="amount:stddev")],
+    )
+    response = await engine.execute(query)
+    # Sample stddev of [100,200,50,75,300,25] = sqrt(55000/5) ≈ 104.88
+    # (population variant would be sqrt(55000/6) ≈ 95.74).
+    assert response.data[0]["orders.amount_stddev_samp"] == pytest.approx(104.88, abs=0.1)
+
+
+async def test_round_over_bare_measure_raises(integration_env):
+    """A bare (non-aggregated) measure inside round is rejected, not leaked."""
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="round(amount, 2)", name="r")],
+    )
+    with pytest.raises(ValueError, match="Bare measure name"):
+        await engine.execute(query)
+
+
+async def test_abs_over_bare_measure_raises(integration_env):
+    """Same guard for abs — a bare measure inside abs is rejected."""
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="abs(amount)", name="a")],
+    )
+    with pytest.raises(ValueError, match="Bare measure name"):
+        await engine.execute(query)

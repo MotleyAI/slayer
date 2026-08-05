@@ -62,6 +62,70 @@ Units can be combined in descending or practical order, for example
 `'1y2m3w5d6h7min8s'`, `'90d'`, `'6h'`, or `'15min'`. Quote the duration value
 inside the formula.
 
+Windowed measures need exactly one resolvable time dimension (a single
+`time_dimensions` entry, or `main_time_dimension` to disambiguate). Filtering on
+a windowed measure (`{"formula": "revenue:sum(window='90d') > 100"}`) applies
+after aggregation, and the windowed measure must also be selected.
+
+A windowed measure may also be used purely as an **order** target without being
+selected — `{"order": [{"column": "revenue:sum(window='90d')", "direction": "desc"}]}`
+ranks by the rolling value and keeps it out of the result. That works both for a
+bare windowed measure and for one inside an order-only composite
+(`{"column": "revenue:sum(window='90d') / cnt:sum"}`).
+
+Note the deliberate asymmetry: a windowed measure inside a composite is allowed
+in `order` but not yet in `measures`. Ordering needs only a single scalar
+comparison, whereas projecting the composite surfaces the rolling value's NULLs
+(a grain bucket with no matching source rows yields NULL) as user-visible
+result values — settling those semantics is part of the follow-up below.
+
+#### Time bounds do not clip the window
+
+A trailing window has to read rows from *before* the earliest bucket you asked
+for — otherwise that bucket silently under-counts. So a **time bound narrows
+which buckets come back, not which rows the window may reach**. These two
+queries return identical numbers:
+
+```json
+{"time_dimensions": [{"dimension": "created_at", "granularity": "month",
+                      "date_range": ["2025-01-01", "2025-12-31"]}]}
+```
+```json
+{"time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
+ "filters": ["created_at >= '2025-01-01' and created_at <= '2025-12-31'"]}
+```
+
+A bound counts as a *frame* bound when it compares a **time dimension's own
+column** against a **literal** using `<`, `<=`, `>`, or `>=`. Everything else is
+an ordinary row filter and does restrict the window's input, including:
+
+- other operators on that column — `created_at == '2025-01-01'`, `IN (…)`,
+  `IS NOT NULL`;
+- a bound on a time column that is not one of the query's time dimensions;
+- a comparison against another column rather than a literal;
+- a bound wrapped in `or` or `not`, which cannot be separated out safely;
+- `filters` declared on the **model** — those define which rows exist at all, so
+  a model scoped to `created_at >= '2024-01-01'` does clip the window there.
+
+Mixed filters are split, so only the time part is set aside:
+`"created_at >= '2025-01-01' and status = 'paid'"` restricts the window's input
+to paid rows while still reaching back before January.
+
+The same rule applies to [`time_shift`](#transform-functions) — the earliest
+visible bucket still gets its prior-period value under either spelling.
+
+If you genuinely want to clip the underlying rows, apply the bound in an inner
+stage of a multi-stage query so the windowed stage never sees the raw column.
+
+The following windowed-measure shapes raise a clear error rather than returning
+wrong numbers, and are planned follow-ups: a windowed aggregation other than
+`sum`/`avg`; a cross-model windowed measure (`customers.revenue:sum(window=…)`);
+a windowed measure combined with a transform (`cumsum`, `time_shift`, …) in any
+position; a windowed measure nested in an arithmetic/composite expression in
+`measures` (`{"formula": "revenue:sum(window='90d') / 2"}`); or one compared
+against a plain aggregate inside one filter
+(`revenue:sum(window='90d') > 100 and revenue:sum > 50`).
+
 ---
 
 ## Field Formulas
@@ -131,12 +195,12 @@ Functions apply window operations to measures:
 | Function | Description | SQL Generated |
 |----------|-------------|---------------|
 | `cumsum(x)` | Running total over time | `SUM(x) OVER (PARTITION BY dims ORDER BY time)` |
-| `time_shift(x, n)` | Value N periods back/ahead | Self-join CTE with INTERVAL offset |
+| `time_shift(x, n)` | Value N time buckets back/ahead (calendar-aware) | Self-join CTE with INTERVAL offset |
 | `time_shift(x, offset, gran)` | Value from a different time bucket | Self-join CTE with INTERVAL offset |
 | `lag(x, n)` | Value N rows back (window function) | `LAG(x, n) OVER (PARTITION BY dims ORDER BY time)` |
 | `lead(x, n)` | Value N rows ahead (window function) | `LEAD(x, n) OVER (PARTITION BY dims ORDER BY time)` |
-| `change(x)` | Difference from previous period | Desugars to `x - time_shift(x, -1)` |
-| `change_pct(x)` | Percentage change from previous | Desugars to `(x - ts) / ts` where `ts = time_shift(x, -1)` |
+| `change(x)` | Period-over-period difference (partition-safe, resets per group) | Desugars to `x - time_shift(x, -1)` |
+| `change_pct(x)` | Period-over-period % change, e.g. month-over-month growth (partition-safe, resets per group; NULL when the prior period's value is 0 or missing) | Desugars to `CASE WHEN ts != 0 THEN (x - ts) / ts END` where `ts = time_shift(x, -1)` |
 | `consecutive_periods(predicate)` | Current trailing run length where predicate is true | Staged window CTEs with reset groups |
 | `rank(x[, partition_by=...])` | Ranking by value (descending) | `RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
 | `percent_rank(x[, partition_by=...])` | Relative rank in [0, 1] (descending) | `PERCENT_RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
@@ -154,6 +218,14 @@ total per status, not one running total across the whole result set.
 **Self-join transforms vs window-function transforms:**
 
 `time_shift` uses a **self-join CTE** with an INTERVAL-shifted time column. `change` and `change_pct` are desugared into a hidden `time_shift` + arithmetic expression at query enrichment time. The shifted sub-query applies the time offset everywhere (WHERE, GROUP BY, SELECT), so it can reach outside the current result set — no edge NULLs when the database has the data, and correct handling of gaps in time series.
+
+The self-join matches on **every projected dimension as well as the shifted time column** — plain columns, joined columns (`stores.name`), derived columns, and any secondary time dimension all take part in the join grain (e.g. `ON base.month IS NOT DISTINCT FROM shifted.month AND base.store IS NOT DISTINCT FROM shifted.store`). So these transforms are partition-safe: each group's series is compared only against itself, and per-group series reset cleanly. One store's first month is never diffed against another store's last month. The grain match is **null-safe** (`IS NOT DISTINCT FROM`, or the dialect equivalent), so a group with a NULL dimension value — for example rows with no matching row across a LEFT join — still lines up against its own prior period instead of dropping to a NULL shifted value.
+
+**Intent recipes:**
+
+- Month-over-month / period-over-period growth → `change_pct(revenue:sum)` with a `time_dimensions` entry at the desired granularity. Prefer this over hand-building the ratio from `time_shift`.
+- Absolute period-over-period delta → `change(revenue:sum)`.
+- Comparing against a *different* grain than the query's (e.g. year-over-year on a monthly series), or using the shifted value as a term in custom arithmetic → `time_shift(revenue:sum, -1, 'year')`.
 
 `lag(x, n)` and `lead(x, n)` use SQL `LAG`/`LEAD` window functions directly. They are more efficient but have two trade-offs:
 
@@ -222,7 +294,7 @@ Combine with a filter to get "top N":
 
 **Ranking within a partition (`partition_by=`):**
 
-To rank within groups instead of across the whole result set, pass `partition_by=` referencing one or more **query dimensions** (or time dimensions). The columns must already be grouped on — partitioning by a column that's not a dimension errors at enrichment time.
+To rank within groups instead of across the whole result set, pass `partition_by=` referencing one or more **query dimensions** (or time dimensions). The columns must already be grouped on — partitioning by a column that's not a dimension errors at plan time (HTTP 400). Naming a query time-dimension partitions by its truncated bucket, not the raw timestamp.
 
 ```json
 {
@@ -277,8 +349,20 @@ Inside `Column.sql`, `ModelMeasure.formula`, or any `Aggregation.formula`, you c
 | `exp(x)` | 1 | `e^x` |
 | `sqrt(x)` | 1 | Square root |
 | `pow(x, n)` / `power(x, n)` | 2 | `x^n`. Both spellings are accepted (sqlglot may emit either depending on origin dialect). |
+| `round(x[, ndigits])` | 1–2 | Round to `ndigits` decimal places (default 0). `ndigits` must be an integer literal. |
+| `abs(x)` | 1 | Absolute value. |
 
-These are native on Postgres / DuckDB / MySQL / ClickHouse. SQLite doesn't have most of them in the standard build, so SLayer registers Python implementations on every connection (see `slayer/sql/sqlite_udfs.py`). NULL inputs always return NULL. Math-domain errors (`ln(0)`, `sqrt(-1)`, `pow(0, -1)`) propagate as `sqlite3.OperationalError` — matching Postgres's strict semantics rather than SQLite ≥3.35's silent-NULL built-in `log()`.
+Unlike the other scalar functions above — which pass through only when embedded in a larger `Column.sql` or arithmetic expression — `round` and `abs` are also valid as the **top-level** form of a query measure or `ModelMeasure.formula`:
+
+```python
+{"formula": "round(revenue:sum, 2)"}        # round an aggregate
+{"formula": "abs(revenue:sum - cost:sum)"}  # absolute difference
+{"formula": "round(revenue:sum / *:count, 2)"}
+```
+
+On Postgres, 2-argument `round` over a floating-point value is automatically cast to `numeric` so it executes (Postgres has no `round(double precision, integer)` overload). SQLite and DuckDB round `DOUBLE` natively.
+
+These are native on Postgres / DuckDB / MySQL / ClickHouse. SQLite doesn't have most of them in the standard build, so SLayer registers Python implementations on every connection (see `slayer/sql/dialects/sqlite.py`). NULL inputs always return NULL. Math-domain errors (`ln(0)`, `sqrt(-1)`, `pow(0, -1)`) propagate as `sqlite3.OperationalError` — matching Postgres's strict semantics rather than SQLite ≥3.35's silent-NULL built-in `log()`.
 
 The 2-arg `log(B, X)` UDF is registered on **every** SQLite version, including ≥3.35 where it overrides the built-in's silent-NULL behaviour to match Postgres's strict error semantics. `ln`, `log10`, and `log2` also always register; the `log2` UDF overrides SQLite ≥3.35's silent-NULL built-in to keep the same strict semantics.
 

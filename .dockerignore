@@ -17,7 +17,6 @@ examples
 *.md
 !README.md
 !LICENSE
-mkdocs.yml
-.readthedocs.yaml
+zensical.toml
 .dockerignore
 .gitignore

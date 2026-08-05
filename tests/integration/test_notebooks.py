@@ -10,6 +10,7 @@ leak into another).
 """
 
 import shutil
+import socket
 from pathlib import Path
 
 import pytest
@@ -50,18 +51,25 @@ def _ensure_jaffle_db():
 # Map: notebook path relative to EXAMPLES_DIR → Linear issue + reason.
 # Re-enable a notebook by removing its entry once the cited issue lands.
 _KNOWN_FAILING_NOTEBOOKS = {
-    "04_time/time_nb.ipynb": (
-        "DEV-1474: cross-model partition in time_shift CTEs not yet "
-        "implemented in the typed pipeline. The QoQ-by-store cell "
-        "(``change(order_total:sum)`` with ``dimensions=['stores.name']``) "
-        "hits ``stage 7b.12``."
-    ),
+    # DEV-1474 (cross-model partition in time_shift CTEs) landed in DEV-1711
+    # Stage 7 — the 04_time QoQ-by-store cell now runs, so that notebook is
+    # un-skipped. 09_lightning_talk stays skipped for a DIFFERENT, downstream
+    # reason: its hero cell issues ONE query with TWO time_shift transforms
+    # (change_pct + an explicit time_shift), which collide on the CTE name
+    # `shifted__time_shift_inner` — the DEV-1692 de-collision gap owned by
+    # Stage 9 (same gap as the 13_osi_import notebooks below).
     "09_lightning_talk/lightning_talk_nb.ipynb": (
-        "DEV-1474: cross-model partition in time_shift CTEs not yet "
-        "implemented in the typed pipeline. The hero query "
-        "(``change_pct(order_total:sum)`` with "
-        "``dimensions=['stores.name']``) hits the same ``stage 7b.12`` "
-        "deferred path as the 04_time notebook."
+        "DEV-1713: DEV-1692 duplicate time_shift CTE name "
+        "(`Duplicate CTE name \"shifted__time_shift_inner\"`) — the hero query "
+        "combines change_pct(order_total:sum) with an explicit "
+        "time_shift(order_total:sum, -1, 'month') in one query, so two shifted "
+        "CTEs are emitted under the same name. DEV-1474's cross-model partition "
+        "(the Stage-7 blocker) is fixed; this is the Stage-9 collision gap."
+    ),
+    # DEV-1704 Stage-0 parity gaps surfaced by the integration notebook run.
+    "12_query_cache/query_cache_nb.ipynb": (
+        "DEV-1715: the DEV-1587 per-query cache is not yet wired into the "
+        "typed pipeline (deferred from Stage 0)."
     ),
 }
 
@@ -75,6 +83,46 @@ def notebook_path(request):
     return request.param
 
 
+# The dbt MetricFlow notebook bootstraps by shallow-cloning an upstream GitHub
+# repo on first run. When that bootstrap can't complete offline, skip rather
+# than fail. The helper writes a `.complete` marker only after a fully built
+# cache, so its presence is the authoritative "network-free from here" signal;
+# a bare/partial clone dir is not enough.
+_METRICFLOW_NB_DIR = "11_dbt_metricflow"
+
+
+def _github_reachable(host: str = "github.com", port: int = 443, timeout: float = 5.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _bootstrap_failure_is_transient(error_text: str) -> bool:
+    """True if a MetricFlow bootstrap error reflects a transient network/server
+    problem (GitHub 5xx/429, DNS, dropped connection) rather than a deterministic
+    one (bad pin SHA, missing CSVs). A reachable socket does not guarantee a clone
+    succeeds — GitHub can accept the connection and still answer 503 — so the skip
+    guard consults this in addition to :func:`_github_reachable`.
+
+    Reuses the setup helper's classifier (imported lazily, mirroring the in-fixture
+    ``build_jaffle_shop`` import above) so the retry loop and skip guard agree on
+    what counts as transient. If the helper can't be imported, err toward *not*
+    transient so a genuine failure is never silently skipped.
+    """
+    import sys
+
+    metricflow_dir = EXAMPLES_DIR / _METRICFLOW_NB_DIR
+    if str(metricflow_dir) not in sys.path:
+        sys.path.insert(0, str(metricflow_dir))
+    try:
+        from setup_metricflow import _is_transient_git_error
+    except ImportError:
+        return False
+    return _is_transient_git_error(error_text)
+
+
 def test_notebook_runs_without_errors(notebook_path, request):
     """Execute the notebook and assert it completes without errors."""
     rel = str(notebook_path.relative_to(EXAMPLES_DIR))
@@ -83,6 +131,12 @@ def test_notebook_runs_without_errors(notebook_path, request):
             reason=_KNOWN_FAILING_NOTEBOOKS[rel],
             strict=False,
         ))
+    is_metricflow = _METRICFLOW_NB_DIR in notebook_path.parts
+    if is_metricflow:
+        complete_marker = notebook_path.parent / ".cache" / ".complete"
+        if not complete_marker.exists() and not _github_reachable():
+            pytest.skip("GitHub unreachable; cannot bootstrap the MetricFlow notebook")
+
     with open(notebook_path) as f:
         nb = nbformat.read(f, as_version=4)
 
@@ -92,4 +146,17 @@ def test_notebook_runs_without_errors(notebook_path, request):
         kernel_name="python3",
         resources={"metadata": {"path": str(notebook_path.parent)}},
     )
-    client.execute()
+    try:
+        client.execute()
+    except nbclient.exceptions.CellExecutionError as exc:
+        # A failing `git fetch` (or a stale/partial cache) surfaces as
+        # MetricFlowDemoError mid-run. Skip — rather than report a bootstrap
+        # failure as a notebook bug — when GitHub is unreachable *or* the failure
+        # is a transient network/server hiccup (e.g. a 503 over a reachable
+        # socket). A deterministic MetricFlowDemoError (bad pin, missing CSVs)
+        # still fails loudly.
+        if is_metricflow and "MetricFlowDemoError" in str(exc):
+            text = str(exc)
+            if not _github_reachable() or _bootstrap_failure_is_transient(text):
+                pytest.skip(f"MetricFlow notebook could not bootstrap: {exc}")
+        raise

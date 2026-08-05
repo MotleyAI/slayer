@@ -339,6 +339,51 @@ class TestComposite:
         )
         assert bound.value_key == LiteralKey(value=Decimal(42))
 
+    def test_aggregates_nested_in_scalar_call_stay_bound(self):
+        # DEV-1484 backfill from the deleted
+        # test_formula.py::TestPlaceholderLeakRegression (DEV-1341). The legacy
+        # parser flattened such formulas to a SQL string with ``__aggN__``
+        # placeholders, so an aggregate nested inside a non-transform call
+        # (``nullif`` / ``coalesce``) could fail to register and leak its
+        # placeholder into emitted SQL. The typed pipeline keeps structure, so
+        # the equivalent guarantee is that BOTH aggregates survive binding as
+        # AggregateKeys in their original positions.
+        bound = bind_expr(
+            parse_expr("*:count / nullif(amount:max, 0)"),
+            scope=_scope(), bundle=_bundle(),
+        )
+        key = bound.value_key
+        assert isinstance(key, ArithmeticKey)
+        assert key.op == "/"
+        outer_agg, wrapped = key.operands
+        assert outer_agg == AggregateKey(source=StarKey(path=()), agg="count")
+        assert isinstance(wrapped, ScalarCallKey)
+        assert wrapped.name == "nullif"
+        assert wrapped.args[0] == AggregateKey(
+            source=ColumnKey(path=(), leaf="amount"), agg="max",
+        )
+        # An aggregate anywhere inside the scalar call makes the whole
+        # expression aggregate-phase.
+        assert key.phase == Phase.AGGREGATE
+
+    def test_coalesce_wrapped_aggregate_plus_outside_aggregate(self):
+        # DEV-1484 backfill: ``coalesce(amount:sum, 0) + amount:avg`` — one
+        # aggregate wrapped by a scalar, one outside it. Both must bind.
+        bound = bind_expr(
+            parse_expr("coalesce(amount:sum, 0) + amount:avg"),
+            scope=_scope(), bundle=_bundle(),
+        )
+        key = bound.value_key
+        assert isinstance(key, ArithmeticKey)
+        wrapped, outside = key.operands
+        assert isinstance(wrapped, ScalarCallKey)
+        assert wrapped.args[0] == AggregateKey(
+            source=ColumnKey(path=(), leaf="amount"), agg="sum",
+        )
+        assert outside == AggregateKey(
+            source=ColumnKey(path=(), leaf="amount"), agg="avg",
+        )
+
 
 # ---------------------------------------------------------------------------
 # IllegalScopeReferenceError — `__` in ModelScope
@@ -468,6 +513,22 @@ class TestFilterBinder:
             isinstance(k, ColumnKey) and k.leaf == "status" for k in refs
         )
         assert any(isinstance(k, AggregateKey) for k in refs)
+
+    def test_referenced_keys_include_aggregate_inside_scalar_call(self):
+        # DEV-1484 backfill from the deleted
+        # test_formula.py::TestPlaceholderLeakRegression::
+        # test_predicate_with_nullif_wrapper — ``nullif(*:count, 0) > 5`` is a
+        # predicate whose aggregate is buried inside a scalar call. It must
+        # still be discovered as a referenced key (the legacy failure mode was
+        # a lost registration leaking an ``__aggN__`` placeholder) and drive
+        # the filter's phase.
+        bound = bind_filter(
+            parse_expr("nullif(*:count, 0) > 5"),
+            scope=_scope(), bundle=_bundle(),
+        )
+        assert bound.phase == Phase.AGGREGATE
+        refs = set(bound.referenced_keys)
+        assert AggregateKey(source=StarKey(path=()), agg="count") in refs
 
 
 # ---------------------------------------------------------------------------

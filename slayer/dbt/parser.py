@@ -13,7 +13,6 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Dict, List
 
 import yaml
 
@@ -56,7 +55,7 @@ def _extract_ref_name(raw: str) -> str:
     return raw
 
 
-def _collect_yaml_paths(directory: str) -> List[str]:
+def _collect_yaml_paths(directory: str) -> list[str]:
     """Recursively collect .yaml and .yml file paths, skipping hidden dirs/files."""
     paths = []
     for root, dirs, files in os.walk(directory):
@@ -69,7 +68,7 @@ def _collect_yaml_paths(directory: str) -> List[str]:
     return paths
 
 
-def _collect_sql_files(directory: str) -> Dict[str, str]:
+def _collect_sql_files(directory: str) -> dict[str, str]:
     """Recursively collect .sql file bodies keyed by filename stem.
 
     dbt models are named after their `.sql` filename (without the extension),
@@ -77,7 +76,7 @@ def _collect_sql_files(directory: str) -> Dict[str, str]:
     hidden dirs/files and any target/build directories dbt may have left
     behind.
     """
-    result: Dict[str, str] = {}
+    result: dict[str, str] = {}
     for root, dirs, files in os.walk(directory):
         dirs[:] = [d for d in dirs if not d.startswith(".") and d != "target"]
         for filename in sorted(files):
@@ -121,8 +120,8 @@ def parse_dbt_project(
             models whose underlying dbt model is a query rather than a
             physical table.
     """
-    all_semantic_models: List[DbtSemanticModel] = []
-    all_metrics: List[DbtMetric] = []
+    all_semantic_models: list[DbtSemanticModel] = []
+    all_metrics: list[DbtMetric] = []
 
     yaml_paths = _collect_yaml_paths(project_path)
     if not yaml_paths:
@@ -206,7 +205,7 @@ def parse_dbt_project(
     )
 
 
-def _parse_regular_models(project_path: str) -> List[DbtRegularModel]:
+def _parse_regular_models(project_path: str) -> list[DbtRegularModel]:
     """Discover regular (non-semantic) dbt models via the dbt manifest.
 
     Returns an empty list when the manifest is absent and dbt-core is not

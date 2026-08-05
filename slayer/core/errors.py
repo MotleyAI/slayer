@@ -35,7 +35,7 @@ class AmbiguousModelError(SlayerError):
     priority`` CLI subcommand, etc.).
     """
 
-    def __init__(self, name: str, candidates: List[str]) -> None:
+    def __init__(self, name: str, candidates: list[str]) -> None:
         self.name = name
         self.candidates = list(candidates)
         super().__init__(
@@ -85,8 +85,8 @@ class SchemaDriftError(SlayerError):
 
     def __init__(
         self,
-        models: List[str],
-        to_delete: List[Any],
+        models: list[str],
+        to_delete: list[Any],
         original: BaseException,
     ) -> None:
         self.models = list(models)
@@ -110,8 +110,8 @@ class ColumnCycleError(SlayerError, ValueError):
     compile-time cycle raise) continue to work unchanged.
     """
 
-    def __init__(self, cycle: List[Tuple[str, str]]) -> None:
-        self.cycle: List[Tuple[str, str]] = list(cycle)
+    def __init__(self, cycle: list[tuple[str, str]]) -> None:
+        self.cycle: list[tuple[str, str]] = list(cycle)
         chain = " → ".join(f"{m}.{c}" for m, c in self.cycle)
         super().__init__(f"Circular column reference detected: {chain}")
 
@@ -417,4 +417,103 @@ class UnreachableFilterDroppedWarning(UserWarning):
         super().__init__(
             f"Filter {filter_text!r} dropped from cross-model CTE "
             f"(unreachable from CTE root): {reason}"
+        )
+
+
+class IdCollisionError(SlayerError, ValueError):
+    """Raised by filename-backed (YAML) storage when saving an entity
+    whose id differs from an existing id only by letter case — such ids
+    collide as filenames on case-insensitive filesystems. ``kind`` is
+    ``"model"`` / ``"datasource"`` / ``"memory"``. Multi-inherits
+    ``ValueError`` so existing ``except ValueError`` call sites continue
+    to work unchanged.
+    """
+
+    _LABELS = {
+        "model": "Model name",
+        "datasource": "Datasource name",
+        "memory": "Memory id",
+    }
+
+    def __init__(
+        self,
+        *,
+        kind: str,
+        new_id: str,
+        existing_id: str,
+        data_source: str | None = None,
+    ) -> None:
+        self.kind = kind
+        self.new_id = new_id
+        self.existing_id = existing_id
+        self.data_source = data_source
+        label = self._LABELS.get(kind, "Id")
+        scope = f" in datasource '{data_source}'" if data_source else ""
+        super().__init__(
+            f"{label} '{new_id}' conflicts with existing '{existing_id}'"
+            f"{scope} (differs only by case). Rename or delete one."
+        )
+
+
+class ForcedFilterError(SlayerError):
+    """Raised when the session policy's ruleset cannot be safely applied to a query.
+
+    Carries the offending ``table`` and ``column`` for diagnostics; either may be
+    ``None`` (``column`` is, for the unlisted-table and statement-root guards).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        table: str | None = None,
+        column: str | None = None,
+    ) -> None:
+        self.table = table
+        self.column = column
+        super().__init__(message)
+
+
+class DistinctDimensionValuesError(SlayerError, ValueError):
+    """Raised when ``distinct_dimension_values=False`` conflicts with the
+    query shape (DEV-1543).
+
+    ``distinct_dimension_values=False`` asks for raw rows — no top-level
+    ``GROUP BY``. It is incompatible with any aggregation: a non-empty
+    ``measures`` list, a filter / order item referencing a measure
+    (colon-form ``col:agg`` / ``*:count``, a transform call like
+    ``rank(...)``, or a bare saved ``ModelMeasure`` name), or a query
+    with no projected columns at all (both ``dimensions`` and
+    ``time_dimensions`` empty).
+
+    Multi-inherits ``ValueError`` so existing ``except ValueError``
+    call sites continue to work unchanged.
+    """
+
+
+class UnresolvableOrderColumnError(SlayerError, ValueError):
+    """Raised when an ``order`` item references a column that cannot be bound
+    to the query's FROM scope (DEV-1645).
+
+    Fires when the sort key is neither a projected output alias, a base-model
+    column, nor a column on a join that the query already pulled into scope
+    (via a dimension, measure, or filter). The common case is ordering by an
+    *unprojected joined column* — e.g. ``order=[{"column":
+    "customers.regions.name"}]`` — whose join was never resolved, so there is
+    no in-scope table to qualify against. Emitting a reference anyway would
+    produce SQL that fails at the database with UndefinedTable/UndefinedColumn;
+    rejecting at compile time surfaces an actionable error instead.
+
+    Multi-inherits ``ValueError`` so existing ``except ValueError`` call sites
+    continue to work unchanged.
+    """
+
+    def __init__(self, *, column: str, qualifier: str) -> None:
+        self.column = column
+        self.qualifier = qualifier
+        super().__init__(
+            f"ORDER BY column '{qualifier}.{column}' cannot be resolved: it is not a "
+            f"projected field, a base column, or a column on a join that is in scope. "
+            f"Project it (add to dimensions/measures), reference it in a filter, or "
+            f"order by a projected field instead."
         )

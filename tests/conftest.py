@@ -2,7 +2,7 @@
 
 import os
 import tempfile
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -24,7 +24,7 @@ def _disable_embedding_channel_by_default(monkeypatch: pytest.MonkeyPatch) -> No
       machine that has ``OPENAI_API_KEY`` set, and emitting per-entity
       bubble-up warnings on CI that doesn't.
     * Tests that *do* want to exercise the embedding code path
-      (``test_embeddings_service.py``, ``test_search_three_channel.py``)
+      (``test_embedding_retriever.py``, ``test_search_three_channel.py``)
       explicitly monkeypatch ``is_available`` back to ``True`` in their
       local fixtures, so this autouse default doesn't interfere.
 
@@ -34,6 +34,22 @@ def _disable_embedding_channel_by_default(monkeypatch: pytest.MonkeyPatch) -> No
     """
     embedding_client.is_available.cache_clear()
     monkeypatch.setattr(embedding_client, "is_available", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def _enable_scope_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DEV-1705: validate scope-closure on every generated statement.
+
+    Sets ``SLAYER_VALIDATE_SCOPES=1`` so the generator's post-mangle, pre-RLS
+    ``maybe_validate_scopes`` hook (``slayer/sql/scope_check.py``) runs for
+    every emitted statement across the suite. A *provable* out-of-scope
+    reference raises ``ScopeLeakError`` at generation time — turning
+    DEV-1703's "no gaps" invariant into a failing test. The validator is
+    sound-on-corpus (no false positives); if a currently-passing statement
+    trips it, that is either a genuine latent leak (pin strict-xfail to its
+    owning stage) or a validator bug (fix the validator) — never silence it.
+    """
+    monkeypatch.setenv("SLAYER_VALIDATE_SCOPES", "1")
 
 
 @pytest.fixture

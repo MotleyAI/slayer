@@ -18,10 +18,6 @@ slayer pg-serve --demo
 
 # Production-ish — non-loopback bind requires a password token
 slayer pg-serve --host 0.0.0.0 --token "$(pass slayer-token)"
-
-# TLS-enabled
-slayer pg-serve --host 0.0.0.0 --token TOK \
-    --tls-cert /etc/ssl/slayer.crt --tls-key /etc/ssl/slayer.key
 ```
 
 Flags:
@@ -31,7 +27,6 @@ Flags:
 | `--host HOST` | Bind address. Default `0.0.0.0`. With `--demo` and no token, defaults to `127.0.0.1` for the loopback fallback. |
 | `--port PORT` | Default `5145`. |
 | `--token T` | Password token. Falls back to `$SLAYER_PG_TOKEN`. Required for non-loopback binds. |
-| `--tls-cert C` / `--tls-key K` | TLS certificate + key pair (must be supplied together). |
 | `--demo` | Generate + ingest the bundled Jaffle Shop dataset before starting. |
 | `--storage PATH` | Storage path (same as the REST + MCP servers). |
 
@@ -60,20 +55,50 @@ Any tool with a PostgreSQL connector works. End-to-end with the bundled demo and
 
 ```bash
 # 1. Start SLayer speaking Postgres, with the Jaffle Shop demo preloaded.
-slayer pg-serve --demo                 # listens on 127.0.0.1:5145
+#    The BI tool connects over the network (e.g. from a Docker container), so
+#    bind all interfaces — a non-loopback bind requires a token.
+slayer pg-serve --demo --host 0.0.0.0 --token pick-a-secret
 
 # 2. Run Metabase (any BI tool works — Superset, Tableau, Power BI, Grafana, …).
-docker run -d -p 3000:3000 --name metabase metabase/metabase
+#    --add-host makes `host.docker.internal` resolve to the Docker host on
+#    every platform (built into Docker Desktop; required on Linux, Docker ≥ 20.10).
+#    The volume keeps Metabase's own settings/dashboards across container re-creates.
+docker run -d -p 3000:3000 --name metabase \
+  --add-host=host.docker.internal:host-gateway \
+  -e MB_DB_FILE=/metabase.data/metabase.db \
+  -v metabase-data:/metabase.data \
+  metabase/metabase
 ```
 
 In Metabase: **Admin → Databases → Add database → PostgreSQL** and fill in:
 
 | Field | Value |
 |---|---|
-| Host | `host.docker.internal` (or your host's IP) |
+| Host | `host.docker.internal` |
 | Port | `5145` |
 | Database name | the SLayer **datasource** (e.g. `jaffle_shop`) |
-| Username / Password | anything when no `--token` is set; otherwise the token as the password |
+| Username | anything non-empty (ignored) |
+| Password | the `--token` value (`pick-a-secret`) |
+| SSL | off |
+
+Or as a single JDBC connection string:
+
+```text
+jdbc:postgresql://host.docker.internal:5145/jaffle_shop?user=metabase&password=pick-a-secret&sslmode=disable
+```
+
+> **Connection refused / name not resolving?** Two common causes:
+>
+> 1. The server was started without `--host 0.0.0.0` — the default demo bind is
+>    `127.0.0.1`, which containers cannot reach.
+> 2. The BI container runs on Linux Docker without the `--add-host` mapping —
+>    `host.docker.internal` only exists out of the box on Docker Desktop. Either
+>    re-create the container with the flag (compose: `extra_hosts:
+>    ["host.docker.internal:host-gateway"]`), or use the container's default
+>    gateway IP as Host instead — find it with
+>    `docker exec <container> ip route | awk '/default/ {print $3}'`
+>    (typically `172.17.0.1` on the default bridge network, but it differs per
+>    compose network and daemon config, so don't hard-code it).
 
 Metabase introspects the schema (via `INFORMATION_SCHEMA` + `pg_catalog`), lists each
 SLayer model as a table under schema `public`, and lets you build questions/dashboards
@@ -90,7 +115,8 @@ against them. Project named metrics (`revenue_sum`) or write `SUM(amount)` /
   at startup.
 * With a token, the server requests a cleartext password
   (`AuthenticationCleartextPassword`); the client's password must equal the token.
-  Combine with TLS (or a loopback bind) so the password is not sent in the clear.
+  Use a loopback bind (or a trusted network) so the password is not sent in the clear.
+  Let us know if you would like us to support TLS. 
 
 ## SQL Surface
 
@@ -112,6 +138,122 @@ Postgres-specific predicates that aren't valid SLayer DSL (`ILIKE`, `::cast`, re
 `ANY`/`ALL`) parse but are rejected at execution — use the standard comparison / `IN` /
 `BETWEEN` forms.
 
+### `CAST(<column> AS <type>)` in projection
+
+A projection of the shape `CAST(<column> AS <type>)` (and the equivalent `col::type`
+sugar) is accepted when the inner expression is a bare or qualified column reference
+**and** the (source, target) pair is in the allowlist below. The engine still executes
+the bare column — the cast is a pure wire-layer type rewrite. The projected column's
+Postgres OID is overridden to match the casted type.
+
+Common BI shapes covered: `SELECT CAST(ordered_at AS TIMESTAMP) FROM orders` (DATE
+column promoted for a TIMESTAMP-aware client), `SELECT CAST(amount AS TEXT) AS s
+FROM orders` (stringification), `SELECT CAST(customers.region AS TEXT) FROM orders`
+(joined column).
+
+Out of scope: `CAST` around aggregates (`CAST(SUM(amount) AS DOUBLE)`), `TRY_CAST`,
+and `CAST` around expressions that aren't a bare column (`CAST(SUBSTRING(...) AS T)`).
+`CAST` wrapping a `DATE_TRUNC(...)` continues to route through the time-grain unwrap.
+
+`CAST(...)` in `ORDER BY` and `GROUP BY` has two layers of admission:
+
+1. **Unaliased canonical-form** (e.g. `ORDER BY CAST(c AS T)` repeating the
+   projection's CAST verbatim): **never admitted.** The translator raises
+   `ORDER BY column '...' is not in the projection list` / the GROUP BY
+   strict-on-extras error. Workaround: alias and reference the alias.
+2. **Aliased reference** (`SELECT CAST(c AS T) AS x ... ORDER BY x` /
+   `... GROUP BY x`): admitted **only** when the `(source, target)` pair
+   preserves sort/group semantics under the bare-column engine projection.
+
+Pairs that **fail** the aliased-reference admission and raise
+`ORDER BY on CAST projection '...' with lossy pair X→T is unsupported`
+(symmetric message for GROUP BY):
+
+| Path     | Lossy pairs                                                              |
+|----------|--------------------------------------------------------------------------|
+| ORDER BY | `X → TEXT` for every non-text `X` (lex sort ≠ engine's natural sort). `TEXT → TEXT` is identity and stays admitted. |
+| GROUP BY | `TIMESTAMP → DATE` (many-to-one rollup); `INT → DOUBLE` (IEEE 754 collapse beyond ±2^53) |
+
+Every other admitted pair — identity (`X → X`), `DATE → TIMESTAMP`,
+`TIMESTAMP → DATE` for ORDER BY, `INT → DOUBLE` — preserves the casted
+semantics under the bare-column engine projection, so the alias path stays
+open.
+
+```sql
+-- Always rejected (canonical form):
+SELECT CAST(delivered_at AS TIMESTAMP) FROM orders
+ORDER BY CAST(delivered_at AS TIMESTAMP);
+
+-- Aliased reference, safe pair → works:
+SELECT CAST(delivered_at AS TIMESTAMP) AS dt FROM orders
+ORDER BY dt;
+
+-- Aliased reference, lossy pair → rejected:
+SELECT CAST(id AS TEXT) AS s FROM orders ORDER BY s;
+SELECT CAST(ordered_at AS DATE) AS d, COUNT(*) FROM orders GROUP BY d;
+```
+
+The wire-type override still applies in the safe-pair case — `dt` is
+wire-typed `TIMESTAMP` even though the engine sorts the underlying `DATE`.
+A future ticket can lift the remaining restrictions by pushing the CAST
+into the engine SQL.
+
+Admitted (source, target) coercions:
+
+| Source type   | Admitted target types        |
+|---------------|------------------------------|
+| `DATE`        | `DATE`, `TIMESTAMP`, `TEXT`  |
+| `TIMESTAMP`   | `TIMESTAMP`, `DATE`, `TEXT`  |
+| `INT`         | `INT`, `DOUBLE`, `TEXT`      |
+| `DOUBLE`      | `DOUBLE`, `TEXT`             |
+| `BOOLEAN`     | `BOOLEAN`, `TEXT`            |
+| `TEXT`        | `TEXT`                       |
+| *(unknown)*   | `TEXT`                       |
+
+Pairs outside the allowlist (e.g. `CAST(name AS INT)`, `CAST(amount AS BOOLEAN)`)
+raise `Unsupported CAST: cannot project <SOURCE> column as <TARGET> (...). Admitted
+coercions: see docs/interfaces/pg-facade.md.` Unsupported target types (`UUID`,
+`JSON`, `ARRAY`, `STRUCT`, …) raise the standard `Unsupported projection
+expression` error.
+
+#### CAST coarse-OID mapping
+
+CAST is a **coarse wire-OID hint**, not a precision-preserving conversion.
+The SLayer engine projects the bare column unchanged; the pg-facade encoder
+is OID-driven, so the wire bytes always match the OID we advertise. Some
+PostgreSQL types the user can write in a CAST don't have a one-to-one
+SLayer equivalent — those collapse onto the nearest broader SLayer type:
+
+| User wrote in `CAST(... AS X)` | SLayer maps to | Wire OID advertised |
+|---|---|---|
+| `INTEGER` / `INT` (pre-existing) | `DataType.INT` | 20 (`int8`) — not 23 (`int4`) |
+| `SMALLINT` | `DataType.INT` | 20 (`int8`) — not 21 (`int2`) |
+| `TINYINT` / `MEDIUMINT` (non-Postgres widths) | `DataType.INT` | 20 (`int8`) |
+| `BIGINT` | `DataType.INT` | 20 (`int8`) ✓ exact match |
+| `DECIMAL` / `NUMERIC` | `DataType.DOUBLE` | 701 (`float8`) — not 1700 (`numeric`) |
+| `FLOAT` / `REAL` / `DOUBLE` | `DataType.DOUBLE` | 701 (`float8`) ✓ |
+| `TIMESTAMPTZ` / `TIMESTAMP WITH TIME ZONE` | `DataType.TIMESTAMP` | 1114 (`timestamp`, no TZ) — not 1184 (`timestamptz`) |
+| `TIMESTAMP` / `DATETIME` | `DataType.TIMESTAMP` | 1114 (`timestamp`) ✓ |
+
+What this means in practice:
+
+- The wire bytes the client receives are always consistent with the OID we
+  advertise (the encoder picks the binary/text form from the OID). There is
+  no value corruption.
+- The OID is potentially broader than what the user typed. A client that
+  asked for `NUMERIC` and got `float8` sees a float on the wire and decodes
+  it correctly as a float — but loses the "exact precision" expectation.
+  A client that asked for `TIMESTAMPTZ` sees naive `timestamp` bytes — and
+  loses TZ-aware decoding semantics.
+- Callers needing exact `NUMERIC` precision, narrow integer wire widths, or
+  TZ-aware timestamps must compute upstream (or wait for SLayer to model
+  those types natively).
+
+`DOUBLE → INT` is intentionally excluded: Python's `int(<float>)` truncates toward zero
+while Postgres rounds half-to-even, so silently admitting the pair would diverge from
+`psql` semantics. Pre-aggregate or pre-round on your side when an integer-typed result
+is required.
+
 ## Introspection
 
 * `INFORMATION_SCHEMA.METRICS` / `DIMENSIONS` / `SCHEMATA` / `TABLES` / `COLUMNS`.
@@ -130,8 +272,40 @@ per column — `asyncpg` (which requests binary results) and `psql` (text) both 
 
 ## Install
 
-The facade is pure-stdlib; the extra exists only to keep the install path consistent:
+The facade is pure-stdlib — no extra is needed. It ships with the base install:
 
 ```bash
-pip install "motley-slayer[pg_facade]"
+pip install motley-slayer
 ```
+
+## Testing your changes
+
+For wire-level / translator changes, the unit suite under `tests/test_pg_facade*.py` covers
+each component in isolation. Behaviour at the *interaction boundary* with a real BI client
+is covered by the live-Metabase end-to-end suite (DEV-1562):
+
+```bash
+poetry run pytest -m metabase_e2e tests/integration/test_metabase_e2e.py -v
+```
+
+The suite needs Docker; it boots `metabase/metabase:v0.62.1.5` alongside two
+token-protected pg-serve processes (per-session random tokens, both bound on `0.0.0.0`
+so the container reaches them via `host.docker.internal`; the second backs the L.2 / L.3
+bad-password tests) and drives ~62 cases through the real `pgjdbc` protocol — bootstrap +
+sync, MBQL aggregations and time-grain breakouts, native-SQL probes, wire-format
+round-trips, transactions, concurrency, and error envelopes. Skips cleanly when Docker is
+unavailable.
+
+Known limitations (each tracked by a strict-`xfail` against a Linear ticket — the day the
+referenced gap is fixed, the test XPASSes and CI flips red, prompting a lift):
+LEFT JOIN-with-subquery projection (DEV-1565), CAST(col AS type) projection (DEV-1566),
+catalog fingerprint measure leak (DEV-1567), MBQL aggregation-ordinal refs in HAVING /
+ORDER BY (DEV-1568) and per-connection `SET` state (DEV-1569).
+
+Metabase week breakouts emit a Sunday-anchored week wrapper
+(`DATE_TRUNC('week', col + INTERVAL '1 day') - INTERVAL '1 day'`); the translator maps this to
+SLayer's `week_sunday` granularity (DEV-1572), so week breakouts bucket the way Metabase asks.
+
+CI fires automatically on PRs touching `slayer/pg_facade/`, `slayer/facade/`,
+`slayer/demo/`, the
+e2e test files, or `pyproject.toml` / `poetry.lock`.
