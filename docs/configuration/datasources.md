@@ -173,7 +173,13 @@ password: YOUR_PASSWORD
 auth, Redshift Serverless, and browser-based SSO in addition to plain
 username/password. To use the classic psycopg2-based dialect instead (e.g.
 for parity with an existing psycopg2 connection pool), set `connection_string`
-directly rather than the structured fields:
+directly rather than the structured fields. This requires `psycopg2-binary`,
+which the `redshift` extra does not install — pull it in via the `postgres`
+extra or install it separately:
+
+```bash
+pip install 'motley-slayer[redshift,postgres]'
+```
 
 ```yaml
 name: rs

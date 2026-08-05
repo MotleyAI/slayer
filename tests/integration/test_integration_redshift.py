@@ -316,14 +316,14 @@ def test_approx_count_distinct_uses_approximate_keyword(rs_storage_with_models) 
     encodes (slayer/sql/dialects/_tier2.py). 3 distinct customer_ids across
     6 orders."""
     engine = SlayerQueryEngine(storage=rs_storage_with_models)
-    result = run_sync(
-        engine.execute(
-            SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="customer_id:count_distinct_approx")],
-            )
-        )
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="customer_id:count_distinct_approx")],
     )
+    dry_run_result = run_sync(engine.execute(query, dry_run=True))
+    assert "APPROXIMATE COUNT(DISTINCT" in dry_run_result.sql
+
+    result = run_sync(engine.execute(query))
     rows = result.data
     assert len(rows) == 1
     val = next(iter(rows[0].values()))

@@ -32,7 +32,7 @@ password: YOUR_PASSWORD
 Or as a connection string, using `redshift-connector` (the default driver —
 supports IAM auth and Redshift Serverless, not just password auth):
 
-```
+```text
 redshift+redshift_connector://YOUR_USER:YOUR_PASSWORD@mycluster.abc123.us-east-1.redshift.amazonaws.com:5439/dev
 ```
 
