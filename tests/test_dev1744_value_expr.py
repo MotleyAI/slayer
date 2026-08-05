@@ -2002,3 +2002,68 @@ class TestNullInInList:
             )
         )
         assert [r["orders.status"] for r in resp.data] == ["new"]
+
+
+class TestUnaryOperandGrouping:
+    """The unary branches need the precedence pass too.
+
+    Adding unary support earlier in this PR fixed the dropped sign but routed
+    the operand straight into ``exp.Neg`` / ``exp.Not`` without grouping it.
+    Both results parse cleanly and mean something else.
+    """
+
+    def test_negated_sum_keeps_its_parens(self) -> None:
+        """``-(a + b)`` must not flatten to ``-a + b``, which is ``(-a) + b``."""
+        key = ArithmeticKey(
+            op="-",
+            operands=(
+                ArithmeticKey(
+                    op="+",
+                    operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1))),
+                ),
+            ),
+        )
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out == "-(orders.amount + 1)", out
+
+    def test_not_of_a_conjunction_keeps_its_parens(self) -> None:
+        """``NOT (a AND b)`` must not flatten to ``NOT a AND b``, which is
+        ``(NOT a) AND b`` — De Morgan, and a different row set."""
+        key = ArithmeticKey(
+            op="not",
+            operands=(
+                ArithmeticKey(
+                    op="and",
+                    operands=(
+                        ArithmeticKey(
+                            op=">",
+                            operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1))),
+                        ),
+                        ArithmeticKey(
+                            op="<",
+                            operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(9))),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out == "NOT (orders.amount > 1 AND orders.amount < 9)", out
+
+    def test_not_of_a_comparison_needs_no_parens(self) -> None:
+        """Don't over-wrap: NOT binds looser than a comparison, so
+        ``NOT a > b`` already means ``NOT (a > b)``."""
+        key = ArithmeticKey(
+            op="not",
+            operands=(
+                ArithmeticKey(
+                    op=">",
+                    operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(5))),
+                ),
+            ),
+        )
+        assert _sql(render_value_key(key, _filter_ctx())) == "NOT orders.amount > 5"
+
+    def test_negated_column_needs_no_parens(self) -> None:
+        key = ArithmeticKey(op="-", operands=(ColumnKey(leaf="amount"),))
+        assert _sql(render_value_key(key, _filter_ctx())) == "-orders.amount"

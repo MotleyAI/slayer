@@ -201,6 +201,8 @@ _PRECEDENCE: Dict[Any, int] = {
     exp.Is: 4, exp.In: 4, exp.Like: 4, exp.Between: 4,
     exp.Add: 5, exp.Sub: 5,
     exp.Mul: 6, exp.Div: 6, exp.Mod: 6,
+    # Unary minus binds tighter than any binary arithmetic.
+    exp.Neg: 7,
 }
 
 # Operators taking exactly two operands. Left-folding a comparison would turn
@@ -255,10 +257,27 @@ def _render_arithmetic(
         return operands[0]
 
     if len(operands) == 1:
+        # Unary operands need the same precedence treatment as binary ones.
+        # Without it ``-(a + b)`` emits ``-a + b`` and ``not (a and b)`` emits
+        # ``NOT a AND b`` — both parse cleanly and both mean something else.
         if op == "not":
-            return exp.Not(this=operands[0])
+            return exp.Not(
+                this=_paren_if_lower_prec(
+                    operands[0],
+                    parent_prec=_PRECEDENCE[exp.Not],
+                    is_right=False,
+                    op=op,
+                ),
+            )
         if op == "-":
-            return exp.Neg(this=operands[0])
+            return exp.Neg(
+                this=_paren_if_lower_prec(
+                    operands[0],
+                    parent_prec=_PRECEDENCE[exp.Neg],
+                    is_right=False,
+                    op=op,
+                ),
+            )
         if op == "+":
             return operands[0]
         raise NotImplementedError(
