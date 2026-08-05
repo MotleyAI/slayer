@@ -59,8 +59,12 @@ These databases are verified by integration tests and runnable Docker examples. 
 | `postgres` / `postgresql` | `motley-slayer[postgres]` | `postgresql://user:pass@localhost:5432/db` |
 | `mysql` / `mariadb` | `motley-slayer[mysql]` | `mysql+pymysql://user:pass@localhost:3306/db` |
 | `clickhouse` | `motley-slayer[clickhouse]` | `clickhouse+http://user:pass@localhost:8123/db` |
-| `duckdb` | `motley-slayer[duckdb]` | `duckdb:///path/to/db.duckdb` |
+| `duckdb` | (built-in, no extra needed) | `duckdb:///path/to/db.duckdb` |
 | `snowflake` | `motley-slayer[snowflake]` | `snowflake://?connection_name=default` (TOML-driven) or `snowflake://user:pw@account/db/schema?warehouse=wh&role=role` (inline). See [Snowflake](#snowflake) below. |
+
+`duckdb` has no install extra because `duckdb` and `duckdb-engine` are core
+dependencies — the bundled demo datasource and the Postgres facade both need
+them, so they are always present.
 
 #### Additional support
 
