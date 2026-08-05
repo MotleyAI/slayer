@@ -506,6 +506,19 @@ def _bind_in(
         LiteralKey(value=normalize_scalar(elt.value))
         for elt in parsed.right.elements
     )
+    # SQL's three-valued logic makes a NULL in the list a trap rather than a
+    # member test. ``col IN (a, NULL)`` never matches on the NULL, and
+    # ``col NOT IN (a, NULL)`` evaluates to NULL for EVERY row — so the filter
+    # silently returns zero rows instead of "everything except a". Neither is
+    # what the author meant, and neither announces itself.
+    if any(v.value is None for v in values):
+        raise ValueError(
+            f"NULL is not allowed inside an {parsed.op!r} list: SQL compares "
+            f"it by three-valued logic, so 'not in' with a NULL matches NO "
+            f"rows at all. Test for null separately — e.g. "
+            f"`col is null` / `col is not null` — combined with the "
+            f"{parsed.op!r} over the non-null values."
+        )
     return InKey(
         column=column,
         values=values,

@@ -1926,3 +1926,79 @@ class TestArityIsRejectedAtBindTime:
             dry_run=True,
         )
         assert "ROUND" in resp.sql.upper()
+
+
+class TestNullInInList:
+    """SQL's three-valued logic makes a NULL member a trap, not a member test.
+
+    ``col IN (a, NULL)`` never matches on the NULL. ``col NOT IN (a, NULL)``
+    is worse: it evaluates to NULL for EVERY row, so the filter returns ZERO
+    rows rather than "everything except a". Neither announces itself — the
+    query runs and hands back a plausible-looking empty result.
+    """
+
+    def test_renderer_refuses_null_in_the_list(self) -> None:
+        key = InKey(
+            column=ColumnKey(leaf="label"),
+            values=(LiteralKey(value="a"), LiteralKey(value=None)),
+        )
+        ctx = _filter_ctx()
+        with pytest.raises(NotImplementedError):
+            render_value_key(key, ctx)
+
+    def test_renderer_refuses_null_in_a_negated_list(self) -> None:
+        key = InKey(
+            column=ColumnKey(leaf="label"),
+            values=(LiteralKey(value="a"), LiteralKey(value=None)),
+            negated=True,
+        )
+        ctx = _filter_ctx()
+        with pytest.raises(NotImplementedError):
+            render_value_key(key, ctx)
+
+    def test_ordinary_in_list_still_renders(self) -> None:
+        key = InKey(
+            column=ColumnKey(leaf="label"),
+            values=(LiteralKey(value="a"), LiteralKey(value="b")),
+        )
+        assert _sql(render_value_key(key, _filter_ctx())) == (
+            "orders.label IN ('a', 'b')"
+        )
+
+    async def test_bind_time_rejects_null_in_list(self, e2e) -> None:
+        """The user-facing half: caught at bind, with a message pointing at
+        ``is null`` rather than at three-valued logic in the abstract."""
+        with pytest.raises(ValueError, match="NULL is not allowed"):
+            await e2e.execute(
+                SlayerQuery(
+                    source_model="orders",
+                    dimensions=[ColumnRef(name="status")],
+                    measures=[ModelMeasure(formula="*:count", name="n")],
+                    filters=["status in ('new', None)"],
+                ),
+                dry_run=True,
+            )
+
+    async def test_bind_time_rejects_null_in_negated_list(self, e2e) -> None:
+        """The dangerous one: this previously returned zero rows in silence."""
+        with pytest.raises(ValueError, match="NULL is not allowed"):
+            await e2e.execute(
+                SlayerQuery(
+                    source_model="orders",
+                    dimensions=[ColumnRef(name="status")],
+                    measures=[ModelMeasure(formula="*:count", name="n")],
+                    filters=["status not in ('new', None)"],
+                ),
+                dry_run=True,
+            )
+
+    async def test_null_free_in_list_still_executes(self, e2e) -> None:
+        resp = await e2e.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="*:count", name="n")],
+                filters=["status in ('new', 'missing')"],
+            )
+        )
+        assert [r["orders.status"] for r in resp.data] == ["new"]

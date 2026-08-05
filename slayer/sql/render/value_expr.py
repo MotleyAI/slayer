@@ -488,6 +488,14 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         )
 
     if isinstance(key, InKey):
+        # Backstop for the bind-time rule: SQL's three-valued logic makes a
+        # NULL member a trap, and ``NOT IN`` with one matches no rows at all.
+        if any(v.value is None for v in key.values):
+            raise NotImplementedError(
+                "NULL is not allowed inside an IN list: 'NOT IN' with a NULL "
+                "matches no rows. Test for null separately with IS NULL / "
+                "IS NOT NULL.",
+            )
         node = exp.In(
             this=render_value_key(key.column, ctx),
             expressions=[_literal(v.value) for v in key.values],
