@@ -232,21 +232,52 @@ class TestCollisionPolicy:
         report = ingest_datasource_report(datasource=ds)
         assert not any(m.name.endswith(("_2", "_3")) for m in report.models)
 
+    _TWO_DUNDER = """
+        CREATE TABLE a__b (id INTEGER PRIMARY KEY, x TEXT);
+        CREATE TABLE a___b (id INTEGER PRIMARY KEY, y TEXT);
+    """
+
     def test_two_dunder_names_collapsing_to_one_skips_the_second(
         self, workspace: Path
     ) -> None:
         """``a__b`` and ``a___b`` both sanitize to ``a_b`` with no real ``a_b``
-        present — the first keeps it, the second is skipped."""
-        ds = _sqlite_ds(
-            workspace,
-            """
-            CREATE TABLE a__b (id INTEGER PRIMARY KEY, x TEXT);
-            CREATE TABLE a___b (id INTEGER PRIMARY KEY, y TEXT);
-            """,
-        )
+        present — exactly one wins, the other is skipped."""
+        ds = _sqlite_ds(workspace, self._TWO_DUNDER)
         report = ingest_datasource_report(datasource=ds)
         assert len([m for m in report.models if m.name == "a_b"]) == 1
         assert len(report.skipped) == 1
+
+    def test_sanitized_vs_sanitized_winner_is_order_independent(
+        self, workspace: Path
+    ) -> None:
+        """Two objects collapsing to the SAME model name must pick the same
+        winner whatever order the inspector lists them in.
+
+        Distinct from the real-vs-sanitized case above: here neither name is
+        reserved up front, so a naive first-come rule lets the scan order decide
+        which physical table `a_b` queries — the same instability that ruled out
+        numeric suffixes.
+        """
+        from slayer.engine import ingestion as ingestion_module
+
+        ds = _sqlite_ds(workspace, self._TWO_DUNDER)
+        real = ingestion_module.list_ingestable_objects
+
+        def _reversed(**kwargs):
+            return list(reversed(real(**kwargs)))
+
+        forward = ingest_datasource_report(datasource=ds)
+        ingestion_module.list_ingestable_objects = _reversed
+        try:
+            backward = ingest_datasource_report(datasource=ds)
+        finally:
+            ingestion_module.list_ingestable_objects = real
+
+        def _winner(report):
+            return next(m.sql_table for m in report.models if m.name == "a_b")
+
+        assert _winner(forward) == _winner(backward)
+        assert _skipped_names(forward) == _skipped_names(backward)
 
 
 # ---------------------------------------------------------------------------

@@ -892,8 +892,15 @@ def _assign_model_names(
     so only the model name is sanitized.
 
     Unsanitized names are reserved first, so a real ``a_b`` beats a sanitized
-    ``a__b`` whatever the scan order. Collisions skip rather than suffix —
-    suffixes shift with the object set, orphaning models and churning drift.
+    ``a__b``. Collisions skip rather than suffix — suffixes shift with the
+    object set, orphaning models and churning drift.
+
+    Both passes are scan-order independent. The sanitized pass walks its
+    candidates in sorted order, so when two objects collapse to the same name
+    (``a__b`` and ``a___b`` both yield ``a_b``) the winner is fixed by the name
+    itself, not by whichever the inspector happened to list first. Otherwise a
+    dialect changing its listing order would silently repoint the model at a
+    different physical object.
     """
     assigned: dict[str, str] = {}
     taken: set[str] = {o.name for o in objects if "__" not in o.name}
@@ -902,7 +909,10 @@ def _assign_model_names(
     for obj in objects:
         if "__" not in obj.name:
             assigned[obj.name] = obj.name
-            continue
+
+    for obj in sorted(
+        (o for o in objects if "__" in o.name), key=lambda o: o.name
+    ):
         candidate = sanitize_model_name(obj.name)
         if candidate in taken:
             skipped.append(
