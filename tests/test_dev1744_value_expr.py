@@ -90,6 +90,7 @@ from slayer.sql.naming import AliasAllocator
 from slayer.sql.render.aggregates import resolve_agg_entry, window_agg_class
 from slayer.sql.render.value_expr import (
     AliasFacilities,
+    contains_aggregate,
     CompositeFacilities,
     FilterFacilities,
     RenderContext,
@@ -1614,3 +1615,130 @@ class TestNoKeyFieldIsSilentlyIgnored:
             f"{base_sql!r} — the field is silently dropped, which is a "
             f"wrong-value bug rather than an error."
         )
+
+
+class TestOperatorCompositionEdges:
+    """Three edges a Codex pass surfaced, all the same family as the rest:
+    output that still parses and still returns rows, but means something else.
+    """
+
+    def test_comparison_nested_in_arithmetic_keeps_its_parens(self) -> None:
+        """``(a > b) + 1`` must not flatten to ``a > b + 1``.
+
+        sqlglot does not parenthesise by nesting, and the two parse
+        differently: the flattened form reads as ``a > (b + 1)``. A precedence
+        table covering only arithmetic misses this, because the CHILD is a
+        comparison.
+        """
+        key = ArithmeticKey(
+            op="+",
+            operands=(
+                ArithmeticKey(
+                    op=">",
+                    operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(5))),
+                ),
+                LiteralKey(value=Decimal(1)),
+            ),
+        )
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out == "(orders.amount > 5) + 1", out
+
+    def test_boolean_nested_in_arithmetic_keeps_its_parens(self) -> None:
+        """Same for a boolean child: ``a AND b + 1`` binds the ``+`` first."""
+        key = ArithmeticKey(
+            op="+",
+            operands=(
+                ArithmeticKey(
+                    op="and",
+                    operands=(
+                        ArithmeticKey(
+                            op=">",
+                            operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1))),
+                        ),
+                        ArithmeticKey(
+                            op="<",
+                            operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(9))),
+                        ),
+                    ),
+                ),
+                LiteralKey(value=Decimal(1)),
+            ),
+        )
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out.startswith("("), out
+
+    def test_comparison_with_three_operands_is_refused(self) -> None:
+        """A chained comparison must RAISE, not left-fold.
+
+        Left-folding ``a < b < c`` compares a BOOLEAN against ``c``; taking
+        only the first two operands silently drops the third. The Mode-B parser
+        rejects chained comparisons, so this is the structural backstop for
+        anything constructing keys directly.
+        """
+        key = ArithmeticKey(
+            op="<",
+            operands=(
+                ColumnKey(leaf="amount"),
+                LiteralKey(value=Decimal(5)),
+                LiteralKey(value=Decimal(9)),
+            ),
+        )
+        ctx = _filter_ctx()
+        with pytest.raises(NotImplementedError):
+            render_value_key(key, ctx)
+
+    def test_is_not_with_extra_operands_is_refused(self) -> None:
+        """``is`` / ``is not`` read operands[0] and [1] only — a third would
+        vanish without a word."""
+        key = ArithmeticKey(
+            op="is",
+            operands=(
+                ColumnKey(leaf="amount"),
+                LiteralKey(value=None),
+                LiteralKey(value=Decimal(1)),
+            ),
+        )
+        ctx = _filter_ctx()
+        with pytest.raises(NotImplementedError):
+            render_value_key(key, ctx)
+
+
+class TestContainsAggregate:
+    """``contains_aggregate`` decides GROUP BY / HAVING placement, so it must
+    answer "is there an aggregate in this tree", not "when does this evaluate"."""
+
+    def test_bare_aggregate(self) -> None:
+        assert contains_aggregate(
+            AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
+        ) is True
+
+    def test_plain_column_is_not_an_aggregate(self) -> None:
+        assert contains_aggregate(ColumnKey(leaf="amount")) is False
+
+    def test_aggregate_nested_in_arithmetic_and_scalar_calls(self) -> None:
+        agg = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
+        nested = ScalarCallKey(
+            name="ifnull",
+            args=(
+                ArithmeticKey(op="+", operands=(agg, LiteralKey(value=Decimal(1)))),
+                LiteralKey(value=Decimal(0)),
+            ),
+        )
+        assert contains_aggregate(nested) is True
+
+    def test_transform_over_a_raw_column_is_not_an_aggregate(self) -> None:
+        """The case a phase test gets wrong.
+
+        Every TransformKey is POST phase, so ``phase >= AGGREGATE`` reports
+        True even when the transform wraps a plain column — routing a
+        non-aggregate predicate into HAVING.
+        """
+        key = TransformKey(op="cumsum", input=ColumnKey(leaf="amount"))
+        assert contains_aggregate(key) is False
+
+    def test_transform_over_an_aggregate_is_an_aggregate(self) -> None:
+        key = TransformKey(
+            op="cumsum",
+            input=AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
+        )
+        assert contains_aggregate(key) is True

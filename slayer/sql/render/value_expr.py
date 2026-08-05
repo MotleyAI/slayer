@@ -67,7 +67,6 @@ from slayer.core.keys import (
     ColumnSqlKey,
     InKey,
     LiteralKey,
-    Phase,
     ScalarCallKey,
     StarKey,
     TimeTruncKey,
@@ -187,12 +186,32 @@ def _literal(value: Any) -> exp.Expression:
     )
 
 
-# sqlglot does NOT parenthesise by node nesting: ``Mul(Add(a, b), c)`` emits
-# ``a + b * c``, which evaluates differently. Precedence must be materialised
-# as explicit ``Paren`` nodes.
-_ARITH_PRECEDENCE: Dict[Any, int] = {
-    exp.Add: 1, exp.Sub: 1, exp.Mul: 2, exp.Div: 2, exp.Mod: 2,
+# sqlglot does NOT parenthesise by node nesting. ``Mul(Add(a, b), c)`` emits
+# ``a + b * c`` and ``Add(GT(a, b), 1)`` emits ``a > b + 1`` — both parse back
+# with different meaning. Precedence must be materialised as explicit ``Paren``
+# nodes, and the table has to span BOOLEAN and COMPARISON operators too, not
+# just arithmetic: a comparison nested inside arithmetic is the case that bites
+# hardest, because the result still parses and still returns rows.
+_PRECEDENCE: Dict[Any, int] = {
+    exp.Or: 1,
+    exp.And: 2,
+    exp.Not: 3,
+    exp.EQ: 4, exp.NEQ: 4, exp.LT: 4, exp.LTE: 4, exp.GT: 4, exp.GTE: 4,
+    exp.Is: 4, exp.In: 4, exp.Like: 4, exp.Between: 4,
+    exp.Add: 5, exp.Sub: 5,
+    exp.Mul: 6, exp.Div: 6, exp.Mod: 6,
 }
+
+# Non-associative on the right: ``a - (b - c)`` needs its parens even though
+# both sides share a precedence level.
+_RIGHT_SENSITIVE_OPS = ("-", "/", "%")
+
+# Operators taking exactly two operands. Left-folding a comparison would turn
+# ``a < b < c`` into ``(a < b) < c`` — a boolean compared to a number — and
+# reading only the first two would silently DROP the rest.
+_STRICTLY_BINARY = frozenset({
+    "=", "==", "!=", "<>", "<", "<=", ">", ">=", "is", "is not",
+})
 
 
 def _paren_if_lower_prec(
@@ -204,12 +223,12 @@ def _paren_if_lower_prec(
     needs them on the RIGHT of the non-associative ``-`` and ``/``
     (``a - (b - c)``). Non-arithmetic children are already self-delimiting.
     """
-    child_prec = _ARITH_PRECEDENCE.get(type(child))
+    child_prec = _PRECEDENCE.get(type(child))
     if child_prec is None:
         return child
     if child_prec < parent_prec:
         return exp.Paren(this=child)
-    if child_prec == parent_prec and is_right and op in ("-", "/", "%"):
+    if child_prec == parent_prec and is_right and op in _RIGHT_SENSITIVE_OPS:
         return exp.Paren(this=child)
     return child
 
@@ -239,6 +258,15 @@ def _render_arithmetic(
         return exp.and_(*operands)
     if op == "or":
         return exp.or_(*operands)
+    if op in _STRICTLY_BINARY and len(operands) != 2:
+        # Refuse rather than fold. Left-folding a chained comparison compares a
+        # BOOLEAN against the next operand, and reading only the first two
+        # drops the rest — both silently wrong. The Mode-B parser already
+        # rejects chained comparisons; this is the structural backstop.
+        raise NotImplementedError(
+            f"Operator {op!r} takes exactly two operands, got {len(operands)}.",
+        )
+
     if op == "is":
         return exp.Is(this=operands[0], expression=operands[1])
     if op == "is not":
@@ -248,7 +276,7 @@ def _render_arithmetic(
     if node_cls is None:
         raise NotImplementedError(f"Unsupported arithmetic operator {op!r}.")
 
-    parent_prec = _ARITH_PRECEDENCE.get(node_cls)
+    parent_prec = _PRECEDENCE.get(node_cls)
     result = operands[0]
     for operand in operands[1:]:
         lhs, rhs = result, operand
@@ -482,11 +510,34 @@ _VALUE_KEY_TYPES: Tuple[type, ...] = (
 
 
 def contains_aggregate(key: ValueKey) -> bool:
-    """Whether ``key`` contains an aggregate, structurally.
+    """Whether ``key``'s tree CONTAINS an ``AggregateKey``.
 
-    Replaces the ``(expr, any_agg)`` tuple the old renderers threaded by hand.
-    ``phase`` already propagates as the max over operands and arguments, so
-    nested cases (a scalar call over an arithmetic over an aggregate) are
-    covered without a second traversal.
+    Replaces the ``(expr, any_agg)`` tuple the old renderers threaded by hand,
+    which decides GROUP BY / HAVING placement.
+
+    A structural walk, deliberately NOT ``phase >= AGGREGATE``: phase answers
+    "when is this evaluated", a different question. Every ``TransformKey`` is
+    POST phase whether or not it wraps an aggregate, so the phase test reports
+    True for a transform over a raw column and would route a non-aggregate
+    predicate into HAVING.
     """
-    return getattr(key, "phase", Phase.ROW) >= Phase.AGGREGATE
+    if isinstance(key, AggregateKey):
+        return True
+    if isinstance(key, ArithmeticKey):
+        return any(contains_aggregate(o) for o in key.operands)
+    if isinstance(key, ScalarCallKey):
+        return any(
+            contains_aggregate(a)
+            for a in key.args
+            if isinstance(a, _VALUE_KEY_TYPES)
+        )
+    if isinstance(key, TransformKey):
+        return contains_aggregate(key.input)
+    if isinstance(key, BetweenKey):
+        return any(
+            contains_aggregate(k) for k in (key.column, key.low, key.high)
+        )
+    if isinstance(key, InKey):
+        # ``values`` are LiteralKeys by type, so only the column can carry one.
+        return contains_aggregate(key.column)
+    return False
