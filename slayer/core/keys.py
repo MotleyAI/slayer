@@ -51,6 +51,48 @@ SCALAR_FUNCTIONS: frozenset[str] = frozenset({
 })
 
 
+# Accepted argument counts per allowlisted scalar, as ``(min, max)``; ``max=None``
+# means variadic. Validated at bind time so a malformed call is a clear SLayer
+# error, and again at render time as the fail-closed backstop.
+#
+# Needed because sqlglot is inconsistent about arity: ``exp.func("ROUND", a, b, c)``
+# SILENTLY DROPS the third argument, ``exp.func("LENGTH", a, b)`` emits invalid
+# ``LENGTH(a, b)`` for the database to reject, and ``exp.func("LOWER", a, b)``
+# raises a raw sqlglot ValueError. None of those is a good answer for a user
+# who mistyped a filter.
+SCALAR_FUNCTION_ARITY: dict[str, tuple[int, Optional[int]]] = {
+    "nullif": (2, 2),
+    "coalesce": (1, None),
+    "ifnull": (2, 2),
+    "ln": (1, 1), "log10": (1, 1), "log2": (1, 1), "log": (1, 2),
+    "exp": (1, 1), "sqrt": (1, 1),
+    "pow": (2, 2), "power": (2, 2),
+    "abs": (1, 1), "floor": (1, 1), "ceil": (1, 1), "round": (1, 2),
+    "lower": (1, 1), "upper": (1, 1), "trim": (1, 1), "length": (1, 1),
+    "replace": (3, 3), "substr": (2, 3), "instr": (2, 2),
+    "concat": (1, None),
+    "like": (2, 2),
+}
+
+
+def check_scalar_arity(name: str, argc: int) -> Optional[str]:
+    """Return an error message when ``name`` cannot take ``argc`` arguments."""
+    bounds = SCALAR_FUNCTION_ARITY.get(name)
+    if bounds is None:
+        return None
+    low, high = bounds
+    if argc < low or (high is not None and argc > high):
+        expected = (
+            f"{low}" if low == high
+            else (f"{low} or more" if high is None else f"{low} to {high}")
+        )
+        return (
+            f"Scalar function {name!r} takes {expected} argument"
+            f"{'' if low == high == 1 else 's'}; got {argc}."
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Phase
 # ---------------------------------------------------------------------------

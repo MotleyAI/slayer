@@ -1777,11 +1777,21 @@ class TestEqualPrecedenceRightChildren:
         assert "(" in out, f"{outer} over {inner} lost its grouping: {out}"
 
     @pytest.mark.parametrize("op", ["+", "*"])
-    def test_genuinely_associative_pairs_stay_unparenthesised(self, op) -> None:
-        """``a + (b + c)`` and ``a * (b * c)`` regroup harmlessly, so don't
-        add noise for them."""
+    def test_even_plus_and_times_keep_their_grouping(self, op) -> None:
+        """``+`` and ``*`` are NOT operationally associative either.
+
+        An earlier version of this test asserted the opposite — that these two
+        could safely drop their parens because they regroup harmlessly. That is
+        true over the reals and false over the machine: with floats, rounding
+        makes ``a + (b + c)`` and ``(a + b) + c`` differ, and with
+        fixed-precision decimals so does overflow. The binder built a specific
+        tree; emitting a different one is a silent accuracy change.
+
+        So the rule is now uniform — every equal-precedence right child keeps
+        its parens — which is also one fewer special case to get wrong.
+        """
         out = _sql(render_value_key(self._key(op, op), _filter_ctx()))
-        assert "(" not in out, out
+        assert "(" in out, out
 
 
 class TestArithmeticArity:
@@ -1832,3 +1842,87 @@ class TestContainsAggregateTransformDependencies:
             time_key=ColumnKey(leaf="created_at"),
         )
         assert contains_aggregate(key) is False
+
+
+class TestScalarArity:
+    """sqlglot's arity handling is inconsistent, and all three modes are bad
+    answers for a mistyped filter.
+
+    ``exp.func("ROUND", a, b, c)`` SILENTLY DROPS the third argument.
+    ``exp.func("LENGTH", a, b)`` emits ``LENGTH(a, b)`` for the database to
+    reject with its own error. ``exp.func("LOWER", a, b)`` raises a raw sqlglot
+    ValueError that leaks an internal library name. The allowlist knows the
+    right answer, so it is checked before the node is built.
+    """
+
+    @pytest.mark.parametrize(
+        "name,argc",
+        [("round", 3), ("lower", 2), ("length", 2), ("abs", 2),
+         ("nullif", 1), ("replace", 2), ("substr", 1), ("like", 3)],
+    )
+    def test_wrong_arity_is_refused(self, name, argc) -> None:
+        from slayer.sql.render.value_expr import render_scalar_call
+
+        args = [exp.column(f"c{i}") for i in range(argc)]
+        with pytest.raises(NotImplementedError):
+            render_scalar_call(
+                name=name, args=args, dialect=get_dialect("postgres"),
+            )
+
+    @pytest.mark.parametrize(
+        "name,argc",
+        [("round", 1), ("round", 2), ("lower", 1), ("substr", 2), ("substr", 3),
+         ("replace", 3), ("coalesce", 1), ("coalesce", 4), ("concat", 3)],
+    )
+    def test_accepted_arities_still_render(self, name, argc) -> None:
+        """The variadic and optional-argument forms must keep working."""
+        from slayer.sql.render.value_expr import render_scalar_call
+
+        args = [exp.column(f"c{i}") for i in range(argc)]
+        out = render_scalar_call(
+            name=name, args=args, dialect=get_dialect("postgres"),
+        )
+        assert out.sql(dialect="postgres")
+
+
+class TestArityIsRejectedAtBindTime:
+    """The renderer check is the backstop; the binder is where a user's typo
+    should surface, with a message naming the function and the counts."""
+
+    async def test_round_with_three_args_is_rejected(self, e2e) -> None:
+        with pytest.raises(ValueError, match="round"):
+            await e2e.execute(
+                SlayerQuery(
+                    source_model="orders",
+                    dimensions=[ColumnRef(name="status")],
+                    measures=[ModelMeasure(formula="*:count", name="n")],
+                    filters=["round(amount, 2, 99) > 1"],
+                ),
+                dry_run=True,
+            )
+
+    async def test_length_with_two_args_is_rejected(self, e2e) -> None:
+        """Previously emitted ``LENGTH(a, b)`` — invalid SQL the backend
+        rejected with its own, less useful error."""
+        with pytest.raises(ValueError, match="length"):
+            await e2e.execute(
+                SlayerQuery(
+                    source_model="orders",
+                    dimensions=[ColumnRef(name="status")],
+                    measures=[ModelMeasure(formula="*:count", name="n")],
+                    filters=["length(status, status) > 1"],
+                ),
+                dry_run=True,
+            )
+
+    async def test_correct_arity_still_binds(self, e2e) -> None:
+        resp = await e2e.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="*:count", name="n")],
+                filters=["round(amount, 2) > 1"],
+            ),
+            dry_run=True,
+        )
+        assert "ROUND" in resp.sql.upper()

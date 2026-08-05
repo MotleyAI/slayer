@@ -54,6 +54,7 @@ from slayer.core.enums import (
 )
 from slayer.core.keys import (
     SCALAR_FUNCTIONS,
+    check_scalar_arity,
     AggregateKey,
     ArithmeticKey,
     BetweenKey,
@@ -1285,11 +1286,18 @@ def _bind_scalar(
                 f"{sorted(SCALAR_FUNCTIONS)}."
             ),
         )
-    if parsed.name == "like" and len(parsed.args) != 2:
-        raise ValueError(
-            f"Scalar function 'like' takes exactly 2 arguments "
-            f"(value, pattern); got {len(parsed.args)}."
-        )
+    # Arity for EVERY allowlisted scalar, not just like. sqlglot's own
+    # handling is inconsistent — a wrong-arity round silently drops the
+    # extra argument, length emits SQL the database rejects — so a
+    # mistyped filter deserves a clear error here instead.
+    arity_error = check_scalar_arity(parsed.name, len(parsed.args))
+    if arity_error is not None:
+        if parsed.name == "like":
+            raise ValueError(
+                f"Scalar function 'like' takes exactly 2 arguments "
+                f"(value, pattern); got {len(parsed.args)}."
+            )
+        raise ValueError(arity_error)
     args = tuple(
         _bind(a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map)
         for a in parsed.args

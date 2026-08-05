@@ -72,6 +72,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    check_scalar_arity,
 )
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.render.aggregates import (
@@ -202,13 +203,6 @@ _PRECEDENCE: Dict[Any, int] = {
     exp.Mul: 6, exp.Div: 6, exp.Mod: 6,
 }
 
-# Truly associative parent/child pairs — the ONLY equal-precedence right
-# children that may safely drop their parens. Everything else keeps them:
-# checking the parent operator alone is not enough, because ``Mul(a, Mod(b, c))``
-# emits ``a * b %% c``, which regroups to ``(a * b) %% c`` and returns a
-# different number.
-_ASSOCIATIVE_PAIRS = {("+", exp.Add), ("*", exp.Mul)}
-
 # Operators taking exactly two operands. Left-folding a comparison would turn
 # ``a < b < c`` into ``(a < b) < c`` — a boolean compared to a number — and
 # reading only the first two would silently DROP the rest.
@@ -222,20 +216,23 @@ def _paren_if_lower_prec(
 ) -> exp.Expression:
     """Parenthesise ``child`` when dropping its parens would change meaning.
 
-    Lower precedence than the parent always needs parens; equal precedence
-    needs them on the RIGHT of the non-associative ``-`` and ``/``
-    (``a - (b - c)``). Non-arithmetic children are already self-delimiting.
+    Lower precedence than the parent always needs parens. So does EVERY
+    equal-precedence right child: checking the parent operator is not enough
+    (``Mul(a, Mod(b, c))`` emits ``a * b % c``, regrouping to ``(a * b) % c``),
+    and even ``+`` and ``*`` are not operationally associative over floats or
+    fixed-precision decimals, where rounding and overflow make ``a + (b + c)``
+    and ``(a + b) + c`` genuinely different. Preserving the tree the binder
+    built costs a pair of parentheses; regrouping costs accuracy.
+
+    A node with no precedence entry — a column, a literal, a function call —
+    is already self-delimiting.
     """
     child_prec = _PRECEDENCE.get(type(child))
     if child_prec is None:
         return child
     if child_prec < parent_prec:
         return exp.Paren(this=child)
-    if (
-        child_prec == parent_prec
-        and is_right
-        and (op, type(child)) not in _ASSOCIATIVE_PAIRS
-    ):
+    if child_prec == parent_prec and is_right:
         return exp.Paren(this=child)
     return child
 
@@ -317,6 +314,12 @@ def render_scalar_call(
     a native single-arg ``LOG10``. Transpiling alone fixes ifnull and breaks
     log10. ``like`` is the allowlist's only operator rather than function.
     """
+    arity_error = check_scalar_arity(name, len(args))
+    if arity_error is not None:
+        # Checked before building, because sqlglot is inconsistent: a 3-arg
+        # ROUND silently DROPS the third, a 2-arg LENGTH emits SQL the backend
+        # rejects, and a 2-arg LOWER raises a raw sqlglot error.
+        raise NotImplementedError(arity_error)
     if name == "like":
         return exp.Like(this=args[0], expression=args[1])
     node = dialect.rewrite_target_ast(exp.func(name.upper(), *args))
