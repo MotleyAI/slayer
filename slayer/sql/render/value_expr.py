@@ -13,13 +13,16 @@ consumer-scope materialisation), and a missing facility raises
 Migration status
 ----------------
 The API here is complete and directly tested, but the generator's own render
-paths do NOT yet route through :func:`render_value_key`. Two POLICIES are
-shared today, each because the generator's copies were demonstrably wrong
-without them:
+paths do NOT yet route through :func:`render_value_key`. Two constructs DO
+render once already, each promoted early because the generator's copies were
+demonstrably emitting wrong SQL, not merely duplicated SQL:
 
 * ScalarCall — all six paths call :func:`render_scalar_call`.
-* Operand grouping — the generator's three arithmetic composers call
-  :func:`group_unary_operand` and :func:`group_is_operands`.
+* Arithmetic / comparison / boolean composition — the generator's three
+  composers call :func:`render_arithmetic`. The one exception is comparison
+  operands in ``_build_arithmetic_for_filter``, which keep a wrapper that
+  parenthesises EVERY multi-term operand: strictly more grouping than this
+  module derives, never less.
 
 Everything else still runs the generator's own per-path branches.
 
@@ -290,15 +293,19 @@ def group_is_operands(
     )
 
 
-def _render_arithmetic(
+def render_arithmetic(
     op: str, operands: List[exp.Expression],
 ) -> exp.Expression:
     """Compose an arithmetic / comparison / boolean operator.
 
-    Mirrors the generator's composer, including the unary forms: the binder
-    represents ``-x`` as a SINGLE-operand ``ArithmeticKey``, so a fold that
-    just returns ``operands[0]`` would turn ``amount > -10`` into
-    ``amount > 10``.
+    The single composer: the generator's three call sites delegate here, so
+    one ``ArithmeticKey`` groups the same way wherever it is rendered (P-G).
+    Their hand-rolled versions each knew a different subset of the precedence
+    table and emitted predicates that parse cleanly and mean something else.
+
+    Handles the unary forms too: the binder represents ``-x`` as a
+    SINGLE-operand ``ArithmeticKey``, so a fold that just returns
+    ``operands[0]`` would turn ``amount > -10`` into ``amount > 10``.
     """
     if not operands:
         raise NotImplementedError(f"Operator {op!r} needs at least one operand.")
@@ -529,7 +536,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         )
 
     if isinstance(key, ArithmeticKey):
-        return _render_arithmetic(
+        return render_arithmetic(
             key.op.lower(), [render_value_key(o, ctx) for o in key.operands],
         )
 

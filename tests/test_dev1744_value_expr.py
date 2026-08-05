@@ -2250,13 +2250,63 @@ class TestGeneratorComposersShareTheGroupingPolicy:
 
     @pytest.mark.parametrize(
         "composer",
-        ["build_arithmetic_for_filter", "compose_arithmetic_op"],
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
     )
     def test_negated_sum_keeps_its_parens(self, composer) -> None:
-        """``_build_arith_or_cmp_ast`` has no unary-minus branch, so only the
-        two composers that do are exercised here."""
         compose = self._composers()[composer]
         assert compose("-", [self._add()]).sql() == "-(t.a + t.b)"
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    @pytest.mark.parametrize(
+        "op,inner_cls,inner_op,expected",
+        [
+            # ``a - (b + c)``: dropping the parens regroups to ``(a - b) + c``.
+            ("-", exp.Add, "+", "t.a - (t.b + t.c)"),
+            # ``a + (b - c)``: the generator treated ``+`` as associative and
+            # emitted ``a + b - c``. Over floats and fixed-precision decimals
+            # that is a different number, not just a different tree.
+            ("+", exp.Sub, "-", "t.a + (t.b - t.c)"),
+            ("*", exp.Div, "/", "t.a * (t.b / t.c)"),
+            ("/", exp.Mul, "*", "t.a / (t.b * t.c)"),
+        ],
+    )
+    def test_equal_precedence_right_operand_keeps_its_parens(
+        self, composer, op, inner_cls, inner_op, expected,
+    ) -> None:
+        compose = self._composers()[composer]
+        inner = inner_cls(
+            this=exp.column("b", table="t"), expression=exp.column("c", table="t"),
+        )
+        out = compose(op, [self._a(), inner]).sql()
+        assert out == expected, out
+
+    def test_lower_precedence_left_operand_keeps_its_parens(self) -> None:
+        """``_build_arith_or_cmp_ast`` applied NO precedence pass at all, so
+        ``(a + b) * c`` emitted ``a + b * c`` — ``b * c`` binds first."""
+        compose = self._composers()["build_arith_or_cmp_ast"]
+        out = compose("*", [self._add(), exp.column("c", table="t")]).sql()
+        assert out == "(t.a + t.b) * t.c", out
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    def test_comparison_nested_in_arithmetic_keeps_its_parens(
+        self, composer,
+    ) -> None:
+        """The generator's precedence table knew only ``+ - * /``, so a
+        comparison operand fell through ungrouped: ``(a > b) + 1`` emitted
+        ``a > b + 1``, read back as ``a > (b + 1)``."""
+        compose = self._composers()[composer]
+        gt = exp.GT(this=self._a(), expression=exp.column("b", table="t"))
+        out = compose("+", [gt, exp.Literal.number("1")]).sql()
+        assert out == "(t.a > t.b) + 1", out
 
     @pytest.mark.parametrize(
         "composer",
