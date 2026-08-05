@@ -234,12 +234,17 @@ class TestClickHouseQueries:
     async def test_string_hygiene_functions_execute(
         self, clickhouse_env: SlayerQueryEngine
     ) -> None:
-        """DEV-1703 Phase 2: the typed pipeline emits string functions
-        UPPERCASE (``LOWER(...)`` / ``SUBSTR(...)``) where the legacy path
-        emitted ClickHouse's native lowercase spelling. ClickHouse function
-        names are case-sensitive in general, so this pins that the standard
-        SQL aliases really do resolve on a live server rather than trusting
-        that the emitted SQL merely looks plausible.
+        """The typed pipeline emits string functions UPPERCASE
+        (``LOWER(...)`` / ``SUBSTRING(...)``) where the legacy path emitted
+        ClickHouse's native lowercase spelling. ClickHouse function names are
+        case-sensitive in general, so this pins that the standard SQL aliases
+        really do resolve on a live server rather than trusting that the
+        emitted SQL merely looks plausible.
+
+        ``substr`` now reaches the server as ``SUBSTRING``: routing every
+        scalar through one dialect-aware policy means sqlglot transpiles the
+        call to the target's own spelling instead of passing the DSL name
+        through verbatim.
         """
         lowered = SlayerQuery(
             source_model="orders",
@@ -257,7 +262,7 @@ class TestClickHouseQueries:
         )
         result = await clickhouse_env.execute(query=subs)
         assert result.data[0]["orders._count"] > 0
-        assert "SUBSTR(" in (result.sql or ""), result.sql
+        assert "SUBSTRING(" in (result.sql or ""), result.sql
 
     async def test_avg_measure(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", measures=[{"formula": "avg_amount:avg"}])
