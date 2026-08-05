@@ -33,6 +33,8 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
+from sqlglot import exp
+
 from slayer.core.errors import SlayerError
 from slayer.core.keys import (
     AggregateKey,
@@ -85,31 +87,41 @@ def _prefixes(path: Path) -> List[Path]:
     return [tuple(path[: i + 1]) for i in range(len(path))]
 
 
-def _derived_sql_paths(
+def _expanded_derived_ast(
     *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
-) -> List[Path]:
-    """Join paths the expansion of a derived column's ``Column.sql`` crosses.
+):
+    """The parsed, expanded AST of a derived column's ``Column.sql``.
 
     Expanded with the same anchoring convention ``ScopeFrame`` uses — at the
     ``__``-path alias with ``is_root=False`` when the column lives on a joined
     model — so the refs inside come out already prefixed by the key's own path
-    and the anchor-rooted scan resolves them without further adjustment.
+    and an anchor-rooted scan resolves them without further adjustment.
     """
     model = (
         anchor_model if key.model == getattr(anchor_model, "name", None)
         else bundle.get_referenced_model(key.model)
     )
     if model is None:
-        return []
+        return None
     col = next((c for c in model.columns if c.name == key.column_name), None)
     if col is None or not col.sql:
-        return []
+        return None
 
     alias_path = "__".join(key.path) if key.path else anchor_relation
     expanded = _expand_derived_refs_any_dialect(
         sql=col.sql, model=model, alias_path=alias_path, bundle=bundle,
     )
-    parsed = _parse_filter_sql_any_dialect(expanded or col.sql)
+    return _parse_filter_sql_any_dialect(expanded or col.sql)
+
+
+def _derived_sql_paths(
+    *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
+) -> List[Path]:
+    """Join paths the expansion of a derived column's ``Column.sql`` crosses."""
+    parsed = _expanded_derived_ast(
+        key=key, anchor_model=anchor_model,
+        anchor_relation=anchor_relation, bundle=bundle,
+    )
     if parsed is None:
         return []
     return list(collect_root_scope_joined_paths(
@@ -118,6 +130,34 @@ def _derived_sql_paths(
         source_relation=anchor_relation,
         bundle=bundle,
     ))
+
+
+def _derived_sql_touches_anchor(
+    *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
+) -> bool:
+    """Whether a derived column's expansion references the ANCHOR relation.
+
+    Tested directly rather than inferred from "it crossed nothing". A derived
+    column can do BOTH: ``amount * customers.rate`` crosses into ``customers``
+    AND depends on the host-local ``amount``. Treating a non-empty crossed set
+    as proof of non-locality would propagate that filter into a
+    ``customers``-rooted CTE, where ``orders.amount`` is not bound.
+
+    Expansion qualifies host-local refs to ``anchor_relation``, so those are
+    exactly the columns carrying that table (or, defensively, none at all).
+    """
+    parsed = _expanded_derived_ast(
+        key=key, anchor_model=anchor_model,
+        anchor_relation=anchor_relation, bundle=bundle,
+    )
+    if parsed is None:
+        # Nothing resolvable to inspect — a bare column name on the anchor.
+        return True
+    for col in parsed.find_all(exp.Column):
+        table = col.args.get("table")
+        if table is None or table.name == anchor_relation:
+            return True
+    return False
 
 
 def compute_key_join_paths(
@@ -233,7 +273,7 @@ def key_has_host_local_ref(
         if isinstance(node, ColumnSqlKey):
             if node.path:
                 return
-            if not _derived_sql_paths(
+            if _derived_sql_touches_anchor(
                 key=node, anchor_model=anchor_model,
                 anchor_relation=anchor_relation, bundle=bundle,
             ):

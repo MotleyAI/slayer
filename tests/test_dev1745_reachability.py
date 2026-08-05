@@ -99,6 +99,9 @@ def _orders() -> SlayerModel:
             # derived, local, purely local sql
             Column(name="host_derived_local", sql="amount * 2",
                    type=DataType.DOUBLE),
+            # derived, host-declared, sql that is BOTH host-local AND crossing
+            Column(name="host_derived_mixed", sql="amount * customers.balance",
+                   type=DataType.DOUBLE),
             # derived referencing TWO models
             Column(name="multi_model",
                    sql="customers.balance + customers__regions.population",
@@ -274,15 +277,19 @@ class TestStructuralRouting:
 
     def _routing(self, key, *, phase=Phase.ROW):
         from slayer.engine.cross_model_planner import HostFilterRouting
-        from slayer.engine.filter_reachability import compute_key_join_paths
+        from slayer.engine.filter_reachability import (
+            compute_key_join_paths,
+            key_has_host_local_ref,
+        )
 
-        paths = compute_key_join_paths(
+        kwargs = dict(
             key=key, anchor_model=_orders(), anchor_relation="orders",
             bundle=_bundle(),
         )
         return HostFilterRouting(
             filter_id="f1", phase=phase, referenced_slot_ids=[], text="",
-            crossed_join_paths=paths,
+            crossed_join_paths=compute_key_join_paths(**kwargs),
+            has_host_local_ref=key_has_host_local_ref(**kwargs),
         )
 
     def test_sibling_branch_is_not_reachable(self) -> None:
@@ -349,6 +356,33 @@ class TestStructuralRouting:
         assert route == FilterRoute.DROP_UNREACHABLE, (
             "reachability is an ALL-dependencies predicate"
         )
+
+    def test_mixed_local_and_crossing_derived_stays_at_host(self) -> None:
+        """A host-declared derived column can be BOTH.
+
+        ``amount * customers.balance`` crosses into ``customers``, so its
+        crossed set is non-empty — but it also depends on the host-local
+        ``amount``, which a customers-rooted CTE cannot bind. Inferring
+        "not host-local" from "it crossed something" would propagate this and
+        emit SQL referencing an unbound ``orders.amount``.
+        """
+        from slayer.engine.cross_model_planner import FilterRoute
+
+        route = self._route(
+            _derived("host_derived_mixed"), target_path=("customers",),
+        )
+        assert route == FilterRoute.DROP_HOST_LOCAL
+
+    def test_purely_crossing_derived_still_propagates(self) -> None:
+        """The counter-case, so the fix above is not just blanket caution:
+        a host-declared derived column whose sql reaches ONLY into the target
+        resolves inside the target's scope and still propagates."""
+        from slayer.engine.cross_model_planner import FilterRoute
+
+        route = self._route(
+            _derived("host_derived_crossing"), target_path=("customers",),
+        )
+        assert route == FilterRoute.PROPAGATE_WHERE
 
     def test_empty_path_is_host_local(self) -> None:
         from slayer.engine.cross_model_planner import FilterRoute
