@@ -30,11 +30,17 @@ every alias / result-key decision:
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+import re
+from typing import TYPE_CHECKING, Literal, Optional, Tuple
 
 import sqlglot
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 from sqlglot import exp
+
+from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
+
+if TYPE_CHECKING:  # pragma: no cover — typing only, keeps the import leaf clean
+    from slayer.core.keys import AggregateKey
 
 # ---------------------------------------------------------------------------
 # Dialect case-folding policy (DEV-1726).
@@ -213,6 +219,181 @@ def flat_name(dotted: str, *, strip_relation: Optional[str] = None) -> str:
         if remainder.startswith(prefix):
             remainder = remainder[len(prefix):]
     return remainder.replace(".", "__")
+
+
+# ---------------------------------------------------------------------------
+# Structural alias constants (P-F).
+#
+# These name derived tables and wrapper subqueries rather than being minted per
+# query, and each was previously written as a bare literal in more than one
+# module — ``_outer`` in BOTH ``generator.py`` (the outer-wrap subquery) and
+# ``dialects/tsql.py`` (the ORDER-BY detach rewrite), coupled by convention
+# only. Hoisting them here gives the naming module a single owner.
+#
+# RATIFIED CARVE-OUT: the T-SQL and stage-wrapper sites take these as
+# CONSTANTS, not allocator-minted names. The T-SQL rewrite is a post-generation
+# AST pass with no allocator in reach, and PR 4 rebuilds the outer-wrap
+# machinery wholesale; both aliases scope a derived table the same pass creates,
+# so a collision would have to come from inside that one subquery. This is a
+# named exception to P-F, recorded rather than silently omitted.
+# ---------------------------------------------------------------------------
+
+OUTER_WRAP_ALIAS = "_outer"
+STAGE_INNER_ALIAS = "_stage_inner"
+FILTERED_ALIAS = "_filtered"
+
+
+# ---------------------------------------------------------------------------
+# CTE-name minting.
+# ---------------------------------------------------------------------------
+
+# Everything outside the SQL identifier alphabet collapses to ``_``. This is
+# LOSSY on purpose (a CTE name must be a bare identifier) — which is exactly
+# why the result must go through an allocator rather than being trusted as an
+# identity.
+_NON_IDENT_CHAR_RE = re.compile(r"[^a-zA-Z0-9_]")
+
+
+def cte_name_from_alias(
+    prefix: str, alias: str, *, allocator: "AliasAllocator",
+) -> str:
+    """Mint a collision-safe CTE name for ``alias`` under ``prefix``.
+
+    The alias is flattened (:func:`flat_name` maps ``.`` to ``__``) and then
+    sanitised to the identifier alphabet. BOTH steps are lossy and neither is
+    injective: ``customers.revenue`` and ``customers__revenue`` flatten to the
+    same string, and ``rev-a`` / ``rev_a`` sanitise to the same string.
+
+    Hence the required ``allocator``: the sanitised string is only a PREFERRED
+    name, walked to ``…_2`` when taken (case-folded on folding dialects), so two
+    calls never hand back one name. Previously it doubled as a CTE name AND a
+    plan identity key, so aggregates that sanitised alike either collided in the
+    ``WITH`` or silently collapsed into one plan.
+
+    Dedup is the CALLER's decision, made on structural identity — never on this
+    string.
+    """
+    sanitized = _NON_IDENT_CHAR_RE.sub("_", flat_name(alias))
+    return allocator.allocate_cte(prefix + sanitized)
+
+
+# ---------------------------------------------------------------------------
+# Canonical aggregate alias — the four-copy consolidation.
+# ---------------------------------------------------------------------------
+
+# The four historical derivations, as PROFILES. They differ on four axes —
+# whether a source relation is prefixed, whether the join path is prefixed,
+# whether a StarKey keeps its own path, and what happens when the source has
+# neither a ``leaf`` nor a ``column_name``. Naming the combinations makes the
+# impossible ones unrepresentable, which four free-standing boolean flags
+# would not.
+AggAliasProfile = Literal[
+    # generator._canonical_cross_model_alias — the ``_cm_`` CTE + projection
+    # alias. Prefixes BOTH the source relation and the join path; an
+    # unrecognised source collapses to the star form.
+    "cross_model_cte",
+    # cross_model_planner._aggregate_alias — the aggregate's output column
+    # inside its CTE. Bare canonical name; no prefix of any kind.
+    "cte_schema",
+    # planning._canonical_name — a hidden slot's declared name. Bare, but an
+    # unrecognised source gets an explicit ``_agg_<name>`` placeholder rather
+    # than being mistaken for a star.
+    "declared_name",
+    # stage_planner._canonical_alias_for_formula — the public alias for a
+    # measure formula. Prefixes the join path RELATIVE to the stage (no source
+    # relation), is the only profile that keeps a StarKey's own path, and
+    # DECLINES (returns None) on an unrecognised source so its caller can fall
+    # through to formula-text sanitisation.
+    "stage_formula",
+]
+
+_PROFILES_WITHOUT_RELATION = ("cte_schema", "declared_name", "stage_formula")
+
+
+def canonical_aggregate_alias(
+    key: "AggregateKey",
+    *,
+    profile: AggAliasProfile,
+    source_relation: Optional[str] = None,
+) -> Optional[str]:
+    """The single canonical-aggregate-alias derivation.
+
+    Replaces four copies that had drifted apart. ``profile`` selects which
+    caller's exact contract to apply; see :data:`AggAliasProfile`.
+
+    Returns ``None`` only for ``stage_formula`` on a source that exposes
+    neither ``leaf`` nor ``column_name`` — that profile's documented "decline
+    and let the caller sanitise the formula text" path.
+    """
+    from slayer.core.keys import StarKey
+
+    if profile == "cross_model_cte":
+        if source_relation is None:
+            raise ValueError(
+                "canonical_aggregate_alias(profile='cross_model_cte') requires "
+                "source_relation — the alias is anchored at the query root.",
+            )
+    elif profile in _PROFILES_WITHOUT_RELATION:
+        if source_relation is not None:
+            raise ValueError(
+                f"canonical_aggregate_alias(profile={profile!r}) does not take "
+                f"source_relation: that profile emits no relation prefix.",
+            )
+    else:
+        raise ValueError(
+            f"Unknown canonical-aggregate-alias profile {profile!r}; "
+            f"expected one of {('cross_model_cte', *_PROFILES_WITHOUT_RELATION)}.",
+        )
+
+    is_star = isinstance(key.source, StarKey)
+    leaf = getattr(key.source, "leaf", None) or getattr(
+        key.source, "column_name", None,
+    )
+
+    # --- measure name, per profile's treatment of an unrecognised source ---
+    if profile in ("cross_model_cte", "cte_schema"):
+        # Any source without a leaf collapses to the star form.
+        measure_name: Optional[str] = leaf or "*"
+    elif profile == "declared_name":
+        if is_star:
+            measure_name = "*"
+        elif leaf is None:
+            # Explicit placeholder — deliberately NOT the star form, so a
+            # hidden slot over an unrecognised source is distinguishable.
+            return f"_agg_{key.agg}"
+        else:
+            measure_name = leaf
+    else:  # stage_formula
+        measure_name = "*" if is_star else leaf
+        if measure_name is None:
+            return None
+
+    canonical = canonical_agg_name(
+        measure_name=measure_name,
+        aggregation_name=key.agg,
+        agg_args=[agg_kwarg_canonical_str(a) for a in key.args] or None,
+        agg_kwargs={
+            k: agg_kwarg_canonical_str(v) for k, v in key.kwargs
+        } or None,
+    )
+
+    # --- prefix, per profile ---
+    if profile in ("cte_schema", "declared_name"):
+        return canonical
+
+    # Every path-bearing source kind — ColumnKey, ColumnSqlKey, and StarKey
+    # alike — carries its join path here, so ``customers.*:count`` keeps the
+    # ``customers`` hop in both prefixing profiles.
+    path: Tuple[str, ...] = tuple(getattr(key.source, "path", ()))
+
+    if profile == "stage_formula":
+        # Path RELATIVE to the stage — no source relation.
+        return (".".join(path) + "." if path else "") + canonical
+
+    assert source_relation is not None  # guaranteed by the validation above
+    return result_key(
+        source_relation=source_relation, path=path, leaf=canonical,
+    )
 
 
 # ---------------------------------------------------------------------------

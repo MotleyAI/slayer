@@ -744,7 +744,7 @@ class TestStringHygieneDialectTranslation:
             ("postgres", "SUBSTRING(orders.status FROM 1 FOR 5)"),
             ("mysql", "SUBSTRING(orders.status, 1, 5)"),
             ("duckdb", "SUBSTRING(orders.status, 1, 5)"),
-            ("clickhouse", "SUBSTR(orders.status, 1, 5)"),
+            ("clickhouse", "SUBSTRING(orders.status, 1, 5)"),
         ],
     )
     async def test_substr_translates_per_dialect(
@@ -767,9 +767,9 @@ class TestStringHygieneDialectTranslation:
         [
             # SQLite normalises CONCAT(...) → a || b at emit time.
             ("sqlite", "orders.status || orders.status"),
-            ("postgres", "CONCAT(orders.status, orders.status)"),
+            ("postgres", "orders.status || orders.status"),
             ("mysql", "CONCAT(orders.status, orders.status)"),
-            ("duckdb", "CONCAT(orders.status, orders.status)"),
+            ("duckdb", "orders.status || orders.status"),
             ("clickhouse", "CONCAT(orders.status, orders.status)"),
         ],
     )

@@ -67,7 +67,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
+from slayer.sql.naming import canonical_aggregate_alias
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.aggregate_input_paths import (
     compute_aggregate_input_join_paths,
@@ -312,36 +312,18 @@ def _aggregate_alias(*, key: AggregateKey) -> str:
     suffix matches the rest of the engine (legacy enrichment, search,
     DBT converter).
     """
-    # ColumnKey -> leaf, ColumnSqlKey (derived agg source) -> column_name,
-    # StarKey -> "*" (CR / Codex: a derived source must alias as
-    # ``net_sum``, not ``_sum``).
-    measure_name = (
-        getattr(key.source, "leaf", None)
-        or getattr(key.source, "column_name", None)
-        or "*"
-    )
-    # AggregateKey.args / kwargs are normalised tuples of scalars /
-    # ColumnKey-shaped values; convert to the (List[str],
-    # Dict[str, Any]) shape ``canonical_agg_name`` expects. DEV-1450
-    # stage 7b.13: route through ``agg_kwarg_canonical_str`` so a
-    # ColumnKey kwarg renders as ``leaf`` (or ``path.leaf`` for joined
-    # paths) instead of Pydantic-repr noise from naive ``str(v)``.
-    # The kwarg suffix is preserved here -- the legacy enrichment at
-    # ``query_engine.py:2160`` drops it, causing two parametric aggs
-    # with different kwargs to collide on CTE alias (legacy bug).
-    # The 7b.5 fix added kwarg-aware aliases here as a correctness
-    # improvement -- ``test_cross_model_planner_wiring.py::
-    # test_parameterized_aggregates_get_distinct_cte_aliases`` pins
-    # this. Parity with legacy for cross-model parametric aggs is
-    # not achievable on this axis.
-    args_list = [agg_kwarg_canonical_str(a) for a in key.args]
-    kwargs_dict = {k: agg_kwarg_canonical_str(v) for k, v in key.kwargs}
-    return canonical_agg_name(
-        measure_name=measure_name,
-        aggregation_name=key.agg,
-        agg_args=args_list or None,
-        agg_kwargs=kwargs_dict or None,
-    )
+    # The derivation itself lives in ``slayer.sql.naming`` (P-F, one naming
+    # authority). This is the ``cte_schema`` profile — the bare canonical
+    # name with no relation or path prefix, since the alias names a column
+    # INSIDE the CTE.
+    #
+    # The kwarg suffix is preserved -- the deleted legacy enrichment dropped it,
+    # causing two parametric aggs with different kwargs to collide on CTE alias.
+    # ``test_cross_model_planner_wiring.py::
+    # test_parameterized_aggregates_get_distinct_cte_aliases`` pins this;
+    # parity with legacy for cross-model parametric aggs is not achievable on
+    # this axis.
+    return canonical_aggregate_alias(key, profile="cte_schema")
 
 
 def _make_cte_schema(

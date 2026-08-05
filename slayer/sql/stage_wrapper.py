@@ -20,7 +20,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.sql.dialects import get_dialect
-from slayer.sql.naming import flat_name
+from slayer.sql.naming import STAGE_INNER_ALIAS, flat_name
 
 
 def build_flat_rename_wrapper(
@@ -48,7 +48,7 @@ def build_flat_rename_wrapper(
        over-projection, ...) raises ``ValueError`` immediately rather
        than masking the issue as a downstream bind miss.
     """
-    inner_alias = "_stage_inner"
+    inner_alias = STAGE_INNER_ALIAS
     body = sqlglot.parse_one(stage_sql, dialect=dialect)
     select = exp.Select()
     produced: List[str] = []

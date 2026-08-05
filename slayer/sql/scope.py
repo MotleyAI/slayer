@@ -27,6 +27,7 @@ import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 
+from slayer.core.errors import UnknownReferenceError
 from slayer.core.keys import ColumnKey, ColumnSqlKey
 from slayer.core.models import SlayerModel
 from slayer.engine.column_expansion import (
@@ -185,9 +186,34 @@ class ScopeFrame(BaseModel):
         )
 
     def _model_for(self, name: str) -> SlayerModel:
+        """Resolve a model name against the scope root, then the bundle.
+
+        Unresolvable RAISES: the previous ``or self.root_model`` fallback
+        expanded the ROOT model's derived SQL instead, turning a wiring bug into
+        a wrong answer rather than a failure.
+        """
         if name == self.root_model.name:
             return self.root_model
-        return self.bundle.get_referenced_model(name) or self.root_model
+        model = self.bundle.get_referenced_model(name)
+        if model is None:
+            known = sorted(
+                {self.root_model.name}
+                | {m.name for m in self.bundle.referenced_models},
+            )
+            raise UnknownReferenceError(
+                name=name,
+                scope_kind="ScopeFrame",
+                scope_summary=(
+                    f"scope rooted at model {self.root_model.name!r}; "
+                    f"models resolvable here: {known}"
+                ),
+                suggestion=(
+                    "A ColumnSqlKey must name the model that owns the derived "
+                    "column, and that model must be in the query's resolved "
+                    "source bundle (reachable from the source model via joins)."
+                ),
+            )
+        return model
 
     def _parse(self, sql: str) -> exp.Expression:
         return sqlglot.parse_one(sql, dialect=self.dialect.sqlglot_name)

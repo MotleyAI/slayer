@@ -1,0 +1,1215 @@
+"""P-G "same construct, same SQL": the single ValueKey→AST renderer.
+
+``slayer/sql/generator.py`` contains FIVE independent ValueKey renderers (the
+issue text says four; the fifth is the outer-wrapper copy):
+
+* R1 ``_render_value_key_for_filter``            — host WHERE / HAVING
+* R2 ``_render_filter_value_key_in_target_scope``— cross-model CTE routed filters
+* R3 ``_render_value_key_against_aliases``       — POST-phase / alias space
+* R4 ``_render_filter_for_outer_wrapper``        — outer combined WHERE
+* R5 ``_render_aggregate_composite_expr``        — AGGREGATE-phase composites
+
+…plus three literal renderers and three arithmetic composers riding along. They
+have drifted, and B5 is the sharpest instance: R1 and R4 emit scalar calls as
+``exp.Anonymous`` passthrough while R2/R3/R5 build a typed node and let the
+dialect transpile it. The same ``ScalarCallKey`` therefore reaches Postgres as
+``IFNULL(...)`` from a filter (Postgres has no ``IFNULL``) and as
+``COALESCE(...)`` from a projection.
+
+This module pins the replacement: ONE ``render_value_key(key, ctx)`` in
+``slayer/sql/render/value_expr.py``, parameterised by an explicit
+``RenderContext`` and failing closed when the context lacks a facility a key
+kind needs. Materialisation stays on ``ScopeFrame`` (P-B) — the renderer
+anchors leaves through ``scope.resolve(ref, consumer=...)`` and never by hand.
+
+Also pinned here: B10 (``ScopeFrame._model_for`` raises instead of silently
+substituting the root model) and the aggregation registry that replaces
+``_build_agg``'s five dispatch mechanisms.
+
+Scope note: this PR defines the COMPLETE context API, including
+``consumer=``, but migrates only SAME-SCOPE call sites (R1 filters, R5
+composites). R2/R3/R4 migrate in PR 3, which also adds the production-path
+proof that ``resolve(consumer=...)`` is exercised — an unused API does not
+establish P-B. The ``consumer`` tests here are therefore renderer-level.
+
+B5 nuance discovered while writing these tests: "uppercase + dialect transpile"
+alone is NOT the whole policy. Building ``exp.func("LOG10", x)`` yields a
+generic ``exp.Log(10, x)`` that re-emits as ``LOG(10, x)`` — which is wrong for
+the dialects that have a native single-arg ``LOG10``
+(``SqlDialect.should_use_native_log``). The generator already owns that rewrite
+(``_rewrite_log_aliases``) but applies it only inside ``_parse`` /
+``_parse_predicate``, never to AST-built calls, so R3 gets ``log10`` WRONG today
+while R1's Anonymous passthrough gets it right. The unified policy is therefore
+transpile-then-log-rewrite, which is the only form that is correct for both
+``ifnull`` and ``log10``.
+"""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+import tempfile
+from decimal import Decimal
+from typing import AsyncIterator, Optional
+
+import pytest
+from sqlglot import exp
+
+from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType
+from slayer.core.keys import (
+    AggregateKey,
+    ArithmeticKey,
+    BetweenKey,
+    ColumnKey,
+    ColumnSqlKey,
+    InKey,
+    LiteralKey,
+    ScalarCallKey,
+    StarKey,
+    TimeTruncKey,
+    TransformKey,
+)
+from slayer.core.models import (
+    Aggregation,
+    Column,
+    DatasourceConfig,
+    ModelJoin,
+    ModelMeasure,
+    SlayerModel,
+)
+from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.sql.dialects import get_dialect
+from slayer.sql.naming import AliasAllocator
+from slayer.sql.scope import ScopeFrame
+from slayer.storage.yaml_storage import YAMLStorage
+
+
+# ===========================================================================
+# Models + scope construction (mirrors tests/test_scope.py's idiom).
+# ===========================================================================
+
+
+def _regions() -> SlayerModel:
+    return SlayerModel(
+        name="regions", sql_table="regions", data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
+            Column(name="population", sql="population", type=DataType.DOUBLE),
+        ],
+    )
+
+
+def _customers() -> SlayerModel:
+    return SlayerModel(
+        name="customers", sql_table="customers", data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+            Column(name="balance", sql="balance", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+    )
+
+
+def _orders() -> SlayerModel:
+    return SlayerModel(
+        name="orders", sql_table="orders", data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="label", sql="label", type=DataType.TEXT),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="net", sql="amount - 1", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )
+
+
+def _scope(
+    host: Optional[SlayerModel] = None,
+    *others: SlayerModel,
+    dialect: str = "postgres",
+    allocator: Optional[AliasAllocator] = None,
+) -> ScopeFrame:
+    host = host or _orders()
+    others = others or (_customers(), _regions())
+    alloc = allocator or AliasAllocator()
+    bundle = ResolvedSourceBundle(
+        source_model=host, referenced_models=[host, *others],
+    )
+    return ScopeFrame(
+        scope_id=alloc.next_scope_id(host.name),
+        root_model=host, root_relation=host.name,
+        bundle=bundle, dialect=get_dialect(dialect), allocator=alloc,
+    )
+
+
+def _filter_ctx(dialect: str = "postgres", **kw):
+    """A RenderContext carrying the FILTER facility group (R1's call family)."""
+    from slayer.sql.render.value_expr import FilterFacilities, RenderContext
+
+    scope = _scope(dialect=dialect)
+    return RenderContext(
+        scope=scope,
+        dialect=scope.dialect,
+        filters=FilterFacilities(**kw),
+    )
+
+
+def _composite_ctx(dialect: str = "postgres", **kw):
+    """A RenderContext carrying the COMPOSITE facility group (R5's family)."""
+    from slayer.sql.render.value_expr import CompositeFacilities, RenderContext
+
+    scope = _scope(dialect=dialect)
+    return RenderContext(
+        scope=scope,
+        dialect=scope.dialect,
+        composites=CompositeFacilities(**kw),
+    )
+
+
+def _sql(expr: exp.Expression, dialect: str = "postgres") -> str:
+    return expr.sql(dialect=dialect)
+
+
+# ===========================================================================
+# B10 — ScopeFrame._model_for raises on an unknown model.
+# ===========================================================================
+
+
+class TestB10UnknownModelRaises:
+    """Today ``_model_for`` ends in ``or self.root_model``: a ``ColumnSqlKey``
+    naming a model absent from the bundle silently expands the ROOT model's
+    derived SQL instead. That turns a wiring bug into a wrong answer — the
+    query runs and returns numbers computed from the wrong model."""
+
+    def test_unknown_model_in_columnsqlkey_raises(self) -> None:
+        from slayer.core.errors import UnknownReferenceError
+
+        scope = _scope()
+        with pytest.raises(UnknownReferenceError):
+            scope.resolve(
+                ColumnSqlKey(model="not_in_bundle", column_name="net"),
+            )
+
+    def test_error_names_the_missing_model(self) -> None:
+        """The message must be actionable: which model was asked for, what the
+        scope root is, and what the bundle actually knows."""
+        from slayer.core.errors import UnknownReferenceError
+
+        scope = _scope()
+        with pytest.raises(UnknownReferenceError) as excinfo:
+            scope.resolve(
+                ColumnSqlKey(model="not_in_bundle", column_name="net"),
+            )
+        message = str(excinfo.value)
+        assert "not_in_bundle" in message
+        assert "orders" in message
+
+    def test_known_models_still_resolve(self) -> None:
+        """Parity guard: the root model and every bundle member keep working —
+        B10 removes only the silent FALLBACK, not the lookup."""
+        scope = _scope()
+        expr = scope.resolve(ColumnSqlKey(model="orders", column_name="net"))
+        assert "amount" in _sql(expr)
+
+    def test_root_model_lookup_does_not_consult_the_bundle(self) -> None:
+        """A scope whose root model is not listed in ``referenced_models`` must
+        still resolve its own root — the first branch of ``_model_for``."""
+        host = _orders()
+        alloc = AliasAllocator()
+        bundle = ResolvedSourceBundle(
+            source_model=host, referenced_models=[_customers(), _regions()],
+        )
+        scope = ScopeFrame(
+            scope_id=alloc.next_scope_id(host.name),
+            root_model=host, root_relation=host.name,
+            bundle=bundle, dialect=get_dialect("postgres"), allocator=alloc,
+        )
+        expr = scope.resolve(ColumnSqlKey(model="orders", column_name="net"))
+        assert "amount" in _sql(expr)
+
+
+# ===========================================================================
+# The RenderContext API.
+# ===========================================================================
+
+
+class TestRenderContextApi:
+    def test_context_holds_real_production_objects(self) -> None:
+        """Pydantic v2 + a ``ScopeFrame`` / dialect strategy / sqlglot nodes
+        needs ``arbitrary_types_allowed``; constructing with the real objects
+        (not stubs) is what proves the config is right."""
+        from slayer.sql.render.value_expr import RenderContext
+
+        scope = _scope()
+        ctx = RenderContext(scope=scope, dialect=scope.dialect)
+        assert ctx.scope is scope
+        assert ctx.consumer is None
+        assert ctx.filters is None and ctx.composites is None
+        assert ctx.aliases is None
+
+    def test_consumer_defaults_to_none_and_is_accepted(self) -> None:
+        """The P-B seam exists in PR 1 even though its production callers
+        arrive in PR 3."""
+        from slayer.sql.render.value_expr import RenderContext
+
+        producer, consumer = _scope(), _scope()
+        ctx = RenderContext(
+            scope=producer, consumer=consumer, dialect=producer.dialect,
+        )
+        assert ctx.consumer is consumer
+
+    @pytest.mark.parametrize(
+        "label,key",
+        [
+            ("local_column", ColumnKey(leaf="amount")),
+            ("joined_column", ColumnKey(path=("customers",), leaf="balance")),
+            ("derived_column", ColumnSqlKey(model="orders", column_name="net")),
+        ],
+    )
+    def test_consumer_routes_column_like_leaves_through_materialization(
+        self, label, key,
+    ) -> None:
+        """With a consumer named, EVERY column-like leaf must come back as a
+        BARE materialisation alias and be projected in the PRODUCING scope —
+        the single Law-2 mechanism, not a second one grown inside the renderer.
+
+        Parametrised over all three column-like kinds because a renderer that
+        special-cases one of them would otherwise slip through."""
+        from slayer.sql.render.value_expr import RenderContext, render_value_key
+
+        producer, consumer = _scope(), _scope()
+        ctx = RenderContext(
+            scope=producer, consumer=consumer, dialect=producer.dialect,
+        )
+        out = render_value_key(key, ctx)
+        assert isinstance(out, exp.Column), f"{label}: got {type(out).__name__}"
+        assert out.table == "", f"{label}: expected a bare alias, got {_sql(out)}"
+        assert len(producer.materializations) == 1
+        assert producer.materializations[0].alias == _sql(out)
+
+    def test_materializations_apply_to_the_producing_select(self) -> None:
+        """The other half of the P-B contract: what the renderer records must
+        actually be projectable via ``apply_materializations``, so the consumer's
+        bare alias resolves to a real column of the producing SELECT."""
+        from slayer.sql.render.value_expr import RenderContext, render_value_key
+
+        producer, consumer = _scope(), _scope()
+        ctx = RenderContext(
+            scope=producer, consumer=consumer, dialect=producer.dialect,
+        )
+        alias = _sql(render_value_key(ColumnKey(leaf="amount"), ctx))
+        select = producer.apply_materializations(
+            exp.Select().from_(exp.to_table("orders")),
+        )
+        assert alias in [p.alias_or_name for p in select.expressions], (
+            f"{alias!r} not projected by the producing scope: "
+            f"{select.sql(dialect='postgres')}"
+        )
+
+    def test_materialization_dedups_within_a_scope(self) -> None:
+        """Two renders of the same key across the same boundary share ONE
+        ``_val_<n>`` — the dedup key is the producing scope + anchored AST +
+        dialect, and the renderer must not defeat it by re-anchoring."""
+        from slayer.sql.render.value_expr import RenderContext, render_value_key
+
+        producer, consumer = _scope(), _scope()
+        ctx = RenderContext(
+            scope=producer, consumer=consumer, dialect=producer.dialect,
+        )
+        a = render_value_key(ColumnKey(leaf="amount"), ctx)
+        b = render_value_key(ColumnKey(leaf="amount"), ctx)
+        assert _sql(a) == _sql(b)
+        assert len(producer.materializations) == 1
+
+    def test_join_paths_register_as_a_side_effect_of_rendering(self) -> None:
+        """P-A: join discovery is a side effect of rendering, never a separate
+        pass. Rendering a joined leaf must register the crossed path on the
+        scope without the caller asking."""
+        from slayer.sql.render.value_expr import RenderContext, render_value_key
+
+        scope = _scope()
+        ctx = RenderContext(scope=scope, dialect=scope.dialect)
+        render_value_key(
+            ColumnKey(path=("customers", "regions"), leaf="name"), ctx,
+        )
+        assert scope.join_paths.as_list() == [
+            ("customers",), ("customers", "regions"),
+        ]
+
+    def test_missing_facility_fails_closed(self) -> None:
+        """A key kind that needs a facility the context lacks must RAISE, not
+        silently degrade. Silent degradation is how the five copies drifted in
+        the first place."""
+        from slayer.core.errors import RenderContextMissingFacilityError
+        from slayer.sql.render.value_expr import RenderContext, render_value_key
+
+        scope = _scope()
+        bare = RenderContext(scope=scope, dialect=scope.dialect)
+        # A POST-phase transform can only be rendered against already-
+        # materialised aliases, which live in the ALIAS facility group.
+        key = TransformKey(
+            op="time_shift",
+            input=AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
+        )
+        with pytest.raises(RenderContextMissingFacilityError):
+            render_value_key(key, bare)
+
+    def test_missing_facility_error_names_the_key_and_facility(self) -> None:
+        from slayer.core.errors import RenderContextMissingFacilityError
+        from slayer.sql.render.value_expr import RenderContext, render_value_key
+
+        scope = _scope()
+        bare = RenderContext(scope=scope, dialect=scope.dialect)
+        key = TransformKey(
+            op="time_shift",
+            input=AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
+        )
+        with pytest.raises(RenderContextMissingFacilityError) as excinfo:
+            render_value_key(key, bare)
+        message = str(excinfo.value)
+        assert "TransformKey" in message
+        assert "aliases" in message.lower(), (
+            f"the error must name the MISSING facility, not just the key: "
+            f"{message!r}"
+        )
+
+    def test_aggregate_without_composite_facilities_fails_closed(self) -> None:
+        """Fail-closed is asserted per facility group, not once.
+
+        A renderer could easily fail closed on the alias group (the branch the
+        test above covers) while silently degrading on the composite group —
+        which is the drift mode this whole PR exists to prevent. An
+        ``AggregateKey`` needs the composite facilities (rn-suffix maps,
+        resolved agg kwargs, composite alias map) to render faithfully.
+        """
+        from slayer.core.errors import RenderContextMissingFacilityError
+        from slayer.sql.render.value_expr import RenderContext, render_value_key
+
+        scope = _scope()
+        bare = RenderContext(scope=scope, dialect=scope.dialect)
+        key = AggregateKey(source=ColumnKey(leaf="amount"), agg="first")
+        with pytest.raises(RenderContextMissingFacilityError) as excinfo:
+            render_value_key(key, bare)
+        assert "composite" in str(excinfo.value).lower(), str(excinfo.value)
+
+    def test_transform_key_renders_when_alias_facilities_are_supplied(
+        self,
+    ) -> None:
+        """The positive half of the fail-closed pair.
+
+        PR 1 defines the COMPLETE context API even though the production call
+        sites for alias-space rendering migrate in PR 3, so a ``TransformKey``
+        WITH its facility must render here — otherwise "fails closed" would be
+        indistinguishable from "not implemented".
+        """
+        from slayer.sql.render.value_expr import (
+            AliasFacilities,
+            RenderContext,
+            render_value_key,
+        )
+
+        scope = _scope()
+        agg = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
+        key = TransformKey(op="time_shift", input=agg)
+        ctx = RenderContext(
+            scope=scope,
+            dialect=scope.dialect,
+            aliases=AliasFacilities(
+                slot_id_by_key={key: "s1"},
+                available_alias_by_slot_id={"s1": "orders.amount_sum_shifted"},
+            ),
+        )
+        out = render_value_key(key, ctx)
+        assert "amount_sum_shifted" in _sql(out), _sql(out)
+
+
+# ===========================================================================
+# Coverage of the whole ValueKey union.
+# ===========================================================================
+
+
+class TestRendersEveryKeyKind:
+    """The union is closed (11 members). One renderer means every member is
+    handled in one place — an unhandled kind must raise, never fall through to
+    a bare ``None`` or a stringified repr."""
+
+    def test_local_column_key(self) -> None:
+        from slayer.sql.render.value_expr import render_value_key
+
+        out = render_value_key(ColumnKey(leaf="amount"), _filter_ctx())
+        assert _sql(out) == "orders.amount"
+
+    def test_joined_column_key_anchors_at_the_path_alias(self) -> None:
+        from slayer.sql.render.value_expr import render_value_key
+
+        out = render_value_key(
+            ColumnKey(path=("customers",), leaf="balance"), _filter_ctx(),
+        )
+        assert _sql(out) == "customers.balance"
+
+    def test_multi_hop_column_key(self) -> None:
+        from slayer.sql.render.value_expr import render_value_key
+
+        out = render_value_key(
+            ColumnKey(path=("customers", "regions"), leaf="name"),
+            _filter_ctx(),
+        )
+        assert _sql(out) == "customers__regions.name"
+
+    def test_column_sql_key_expands_the_derived_expression(self) -> None:
+        """Exact SQL, not a substring check: ``net`` is ``amount - 1``, and the
+        expansion must be anchored at the scope root."""
+        from slayer.sql.render.value_expr import render_value_key
+
+        out = render_value_key(
+            ColumnSqlKey(model="orders", column_name="net"), _filter_ctx(),
+        )
+        assert _sql(out) == "orders.amount - 1"
+
+    def test_time_trunc_key(self) -> None:
+        """Exact per-dialect SQL — a substring check would accept a truncation
+        at the wrong granularity or over the wrong column."""
+        from slayer.sql.render.value_expr import render_value_key
+
+        key = TimeTruncKey(
+            column=ColumnKey(leaf="created_at"), granularity="month",
+        )
+        out = render_value_key(key, _filter_ctx("postgres"))
+        assert _sql(out, "postgres") == "DATE_TRUNC('MONTH', orders.created_at)"
+
+    def test_literal_key_variants(self) -> None:
+        from slayer.sql.render.value_expr import render_value_key
+
+        ctx = _filter_ctx()
+        assert _sql(render_value_key(LiteralKey(value=Decimal(3)), ctx)) == "3"
+        assert _sql(render_value_key(LiteralKey(value="x"), ctx)) == "'x'"
+        assert _sql(
+            render_value_key(LiteralKey(value=None), ctx)
+        ).upper() == "NULL"
+
+    def test_star_key(self) -> None:
+        from slayer.sql.render.value_expr import render_value_key
+
+        out = render_value_key(StarKey(), _filter_ctx())
+        assert isinstance(out, exp.Star)
+
+    def test_arithmetic_key(self) -> None:
+        from slayer.sql.render.value_expr import render_value_key
+
+        out = render_value_key(
+            ArithmeticKey(
+                op="+",
+                operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1))),
+            ),
+            _filter_ctx(),
+        )
+        assert _sql(out) == "orders.amount + 1"
+
+    def test_comparison_arithmetic_key(self) -> None:
+        from slayer.sql.render.value_expr import render_value_key
+
+        out = render_value_key(
+            ArithmeticKey(
+                op=">",
+                operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(5))),
+            ),
+            _filter_ctx(),
+        )
+        assert _sql(out) == "orders.amount > 5"
+
+    def test_between_key(self) -> None:
+        from slayer.sql.render.value_expr import render_value_key
+
+        out = render_value_key(
+            BetweenKey(
+                column=ColumnKey(leaf="amount"),
+                low=LiteralKey(value=Decimal(1)),
+                high=LiteralKey(value=Decimal(9)),
+            ),
+            _filter_ctx(),
+        )
+        assert _sql(out) == "orders.amount BETWEEN 1 AND 9"
+
+    def test_in_key(self) -> None:
+        from slayer.sql.render.value_expr import render_value_key
+
+        out = render_value_key(
+            InKey(
+                column=ColumnKey(leaf="label"),
+                values=(LiteralKey(value="a"), LiteralKey(value="b")),
+            ),
+            _filter_ctx(),
+        )
+        assert _sql(out) == "orders.label IN ('a', 'b')"
+
+    def test_negated_in_key(self) -> None:
+        from slayer.sql.render.value_expr import render_value_key
+
+        out = render_value_key(
+            InKey(
+                column=ColumnKey(leaf="label"),
+                values=(LiteralKey(value="a"),),
+                negated=True,
+            ),
+            _filter_ctx(),
+        )
+        # Exact form: a bare "NOT" substring would also match e.g. an
+        # IS NOT NULL wrapper that got the predicate wrong.
+        assert _sql(out) == "NOT orders.label IN ('a')"
+
+    def test_local_aggregate_key(self) -> None:
+        from slayer.sql.render.value_expr import render_value_key
+
+        out = render_value_key(
+            AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
+            _composite_ctx(),
+        )
+        assert _sql(out) == "SUM(orders.amount)"
+
+    def test_star_count_aggregate_key(self) -> None:
+        from slayer.sql.render.value_expr import render_value_key
+
+        out = render_value_key(
+            AggregateKey(source=StarKey(), agg="count"), _composite_ctx(),
+        )
+        assert _sql(out) == "COUNT(*)"
+
+    def test_unhandled_kind_raises_notimplementederror(self) -> None:
+        """Fail closed on anything outside the union rather than returning a
+        stringified repr into the SQL.
+
+        Pinned to ONE exact exception type (matching the existing generator
+        renderers' convention) and to a message naming the offending type —
+        accepting a tuple of types would let an incidental TypeError from
+        somewhere else inside the renderer satisfy this test.
+        """
+        from slayer.sql.render.value_expr import render_value_key
+
+        with pytest.raises(NotImplementedError) as excinfo:
+            render_value_key(object(), _filter_ctx())  # type: ignore[arg-type]
+        assert "object" in str(excinfo.value)
+
+
+# ===========================================================================
+# B5 — one ScalarCall render policy everywhere.
+# ===========================================================================
+
+
+# (function name, args, expected postgres SQL, expected tsql SQL)
+#
+# The expectations encode the UNIFIED policy: uppercase → typed sqlglot node →
+# dialect transpile → log-alias rewrite. Where that differs from what R1 emits
+# today, the difference IS B5.
+#
+# Identifiers are unquoted here: bracket / double-quote wrapping is a separate
+# emit-time pass over the finished statement, not part of value rendering.
+_SCALAR_MATRIX = [
+    # R1 today: IFNULL(...) — invalid on Postgres, which has no IFNULL.
+    ("ifnull", (ColumnKey(leaf="amount"), LiteralKey(value=Decimal(0))),
+     "COALESCE(orders.amount, 0)", "COALESCE(orders.amount, 0)"),
+    # R1 today: CONCAT(...) verbatim on every dialect; the operator differs.
+    ("concat", (ColumnKey(leaf="label"), LiteralKey(value="x")),
+     "orders.label || 'x'", "orders.label + 'x'"),
+    # R1 today: LENGTH(...) on T-SQL, which spells it LEN.
+    ("length", (ColumnKey(leaf="label"),),
+     "LENGTH(orders.label)", "LEN(orders.label)"),
+]
+
+
+class TestB5ScalarCallPolicy:
+    @pytest.mark.parametrize(
+        "name,args,expected_pg,expected_tsql",
+        _SCALAR_MATRIX,
+        ids=[m[0] for m in _SCALAR_MATRIX],
+    )
+    def test_scalar_calls_transpile_per_dialect(
+        self, name, args, expected_pg, expected_tsql,
+    ) -> None:
+        from slayer.sql.render.value_expr import render_value_key
+
+        key = ScalarCallKey(name=name, args=args)
+        assert _sql(
+            render_value_key(key, _filter_ctx("postgres")), "postgres",
+        ) == expected_pg
+        assert _sql(
+            render_value_key(key, _filter_ctx("tsql")), "tsql",
+        ) == expected_tsql
+
+    def test_ifnull_never_reaches_postgres_unmapped(self) -> None:
+        """The headline B5 bug, stated as the invariant rather than as an exact
+        string: Postgres has no ``IFNULL``, so emitting it is broken SQL."""
+        from slayer.sql.render.value_expr import render_value_key
+
+        key = ScalarCallKey(
+            name="ifnull",
+            args=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(0))),
+        )
+        out = _sql(render_value_key(key, _filter_ctx("postgres")), "postgres")
+        assert "IFNULL" not in out.upper(), out
+
+    def test_log10_keeps_the_native_single_arg_alias(self) -> None:
+        """The other half of the policy, and the reason "transpile" alone is
+        the wrong rule.
+
+        ``exp.func("LOG10", x)`` normalises to a generic ``Log(10, x)`` that
+        re-emits as ``LOG(10, x)``. Every Tier-1/2 dialect but Oracle has a
+        native single-arg ``LOG10``, which is why the generator carries
+        ``_rewrite_log_aliases``. Applying transpile WITHOUT that rewrite would
+        regress ``log10`` — so the unified renderer must apply both.
+        """
+        from slayer.sql.render.value_expr import render_value_key
+
+        key = ScalarCallKey(name="log10", args=(ColumnKey(leaf="amount"),))
+        out = _sql(render_value_key(key, _filter_ctx("postgres")), "postgres")
+        assert out.upper().startswith("LOG10("), out
+
+    def test_round_keeps_the_dev1576_postgres_cast(self) -> None:
+        """Parity guard: two-arg ROUND on Postgres needs the numeric cast, and
+        it is the ONE scalar call R1 already routed through the typed path.
+        Unifying must not lose it."""
+        from slayer.sql.render.value_expr import render_value_key
+
+        key = ScalarCallKey(
+            name="round",
+            args=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(0))),
+        )
+        out = _sql(render_value_key(key, _filter_ctx("postgres")), "postgres")
+        assert "CAST" in out.upper() and "DECIMAL" in out.upper(), out
+
+    def test_like_stays_the_sql_operator(self) -> None:
+        """``like(value, pattern)`` is the one allowlist member that is an
+        OPERATOR, not a function call. Both legacy paths special-case it; the
+        unified renderer keeps that."""
+        from slayer.sql.render.value_expr import render_value_key
+
+        key = ScalarCallKey(
+            name="like",
+            args=(ColumnKey(leaf="label"), LiteralKey(value="x%")),
+        )
+        out = render_value_key(key, _filter_ctx("postgres"))
+        assert isinstance(out, exp.Like)
+        assert _sql(out) == "orders.label LIKE 'x%'"
+
+    def test_nested_scalar_calls_use_one_policy_throughout(self) -> None:
+        """The policy applies at every depth — a nested call must not fall back
+        to the passthrough branch."""
+        from slayer.sql.render.value_expr import render_value_key
+
+        key = ScalarCallKey(
+            name="ifnull",
+            args=(
+                ScalarCallKey(name="length", args=(ColumnKey(leaf="label"),)),
+                LiteralKey(value=Decimal(0)),
+            ),
+        )
+        out = _sql(render_value_key(key, _filter_ctx("tsql")), "tsql")
+        assert "COALESCE" in out.upper() and "LEN(" in out.upper(), out
+        assert "IFNULL" not in out.upper() and "LENGTH" not in out.upper(), out
+
+
+class TestPGSameConstructSameSql:
+    """P-G proper: a given ValueKey renders identically wherever it appears.
+
+    The contexts differ (filter facilities vs composite facilities) but the
+    rendering POLICY must not branch on them. Any divergence here is the class
+    of bug the five copies produced.
+    """
+
+    _KEYS = [
+        ("column", ColumnKey(leaf="amount")),
+        ("joined_column", ColumnKey(path=("customers",), leaf="balance")),
+        ("derived_column", ColumnSqlKey(model="orders", column_name="net")),
+        ("literal", LiteralKey(value=Decimal(7))),
+        ("scalar_call", ScalarCallKey(
+            name="ifnull",
+            args=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(0))),
+        )),
+        ("nested_scalar_call", ScalarCallKey(
+            name="upper",
+            args=(ScalarCallKey(name="trim", args=(ColumnKey(leaf="label"),)),),
+        )),
+        ("arithmetic", ArithmeticKey(
+            op="*",
+            operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(2))),
+        )),
+        ("in_predicate", InKey(
+            column=ColumnKey(leaf="label"), values=(LiteralKey(value="a"),),
+        )),
+        ("between_predicate", BetweenKey(
+            column=ColumnKey(leaf="amount"),
+            low=LiteralKey(value=Decimal(1)),
+            high=LiteralKey(value=Decimal(2)),
+        )),
+    ]
+
+    @pytest.mark.parametrize("label,key", _KEYS, ids=[k[0] for k in _KEYS])
+    @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "tsql", "bigquery"])
+    def test_same_key_same_sql_across_contexts(
+        self, label, key, dialect,
+    ) -> None:
+        from slayer.sql.render.value_expr import render_value_key
+
+        in_filter = _sql(
+            render_value_key(key, _filter_ctx(dialect)), dialect,
+        )
+        in_composite = _sql(
+            render_value_key(key, _composite_ctx(dialect)), dialect,
+        )
+        assert in_filter == in_composite, (
+            f"{label} renders differently by context on {dialect}: "
+            f"filter={in_filter!r} composite={in_composite!r}"
+        )
+
+
+# ===========================================================================
+# The aggregation registry (replaces _build_agg's five dispatch mechanisms).
+# ===========================================================================
+
+
+class TestAggregationRegistry:
+    """``_build_agg`` reaches its builders five different ways: a hardcoded
+    name pair for first/last, ``_AGG_FUNCTION_MAP`` plus a SECOND inline
+    ``agg_class_map``, a frozenset membership test for the stat aggregates,
+    name equality for the dialect-hook aggregates, and a formula-template
+    fallback. One registry table replaces all five."""
+
+    # Frozen INDEPENDENTLY of both BUILTIN_AGGREGATIONS and the registry, one
+    # per former dispatch mechanism, so the coverage assertion cannot become
+    # tautological if the registry were ever used to build the enum (or vice
+    # versa). Each name must resolve AND be reachable through the old
+    # mechanism's builder.
+    _REQUIRED_BY_MECHANISM = {
+        "first_last_case": ["first", "last"],
+        "agg_function_map": ["count", "sum", "avg", "min", "max"],
+        "stat_frozenset": [
+            "stddev_samp", "stddev_pop", "var_samp", "var_pop",
+            "corr", "covar_samp", "covar_pop",
+        ],
+        "dialect_hook": [
+            "percentile", "median", "count_distinct", "count_distinct_approx",
+        ],
+        "formula_template": ["weighted_avg"],
+    }
+
+    def test_every_builtin_resolves(self) -> None:
+        from slayer.sql.render.aggregates import resolve_agg_entry
+
+        for name in sorted(BUILTIN_AGGREGATIONS):
+            entry = resolve_agg_entry(name)
+            assert entry is not None, name
+            assert entry.name == name
+
+    @pytest.mark.parametrize(
+        "mechanism,names",
+        sorted(_REQUIRED_BY_MECHANISM.items()),
+        ids=sorted(_REQUIRED_BY_MECHANISM),
+    )
+    def test_each_former_dispatch_mechanism_is_represented(
+        self, mechanism, names,
+    ) -> None:
+        """One registry table must subsume all five mechanisms — an
+        implementation that only ported the easy ``_AGG_FUNCTION_MAP`` entries
+        would still pass ``test_every_builtin_resolves`` if the enum happened
+        to be small."""
+        from slayer.sql.render.aggregates import resolve_agg_entry
+
+        for name in names:
+            entry = resolve_agg_entry(name)
+            assert entry is not None, f"{mechanism}: {name} does not resolve"
+            assert entry.name == name
+
+    def test_required_names_are_really_builtins(self) -> None:
+        """Guard on the frozen table's own premise, so a rename in the enum
+        surfaces here rather than silently shrinking coverage."""
+        for names in self._REQUIRED_BY_MECHANISM.values():
+            for name in names:
+                assert name in BUILTIN_AGGREGATIONS, name
+
+    def test_unknown_aggregation_raises(self) -> None:
+        from slayer.sql.render.aggregates import resolve_agg_entry
+
+        with pytest.raises(ValueError):
+            resolve_agg_entry("definitely_not_an_aggregation")
+
+    def test_windowable_flags_are_exact(self) -> None:
+        """Only ``sum`` and ``avg`` are windowable today — that is precisely
+        what ``stage_planner`` gates on, and the registry must agree with it
+        rather than restating it."""
+        from slayer.sql.render.aggregates import resolve_agg_entry
+
+        assert resolve_agg_entry("sum").windowable is True
+        assert resolve_agg_entry("avg").windowable is True
+        for name in ("count", "min", "max", "median", "percentile", "first"):
+            assert resolve_agg_entry(name).windowable is False, name
+
+    def test_window_agg_class_replaces_the_hardcode(self) -> None:
+        from slayer.sql.render.aggregates import window_agg_class
+
+        assert window_agg_class("sum") is exp.Sum
+        assert window_agg_class("avg") is exp.Avg
+
+    def test_non_windowable_aggregation_fails_closed(self) -> None:
+        """The generator's windowed path currently reads
+        ``exp.Sum if plan.agg == "sum" else exp.Avg`` — a silent catch-all that
+        renders ANY other aggregation as AVG. It is unreachable through the
+        planner today, which is exactly why it would stay silently wrong.
+
+        Approved divergence: it raises instead.
+        """
+        from slayer.sql.render.aggregates import window_agg_class
+
+        for name in ("median", "count", "min", "max", "percentile"):
+            with pytest.raises(ValueError):
+                window_agg_class(name)
+
+
+# ===========================================================================
+# End-to-end: the migrated call-site families keep working.
+# ===========================================================================
+
+
+async def _e2e_engine(*, dialect: str = "sqlite") -> SlayerQueryEngine:
+    d = tempfile.mkdtemp()
+    db_path = os.path.join(d, "ve.db")
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    cur.execute(
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, "
+        "amount REAL, disc REAL, qty REAL, created_at TEXT)"
+    )
+    cur.executemany(
+        "INSERT INTO orders VALUES (?,?,?,?,?,?)",
+        [
+            (1, "new", 10.0, None, 2.0, "2024-01-01"),
+            (2, "new", 20.0, 5.0, 4.0, "2024-02-01"),
+            (3, "old", 30.0, None, 1.0, "2024-01-15"),
+        ],
+    )
+    con.commit()
+    con.close()
+
+    storage = YAMLStorage(base_dir=os.path.join(d, "store"))
+    await storage.save_datasource(
+        DatasourceConfig(name="prod", type=dialect, database=db_path)
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="prod",
+            # first/last needs a resolvable ranking time column.
+            default_time_dimension="created_at",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="status", type=DataType.TEXT),
+                Column(name="amount", type=DataType.DOUBLE),
+                Column(name="disc", type=DataType.DOUBLE),
+                Column(name="qty", type=DataType.DOUBLE),
+                Column(name="created_at", type=DataType.TIMESTAMP),
+            ],
+            # Exercises the formula-template dispatch mechanism through the
+            # registry — a CUSTOM aggregation, not a builtin.
+            aggregations=[
+                Aggregation(name="sum_sq", formula="SUM({value} * {value})"),
+            ],
+        )
+    )
+    return SlayerQueryEngine(storage=storage)
+
+
+@pytest.fixture
+async def e2e() -> AsyncIterator[SlayerQueryEngine]:
+    yield await _e2e_engine()
+
+
+class TestMigratedCallSitesEndToEnd:
+    async def test_scalar_call_in_a_row_filter_executes(self, e2e) -> None:
+        """R1's family (host WHERE) after migration. ``disc`` is NULL for two
+        rows, so ``ifnull(disc, 0) > 1`` must keep exactly the one row where
+        ``disc = 5``."""
+        resp = await e2e.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="*:count")],
+                filters=["ifnull(disc, 0) > 1"],
+            )
+        )
+        assert len(resp.data) == 1
+        assert resp.data[0]["orders.status"] == "new"
+        assert resp.data[0]["orders._count"] == 1
+
+    async def test_scalar_call_composite_projection_executes(self, e2e) -> None:
+        """R5's family (AGGREGATE-phase composite): a scalar call WRAPPING an
+        aggregate. Sums: new = 30, old = 30."""
+        resp = await e2e.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="ifnull(amount:sum, 0)", name="m")],
+            )
+        )
+        by_status = {r["orders.status"]: r["orders.m"] for r in resp.data}
+        assert by_status == {"new": 30.0, "old": 30.0}
+
+    async def test_arithmetic_composite_of_two_aggregates(self, e2e) -> None:
+        """The composite family's core shape: arithmetic over two aggregates
+        must stay ONE inline expression, not two materialised slots."""
+        resp = await e2e.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[
+                    ModelMeasure(formula="amount:sum - qty:sum", name="d"),
+                ],
+            )
+        )
+        by_status = {r["orders.status"]: r["orders.d"] for r in resp.data}
+        assert by_status == {"new": 24.0, "old": 29.0}
+
+    async def test_custom_formula_aggregation_still_dispatches(
+        self, e2e,
+    ) -> None:
+        """The registry must keep the formula-template mechanism reachable for
+        aggregations that are NOT builtins — a closed builtin table would drop
+        them. new = 10² + 20² = 500; old = 30² = 900."""
+        resp = await e2e.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="amount:sum_sq", name="ss")],
+            )
+        )
+        by_status = {r["orders.status"]: r["orders.ss"] for r in resp.data}
+        assert by_status == {"new": 500.0, "old": 900.0}
+
+    async def test_having_filter_over_an_aggregate_executes(self, e2e) -> None:
+        """AGGREGATE-phase filter (HAVING) — the other half of R1's family."""
+        resp = await e2e.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="qty:sum", name="q")],
+                filters=["qty:sum > 5"],
+            )
+        )
+        assert [r["orders.status"] for r in resp.data] == ["new"]
+        assert resp.data[0]["orders.q"] == 6.0
+
+    async def test_first_last_composite_call_site_executes(self, e2e) -> None:
+        """R5's SECOND production call site (``_build_first_last_base_select``,
+        generator.py:3741) — reached only by a first/last measure, which builds
+        its own ranked base SELECT rather than the ordinary composite one.
+
+        Ordered by ``id``: new -> last amount 20, old -> 30."""
+        resp = await e2e.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="amount:last", name="la")],
+            )
+        )
+        by_status = {r["orders.status"]: r["orders.la"] for r in resp.data}
+        assert by_status == {"new": 20.0, "old": 30.0}
+
+    async def test_scalar_call_inside_a_first_last_composite(self, e2e) -> None:
+        """…and the same call site carrying a SCALAR CALL, so a legacy copy
+        surviving on that route could not pass unnoticed."""
+        resp = await e2e.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[
+                    ModelMeasure(formula="ifnull(amount:last, 0)", name="la"),
+                ],
+            )
+        )
+        by_status = {r["orders.status"]: r["orders.la"] for r in resp.data}
+        assert by_status == {"new": 20.0, "old": 30.0}
+
+
+class TestOuterWrapperAndShiftedCteFamilies:
+    """The two remaining migrated/patched routes, which the ordinary WHERE and
+    HAVING tests do not reach.
+
+    * R4 ``_render_filter_for_outer_wrapper`` — the outer combined
+      SELECT. R4 is NOT migrated in PR 1 (it is cross-scope, and moves in
+      PR 3), but B5 says "everywhere", so its scalar branch IS patched here.
+    * R1's shifted-CTE WHERE call site (generator.py:7468) — reached only by a
+      ``time_shift`` transform, never by a plain host filter.
+    """
+
+    async def _engine(self, *, dialect: str = "sqlite") -> SlayerQueryEngine:
+        d = tempfile.mkdtemp()
+        db_path = os.path.join(d, "routes.db")
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE regions (id INTEGER PRIMARY KEY, tier TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO regions VALUES (?,?)", [(1, "gold"), (2, "silver")],
+        )
+        cur.execute(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, region_id INTEGER, "
+            "status TEXT, amount REAL, disc REAL, created_at TEXT)"
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (?,?,?,?,?,?)",
+            [
+                (1, 1, "new", 100.0, None, "2024-01-15"),
+                (2, 1, "new", 200.0, 5.0, "2024-02-15"),
+                (3, 2, "old", 300.0, None, "2024-01-20"),
+                (4, 2, "old", 400.0, 7.0, "2024-02-20"),
+            ],
+        )
+        con.commit()
+        con.close()
+
+        storage = YAMLStorage(base_dir=os.path.join(d, "store"))
+        await storage.save_datasource(
+            DatasourceConfig(name="prod", type=dialect, database=db_path)
+        )
+        await storage.save_model(
+            SlayerModel(
+                name="regions", sql_table="regions", data_source="prod",
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="tier", type=DataType.TEXT),
+                ],
+            )
+        )
+        await storage.save_model(
+            SlayerModel(
+                name="orders", sql_table="orders", data_source="prod",
+                default_time_dimension="created_at",
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="region_id", type=DataType.INT),
+                    Column(name="status", type=DataType.TEXT),
+                    Column(name="amount", type=DataType.DOUBLE),
+                    Column(name="disc", type=DataType.DOUBLE),
+                    Column(name="created_at", type=DataType.TIMESTAMP),
+                    # Join-crossing Column.filter => filtered-local
+                    # isolation => the outer combined-SELECT wrapper (R4).
+                    Column(
+                        name="gold_amount", sql="amount",
+                        type=DataType.DOUBLE,
+                        filter="regions.tier = 'gold'",
+                    ),
+                ],
+                joins=[
+                    ModelJoin(
+                        target_model="regions",
+                        join_pairs=[["region_id", "id"]],
+                    ),
+                ],
+            )
+        )
+        return SlayerQueryEngine(storage=storage)
+
+    async def test_outer_wrapper_filter_over_an_isolated_aggregate(
+        self,
+    ) -> None:
+        """R4's route: an AGGREGATE-phase filter on a filtered-local isolated
+        aggregate renders as plain WHERE on the joined-back column of the outer
+        combined SELECT. Gold totals: new = 300, old = 0/NULL — so a threshold
+        of 100 keeps only ``new``."""
+        engine = await self._engine()
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="gold_amount:sum", name="g")],
+                filters=["gold_amount:sum > 100"],
+            )
+        )
+        assert [r["orders.status"] for r in resp.data] == ["new"]
+        assert resp.data[0]["orders.g"] == 300.0
+
+    async def test_outer_wrapper_filter_carrying_a_scalar_call(self) -> None:
+        """B5 on R4's route specifically — the patched scalar branch. Wrapping
+        the same comparison in ``ifnull`` must not change which rows survive,
+        and (on a dialect without IFNULL) must not emit it."""
+        engine = await self._engine()
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="gold_amount:sum", name="g")],
+                filters=["ifnull(gold_amount:sum, 0) > 100"],
+            )
+        )
+        assert [r["orders.status"] for r in resp.data] == ["new"]
+        assert resp.data[0]["orders.g"] == 300.0
+
+    async def test_outer_wrapper_scalar_call_is_transpiled_on_postgres(
+        self,
+    ) -> None:
+        """The emission half of the same case, and the B5 bug in its sharpest
+        form: R4 passes scalar calls through as ``exp.Anonymous``, so the
+        literal ``IFNULL`` reaches POSTGRES — which has no such function, making
+        this generated SQL simply invalid there.
+
+        Postgres-typed datasource + ``dry_run`` (no execution): the point is
+        what is EMITTED for that backend. Asserted on Postgres rather than
+        SQLite deliberately — SQLite does have ``IFNULL``, so the same
+        assertion there would be a policy preference rather than a correctness
+        claim.
+        """
+        engine = await self._engine(dialect="postgres")
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="gold_amount:sum", name="g")],
+                filters=["ifnull(gold_amount:sum, 0) > 100"],
+            ),
+            dry_run=True,
+        )
+        assert "IFNULL" not in resp.sql.upper(), resp.sql
+        assert "COALESCE" in resp.sql.upper(), resp.sql
+
+    async def test_shifted_cte_filter_call_site_executes(self) -> None:
+        """R1's SECOND call site (the ``time_shift`` CTE's WHERE, :7468).
+
+        A host filter must apply inside the shifted CTE as well as the host
+        base, so the shifted value is computed over the same filtered rows.
+        With ``status = 'new'`` only, January's total is 100 and February's
+        shifted-by-one-month value must be that same 100.
+        """
+        from slayer.core.enums import TimeGranularity
+        from slayer.core.query import TimeDimension
+
+        engine = await self._engine()
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                time_dimensions=[
+                    TimeDimension(
+                        dimension=ColumnRef(name="created_at"),
+                        granularity=TimeGranularity.MONTH,
+                    ),
+                ],
+                measures=[
+                    ModelMeasure(formula="amount:sum", name="amt"),
+                    ModelMeasure(
+                        formula="time_shift(amount:sum, -1, 'month')",
+                        name="prev",
+                    ),
+                ],
+                filters=["status = 'new'"],
+            )
+        )
+        rows = sorted(resp.data, key=lambda r: str(r["orders.created_at"]))
+        assert len(rows) == 2, rows
+        assert rows[0]["orders.amt"] == 100.0
+        assert rows[1]["orders.amt"] == 200.0
+        # February's shifted value is January's filtered total.
+        assert rows[1]["orders.prev"] == 100.0

@@ -55,7 +55,7 @@ from slayer.core.keys import (
     normalize_scalar,
 )
 from slayer.core.formula import RANK_FAMILY_TRANSFORMS
-from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
+from slayer.sql.naming import canonical_aggregate_alias
 from slayer.engine.binding import BoundExpr, BoundFilter
 from slayer.engine.planned import SlotId, ValueSlot
 
@@ -799,31 +799,12 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
         # mirrors the cross-model parametric P10 exception. Without this,
         # two hidden parametric aggregates collide on a single base-CTE
         # alias when materialised.
-        if isinstance(key.source, StarKey):
-            measure_name = "*"
-        else:
-            leaf = getattr(key.source, "leaf", None) or getattr(
-                key.source, "column_name", None,
-            )
-            if leaf is None:
-                return f"_agg_{key.agg}"
-            measure_name = leaf
-        agg_args = (
-            [agg_kwarg_canonical_str(a) for a in key.args]
-            if key.args
-            else None
-        )
-        agg_kwargs = (
-            {k: agg_kwarg_canonical_str(v) for k, v in key.kwargs}
-            if key.kwargs
-            else None
-        )
-        return canonical_agg_name(
-            measure_name=measure_name,
-            aggregation_name=key.agg,
-            agg_args=agg_args,
-            agg_kwargs=agg_kwargs,
-        )
+        # The derivation lives in ``slayer.sql.naming`` (P-F). The
+        # ``declared_name`` profile is the bare canonical name, with the
+        # explicit ``_agg_<name>`` placeholder for a source exposing neither a
+        # leaf nor a column name (deliberately NOT the star form, so such a
+        # slot stays distinguishable from a real ``*:count``).
+        return canonical_aggregate_alias(key, profile="declared_name")
     if isinstance(key, TransformKey):
         return f"_{key.op}_inner"
     if isinstance(key, ArithmeticKey):

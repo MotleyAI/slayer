@@ -420,6 +420,29 @@ class UnreachableFilterDroppedWarning(UserWarning):
         )
 
 
+class RenderContextMissingFacilityError(SlayerError, ValueError):
+    """A ValueKey render needed a facility its render context did not carry.
+
+    The single ValueKey renderer fails closed rather than degrading quietly:
+    silent fallbacks are how the generator's five renderer copies drifted apart.
+    """
+
+    def __init__(
+        self,
+        key_kind: str,
+        facility: str,
+        detail: str | None = None,
+    ) -> None:
+        self.key_kind = key_kind
+        self.facility = facility
+        self.detail = detail
+        suffix = f" ({detail})" if detail else ""
+        super().__init__(
+            f"Rendering a {key_kind} requires the {facility!r} render-context "
+            f"facility, which was not supplied{suffix}."
+        )
+
+
 class IdCollisionError(SlayerError, ValueError):
     """Raised by filename-backed (YAML) storage when saving an entity
     whose id differs from an existing id only by letter case — such ids
