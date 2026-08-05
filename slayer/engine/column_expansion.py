@@ -245,14 +245,20 @@ def _process_column_node_sync(
     visited: Tuple[Tuple[str, str], ...],
     is_root: bool,
     root_scope_ids: Set[int],
-) -> None:
+) -> Optional[exp.Expression]:
     """Expand one ``exp.Column`` node in place if it names a derived column.
 
-    Returns ``True`` when the node was rewritten, ``False`` when it was left
-    alone (a physical column, or an unresolvable/opaque alias path).
+    Returns the replacement expression when the node was rewritten, ``None``
+    when it was left alone (a physical column — which is qualified in place —
+    or an unresolvable/opaque alias path).
+
+    The return value matters only when ``col`` is the ROOT of the tree being
+    walked: ``Expression.replace`` swaps a node inside its parent, so on a
+    parentless root it is a no-op and the expansion would be computed and then
+    silently discarded. The caller rebinds the root from this return value.
     """
     if col.args.get("db") or col.args.get("catalog"):
-        return
+        return None
     table_id = col.args.get("table")
     col_name = col.name
     table_alias = table_id.name if table_id is not None else alias_path
@@ -264,13 +270,13 @@ def _process_column_node_sync(
         is_root=is_root,
     )
     if target_model is None or canonical_alias is None:
-        return
+        return None
     target_col = target_model.get_column(col_name)
     if target_col is None or _is_trivial_base(column=target_col):
         col.set("table", exp.to_identifier(canonical_alias))
-        return
+        return None
     if id(col) not in root_scope_ids:
-        return
+        return None
     next_is_root = is_root and (target_model is model)
     key = (target_model.name, col_name)
     if key in visited:
@@ -287,9 +293,11 @@ def _process_column_node_sync(
         is_root=next_is_root,
     )
     if expanded_sql is None:
-        return
+        return None
     expanded_ast = sqlglot.parse_one(expanded_sql, dialect=dialect)
-    col.replace(exp.Paren(this=expanded_ast))
+    replacement = exp.Paren(this=expanded_ast)
+    col.replace(replacement)
+    return replacement
 
 
 def expand_derived_refs_sync(
@@ -320,7 +328,7 @@ def expand_derived_refs_sync(
     column_nodes = list(parsed.find_all(exp.Column))
     root_scope_ids = _root_scope_column_ids(parsed=parsed)
     for col in column_nodes:
-        _process_column_node_sync(
+        replacement = _process_column_node_sync(
             col=col,
             model=model,
             alias_path=alias_path,
@@ -330,4 +338,12 @@ def expand_derived_refs_sync(
             is_root=is_root,
             root_scope_ids=root_scope_ids,
         )
+        # ``col.replace`` mutates the node's PARENT. When the whole fragment is
+        # a single column reference — ``Column.sql = "other_derived_col"``, an
+        # alias of another derived column — that column IS ``parsed`` and has
+        # no parent, so the replace is a silent no-op. Rebind the root here, or
+        # the correctly-expanded SQL is computed and thrown away and the
+        # emitted query references a derived column as though it were physical.
+        if replacement is not None and col is parsed:
+            parsed = replacement
     return parsed.sql(dialect=dialect)

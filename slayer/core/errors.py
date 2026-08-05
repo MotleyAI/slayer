@@ -186,6 +186,42 @@ class UnknownReferenceError(SlayerError, ValueError):
         ))
 
 
+class ModeASqlParseError(SlayerError, ValueError):
+    """A free-SQL (Mode-A) fragment could not be parsed.
+
+    Mode-A text used to fail soft in three places: the fragment was handed
+    through unparsed, or — worse, in the join-path scanner — swallowed into
+    ZERO join paths, so an unparseable predicate emitted a query missing its
+    joins instead of reporting the problem. This is now the single loud
+    failure, carrying the fragment verbatim and the surface it came from
+    (``location``) so the author can find it.
+
+    Multi-inherits ``ValueError`` for back-compat with call sites that already
+    catch ``ValueError`` around SQL text handling (see
+    :class:`UnknownReferenceError`).
+    """
+
+    def __init__(
+        self,
+        fragment: str,
+        location: str,
+        reason: str | None = None,
+    ) -> None:
+        self.fragment = fragment
+        self.location = location
+        self.reason = reason
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary=f"Cannot parse SQL fragment {fragment!r}.",
+            scope=location if reason is None else f"{location}: {reason}",
+            suggestion=(
+                "Mode-A surfaces take raw SQL for the target dialect. Check "
+                "the fragment for balanced parentheses and quotes, and that "
+                "any '{variable}' placeholders were supplied."
+            ),
+        ))
+
+
 class AmbiguousReferenceError(SlayerError, ValueError):
     """A reference matches multiple candidates in scope and can't pick one.
 
