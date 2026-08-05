@@ -7196,26 +7196,6 @@ class SQLGenerator:
         )
 
     @staticmethod
-    def _paren_if_lower_prec(
-        child: exp.Expression, *, parent_prec: int, is_right: bool, op: str,
-    ) -> exp.Expression:
-        """Wrap ``child`` in parens when its arithmetic precedence is lower
-        than the parent op's (or equal, for the RIGHT operand of the
-        non-associative ``-`` / ``/``). Leaves / functions / casts / already-
-        parenthesised nodes are returned untouched.
-        """
-        child_prec = {
-            exp.Add: 1, exp.Sub: 1, exp.Mul: 2, exp.Div: 2,
-        }.get(type(child))
-        if child_prec is None:
-            return child
-        if child_prec < parent_prec:
-            return exp.Paren(this=child)
-        if child_prec == parent_prec and is_right and op in ("-", "/"):
-            return exp.Paren(this=child)
-        return child
-
-    @staticmethod
     def _compose_arithmetic_op(
         *, op: str, operands: List[exp.Expression],
     ) -> exp.Expression:

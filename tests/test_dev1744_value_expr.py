@@ -2263,20 +2263,20 @@ class TestGeneratorComposersShareTheGroupingPolicy:
          "build_arith_or_cmp_ast"],
     )
     @pytest.mark.parametrize(
-        "op,inner_cls,inner_op,expected",
+        "op,inner_cls,expected",
         [
             # ``a - (b + c)``: dropping the parens regroups to ``(a - b) + c``.
-            ("-", exp.Add, "+", "t.a - (t.b + t.c)"),
+            ("-", exp.Add, "t.a - (t.b + t.c)"),
             # ``a + (b - c)``: the generator treated ``+`` as associative and
             # emitted ``a + b - c``. Over floats and fixed-precision decimals
             # that is a different number, not just a different tree.
-            ("+", exp.Sub, "-", "t.a + (t.b - t.c)"),
-            ("*", exp.Div, "/", "t.a * (t.b / t.c)"),
-            ("/", exp.Mul, "*", "t.a / (t.b * t.c)"),
+            ("+", exp.Sub, "t.a + (t.b - t.c)"),
+            ("*", exp.Div, "t.a * (t.b / t.c)"),
+            ("/", exp.Mul, "t.a / (t.b * t.c)"),
         ],
     )
     def test_equal_precedence_right_operand_keeps_its_parens(
-        self, composer, op, inner_cls, inner_op, expected,
+        self, composer, op, inner_cls, expected,
     ) -> None:
         compose = self._composers()[composer]
         inner = inner_cls(
