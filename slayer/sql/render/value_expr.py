@@ -93,6 +93,11 @@ _BINARY_OPS: Dict[str, Any] = {
 }
 
 
+# Named once: the render context field that carries the generator's aggregate
+# builder, cited by every fail-closed guard below.
+_AGG_BUILDER = "composites.agg_builder"
+
+
 class FilterFacilities(BaseModel):
     """What WHERE / HAVING rendering needs beyond the scope."""
 
@@ -313,14 +318,14 @@ def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> exp.Expression:
     if not is_builtin_agg(key.agg):
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
-            facility="composites.agg_builder",
+            facility=_AGG_BUILDER,
             detail=f"custom aggregation {key.agg!r} needs the generator's builder",
         )
     entry = resolve_agg_entry(key.agg)
     if entry.dispatch not in (DISPATCH_SIMPLE, DISPATCH_DISTINCT):
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
-            facility="composites.agg_builder",
+            facility=_AGG_BUILDER,
             detail=(
                 f"aggregation {key.agg!r} renders via the {entry.dispatch!r} "
                 f"mechanism, which needs the generator's builder"
@@ -333,7 +338,7 @@ def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> exp.Expression:
     if key.column_filter_key is not None:
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
-            facility="composites.agg_builder",
+            facility=_AGG_BUILDER,
             detail=(
                 "the aggregate's source carries a column filter, which needs "
                 "the generator's CASE-WHEN wrapper"
@@ -342,20 +347,32 @@ def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> exp.Expression:
     if key.kwargs or key.args:
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
-            facility="composites.agg_builder",
+            facility=_AGG_BUILDER,
             detail=(
                 f"aggregation {key.agg!r} carries args/kwargs, which need the "
                 f"generator's parameter resolution"
             ),
         )
     if isinstance(key.source, StarKey):
+        if key.source.path:
+            # ``customers.*:count`` counts rows of the JOINED relation, which
+            # needs the join graph. A bare ``*`` here would count host rows —
+            # a wrong number, same class as the two guards above.
+            raise RenderContextMissingFacilityError(
+                key_kind=type(key).__name__,
+                facility=_AGG_BUILDER,
+                detail=(
+                    f"cross-model star over path {key.source.path!r} needs the "
+                    f"generator's join-graph routing"
+                ),
+            )
         inner: exp.Expression = exp.Star()
     else:
         inner = ctx.scope.resolve(key.source, consumer=ctx.consumer)
     if entry.node_class is None:  # pragma: no cover — dispatch gate guarantees it
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
-            facility="composites.agg_builder",
+            facility=_AGG_BUILDER,
             detail=f"aggregation {key.agg!r} has no direct sqlglot node",
         )
     if entry.dispatch == DISPATCH_DISTINCT:
@@ -383,8 +400,8 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         # BigQuery, plus the WEEK_SUNDAY day-shift. Emitting a literal
         # DATE_TRUNC here would name a function SQLite does not have.
         return ctx.dialect.build_date_trunc(
-            column,
-            TimeGranularity(key.granularity),
+            col_expr=column,
+            granularity=TimeGranularity(key.granularity),
             parse=lambda sql: sqlglot.parse_one(
                 sql, dialect=ctx.dialect.sqlglot_name,
             ),

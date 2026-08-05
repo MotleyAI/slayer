@@ -425,6 +425,23 @@ class TestRenderContextApi:
         with pytest.raises(RenderContextMissingFacilityError):
             render_value_key(key, ctx)
 
+    def test_cross_model_star_without_a_builder_fails_closed(self) -> None:
+        """``customers.*:count`` counts rows of the JOINED relation.
+
+        ``StarKey.path`` carries that hop, and routing it needs the join graph.
+        Emitting a bare ``*`` would count HOST rows instead — a wrong number,
+        the same failure class as a dropped column filter.
+        """
+        key = AggregateKey(source=StarKey(path=("customers",)), agg="count")
+        ctx = _composite_ctx()
+        with pytest.raises(RenderContextMissingFacilityError):
+            render_value_key(key, ctx)
+
+    def test_local_star_still_renders(self) -> None:
+        """The guard must not catch the ordinary local ``*:count``."""
+        key = AggregateKey(source=StarKey(), agg="count")
+        assert _sql(render_value_key(key, _composite_ctx())) == "COUNT(*)"
+
     def test_transform_key_renders_when_alias_facilities_are_supplied(
         self,
     ) -> None:
@@ -719,7 +736,8 @@ class TestRendersEveryKeyKind:
     def test_arithmetic_precedence_is_parenthesised(self, key, expected) -> None:
         """Operator precedence has to be materialised as ``Paren`` nodes."""
 
-        assert _sql(render_value_key(key, _filter_ctx())) == expected
+        ctx = _filter_ctx()
+        assert _sql(render_value_key(key, ctx)) == expected
 
     def test_unsupported_literal_type_raises(self) -> None:
         """An unrecognised Python value must not become a quoted string.

@@ -1165,7 +1165,8 @@ class TestProductionCallersDelegate:
         SQLGenerator(dialect="postgres")._canonical_cross_model_alias(
             source_relation="orders", key=key,
         )
-        assert calls and calls[-1].get("profile") == "cross_model_cte"
+        assert calls, "the generator did not delegate to the naming module"
+        assert calls[-1].get("profile") == "cross_model_cte"
         assert calls[-1].get("source_relation") == "orders"
 
         cross_model_planner._aggregate_alias(key=key)
