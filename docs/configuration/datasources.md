@@ -69,7 +69,7 @@ SQL generation is covered by unit tests, but not verified against live instances
 | Type | SQLAlchemy Driver | Install |
 |------|-------------------|---------|
 | `bigquery` | `sqlalchemy-bigquery` | `pip install sqlalchemy-bigquery` |
-| `redshift` | `sqlalchemy-redshift` + `redshift-connector` | `pip install 'motley-slayer[redshift]'`. Connection-layer code is new and unit-tested but not yet run against a live cluster — see [Redshift](#redshift) below. |
+| `redshift` | `sqlalchemy-redshift` + `redshift-connector` | `pip install 'motley-slayer[redshift]'`. Connection-layer code is unit-tested and has passed manually against a live Redshift Serverless endpoint (outside CI) — see [Redshift](#redshift) below. |
 | `trino` / `presto` / `athena` | `trino` or `PyAthena` | `pip install trino` or `pip install PyAthena` |
 | `databricks` / `spark` | `databricks-sql-connector` | `pip install databricks-sql-connector` |
 | `oracle` | `oracledb` | `pip install oracledb` |

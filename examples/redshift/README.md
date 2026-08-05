@@ -3,9 +3,10 @@
 Redshift is a Tier 2 dialect (see [database support](../../docs/database-support.md)):
 `RedshiftDialect`'s SQL generation is unit-tested, and the connection layer added
 alongside this example (`motley-slayer[redshift]`, `driver_map["redshift"]`) is
-too — but neither has been run against a live cluster yet. Like Snowflake /
-BigQuery, there's no free local Docker image, so this example needs a real
-cluster or Redshift Serverless workgroup.
+too. The connection layer has since passed manually against a live Redshift
+Serverless endpoint (outside CI) — see the CI note under Known limitations.
+Like Snowflake / BigQuery, there's no free local Docker image, so this example
+needs a real cluster or Redshift Serverless workgroup.
 
 ## 1. Install the extra
 
@@ -74,8 +75,10 @@ rather than a native aggregate function name.
 - **No auto-discovered joins** (see step 4) — unverified either way; add
   `joins:` manually until confirmed.
 - **Not yet CI-verified.** `tests/integration/test_integration_redshift.py`
-  exists and is unit-tested against the driver locally, but the
-  `redshift-integration` CI job skips until `REDSHIFT_HOST` /
+  has passed manually against a live Redshift Serverless endpoint, but the
+  `redshift-integration` CI job still skips — `REDSHIFT_HOST` /
   `REDSHIFT_DATABASE` / `REDSHIFT_USER` / `REDSHIFT_PASSWORD` repo secrets are
-  configured. Until it's run at least once against a real cluster, treat this
-  example as "should work" rather than "verified."
+  deliberately not configured yet, since the only endpoint verified so far is
+  a personal one and wiring it into CI would bill every contributor's run to
+  that account. Redshift moves to Tier 1 once the job passes against a
+  project-owned endpoint.

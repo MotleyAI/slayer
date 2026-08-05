@@ -39,13 +39,16 @@ Trino/Presto (Athena uses the Presto dialect), Databricks/Spark, Oracle.
 layer — `driver_map["redshift"] = "redshift+redshift_connector"`, the
 `motley-slayer[redshift]` extra, and a live integration suite
 (`tests/integration/test_integration_redshift.py`, gated on `REDSHIFT_HOST` /
-`REDSHIFT_DATABASE` / `REDSHIFT_USER` / `REDSHIFT_PASSWORD`) — now exist too,
-unit-tested against the driver locally. It stays in Tier 2 rather than Tier 1
-because none of that has actually run against a live Redshift
-cluster/serverless endpoint yet — the `redshift-integration` CI job
-(`.github/workflows/ci.yml`) will exercise it the same skip-until-configured
-way Snowflake/BigQuery started, and this entry should move to Tier 1 once it
-passes there at least once.
+`REDSHIFT_DATABASE` / `REDSHIFT_USER` / `REDSHIFT_PASSWORD`) — now exist too.
+The suite has passed manually against a live Redshift Serverless endpoint
+(outside CI). It stays in Tier 2 rather than Tier 1 because the
+`redshift-integration` CI job (`.github/workflows/ci.yml`) has not yet run it
+against a live endpoint — CI secrets are deliberately not wired up yet, since
+the only endpoint verified so far is a personal AWS resource, and pointing CI
+at it would bill every contributor's CI run to that personal account. This
+entry should move to Tier 1 once the CI job passes at least once against a
+project-owned (non-personal) Redshift endpoint, the same skip-until-configured
+way Snowflake/BigQuery started.
 
 ## Aggregation support
 
