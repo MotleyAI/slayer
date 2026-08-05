@@ -2259,6 +2259,28 @@ class TestEveryOperatorPairSurvivesTheRoundTrip:
         )
 
     @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("outer", CMP)
+    @pytest.mark.parametrize("inner", CMP + BOOL)
+    @pytest.mark.parametrize("position", ["left", "right"])
+    def test_predicate_nested_in_a_comparison(
+        self, outer, inner, position, dialect,
+    ) -> None:
+        """A comparison over BOOLEAN operands — ``(a = b) = (c = d)``,
+        ``(a AND b) = c``. Type-coherent (SQL comparisons take booleans) and
+        reachable: Python's grammar reads ``(a == b) == c`` as a NESTED
+        comparison, not a chained one, so the Mode-B binder does build it.
+        This arm sits exactly on the comparison/connector precedence boundary,
+        which is where ``IS`` and the non-associativity rule both live.
+        """
+        nested = self._nested(inner)
+        other = self._binary("<", self._leaf("d"), self._leaf("e"))
+        operands = [nested, other] if position == "left" else [other, nested]
+        self._check(
+            self._binary(outer, *operands), dialect,
+            f"{outer} over {inner} ({position})",
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
     @pytest.mark.parametrize("outer", BOOL)
     @pytest.mark.parametrize("inner", CMP + BOOL)
     @pytest.mark.parametrize("position", ["left", "right"])
