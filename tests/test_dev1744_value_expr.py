@@ -960,9 +960,7 @@ class TestAggregationRegistry:
     def test_every_builtin_resolves(self) -> None:
 
         for name in sorted(BUILTIN_AGGREGATIONS):
-            entry = resolve_agg_entry(name)
-            assert entry is not None, name
-            assert entry.name == name
+            assert resolve_agg_entry(name).name == name
 
     @pytest.mark.parametrize(
         "mechanism,names",
@@ -978,9 +976,7 @@ class TestAggregationRegistry:
         to be small."""
 
         for name in names:
-            entry = resolve_agg_entry(name)
-            assert entry is not None, f"{mechanism}: {name} does not resolve"
-            assert entry.name == name
+            assert resolve_agg_entry(name).name == name, mechanism
 
     def test_required_names_are_really_builtins(self) -> None:
         """Guard on the frozen table's own premise, so a rename in the enum
