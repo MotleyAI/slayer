@@ -537,10 +537,15 @@ def _route_host_filters(
         elif route is FilterRoute.DROP_UNREACHABLE:
             dropped.append(UnreachableFilterDroppedWarning(
                 filter_text=hf.text or hf.filter_id,
+                # Deliberately target-INDEPENDENT (D8). The same user filter is
+                # classified once per cross-model plan, and the boundary dedups
+                # those to one warning while asserting the reasons AGREE. A
+                # reason naming this plan's target would make two plans
+                # disagree about one filter and trip that assertion.
                 reason=(
-                    f"filter {hf.filter_id!r} references slot(s) outside "
-                    f"the join path to {terminal_model.name!r}; "
-                    f"unreachable filters are dropped."
+                    f"filter {hf.filter_id!r} depends on join path(s) that are "
+                    f"not reachable from the cross-model aggregate's CTE root; "
+                    f"it still applies at the host, and is dropped from the CTE."
                 ),
             ))
     return applied, where_ids, having_ids, dropped

@@ -25,6 +25,7 @@ delivered — intended, and asserted here rather than left implicit.
 
 from __future__ import annotations
 
+import pathlib
 import tempfile
 import warnings
 
@@ -103,13 +104,41 @@ def _query(*, extra_filters: list | None = None) -> SlayerQuery:
     )
 
 
-async def _engine(tmpdir: str) -> SlayerQueryEngine:
+_DDL = [
+    "CREATE TABLE orders (id INTEGER, customer_id INTEGER, shipper_id INTEGER,"
+    " warehouse_id INTEGER, status VARCHAR, amount DOUBLE)",
+    "CREATE TABLE customers (id INTEGER, revenue DOUBLE)",
+    "CREATE TABLE warehouses (id INTEGER, code VARCHAR)",
+    "CREATE TABLE shippers (id INTEGER, cost DOUBLE)",
+]
+
+
+async def _engine(tmpdir: str, *, with_tables: bool = False) -> SlayerQueryEngine:
+    """Engine over a DuckDB datasource.
+
+    ``database`` MUST be set: ``explain=True`` opens a real connection, and a
+    DuckDB datasource with database=None writes a file literally named "None"
+    into the working directory.
+
+    ``with_tables`` materialises the physical tables in a file-backed database.
+    ``explain`` runs a real EXPLAIN, which the backend rejects outright if the
+    tables do not exist — so the paths that actually touch the database need
+    something to point at.
+    """
     storage = YAMLStorage(base_dir=tmpdir)
-    # ``database`` MUST be set: ``explain=True`` opens a real connection, and a
-    # DuckDB datasource with database=None writes a file literally named "None"
-    # into the working directory.
+    database = ":memory:"
+    if with_tables:
+        import duckdb
+
+        database = str(pathlib.Path(tmpdir) / "w.duckdb")
+        con = duckdb.connect(database)
+        try:
+            for ddl in _DDL:
+                con.execute(ddl)
+        finally:
+            con.close()
     await storage.save_datasource(
-        DatasourceConfig(name="test", type="duckdb", database=":memory:")
+        DatasourceConfig(name="test", type="duckdb", database=database)
     )
     for m in (_orders(), _customers(), _warehouses(), _shippers()):
         await storage.save_model(m, _validate=False)
@@ -250,7 +279,7 @@ class TestEmissionIsBoundaryNotRender:
     ])
     async def test_warning_emitted_on_every_execute_mode(self, kwargs) -> None:
         with tempfile.TemporaryDirectory() as d:
-            engine = await _engine(d)
+            engine = await _engine(d, with_tables="explain" in kwargs)
             resp = await engine.execute(_query(), **kwargs)
         assert len(_dropped(resp)) == 1, (
             f"no dropped-filter payload for execute(**{kwargs})"
@@ -496,10 +525,11 @@ class TestRestEntryPoint:
 
             asyncio.run(_seed())
             client = TestClient(create_app(storage=storage))
-            resp = client.post("/query", json={
-                "query": _query().model_dump(mode="json", exclude_none=True),
-                "dry_run": True,
-            })
+            # QueryRequest carries the query fields at the TOP level, with
+            # dry_run alongside them — there is no nested "query" envelope.
+            payload = _query().model_dump(mode="json", exclude_none=True)
+            payload["dry_run"] = True
+            resp = client.post("/query", json=payload)
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert "warnings" in body, (
@@ -523,9 +553,14 @@ class TestMcpEntryPoint:
             for m in (_orders(), _customers(), _warehouses()):
                 await storage.save_model(m, _validate=False)
             server = create_mcp_server(storage=storage)
-            tool = await server.get_tool("query")
-            result = await tool.run({
-                "query": _query().model_dump(mode="json", exclude_none=True),
+            # The MCP query tool takes the query fields as its own typed
+            # arguments — no nested "query" envelope, and `dimensions` is a
+            # list of plain strings rather than the SlayerQuery dict form.
+            result = await server.call_tool("query", {
+                "source_model": "orders",
+                "dimensions": ["status"],
+                "measures": [{"formula": "customers.revenue:sum"}],
+                "filters": [DROPPED_FILTER],
                 "dry_run": True,
             })
         text = str(result)

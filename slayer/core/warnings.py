@@ -17,9 +17,9 @@ pulling in engine code.
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SlayerWarning(BaseModel):
@@ -64,6 +64,16 @@ class DroppedFilterWarning(SlayerWarning):
     filter_text: str
     location: str
     reason: str
+
+
+# The response carries a DISCRIMINATED union, not the bare base class: Pydantic
+# validates a ``List[SlayerWarning]`` down to the base type and would silently
+# drop every subclass field on the way through. Keyed on ``kind``, each payload
+# round-trips as itself.
+AnySlayerWarning = Annotated[
+    Union[NormalizationWarning, DroppedFilterWarning],
+    Field(discriminator="kind"),
+]
 
 
 class SlayerNormalizationWarning(UserWarning):

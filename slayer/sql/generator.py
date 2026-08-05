@@ -4692,19 +4692,12 @@ class SQLGenerator:
                 (a, a) for a in grain_aliases
             ]
 
-        # Codex MED fold-in: surface dropped-filter warnings from each
-        # plan via Python ``warnings`` so callers using
-        # ``warnings.catch_warnings()`` see what was dropped. The
-        # generator is the boundary that "renders" the plan; warnings
-        # are inert until something is actually compiled.
-        import warnings as _warnings_mod
-        for plan in planned_query.cross_model_aggregate_plans:
-            for w in plan.dropped_filter_warnings:
-                _warnings_mod.warn(
-                    str(w),
-                    UserWarning,
-                    stacklevel=2,
-                )
+        # DEV-1745 (W5): dropped-filter warnings are NOT emitted here. This
+        # emission fired once per cross-model plan — so nested subplans
+        # double-fired for one user filter — and never fired at all on a path
+        # that did not reach this render step. It is now collected across every
+        # plan at the ENGINE boundary, deduped per user filter, and emitted
+        # exactly once per execute. The plans still carry the payloads.
 
         # Build the combined SELECT: SELECT _base.<all_local>,
         # _cm_*.<canonical> [AS "<user_alias>"] FROM _base [LEFT JOIN |

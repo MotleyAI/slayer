@@ -1978,13 +1978,33 @@ def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _format_warnings(result: SlayerResponse) -> str:
+    """Advisories about the query, appended to every output format.
+
+    A dropped filter changes which rows the answer covers, so it cannot be
+    left to a field the caller might not read (DEV-1745 W5 / D2).
+    """
+    lines = []
+    for w in (result.warnings or []):
+        if getattr(w, "kind", None) == "unreachable_filter_dropped":
+            lines.append(
+                f"  - dropped filter {w.filter_text!r} "
+                f"(at {w.location}): {w.reason}"
+            )
+        else:
+            lines.append(f"  - {getattr(w, 'rule_id', w.kind)}: {w}")
+    return "" if not lines else "\n\nWarnings:\n" + "\n".join(lines)
+
+
 def _format_output(result: SlayerResponse, fmt: str) -> str:
     """Format query output in the requested format."""
     if fmt == "csv":
-        return _format_csv(data=result.data, columns=result.columns)
-    if fmt == "markdown":
-        return result.to_markdown()
-    return _format_json(data=result.data, columns=result.columns)
+        body = _format_csv(data=result.data, columns=result.columns)
+    elif fmt == "markdown":
+        body = result.to_markdown()
+    else:
+        body = _format_json(data=result.data, columns=result.columns)
+    return body + _format_warnings(result)
 
 
 def _format_field_meta(entries: dict[str, Any]) -> list[str]:

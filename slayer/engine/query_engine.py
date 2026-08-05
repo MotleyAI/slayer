@@ -7,6 +7,7 @@ import copy
 import decimal
 import logging
 import re
+import warnings as _warnings_module
 from collections.abc import Callable
 from typing import Any, Dict, List, Optional
 
@@ -36,7 +37,7 @@ from slayer.core.query import (
     list_valued_variable_names,
     substitute_variables,
 )
-from slayer.core.warnings import NormalizationWarning
+from slayer.core.warnings import AnySlayerWarning, NormalizationWarning
 from slayer.core.recommend import (
     CandidateCoverage,
     ItemPath,
@@ -362,6 +363,82 @@ def _build_explain_sql(dialect: str, sql: str) -> str:
     return get_dialect(dialect).build_explain_sql(sql)
 
 
+def _walk_cross_model_plans(planned):
+    """Every cross-model plan on ``planned``, including nested rerooted plans.
+
+    A nested plan carries its OWN dropped-filter warnings for the same user
+    filter, which is why the old per-plan emission double-fired.
+    """
+    for plan in getattr(planned, "cross_model_aggregate_plans", ()) or ():
+        yield plan
+        nested = getattr(plan, "rerooted_plan", None)
+        if nested is not None:
+            yield from _walk_cross_model_plans(nested)
+
+
+def _stage_location(stages, index: int) -> str:
+    """Human-readable pointer to the stage a filter came from.
+
+    Part of the dedup identity (D8), so it must distinguish two stages that
+    carry the SAME filter text — those are two distinct user filters.
+    """
+    name = getattr(stages[index], "name", None) if index < len(stages) else None
+    return f"stage {name!r}.filters" if name else f"stages[{index}].filters"
+
+
+def _collect_dropped_filter_warnings(*, planned_list, stages) -> List[Any]:
+    """Dropped-filter payloads for the whole pipeline, one per user filter.
+
+    Identity is ``(location, original filter text)`` — stated in the terms the
+    author sees, because the contract is user-facing. The same filter dropped
+    by several cross-model plans is ONE warning.
+
+    Reasons for the same filter must AGREE. A disagreement means two plans
+    reached different conclusions about one filter, which is a planner
+    inconsistency; raising beats silently keeping whichever came first.
+    """
+    from slayer.core.warnings import DroppedFilterWarning
+
+    by_identity: "dict[tuple[str, str], DroppedFilterWarning]" = {}
+    for index, planned in enumerate(planned_list):
+        location = _stage_location(stages, index)
+        for plan in _walk_cross_model_plans(planned):
+            for w in plan.dropped_filter_warnings or ():
+                identity = (location, w.filter_text)
+                existing = by_identity.get(identity)
+                if existing is None:
+                    by_identity[identity] = DroppedFilterWarning(
+                        filter_text=w.filter_text,
+                        location=location,
+                        reason=w.reason,
+                    )
+                elif existing.reason != w.reason:
+                    raise ValueError(
+                        f"Planner inconsistency: filter {w.filter_text!r} at "
+                        f"{location} was dropped for two different reasons — "
+                        f"{existing.reason!r} vs {w.reason!r}."
+                    )
+    return list(by_identity.values())
+
+
+def _emit_dropped_filter_warnings(response) -> None:
+    """Emit one ``UnreachableFilterDroppedWarning`` per dropped user filter.
+
+    Called once, at the outermost boundary, AFTER the response is built.
+    """
+    from slayer.core.errors import UnreachableFilterDroppedWarning
+    from slayer.core.warnings import DroppedFilterWarning
+
+    for w in response.warnings or ():
+        if isinstance(w, DroppedFilterWarning):
+            _warnings_module.warn(
+                UnreachableFilterDroppedWarning(
+                    filter_text=w.filter_text, reason=w.reason,
+                ),
+                stacklevel=3,
+            )
+
+
 class SlayerResponse(BaseModel):
     """Response from a SLayer query."""
 
@@ -375,7 +452,7 @@ class SlayerResponse(BaseModel):
     # AST-resolvable dotted refs in raw SQL). Empty for queries that
     # arrived in canonical form. Surfaced alongside the result so
     # REST / MCP / CLI consumers can echo the rewrites back to authors.
-    warnings: List[NormalizationWarning] = PydanticField(default_factory=list)
+    warnings: List[AnySlayerWarning] = PydanticField(default_factory=list)
 
     @model_validator(mode="after")
     def _populate_columns(self) -> "SlayerResponse":
@@ -744,7 +821,7 @@ class SlayerQueryEngine:
         main_query, named_queries, prefer_data_source = await self._normalize_input(
             query, runtime_kwarg=runtime_kwarg, prefer_data_source=data_source
         )
-        return await self._execute_pipeline(
+        response = await self._execute_pipeline(
             query=main_query,
             named_queries=named_queries,
             runtime_kwarg=runtime_kwarg,
@@ -755,6 +832,14 @@ class SlayerQueryEngine:
             original_input=query,
             original_data_source=data_source,
         )
+        # DEV-1745 (W5): the ONE Python-warnings emission, at the outermost
+        # boundary and after the structured response exists. Ordering is
+        # load-bearing — under ``-W error`` this raises, and the contract is
+        # that the payload was fully built first. Emitting here rather than
+        # mid-render also makes it path-independent: dry_run, explain and a
+        # real execute all reach it.
+        _emit_dropped_filter_warnings(response)
+        return response
 
     async def _normalize_input(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
         self,
@@ -1026,6 +1111,14 @@ class SlayerQueryEngine:
         stages = [*normed_named.values(), query]
         planned_list = plan_stages(queries=stages, bundle=bundle)
         root_planned = planned_list[-1]
+
+        # DEV-1745 (W5): collect dropped-filter payloads across EVERY plan in
+        # the pipeline (including nested rerooted subplans) and dedup them per
+        # user filter. Collection happens here, with the plans in hand; the
+        # Python-warnings emission happens later, at the outermost boundary.
+        slack_warnings.extend(_collect_dropped_filter_warnings(
+            planned_list=planned_list, stages=stages,
+        ))
 
         dialect = self._dialect_for_type(datasource.type)
         sql = generate_planned_stages(
