@@ -213,11 +213,14 @@ _PRECEDENCE: Dict[Any, int] = {
     exp.Neg: 7,
 }
 
+_IS = "is"
+_IS_NOT = "is not"
+
 # Operators taking exactly two operands. Left-folding a comparison would turn
 # ``a < b < c`` into ``(a < b) < c`` — a boolean compared to a number — and
 # reading only the first two would silently DROP the rest.
 _STRICTLY_BINARY = frozenset({
-    "=", "==", "!=", "<>", "<", "<=", ">", ">=", "is", "is not",
+    "=", "==", "!=", "<>", "<", "<=", ">", ">=", _IS, _IS_NOT,
 })
 
 # The comparison family's shared level. Unlike arithmetic, comparisons are
@@ -303,62 +306,28 @@ def group_is_operands(
     )
 
 
-def render_arithmetic(
-    op: str, operands: List[exp.Expression],
-) -> exp.Expression:
-    """Compose an arithmetic / comparison / boolean operator.
+def _render_unary(*, op: str, operand: exp.Expression) -> exp.Expression:
+    """The single-operand forms.
 
-    The single composer: the generator's three call sites delegate here, so
-    one ``ArithmeticKey`` groups the same way wherever it is rendered (P-G).
-    Their hand-rolled versions each knew a different subset of the precedence
-    table and emitted predicates that parse cleanly and mean something else.
-
-    Handles the unary forms too: the binder represents ``-x`` as a
-    SINGLE-operand ``ArithmeticKey``, so a fold that just returns
-    ``operands[0]`` would turn ``amount > -10`` into ``amount > 10``.
+    The binder represents ``-x`` as a SINGLE-operand ``ArithmeticKey``, so a
+    fold that just returns the operand would turn ``amount > -10`` into
+    ``amount > 10``. The operand needs the same precedence treatment as a
+    binary one: without it ``-(a + b)`` emits ``-a + b`` and ``not (a and b)``
+    emits ``NOT a AND b``.
     """
-    if not operands:
-        raise NotImplementedError(f"Operator {op!r} needs at least one operand.")
+    if op in ("not", "-"):
+        grouped = group_unary_operand(operand, op=op)
+        return exp.Not(this=grouped) if op == "not" else exp.Neg(this=grouped)
+    if op == "+":
+        # Unary plus is a no-op; SQL never needs it spelled out.
+        return operand
+    raise NotImplementedError(f"Unsupported unary operator {op!r}.")
 
-    if op in ("and", "or") and len(operands) == 1:
-        # Degenerate but well-defined: the conjunction of one term IS that term.
-        return operands[0]
 
-    if len(operands) == 1:
-        # Unary operands need the same precedence treatment as binary ones.
-        # Without it ``-(a + b)`` emits ``-a + b`` and ``not (a and b)`` emits
-        # ``NOT a AND b`` — both parse cleanly and both mean something else.
-        if op in ("not", "-"):
-            grouped = group_unary_operand(operands[0], op=op)
-            return exp.Not(this=grouped) if op == "not" else exp.Neg(this=grouped)
-        if op == "+":
-            return operands[0]
-        raise NotImplementedError(
-            f"Unsupported unary operator {op!r}.",
-        )
-
-    if op == "and":
-        return exp.and_(*operands)
-    if op == "or":
-        return exp.or_(*operands)
-    if op in _STRICTLY_BINARY and len(operands) != 2:
-        # Refuse rather than fold. Left-folding a chained comparison compares a
-        # BOOLEAN against the next operand, and reading only the first two
-        # drops the rest — both silently wrong. The Mode-B parser already
-        # rejects chained comparisons; this is the structural backstop.
-        raise NotImplementedError(
-            f"Operator {op!r} takes exactly two operands, got {len(operands)}.",
-        )
-
-    if op in ("is", "is not"):
-        lhs, rhs = group_is_operands(lhs=operands[0], rhs=operands[1])
-        node = exp.Is(this=lhs, expression=rhs)
-        return exp.Not(this=node) if op == "is not" else node
-
-    node_cls = _BINARY_OPS.get(op)
-    if node_cls is None:
-        raise NotImplementedError(f"Unsupported arithmetic operator {op!r}.")
-
+def _fold_binary(
+    *, node_cls: Any, operands: List[exp.Expression],
+) -> exp.Expression:
+    """Left-fold ``operands``, grouping each side by precedence as it goes."""
     parent_prec = _PRECEDENCE.get(node_cls)
     result = operands[0]
     for operand in operands[1:]:
@@ -374,6 +343,51 @@ def render_arithmetic(
     return result
 
 
+def render_arithmetic(
+    op: str, operands: List[exp.Expression],
+) -> exp.Expression:
+    """Compose an arithmetic / comparison / boolean operator.
+
+    The single composer: the generator's three call sites delegate here, so
+    one ``ArithmeticKey`` groups the same way wherever it is rendered (P-G).
+    Their hand-rolled versions each knew a different subset of the precedence
+    table and emitted predicates that parse cleanly and mean something else.
+    """
+    if not operands:
+        raise NotImplementedError(f"Operator {op!r} needs at least one operand.")
+
+    if op in ("and", "or") and len(operands) == 1:
+        # Degenerate but well-defined: the conjunction of one term IS that term.
+        return operands[0]
+
+    if len(operands) == 1:
+        return _render_unary(op=op, operand=operands[0])
+
+    if op == "and":
+        return exp.and_(*operands)
+    if op == "or":
+        return exp.or_(*operands)
+
+    if op in _STRICTLY_BINARY and len(operands) != 2:
+        # Refuse rather than fold. Left-folding a chained comparison compares a
+        # BOOLEAN against the next operand, and reading only the first two
+        # drops the rest — both silently wrong. The Mode-B parser already
+        # rejects chained comparisons; this is the structural backstop.
+        raise NotImplementedError(
+            f"Operator {op!r} takes exactly two operands, got {len(operands)}.",
+        )
+
+    if op in (_IS, _IS_NOT):
+        lhs, rhs = group_is_operands(lhs=operands[0], rhs=operands[1])
+        node = exp.Is(this=lhs, expression=rhs)
+        return exp.Not(this=node) if op == _IS_NOT else node
+
+    node_cls = _BINARY_OPS.get(op)
+    if node_cls is None:
+        raise NotImplementedError(f"Unsupported arithmetic operator {op!r}.")
+    return _fold_binary(node_cls=node_cls, operands=operands)
+
+
 def render_scalar_call(
     *, name: str, args: List[exp.Expression], dialect: SqlDialect,
 ) -> exp.Expression:
@@ -386,7 +400,7 @@ def render_scalar_call(
     a native single-arg ``LOG10``. Transpiling alone fixes ifnull and breaks
     log10. ``like`` is the allowlist's only operator rather than function.
     """
-    arity_error = check_scalar_arity(name, len(args))
+    arity_error = check_scalar_arity(name=name, argc=len(args))
     if arity_error is not None:
         # Checked before building, because sqlglot is inconsistent: a 3-arg
         # ROUND silently DROPS the third, a 2-arg LENGTH emits SQL the backend

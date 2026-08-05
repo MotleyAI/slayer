@@ -1216,8 +1216,21 @@ class TestCrossModelDedupIdentity:
 
     def test_same_key_same_shape_shares_one_identity(self) -> None:
         """The C13 intent the dedup exists to serve: the same aggregate under
-        two public names is still ONE CTE."""
-        assert self._identity(rerooted=False) == self._identity(rerooted=False)
+        two public names is still ONE CTE.
+
+        Two SEPARATELY CONSTRUCTED keys, which is what two plans carry — the
+        identity has to compare equal BY VALUE, not by object.
+        """
+        first = AggregateKey(
+            source=ColumnKey(path=("customers",), leaf="revenue"), agg="sum",
+        )
+        second = AggregateKey(
+            source=ColumnKey(path=("customers",), leaf="revenue"), agg="sum",
+        )
+        assert first is not second
+        assert self._identity(rerooted=False, key=first) == self._identity(
+            rerooted=False, key=second,
+        )
 
     def test_filtered_and_unfiltered_are_different_identities(self) -> None:
         """The reason the identity is the typed key and not the alias: these

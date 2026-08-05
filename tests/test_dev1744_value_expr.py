@@ -1867,10 +1867,9 @@ class TestScalarArity:
         from slayer.sql.render.value_expr import render_scalar_call
 
         args = [exp.column(f"c{i}") for i in range(argc)]
+        dialect = get_dialect("postgres")
         with pytest.raises(NotImplementedError):
-            render_scalar_call(
-                name=name, args=args, dialect=get_dialect("postgres"),
-            )
+            render_scalar_call(name=name, args=args, dialect=dialect)
 
     @pytest.mark.parametrize(
         "name,argc",
@@ -1892,31 +1891,26 @@ class TestArityIsRejectedAtBindTime:
     """The renderer check is the backstop; the binder is where a user's typo
     should surface, with a message naming the function and the counts."""
 
+    @staticmethod
+    def _query(predicate: str) -> SlayerQuery:
+        return SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="*:count", name="n")],
+            filters=[predicate],
+        )
+
     async def test_round_with_three_args_is_rejected(self, e2e) -> None:
+        query = self._query("round(amount, 2, 99) > 1")
         with pytest.raises(ValueError, match="round"):
-            await e2e.execute(
-                SlayerQuery(
-                    source_model="orders",
-                    dimensions=[ColumnRef(name="status")],
-                    measures=[ModelMeasure(formula="*:count", name="n")],
-                    filters=["round(amount, 2, 99) > 1"],
-                ),
-                dry_run=True,
-            )
+            await e2e.execute(query, dry_run=True)
 
     async def test_length_with_two_args_is_rejected(self, e2e) -> None:
         """Previously emitted ``LENGTH(a, b)`` — invalid SQL the backend
         rejected with its own, less useful error."""
+        query = self._query("length(status, status) > 1")
         with pytest.raises(ValueError, match="length"):
-            await e2e.execute(
-                SlayerQuery(
-                    source_model="orders",
-                    dimensions=[ColumnRef(name="status")],
-                    measures=[ModelMeasure(formula="*:count", name="n")],
-                    filters=["length(status, status) > 1"],
-                ),
-                dry_run=True,
-            )
+            await e2e.execute(query, dry_run=True)
 
     async def test_correct_arity_still_binds(self, e2e) -> None:
         resp = await e2e.execute(
@@ -1968,32 +1962,27 @@ class TestNullInInList:
             "orders.label IN ('a', 'b')"
         )
 
+    @staticmethod
+    def _query(predicate: str) -> SlayerQuery:
+        return SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="*:count", name="n")],
+            filters=[predicate],
+        )
+
     async def test_bind_time_rejects_null_in_list(self, e2e) -> None:
         """The user-facing half: caught at bind, with a message pointing at
         ``is null`` rather than at three-valued logic in the abstract."""
+        query = self._query("status in ('new', None)")
         with pytest.raises(ValueError, match="NULL is not allowed"):
-            await e2e.execute(
-                SlayerQuery(
-                    source_model="orders",
-                    dimensions=[ColumnRef(name="status")],
-                    measures=[ModelMeasure(formula="*:count", name="n")],
-                    filters=["status in ('new', None)"],
-                ),
-                dry_run=True,
-            )
+            await e2e.execute(query, dry_run=True)
 
     async def test_bind_time_rejects_null_in_negated_list(self, e2e) -> None:
         """The dangerous one: this previously returned zero rows in silence."""
+        query = self._query("status not in ('new', None)")
         with pytest.raises(ValueError, match="NULL is not allowed"):
-            await e2e.execute(
-                SlayerQuery(
-                    source_model="orders",
-                    dimensions=[ColumnRef(name="status")],
-                    measures=[ModelMeasure(formula="*:count", name="n")],
-                    filters=["status not in ('new', None)"],
-                ),
-                dry_run=True,
-            )
+            await e2e.execute(query, dry_run=True)
 
     async def test_null_free_in_list_still_executes(self, e2e) -> None:
         resp = await e2e.execute(
@@ -2146,8 +2135,9 @@ class TestStarSourceIsCountOnly:
     @pytest.mark.parametrize("agg", ["sum", "avg", "min", "max", "count_distinct"])
     def test_non_count_star_is_refused(self, agg) -> None:
         key = AggregateKey(source=StarKey(), agg=agg)
+        ctx = _composite_ctx()
         with pytest.raises(NotImplementedError, match="bare star"):
-            render_value_key(key, _composite_ctx())
+            render_value_key(key, ctx)
 
     def test_count_star_still_renders(self) -> None:
         key = AggregateKey(source=StarKey(), agg="count")
