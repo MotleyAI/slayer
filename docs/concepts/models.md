@@ -353,6 +353,63 @@ Or use the saved result as a model in another query:
 }
 ```
 
+### Variables in model SQL
+
+`{variable}` substitution is not limited to query-level filters — the same mechanism injects caller-supplied values into a model's **raw-SQL (Mode A) surfaces**. This is the primitive for parameterizing hand-written model SQL (for example, representing a Cube `FILTER_PARAMS` cube as an `sql`-mode model whose filter bounds arrive as variables).
+
+The four substituted surfaces are:
+
+| Surface | What it holds |
+| -- | -- |
+| `SlayerModel.sql` | the raw SQL body of an `sql`-mode model (WHERE inside CTEs, projected scalars, anywhere) |
+| `SlayerModel.filters` | model-level always-applied WHERE predicates |
+| `Column.sql` | a column's row-level SQL expression |
+| `Column.filter` | a column's CASE-WHEN conditional (e.g. a windowed TY/LY sum with scalar bounds) |
+
+```json
+{
+  "name": "floored_orders",
+  "data_source": "shop",
+  "sql": "SELECT id, region, amount FROM orders WHERE amount >= {floor}",
+  "query_variables": {"floor": 0},
+  "columns": [
+    {"name": "id", "sql": "id", "type": "INT", "primary_key": true},
+    {"name": "region", "sql": "region", "type": "TEXT"},
+    {"name": "amount", "sql": "amount", "type": "DOUBLE"}
+  ]
+}
+```
+
+Querying this model with `variables={"floor": 100}` renders `WHERE amount >= 100` before the body reaches sqlglot.
+
+Rules:
+
+- **Same precedence** as everywhere else (runtime kwarg > stage > outer query > `model.query_variables`), and the same `{{`/`}}` literal-brace escaping.
+- **Raise on missing — once any variable is in play.** As soon as at least one variable is supplied (a `query_variables` default, or a caller/stage/runtime value), every `{var}` placeholder must resolve or execution raises `Undefined variable` — a parameterized model is meant to fail without its value, not silently render a neutral predicate.
+- **Variable-free executions treat braces as literals.** When there is *no* variable in play at all (no `query_variables` and no caller variables), the four surfaces are left untouched: a raw brace literal (e.g. a Postgres array `'{1,2,3}'`) survives verbatim, and a placeholder-shaped token like `'{status}'` is emitted as-is rather than raising. This is the deliberate contract that lets brace-bearing SQL coexist with the feature. If a model *does* use variables, escape any literal braces as `{{`/`}}`. Two kinds of model are exempt and always run substitution — one carrying an optional `{? ... ?}` block (so the block collapses), and a **generated** model that declares its variables in `meta.cube_variables` (an importer wrote the template, so there is no brace-literal ambiguity to protect and a missing variable raises normally).
+- **String escaping is Mode-A- and dialect-aware.** Write the surrounding quotes yourself (`WHERE region = '{region}'`); a string value's embedded single quotes are escaped so it stays inside that literal. The regime follows the datasource dialect: standard backends (SQLite, Postgres, DuckDB, …) double the quote (`''`); backslash-escaping backends (MySQL, ClickHouse, Snowflake, Redshift, BigQuery, Databricks, Spark) also escape backslashes, so a value like `a\'b` can't break out of the literal (DEV-1727). Numbers (including booleans) insert verbatim; non-finite floats are rejected.
+- **List values render an `IN`-list.** A `list` (or `tuple`) variable renders a comma-separated, injection-safe `IN`-list body. Write the parentheses yourself and **omit** per-element quotes — each string element is auto-quoted for you (the opposite of the scalar-string rule above, because a single placeholder can't carry per-element quotes):
+
+    ```json
+    { "filters": ["region IN ({regions})"] }
+    ```
+
+    with `variables={"regions": ["US", "CA"]}` renders `region IN ('US', 'CA')`. Elements must be strings or numbers; an **empty list raises** (`IN ()` is invalid SQL — for "no filter" semantics use a sentinel default rather than an empty list). Passing a bare scalar here (`{"regions": "US"}`) renders `IN (US)` — unquoted, per the scalar rule above — so wrap single values in a one-element list: `{"regions": ["US"]}`. (The exception is a variable a *generated* model declares list-valued: see [importing Cube](../cube/cube_import.md#scalars-are-accepted-for-the-string-form), where the template is machine-written and a scalar is normalized for you.)
+- **Optional blocks `{? ... ?}` — a filter that disappears when its variable is absent.** Wrap a predicate in `{? ... ?}` (Mode-A surfaces only): when every `{var}` inside is supplied, the block renders parenthesised; when any is missing, the whole block collapses to the neutral `(1=1)`. This is the SLayer form of a Cube `FILTER_PARAMS` optional pushdown. Put the `AND` outside the block so the collapse leaves valid SQL (open your `WHERE` with `1=1`):
+
+    ```json
+    { "sql": "SELECT * FROM orders WHERE 1=1 AND {? region IN ({regions}) ?}" }
+    ```
+
+    With `variables={"regions": ["US","CA"]}` this renders `... WHERE 1=1 AND (region IN ('US', 'CA'))`; with no `regions` supplied it renders `... WHERE 1=1 AND (1=1)`. A block must contain at least one `{var}`; blocks do not nest; a block collapses even on a **zero-variable** call (unlike bare placeholders, which are left literal when no variable is in play at all). Optional blocks are rejected in Mode-B query filters.
+- **`inspect` / `inspect_model` show the literal template** (`{floor}`), not a rendered value. A `Variables:` line lists the model's placeholders classified **required** (bare, no default — omitting it raises) vs **optional** (inside a block, or carrying a `query_variables` default). The classification is derived from the SQL, not stored, so it can never drift from the template.
+
+**Scope (DEV-1625):** substitution currently applies to the **direct source model** of a query. Nested `source_queries` stages, query-backed direct sources, join-target models, and cross-model-target models are the deferred follow-up ([DEV-1678](https://linear.app/motley-ai/issue/DEV-1678)). A `{var}` in one of those lineages is left untouched (and surfaces as an error on the stray placeholder) until that lands.
+
+**Trusted input.** Substituted values are still treated as trusted, not attacker-controlled — prefer not to feed untrusted end-user input through `variables`. The Mode-A escaping is now dialect-aware (DEV-1727): it keeps a string value inside the quoted literal you wrote on every supported dialect, including backslash-escaping backends like MySQL and ClickHouse. Two residual caveats: a `{var}` placed in an **unquoted** position is still raw substitution (only *quoted* string literals are escaped); and the backslash-dialect escaping assumes the server's **default** string mode — a MySQL server running with `sql_mode=NO_BACKSLASH_ESCAPES` treats backslash as an ordinary char, which the whole sqlglot dialect layer (not just this feature) assumes is off.
+
+**Known limitation:** a string value containing a backslash does not round-trip through **SQLite** end-to-end (its driver does not unescape backslashes) — a pre-existing dialect quirk, independent of variable substitution and out of scope for DEV-1727.
+
 ### Variable precedence
 
 When a query-backed model references `{var}` placeholders, values flow in this order (highest first):

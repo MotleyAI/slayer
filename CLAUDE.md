@@ -53,7 +53,10 @@ data dir, override with `$SLAYER_STORAGE`.
 - Dots denote join paths in queries (`customers.regions.name`); `__` denotes path aliases in model SQL (`customers__regions.name`)
 - Models are keyed by `(data_source, name)`; joins resolve within the parent model's datasource
 - Models/queries/datasource configs carry a `version` field; storage migrations run automatically on load (`slayer/storage/migrations.py`)
-- Filters support `{variable}` placeholders from `query.variables`; datasource configs support `${ENV_VAR}`
+- Filters support `{variable}` placeholders from `query.variables` (scalars, plus lists → auto-quoted `IN`-list body: `region IN ({regions})`). Values are trusted input; string escaping IS dialect-aware (DEV-1727) but only applies to *quoted* literals. Datasource configs support `${ENV_VAR}`
+- Mode-A raw-SQL surfaces also support optional blocks `{? pred ?}` — render parenthesised when every inner `{var}` is supplied, else collapse to `(1=1)` (Cube `FILTER_PARAMS` optional-pushdown form, DEV-1730). `extract_model_variables(model)` classifies placeholders required vs optional; surfaced in the inspect skeleton
+- `slayer import-cube` reads Cube `.yml`/`.yaml` **and `.js`** (`cube()`/`view()` via esprima); FILTER_PARAMS → `{var}`/`{? ?}`, requiredness from member `meta.required` (`--ignore-required-meta` to force optional). See `docs/cube/cube_import.md`
+- A model may declare a variable `list_valued` in `meta.cube_variables` (importers do this for generated `col IN ({var})` templates); the engine then wraps a bare scalar into a one-element list. Hand-written model SQL keeps the author-writes-the-quotes convention — a scalar string substitutes unquoted
 
 ## Database Support
 

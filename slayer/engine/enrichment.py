@@ -38,7 +38,7 @@ from slayer.core.formula import (
     parse_formula,
 )
 from slayer.core.models import Column, SlayerModel
-from slayer.core.query import OrderItem, SlayerQuery
+from slayer.core.query import OrderItem, SlayerQuery, substitute_variables
 from slayer.core.refs import DOTTED_IDENT_REF_RE as _DOTTED_IDENT_REF_RE
 from slayer.engine.column_expansion import _is_trivial_base, expand_derived_refs
 from slayer.engine.enriched import (
@@ -1782,15 +1782,17 @@ async def enrich_query(
         parsed_model_filters.append(parsed_mf)
 
     # --- Process filters ---
-    # Apply variable substitution to query-level filters (not model-level —
-    # SQL-mode filters are constructed before the query runs and don't see
-    # query-time variable substitution).
+    # Apply variable substitution to query-level (Mode-B) filters. Model-level
+    # Mode-A surfaces (SlayerModel.sql / .filters / Column.sql / .filter) are
+    # substituted upstream in the engine (``_substitute_model_sql_surfaces``,
+    # DEV-1625) before this function sees the model.
     query_filters = list(query.filters or [])
     if query.variables and query_filters:
-        from slayer.core.query import substitute_variables
-
+        # Mode-B filters are parsed by the Python-AST formula parser → escape
+        # string values Python-style so quotes/backslashes round-trip.
         query_filters = [
-            substitute_variables(filter_str=f, variables=query.variables) for f in query_filters
+            substitute_variables(filter_str=f, variables=query.variables, escape="python")
+            for f in query_filters
         ]
 
     # DEV-1543: distinct_dimension_values=False rejects any measure

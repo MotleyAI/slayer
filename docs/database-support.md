@@ -154,6 +154,13 @@ If you need percentiles on MySQL, the recommended options are:
 - Define a custom `Aggregation` on the model with whatever `GROUP_CONCAT`-
   based or windowed expression suits your data shape and group sizes.
 
+**String-literal escaping** (`{variable}` substitution and generated SQL
+generally) assumes MySQL's **default** `sql_mode` where a backslash escapes
+the following character. A server running with `sql_mode=NO_BACKSLASH_ESCAPES`
+treats backslash as an ordinary char; SLayer's entire sqlglot-based MySQL
+emission — not just variable substitution — assumes that mode is off, so
+backslash-bearing string values are not supported on such servers.
+
 ### SQL Server (T-SQL) caveats
 
 T-SQL has `STDEV`/`STDEVP`/`VAR`/`VARP` (not `STDDEV_SAMP`/`STDDEV_POP`/

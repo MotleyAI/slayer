@@ -12,11 +12,13 @@ fields use class-level defaults (``sqlglot_name: str = "postgres"``).
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 from collections.abc import Callable
 
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp
+from sqlglot.dialects.dialect import Dialect as _SqlglotDialect
 
 from slayer.core.enums import TimeGranularity
 
@@ -142,6 +144,29 @@ def _build_covar_decomposition(
 # ---------------------------------------------------------------------------
 
 
+@lru_cache(maxsize=None)
+def _sqlglot_backslash_escapes(sqlglot_name: str) -> bool:
+    """Whether ``sqlglot``'s tokenizer for ``sqlglot_name`` treats a backslash
+    as a string-literal escape character (DEV-1727).
+
+    This is the single source of truth for the Mode-A ``{var}`` escaping regime:
+    deriving it from the same tokenizer that later PARSES the substituted SQL
+    means our escaping can never drift from the parser. ``STRING_ESCAPES`` is a
+    semi-internal sqlglot attribute; guard it so a future sqlglot change that
+    renames/reshapes it fails loudly here rather than silently mis-escaping.
+    """
+    tokenizer = _SqlglotDialect.get_or_raise(sqlglot_name).tokenizer_class
+    escapes = getattr(tokenizer, "STRING_ESCAPES", None)
+    if not isinstance(escapes, (list, tuple, set, frozenset)):
+        raise RuntimeError(
+            f"Cannot derive the backslash-escaping regime for sqlglot dialect "
+            f"{sqlglot_name!r}: its tokenizer's STRING_ESCAPES is "
+            f"{type(escapes).__name__}, expected a collection of strings. A "
+            f"sqlglot upgrade may have changed this internal API (DEV-1727)."
+        )
+    return "\\" in escapes
+
+
 class SqlDialect(BaseModel):
     """Strategy class encapsulating one database's SQL-generation quirks.
 
@@ -158,6 +183,21 @@ class SqlDialect(BaseModel):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+
+    @property
+    def backslash_escapes_strings(self) -> bool:
+        """Whether this dialect's string literals treat a backslash as an escape
+        character (MySQL/ClickHouse/Snowflake/Redshift/BigQuery/Databricks/Spark)
+        rather than an ordinary char (SQLite/Postgres/DuckDB/T-SQL/Trino/Presto/
+        Oracle).
+
+        Drives DEV-1727 dialect-aware Mode-A ``{var}`` escaping: pass this to
+        ``substitute_variables(..., backslash_escapes=...)`` so a value like
+        ``a\\'b`` stays inside its quoted literal on every backend. Derived from
+        sqlglot's tokenizer (see :func:`_sqlglot_backslash_escapes`) so it can't
+        disagree with the parser; a pinning test freezes the expected value.
+        """
+        return _sqlglot_backslash_escapes(self.sqlglot_name)
 
     # ------------------------------------------------------------------
     # Date-trunc / time arithmetic

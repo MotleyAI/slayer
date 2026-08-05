@@ -1,0 +1,5 @@
+cubes:
+{% for t in tables %}
+  - name: "{{ t }}"
+    sql_table: "public.{{ t }}"
+{% endfor %}

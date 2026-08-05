@@ -51,6 +51,13 @@ sqlalchemy-bigquery = {version = ">=1.11", optional = true, python = "<3.15"}
 duckdb = ">=0.9"
 duckdb-engine = ">=0.13"
 jafgen = "^0.4.14"
+# esprima is a pure-Python ESTree parser (zero transitive deps) used by the
+# Cube JavaScript-config importer (`slayer import-cube` on `.js` files,
+# DEV-1730). Core dep so `import-cube` works after a single
+# `pip install motley-slayer`. Frozen upstream at ES2017 — sufficient for the
+# declarative cube()/view() config subset; newer syntax surfaces as a report
+# issue rather than a crash.
+esprima = ">=4.0"
 # rank-bm25 is unmaintained (last release 0.2.2); revisit if supply-chain
 # concerns arise — the actively-maintained alternative is `bm25s`.
 rank-bm25 = ">=0.2.2"
