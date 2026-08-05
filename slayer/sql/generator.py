@@ -56,7 +56,7 @@ from slayer.sql.naming import (
     result_key_from_alias,
 )
 from slayer.sql.render.aggregates import window_agg_class
-from slayer.sql.render.value_expr import render_scalar_call
+from slayer.sql.render.value_expr import render_scalar_call, rewrite_log_alias
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.scope import ScopeFrame
 from slayer.sql.scope_check import maybe_validate_scopes
@@ -1064,29 +1064,14 @@ class SQLGenerator:
     # ------------------------------------------------------------------
 
     def _rewrite_log_aliases(self, node: exp.Expression) -> exp.Expression:
-        """DEV-1337: rewrite ``Log(this=Literal(10|2), expression=X)`` back to
-        ``Anonymous(this='log10'|'log2', expressions=[X])`` for dialects with
-        native single-arg aliases. Walked over every parsed AST so the
-        rewrite survives sqlglot's re-parse passes (which would otherwise
-        turn ``LOG10(x)`` back into a generic ``Log`` node and re-emit as
-        ``LOG(10, x)``). No-op on non-``Log`` nodes and on ``Log`` nodes
-        with a non-literal or non-{10,2} base.
+        """Thin delegator to the shared log-alias policy in
+        ``slayer.sql.render.value_expr``.
+
+        Kept as a method so the existing ``tree.transform(...)`` call sites,
+        which walk every parsed AST so the rewrite survives sqlglot's re-parse
+        passes, stay unchanged.
         """
-        if not isinstance(node, exp.Log):
-            return node
-        base = node.args.get("this")
-        arg = node.args.get("expression")
-        if arg is None or not isinstance(base, exp.Literal) or base.is_string:
-            return node
-        try:
-            base_val = float(base.this)
-        except (TypeError, ValueError):
-            return node
-        if base_val == 10 and self._dialect.should_use_native_log(10):
-            return exp.Anonymous(this="log10", expressions=[arg.copy()])
-        if base_val == 2 and self._dialect.should_use_native_log(2):
-            return exp.Anonymous(this="log2", expressions=[arg.copy()])
-        return node
+        return rewrite_log_alias(node, dialect=self._dialect)
 
     def _resolve_sql(
         self,
@@ -3939,7 +3924,7 @@ class SQLGenerator:
             if key.name == "like":
                 return exp.Like(this=args[0], expression=args[1]), any_agg
             return render_scalar_call(
-                key.name, args, dialect=self._dialect,
+                name=key.name, args=args, dialect=self._dialect,
             ), any_agg
         if isinstance(key, LiteralKey):
             v = key.value
@@ -4701,8 +4686,8 @@ class SQLGenerator:
             full_agg_alias = self._full_alias_for_slot(
                 slot=agg_slot, source_relation=source_relation, alias_index={},
             )
-            cte_name = wm_allocator.allocate_cte(
-                _cte_name_from_alias("_wm_", full_agg_alias),
+            cte_name = cte_name_from_alias(
+                "_wm_", full_agg_alias, allocator=wm_allocator,
             )
             cte_sql, grain_aliases = self._render_window_measure_cte_from_planned(
                 plan=plan, agg_slot=agg_slot, source_model=source_model,
@@ -4860,6 +4845,11 @@ class SQLGenerator:
             agg_slot = slots_by_id[plan.aggregate_slot_id]
             agg_col_alias = agg_col_alias_for_plan[plan.aggregate_slot_id]
             cte_name = cm_cte_name_for_plan[plan.aggregate_slot_id]
+            # Read THIS plan's canonical alias. It feeds
+            # ``_public_aliases_for_cross_model_agg``, which falls back to it
+            # when the slot declares no public alias, so a stale value projects
+            # one measure under another measure's name.
+            canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
             # DEV-1495 bug 2 / DEV-1712: an order-by-only (hidden) cross-model
             # aggregate never surfaces in the combined projection — its CTE is
             # still joined below, and the ORDER BY references it CTE-qualified
@@ -5138,7 +5128,7 @@ class SQLGenerator:
         # we don't have on the new side. Future slices may re-enable.
         return sql
 
-    def _render_cross_model_transform_chain(
+    def _render_cross_model_transform_chain(  # NOSONAR(S3776) — pre-existing complexity in the window-layer chain; this PR only threaded the CTE-name allocator through it, which re-attributed the function as new code. The chain is rebuilt as sqlglot AST in the scope-assembly PR, where the layering is what gets simplified.
         self,
         *,
         prelude_ctes: List[Tuple[str, str]],
@@ -6393,7 +6383,7 @@ class SQLGenerator:
             if value_key.name == "like":
                 return exp.Like(this=rendered_args[0], expression=rendered_args[1])
             return render_scalar_call(
-                value_key.name, rendered_args, dialect=self._dialect,
+                name=value_key.name, args=rendered_args, dialect=self._dialect,
             )
         if isinstance(value_key, BetweenKey):
             # DEV-1708: a routed ``date_range``-derived BETWEEN over a target
@@ -7199,7 +7189,9 @@ class SQLGenerator:
             ]
             if key.name == "like":
                 return exp.Like(this=args[0], expression=args[1])
-            return render_scalar_call(key.name, args, dialect=self._dialect)
+            return render_scalar_call(
+                name=key.name, args=args, dialect=self._dialect,
+            )
 
         if isinstance(key, BetweenKey):
             return exp.Between(
@@ -9499,7 +9491,9 @@ class SQLGenerator:
             # normalises to a generic ``Log(10, x)`` that re-emits as
             # ``LOG(10, x)``, wrong for dialects with a native single-arg
             # ``LOG10``. Transpiling alone fixes ifnull and breaks log10.
-            return render_scalar_call(key.name, args, dialect=self._dialect)
+            return render_scalar_call(
+                name=key.name, args=args, dialect=self._dialect,
+            )
         if isinstance(key, BetweenKey):
             col_expr = self._render_value_key_for_filter(
                 key=key.column,
@@ -9687,7 +9681,9 @@ class SQLGenerator:
             # normalises to a generic ``Log(10, x)`` that re-emits as
             # ``LOG(10, x)``, wrong for dialects with a native single-arg
             # ``LOG10``. Transpiling alone fixes ifnull and breaks log10.
-            return render_scalar_call(key.name, args, dialect=self._dialect)
+            return render_scalar_call(
+                name=key.name, args=args, dialect=self._dialect,
+            )
         if isinstance(key, BetweenKey):
             col_expr = self._render_filter_for_outer_wrapper(
                 key=key.column,

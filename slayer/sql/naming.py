@@ -251,7 +251,10 @@ FILTERED_ALIAS = "_filtered"
 # LOSSY on purpose (a CTE name must be a bare identifier) — which is exactly
 # why the result must go through an allocator rather than being trusted as an
 # identity.
-_NON_IDENT_CHAR_RE = re.compile(r"[^a-zA-Z0-9_]")
+# Written out rather than as ``\W``: Python's ``\w`` is Unicode-aware, so ``\W``
+# would let accented letters and other non-ASCII word characters through into a
+# name that must be a bare ASCII SQL identifier.
+_NON_IDENT_CHAR_RE = re.compile(r"[^a-zA-Z0-9_]")  # NOSONAR(S6353) — see above: \W is Unicode-aware and would not be equivalent.
 
 
 def cte_name_from_alias(
@@ -310,7 +313,7 @@ AggAliasProfile = Literal[
 _PROFILES_WITHOUT_RELATION = ("cte_schema", "declared_name", "stage_formula")
 
 
-def canonical_aggregate_alias(
+def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over the four frozen alias profiles; each branch IS that profile's contract, and extracting per-profile helpers would restore the four-copy drift this function removes.
     key: "AggregateKey",
     *,
     profile: AggAliasProfile,

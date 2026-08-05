@@ -43,7 +43,7 @@ class AggEntry(BaseModel):
         return self.window_class is not None
 
 
-def _entry(name: str, dispatch: str, **kw) -> AggEntry:
+def _entry(*, name: str, dispatch: str, **kw) -> AggEntry:
     return AggEntry(name=name, dispatch=dispatch, **kw)
 
 
@@ -52,34 +52,40 @@ AGG_REGISTRY: Dict[str, AggEntry] = {
     for e in (
         # Only sum and avg carry a window frame — the same pair the stage
         # planner gates windowed measures on.
-        _entry("sum", DISPATCH_SIMPLE, node_class=exp.Sum, window_class=exp.Sum),
-        _entry("avg", DISPATCH_SIMPLE, node_class=exp.Avg, window_class=exp.Avg),
-        _entry("count", DISPATCH_SIMPLE, node_class=exp.Count),
-        _entry("min", DISPATCH_SIMPLE, node_class=exp.Min),
-        _entry("max", DISPATCH_SIMPLE, node_class=exp.Max),
-        _entry("count_distinct", DISPATCH_DISTINCT, node_class=exp.Count),
-        _entry("count_distinct_approx", DISPATCH_DIALECT_HOOK),
-        _entry("first", DISPATCH_RANKED),
-        _entry("last", DISPATCH_RANKED),
-        _entry("median", DISPATCH_DIALECT_HOOK),
-        _entry("percentile", DISPATCH_DIALECT_HOOK),
-        _entry("weighted_avg", DISPATCH_FORMULA),
-        _entry("stddev_samp", DISPATCH_STAT),
-        _entry("stddev_pop", DISPATCH_STAT),
-        _entry("var_samp", DISPATCH_STAT),
-        _entry("var_pop", DISPATCH_STAT),
-        _entry("corr", DISPATCH_STAT),
-        _entry("covar_samp", DISPATCH_STAT),
-        _entry("covar_pop", DISPATCH_STAT),
+        _entry(name="sum", dispatch=DISPATCH_SIMPLE, node_class=exp.Sum, window_class=exp.Sum),
+        _entry(name="avg", dispatch=DISPATCH_SIMPLE, node_class=exp.Avg, window_class=exp.Avg),
+        _entry(name="count", dispatch=DISPATCH_SIMPLE, node_class=exp.Count),
+        _entry(name="min", dispatch=DISPATCH_SIMPLE, node_class=exp.Min),
+        _entry(name="max", dispatch=DISPATCH_SIMPLE, node_class=exp.Max),
+        _entry(name="count_distinct", dispatch=DISPATCH_DISTINCT, node_class=exp.Count),
+        _entry(name="count_distinct_approx", dispatch=DISPATCH_DIALECT_HOOK),
+        _entry(name="first", dispatch=DISPATCH_RANKED),
+        _entry(name="last", dispatch=DISPATCH_RANKED),
+        _entry(name="median", dispatch=DISPATCH_DIALECT_HOOK),
+        _entry(name="percentile", dispatch=DISPATCH_DIALECT_HOOK),
+        _entry(name="weighted_avg", dispatch=DISPATCH_FORMULA),
+        _entry(name="stddev_samp", dispatch=DISPATCH_STAT),
+        _entry(name="stddev_pop", dispatch=DISPATCH_STAT),
+        _entry(name="var_samp", dispatch=DISPATCH_STAT),
+        _entry(name="var_pop", dispatch=DISPATCH_STAT),
+        _entry(name="corr", dispatch=DISPATCH_STAT),
+        _entry(name="covar_samp", dispatch=DISPATCH_STAT),
+        _entry(name="covar_pop", dispatch=DISPATCH_STAT),
     )
 }
 
 # Every built-in must be in the table, or a lookup would fall through to the
 # custom-formula path and render a built-in as if it were user-defined.
-_missing = BUILTIN_AGGREGATIONS - set(AGG_REGISTRY)
-if _missing:  # pragma: no cover — import-time invariant
+# Checked BOTH ways: a missing built-in would fall through to the custom-formula
+# path, and a registry key that is NOT a built-in (a typo such as sumn) would
+# make is_builtin_agg accept it and route it away from that path.
+_registered = set(AGG_REGISTRY)
+_missing = set(BUILTIN_AGGREGATIONS) - _registered
+_unknown = _registered - set(BUILTIN_AGGREGATIONS)
+if _missing or _unknown:  # pragma: no cover — import-time invariant
     raise RuntimeError(
-        f"Aggregation registry is missing built-ins: {sorted(_missing)}",
+        f"Aggregation registry disagrees with BUILTIN_AGGREGATIONS: "
+        f"missing={sorted(_missing)}, unknown={sorted(_unknown)}",
     )
 
 

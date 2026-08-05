@@ -49,7 +49,6 @@ import inspect
 import os
 import re
 import sqlite3
-import tempfile
 from decimal import Decimal
 from typing import AsyncIterator, List
 
@@ -83,7 +82,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 # ===========================================================================
 
 
-async def _build_engine(*, dialect: str = "sqlite") -> SlayerQueryEngine:
+async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQueryEngine:
     """orders -> customers, seeded, with the collision-bait columns.
 
     On ``customers``:
@@ -99,7 +98,7 @@ async def _build_engine(*, dialect: str = "sqlite") -> SlayerQueryEngine:
         ``orders.customers__revenue_sum`` sanitises to exactly the same CTE
         name as the cross-model ``orders.customers.revenue_sum``.
     """
-    d = tempfile.mkdtemp()
+    d = base_dir
     db_path = os.path.join(d, "b4.db")
     con = sqlite3.connect(db_path)
     cur = con.cursor()
@@ -179,8 +178,8 @@ async def _build_engine(*, dialect: str = "sqlite") -> SlayerQueryEngine:
 
 
 @pytest.fixture
-async def engine() -> AsyncIterator[SlayerQueryEngine]:
-    yield await _build_engine()
+async def engine(tmp_path_factory) -> AsyncIterator[SlayerQueryEngine]:
+    yield await _build_engine(base_dir=str(tmp_path_factory.mktemp("b4")))
 
 
 def _cte_names_by_scope(sql: str, *, dialect: str = "sqlite") -> List[List[str]]:
@@ -353,6 +352,37 @@ class TestCrossModelCteNameAllocation:
             ],
         )
 
+    async def test_unrenamed_cross_model_measures_keep_their_own_aliases(
+        self, engine,
+    ) -> None:
+        """Two cross-model measures with NO declared ``name`` must each project
+        under their OWN canonical alias.
+
+        Every other cross-model test in this file declares ``name=``. This one
+        does not, so it exercises the path where the public alias is derived
+        rather than user-supplied — the branch that reads a plan's canonical
+        alias. It is a coverage gap-filler, not a regression guard: the planner
+        populates ``public_aliases`` even for un-named measures, so the
+        canonical-alias fallback inside
+        ``_public_aliases_for_cross_model_agg`` is not reachable from here.
+        """
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[
+                    ModelMeasure(formula="customers.revenue:sum"),
+                    ModelMeasure(formula="customers.Rev:sum"),
+                ],
+            )
+        )
+        assert "orders.customers.revenue_sum" in resp.columns, resp.columns
+        assert "orders.customers.Rev_sum" in resp.columns, resp.columns
+        row = resp.data[0]
+        # revenue sums to 600 over the three customers; Rev (revx) to 24 —
+        # equal values would mean both read the same CTE column.
+        assert row["orders.customers.revenue_sum"] != row["orders.customers.Rev_sum"]
+
     async def test_same_key_slots_still_share_one_cte(self, engine) -> None:
         """Parity guard for the C13 intent the buggy dedup was meant to serve:
         two measures that are the SAME aggregate under different public names
@@ -387,7 +417,8 @@ class TestCrossModelCteNameAllocation:
             )
         )
         row = resp.data[0]
-        assert "orders.a" in row and "orders.b" in row, list(row)
+        assert "orders.a" in row, list(row)
+        assert "orders.b" in row, list(row)
         assert row["orders.a"] == row["orders.b"]
 
 
@@ -493,8 +524,8 @@ class TestAllocatorRouting:
         difference today: the three ``f"step{...}"`` mint sites must all go
         through the allocator.
 
-        ``generator.py:1916`` bypasses an allocator that is in scope 100 lines
-        above it; ``:5175`` and ``:5229`` live in the cross-model transform
+        ``the generator`` bypasses an allocator that is in scope 100 lines
+        above it; ``that call site`` and ``that call site`` live in the cross-model transform
         chain, which holds no allocator at all. They are latently safe only
         because no ``_cm_*`` CTE can be named ``stepN`` — an invariant nothing
         enforces.
@@ -552,10 +583,10 @@ _INTERNAL_NAMES = [
 ]
 
 
-async def _hostile_engine(*, column: str) -> SlayerQueryEngine:
+async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
     """A single-model store whose ``orders`` model carries a user column named
     exactly like one of SLayer's internal minted names."""
-    d = tempfile.mkdtemp()
+    d = base_dir
     db_path = os.path.join(d, "hostile.db")
     con = sqlite3.connect(db_path)
     cur = con.cursor()
@@ -615,9 +646,11 @@ class TestInternalNamesDoNotCollideWithUserColumns:
 
     @pytest.mark.parametrize("column", _INTERNAL_NAMES)
     async def test_user_column_named_like_an_internal_alias(
-        self, column,
+        self, column, tmp_path_factory,
     ) -> None:
-        engine = await _hostile_engine(column=column)
+        engine = await _hostile_engine(
+            column=column, base_dir=str(tmp_path_factory.mktemp("hostile")),
+        )
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",
@@ -638,11 +671,13 @@ class TestInternalNamesDoNotCollideWithUserColumns:
 
     @pytest.mark.parametrize("column", _INTERNAL_NAMES)
     async def test_user_column_named_like_an_internal_alias_as_dimension(
-        self, column,
+        self, column, tmp_path_factory,
     ) -> None:
         """The same names as a GROUP BY dimension, which routes through the
         ranked-subquery / projection aliasing rather than the aggregate path."""
-        engine = await _hostile_engine(column=column)
+        engine = await _hostile_engine(
+            column=column, base_dir=str(tmp_path_factory.mktemp("hostile")),
+        )
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",
@@ -654,12 +689,14 @@ class TestInternalNamesDoNotCollideWithUserColumns:
 
     @pytest.mark.parametrize("column", ["_td_0", "_dim_0", "_val_0"])
     async def test_ranked_subquery_families_survive_the_name(
-        self, column,
+        self, column, tmp_path_factory,
     ) -> None:
         """Reaches the ``_td_<n>`` / ``_dim_<n>`` counters specifically: a
         first/last measure builds the ranked subquery those aliases live in.
         Last amount per status, ordered by ``created_at``: a -> 20, b -> 30."""
-        engine = await _hostile_engine(column=column)
+        engine = await _hostile_engine(
+            column=column, base_dir=str(tmp_path_factory.mktemp("hostile")),
+        )
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",
@@ -673,13 +710,15 @@ class TestInternalNamesDoNotCollideWithUserColumns:
     @pytest.mark.parametrize(
         "column", ["_w_dim_0", "_w_td_0", "_w_time", "_w_value"],
     )
-    async def test_windowed_families_survive_the_name(self, column) -> None:
+    async def test_windowed_families_survive_the_name(self, column, tmp_path_factory) -> None:
         """Reaches the ``_w_*`` ``_src``-projection aliases specifically: a
         duration-windowed measure is the only shape that builds them."""
         from slayer.core.enums import TimeGranularity
         from slayer.core.query import TimeDimension
 
-        engine = await _hostile_engine(column=column)
+        engine = await _hostile_engine(
+            column=column, base_dir=str(tmp_path_factory.mktemp("hostile")),
+        )
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",
@@ -944,25 +983,22 @@ class TestCanonicalAggregateAlias:
         """Profile validation makes the impossible combinations
         unrepresentable — the reason this is a profile enum rather than four
         free-floating boolean flags."""
+        key = _key(ColumnKey(leaf="revenue"), "sum")
         with pytest.raises(ValueError):
-            naming.canonical_aggregate_alias(
-                _key(ColumnKey(leaf="revenue"), "sum"),
-                profile="cross_model_cte",
-            )
+            naming.canonical_aggregate_alias(key, profile="cross_model_cte")
 
     def test_source_relation_is_rejected_by_the_other_profiles(self) -> None:
+        key = _key(ColumnKey(leaf="revenue"), "sum")
         for profile in ("cte_schema", "declared_name", "stage_formula"):
             with pytest.raises(ValueError):
                 naming.canonical_aggregate_alias(
-                    _key(ColumnKey(leaf="revenue"), "sum"),
-                    profile=profile, source_relation="orders",
+                    key, profile=profile, source_relation="orders",
                 )
 
     def test_unknown_profile_is_rejected(self) -> None:
+        key = _key(ColumnKey(leaf="revenue"), "sum")
         with pytest.raises(ValueError):
-            naming.canonical_aggregate_alias(
-                _key(ColumnKey(leaf="revenue"), "sum"), profile="nonsense",
-            )
+            naming.canonical_aggregate_alias(key, profile="nonsense")
 
 
 class TestProductionCallersDelegate:
