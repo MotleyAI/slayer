@@ -3921,8 +3921,6 @@ class SQLGenerator:
                     args.append(exp.Literal.number(str(a)))
                 else:
                     args.append(exp.Literal.string(str(a)))
-            if key.name == "like":
-                return exp.Like(this=args[0], expression=args[1]), any_agg
             return render_scalar_call(
                 name=key.name, args=args, dialect=self._dialect,
             ), any_agg
@@ -6380,8 +6378,6 @@ class SQLGenerator:
                 )
                 for a in value_key.args
             ]
-            if value_key.name == "like":
-                return exp.Like(this=rendered_args[0], expression=rendered_args[1])
             return render_scalar_call(
                 name=value_key.name, args=rendered_args, dialect=self._dialect,
             )
@@ -7187,8 +7183,6 @@ class SQLGenerator:
                 else _render_scalar_literal(a)
                 for a in key.args
             ]
-            if key.name == "like":
-                return exp.Like(this=args[0], expression=args[1])
             return render_scalar_call(
                 name=key.name, args=args, dialect=self._dialect,
             )
@@ -9479,8 +9473,6 @@ class SQLGenerator:
                         first_last_state=first_last_state,
                         aliases_by_slot_id=aliases_by_slot_id,
                     ))
-            if key.name == "like":
-                return exp.Like(this=args[0], expression=args[1])
             # One ScalarCall policy everywhere (B5): typed node, dialect
             # rewrite, then the log-alias fix-up. This branch used to return an
             # ``exp.Anonymous`` passthrough for everything but ROUND, so a
@@ -9669,8 +9661,6 @@ class SQLGenerator:
                         cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
                         aliases_by_slot_id=aliases_by_slot_id,
                     ))
-            if key.name == "like":
-                return exp.Like(this=args[0], expression=args[1])
             # One ScalarCall policy everywhere (B5): typed node, dialect
             # rewrite, then the log-alias fix-up. This branch used to return an
             # ``exp.Anonymous`` passthrough for everything but ROUND, so a

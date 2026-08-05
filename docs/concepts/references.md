@@ -114,6 +114,30 @@ Rejected at enrichment (when the formula is evaluated against a model):
 {"name": "bad", "formula": "json_extract(data, '$.x')"}      // raw SQL fn
 ```
 
+## Scalar functions and dialect semantics
+
+The allowlisted scalars are rendered as typed SQL and then translated to each
+backend's own spelling, so one formula stays correct across dialects rather
+than being passed through verbatim. `length(x)` emits `LEN(x)` on SQL Server,
+`substr(x, 1, 5)` emits `SUBSTRING(x FROM 1 FOR 5)` on Postgres, and
+`ifnull(x, 0)` emits `COALESCE(x, 0)` on backends without `IFNULL`.
+
+Two consequences worth knowing:
+
+* **`concat` follows SQL string-concatenation semantics.** On dialects whose
+  natural spelling is the `||` operator (Postgres, DuckDB, SQLite), `concat(a, b)`
+  emits `a || b`, which yields `NULL` if either operand is `NULL`. That differs
+  from those backends' own `CONCAT()` function, which treats `NULL` as an empty
+  string. Wrap operands in `ifnull(...)` when you want the NULL-tolerant
+  behaviour:
+
+    ```json
+    {"filters": ["concat(ifnull(first_name, ''), ifnull(last_name, '')) = 'AdaLovelace'"]}
+    ```
+
+* **`log10` / `log2` keep their single-argument form** on the backends that
+  provide one, rather than becoming the generic two-argument `LOG(base, x)`.
+
 ## See also
 
 * [Models](models.md) — `Column.sql`, `Column.filter`, model-level filters
