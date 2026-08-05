@@ -1719,12 +1719,25 @@ class TestSubstituteVariables:
     def test_invalid_type_raises(self) -> None:
         from slayer.core.query import substitute_variables
 
-        with pytest.raises(ValueError, match="must be a string or number"):
+        # A dict is neither scalar nor list/tuple → rejected. (Lists ARE now a
+        # valid IN-list body — DEV-1730 — covered in
+        # tests/test_mode_a_variable_substitution.py.)
+        with pytest.raises(ValueError, match="must be a string, number, or list/tuple"):
             substitute_variables(
                 filter_str="status = '{val}'",
-                variables={"val": [1, 2, 3]},
+                variables={"val": {"a": 1}},
                 escape="python",
             )
+
+    def test_list_value_renders_in_list(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        result = substitute_variables(
+            filter_str="status in ({vals})",
+            variables={"vals": ["a", "b"]},
+            escape="python",
+        )
+        assert result == "status in ('a', 'b',)"
 
     def test_no_variables_no_change(self) -> None:
         from slayer.core.query import substitute_variables

@@ -1,0 +1,19 @@
+views:
+  - name: orders_overview
+    cubes:
+      - join_path: orders
+        includes:
+          - count
+          - total_revenue
+          - status
+      - join_path: orders.customers
+        prefix: true
+        includes:
+          - name
+          - region
+          - lifetime_value
+    default_filters:
+      - member: orders.status
+        operator: equals
+        values:
+          - completed

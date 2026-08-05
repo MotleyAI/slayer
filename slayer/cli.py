@@ -378,6 +378,29 @@ examples:
     )
     _add_storage_arg(import_dbt_parser)
 
+    # ── import-cube ───────────────────────────────────────────────────
+    import_cube_parser = subparsers.add_parser(
+        "import-cube",
+        help="Import Cube (Cube.js / Cube.dev) YAML and JavaScript data models into SLayer models",
+        epilog="""\
+examples:
+  slayer import-cube ./cube_project --datasource my_postgres
+  slayer import-cube ./cube_project/model --datasource my_postgres --report ./report.json
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    import_cube_parser.add_argument("cube_project_path", help="Path to the Cube project (or its model directory)")
+    import_cube_parser.add_argument("--datasource", required=True, help="SLayer datasource name to file the imported models under")
+    import_cube_parser.add_argument("--report", default=None, help="Path for the JSON conversion report (default: <storage>/cube_import_report.json)")
+    import_cube_parser.add_argument("--include-hidden", action="store_true", help="Also print hidden (public: false) models in the summary")
+    import_cube_parser.add_argument(
+        "--ignore-required-meta", action="store_true",
+        help="Emit every FILTER_PARAMS pushdown as an optional filter (literal "
+             "Cube semantics), ignoring a member's meta.required marker. By "
+             "default a truthy meta.required makes that filter required "
+             "(raise-on-missing).")
+    _add_storage_arg(import_cube_parser)
+
     # ── import-osi ────────────────────────────────────────────────────
     import_osi_parser = subparsers.add_parser(
         "import-osi",
@@ -851,6 +874,8 @@ examples:
         _run_recommend_root_model(args)
     elif args.command == "import-dbt":
         _run_import_dbt(args)
+    elif args.command == "import-cube":
+        _run_import_cube(args)
     elif args.command == "import-osi":
         _run_import_osi(args)
     elif args.command == "models":
@@ -1617,6 +1642,71 @@ def _run_import_dbt(args):
         f"\nDone: {visible_count} models, {hidden_count} hidden, "
         f"{unconverted} unconverted, {dropped} dropped"
     )
+
+
+def _run_import_cube(args):
+    from slayer.cube.converter import CubeToSlayerConverter
+    from slayer.cube.parser import parse_cube_project
+    from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
+
+    storage = _resolve_storage(args)
+    project, parse_issues = parse_cube_project(args.cube_project_path)
+
+    if not project.cubes and not project.views:
+        print(f"No cubes or views found in {args.cube_project_path}")
+        sys.exit(1)
+
+    result = CubeToSlayerConverter(
+        project=project, data_source=args.datasource, parse_issues=parse_issues,
+        honor_required_meta=not args.ignore_required_meta,
+    ).convert()
+    saved = 0
+    for model in result.models:
+        try:
+            run_sync(storage.save_model(model))
+            saved += 1
+        except Exception as exc:  # noqa: BLE001 — one bad model shouldn't abort the import
+            result.report.add(CubeConversionIssue(
+                category=CubeIssueCategory.SAVE_FAILED, severity="error",
+                cube=model.name,
+                message=f"Failed to save model '{model.name}': {exc}"))
+
+    _print_cube_import_summary(result, include_hidden=args.include_hidden)
+    report_path = _write_cube_report(result, args)
+    print(
+        f"\nDone: {saved} of {result.report.model_count} models saved "
+        f"({result.report.hidden_count} hidden, {result.report.view_count} views), "
+        f"{len(result.report.issues)} report issues. Report: {report_path}"
+    )
+
+
+def _print_cube_import_summary(result, *, include_hidden):
+    for model in result.models:
+        if model.hidden and not include_hidden:
+            continue
+        suffix = " [hidden]" if model.hidden else ""
+        kind = " (view)" if (model.meta or {}).get("cube_kind") == "view" else ""
+        print(
+            f"Imported model: {model.name}{kind}{suffix} "
+            f"({len(model.columns)} columns, {len(model.measures)} measures)"
+        )
+    for severity in ("error", "warning", "info"):
+        for issue in result.report.by_severity(severity):
+            print(f"  {severity.upper()} [{issue.category.value}/{issue.context}]: {issue.message}")
+
+
+def _write_cube_report(result, args) -> str:
+    import os
+
+    storage_base = args.storage or args.models_dir or _STORAGE_DEFAULT
+    if storage_base.endswith(".db"):
+        storage_base = os.path.dirname(storage_base) or "."
+    report_path = args.report or os.path.join(storage_base, "cube_import_report.json")
+    # Report path is an intended, user-specified CLI output location.
+    os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)  # NOSONAR(S8707)
+    with open(report_path, "w", encoding="utf-8") as fh:  # NOSONAR(S8707)
+        fh.write(result.report.model_dump_json(indent=2))
+    return report_path
 
 
 def _run_import_osi(args):

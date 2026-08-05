@@ -20,7 +20,7 @@ import sqlalchemy as sa
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.query import SlayerQuery, extract_model_variables
 from slayer.engine.ingestion import _friendly_db_error
 from slayer.engine.profiling import (
     _is_sample_cached,
@@ -598,7 +598,9 @@ def model_skeleton_fields(
     """Cheap, DB-free structured skeleton of a model.
 
     Shape: ``{name, canonical_id, description, column_names, measure_names,
-    aggregation_names, joins_to}``. Used by ``inspect(model, compact=True)``
+    aggregation_names, joins_to, variables}`` — ``variables`` is
+    ``{required, optional}`` (DEV-1730), the Mode-A ``{var}`` / ``{? ?}``
+    placeholders classified structurally. Used by ``inspect(model, compact=True)``
     JSON and by each entry of ``inspect(datasource, compact=False)``'s
     ``models`` list (DEV-1588). ``description`` is truncated by ``max_chars``;
     ``canonical_id`` falls back to the bare name when ``data_source`` is unset
@@ -607,6 +609,7 @@ def model_skeleton_fields(
     canonical_id = (
         f"{model.data_source}.{model.name}" if model.data_source else model.name
     )
+    mv = extract_model_variables(model)
     return {
         "name": model.name,
         "canonical_id": canonical_id,
@@ -615,6 +618,7 @@ def model_skeleton_fields(
         "measure_names": [m.name for m in model.measures if m.name is not None],
         "aggregation_names": [a.name for a in model.aggregations],
         "joins_to": sorted({j.target_model for j in model.joins}),
+        "variables": {"required": mv.required, "optional": mv.optional},
     }
 
 
@@ -630,7 +634,9 @@ def render_model_skeleton(
     An optional truncated description line (only when set), then four lines —
     ``Columns`` / ``Measures`` / ``Aggregations`` / ``Joins to`` — always
     present, each empty value rendered ``_(none)_`` (aligned to
-    ``models_summary(compact)``). The caller prepends the ``#``/``##`` heading.
+    ``models_summary(compact)``), plus a fifth ``Variables`` line when the model
+    is parameterised with Mode-A ``{var}`` / ``{? ?}`` placeholders (DEV-1730).
+    The caller prepends the ``#``/``##`` heading.
     """
     fields = model_skeleton_fields(model=model, max_chars=max_chars)
     lines: list[str] = []
@@ -640,7 +646,23 @@ def render_model_skeleton(
     lines.append(f"Measures: {_skeleton_csv(fields['measure_names'])}")
     lines.append(f"Aggregations: {_skeleton_csv(fields['aggregation_names'])}")
     lines.append(f"Joins to: {_skeleton_csv(fields['joins_to'])}")
+    var_line = _render_variables_line(fields["variables"])
+    if var_line:
+        lines.append(var_line)
     return "\n".join(lines)
+
+
+def _render_variables_line(variables: dict[str, list[str]]) -> str | None:
+    """Render the model-variable line for sql-mode models parameterised with
+    ``{var}`` / ``{? ?}`` (DEV-1730). Returns ``None`` when the model takes no
+    variables so a plain table-backed model's skeleton is unchanged.
+    """
+    required = variables.get("required") or []
+    optional = variables.get("optional") or []
+    if not required and not optional:
+        return None
+    parts = [f"{name} (required)" for name in required] + list(optional)
+    return f"Variables: {', '.join(parts)}"
 
 
 async def render_model_inspection(  # NOSONAR(S3776) — faithful extraction of the inspect_model tool body; the section-gating + cache-miss + dual markdown/json render is intentionally a single linear pass
