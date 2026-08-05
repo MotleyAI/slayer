@@ -992,6 +992,19 @@ def _build_one_model(
     )
 
 
+def _dispose_quietly(sa_engine: sa.Engine) -> None:
+    """Dispose ``sa_engine``, swallowing disposal errors.
+
+    Called from ``finally`` blocks: a raising ``dispose()`` would replace the
+    in-flight ingestion exception, so the caller would see a teardown error
+    instead of the driver error that actually failed the run.
+    """
+    try:
+        sa_engine.dispose()
+    except Exception as exc:  # noqa: BLE001 — teardown must not mask the cause
+        logger.debug("engine dispose failed: %s", exc)
+
+
 def _collect_fk_columns(
     *,
     inspector: sa.engine.Inspector,
@@ -1102,7 +1115,7 @@ def ingest_datasource_report(
         # can all raise a driver error — the REST layer explicitly handles
         # ``SQLAlchemyError`` from here — and an undisposed engine would keep
         # the connection open, which is the exact problem this prevents.
-        sa_engine.dispose()
+        _dispose_quietly(sa_engine)
 
 
 def ingest_datasource(

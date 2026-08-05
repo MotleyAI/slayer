@@ -1676,7 +1676,7 @@ def _live_schema_for_datasource(
     Gating this on the ingest-side ``--no-views`` flag would re-arm that
     data-loss bug for anyone who opted out of ingesting views.
     """
-    from slayer.engine.ingestion import list_ingestable_objects
+    from slayer.engine.ingestion import _dispose_quietly, list_ingestable_objects
     from slayer.sql import engine_factory
     sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
     try:
@@ -1709,8 +1709,9 @@ def _live_schema_for_datasource(
         # Same rationale as ``ingest_datasource``: this is a one-shot
         # admin path. Disposing releases the underlying connection so
         # external direct file access (e.g. ``duckdb.connect(file)``)
-        # in the same process isn't blocked.
-        sa_engine.dispose()
+        # in the same process isn't blocked. Quiet, so a raising dispose
+        # can't replace an in-flight introspection error.
+        _dispose_quietly(sa_engine)
 
 
 def _introspect_one_table(

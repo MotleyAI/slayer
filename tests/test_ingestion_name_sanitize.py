@@ -360,6 +360,47 @@ class TestSkipBackstop:
 # ---------------------------------------------------------------------------
 
 
+class TestEngineDisposal:
+    def test_dispose_failure_does_not_mask_the_real_error(
+        self, workspace: Path, monkeypatch
+    ) -> None:
+        """Disposal runs in a ``finally``; if it raises there it would replace
+        the in-flight exception, and the caller would see a teardown error
+        instead of the driver error that actually failed the run. The REST
+        layer surfaces that exception's message, so masking it is a real
+        diagnosability loss.
+        """
+        from slayer.engine import ingestion as ingestion_module
+
+        ds = _sqlite_ds(
+            workspace, "CREATE TABLE orders (id INTEGER PRIMARY KEY, x TEXT);"
+        )
+
+        class _Boom(Exception):
+            pass
+
+        disposed: list[bool] = []
+
+        class _ExplodingEngine:
+            def dispose(self):
+                disposed.append(True)
+                raise RuntimeError("dispose blew up")
+
+        monkeypatch.setattr(
+            "slayer.sql.engine_factory.get_engine",
+            lambda _cfg: _ExplodingEngine(),
+        )
+        monkeypatch.setattr(
+            ingestion_module.sa,
+            "inspect",
+            lambda *_a, **_k: (_ for _ in ()).throw(_Boom("the real failure")),
+        )
+
+        with pytest.raises(_Boom, match="the real failure"):
+            ingest_datasource_report(datasource=ds)
+        assert disposed, "dispose must still be attempted"
+
+
 class TestWrapperContract:
     def test_ingest_datasource_still_returns_a_list_of_models(
         self, workspace: Path
