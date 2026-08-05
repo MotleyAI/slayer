@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from datetime import datetime
 from decimal import Decimal
 from typing import AsyncIterator, Optional
 
@@ -748,11 +749,9 @@ class TestRendersEveryKeyKind:
         raises, and the paths converge in a later PR — a silent
         ``str(value)`` there would turn a loud failure into a wrong value.
         """
-        from datetime import datetime
-
-
+        value = datetime(2024, 1, 1)
         with pytest.raises(NotImplementedError):
-            _literal(datetime(2024, 1, 1))
+            _literal(value)
 
     def test_supported_literal_types_still_render(self) -> None:
         """The fail-closed branch must not swallow the supported cases."""
