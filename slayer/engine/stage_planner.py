@@ -81,10 +81,15 @@ from slayer.engine.cross_model_planner import (
 )
 from slayer.engine.measure_expansion import expand_model_measures
 from slayer.engine.response_meta import _infer_aggregated_format
+from slayer.engine.filter_reachability import (
+    compute_key_join_paths,
+    key_has_host_local_ref,
+)
 from slayer.engine.planned import (
     BoundExpr as PlannedBoundExpr,
     BoundFilterId,
     FilterPhase,
+    FilterReachability,
     OrderEntry,
     PlannedQuery,
     SrcFilterRewrite,
@@ -1321,10 +1326,42 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # BoundFilter (date_range + user filters). Model.filters (text-only)
     # are always row-phase host-local WHERE and never need to be routed
     # to a cross-model CTE — they're skipped here.
+    # DEV-1745 (W4 / D9) — the per-filter structural reachability summary, in
+    # THIS plan's coordinate system. Computed once here and carried on the plan;
+    # ``classify_host_filter`` routes from it rather than re-deriving anything
+    # from model names at classification time.
+    reachability_anchor_model = render_source_model or bundle.source_model
+    source_relation = (
+        query.source_model
+        if isinstance(query.source_model, str)
+        else host_model_name
+    )
+    filter_reachability: List[FilterReachability] = []
+    for fp in filters_by_phase:
+        if fp.expression is None:
+            continue
+        filter_reachability.append(FilterReachability(
+            filter_id=fp.id,
+            crossed_join_paths=compute_key_join_paths(
+                key=fp.expression.value_key,
+                anchor_model=reachability_anchor_model,
+                anchor_relation=source_relation,
+                bundle=bundle,
+            ),
+            has_host_local_ref=key_has_host_local_ref(
+                key=fp.expression.value_key,
+                anchor_model=reachability_anchor_model,
+                anchor_relation=source_relation,
+                bundle=bundle,
+            ),
+        ))
+    reachability_by_fid = {r.filter_id: r for r in filter_reachability}
+
     host_filter_routings: List[HostFilterRouting] = []
     for fid, bf, ftext in zip(
         bound_filter_ids, bound_filters, bound_filter_texts,
     ):
+        summary = reachability_by_fid.get(fid)
         host_filter_routings.append(HostFilterRouting(
             filter_id=fid,
             phase=bf.phase,
@@ -1332,6 +1369,12 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                 bf, projection.registry,
             )),
             text=ftext,
+            crossed_join_paths=(
+                summary.crossed_join_paths if summary is not None else ()
+            ),
+            has_host_local_ref=(
+                summary.has_host_local_ref if summary is not None else False
+            ),
         ))
 
     cross_model_plans = []
@@ -1450,12 +1493,6 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     stage_schema = _emit_stage_schema(
         query=query, projection=projection,
     )
-    source_relation = (
-        query.source_model
-        if isinstance(query.source_model, str)
-        else host_model_name
-    )
-
     # Stage 7b.10 — the active TD's slot id (``active_td_slot_id``) is resolved
     # right after projection above so the windowed-plan builder can use it.
 
@@ -1510,6 +1547,7 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         distinct_dimension_values=query.distinct_dimension_values,
         frame_bound_columns=frame_bound_columns,
         outer_where_filter_ids=outer_where_filter_ids,
+        filter_reachability=filter_reachability,
     )
 
 

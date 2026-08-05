@@ -193,8 +193,10 @@ class TestCompositeKeyKindsAreTotal:
     def test_arithmetic_unions_operands(self) -> None:
         key = ArithmeticKey(
             op="+",
-            left=ColumnKey(path=(), leaf="amount"),
-            right=ColumnKey(path=("customers",), leaf="balance"),
+            operands=(
+                ColumnKey(path=(), leaf="amount"),
+                ColumnKey(path=("customers",), leaf="balance"),
+            ),
         )
         assert ("customers",) in _paths_for(key)
 
@@ -224,8 +226,10 @@ class TestCompositeKeyKindsAreTotal:
         seen — this is the case a top-level-only scan misses."""
         key = ArithmeticKey(
             op="+",
-            left=ColumnKey(path=(), leaf="amount"),
-            right=_derived("host_derived_crossing"),
+            operands=(
+                ColumnKey(path=(), leaf="amount"),
+                _derived("host_derived_crossing"),
+            ),
         )
         assert ("customers",) in _paths_for(key)
 
@@ -336,8 +340,10 @@ class TestStructuralRouting:
 
         key = ArithmeticKey(
             op="+",
-            left=ColumnKey(path=("customers",), leaf="balance"),
-            right=ColumnKey(path=("warehouses",), leaf="id"),
+            operands=(
+                ColumnKey(path=("customers",), leaf="balance"),
+                ColumnKey(path=("warehouses",), leaf="id"),
+            ),
         )
         route = self._route(key, target_path=("customers",))
         assert route == FilterRoute.DROP_UNREACHABLE, (
