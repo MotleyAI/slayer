@@ -1742,3 +1742,93 @@ class TestContainsAggregate:
             input=AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
         )
         assert contains_aggregate(key) is True
+
+
+class TestEqualPrecedenceRightChildren:
+    """Checking the PARENT operator alone is not enough.
+
+    ``a - (b - c)`` was already handled, but ``a * (b % c)`` was not: the
+    parent is ``*``, which looks associative, so the parens were dropped and
+    the expression regrouped to ``(a * b) % c``. With a=2 b=3 c=2 that is 0
+    instead of 2 — a different number from SQL that parses cleanly.
+    """
+
+    def _key(self, outer_op, inner_op):
+        return ArithmeticKey(
+            op=outer_op,
+            operands=(
+                ColumnKey(leaf="amount"),
+                ArithmeticKey(
+                    op=inner_op,
+                    operands=(
+                        LiteralKey(value=Decimal(3)),
+                        LiteralKey(value=Decimal(2)),
+                    ),
+                ),
+            ),
+        )
+
+    @pytest.mark.parametrize(
+        "outer,inner",
+        [("*", "%"), ("*", "/"), ("/", "*"), ("/", "/"), ("-", "+"), ("-", "-")],
+    )
+    def test_equal_precedence_right_child_keeps_parens(self, outer, inner) -> None:
+        out = _sql(render_value_key(self._key(outer, inner), _filter_ctx()))
+        assert "(" in out, f"{outer} over {inner} lost its grouping: {out}"
+
+    @pytest.mark.parametrize("op", ["+", "*"])
+    def test_genuinely_associative_pairs_stay_unparenthesised(self, op) -> None:
+        """``a + (b + c)`` and ``a * (b * c)`` regroup harmlessly, so don't
+        add noise for them."""
+        out = _sql(render_value_key(self._key(op, op), _filter_ctx()))
+        assert "(" not in out, out
+
+
+class TestArithmeticArity:
+    def test_no_operands_is_refused(self) -> None:
+        key = ArithmeticKey(op="+", operands=())
+        ctx = _filter_ctx()
+        with pytest.raises(NotImplementedError):
+            render_value_key(key, ctx)
+
+    @pytest.mark.parametrize("op", ["and", "or"])
+    def test_single_operand_boolean_is_that_operand(self, op) -> None:
+        """The conjunction of one term is that term — well-defined, and it must
+        not fall through to the unary branch and report ``and`` as an
+        unsupported unary operator."""
+        inner = ArithmeticKey(
+            op=">", operands=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(5))),
+        )
+        key = ArithmeticKey(op=op, operands=(inner,))
+        assert _sql(render_value_key(key, _filter_ctx())) == "orders.amount > 5"
+
+
+class TestContainsAggregateTransformDependencies:
+    """``partition_keys`` and ``time_key`` are expression dependencies of a
+    transform just as ``input`` is — an aggregate in either one still lands in
+    the emitted SQL."""
+
+    def test_aggregate_in_partition_keys(self) -> None:
+        agg = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
+        key = TransformKey(
+            op="rank",
+            input=ColumnKey(leaf="amount"),
+            partition_keys=frozenset({agg}),
+        )
+        assert contains_aggregate(key) is True
+
+    def test_aggregate_in_time_key(self) -> None:
+        agg = AggregateKey(source=ColumnKey(leaf="created_at"), agg="max")
+        key = TransformKey(
+            op="cumsum", input=ColumnKey(leaf="amount"), time_key=agg,
+        )
+        assert contains_aggregate(key) is True
+
+    def test_transform_with_no_aggregate_anywhere(self) -> None:
+        key = TransformKey(
+            op="rank",
+            input=ColumnKey(leaf="amount"),
+            partition_keys=frozenset({ColumnKey(leaf="label")}),
+            time_key=ColumnKey(leaf="created_at"),
+        )
+        assert contains_aggregate(key) is False

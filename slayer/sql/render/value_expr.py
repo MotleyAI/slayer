@@ -202,9 +202,12 @@ _PRECEDENCE: Dict[Any, int] = {
     exp.Mul: 6, exp.Div: 6, exp.Mod: 6,
 }
 
-# Non-associative on the right: ``a - (b - c)`` needs its parens even though
-# both sides share a precedence level.
-_RIGHT_SENSITIVE_OPS = ("-", "/", "%")
+# Truly associative parent/child pairs — the ONLY equal-precedence right
+# children that may safely drop their parens. Everything else keeps them:
+# checking the parent operator alone is not enough, because ``Mul(a, Mod(b, c))``
+# emits ``a * b %% c``, which regroups to ``(a * b) %% c`` and returns a
+# different number.
+_ASSOCIATIVE_PAIRS = {("+", exp.Add), ("*", exp.Mul)}
 
 # Operators taking exactly two operands. Left-folding a comparison would turn
 # ``a < b < c`` into ``(a < b) < c`` — a boolean compared to a number — and
@@ -228,7 +231,11 @@ def _paren_if_lower_prec(
         return child
     if child_prec < parent_prec:
         return exp.Paren(this=child)
-    if child_prec == parent_prec and is_right and op in _RIGHT_SENSITIVE_OPS:
+    if (
+        child_prec == parent_prec
+        and is_right
+        and (op, type(child)) not in _ASSOCIATIVE_PAIRS
+    ):
         return exp.Paren(this=child)
     return child
 
@@ -243,6 +250,13 @@ def _render_arithmetic(
     just returns ``operands[0]`` would turn ``amount > -10`` into
     ``amount > 10``.
     """
+    if not operands:
+        raise NotImplementedError(f"Operator {op!r} needs at least one operand.")
+
+    if op in ("and", "or") and len(operands) == 1:
+        # Degenerate but well-defined: the conjunction of one term IS that term.
+        return operands[0]
+
     if len(operands) == 1:
         if op == "not":
             return exp.Not(this=operands[0])
@@ -532,7 +546,14 @@ def contains_aggregate(key: ValueKey) -> bool:
             if isinstance(a, _VALUE_KEY_TYPES)
         )
     if isinstance(key, TransformKey):
-        return contains_aggregate(key.input)
+        # partition_keys and time_key are expression dependencies just as
+        # input is: cumsum(x, partition_by=revenue:sum) references an
+        # aggregate even though its input does not.
+        return (
+            contains_aggregate(key.input)
+            or any(contains_aggregate(p) for p in key.partition_keys)
+            or (key.time_key is not None and contains_aggregate(key.time_key))
+        )
     if isinstance(key, BetweenKey):
         return any(
             contains_aggregate(k) for k in (key.column, key.low, key.high)
