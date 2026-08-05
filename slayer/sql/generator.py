@@ -8431,7 +8431,7 @@ class SQLGenerator:
             root_relation=source_relation,
             bundle=bundle,
             dialect=self._dialect,
-            allocator=AliasAllocator(),
+            allocator=self._new_allocator(),
         )
 
     def _enter_mode_a_predicate(

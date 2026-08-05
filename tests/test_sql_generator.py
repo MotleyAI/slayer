@@ -5012,9 +5012,11 @@ class TestAggParamSanitization:
         sql = await _generate(generator=gen, query=query, model=agg_model)
         # The literal `100` must NOT appear inside CASE WHEN; the value
         # column SHOULD still be CASE-wrapped.
-        assert "CASE WHEN status = 'active' THEN 100" not in sql
+        # ``status`` is not a declared column, so the Mode-A door qualifies it
+        # against the scope root like any other bare ref (DEV-1745 W1).
+        assert "CASE WHEN sales.status = 'active' THEN 100" not in sql
         assert "/ 100" in sql
-        assert "CASE WHEN status = 'active' THEN" in sql
+        assert "CASE WHEN sales.status = 'active' THEN" in sql
 
     async def test_filtered_weighted_avg_still_wraps_column_weight(
         self, gen: SQLGenerator, agg_model: SlayerModel,
@@ -5038,8 +5040,9 @@ class TestAggParamSanitization:
             ],
         )
         sql = await _generate(generator=gen, query=query, model=agg_model)
-        # Both legs are row-level references → both wrapped.
-        assert sql.count("CASE WHEN status = 'active'") >= 2
+        # Both legs are row-level references → both wrapped. (``status`` is
+        # undeclared, so the door qualifies it to the root — DEV-1745 W1.)
+        assert sql.count("CASE WHEN sales.status = 'active'") >= 2
 
     def test_injection_via_direct_agg_render_spec(self, gen: SQLGenerator) -> None:
         """Malicious agg_kwargs on a directly constructed AggRenderSpec are rejected

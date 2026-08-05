@@ -474,7 +474,12 @@ class TestShiftedCteJoinedFilter:
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         where = _shifted_where(sql)
         assert "stores.name" in where, where
-        assert "IS NOT NULL" in where.upper(), where
+        # The predicate reaches the shifted CTE as an AST now that Mode-A text
+        # enters through the one door, so sqlglot emits its canonical negated
+        # form. The host path always re-parsed and rendered this way; the
+        # shifted path's raw-text passthrough was the odd one out (DEV-1745 W1).
+        upper = where.upper()
+        assert "IS NOT NULL" in upper or "NOT STORES.NAME IS NULL" in upper, where
         assert_scope_closed(sql)
 
 
