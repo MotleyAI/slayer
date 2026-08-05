@@ -53,6 +53,7 @@ from decimal import Decimal
 from typing import AsyncIterator, Optional
 
 import pytest
+import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType
@@ -96,6 +97,7 @@ from slayer.sql.render.value_expr import (
     FilterFacilities,
     RenderContext,
     _literal,
+    render_arithmetic,
     render_value_key,
 )
 from slayer.sql.scope import ScopeFrame
@@ -2150,6 +2152,151 @@ class TestStarSourceIsCountOnly:
     def test_count_star_still_renders(self) -> None:
         key = AggregateKey(source=StarKey(), agg="count")
         assert _sql(render_value_key(key, _composite_ctx())) == "COUNT(*)"
+
+
+def _grouping_shape(node: exp.Expression):
+    """``node`` reduced to WHICH OPERAND BELONGS TO WHICH OPERATOR, and nothing
+    else, as nested tuples of ``(operator, operands...)``.
+
+    Comparing whole sqlglot nodes does not work here, because a parsed tree and
+    a hand-built one differ in ways that have nothing to do with grouping:
+    ``Div`` carries parser-set ``typed`` / ``safe`` flags, nodes pick up
+    ``_type`` annotations, and each dialect injects its own numeric cast
+    (Postgres renders ``a / b`` as ``CAST(a AS DOUBLE PRECISION) / b``).
+
+    ``Paren`` and ``Cast`` collapse to their operand: the first carries no
+    meaning once a tree exists — it is how meaning is PRESERVED across the
+    string — and the second is a typing decision. Leaves reduce to their own
+    SQL, which is identical on both sides.
+    """
+    if isinstance(node, (exp.Paren, exp.Cast)):
+        return _grouping_shape(node.this)
+    operands = [
+        node.args.get("this"), node.args.get("expression"),
+        *(node.args.get("expressions") or []),
+    ]
+    operands = [o for o in operands if isinstance(o, exp.Expression)]
+    if not operands:
+        return node.sql()
+    return (type(node).__name__, tuple(_grouping_shape(o) for o in operands))
+
+
+def _reparses_to_the_same_tree(node: exp.Expression, dialect: str) -> bool:
+    """Whether the database will read back the tree we built."""
+    reparsed = sqlglot.parse_one(node.sql(dialect=dialect), dialect=dialect)
+    return _grouping_shape(reparsed) == _grouping_shape(node)
+
+
+class TestEveryOperatorPairSurvivesTheRoundTrip:
+    """The meta-test for the whole regrouping family.
+
+    Every individual grouping bug in this PR has the same shape: we build one
+    tree and the database reads a different one. Asserting emitted STRINGS
+    catches them one at a time, and only once someone has thought of the shape.
+
+    This asserts the property directly — render, re-parse, and compare the
+    trees modulo parens — over every ordered pair of operators in the
+    precedence table, in both operand positions. Note that re-parse STABILITY
+    alone would not do: ``a + b * c`` re-parses to a stable string while
+    meaning something other than the ``(a + b) * c`` we built.
+    """
+
+    # Grouped by result type. Feeding a boolean to an arithmetic operator is
+    # not a shape the binder builds, and the dialects wrap such an operand in
+    # their own numeric CAST — noise that says nothing about grouping.
+    ARITH = ["+", "-", "*", "/", "%"]
+    CMP = ["=", "!=", "<", "<=", ">", ">="]
+    BOOL = ["and", "or"]
+    DIALECTS = ["postgres", "sqlite", "mysql"]
+
+    @staticmethod
+    def _leaf(name: str) -> exp.Expression:
+        return exp.column(name, table="t")
+
+    def _binary(self, op: str, left, right):
+        return render_arithmetic(op, [left, right])
+
+    def _nested(self, inner: str):
+        return self._binary(inner, self._leaf("b"), self._leaf("c"))
+
+    def _check(self, built, dialect, label) -> None:
+        assert _reparses_to_the_same_tree(built, dialect), (
+            f"{label} regrouped: {built.sql(dialect=dialect)}"
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("outer", ARITH)
+    @pytest.mark.parametrize("inner", ARITH)
+    @pytest.mark.parametrize("position", ["left", "right"])
+    def test_arithmetic_nested_in_arithmetic(
+        self, outer, inner, position, dialect,
+    ) -> None:
+        nested = self._nested(inner)
+        operands = (
+            [nested, self._leaf("d")] if position == "left"
+            else [self._leaf("a"), nested]
+        )
+        self._check(
+            self._binary(outer, *operands), dialect,
+            f"{outer} over {inner} ({position})",
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("outer", CMP)
+    @pytest.mark.parametrize("inner", ARITH)
+    @pytest.mark.parametrize("position", ["left", "right"])
+    def test_arithmetic_nested_in_a_comparison(
+        self, outer, inner, position, dialect,
+    ) -> None:
+        nested = self._nested(inner)
+        operands = (
+            [nested, self._leaf("d")] if position == "left"
+            else [self._leaf("a"), nested]
+        )
+        self._check(
+            self._binary(outer, *operands), dialect,
+            f"{outer} over {inner} ({position})",
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("outer", BOOL)
+    @pytest.mark.parametrize("inner", CMP + BOOL)
+    @pytest.mark.parametrize("position", ["left", "right"])
+    def test_predicate_nested_in_a_connector(
+        self, outer, inner, position, dialect,
+    ) -> None:
+        nested = self._nested(inner)
+        other = self._binary("<", self._leaf("d"), self._leaf("e"))
+        operands = [nested, other] if position == "left" else [other, nested]
+        self._check(
+            self._binary(outer, *operands), dialect,
+            f"{outer} over {inner} ({position})",
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("inner", CMP + BOOL)
+    def test_not_over_every_predicate(self, inner, dialect) -> None:
+        self._check(
+            render_arithmetic("not", [self._nested(inner)]), dialect,
+            f"not over {inner}",
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("inner", ARITH)
+    def test_negation_over_every_arithmetic_operator(self, inner, dialect) -> None:
+        self._check(
+            render_arithmetic("-", [self._nested(inner)]), dialect,
+            f"- over {inner}",
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("op", ["is", "is not"])
+    @pytest.mark.parametrize("inner", ARITH + CMP)
+    def test_is_over_every_value_expression(self, op, inner, dialect) -> None:
+        self._check(
+            render_arithmetic(op, [self._nested(inner), exp.Null()]), dialect,
+            f"{op} over {inner}",
+        )
 
 
 class TestGeneratorComposersShareTheGroupingPolicy:

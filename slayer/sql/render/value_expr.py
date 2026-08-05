@@ -248,6 +248,16 @@ def _paren_if_lower_prec(
     A node with no precedence entry — a column, a literal, a function call —
     is already self-delimiting.
     """
+    if isinstance(child, exp.Mod):
+        # ``%`` is parenthesised unconditionally, because precedence alone is
+        # not enough to survive our own pipeline. SQL puts ``%`` on the
+        # ``*`` / ``/`` tier, and so does the Mode-B parser — but SQLGLOT's
+        # parser puts it on the ``+`` / ``-`` tier, so it reads back
+        # ``a + b % c`` as ``(a + b) % c``. Generated SQL IS re-parsed by
+        # sqlglot downstream (reserved-word pre-quoting, the log-alias
+        # transform), so an unparenthesised ``%`` would be silently regrouped
+        # in flight rather than by any database.
+        return exp.Paren(this=child)
     child_prec = _PRECEDENCE.get(type(child))
     if child_prec is None:
         return child
