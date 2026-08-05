@@ -1328,6 +1328,41 @@ class TestDatasourceConfig:
         assert url.host == "db.example"
         assert url.database == "analytics"
 
+    def test_redshift_connection_string_uses_redshift_connector_driver(self) -> None:
+        # Explicit driver_map entry (not the bare "redshift" scheme, which
+        # sqlalchemy-redshift also registers but defaults to psycopg2 —
+        # password-auth only). redshift-connector supports IAM auth and
+        # Redshift Serverless, which is what docs/configuration/datasources.md
+        # documents as the intended driver.
+        ds = DatasourceConfig(
+            name="test",
+            type="redshift",
+            host="mycluster.abc123.us-east-1.redshift.amazonaws.com",
+            port=5439,
+            database="dev",
+            username="user",
+            password="pass",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+        )
+        cs = ds.get_connection_string()
+        assert cs.startswith("redshift+redshift_connector://")
+        url = make_url(cs)
+        assert url.host == "mycluster.abc123.us-east-1.redshift.amazonaws.com"
+        assert url.port == 5439
+        assert url.database == "dev"
+        assert url.username == "user"
+        assert url.password == "pass"  # NOSONAR(S2068) — test-only fixture credential, not a real secret
+
+    def test_redshift_explicit_connection_string_bypasses_driver_map(self) -> None:
+        # A caller who wants the psycopg2 dialect explicitly (or the bare
+        # "redshift" scheme) can still do so via `connection_string` —
+        # driver_map only applies when building the URL from structured
+        # fields.
+        ds = DatasourceConfig(
+            name="test",
+            connection_string="redshift+psycopg2://user:pass@host:5439/dev",
+        )
+        assert ds.get_connection_string() == "redshift+psycopg2://user:pass@host:5439/dev"
+
 
 class TestTimeGranularity:
     def test_period_start_week(self) -> None:

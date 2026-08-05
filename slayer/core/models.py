@@ -877,6 +877,18 @@ class DatasourceConfig(BaseModel):
             "mysql": "mysql+pymysql",
             "mariadb": "mysql+pymysql",
             "clickhouse": "clickhouse+http",
+            # Explicit rather than falling through to the bare "redshift"
+            # scheme (which sqlalchemy-redshift also registers, defaulting to
+            # its psycopg2 dialect): redshift-connector is AWS's maintained
+            # driver and the one this DBAPI-agnostic sqlalchemy-redshift
+            # setup is documented against (IAM auth, Redshift Serverless,
+            # browser SSO — psycopg2 only does password auth). Being
+            # explicit here also stops a future edit from "simplifying" this
+            # to "postgresql" — Redshift's wire protocol is Postgres-derived
+            # but its dialect (RedshiftDialect) carries real SQL differences
+            # (e.g. APPROXIMATE COUNT(DISTINCT)) that the bare postgresql
+            # dialect doesn't know about.
+            "redshift": "redshift+redshift_connector",
         }
         driver = driver_map.get(self.type, self.type)
         # Build the URL with SQLAlchemy's structured builder (issue #240)
