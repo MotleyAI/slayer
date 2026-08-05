@@ -388,6 +388,18 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         return ctx.scope.resolve(key, consumer=ctx.consumer)
 
     if isinstance(key, StarKey):
+        # Same rule as the aggregate branch: a pathed star names the JOINED
+        # relation's rows, which needs the join graph. Emitting a bare ``*``
+        # would silently count the host's.
+        if key.path:
+            raise RenderContextMissingFacilityError(
+                key_kind=type(key).__name__,
+                facility=_AGG_BUILDER,
+                detail=(
+                    f"cross-model star over path {key.path!r} needs the "
+                    f"generator's join-graph routing"
+                ),
+            )
         return exp.Star()
 
     if isinstance(key, LiteralKey):

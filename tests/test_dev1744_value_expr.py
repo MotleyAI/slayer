@@ -1434,3 +1434,184 @@ class TestOuterWrapperAndShiftedCteFamilies:
         assert rows[1]["orders.amt"] == 200.0
         # February's shifted value is January's filtered total.
         assert rows[1]["orders.prev"] == 100.0
+
+
+# ===========================================================================
+# Meta: no key field may be silently ignored.
+# ===========================================================================
+
+
+def _mutation_cases():
+    """(label, base_key, mutated_key) triples — each pair differs in ONE field.
+
+    Every renderer bug found while reviewing this PR was the same shape: the
+    key carried a field, a render path ignored it, and the output was silently
+    WRONG rather than an error. A dropped ``column_filter_key`` made an
+    aggregate cover rows the filter excluded; a dropped ``StarKey.path``
+    counted host rows instead of the joined relation; a dropped unary operand
+    turned ``-10`` into ``10``.
+
+    So the general invariant is: changing a field must change the rendered SQL
+    (or make the render refuse). Two keys that differ but render identically
+    means that field vanished.
+    """
+    col = ColumnKey(leaf="amount")
+    other = ColumnKey(leaf="label")
+    return [
+        ("ColumnKey.leaf", col, other),
+        ("ColumnKey.path", col, ColumnKey(path=("customers",), leaf="amount")),
+        (
+            "ColumnSqlKey.column_name",
+            ColumnSqlKey(model="orders", column_name="net"),
+            ColumnSqlKey(model="orders", column_name="amount"),
+        ),
+        (
+            "TimeTruncKey.granularity",
+            TimeTruncKey(column=col, granularity="month"),
+            TimeTruncKey(column=col, granularity="year"),
+        ),
+        (
+            "TimeTruncKey.column",
+            TimeTruncKey(column=col, granularity="month"),
+            TimeTruncKey(column=other, granularity="month"),
+        ),
+        ("StarKey.path", StarKey(), StarKey(path=("customers",))),
+        (
+            "LiteralKey.value",
+            LiteralKey(value=Decimal(1)), LiteralKey(value=Decimal(2)),
+        ),
+        (
+            "ArithmeticKey.op",
+            ArithmeticKey(op="+", operands=(col, LiteralKey(value=Decimal(1)))),
+            ArithmeticKey(op="-", operands=(col, LiteralKey(value=Decimal(1)))),
+        ),
+        (
+            "ArithmeticKey.operands",
+            ArithmeticKey(op="+", operands=(col, LiteralKey(value=Decimal(1)))),
+            ArithmeticKey(op="+", operands=(col, LiteralKey(value=Decimal(9)))),
+        ),
+        (
+            "ArithmeticKey.operand_arity",
+            ArithmeticKey(op="-", operands=(LiteralKey(value=Decimal(10)),)),
+            ArithmeticKey(
+                op="-",
+                operands=(LiteralKey(value=Decimal(10)), LiteralKey(value=Decimal(0))),
+            ),
+        ),
+        (
+            "ArithmeticKey.nesting",
+            ArithmeticKey(
+                op="*",
+                operands=(
+                    ArithmeticKey(op="+", operands=(col, LiteralKey(value=Decimal(1)))),
+                    LiteralKey(value=Decimal(2)),
+                ),
+            ),
+            ArithmeticKey(
+                op="+",
+                operands=(
+                    col,
+                    ArithmeticKey(
+                        op="*",
+                        operands=(LiteralKey(value=Decimal(1)), LiteralKey(value=Decimal(2))),
+                    ),
+                ),
+            ),
+        ),
+        (
+            "ScalarCallKey.name",
+            ScalarCallKey(name="lower", args=(col,)),
+            ScalarCallKey(name="upper", args=(col,)),
+        ),
+        (
+            "ScalarCallKey.args",
+            ScalarCallKey(name="lower", args=(col,)),
+            ScalarCallKey(name="lower", args=(other,)),
+        ),
+        (
+            "BetweenKey.low",
+            BetweenKey(column=col, low=LiteralKey(value=Decimal(1)),
+                       high=LiteralKey(value=Decimal(9))),
+            BetweenKey(column=col, low=LiteralKey(value=Decimal(2)),
+                       high=LiteralKey(value=Decimal(9))),
+        ),
+        (
+            "InKey.values",
+            InKey(column=col, values=(LiteralKey(value="a"),)),
+            InKey(column=col, values=(LiteralKey(value="b"),)),
+        ),
+        (
+            "InKey.negated",
+            InKey(column=col, values=(LiteralKey(value="a"),)),
+            InKey(column=col, values=(LiteralKey(value="a"),), negated=True),
+        ),
+        (
+            "AggregateKey.agg",
+            AggregateKey(source=col, agg="sum"),
+            AggregateKey(source=col, agg="min"),
+        ),
+        (
+            "AggregateKey.source",
+            AggregateKey(source=col, agg="sum"),
+            AggregateKey(source=other, agg="sum"),
+        ),
+        (
+            "AggregateKey.column_filter_key",
+            AggregateKey(source=col, agg="sum"),
+            AggregateKey(
+                source=col, agg="sum",
+                column_filter_key=SqlExprKey(canonical_sql="status = 'new'"),
+            ),
+        ),
+        (
+            "AggregateKey.kwargs",
+            AggregateKey(source=col, agg="sum"),
+            AggregateKey(source=col, agg="sum", kwargs=(("window", "90d"),)),
+        ),
+        (
+            "AggregateKey.star_path",
+            AggregateKey(source=StarKey(), agg="count"),
+            AggregateKey(source=StarKey(path=("customers",)), agg="count"),
+        ),
+    ]
+
+
+_MUTATIONS = _mutation_cases()
+
+
+class TestNoKeyFieldIsSilentlyIgnored:
+    """The generalisation of every renderer bug this PR's review surfaced.
+
+    A field that does not reach the emitted SQL is a wrong-value bug waiting
+    to happen: the query runs, returns numbers, and the number is wrong. This
+    sweeps the union rather than waiting for each instance to be reported.
+
+    Raising counts as passing — refusing to render a key the context cannot
+    honour is the fail-closed contract. What must never happen is two
+    materially different keys rendering to the SAME SQL.
+    """
+
+    @pytest.mark.parametrize(
+        "label,base,mutated", _MUTATIONS, ids=[m[0] for m in _MUTATIONS],
+    )
+    def test_changing_a_field_changes_the_sql(self, label, base, mutated) -> None:
+        def render(key):
+            # Try both facility groups; a key needing neither renders in both.
+            for ctx in (_composite_ctx(), _filter_ctx()):
+                try:
+                    return _sql(render_value_key(key, ctx))
+                except RenderContextMissingFacilityError:
+                    continue
+                except NotImplementedError:
+                    continue
+            return None  # refused everywhere — fail-closed, acceptable
+
+        base_sql = render(base)
+        mutated_sql = render(mutated)
+        if base_sql is None or mutated_sql is None:
+            return  # at least one was refused; nothing was silently dropped
+        assert base_sql != mutated_sql, (
+            f"{label}: two keys differing in that field render IDENTICALLY as "
+            f"{base_sql!r} — the field is silently dropped, which is a "
+            f"wrong-value bug rather than an error."
+        )
