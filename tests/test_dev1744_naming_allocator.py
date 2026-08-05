@@ -47,18 +47,25 @@ from __future__ import annotations
 
 import inspect
 import os
+import pathlib
 import re
 import sqlite3
+from collections import Counter
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import AsyncIterator, List
 
 import pytest
+import sqlglot
+from sqlglot import exp
 
-from slayer.core.enums import DataType
+import tests.test_parity_guards as guard_module
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
+    SqlExprKey,
     StarKey,
     TimeTruncKey,
 )
@@ -69,9 +76,19 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.engine import cross_model_planner, planning, stage_planner
+from slayer.engine.binding import BoundExpr
+from slayer.engine.cross_model_planner import _aggregate_alias
+from slayer.engine.planning import _canonical_name
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.stage_planner import _canonical_alias_for_formula
+from slayer.sql import generator as generator_module
 from slayer.sql import naming
+from slayer.sql import stage_wrapper as sw_module
+from slayer.sql.dialects import get_dialect
+from slayer.sql.dialects import tsql as tsql_module
+from slayer.sql.generator import SQLGenerator, _cm_plan_identity
 from slayer.sql.naming import AliasAllocator
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -193,9 +210,6 @@ def _cte_names_by_scope(sql: str, *, dialect: str = "sqlite") -> List[List[str]]
     cross-scope uniqueness check would constrain the allocator beyond what the
     plan asks for.
     """
-    import sqlglot
-    from sqlglot import exp
-
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     return [
         [cte.alias_or_name for cte in with_node.expressions]
@@ -406,10 +420,6 @@ class TestCrossModelCteNameAllocation:
         the step CTE binds the wrong column. Asserted as "no output alias is
         emitted twice", which is what actually breaks.
         """
-        from collections import Counter
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.query import TimeDimension
-
         resp = await engine.execute(
             SlayerQuery(
                 source_model="orders",
@@ -498,9 +508,7 @@ class TestDedupIdentityIsStructural:
     The identity choice still has to be right, because the generator's dedup
     map is what enforces it.
     """
-
     def _filtered_and_plain(self):
-        from slayer.core.keys import SqlExprKey
 
         source = ColumnKey(leaf="revenue")
         plain = AggregateKey(source=source, agg="sum")
@@ -585,13 +593,12 @@ class TestAllocatorRouting:
         ``_cm_``, so both CTE families behave identically under a case-only
         collision rather than one being retrofitted and the other not.
 
-        Two windowed measures over case-only column variants would otherwise
-        emit two names that fold together on a folding dialect — the exact
-        shape that broke ``_cm_``.
+        Both measures aggregate the SAME column (``amount``) over different
+        windows; the case-only pair is in their declared names, ``Wm`` and
+        ``wm``. Those names reach the CTE name, so without the allocator the
+        two would fold together on a folding dialect — the exact shape that
+        broke ``_cm_``.
         """
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.query import TimeDimension
-
         engine = await _hostile_engine(
             column="revx2", base_dir=str(tmp_path_factory.mktemp("wm")),
         )
@@ -628,8 +635,6 @@ class TestAllocatorRouting:
         because no ``_cm_*`` CTE can be named ``stepN`` — an invariant nothing
         enforces.
         """
-        from slayer.sql import generator as generator_module
-
         src = inspect.getsource(generator_module)
         raw = [
             line.strip()
@@ -811,9 +816,6 @@ class TestInternalNamesDoNotCollideWithUserColumns:
     async def test_windowed_families_survive_the_name(self, column, tmp_path_factory) -> None:
         """Reaches the ``_w_*`` ``_src``-projection aliases specifically: a
         duration-windowed measure is the only shape that builds them."""
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.query import TimeDimension
-
         engine = await _hostile_engine(
             column=column, base_dir=str(tmp_path_factory.mktemp("hostile")),
         )
@@ -853,7 +855,6 @@ class TestNamingConstants:
     outer-wrap machinery wholesale. The carve-out is recorded as a named P-F
     exception, not an omission.
     """
-
     def test_constants_exist_and_match_the_current_literals(self) -> None:
         assert naming.OUTER_WRAP_ALIAS == "_outer"
         assert naming.STAGE_INNER_ALIAS == "_stage_inner"
@@ -867,15 +868,12 @@ class TestNamingConstants:
         or an error message, and forbidding that would constrain the
         implementation past what the plan asks for.
         """
-        from slayer.sql.dialects import tsql as tsql_module
-
         assert hasattr(tsql_module, "OUTER_WRAP_ALIAS"), (
             "tsql.py does not import naming.OUTER_WRAP_ALIAS"
         )
         assert tsql_module.OUTER_WRAP_ALIAS is naming.OUTER_WRAP_ALIAS
 
     def test_stage_wrapper_imports_the_shared_constant(self) -> None:
-        from slayer.sql import stage_wrapper as sw_module
 
         assert hasattr(sw_module, "STAGE_INNER_ALIAS"), (
             "stage_wrapper.py does not import naming.STAGE_INNER_ALIAS"
@@ -886,8 +884,6 @@ class TestNamingConstants:
         """Behavioural companion: the ratified carve-out says the T-SQL
         ORDER-BY detach rewrite keeps using a CONSTANT (not an allocated name),
         so its emitted alias must still be exactly the shared one."""
-        from slayer.sql.dialects import get_dialect
-
         assert get_dialect("tsql") is not None
         assert naming.OUTER_WRAP_ALIAS == "_outer"
 
@@ -902,9 +898,7 @@ class TestParityGuardRepair:
     Only the documentation is repaired — strengthening the guard's matcher is
     explicitly out of scope for this PR.
     """
-
     def test_docstring_no_longer_references_the_deleted_module(self) -> None:
-        import tests.test_parity_guards as guard_module
 
         doc = guard_module.__doc__ or ""
         assert "parity_xfails" not in doc, (
@@ -915,16 +909,12 @@ class TestParityGuardRepair:
     def test_the_deleted_module_really_is_gone(self) -> None:
         """Guard on the premise itself, so this repair cannot be silently
         invalidated by the file coming back."""
-        import pathlib
-
         tests_dir = pathlib.Path(__file__).parent
         assert not (tests_dir / "parity_xfails.py").exists()
 
     def test_the_guard_itself_still_works(self) -> None:
         """Parity: the repair is docstring-only, so the guard must still run
         and still pass."""
-        import tests.test_parity_guards as guard_module
-
         assert hasattr(guard_module, "APPROVED_GUARDS")
 
 
@@ -1112,11 +1102,6 @@ class TestProductionCallersDelegate:
     def test_all_four_agree_with_the_naming_module(
         self, case, key, expected_a, expected_b, expected_c, expected_d,
     ) -> None:
-        from slayer.engine.binding import BoundExpr
-        from slayer.engine.cross_model_planner import _aggregate_alias
-        from slayer.engine.planning import _canonical_name
-        from slayer.engine.stage_planner import _canonical_alias_for_formula
-        from slayer.sql.generator import SQLGenerator
 
         gen = SQLGenerator(dialect="postgres")
         assert gen._canonical_cross_model_alias(
@@ -1138,11 +1123,6 @@ class TestProductionCallersDelegate:
         Spy on the naming module and assert each production function FORWARDS,
         with the right profile and the right ``source_relation``.
         """
-        from slayer.engine import cross_model_planner, planning, stage_planner
-        from slayer.engine.binding import BoundExpr
-        from slayer.sql import generator as generator_module
-        from slayer.sql.generator import SQLGenerator
-
         key = _key(ColumnKey(path=("customers",), leaf="revenue"), "sum")
         calls: List[dict] = []
         real = naming.canonical_aggregate_alias
@@ -1196,11 +1176,7 @@ class TestCrossModelDedupIdentity:
     plans cannot collide here today — these tests keep that from becoming
     silently wrong if that ever changes.
     """
-
     def _identity(self, *, rerooted, key=None):
-        from types import SimpleNamespace
-
-        from slayer.sql.generator import _cm_plan_identity
 
         key = key or AggregateKey(
             source=ColumnKey(path=("customers",), leaf="revenue"), agg="sum",
@@ -1215,11 +1191,14 @@ class TestCrossModelDedupIdentity:
         assert self._identity(rerooted=False) != self._identity(rerooted=True)
 
     def test_same_key_same_shape_shares_one_identity(self) -> None:
-        """The C13 intent the dedup exists to serve: the same aggregate under
-        two public names is still ONE CTE.
+        """Two SEPARATELY CONSTRUCTED but equal keys — which is what two plans
+        carry — collapse to ONE identity. The tuple has to compare equal BY
+        VALUE, since it is used as a dict key.
 
-        Two SEPARATELY CONSTRUCTED keys, which is what two plans carry — the
-        identity has to compare equal BY VALUE, not by object.
+        This is the unit-level precondition only. That two public names really
+        do end up sharing a single CTE is asserted end-to-end by
+        ``test_same_key_slots_still_share_one_cte`` above; this test cannot see
+        public names at all, because the identity deliberately excludes them.
         """
         first = AggregateKey(
             source=ColumnKey(path=("customers",), leaf="revenue"), agg="sum",
@@ -1235,8 +1214,6 @@ class TestCrossModelDedupIdentity:
     def test_filtered_and_unfiltered_are_different_identities(self) -> None:
         """The reason the identity is the typed key and not the alias: these
         two produce the SAME canonical alias."""
-        from slayer.core.keys import SqlExprKey
-
         source = ColumnKey(path=("customers",), leaf="revenue")
         plain = AggregateKey(source=source, agg="sum")
         filtered = AggregateKey(

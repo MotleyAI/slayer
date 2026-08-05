@@ -56,7 +56,7 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType
+from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, TimeGranularity
 from slayer.core.errors import (
     RenderContextMissingFacilityError,
     UnknownReferenceError,
@@ -83,13 +83,17 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
-from slayer.sql.render.aggregates import resolve_agg_entry, window_agg_class
+from slayer.sql.render.aggregates import (
+    AGG_REGISTRY,
+    resolve_agg_entry,
+    window_agg_class,
+)
 from slayer.sql.render.value_expr import (
     AliasFacilities,
     contains_aggregate,
@@ -98,7 +102,9 @@ from slayer.sql.render.value_expr import (
     RenderContext,
     _literal,
     render_arithmetic,
+    render_scalar_call,
     render_value_key,
+    rewrite_log_alias,
 )
 from slayer.sql.scope import ScopeFrame
 from slayer.storage.yaml_storage import YAMLStorage
@@ -168,7 +174,6 @@ def _scope(
 
 def _filter_ctx(dialect: str = "postgres", **kw):
     """A RenderContext carrying the FILTER facility group (R1's call family)."""
-
     scope = _scope(dialect=dialect)
     return RenderContext(
         scope=scope,
@@ -179,7 +184,6 @@ def _filter_ctx(dialect: str = "postgres", **kw):
 
 def _composite_ctx(dialect: str = "postgres", **kw):
     """A RenderContext carrying the COMPOSITE facility group (R5's family)."""
-
     scope = _scope(dialect=dialect)
     return RenderContext(
         scope=scope,
@@ -202,7 +206,6 @@ class TestB10UnknownModelRaises:
     naming a model absent from the bundle silently expands the ROOT model's
     derived SQL instead. That turns a wiring bug into a wrong answer — the
     query runs and returns numbers computed from the wrong model."""
-
     def test_unknown_model_in_columnsqlkey_raises(self) -> None:
 
         scope = _scope()
@@ -213,7 +216,6 @@ class TestB10UnknownModelRaises:
     def test_error_names_the_missing_model(self) -> None:
         """The message must be actionable: which model was asked for, what the
         scope root is, and what the bundle actually knows."""
-
         scope = _scope()
         key = ColumnSqlKey(model="not_in_bundle", column_name="net")
         with pytest.raises(UnknownReferenceError) as excinfo:
@@ -256,7 +258,6 @@ class TestRenderContextApi:
         """Pydantic v2 + a ``ScopeFrame`` / dialect strategy / sqlglot nodes
         needs ``arbitrary_types_allowed``; constructing with the real objects
         (not stubs) is what proves the config is right."""
-
         scope = _scope()
         ctx = RenderContext(scope=scope, dialect=scope.dialect)
         assert ctx.scope is scope
@@ -268,7 +269,6 @@ class TestRenderContextApi:
     def test_consumer_defaults_to_none_and_is_accepted(self) -> None:
         """The P-B seam exists in PR 1 even though its production callers
         arrive in PR 3."""
-
         producer, consumer = _scope(), _scope()
         ctx = RenderContext(
             scope=producer, consumer=consumer, dialect=producer.dialect,
@@ -292,7 +292,6 @@ class TestRenderContextApi:
 
         Parametrised over all three column-like kinds because a renderer that
         special-cases one of them would otherwise slip through."""
-
         producer, consumer = _scope(), _scope()
         ctx = RenderContext(
             scope=producer, consumer=consumer, dialect=producer.dialect,
@@ -307,7 +306,6 @@ class TestRenderContextApi:
         """The other half of the P-B contract: what the renderer records must
         actually be projectable via ``apply_materializations``, so the consumer's
         bare alias resolves to a real column of the producing SELECT."""
-
         producer, consumer = _scope(), _scope()
         ctx = RenderContext(
             scope=producer, consumer=consumer, dialect=producer.dialect,
@@ -325,7 +323,6 @@ class TestRenderContextApi:
         """Two renders of the same key across the same boundary share ONE
         ``_val_<n>`` — the dedup key is the producing scope + anchored AST +
         dialect, and the renderer must not defeat it by re-anchoring."""
-
         producer, consumer = _scope(), _scope()
         ctx = RenderContext(
             scope=producer, consumer=consumer, dialect=producer.dialect,
@@ -339,7 +336,6 @@ class TestRenderContextApi:
         """P-A: join discovery is a side effect of rendering, never a separate
         pass. Rendering a joined leaf must register the crossed path on the
         scope without the caller asking."""
-
         scope = _scope()
         ctx = RenderContext(scope=scope, dialect=scope.dialect)
         render_value_key(
@@ -353,7 +349,6 @@ class TestRenderContextApi:
         """A key kind that needs a facility the context lacks must RAISE, not
         silently degrade. Silent degradation is how the five copies drifted in
         the first place."""
-
         scope = _scope()
         bare = RenderContext(scope=scope, dialect=scope.dialect)
         # A POST-phase transform can only be rendered against already-
@@ -391,7 +386,6 @@ class TestRenderContextApi:
         ``AggregateKey`` needs the composite facilities (rn-suffix maps,
         resolved agg kwargs, composite alias map) to render faithfully.
         """
-
         scope = _scope()
         bare = RenderContext(scope=scope, dialect=scope.dialect)
         key = AggregateKey(source=ColumnKey(leaf="amount"), agg="first")
@@ -407,7 +401,6 @@ class TestRenderContextApi:
         ``source`` alone drops the filter and covers rows it must exclude —
         a wrong number rather than an error, so the no-builder path refuses it.
         """
-
         key = AggregateKey(
             source=ColumnKey(leaf="amount"),
             agg="sum",
@@ -420,7 +413,6 @@ class TestRenderContextApi:
     def test_parametric_aggregate_without_a_builder_fails_closed(self) -> None:
         """Same rule for args/kwargs, which need the generator's parameter
         resolution."""
-
         key = AggregateKey(
             source=ColumnKey(leaf="amount"),
             agg="sum",
@@ -457,7 +449,6 @@ class TestRenderContextApi:
         WITH its facility must render here — otherwise "fails closed" would be
         indistinguishable from "not implemented".
         """
-
         scope = _scope()
         agg = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
         key = TransformKey(op="time_shift", input=agg)
@@ -482,7 +473,6 @@ class TestRendersEveryKeyKind:
     """The union is closed (11 members). One renderer means every member is
     handled in one place — an unhandled kind must raise, never fall through to
     a bare ``None`` or a stringified repr."""
-
     def test_local_column_key(self) -> None:
 
         out = render_value_key(ColumnKey(leaf="amount"), _filter_ctx())
@@ -506,7 +496,6 @@ class TestRendersEveryKeyKind:
     def test_column_sql_key_expands_the_derived_expression(self) -> None:
         """Exact SQL, not a substring check: ``net`` is ``amount - 1``, and the
         expansion must be anchored at the scope root."""
-
         out = render_value_key(
             ColumnSqlKey(model="orders", column_name="net"), _filter_ctx(),
         )
@@ -515,7 +504,6 @@ class TestRendersEveryKeyKind:
     def test_time_trunc_key(self) -> None:
         """Exact per-dialect SQL — a substring check would accept a truncation
         at the wrong granularity or over the wrong column."""
-
         key = TimeTruncKey(
             column=ColumnKey(leaf="created_at"), granularity="month",
         )
@@ -532,7 +520,6 @@ class TestRendersEveryKeyKind:
         the backend rejects, which is the same one-construct-two-renderings
         defect this module exists to remove.
         """
-
         key = TimeTruncKey(
             column=ColumnKey(leaf="created_at"), granularity="month",
         )
@@ -548,7 +535,6 @@ class TestRendersEveryKeyKind:
         A hardcoded unit table would have no entry for it and would emit
         ``DATE_TRUNC('WEEK_SUNDAY', col)``, which no dialect accepts.
         """
-
         key = TimeTruncKey(
             column=ColumnKey(leaf="created_at"), granularity="week_sunday",
         )
@@ -652,7 +638,6 @@ class TestRendersEveryKeyKind:
         ``amount > -10`` would silently become ``amount > 10`` — a wrong
         result, not a failure.
         """
-
         out = render_value_key(
             ArithmeticKey(op="-", operands=(LiteralKey(value=Decimal(10)),)),
             _filter_ctx(),
@@ -740,7 +725,6 @@ class TestRendersEveryKeyKind:
     )
     def test_arithmetic_precedence_is_parenthesised(self, key, expected) -> None:
         """Operator precedence has to be materialised as ``Paren`` nodes."""
-
         ctx = _filter_ctx()
         assert _sql(render_value_key(key, ctx)) == expected
 
@@ -759,7 +743,6 @@ class TestRendersEveryKeyKind:
 
     def test_supported_literal_types_still_render(self) -> None:
         """The fail-closed branch must not swallow the supported cases."""
-
         assert _literal(None).sql() == "NULL"
         assert _literal(True).sql() == "TRUE"
         assert _literal(Decimal("1.5")).sql() == "1.5"
@@ -774,7 +757,6 @@ class TestRendersEveryKeyKind:
         accepting a tuple of types would let an incidental TypeError from
         somewhere else inside the renderer satisfy this test.
         """
-
         ctx = _filter_ctx()
         with pytest.raises(NotImplementedError) as excinfo:
             render_value_key(object(), ctx)  # type: ignore[arg-type]
@@ -828,7 +810,6 @@ class TestB5ScalarCallPolicy:
     def test_ifnull_never_reaches_postgres_unmapped(self) -> None:
         """The headline B5 bug, stated as the invariant rather than as an exact
         string: Postgres has no ``IFNULL``, so emitting it is broken SQL."""
-
         key = ScalarCallKey(
             name="ifnull",
             args=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(0))),
@@ -846,7 +827,6 @@ class TestB5ScalarCallPolicy:
         ``_rewrite_log_aliases``. Applying transpile WITHOUT that rewrite would
         regress ``log10`` — so the unified renderer must apply both.
         """
-
         key = ScalarCallKey(name="log10", args=(ColumnKey(leaf="amount"),))
         out = _sql(render_value_key(key, _filter_ctx("postgres")), "postgres")
         assert out.upper().startswith("LOG10("), out
@@ -855,7 +835,6 @@ class TestB5ScalarCallPolicy:
         """Parity guard: two-arg ROUND on Postgres needs the numeric cast, and
         it is the ONE scalar call R1 already routed through the typed path.
         Unifying must not lose it."""
-
         key = ScalarCallKey(
             name="round",
             args=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(0))),
@@ -868,7 +847,6 @@ class TestB5ScalarCallPolicy:
         """``like(value, pattern)`` is the one allowlist member that is an
         OPERATOR, not a function call. Both legacy paths special-case it; the
         unified renderer keeps that."""
-
         key = ScalarCallKey(
             name="like",
             args=(ColumnKey(leaf="label"), LiteralKey(value="x%")),
@@ -880,7 +858,6 @@ class TestB5ScalarCallPolicy:
     def test_nested_scalar_calls_use_one_policy_throughout(self) -> None:
         """The policy applies at every depth — a nested call must not fall back
         to the passthrough branch."""
-
         key = ScalarCallKey(
             name="ifnull",
             args=(
@@ -907,8 +884,6 @@ class TestLogAliasPolicyIsShared:
 
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "tsql", "bigquery"])
     def test_generator_delegates_to_the_shared_policy(self, dialect) -> None:
-        from slayer.sql.generator import SQLGenerator
-        from slayer.sql.render.value_expr import rewrite_log_alias
 
         gen = SQLGenerator(dialect=dialect)
         node = exp.Log(
@@ -921,16 +896,12 @@ class TestLogAliasPolicyIsShared:
     def test_generator_parse_path_still_emits_native_log10(self) -> None:
         """Behavioural companion: the delegation must not lose the rewrite that
         the generator applies over parsed trees."""
-        from slayer.sql.generator import SQLGenerator
-
         gen = SQLGenerator(dialect="postgres")
         out = gen._parse("log10(x)").sql(dialect="postgres")
         assert out.upper().startswith("LOG10("), out
 
     def test_non_log_nodes_pass_through_untouched(self) -> None:
-        from slayer.sql.render.value_expr import rewrite_log_alias
 
-        from slayer.sql.dialects import get_dialect
 
         node = exp.column("x")
         assert rewrite_log_alias(node, dialect=get_dialect("postgres")) is node
@@ -943,7 +914,6 @@ class TestPGSameConstructSameSql:
     rendering POLICY must not branch on them. Any divergence here is the class
     of bug the five copies produced.
     """
-
     _KEYS = [
         ("column", ColumnKey(leaf="amount")),
         ("joined_column", ColumnKey(path=("customers",), leaf="balance")),
@@ -1036,7 +1006,6 @@ class TestAggregationRegistry:
         implementation that only ported the easy ``_AGG_FUNCTION_MAP`` entries
         would still pass ``test_every_builtin_resolves`` if the enum happened
         to be small."""
-
         for name in names:
             assert resolve_agg_entry(name).name == name, mechanism
 
@@ -1056,7 +1025,6 @@ class TestAggregationRegistry:
         """Only ``sum`` and ``avg`` are windowable today — that is precisely
         what ``stage_planner`` gates on, and the registry must agree with it
         rather than restating it."""
-
         assert resolve_agg_entry("sum").windowable is True
         assert resolve_agg_entry("avg").windowable is True
         for name in ("count", "min", "max", "median", "percentile", "first"):
@@ -1075,8 +1043,6 @@ class TestAggregationRegistry:
         subtler half: ``is_builtin_agg`` would accept it and route it AWAY from
         that path, so the typo would render as if it were a real aggregation.
         """
-        from slayer.sql.render.aggregates import AGG_REGISTRY
-
         assert set(AGG_REGISTRY) == set(BUILTIN_AGGREGATIONS)
 
     def test_non_windowable_aggregation_fails_closed(self) -> None:
@@ -1087,7 +1053,6 @@ class TestAggregationRegistry:
 
         Approved divergence: it raises instead.
         """
-
         for name in ("median", "count", "min", "max", "percentile"):
             with pytest.raises(ValueError):
                 window_agg_class(name)
@@ -1268,7 +1233,6 @@ class TestOuterWrapperAndShiftedCteFamilies:
     * R1's shifted-CTE WHERE call site (the generator) — reached only by a
       ``time_shift`` transform, never by a plain host filter.
     """
-
     async def _engine(self, tmp_path_factory, *, dialect: str = "sqlite") -> SlayerQueryEngine:
         d = str(tmp_path_factory.mktemp("routes"))
         db_path = os.path.join(d, "routes.db")
@@ -1408,9 +1372,6 @@ class TestOuterWrapperAndShiftedCteFamilies:
         With ``status = 'new'`` only, January's total is 100 and February's
         shifted-by-one-month value must be that same 100.
         """
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.query import TimeDimension
-
         engine = await self._engine(tmp_path_factory)
         resp = await engine.execute(
             SlayerQuery(
@@ -1624,7 +1585,6 @@ class TestOperatorCompositionEdges:
     """Three edges a Codex pass surfaced, all the same family as the rest:
     output that still parses and still returns rows, but means something else.
     """
-
     def test_comparison_nested_in_arithmetic_keeps_its_parens(self) -> None:
         """``(a > b) + 1`` must not flatten to ``a > b + 1``.
 
@@ -1709,7 +1669,6 @@ class TestOperatorCompositionEdges:
 class TestContainsAggregate:
     """``contains_aggregate`` decides GROUP BY / HAVING placement, so it must
     answer "is there an aggregate in this tree", not "when does this evaluate"."""
-
     def test_bare_aggregate(self) -> None:
         assert contains_aggregate(
             AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
@@ -1755,7 +1714,6 @@ class TestEqualPrecedenceRightChildren:
     the expression regrouped to ``(a * b) % c``. With a=2 b=3 c=2 that is 0
     instead of 2 — a different number from SQL that parses cleanly.
     """
-
     def _key(self, outer_op, inner_op):
         return ArithmeticKey(
             op=outer_op,
@@ -1820,7 +1778,6 @@ class TestContainsAggregateTransformDependencies:
     """``partition_keys`` and ``time_key`` are expression dependencies of a
     transform just as ``input`` is — an aggregate in either one still lands in
     the emitted SQL."""
-
     def test_aggregate_in_partition_keys(self) -> None:
         agg = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
         key = TransformKey(
@@ -1864,7 +1821,6 @@ class TestScalarArity:
          ("nullif", 1), ("replace", 2), ("substr", 1), ("like", 3)],
     )
     def test_wrong_arity_is_refused(self, name, argc) -> None:
-        from slayer.sql.render.value_expr import render_scalar_call
 
         args = [exp.column(f"c{i}") for i in range(argc)]
         dialect = get_dialect("postgres")
@@ -1878,8 +1834,6 @@ class TestScalarArity:
     )
     def test_accepted_arities_still_render(self, name, argc) -> None:
         """The variadic and optional-argument forms must keep working."""
-        from slayer.sql.render.value_expr import render_scalar_call
-
         args = [exp.column(f"c{i}") for i in range(argc)]
         out = render_scalar_call(
             name=name, args=args, dialect=get_dialect("postgres"),
@@ -1933,7 +1887,6 @@ class TestNullInInList:
     rows rather than "everything except a". Neither announces itself — the
     query runs and hands back a plausible-looking empty result.
     """
-
     def test_renderer_refuses_null_in_the_list(self) -> None:
         key = InKey(
             column=ColumnKey(leaf="label"),
@@ -2003,7 +1956,6 @@ class TestUnaryOperandGrouping:
     the operand straight into ``exp.Neg`` / ``exp.Not`` without grouping it.
     Both results parse cleanly and mean something else.
     """
-
     def test_negated_sum_keeps_its_parens(self) -> None:
         """``-(a + b)`` must not flatten to ``-a + b``, which is ``(-a) + b``."""
         key = ArithmeticKey(
@@ -2070,7 +2022,6 @@ class TestComparisonsAreNonAssociative:
     shapes are reachable — the Mode-B parser reads ``(a == b) == c`` as a
     NESTED comparison, not a chained one, so the binder does build them.
     """
-
     def _cmp(self, op, left, right):
         return ArithmeticKey(op=op, operands=(left, right))
 
