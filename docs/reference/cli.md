@@ -208,6 +208,7 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 | `--schema` | No | (with `--ingest`) Schema to ingest from |
 | `--include` | No | (with `--ingest`) Comma-separated tables to include |
 | `--exclude` | No | (with `--ingest`) Comma-separated tables to exclude |
+| `--no-views` | No | (with `--ingest`) Skip views and materialized views (ingested by default) |
 | `--years` | No | (demo only) Years of synthetic data to generate (default: 2) |
 | `-y`, `--yes` | No | Overwrite existing datasource / colliding models without prompting |
 | `--storage` | No | Storage path |

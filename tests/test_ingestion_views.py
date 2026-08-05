@@ -79,7 +79,10 @@ def _mock_inspector(
         def _call(*_args, **_kwargs):
             if isinstance(value, Exception):
                 raise value
-            return list(value)
+            # ``or []`` matters: an omitted accessor must exercise the
+            # "dialect reports no objects" path, not blow up on list(None)
+            # and land in the generic except branch.
+            return list(value or [])
         return _call
 
     insp.get_view_names.side_effect = _maybe(views)

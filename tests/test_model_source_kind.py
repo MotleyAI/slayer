@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import sqlalchemy as sa
+from pydantic import ValidationError
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
@@ -152,7 +153,7 @@ class TestPersistence:
         )
 
     def test_rejects_an_unknown_kind(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             SlayerModel(
                 name="m", sql_table="t", data_source="ds", source_kind="temp_table"
             )

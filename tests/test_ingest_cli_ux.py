@@ -103,8 +103,9 @@ class TestIngestExitCodes:
             ),
         )
 
+        args = _args(workspace)
         with pytest.raises(SystemExit) as exc:
-            _run_ingest(_args(workspace))
+            _run_ingest(args)
         assert exc.value.code == 1
 
         out = capsys.readouterr().out
@@ -148,8 +149,9 @@ class TestIngestExitCodes:
             ),
         )
 
+        args = _args(workspace, schema="analytics")
         with pytest.raises(SystemExit) as exc:
-            _run_ingest(_args(workspace, schema="analytics"))
+            _run_ingest(args)
         assert exc.value.code == 1
 
         out = capsys.readouterr().out
@@ -178,8 +180,9 @@ class TestIngestExitCodes:
                 objects=[],
             ),
         )
+        args = _args(workspace)
         with pytest.raises(SystemExit) as exc:
-            _run_ingest(_args(workspace))
+            _run_ingest(args)
         assert exc.value.code == 1
 
 

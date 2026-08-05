@@ -992,6 +992,31 @@ def _build_one_model(
     )
 
 
+def _collect_fk_columns(
+    *,
+    inspector: sa.engine.Inspector,
+    table_names: list[str],
+    schema: str | None,
+) -> dict[str, set[str]]:
+    """Map each table to its FK-constrained columns, for rollup exclusion.
+
+    Guarded per table: views have no foreign keys and some dialects raise
+    instead of returning ``[]``. This runs before per-object model
+    construction, so an unguarded raise would abort the whole ingest.
+    """
+    out: dict[str, set[str]] = defaultdict(set)
+    for table_name in table_names:
+        try:
+            fks = inspector.get_foreign_keys(table_name, schema=schema)
+        except Exception as exc:  # noqa: BLE001 — FK metadata is optional
+            logger.debug("get_foreign_keys failed for %r: %s", table_name, exc)
+            continue
+        for fk in fks:
+            for col in fk["constrained_columns"]:
+                out[table_name].add(col)
+    return out
+
+
 def ingest_datasource_report(
     datasource: DatasourceConfig,
     include_tables: list[str] | None = None,
@@ -1006,82 +1031,78 @@ def ingest_datasource_report(
     """
     from slayer.sql import engine_factory
     sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
-    inspector = sa.inspect(sa_engine)
-
-    objects = list_ingestable_objects(
-        inspector=inspector, schema=schema, include_views=include_views
-    )
-    if include_tables:
-        objects = [o for o in objects if o.name in include_tables]
-    if exclude_tables:
-        objects = [o for o in objects if o.name not in exclude_tables]
-
-    table_names = [o.name for o in objects]
-    table_set = set(table_names)
-
-    name_by_object, skipped = _assign_model_names(objects)
-
-    # Build FK graph, check for cycles
-    fk_graph = _build_fk_graph(inspector=inspector, table_names=table_names, schema=schema)
-    has_cycles = False
     try:
-        _check_acyclic(fk_graph)
-    except RollupGraphError as e:
-        logger.warning(f"FK graph has cycles, skipping rollup: {e}")
-        has_cycles = True
+        inspector = sa.inspect(sa_engine)
 
-    # Collect FK columns per table (for excluding from rollup). Guarded: views
-    # have no foreign keys and some dialects raise rather than returning [].
-    # This loop runs before the per-object try/except below, so an unguarded
-    # raise here would abort the run despite that isolation.
-    fk_columns_by_table: dict[str, set[str]] = defaultdict(set)
-    for table_name in table_names:
-        try:
-            fks = inspector.get_foreign_keys(table_name, schema=schema)
-        except Exception as exc:  # noqa: BLE001 — FK metadata is optional
-            logger.debug("get_foreign_keys failed for %r: %s", table_name, exc)
-            continue
-        for fk in fks:
-            for col in fk["constrained_columns"]:
-                fk_columns_by_table[table_name].add(col)
+        objects = list_ingestable_objects(
+            inspector=inspector, schema=schema, include_views=include_views
+        )
+        if include_tables:
+            objects = [o for o in objects if o.name in include_tables]
+        if exclude_tables:
+            objects = [o for o in objects if o.name not in exclude_tables]
 
-    models = []
-    for obj in objects:
-        model_name = name_by_object.get(obj.name)
-        if model_name is None:
-            continue  # already recorded in ``skipped`` by _assign_model_names
+        table_names = [o.name for o in objects]
+        table_set = set(table_names)
+
+        name_by_object, skipped = _assign_model_names(objects)
+
+        # Build FK graph, check for cycles
+        fk_graph = _build_fk_graph(
+            inspector=inspector, table_names=table_names, schema=schema
+        )
+        has_cycles = False
         try:
-            models.append(
-                _build_one_model(
-                    sa_engine=sa_engine,
-                    inspector=inspector,
-                    obj=obj,
-                    model_name=model_name,
-                    schema=schema,
-                    data_source=datasource.name,
-                    fk_graph=fk_graph,
-                    has_cycles=has_cycles,
-                    fk_columns_by_table=fk_columns_by_table,
-                    table_set=table_set,
+            _check_acyclic(fk_graph)
+        except RollupGraphError as e:
+            logger.warning(f"FK graph has cycles, skipping rollup: {e}")
+            has_cycles = True
+
+        fk_columns_by_table = _collect_fk_columns(
+            inspector=inspector, table_names=table_names, schema=schema
+        )
+
+        models = []
+        for obj in objects:
+            model_name = name_by_object.get(obj.name)
+            if model_name is None:
+                continue  # already recorded in ``skipped`` by _assign_model_names
+            try:
+                models.append(
+                    _build_one_model(
+                        sa_engine=sa_engine,
+                        inspector=inspector,
+                        obj=obj,
+                        model_name=model_name,
+                        schema=schema,
+                        data_source=datasource.name,
+                        fk_graph=fk_graph,
+                        has_cycles=has_cycles,
+                        fk_columns_by_table=fk_columns_by_table,
+                        table_set=table_set,
+                    )
                 )
-            )
-        except Exception as exc:  # noqa: BLE001 — per-object isolation
-            logger.warning(
-                "Skipping %s %r in datasource %r: %s",
-                obj.kind, obj.name, datasource.name, exc,
-            )
-            skipped.append(
-                SkippedTable(table_name=obj.name, kind=obj.kind, reason=str(exc))
-            )
+            except Exception as exc:  # noqa: BLE001 — per-object isolation
+                logger.warning(
+                    "Skipping %s %r in datasource %r: %s",
+                    obj.kind, obj.name, datasource.name, exc,
+                )
+                skipped.append(
+                    SkippedTable(table_name=obj.name, kind=obj.kind, reason=str(exc))
+                )
 
-    # ingest_datasource is a one-shot admin operation, not a hot query
-    # path. Disposing here releases the underlying connection so other
-    # consumers (notably ``duckdb.connect(file)`` in notebooks) can open
-    # the same file. The engine_factory cache will rebuild on the next
-    # call; the cost is one extra ``sa.create_engine`` per ingest, which
-    # is negligible compared to the actual schema-introspection work.
-    sa_engine.dispose()
-    return IngestionScanReport(models=models, skipped=skipped, objects=objects)
+        return IngestionScanReport(
+            models=models, skipped=skipped, objects=objects
+        )
+    finally:
+        # One-shot admin operation, not a hot query path. Disposing releases
+        # the underlying connection so other consumers (notably
+        # ``duckdb.connect(file)`` in notebooks) can open the same file. In a
+        # ``finally`` because discovery, the FK graph, and the FK-column pass
+        # can all raise a driver error — the REST layer explicitly handles
+        # ``SQLAlchemyError`` from here — and an undisposed engine would keep
+        # the connection open, which is the exact problem this prevents.
+        sa_engine.dispose()
 
 
 def ingest_datasource(
@@ -1555,7 +1576,7 @@ def _get_schemas(ds: DatasourceConfig) -> list[str]:
         engine = engine_factory.get_engine(ds.resolve_env_vars())
         inspector = sa.inspect(engine)
         return inspector.get_schema_names()
-    except Exception:  # noqa: BLE001 — hint-only, never fatal
+    except Exception:  # noqa: BLE001 — hint-only and never fatal
         return []
 
 
