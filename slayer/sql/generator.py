@@ -56,7 +56,12 @@ from slayer.sql.naming import (
     result_key_from_alias,
 )
 from slayer.sql.render.aggregates import window_agg_class
-from slayer.sql.render.value_expr import render_scalar_call, rewrite_log_alias
+from slayer.sql.render.value_expr import (
+    group_is_operands,
+    group_unary_operand,
+    render_scalar_call,
+    rewrite_log_alias,
+)
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.scope import ScopeFrame
 from slayer.sql.scope_check import maybe_validate_scopes
@@ -6476,29 +6481,27 @@ class SQLGenerator:
         arithmetic (``+``, ``-``, ``*``, ``/``).
         """
         if op == "not":
-            return exp.Not(this=operands[0])
+            return exp.Not(this=group_unary_operand(operands[0], op="not"))
         # ``and`` / ``or`` (Codex round 2): the binder produces n-ary
         # boolean ``ArithmeticKey`` for ``a AND b AND c`` (three operands);
         # the prior implementation took only ``operands[0]`` / ``[1]`` and
         # silently dropped the third predicate from cross-model HAVING/
-        # WHERE, broadening results. Fold over every operand the same
-        # way ``_compose_arithmetic_op`` and ``_build_arithmetic_for_filter``
-        # already do.
+        # WHERE, broadening results.
+        #
+        # ``exp.and_`` / ``exp.or_`` rather than a hand-rolled fold: the fold
+        # built ``And(a, Or(b, c))``, which sqlglot emits FLAT as
+        # ``a AND b OR c`` — read back as ``(a AND b) OR c``, a broader row set.
         if op in ("and", "or"):
-            node_cls = exp.And if op == "and" else exp.Or
-            acc = operands[0]
-            for o in operands[1:]:
-                acc = node_cls(this=acc, expression=o)
-            return acc
+            return exp.and_(*operands) if op == "and" else exp.or_(*operands)
         left, right = operands[0], operands[1]
         # ``IS`` / ``IS NOT`` (Codex review): the typed pipeline's filter
         # normalizer lowers SQL ``IS NULL`` / ``IS NOT NULL`` to Python
         # ``is None`` / ``is not None``. Render against a ``Null`` literal
         # as the standard SQL forms.
-        if op == "is":
-            return exp.Is(this=left, expression=right)
-        if op == "is not":
-            return exp.Not(this=exp.Is(this=left, expression=right))
+        if op in ("is", "is not"):
+            left, right = group_is_operands(lhs=left, rhs=right)
+            node = exp.Is(this=left, expression=right)
+            return exp.Not(this=node) if op == "is not" else node
         op_map = {
             "==": exp.EQ,
             "!=": exp.NEQ,
@@ -7266,17 +7269,21 @@ class SQLGenerator:
         sqlglot binary nodes.
         """
         if len(operands) == 1:
-            if op == "not":
-                return exp.Not(this=operands[0])
-            if op == "-":
-                return exp.Neg(this=operands[0])
+            # Grouped through the shared policy: a bare ``exp.Neg`` / ``exp.Not``
+            # emitted ``-(a + b)`` as ``-a + b`` and ``not (a and b)`` as
+            # ``NOT a AND b`` — both parse, both mean something else.
+            if op in ("not", "-"):
+                grouped = group_unary_operand(operands[0], op=op)
+                return (
+                    exp.Not(this=grouped) if op == "not" else exp.Neg(this=grouped)
+                )
         if len(operands) == 2:
             lhs, rhs = operands
             # ``IS`` / ``IS NOT`` (Codex review): see ``_build_arith_or_cmp_ast``.
-            if op == "is":
-                return exp.Is(this=lhs, expression=rhs)
-            if op == "is not":
-                return exp.Not(this=exp.Is(this=lhs, expression=rhs))
+            if op in ("is", "is not"):
+                lhs, rhs = group_is_operands(lhs=lhs, rhs=rhs)
+                node = exp.Is(this=lhs, expression=rhs)
+                return exp.Not(this=node) if op == "is not" else node
             binary = {
                 "+": exp.Add, "-": exp.Sub, "*": exp.Mul, "/": exp.Div,
                 "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE,
@@ -7300,16 +7307,12 @@ class SQLGenerator:
                         rhs, parent_prec=parent_prec, is_right=True, op=op,
                     )
                 return binary[op](this=lhs, expression=rhs)
-            if op == "and":
-                return exp.And(this=lhs, expression=rhs)
-            if op == "or":
-                return exp.Or(this=lhs, expression=rhs)
         if len(operands) >= 2 and op in ("and", "or"):
-            node_cls = exp.And if op == "and" else exp.Or
-            acc = operands[0]
-            for rhs in operands[1:]:
-                acc = node_cls(this=acc, expression=rhs)
-            return acc
+            # ``exp.and_`` / ``exp.or_`` rather than a hand-rolled fold: the
+            # fold built ``And(a, Or(b, c))``, which sqlglot emits FLAT as
+            # ``a AND b OR c`` — read back as ``(a AND b) OR c``, a broader
+            # row set.
+            return exp.and_(*operands) if op == "and" else exp.or_(*operands)
         raise NotImplementedError(
             f"DEV-1450 stage 7b.10: arithmetic op {op!r} arity "
             f"{len(operands)} not supported in POST-filter rendering.",
@@ -9840,7 +9843,7 @@ class SQLGenerator:
             # single-operand form so a filter like ``amount > -10``
             # doesn't crash with IndexError.
             if len(operands) == 1:
-                return exp.Neg(this=operands[0])
+                return exp.Neg(this=group_unary_operand(operands[0], op="-"))
             return exp.Sub(
                 this=SQLGenerator._paren_if_lower_prec(
                     operands[0], parent_prec=1, is_right=False, op="-",
@@ -9867,18 +9870,14 @@ class SQLGenerator:
                     operands[1], parent_prec=2, is_right=True, op="/",
                 ),
             )
-        if op == "and":
-            result = operands[0]
-            for o in operands[1:]:
-                result = exp.And(this=result, expression=o)
-            return result
-        if op == "or":
-            result = operands[0]
-            for o in operands[1:]:
-                result = exp.Or(this=result, expression=o)
-            return result
+        if op in ("and", "or"):
+            # ``exp.and_`` / ``exp.or_`` rather than a hand-rolled fold: the
+            # fold built ``And(a, Or(b, c))``, which sqlglot emits FLAT as
+            # ``a AND b OR c`` — read back as ``(a AND b) OR c``, a broader
+            # row set.
+            return exp.and_(*operands) if op == "and" else exp.or_(*operands)
         if op == "not":
-            return exp.Not(this=operands[0])
+            return exp.Not(this=group_unary_operand(operands[0], op="not"))
         # ``IS`` / ``IS NOT`` (Codex round 2): the filter normalizer lowers
         # SQL ``IS NULL`` / ``IS NOT NULL`` to Python ``is None`` / ``is
         # not None``. Render against the rhs (a ``Null`` literal) as the
@@ -9886,10 +9885,10 @@ class SQLGenerator:
         # ``deleted_at IS NULL`` parses and binds but raises here at SQL
         # generation. Mirrors the patches in ``_build_arith_or_cmp_ast``
         # and ``_compose_arithmetic_op``.
-        if op == "is":
-            return exp.Is(this=operands[0], expression=operands[1])
-        if op == "is not":
-            return exp.Not(this=exp.Is(this=operands[0], expression=operands[1]))
+        if op in ("is", "is not"):
+            lhs, rhs = group_is_operands(lhs=operands[0], rhs=operands[1])
+            node = exp.Is(this=lhs, expression=rhs)
+            return exp.Not(this=node) if op == "is not" else node
         raise NotImplementedError(
             f"DEV-1450 stage 7b.8: ArithmeticKey op {op!r} not "
             f"supported in filter rendering."

@@ -86,6 +86,7 @@ from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
+from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
 from slayer.sql.render.aggregates import resolve_agg_entry, window_agg_class
 from slayer.sql.render.value_expr import (
@@ -2149,3 +2150,126 @@ class TestStarSourceIsCountOnly:
     def test_count_star_still_renders(self) -> None:
         key = AggregateKey(source=StarKey(), agg="count")
         assert _sql(render_value_key(key, _composite_ctx())) == "COUNT(*)"
+
+
+class TestGeneratorComposersShareTheGroupingPolicy:
+    """The three LIVE generator composers had the same grouping holes.
+
+    ``value_expr`` is not yet on the generator's arithmetic path (that reroute
+    is the scope-assembly PR), so finding these there did not fix them here.
+    Each composer built ``exp.Not`` / ``exp.Neg`` / ``exp.Is`` around a bare
+    operand and hand-folded ``and``/``or``, producing SQL that parses cleanly
+    and returns a different row set:
+
+    * ``not (a AND b)``      -> ``NOT a AND b``   = ``(NOT a) AND b``
+    * ``-(a + b)``           -> ``-a + b``        = ``(-a) + b``
+    * ``(a = 5) IS NULL``    -> ``a = 5 IS NULL`` = ``a = (5 IS NULL)``
+    * ``a AND (b OR c)``     -> ``a AND b OR c``  = ``(a AND b) OR c``
+
+    All four now route through the shared policy in ``value_expr``, so the
+    construct groups the same way wherever it is composed (P-G).
+    """
+
+    @staticmethod
+    def _a():
+        return exp.column("a", table="t")
+
+    def _gt(self):
+        return exp.GT(this=self._a(), expression=exp.Literal.number("1"))
+
+    def _lt(self):
+        return exp.LT(this=self._a(), expression=exp.Literal.number("9"))
+
+    def _eq(self):
+        return exp.EQ(this=self._a(), expression=exp.Literal.number("5"))
+
+    def _add(self):
+        return exp.Add(this=self._a(), expression=exp.column("b", table="t"))
+
+    def _composers(self):
+        """The three live composers, as uniform ``(op, operands) -> node``."""
+        gen = SQLGenerator.__new__(SQLGenerator)
+        return {
+            "build_arithmetic_for_filter": (
+                lambda op, ops: SQLGenerator._build_arithmetic_for_filter(
+                    op=op, operands=ops,
+                )
+            ),
+            "compose_arithmetic_op": (
+                lambda op, ops: SQLGenerator._compose_arithmetic_op(
+                    op=op, operands=ops,
+                )
+            ),
+            "build_arith_or_cmp_ast": (
+                lambda op, ops: gen._build_arith_or_cmp_ast(op=op, operands=ops)
+            ),
+        }
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    def test_not_of_a_conjunction_keeps_its_parens(self, composer) -> None:
+        compose = self._composers()[composer]
+        conj = exp.And(this=self._gt(), expression=self._lt())
+        assert compose("not", [conj]).sql() == "NOT (t.a > 1 AND t.a < 9)"
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    def test_is_null_over_a_comparison_keeps_its_parens(self, composer) -> None:
+        compose = self._composers()[composer]
+        out = compose("is", [self._eq(), exp.Null()]).sql()
+        assert out == "(t.a = 5) IS NULL", out
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    def test_is_not_null_over_a_comparison_keeps_its_parens(self, composer) -> None:
+        compose = self._composers()[composer]
+        out = compose("is not", [self._eq(), exp.Null()]).sql()
+        assert out == "NOT (t.a = 5) IS NULL", out
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    def test_disjunction_inside_a_conjunction_keeps_its_parens(
+        self, composer,
+    ) -> None:
+        compose = self._composers()[composer]
+        disj = exp.Or(this=self._gt(), expression=self._lt())
+        out = compose("and", [self._lt(), disj]).sql()
+        assert out == "t.a < 9 AND (t.a > 1 OR t.a < 9)", out
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op"],
+    )
+    def test_negated_sum_keeps_its_parens(self, composer) -> None:
+        """``_build_arith_or_cmp_ast`` has no unary-minus branch, so only the
+        two composers that do are exercised here."""
+        compose = self._composers()[composer]
+        assert compose("-", [self._add()]).sql() == "-(t.a + t.b)"
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    def test_plain_shapes_gain_no_parens(self, composer) -> None:
+        """Don't over-wrap — the fix must not churn the emission of the
+        shapes that were already right."""
+        compose = self._composers()[composer]
+        assert compose("is", [self._a(), exp.Null()]).sql() == "t.a IS NULL"
+        assert compose("not", [self._gt()]).sql() == "NOT t.a > 1"
+        assert (
+            compose("and", [self._gt(), self._lt()]).sql()
+            == "t.a > 1 AND t.a < 9"
+        )

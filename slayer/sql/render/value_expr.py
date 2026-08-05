@@ -13,10 +13,15 @@ consumer-scope materialisation), and a missing facility raises
 Migration status
 ----------------
 The API here is complete and directly tested, but the generator's own render
-paths do NOT yet route through :func:`render_value_key`. Only the ScalarCall
-POLICY is shared today: all six paths call :func:`render_scalar_call`, so that
-construct genuinely renders once. Everything else still runs the generator's
-own per-path branches.
+paths do NOT yet route through :func:`render_value_key`. Two POLICIES are
+shared today, each because the generator's copies were demonstrably wrong
+without them:
+
+* ScalarCall — all six paths call :func:`render_scalar_call`.
+* Operand grouping — the generator's three arithmetic composers call
+  :func:`group_unary_operand` and :func:`group_is_operands`.
+
+Everything else still runs the generator's own per-path branches.
 
 Deferred to the scope-assembly PR, together with the cross-scope migration,
 because the two are the same piece of work. Finishing it needs:
@@ -222,7 +227,7 @@ _COMPARISON_PREC = 4
 
 
 def _paren_if_lower_prec(
-    child: exp.Expression, *, parent_prec: int, is_right: bool, op: str,
+    child: exp.Expression, *, parent_prec: int, is_right: bool,
 ) -> exp.Expression:
     """Parenthesise ``child`` when dropping its parens would change meaning.
 
@@ -250,6 +255,41 @@ def _paren_if_lower_prec(
     return child
 
 
+def group_unary_operand(operand: exp.Expression, *, op: str) -> exp.Expression:
+    """Parenthesise a unary operator's operand when precedence requires it.
+
+    Public because the generator's three arithmetic composers built ``exp.Not``
+    / ``exp.Neg`` around a bare operand: ``-(a + b)`` emitted ``-a + b`` and
+    ``not (a and b)`` emitted ``NOT a AND b``. Both parse cleanly and mean
+    something else, so the policy is shared rather than re-derived (P-G).
+    """
+    if op not in ("not", "-"):
+        raise NotImplementedError(
+            f"group_unary_operand only covers 'not' and '-', got {op!r}.",
+        )
+    parent = exp.Not if op == "not" else exp.Neg
+    return _paren_if_lower_prec(
+        operand, parent_prec=_PRECEDENCE[parent], is_right=False,
+    )
+
+
+def group_is_operands(
+    *, lhs: exp.Expression, rhs: exp.Expression,
+) -> Tuple[exp.Expression, exp.Expression]:
+    """Parenthesise an ``IS`` / ``IS NOT`` operand when precedence requires it.
+
+    ``IS`` binds tighter than ``=``, so an ungrouped ``(a = 5) is null`` emits
+    ``a = 5 IS NULL`` and every dialect reads it as ``a = (5 IS NULL)`` — a
+    different predicate that still returns rows. Shared with the generator's
+    composers for the same reason as :func:`group_unary_operand`.
+    """
+    is_prec = _PRECEDENCE[exp.Is]
+    return (
+        _paren_if_lower_prec(lhs, parent_prec=is_prec, is_right=False),
+        _paren_if_lower_prec(rhs, parent_prec=is_prec, is_right=True),
+    )
+
+
 def _render_arithmetic(
     op: str, operands: List[exp.Expression],
 ) -> exp.Expression:
@@ -271,24 +311,9 @@ def _render_arithmetic(
         # Unary operands need the same precedence treatment as binary ones.
         # Without it ``-(a + b)`` emits ``-a + b`` and ``not (a and b)`` emits
         # ``NOT a AND b`` — both parse cleanly and both mean something else.
-        if op == "not":
-            return exp.Not(
-                this=_paren_if_lower_prec(
-                    operands[0],
-                    parent_prec=_PRECEDENCE[exp.Not],
-                    is_right=False,
-                    op=op,
-                ),
-            )
-        if op == "-":
-            return exp.Neg(
-                this=_paren_if_lower_prec(
-                    operands[0],
-                    parent_prec=_PRECEDENCE[exp.Neg],
-                    is_right=False,
-                    op=op,
-                ),
-            )
+        if op in ("not", "-"):
+            grouped = group_unary_operand(operands[0], op=op)
+            return exp.Not(this=grouped) if op == "not" else exp.Neg(this=grouped)
         if op == "+":
             return operands[0]
         raise NotImplementedError(
@@ -309,17 +334,7 @@ def _render_arithmetic(
         )
 
     if op in ("is", "is not"):
-        # Same precedence pass as every other comparison. ``IS`` binds tighter
-        # than ``=``, so an unparenthesised ``(a = b) is null`` would emit
-        # ``a = b IS NULL`` and be read as ``a = (b IS NULL)`` — a different
-        # predicate that still runs.
-        is_prec = _PRECEDENCE[exp.Is]
-        lhs = _paren_if_lower_prec(
-            operands[0], parent_prec=is_prec, is_right=False, op=op,
-        )
-        rhs = _paren_if_lower_prec(
-            operands[1], parent_prec=is_prec, is_right=True, op=op,
-        )
+        lhs, rhs = group_is_operands(lhs=operands[0], rhs=operands[1])
         node = exp.Is(this=lhs, expression=rhs)
         return exp.Not(this=node) if op == "is not" else node
 
@@ -333,10 +348,10 @@ def _render_arithmetic(
         lhs, rhs = result, operand
         if parent_prec is not None:
             lhs = _paren_if_lower_prec(
-                lhs, parent_prec=parent_prec, is_right=False, op=op,
+                lhs, parent_prec=parent_prec, is_right=False,
             )
             rhs = _paren_if_lower_prec(
-                rhs, parent_prec=parent_prec, is_right=True, op=op,
+                rhs, parent_prec=parent_prec, is_right=True,
             )
         result = node_cls(this=lhs, expression=rhs)
     return result
