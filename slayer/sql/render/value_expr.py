@@ -212,6 +212,14 @@ _STRICTLY_BINARY = frozenset({
     "=", "==", "!=", "<>", "<", "<=", ">", ">=", "is", "is not",
 })
 
+# The comparison family's shared level. Unlike arithmetic, comparisons are
+# NON-ASSOCIATIVE in SQL, so an equal-precedence child needs parens on EITHER
+# side — a left child included. Without that, ``(a = b) is null`` emits
+# ``a = b IS NULL``, which every dialect reads as ``a = (b IS NULL)`` because
+# ``IS`` binds tighter than ``=``; and ``(a < b) = c`` emits ``a < b = c``,
+# which Postgres rejects outright as a non-associative chain.
+_COMPARISON_PREC = 4
+
 
 def _paren_if_lower_prec(
     child: exp.Expression, *, parent_prec: int, is_right: bool, op: str,
@@ -226,6 +234,9 @@ def _paren_if_lower_prec(
     and ``(a + b) + c`` genuinely different. Preserving the tree the binder
     built costs a pair of parentheses; regrouping costs accuracy.
 
+    At :data:`_COMPARISON_PREC` an equal-precedence LEFT child is parenthesised
+    too, because that family is non-associative.
+
     A node with no precedence entry — a column, a literal, a function call —
     is already self-delimiting.
     """
@@ -234,7 +245,7 @@ def _paren_if_lower_prec(
         return child
     if child_prec < parent_prec:
         return exp.Paren(this=child)
-    if child_prec == parent_prec and is_right:
+    if child_prec == parent_prec and (is_right or parent_prec == _COMPARISON_PREC):
         return exp.Paren(this=child)
     return child
 
@@ -297,10 +308,20 @@ def _render_arithmetic(
             f"Operator {op!r} takes exactly two operands, got {len(operands)}.",
         )
 
-    if op == "is":
-        return exp.Is(this=operands[0], expression=operands[1])
-    if op == "is not":
-        return exp.Not(this=exp.Is(this=operands[0], expression=operands[1]))
+    if op in ("is", "is not"):
+        # Same precedence pass as every other comparison. ``IS`` binds tighter
+        # than ``=``, so an unparenthesised ``(a = b) is null`` would emit
+        # ``a = b IS NULL`` and be read as ``a = (b IS NULL)`` — a different
+        # predicate that still runs.
+        is_prec = _PRECEDENCE[exp.Is]
+        lhs = _paren_if_lower_prec(
+            operands[0], parent_prec=is_prec, is_right=False, op=op,
+        )
+        rhs = _paren_if_lower_prec(
+            operands[1], parent_prec=is_prec, is_right=True, op=op,
+        )
+        node = exp.Is(this=lhs, expression=rhs)
+        return exp.Not(this=node) if op == "is not" else node
 
     node_cls = _BINARY_OPS.get(op)
     if node_cls is None:
@@ -429,6 +450,15 @@ def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> exp.Expression:
                     f"cross-model star over path {key.source.path!r} needs the "
                     f"generator's join-graph routing"
                 ),
+            )
+        if key.agg != "count":
+            # ``COUNT`` is the only aggregation a bare star is defined for.
+            # Without this the dispatch gate happily builds ``SUM(*)`` or
+            # ``COUNT(DISTINCT *)`` — SQL no backend accepts, discovered at
+            # execution time rather than here.
+            raise NotImplementedError(
+                f"Aggregation {key.agg!r} cannot take ``*`` as its source; "
+                f"only 'count' is defined over a bare star.",
             )
         inner: exp.Expression = exp.Star()
     else:

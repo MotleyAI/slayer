@@ -2067,3 +2067,85 @@ class TestUnaryOperandGrouping:
     def test_negated_column_needs_no_parens(self) -> None:
         key = ArithmeticKey(op="-", operands=(ColumnKey(leaf="amount"),))
         assert _sql(render_value_key(key, _filter_ctx())) == "-orders.amount"
+
+
+class TestComparisonsAreNonAssociative:
+    """The equal-precedence rule was right-child-only, and ``is`` skipped it.
+
+    Arithmetic is left-associative, so an equal-precedence LEFT child regroups
+    harmlessly. The comparison family is not: SQL binds ``IS`` tighter than
+    ``=``, and Postgres rejects a chain of relational operators outright. Both
+    shapes are reachable — the Mode-B parser reads ``(a == b) == c`` as a
+    NESTED comparison, not a chained one, so the binder does build them.
+    """
+
+    def _cmp(self, op, left, right):
+        return ArithmeticKey(op=op, operands=(left, right))
+
+    def _inner(self, op="="):
+        return self._cmp(
+            op, ColumnKey(leaf="amount"), LiteralKey(value=Decimal(5)),
+        )
+
+    def test_comparison_over_comparison_keeps_left_parens(self) -> None:
+        """``(a = 5) = TRUE`` must not flatten to ``a = 5 = TRUE``."""
+        key = self._cmp("=", self._inner(), LiteralKey(value=True))
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out == "(orders.amount = 5) = TRUE", out
+
+    def test_mixed_relational_operators_keep_left_parens(self) -> None:
+        """``(a < 5) = TRUE`` emitted bare is ``a < 5 = TRUE`` — a
+        non-associative chain Postgres refuses to parse at all."""
+        key = self._cmp("=", self._inner("<"), LiteralKey(value=True))
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out == "(orders.amount < 5) = TRUE", out
+
+    def test_is_null_over_a_comparison_keeps_its_parens(self) -> None:
+        """The wrong-value case: ``a = 5 IS NULL`` is read as
+        ``a = (5 IS NULL)``, i.e. ``a = FALSE`` — a different predicate that
+        still returns rows."""
+        key = self._cmp("is", self._inner(), LiteralKey(value=None))
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out == "(orders.amount = 5) IS NULL", out
+
+    def test_is_not_null_over_a_comparison_keeps_its_parens(self) -> None:
+        key = self._cmp("is not", self._inner(), LiteralKey(value=None))
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out == "NOT (orders.amount = 5) IS NULL", out
+
+    def test_plain_is_null_over_a_column_gains_no_parens(self) -> None:
+        """Don't over-wrap: a column is self-delimiting."""
+        key = self._cmp("is", ColumnKey(leaf="amount"), LiteralKey(value=None))
+        assert _sql(render_value_key(key, _filter_ctx())) == "orders.amount IS NULL"
+
+    def test_arithmetic_left_child_still_flattens(self) -> None:
+        """The non-associativity rule is scoped to the comparison level —
+        ``(a - 1) - 2`` is the tree a left-fold builds, and re-parenthesising
+        every arithmetic left child would churn emission for no gain."""
+        inner = self._cmp(
+            "-", ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1)),
+        )
+        key = self._cmp("-", inner, LiteralKey(value=Decimal(2)))
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out == "orders.amount - 1 - 2", out
+
+
+class TestStarSourceIsCountOnly:
+    """``*`` is only defined as ``COUNT``'s argument.
+
+    The builder-free aggregate path gated on the dispatch MECHANISM, which
+    passes for every simple aggregation, so a ``StarKey`` source went straight
+    into whichever node the registry named — building ``SUM(*)`` and
+    ``COUNT(DISTINCT *)``, which no backend accepts. Refused here rather than
+    at execution time.
+    """
+
+    @pytest.mark.parametrize("agg", ["sum", "avg", "min", "max", "count_distinct"])
+    def test_non_count_star_is_refused(self, agg) -> None:
+        key = AggregateKey(source=StarKey(), agg=agg)
+        with pytest.raises(NotImplementedError, match="bare star"):
+            render_value_key(key, _composite_ctx())
+
+    def test_count_star_still_renders(self) -> None:
+        key = AggregateKey(source=StarKey(), agg="count")
+        assert _sql(render_value_key(key, _composite_ctx())) == "COUNT(*)"
