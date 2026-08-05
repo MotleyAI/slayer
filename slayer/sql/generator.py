@@ -4204,38 +4204,20 @@ class SQLGenerator:
             p.aggregate_slot_id for p in planned_query.windowed_aggregate_plans
         }
 
-        # DEV-1503 — outer combined-SELECT WHERE wrapper. Identify
-        # AGGREGATE-phase host filters whose value-key references any
-        # FILTERED-LOCAL ISOLATED aggregate (a plan with
-        # ``cte_root_model is not None``). The filtered aggregate lives in
-        # its ``_cm_*`` CTE that LEFT JOINs back to ``_base``; applying
-        # the comparison as HAVING in the CTE would drop CTE rows where
-        # the aggregate fails the test, but the LEFT JOIN would then
-        # surface the host row with a NULL aggregate (wrong semantic).
-        # Routing to the outer combined SELECT (non-aggregating) as
-        # plain WHERE on the joined-back column drops the row instead.
-        isolated_agg_slot_ids = {
-            p.aggregate_slot_id
-            for p in planned_query.cross_model_aggregate_plans
-            if p.cte_root_model is not None
-        }
+        # DEV-1503 / DEV-1745 (P-D) — the outer combined-SELECT WHERE wrapper is
+        # routed by the PLANNER (``_plan_outer_where_filters``), which knows
+        # which aggregates were isolated into a CTE with its own root. The
+        # generator consumes that decision verbatim: re-walking
+        # ``filters_by_phase`` here to rediscover it would be routing policy
+        # chosen during emission, and the two could disagree.
         slot_by_key = {s.key: s for s in slots_by_id.values()}
-        outer_where_filter_ids: Set[str] = set()
-        outer_where_filters: List = []
-        if isolated_agg_slot_ids:
-            for fp in planned_query.filters_by_phase:
-                if fp.phase != Phase.AGGREGATE or fp.expression is None:
-                    continue
-                refs_isolated = False
-                for k in walk_value_keys(fp.expression.value_key):
-                    if isinstance(k, AggregateKey):
-                        slot = slot_by_key.get(k)
-                        if slot is not None and slot.id in isolated_agg_slot_ids:
-                            refs_isolated = True
-                            break
-                if refs_isolated:
-                    outer_where_filter_ids.add(fp.id)
-                    outer_where_filters.append(fp)
+        outer_where_filter_ids: Set[str] = set(
+            planned_query.outer_where_filter_ids,
+        )
+        outer_where_filters: List = [
+            fp for fp in planned_query.filters_by_phase
+            if fp.id in outer_where_filter_ids
+        ]
         # DEV-1503 (Codex round 2 #1) — composite projection slots whose
         # value-key tree walks an ISOLATED cross-model aggregate must NOT
         # render in ``_base``. Inline rendering pulls the filter-target

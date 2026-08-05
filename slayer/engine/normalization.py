@@ -565,7 +565,45 @@ def normalize_query(
     # the model. Wiring is preserved so future activations need no
     # plumbing changes.
 
+    # Rule 4: MALFORMED_DATE_RANGE.
+    all_warnings.extend(_apply_malformed_date_range(query))
+
     return NormalizationResult(query=query, warnings=all_warnings)
+
+
+def _apply_malformed_date_range(
+    query: SlayerQuery,
+) -> List[NormalizationWarning]:
+    """Warn when a ``time_dimensions[i].date_range`` is present but is not the
+    two-element ``[start, end]`` the planner requires.
+
+    The planner's silent ``continue`` on such a range is deliberate and stays
+    exactly as it is — this rule changes NO behaviour, it only stops the drop
+    from being invisible. The trigger is the planner's own drop condition
+    (``date_range is not None and len(date_range) != 2``), so the warning fires
+    if and only if the range is actually ignored: ``[]``, one element, or three
+    or more. An absent ``date_range`` is legitimately optional and never warns.
+
+    Reports, but does not rewrite: there is no unambiguous canonical form to
+    rewrite a malformed range TO, and inventing one would change results.
+    """
+    emitted: List[NormalizationWarning] = []
+    for i, td in enumerate(query.time_dimensions or []):
+        date_range = getattr(td, "date_range", None)
+        if date_range is None or len(date_range) == 2:
+            continue
+        payload = NormalizationWarning(
+            rule_id="MALFORMED_DATE_RANGE",
+            original=f"time_dimensions[{i}].date_range={list(date_range)!r}",
+            normalized="(ignored — no date filter emitted)",
+            location=f"time_dimensions[{i}].date_range",
+            rule_doc_url="docs/agent_input_slack.md#malformed-date-range",
+        )
+        emitted.append(payload)
+        _warnings_module.warn(
+            SlayerNormalizationWarning(payload), stacklevel=2,
+        )
+    return emitted
 
 
 def _normalize_model_measures(

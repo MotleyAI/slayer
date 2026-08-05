@@ -454,6 +454,22 @@ class PlannedQuery(BaseModel):
     # equality-joined into ``_src`` (``_build_windowed_plans`` skips them), so
     # stripping a bound on one would leave that axis unconstrained.
     frame_bound_columns: List[ValueKey] = Field(default_factory=list)
+    # DEV-1745 (W3 / P-D) — ids of the AGGREGATE-phase filters that must be
+    # applied as a plain WHERE on the OUTER combined SELECT rather than as
+    # HAVING inside a ``_cm_*`` CTE (DEV-1503).
+    #
+    # A filtered-local ISOLATED aggregate lives in a CTE that LEFT JOINs back
+    # to ``_base``. Applying the comparison as HAVING inside that CTE drops CTE
+    # rows, but the LEFT JOIN then resurfaces the host row with a NULL
+    # aggregate — the wrong semantic. On the outer, non-aggregating SELECT the
+    # same comparison drops the row.
+    #
+    # Decided HERE because it is a routing decision, not an emission detail:
+    # the generator used to re-walk ``filters_by_phase`` at render time to
+    # rediscover it, which is policy chosen during emission. The generator now
+    # reads this field and never re-derives it, so clearing the field removes
+    # the outer WHERE.
+    outer_where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
 
 
 # ``CrossModelAggregatePlan.rerooted_plan`` is a forward reference to

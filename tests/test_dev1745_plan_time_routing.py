@@ -131,14 +131,26 @@ class TestGeneratorConsumesThePlanVerbatim:
             validate=False, extra_models=[_customers()],
         )
 
+    # The predicate applied to the JOINED-BACK ``_cm_`` column on the outer,
+    # non-aggregating SELECT — the shape this routing exists to produce, and
+    # one nothing else in the query emits.
+    OUTER_WHERE = 'WHERE _cm_orders__eu_amount_sum."orders.eu" > 100'
+
     async def test_outer_where_is_emitted_for_the_isolated_shape(self) -> None:
         sql = await self._sql(_outer_where_query())
-        assert "> 100" in sql, sql
+        assert self.OUTER_WHERE in sql, sql
 
     async def test_clearing_the_plan_field_removes_the_outer_where(self) -> None:
         """P-D: the plan is authoritative. A generator that re-walks the
         filters at render time would ignore the cleared field and keep
-        emitting the predicate."""
+        emitting the outer WHERE.
+
+        Asserted on the outer WHERE specifically rather than on the predicate
+        text appearing anywhere: clearing the routing does not delete the
+        user's filter, it returns it to the default HAVING placement. Demanding
+        that ``> 100`` vanish from the whole query would be demanding that a
+        filter be silently dropped.
+        """
         from slayer.sql.generator import SQLGenerator
 
         planned = plan_query(query=_outer_where_query(), bundle=_bundle())
@@ -149,7 +161,7 @@ class TestGeneratorConsumesThePlanVerbatim:
         cleared = planned.model_copy(update={"outer_where_filter_ids": []})
         gen = SQLGenerator(dialect="postgres")
         sql = gen.generate_from_planned(planned_query=cleared, bundle=_bundle())
-        assert "> 100" not in sql, (
+        assert self.OUTER_WHERE not in sql, (
             "the generator re-derived the outer-WHERE routing instead of "
             f"consuming the plan:\n{sql}"
         )

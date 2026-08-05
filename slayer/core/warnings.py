@@ -17,12 +17,24 @@ pulling in engine code.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
 
-class NormalizationWarning(BaseModel):
+class SlayerWarning(BaseModel):
+    """Base of the warning family carried on ``SlayerResponse.warnings``.
+
+    ``SlayerResponse.warnings`` used to be normalization-only, so consumers
+    could assume every element had a ``rule_id``. It now carries more than one
+    kind of advisory, so every payload declares a ``kind`` discriminator and a
+    consumer switches on it rather than on the presence of a field.
+    """
+
+    kind: str
+
+
+class NormalizationWarning(SlayerWarning):
     """Structured payload describing one slack-normalization rewrite.
 
     ``rule_id`` identifies the rule that fired (``FUNC_STYLE_AGG``,
@@ -32,11 +44,26 @@ class NormalizationWarning(BaseModel):
     into ``docs/agent_input_slack.md``.
     """
 
+    kind: Literal["normalization"] = "normalization"
     rule_id: str
     original: str
     normalized: str
     location: str
     rule_doc_url: Optional[str] = None
+
+
+class DroppedFilterWarning(SlayerWarning):
+    """A user filter that could not be applied where it was routed.
+
+    Carries the filter's ORIGINAL author text (not the normalized, prequoted
+    or re-rendered form — the author has to recognise it), the surface it came
+    from, and why it was dropped.
+    """
+
+    kind: Literal["unreachable_filter_dropped"] = "unreachable_filter_dropped"
+    filter_text: str
+    location: str
+    reason: str
 
 
 class SlayerNormalizationWarning(UserWarning):

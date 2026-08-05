@@ -83,6 +83,7 @@ from slayer.engine.measure_expansion import expand_model_measures
 from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.engine.planned import (
     BoundExpr as PlannedBoundExpr,
+    BoundFilterId,
     FilterPhase,
     OrderEntry,
     PlannedQuery,
@@ -1480,6 +1481,16 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             wp.where_filter_ids = src_where_ids
             wp.src_filter_rewrites = src_rewrites
 
+    # DEV-1745 (W3 / P-D) — decide the outer-WHERE routing HERE, where the
+    # cross-model plans (and so ``cte_root_model``) are already known. The
+    # generator used to rediscover this by re-walking the filters at render
+    # time; it now consumes the field.
+    outer_where_filter_ids = _plan_outer_where_filters(
+        filters_by_phase=filters_by_phase,
+        cross_model_plans=cross_model_plans,
+        slots=[*row_slots, *agg_slots, *combined_slots],
+    )
+
     return PlannedQuery(
         source_relation=source_relation,
         row_slots=row_slots,
@@ -1498,7 +1509,45 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         render_source_model=render_source_model,
         distinct_dimension_values=query.distinct_dimension_values,
         frame_bound_columns=frame_bound_columns,
+        outer_where_filter_ids=outer_where_filter_ids,
     )
+
+
+def _plan_outer_where_filters(
+    *, filters_by_phase: list, cross_model_plans: list, slots: list,
+) -> List[BoundFilterId]:
+    """AGGREGATE-phase filters that must be applied on the OUTER combined
+    SELECT instead of as HAVING inside a ``_cm_*`` CTE (DEV-1503).
+
+    A filter qualifies when its value-key tree references an aggregate that was
+    isolated into a CTE with its own root (``cte_root_model is not None``).
+    That CTE LEFT JOINs back to ``_base``, so a HAVING inside it drops CTE rows
+    and the join then resurfaces the host row carrying a NULL aggregate. The
+    same predicate on the outer, non-aggregating SELECT drops the row.
+
+    Returned in ``filters_by_phase`` order so the emitted WHERE conjunct order
+    is stable.
+    """
+    isolated_agg_slot_ids = {
+        p.aggregate_slot_id
+        for p in cross_model_plans
+        if p.cte_root_model is not None
+    }
+    if not isolated_agg_slot_ids:
+        return []
+    slot_by_key = {s.key: s for s in slots}
+    routed: List[BoundFilterId] = []
+    for fp in filters_by_phase:
+        if fp.phase != Phase.AGGREGATE or fp.expression is None:
+            continue
+        for k in walk_value_keys(fp.expression.value_key):
+            if not isinstance(k, AggregateKey):
+                continue
+            slot = slot_by_key.get(k)
+            if slot is not None and slot.id in isolated_agg_slot_ids:
+                routed.append(fp.id)
+                break
+    return routed
 
 
 def _frame_bound_columns(*, row_slots: list) -> List[ValueKey]:
