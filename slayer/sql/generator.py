@@ -553,6 +553,28 @@ def _cte_name_from_alias(prefix: str, alias: str) -> str:
     return prefix + sanitized
 
 
+def _cm_plan_identity(*, source_relation: str, plan, agg_slot) -> tuple:
+    """The dedup identity for a cross-model CTE.
+
+    Structural, never the sanitised name string: the canonical alias omits the
+    aggregate's column filter, and the name is doubly lossy, so either would
+    merge plans that must render separately.
+
+    The reroot shape is part of the identity because the two render paths
+    produce DIFFERENT join-back pairs and a different aggregate column alias —
+    forward uses the canonical alias, rerooted uses the sub-plan's. Sharing a
+    CTE across them would join at the wrong grain or read the wrong column.
+    The planner interns each key to one slot and emits one plan per slot, so
+    two plans cannot collide here today; keeping the shape in the identity
+    means a future planner change cannot make that silently wrong.
+    """
+    return (
+        source_relation,
+        agg_slot.key,
+        plan.rerooted_plan is not None,
+    )
+
+
 def _effective_src_filters(*, planned_query, plan) -> list:
     """``planned_query.filters_by_phase`` as the windowed ``_src`` scope sees it
     (DEV-1732): frame-bound residuals substituted for the host's predicates.
@@ -4609,7 +4631,9 @@ class SQLGenerator:
                 key=agg_slot.key,
             )
             canonical_alias_for_plan[plan.aggregate_slot_id] = canonical_alias
-            identity = (source_relation, agg_slot.key)
+            identity = _cm_plan_identity(
+                source_relation=source_relation, plan=plan, agg_slot=agg_slot,
+            )
             existing = cm_cte_name_by_identity.get(identity)
             if existing is not None:
                 # Same aggregate under another public name: share the one CTE,

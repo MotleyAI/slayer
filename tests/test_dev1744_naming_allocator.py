@@ -1179,3 +1179,62 @@ class TestProductionCallersDelegate:
             "IGNORED_TEXT", bound=BoundExpr(value_key=key),
         )
         assert calls[-1].get("profile") == "stage_formula"
+
+
+class TestCrossModelDedupIdentity:
+    """What makes two cross-model plans "the same CTE".
+
+    The identity is structural — never the sanitised name — because the
+    canonical alias omits the aggregate's column filter and the name is doubly
+    lossy, so either would merge plans that must render separately.
+
+    It also carries the RENDER SHAPE. The forward and rerooted paths produce
+    different join-back pairs and a different aggregate column alias (forward
+    uses the canonical alias; rerooted uses the sub-plan's), so sharing one CTE
+    across them would join at the wrong grain or read the wrong column. The
+    planner interns each key to one slot and emits one plan per slot, so two
+    plans cannot collide here today — these tests keep that from becoming
+    silently wrong if that ever changes.
+    """
+
+    def _identity(self, *, rerooted, key=None):
+        from types import SimpleNamespace
+
+        from slayer.sql.generator import _cm_plan_identity
+
+        key = key or AggregateKey(
+            source=ColumnKey(path=("customers",), leaf="revenue"), agg="sum",
+        )
+        return _cm_plan_identity(
+            source_relation="orders",
+            plan=SimpleNamespace(rerooted_plan=object() if rerooted else None),
+            agg_slot=SimpleNamespace(key=key),
+        )
+
+    def test_forward_and_rerooted_are_different_identities(self) -> None:
+        assert self._identity(rerooted=False) != self._identity(rerooted=True)
+
+    def test_same_key_same_shape_shares_one_identity(self) -> None:
+        """The C13 intent the dedup exists to serve: the same aggregate under
+        two public names is still ONE CTE."""
+        assert self._identity(rerooted=False) == self._identity(rerooted=False)
+
+    def test_filtered_and_unfiltered_are_different_identities(self) -> None:
+        """The reason the identity is the typed key and not the alias: these
+        two produce the SAME canonical alias."""
+        from slayer.core.keys import SqlExprKey
+
+        source = ColumnKey(path=("customers",), leaf="revenue")
+        plain = AggregateKey(source=source, agg="sum")
+        filtered = AggregateKey(
+            source=source, agg="sum",
+            column_filter_key=SqlExprKey(canonical_sql="region_id = 1"),
+        )
+        assert self._identity(rerooted=False, key=plain) != self._identity(
+            rerooted=False, key=filtered,
+        )
+
+    def test_identity_is_hashable(self) -> None:
+        """It is used as a dict key, so an unhashable member would surface as a
+        TypeError mid-render rather than at import."""
+        assert len({self._identity(rerooted=False), self._identity(rerooted=True)}) == 2

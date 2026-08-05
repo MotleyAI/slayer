@@ -7,7 +7,7 @@ SLayer has two distinct expression layers and the rules for what each one accept
 | Mode | Fields | Parser | Accepts | Rejects |
 |---|---|---|---|---|
 | **A — SQL** | `Column.sql`, `Column.filter`, each entry of `SlayerModel.filters` | sqlglot | Any valid SQL expression for the underlying dialect — function calls (`json_extract`, `coalesce`, `nullif`, `lower`, `length`, …), arithmetic, `CASE WHEN`, string literals, comparison and boolean operators in SQL spelling (`=`, `<>`, `IS NULL`, `AND`, `OR`, `NOT`, `IN`, `LIKE`). Bare names and `__`-delimited join paths. | Aggregation colon syntax (`revenue:sum`); SLayer transform calls (`cumsum`, `change`, `rank`, …); references to `ModelMeasure` formulas; raw `OVER (...)` window functions inside `Column.filter` / `SlayerModel.filters` (allowed only in `Column.sql`). |
-| **B — DSL** | `ModelMeasure.formula`, `SlayerQuery.measures`, `SlayerQuery.filters`, `SlayerQuery.dimensions`, `SlayerQuery.time_dimensions`, `SlayerQuery.order`, `SlayerQuery.main_time_dimension` | Python AST formula parser | Bare names that resolve to a `Column` or `ModelMeasure` on the model; single-dot dotted paths through joins (`customers.regions.name`, `customers.revenue:sum`); aggregation colon syntax (`<col>:<agg>`, `*:count`, parametric forms); transform calls (`cumsum(revenue:sum)`, `rank(revenue:sum, partition_by=region)`); arithmetic / boolean / comparison operators; the SQL `\|\|` concat operator (folded into `concat(...)`); pattern matching via the `like(value, pattern)` scalar (emits the SQL `LIKE` operator — wrap in `not (...)` for `NOT LIKE`); a small allowlist of lowercase string-hygiene scalars in `SlayerQuery.filters` only — `lower`, `upper`, `trim`, `replace`, `substr`, `instr`, `length`, `concat`, `like`; `{variable}` placeholders (filters only). | `__`-delimited tokens in user input; raw SQL function calls outside the string-hygiene allowlist (`json_extract`, `coalesce`, …); raw `OVER (...)`; bare names that don't resolve to a Column / ModelMeasure / custom aggregation / query alias; **uppercase** spellings of the string-hygiene functions (`LOWER`, `TRIM`, …) — DSL is case-sensitive. |
+| **B — DSL** | `ModelMeasure.formula`, `SlayerQuery.measures`, `SlayerQuery.filters`, `SlayerQuery.dimensions`, `SlayerQuery.time_dimensions`, `SlayerQuery.order`, `SlayerQuery.main_time_dimension` | Python AST formula parser | Bare names that resolve to a `Column` or `ModelMeasure` on the model; single-dot dotted paths through joins (`customers.regions.name`, `customers.revenue:sum`); aggregation colon syntax (`<col>:<agg>`, `*:count`, parametric forms); transform calls (`cumsum(revenue:sum)`, `rank(revenue:sum, partition_by=region)`); arithmetic / boolean / comparison operators; the SQL `\|\|` concat operator (folded into `concat(...)`); pattern matching via the `like(value, pattern)` scalar (emits the SQL `LIKE` operator — wrap in `not (...)` for `NOT LIKE`); a closed allowlist of lowercase scalar functions — null handling (`nullif`, `coalesce`, `ifnull`), math (`ln`, `log10`, `log2`, `log`, `exp`, `sqrt`, `pow`, `power`, `abs`, `floor`, `ceil`, `round`), string hygiene (`lower`, `upper`, `trim`, `replace`, `substr`, `instr`, `length`, `concat`) and `like`, each with a fixed argument count that is validated; `{variable}` placeholders (filters only). | `__`-delimited tokens in user input; raw SQL function calls outside that allowlist (`json_extract`, `date_trunc`, …), and any allowlisted call with the wrong number of arguments; raw `OVER (...)`; bare names that don't resolve to a Column / ModelMeasure / custom aggregation / query alias; **uppercase** spellings of the allowlisted functions (`LOWER`, `TRIM`, …) — DSL is case-sensitive; `NULL` inside an `in` / `not in` list (use `is null` / `is not null` instead — see below). |
 
 ## Identifier resolution
 
@@ -137,6 +137,25 @@ Two consequences worth knowing:
 
 * **`log10` / `log2` keep their single-argument form** on the backends that
   provide one, rather than becoming the generic two-argument `LOG(base, x)`.
+
+* **Argument counts are validated.** Each allowlisted scalar has a fixed arity
+  (`round` takes 1 or 2, `substr` 2 or 3, `replace` exactly 3; `coalesce` and
+  `concat` are variadic). A call with the wrong number is rejected with a
+  message naming the function, rather than being silently truncated or passed
+  through to fail at the database.
+
+## `NULL` inside an `in` list
+
+`NULL` is rejected inside an `in` / `not in` list. SQL compares it by
+three-valued logic, so `status in ('a', None)` never matches on the null, and
+`status not in ('a', None)` matches **no rows at all** — the filter silently
+returns an empty result instead of "everything except 'a'".
+
+Test for null separately:
+
+```json
+{"filters": ["status not in ('new', 'old')", "status is not null"]}
+```
 
 ## See also
 
