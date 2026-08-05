@@ -874,6 +874,47 @@ class TestB5ScalarCallPolicy:
         assert "LENGTH" not in out.upper(), out
 
 
+class TestLogAliasPolicyIsShared:
+    """The log-alias rule lives in ONE place.
+
+    The generator had its own copy of exactly this rule — same ``exp.Log``
+    guard, same literal-base checks, same ``Anonymous`` output. Two copies of a
+    policy the module docstring calls load-bearing is the drift this PR exists
+    to remove, so the generator delegates and these tests pin that it still
+    agrees with the shared implementation.
+    """
+
+    @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "tsql", "bigquery"])
+    def test_generator_delegates_to_the_shared_policy(self, dialect) -> None:
+        from slayer.sql.generator import SQLGenerator
+        from slayer.sql.render.value_expr import rewrite_log_alias
+
+        gen = SQLGenerator(dialect=dialect)
+        node = exp.Log(
+            this=exp.Literal.number("10"), expression=exp.column("x"),
+        )
+        via_generator = gen._rewrite_log_aliases(node.copy())
+        via_shared = rewrite_log_alias(node.copy(), dialect=gen._dialect)
+        assert via_generator.sql(dialect=dialect) == via_shared.sql(dialect=dialect)
+
+    def test_generator_parse_path_still_emits_native_log10(self) -> None:
+        """Behavioural companion: the delegation must not lose the rewrite that
+        the generator applies over parsed trees."""
+        from slayer.sql.generator import SQLGenerator
+
+        gen = SQLGenerator(dialect="postgres")
+        out = gen._parse("log10(x)").sql(dialect="postgres")
+        assert out.upper().startswith("LOG10("), out
+
+    def test_non_log_nodes_pass_through_untouched(self) -> None:
+        from slayer.sql.render.value_expr import rewrite_log_alias
+
+        from slayer.sql.dialects import get_dialect
+
+        node = exp.column("x")
+        assert rewrite_log_alias(node, dialect=get_dialect("postgres")) is node
+
+
 class TestPGSameConstructSameSql:
     """P-G proper: a given ValueKey renders identically wherever it appears.
 
@@ -1004,6 +1045,18 @@ class TestAggregationRegistry:
 
         assert window_agg_class("sum") is exp.Sum
         assert window_agg_class("avg") is exp.Avg
+
+    def test_registry_and_builtins_agree_both_ways(self) -> None:
+        """The import-time invariant, asserted in both directions.
+
+        A missing built-in would fall through to the custom-formula path. A
+        registry key that is NOT a built-in — a typo such as ``sumn`` — is the
+        subtler half: ``is_builtin_agg`` would accept it and route it AWAY from
+        that path, so the typo would render as if it were a real aggregation.
+        """
+        from slayer.sql.render.aggregates import AGG_REGISTRY
+
+        assert set(AGG_REGISTRY) == set(BUILTIN_AGGREGATIONS)
 
     def test_non_windowable_aggregation_fails_closed(self) -> None:
         """The generator's windowed path currently reads

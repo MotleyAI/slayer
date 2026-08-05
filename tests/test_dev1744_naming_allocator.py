@@ -116,14 +116,14 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
     )
     cur.execute(
         "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, "
-        "status TEXT, amount REAL)"
+        "status TEXT, amount REAL, created_at TEXT)"
     )
     cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?)",
+        "INSERT INTO orders VALUES (?,?,?,?,?)",
         [
-            (1, 1, "a", 10.0),
-            (2, 2, "a", 20.0),
-            (3, 3, "a", 30.0),
+            (1, 1, "a", 10.0, "2024-01-01"),
+            (2, 2, "a", 20.0, "2024-02-01"),
+            (3, 3, "a", 30.0, "2024-03-01"),
         ],
     )
     con.commit()
@@ -153,11 +153,13 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
             name="orders",
             sql_table="orders",
             data_source="prod",
+            default_time_dimension="created_at",
             columns=[
                 Column(name="id", type=DataType.INT, primary_key=True),
                 Column(name="customer_id", type=DataType.INT),
                 Column(name="status", type=DataType.TEXT),
                 Column(name="amount", type=DataType.DOUBLE),
+                Column(name="created_at", type=DataType.TIMESTAMP),
                 # __ in a Column.name (keep-list carve-out) + a join-crossing
                 # filter => filtered-local isolation => a _cm_ CTE.
                 Column(
@@ -383,6 +385,63 @@ class TestCrossModelCteNameAllocation:
         # equal values would mean both read the same CTE column.
         assert row["orders.customers.revenue_sum"] != row["orders.customers.Rev_sum"]
 
+    async def test_hidden_cross_model_agg_under_a_transform_keeps_its_alias(
+        self, engine,
+    ) -> None:
+        """A HIDDEN cross-model aggregate feeding a transform layer must
+        project under ITS OWN canonical alias.
+
+        This is the ONE shape that reaches the canonical-alias fallback in
+        ``_public_aliases_for_cross_model_agg``. The projection loop trims a
+        hidden aggregate only when there is no transform chain
+        (``plan.hidden and not transform_layers``); with a chain the hidden
+        aggregate stays projected so the step CTE can consume it, and — having
+        no user-declared name — its ``public_aliases`` is empty, so the alias
+        falls back to the plan's canonical one.
+
+        Reading a stale value there emits
+        ``_cm_..._revenue_sum."orders.customers.revenue_sum" AS
+        "orders.customers.revx_sum"``: the hidden aggregate is projected under
+        the OTHER measure's name, that alias appears twice in one SELECT, and
+        the step CTE binds the wrong column. Asserted as "no output alias is
+        emitted twice", which is what actually breaks.
+        """
+        from collections import Counter
+        from slayer.core.enums import TimeGranularity
+        from slayer.core.query import TimeDimension
+
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                time_dimensions=[
+                    TimeDimension(
+                        dimension=ColumnRef(name="created_at"),
+                        granularity=TimeGranularity.MONTH,
+                    ),
+                ],
+                measures=[
+                    # Hidden CMA (customers.revenue:sum) feeding a transform.
+                    ModelMeasure(
+                        formula="cumsum(customers.revenue:sum)", name="run",
+                    ),
+                    # A second cross-model aggregate, so a leaked alias differs
+                    # from the correct one.
+                    ModelMeasure(formula="customers.Rev:sum", name="rv"),
+                ],
+            ),
+            dry_run=True,
+        )
+        assert resp.sql is not None
+        alias_counts = Counter(re.findall(r'AS "([^"]+)"', resp.sql))
+        duplicated = {a: n for a, n in alias_counts.items() if n > 1}
+        assert not duplicated, (
+            f"an output alias is emitted more than once — a cross-model "
+            f"aggregate was projected under another measure's name: "
+            f"{duplicated}\n{resp.sql}"
+        )
+        # …and the hidden aggregate still carries its own canonical alias.
+        assert "orders.customers.revenue_sum" in alias_counts, alias_counts
+
     async def test_same_key_slots_still_share_one_cte(self, engine) -> None:
         """Parity guard for the C13 intent the buggy dedup was meant to serve:
         two measures that are the SAME aggregate under different public names
@@ -518,6 +577,45 @@ class TestAllocatorRouting:
         b = naming.cte_name_from_alias("_cm_", "orders.rev_sum", allocator=alloc)
         assert a == "_cm_orders__Rev_sum"
         assert b == "_cm_orders__rev_sum"
+
+    async def test_windowed_cte_names_use_the_shared_helper(
+        self, tmp_path_factory,
+    ) -> None:
+        """``_wm_`` names go through the same sanitise-and-allocate primitive as
+        ``_cm_``, so both CTE families behave identically under a case-only
+        collision rather than one being retrofitted and the other not.
+
+        Two windowed measures over case-only column variants would otherwise
+        emit two names that fold together on a folding dialect — the exact
+        shape that broke ``_cm_``.
+        """
+        from slayer.core.enums import TimeGranularity
+        from slayer.core.query import TimeDimension
+
+        engine = await _hostile_engine(
+            column="revx2", base_dir=str(tmp_path_factory.mktemp("wm")),
+        )
+        resp = await engine.execute(
+            SlayerQuery(
+                source_model="orders",
+                time_dimensions=[
+                    TimeDimension(
+                        dimension=ColumnRef(name="created_at"),
+                        granularity=TimeGranularity.MONTH,
+                    ),
+                ],
+                measures=[
+                    ModelMeasure(formula="amount:sum(window='90d')", name="Wm"),
+                    ModelMeasure(formula="amount:sum(window='30d')", name="wm"),
+                ],
+            ),
+            dry_run=True,
+        )
+        for scope_names in _cte_names_by_scope(resp.sql):
+            folded = [n.lower() for n in scope_names]
+            assert len(folded) == len(set(folded)), scope_names
+        wm_names = [n for n in _cte_names(resp.sql) if n.startswith("_wm_")]
+        assert len(wm_names) == 2, wm_names
 
     def test_no_raw_step_cte_names_in_the_generator(self) -> None:
         """P-F, checked structurally because it has no reachable behavioural
