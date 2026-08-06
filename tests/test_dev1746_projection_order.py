@@ -39,6 +39,7 @@ recompare churn list (Codex D6).
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from typing import AsyncIterator, List
 
@@ -69,7 +70,11 @@ from tests._dev1746_fixtures import (
     outer_select_aliases,
     seed_dev1746_sqlite,
 )
-from tests._engine_helpers import _engine_generate, _join_aliases
+from tests._engine_helpers import (
+    _engine_generate,
+    _extract_cte_body,
+    _join_aliases,
+)
 
 
 def _chain_bundle() -> ResolvedSourceBundle:
@@ -251,12 +256,22 @@ class TestB7DeclarationOrderProjection:
     ) -> None:
         """A slot can be publicly projected AND consumed as a transform input.
 
-        ``amount:sum`` is selected as ``total`` and is also what ``cumsum``
-        operates on — one key, so one slot, reached by both. The combined SELECT
-        carries hidden transform inputs as well as public columns, so this is the
-        shape where the two could disagree about how many columns the slot
-        renders. It must emit the slot ONCE for its one declared name, and must
-        not trip the leftover-column guard.
+        This is the shape where the projection's occurrence count and the slot's
+        rendered columns could disagree, which is what the combined SELECT's
+        leftover guard exists to catch.
+
+        Three things have to line up for the test to mean anything, so each is
+        asserted rather than assumed:
+
+        * the measure and the transform's operand must be ONE slot (same key →
+          same slot), otherwise there is no slot reached by both paths;
+        * the query must take the CROSS-MODEL path, because the guard lives in
+          the combined-SELECT builder — a purely local transform never reaches
+          it;
+        * the assertion must be on the COMBINED select (which becomes the
+          transform chain's ``base`` CTE), because a leftover column appended
+          there would be trimmed by the outer wrap and never show up in the
+          outermost SELECT.
         """
         query = SlayerQuery(
             source_model="orders_x",
@@ -265,17 +280,64 @@ class TestB7DeclarationOrderProjection:
                 granularity=TimeGranularity.MONTH,
             )],
             measures=[
-                ModelMeasure(formula="amount:sum", name="total"),
-                ModelMeasure(formula="cumsum(amount:sum)", name="running"),
+                ModelMeasure(
+                    formula="customers_v2.lifetime_value:sum", name="ltv",
+                ),
+                ModelMeasure(
+                    formula="cumsum(customers_v2.lifetime_value:sum)",
+                    name="running",
+                ),
             ],
         )
+        planned = plan_query(query=query, bundle=_chain_bundle())
+
+        # (1) One slot, reached by both.
+        slots = {s.id: s for s in _all_slots(planned)}
+        ltv_sid = next(
+            sid for sid in planned.projection
+            if slots[sid].public_name == "ltv"
+        )
+        running_sid = next(
+            sid for sid in planned.projection
+            if slots[sid].public_name == "running"
+        )
+        operand_key = slots[running_sid].key.input
+        operand_sid = next(
+            (sid for sid, s in slots.items() if s.key == operand_key), None,
+        )
+        assert operand_sid == ltv_sid, (
+            f"precondition: the transform's operand must be the SAME slot as "
+            f"the projected measure, or this shape does not exercise the "
+            f"guard. operand={operand_sid} projected={ltv_sid}"
+        )
+
+        # (2) The cross-model path — the guard lives in that builder.
+        assert planned.cross_model_aggregate_plans, (
+            "precondition: this query must take the cross-model path"
+        )
+        assert planned.transform_layers, (
+            "precondition: this query must carry a transform chain"
+        )
+
         sql = await _gen(query, dialect="postgres")
+
+        # (3) The combined SELECT — the transform chain's ``base`` CTE.
+        # ``\bbase`` and not ``base``: the latter also matches the host ``_base``
+        # CTE, which is a different scope and carries none of these columns.
+        base_body = _extract_cte_body(sql, r"\bbase")
+        base_aliases = _alias_suffixes(re.findall(r'AS "([^"]+)"', base_body))
+        assert base_aliases.count("ltv") == 1, (
+            f"the combined SELECT carries {base_aliases.count('ltv')} columns "
+            f"for the shared slot; a leftover would be appended here and then "
+            f"trimmed by the outer wrap, invisible from the outermost SELECT.\n"
+            f"{base_body}"
+        )
+
         emitted = _alias_suffixes(outer_select_aliases(sql))
-        assert emitted == ["created_at", "total", "running"], (
+        assert emitted == ["created_at", "ltv", "running"], (
             f"expected each declared name once, in declaration order: "
             f"{emitted}\n\n{sql}"
         )
-        assert emitted.count("total") == 1, emitted
 
     async def test_hidden_slots_are_absent_from_the_projection(self) -> None:
         """Unified trimming: an order-only aggregate never reaches the public

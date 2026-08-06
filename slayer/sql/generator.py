@@ -960,10 +960,17 @@ class SQLGenerator:
         owner_of: Dict[str, str] = {}
         for sid, aliases in aliases_by_slot_id.items():
             for alias in aliases:
-                if alias in owner_of:
+                owner = owner_of.get(alias)
+                if owner == sid:
                     raise ValueError(
-                        f"slots {owner_of[alias]!r} and {sid!r} both render the "
-                        f"alias {alias!r}; an inner stage cannot carry the same "
+                        f"slot {sid!r} renders the alias {alias!r} more than "
+                        f"once; an inner stage cannot carry the same output "
+                        f"name twice",
+                    )
+                if owner is not None:
+                    raise ValueError(
+                        f"slots {owner!r} and {sid!r} both render the alias "
+                        f"{alias!r}; an inner stage cannot carry the same "
                         f"output name twice",
                     )
                 owner_of[alias] = sid
