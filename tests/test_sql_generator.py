@@ -9816,7 +9816,7 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "Loss_Payment" not in base_body
         assert "Loss_Reserve" not in base_body
         # ORDER BY must use the bare combined alias, NOT _base."<alias>".
-        order_match = _re.search(r"ORDER BY[^\n]+", sql)
+        order_match = _re.search(r"ORDER BY\s+[^\n]+", sql)
         assert order_match, f"Expected ORDER BY in:\n{sql}"
         order_clause = order_match.group(0)
         assert "total_loss" in order_clause, (

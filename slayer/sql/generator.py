@@ -56,6 +56,7 @@ from slayer.sql.naming import (
     result_key_from_alias,
 )
 from slayer.sql.render.aggregates import window_agg_class
+from slayer.sql.render.cte_assembly import CteEntry, assemble_with_chain
 from slayer.sql.render.joins import (
     build_grain_joinback_condition,
     grain_alias_column,
@@ -915,6 +916,23 @@ class SQLGenerator:
         ``"name"``), so those emissions are unchanged.
         """
         return exp.to_identifier(name, quoted=True).sql(dialect=self.dialect)
+
+    def _parse_cte_body(self, sql: str) -> exp.Expression:
+        """Parse a rendered CTE body back into AST for the WITH assembler.
+
+        The deliberate seam. The CTE renderers still return SQL text, and one of
+        them (the re-rooted cross-model CTE) returns a COMPLETE ``WITH … SELECT``
+        statement produced by a nested ``generate_from_planned`` — threading AST
+        out through that whole pipeline is a larger change than this PR takes on.
+        Parsing once here keeps the assembly between scopes on AST, which is
+        what the doctrine is about; the alternative was splicing statement text
+        into an f-string, which is what it replaced.
+
+        ``sqlglot.parse_one`` rather than :meth:`_parse`: this text is our own
+        freshly-emitted output, so it needs no prequoting or derived-ref
+        expansion — only structure.
+        """
+        return sqlglot.parse_one(sql, dialect=self.dialect)
 
     def _null_safe_join_pair_sql(self, *, left_sql: str, right_sql: str) -> str:
         """Render one dialect-aware null-safe equality (DEV-1708 / Codex F2) for
@@ -4148,7 +4166,11 @@ class SQLGenerator:
         for ga in grain_aliases:
             outer = outer.group_by(_base_col(ga))
 
-        return outer.sql(dialect=self.dialect, pretty=True), grain_aliases
+        # Returned as AST: the caller assembles the WITH chain structurally.
+        # Rendering here and re-parsing later would re-introduce the very
+        # corruption B2 removed — a dotted public alias round-trips through
+        # text as a multi-part reference on BigQuery.
+        return outer, grain_aliases
 
     def _render_with_cross_model_plans(  # NOSONAR(S3776) — orchestration of host ``_base`` CTE + per-plan ``_cm_*`` CTEs + combined SELECT + transform-chain step CTEs + outer ORDER BY/LIMIT wrap. Each block is a coherent compilation stage sharing planned_query / slots_by_id / cma_slot_ids / seen_base_ids state; extracting per-stage helpers would scatter the cross-cutting state.
         self,
@@ -4560,7 +4582,8 @@ class SQLGenerator:
             if base_having is not None:
                 base_select = base_select.having(base_having)
 
-        base_cte_sql = base_select.sql(dialect=self.dialect, pretty=True)
+        # ``base_select`` stays AST: the WITH assembler takes the query
+        # structurally, and the transform-chain branch renders it on demand.
 
         # Per-plan ``_cm_*`` CTEs. The CTE name and projection use the
         # CANONICAL aggregate alias (path + canonical_agg_name); user-
@@ -4633,7 +4656,7 @@ class SQLGenerator:
             if plan.rerooted_plan is not None:
                 # C1: nested re-rooted PlannedQuery rooted at the target,
                 # preserving host dimension grain.
-                cte_sql, joinback_pairs, agg_col_alias = (
+                rerooted_sql, joinback_pairs, agg_col_alias = (
                     self._render_rerooted_cross_model_cte(
                         plan=plan,
                         bundle=bundle,
@@ -4641,8 +4664,12 @@ class SQLGenerator:
                         host_source_relation=source_relation,
                     )
                 )
+                # The ONE parse seam: this branch renders a complete nested
+                # ``WITH … SELECT`` through ``generate_from_planned``, so it
+                # arrives as text. Everything else in the chain is already AST.
+                cte_query = self._parse_cte_body(rerooted_sql)
             else:
-                cte_sql, shared_grain_aliases = self._render_cross_model_cte(
+                cte_query, shared_grain_aliases = self._render_cross_model_cte(
                     plan=plan,
                     agg_slot=agg_slot,
                     full_agg_alias=canonical_alias,
@@ -4654,7 +4681,7 @@ class SQLGenerator:
                 # Forward path: host alias == cte alias; agg under canonical.
                 joinback_pairs = [(a, a) for a in shared_grain_aliases]
                 agg_col_alias = canonical_alias
-            cm_ctes.append((cte_name, cte_sql))
+            cm_ctes.append((cte_name, cte_query))
             joinback_pairs_for_plan[plan.aggregate_slot_id] = joinback_pairs
             agg_col_alias_for_plan[plan.aggregate_slot_id] = agg_col_alias
             joinback_pairs_for_identity[identity] = joinback_pairs
@@ -4687,13 +4714,13 @@ class SQLGenerator:
             cte_name = cte_name_from_alias(
                 "_wm_", full_agg_alias, allocator=wm_allocator,
             )
-            cte_sql, grain_aliases = self._render_window_measure_cte_from_planned(
+            cte_query, grain_aliases = self._render_window_measure_cte_from_planned(
                 plan=plan, agg_slot=agg_slot, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
                 planned_query=planned_query, slots_by_id=slots_by_id,
                 aliases_by_slot_id=aliases_by_slot_id, full_agg_alias=full_agg_alias,
             )
-            wm_ctes.append((cte_name, cte_sql))
+            wm_ctes.append((cte_name, cte_query))
             wm_cte_name_for_plan[plan.aggregate_slot_id] = cte_name
             wm_agg_col_for_plan[plan.aggregate_slot_id] = full_agg_alias
             wm_joinback_pairs_for_plan[plan.aggregate_slot_id] = [
@@ -4710,11 +4737,19 @@ class SQLGenerator:
         # Build the combined SELECT: SELECT _base.<all_local>,
         # _cm_*.<canonical> [AS "<user_alias>"] FROM _base [LEFT JOIN |
         # CROSS JOIN] _cm_* [ON ...].
-        combined_parts: List[str] = []
+        # Projection expressions per slot, emitted below in the PLAN's declared
+        # order (B7). Collecting per slot first is what allows one ordered pass:
+        # the host, outer-composite, cross-model and windowed sides each know how
+        # to render their own columns, but none of them knows where those columns
+        # belong relative to the others — only ``planned_query.projection`` does.
+        proj_exprs: Dict[str, List[exp.Expression]] = {}
         # ``combined_aliases_by_slot_id`` records the output column alias each
         # slot surfaces in the combined SELECT — the input the transform chain
         # (when present) binds against (the combined result is its base CTE).
         combined_aliases_by_slot_id: Dict[str, List[str]] = {}
+
+        def _emit(sid: str, expr: exp.Expression) -> None:
+            proj_exprs.setdefault(sid, []).append(expr)
         # Host-side projection: every slot in base_projection surfaces
         # its picked alias(es). Multi-alias slots emit one entry per
         # alias (C13). With a transform chain on top, the combined SELECT is
@@ -4729,7 +4764,7 @@ class SQLGenerator:
         for sid in host_combined_ids:
             aliases = aliases_by_slot_id.get(sid, [])
             for full_alias in aliases:
-                combined_parts.append(f'_base.{self._quote_ident(full_alias)}')
+                _emit(sid, grain_alias_column(alias=full_alias, table="_base"))
             if aliases:
                 combined_aliases_by_slot_id[sid] = list(aliases)
         # DEV-1503 (Codex round 2 #1) — composite slots routed to the outer
@@ -4739,7 +4774,7 @@ class SQLGenerator:
         # promoted as aux above). Wrap with ``AS "<public_alias>"`` so the
         # composite surfaces under the user-declared name.
         outer_composite_order_alias_by_sid: Dict[str, str] = {}
-        outer_composite_order_expressions: Dict[str, str] = {}
+        outer_composite_order_expressions: Dict[str, exp.Expression] = {}
         if outer_composite_slot_ids:
             outer_composite_cm_map: Dict[str, Tuple[str, str]] = {}
             for plan in planned_query.cross_model_aggregate_plans:
@@ -4760,7 +4795,7 @@ class SQLGenerator:
                     wm_agg_col_for_plan[plan.aggregate_slot_id],
                 )
 
-            def _render_outer_composite(cslot) -> str:
+            def _render_outer_composite(cslot) -> exp.Expression:
                 rendered = self._render_filter_for_outer_wrapper(
                     key=cslot.key,
                     slot_by_key=slot_by_key,
@@ -4769,7 +4804,7 @@ class SQLGenerator:
                 )
                 if cslot.type is not None:
                     rendered = _wrap_cast_for_type(rendered, cslot.type)
-                return rendered.sql(dialect=self.dialect)
+                return rendered
 
             # Projected outer composites: cycle through ``public_aliases``
             # for each occurrence in ``planned_query.projection``. C13 lets
@@ -4795,8 +4830,9 @@ class SQLGenerator:
                 )
                 outer_emission_count[sid] = idx + 1
                 full_alias = f"{source_relation}.{public_alias}"
-                combined_parts.append(
-                    f'{_render_outer_composite(cslot)} AS {self._quote_ident(full_alias)}',
+                _emit(
+                    sid,
+                    _render_outer_composite(cslot).as_(full_alias, quoted=True),
                 )
                 combined_aliases_by_slot_id.setdefault(sid, []).append(
                     full_alias,
@@ -4861,12 +4897,11 @@ class SQLGenerator:
                 )
             )
             for pub in public_aliases:
-                if pub == agg_col_alias:
-                    combined_parts.append(f'{cte_name}.{self._quote_ident(agg_col_alias)}')
-                else:
-                    combined_parts.append(
-                        f'{cte_name}.{self._quote_ident(agg_col_alias)} AS {self._quote_ident(pub)}',
-                    )
+                col = grain_alias_column(alias=agg_col_alias, table=cte_name)
+                _emit(
+                    plan.aggregate_slot_id,
+                    col if pub == agg_col_alias else col.as_(pub, quoted=True),
+                )
             combined_aliases_by_slot_id[plan.aggregate_slot_id] = list(
                 public_aliases,
             )
@@ -4900,12 +4935,11 @@ class SQLGenerator:
             )
             full_aliases = [f"{source_relation}.{p}" for p in public_names] or [agg_col]
             for full in full_aliases:
-                if full == agg_col:
-                    combined_parts.append(f'{cte_name}.{self._quote_ident(agg_col)}')
-                else:
-                    combined_parts.append(
-                        f'{cte_name}.{self._quote_ident(agg_col)} AS {self._quote_ident(full)}',
-                    )
+                col = grain_alias_column(alias=agg_col, table=cte_name)
+                _emit(
+                    plan.aggregate_slot_id,
+                    col if full == agg_col else col.as_(full, quoted=True),
+                )
             combined_aliases_by_slot_id[plan.aggregate_slot_id] = list(full_aliases)
 
         # Grain join-backs (P-I). Both plan kinds join back identically — on the
@@ -4913,7 +4947,37 @@ class SQLGenerator:
         # truncated time bucket keeps its aggregate instead of dropping it. An
         # EMPTY grain (a scalar aggregate) has nothing to join on and becomes a
         # CROSS JOIN; the builder signals that by returning ``None``.
-        from_clause_str = "FROM _base"
+        # The public projection, in the plan's declared order (B7). Every
+        # renderer consumes ``planned_query.projection`` verbatim rather than
+        # reconstructing an order from the separate host / composite / cross-
+        # model / windowed lists — which is why a cross-model measure declared
+        # first used to be emitted last. Hidden slots are simply absent from the
+        # plan's list, so trimming them is not a step: it is the absence of one.
+        # One slot can appear in the projection more than once: C13 lets the
+        # same key be selected under several user-declared names, and the plan
+        # lists it once per name. Each occurrence therefore consumes the NEXT of
+        # that slot's rendered columns — emitting the whole list per occurrence
+        # would project every alias once per name.
+        combined_select_exprs: List[exp.Expression] = []
+        consumed: Dict[str, int] = {}
+        for sid in planned_query.projection:
+            exprs = proj_exprs.get(sid)
+            if not exprs:
+                continue
+            idx = consumed.get(sid, 0)
+            if idx < len(exprs):
+                combined_select_exprs.append(exprs[idx])
+                consumed[sid] = idx + 1
+        # Columns the plan does not publish but the statement still needs: with
+        # a transform chain the combined SELECT is that chain's base CTE, so it
+        # must also carry hidden inputs (transform operands, order-only slots)
+        # for the step CTEs to read. The outer wrap trims them back afterwards.
+        for sid, exprs in proj_exprs.items():
+            combined_select_exprs.extend(exprs[consumed.get(sid, 0):])
+
+        combined_select = exp.Select().select(*combined_select_exprs)
+        combined_select = combined_select.from_("_base")
+
         joined_cte_names: set = set()
         joinback_specs = [
             (
@@ -4943,16 +5007,13 @@ class SQLGenerator:
                 dialect=self._dialect,
             )
             if on_condition is None:
-                from_clause_str += f"\nCROSS JOIN {cte_name}"
-            else:
-                from_clause_str += (
-                    f"\nLEFT JOIN {cte_name} ON "
-                    + on_condition.sql(dialect=self.dialect)
+                combined_select = combined_select.join(
+                    cte_name, join_type="CROSS",
                 )
-
-        combined_select_sql = (
-            f"SELECT {', '.join(combined_parts)}\n{from_clause_str}"
-        )
+            else:
+                combined_select = combined_select.join(
+                    cte_name, on=on_condition, join_type="LEFT",
+                )
 
         # DEV-1503 — outer combined-SELECT WHERE wrapper. AGGREGATE-phase
         # host filters routed here in the classification pass above
@@ -4977,7 +5038,6 @@ class SQLGenerator:
                 cross_model_agg_slot_to_cm[plan.aggregate_slot_id] = (
                     cte_name, agg_col_alias,
                 )
-            outer_where_parts: List[str] = []
             for fp in outer_where_filters:
                 rendered = self._render_filter_for_outer_wrapper(
                     key=fp.expression.value_key,
@@ -4987,10 +5047,7 @@ class SQLGenerator:
                 )
                 if isinstance(rendered, (exp.And, exp.Or)):
                     rendered = exp.Paren(this=rendered)
-                outer_where_parts.append(rendered.sql(dialect=self.dialect))
-            combined_select_sql += (
-                "\nWHERE " + _SQL_AND_JOINER.join(outer_where_parts)
-            )
+                combined_select = combined_select.where(rendered)
 
         # DEV-1714 Stage 10 — POST-phase filters referencing a windowed measure
         # render as an outer WHERE on the combined SELECT (never HAVING on the
@@ -5004,7 +5061,11 @@ class SQLGenerator:
                 )
                 for p in planned_query.windowed_aggregate_plans
             }
-            wm_post_parts: List[str] = []
+            # ``Select.where`` conjoins, so a POST-phase windowed filter composes
+            # with any outer-WHERE filter above without the caller choosing
+            # between ``WHERE`` and ``AND`` — the hand-rolled connector this
+            # replaces glued an ``AND`` onto a predicate built elsewhere, with no
+            # parenthesisation of the union.
             for fp in planned_query.filters_by_phase:
                 if fp.phase != Phase.POST or fp.expression is None:
                     continue
@@ -5016,10 +5077,7 @@ class SQLGenerator:
                 )
                 if isinstance(rendered, (exp.And, exp.Or)):
                     rendered = exp.Paren(this=rendered)
-                wm_post_parts.append(rendered.sql(dialect=self.dialect))
-            if wm_post_parts:
-                connector = "\nAND " if outer_where_filters else "\nWHERE "
-                combined_select_sql += connector + _SQL_AND_JOINER.join(wm_post_parts)
+                combined_select = combined_select.where(rendered)
 
         # DEV-1450 stage 7b.15e (C2): a transform layer over a cross-model
         # aggregate (``cumsum(customers.avg_score:avg)``) runs on TOP of the
@@ -5038,21 +5096,41 @@ class SQLGenerator:
                     "G4); the cross-model transform chain does not carry `_wm_` "
                     "CTEs.",
                 )
+            # The transform chain is still string-assembled (it adopts the
+            # shared assembler in PR 4, with the local chain), so render its
+            # prelude CTEs here rather than threading AST into it.
             return self._render_cross_model_transform_chain(
-                prelude_ctes=[("_base", base_cte_sql)] + cm_ctes,
-                combined_select_sql=combined_select_sql,
+                prelude_ctes=[
+                    ("_base", base_select.sql(dialect=self.dialect, pretty=True)),
+                ] + [
+                    (name, query.sql(dialect=self.dialect, pretty=True))
+                    for name, query in cm_ctes
+                ],
+                combined_select_sql=combined_select.sql(
+                    dialect=self.dialect, pretty=True,
+                ),
                 planned_query=planned_query,
                 slots_by_id=slots_by_id,
                 combined_aliases_by_slot_id=combined_aliases_by_slot_id,
                 source_relation=source_relation,
             )
 
-        all_ctes = [("_base", base_cte_sql)] + cm_ctes + wm_ctes + [("_combined", combined_select_sql)]
-
-        # Stitch the WITH chain together. Inner CTEs first; the final
-        # ``_combined`` is the outermost FROM target.
-        cte_strs = [f"{name} AS (\n{sql}\n)" for name, sql in all_ctes[:-1]]
-        sql = f"WITH {', '.join(cte_strs)}\n{combined_select_sql}"
+        # Assemble the WITH chain (§5.6). Dependencies are DECLARED, not
+        # discovered by scanning the rendered statement: ``_wm_`` CTEs select
+        # FROM ``_base``, the cross-model CTEs are rooted at their own targets
+        # and depend on nothing. The assembler emits a stable topological order
+        # with declaration order as the tiebreak.
+        cte_entries = [CteEntry(name="_base", query=base_select)]
+        cte_entries += [
+            CteEntry(name=name, query=query) for name, query in cm_ctes
+        ]
+        cte_entries += [
+            CteEntry(name=name, query=query, depends_on=["_base"])
+            for name, query in wm_ctes
+        ]
+        combined_statement = assemble_with_chain(
+            entries=cte_entries, final=combined_select,
+        )
 
         # ORDER BY / LIMIT / OFFSET: emitted at the combined SELECT
         # level. ORDER BY columns must be qualified — ``_base`` columns
@@ -5062,7 +5140,7 @@ class SQLGenerator:
         # are trimmed from the projection above, so their ORDER BY term must be
         # CTE-qualified (``_cm_*."<agg_col_alias>"``) rather than the bare
         # combined-SELECT alias.
-        hidden_cte_order_refs: Dict[str, str] = {}
+        hidden_cte_order_refs: Dict[str, exp.Expression] = {}
         for plan in planned_query.cross_model_aggregate_plans:
             # Only CMAs actually trimmed from the projection (hidden + no
             # transform chain) need the CTE-qualified ORDER BY reference.
@@ -5071,7 +5149,7 @@ class SQLGenerator:
             _agg_col = agg_col_alias_for_plan[plan.aggregate_slot_id]
             _cte = cm_cte_name_for_plan[plan.aggregate_slot_id]
             hidden_cte_order_refs[plan.aggregate_slot_id] = (
-                f'{_cte}.{self._quote_ident(_agg_col)}'
+                grain_alias_column(alias=_agg_col, table=_cte)
             )
         # DEV-1733: same treatment for a hidden (order-only) WINDOWED aggregate
         # trimmed from the combined projection above — reference its ``_wm_``
@@ -5079,11 +5157,11 @@ class SQLGenerator:
         for plan in planned_query.windowed_aggregate_plans:
             if not (plan.hidden and not planned_query.transform_layers):
                 continue
-            hidden_cte_order_refs[plan.aggregate_slot_id] = (
-                f'{wm_cte_name_for_plan[plan.aggregate_slot_id]}.'
-                f'{self._quote_ident(wm_agg_col_for_plan[plan.aggregate_slot_id])}'
+            hidden_cte_order_refs[plan.aggregate_slot_id] = grain_alias_column(
+                alias=wm_agg_col_for_plan[plan.aggregate_slot_id],
+                table=wm_cte_name_for_plan[plan.aggregate_slot_id],
             )
-        order_sql = self._build_combined_order_by_sql(
+        order_terms = self._build_combined_order_by_sql(
             planned_query=planned_query,
             slots_by_id=slots_by_id,
             cma_slot_ids=cma_slot_ids,
@@ -5096,19 +5174,25 @@ class SQLGenerator:
             outer_composite_expressions=outer_composite_order_expressions,
             hidden_cte_order_refs=hidden_cte_order_refs,
         )
-        if order_sql:
-            sql += "\n" + order_sql
-        if planned_query.limit is not None:
-            sql += f"\nLIMIT {planned_query.limit}"
-        if planned_query.offset is not None:
-            sql += f"\nOFFSET {planned_query.offset}"
+        if order_terms:
+            combined_statement.set("order", exp.Order(expressions=order_terms))
+
+        # Pagination through the dialect strategy (B3). This path used to append
+        # raw ``LIMIT``/``OFFSET`` text, which emitted a literal ``LIMIT`` on
+        # SQL Server — while the same query carrying a transform layer went
+        # through the outer wrap and came out correct.
+        combined_statement = self._dialect.apply_pagination(
+            combined_statement,
+            limit=planned_query.limit,
+            offset=planned_query.offset,
+        )
 
         # Outer projection trim — the inner already projects the public
         # list in declared order, so the trim is normally a no-op. Skip
         # the trim machinery here because the legacy path goes through
         # an EnrichedQuery-driven ``_apply_outer_projection_trim`` that
         # we don't have on the new side. Future slices may re-enable.
-        return sql
+        return combined_statement.sql(dialect=self.dialect, pretty=True)
 
     def _render_cross_model_transform_chain(  # NOSONAR(S3776) — pre-existing complexity in the window-layer chain; this PR only threaded the CTE-name allocator through it, which re-attributed the function as new code. The chain is rebuilt as sqlglot AST in the scope-assembly PR, where the layering is what gets simplified.
         self,
@@ -6036,8 +6120,7 @@ class SQLGenerator:
         if cte_having is not None:
             cte_select = cte_select.having(cte_having)
 
-        cte_sql = cte_select.sql(dialect=self.dialect, pretty=True)
-        return cte_sql, shared_grain_aliases
+        return cte_select, shared_grain_aliases
 
     def _register_routed_filter_joins(  # NOSONAR(S3776) — a cohesive recursive ValueKey tree-walk dispatcher (the heavy AggregateKey arm is already extracted to _register_agg_key_joins); the remaining branches are the closed-union dispatch contract, mirroring the sibling walkers _value_key_join_paths / _collect_base_aux_slot_ids in this file.
         self,
@@ -6457,10 +6540,15 @@ class SQLGenerator:
         cm_alias_for_plan: Dict[str, str],
         bare_order_slot_ids: Optional[Set[str]] = None,
         outer_composite_aliases: Optional[Dict[str, str]] = None,
-        outer_composite_expressions: Optional[Dict[str, str]] = None,
-        hidden_cte_order_refs: Optional[Dict[str, str]] = None,
-    ) -> Optional[str]:
-        """Build the ORDER BY clause for the combined SELECT.
+        outer_composite_expressions: Optional[Dict[str, exp.Expression]] = None,
+        hidden_cte_order_refs: Optional[Dict[str, exp.Expression]] = None,
+    ) -> List[exp.Ordered]:
+        """Build the combined SELECT's ORDER BY terms, as AST.
+
+        Terms are AST rather than text because they reference DOTTED public
+        aliases, and rendering them to a string only to re-parse it re-reads
+        such an alias as a multi-part reference on BigQuery — the same
+        corruption the grain join-back suffered.
 
         PROJECTED local slots are referenced as ``_base."<full_alias>"``
         (legacy parity); cross-model slots are referenced as bare
@@ -6482,12 +6570,12 @@ class SQLGenerator:
         would dangle).
         """
         if not planned_query.order:
-            return None
+            return []
         bare_ids = bare_order_slot_ids or set()
         outer_aliases = outer_composite_aliases or {}
         outer_expressions = outer_composite_expressions or {}
         hidden_cte_refs = hidden_cte_order_refs or {}
-        parts: List[str] = []
+        parts: List[exp.Ordered] = []
         for entry in planned_query.order:
             slot = slots_by_id.get(entry.slot_id)
             if slot is None:
@@ -6505,9 +6593,7 @@ class SQLGenerator:
             )
             if term is not None:
                 parts.append(term)
-        if not parts:
-            return None
-        return "ORDER BY " + ", ".join(parts)
+        return parts
 
     def _resolve_combined_order_term(
         self,
@@ -6519,10 +6605,10 @@ class SQLGenerator:
         cm_alias_for_plan: Dict[str, str],
         bare_ids: Set[str],
         outer_aliases: Dict[str, str],
-        outer_expressions: Optional[Dict[str, str]] = None,
-        hidden_cte_refs: Optional[Dict[str, str]] = None,
-    ) -> Optional[str]:
-        """Resolve one ``OrderEntry`` to its ``"alias" <direction>`` term.
+        outer_expressions: Optional[Dict[str, exp.Expression]] = None,
+        hidden_cte_refs: Optional[Dict[str, exp.Expression]] = None,
+    ) -> Optional[exp.Ordered]:
+        """Resolve one ``OrderEntry`` to an ``exp.Ordered`` term.
 
         Cross-model agg slot → bare CTE alias; projected outer-composite
         slot → bare combined-SELECT alias; order-only outer composite
@@ -6534,7 +6620,11 @@ class SQLGenerator:
         cross-model alias map has no entry (the order slot can't be
         rendered).
         """
-        direction = "ASC" if entry.direction == "asc" else "DESC"
+        descending = entry.direction != "asc"
+
+        def _ordered(col: exp.Expression) -> exp.Ordered:
+            return exp.Ordered(this=col, desc=descending)
+
         # DEV-1712 / DEV-1733: a HIDDEN (order-only) aggregate that lives in its
         # own CTE — cross-model (``_cm_``) or windowed (``_wm_``) — is trimmed
         # from the combined projection, so the bare alias no longer names a
@@ -6544,24 +6634,24 @@ class SQLGenerator:
         # branch below and dangle.
         hidden_ref = (hidden_cte_refs or {}).get(entry.slot_id)
         if hidden_ref is not None:
-            return f'{hidden_ref} {direction}'
+            return _ordered(hidden_ref.copy())
         if entry.slot_id in cma_slot_ids:
             alias = cm_alias_for_plan.get(entry.slot_id)
             if alias is None:
                 return None
-            return f'{self._quote_ident(alias)} {direction}'
+            return _ordered(exp.column(alias, quoted=True))
         if entry.slot_id in outer_aliases:
-            return f'{self._quote_ident(outer_aliases[entry.slot_id])} {direction}'
+            return _ordered(exp.column(outer_aliases[entry.slot_id], quoted=True))
         if outer_expressions and entry.slot_id in outer_expressions:
-            return f'{outer_expressions[entry.slot_id]} {direction}'
+            return _ordered(outer_expressions[entry.slot_id].copy())
         full_alias = self._full_alias_for_slot(
             slot=slot,
             source_relation=source_relation,
             alias_index={},
         )
         if entry.slot_id in bare_ids:
-            return f'{self._quote_ident(full_alias)} {direction}'
-        return f'_base.{self._quote_ident(full_alias)} {direction}'
+            return _ordered(exp.column(full_alias, quoted=True))
+        return _ordered(grain_alias_column(alias=full_alias, table="_base"))
 
     def _full_alias_for_slot(
         self,

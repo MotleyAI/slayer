@@ -301,15 +301,22 @@ class TestAssembledChainForRealQueries:
         it receives EXPLICIT dependency metadata (Codex D3) rather than being
         handed a bare list to sort by itself.
         """
-        mod = TestWithChainAssembler._mod()
+        from slayer.sql import generator as generator_mod
+
         calls: list = []
-        original = mod.assemble_with_chain
+        original = generator_mod.assemble_with_chain
 
         def _wrapped(*, entries, final, **kwargs):
             calls.append(list(entries))
             return original(entries=entries, final=final, **kwargs)
 
-        monkeypatch.setattr(mod, "assemble_with_chain", _wrapped, raising=True)
+        # Patch the GENERATOR's binding, not the defining module's: the
+        # generator imports the symbol directly (imports live at the top of the
+        # file), so rebinding the source module would leave production calling
+        # the original and the spy would record nothing.
+        monkeypatch.setattr(
+            generator_mod, "assemble_with_chain", _wrapped, raising=True,
+        )
         sql = await _gen(_mixed_query(), dialect="postgres")
         assert calls, (
             "the cross-model WITH chain was assembled without the shared "
