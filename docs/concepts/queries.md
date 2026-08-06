@@ -223,9 +223,9 @@ Multiple entries in the `filters` list are combined with AND.
 
 Filters in `SlayerQuery.filters` accept a small allowlist of lowercase
 SQL scalar functions for case-folding, trimming, substring extraction,
-and string concatenation: `lower`, `upper`, `trim`, `replace`, `substr`,
-`instr`, `length`, `concat`. The SQL `||` concat operator is rewritten
-to `concat(...)` automatically.
+and string concatenation: `lower`, `upper`, `trim`, `ltrim`, `rtrim`,
+`replace`, `substr`, `substring`, `instr`, `length`, `concat`. The SQL
+`||` concat operator is rewritten to `concat(...)` automatically.
 
 ```json
 "filters": [

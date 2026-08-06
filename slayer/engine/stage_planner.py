@@ -88,12 +88,13 @@ from slayer.engine.filter_reachability import (
 from slayer.engine.planned import (
     BoundExpr as PlannedBoundExpr,
     BoundFilterId,
+    CrossModelAggregatePlan,
     EmptyBaseGrainPlan,
-    SlotId,
     FilterPhase,
     FilterReachability,
     OrderEntry,
     PlannedQuery,
+    SlotId,
     SrcFilterRewrite,
     TransformLayer,
     ValueSlot,
@@ -1339,6 +1340,9 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         else host_model_name
     )
     filter_reachability: List[FilterReachability] = []
+    # One expansion cache for the whole plan — the two visitors ask for the
+    # same derived column's expansion, and so does every filter that mentions it.
+    reachability_cache: dict = {}
     for fp in filters_by_phase:
         if fp.expression is None:
             continue
@@ -1349,12 +1353,14 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                 anchor_model=reachability_anchor_model,
                 anchor_relation=source_relation,
                 bundle=bundle,
+                cache=reachability_cache,
             ),
             has_host_local_ref=key_has_host_local_ref(
                 key=fp.expression.value_key,
                 anchor_model=reachability_anchor_model,
                 anchor_relation=source_relation,
                 bundle=bundle,
+                cache=reachability_cache,
             ),
         ))
     reachability_by_fid = {r.filter_id: r for r in filter_reachability}
@@ -1613,7 +1619,10 @@ def _plan_empty_base_grain(
 
 
 def _plan_outer_where_filters(
-    *, filters_by_phase: list, cross_model_plans: list, slots: list,
+    *,
+    filters_by_phase: List[FilterPhase],
+    cross_model_plans: List[CrossModelAggregatePlan],
+    slots: List[ValueSlot],
 ) -> List[BoundFilterId]:
     """AGGREGATE-phase filters that must be applied on the OUTER combined
     SELECT instead of as HAVING inside a ``_cm_*`` CTE (DEV-1503).

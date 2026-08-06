@@ -1955,11 +1955,21 @@ def _format_table(data: list[dict[str, Any]], columns: list[str], max_rows: int 
     return result
 
 
-def _format_json(data: list[dict[str, Any]], columns: list[str]) -> str:
-    """Format data as JSON array."""
-    import json
+def _format_json(
+    data: list[dict[str, Any]],
+    warnings: list[dict[str, Any]] | None = None,
+) -> str:
+    """Format data as JSON.
 
-    return json.dumps(data, default=str)
+    A bare array when there is nothing to report, so the long-standing shape is
+    unchanged for every clean query. When warnings exist they go INSIDE the
+    JSON as ``{"data": [...], "warnings": [...]}`` — appending them as prose
+    would break ``json.loads`` on exactly the queries a caller most needs to
+    inspect (DEV-1745 W5).
+    """
+    if not warnings:
+        return json.dumps(data, default=str)
+    return json.dumps({"data": data, "warnings": warnings}, default=str)
 
 
 def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
@@ -1978,33 +1988,53 @@ def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _csv_warning_comments(result: SlayerResponse) -> str:
+    """Warnings as leading `#` comment lines for CSV output.
+
+    Comments precede the header, so every DATA record keeps a uniform column
+    count and the advisory is still visible to whoever reads the output.
+    """
+    lines = [f"# warning: {w.human_message()}" for w in (result.warnings or [])]
+    return "" if not lines else "\n".join(lines) + "\n"
+
+
 def _format_warnings(result: SlayerResponse) -> str:
-    """Advisories about the query, appended to every output format.
+    """Advisories about the query, appended to the TEXT output formats.
 
     A dropped filter changes which rows the answer covers, so it cannot be
-    left to a field the caller might not read (DEV-1745 W5 / D2).
+    left to a field the caller might not read (DEV-1745 W5 / D2). Rendering
+    goes through each payload's ``human_message`` so this surface and the CLI
+    cannot describe the same warning differently.
     """
-    lines = []
-    for w in (result.warnings or []):
-        if getattr(w, "kind", None) == "unreachable_filter_dropped":
-            lines.append(
-                f"  - dropped filter {w.filter_text!r} "
-                f"(at {w.location}): {w.reason}"
-            )
-        else:
-            lines.append(f"  - {getattr(w, 'rule_id', w.kind)}: {w}")
+    lines = [f"  - {w.human_message()}" for w in (result.warnings or [])]
     return "" if not lines else "\n\nWarnings:\n" + "\n".join(lines)
 
 
 def _format_output(result: SlayerResponse, fmt: str) -> str:
-    """Format query output in the requested format."""
+    """Format query output in the requested format.
+
+    Warnings never corrupt a machine-readable format: for ``json`` they go
+    INSIDE the payload under a ``warnings`` key, and for ``csv`` they become
+    leading ``#`` comment lines. Only ``markdown`` gets a prose block.
+
+    Note this covers the warnings only. The ``query`` tool still prepends
+    ``SQL:`` text for ``show_sql`` / ``explain`` and appends an attributes
+    block, which has always made those combinations non-JSON; that predates
+    this change and is not addressed here.
+    """
     if fmt == "csv":
-        body = _format_csv(data=result.data, columns=result.columns)
-    elif fmt == "markdown":
-        body = result.to_markdown()
-    else:
-        body = _format_json(data=result.data, columns=result.columns)
-    return body + _format_warnings(result)
+        # Leading `#` comment lines, never trailing prose: appending the block
+        # turned each warning into a record with the wrong column count and
+        # broke every CSV reader on exactly the queries worth inspecting.
+        return _csv_warning_comments(result) + _format_csv(
+            data=result.data, columns=result.columns,
+        )
+    if fmt == "markdown":
+        return result.to_markdown() + _format_warnings(result)
+    return _format_json(
+        data=result.data,
+        warnings=[w.model_dump(mode="json") for w in (result.warnings or [])],
+    )
 
 
 def _format_field_meta(entries: dict[str, Any]) -> list[str]:

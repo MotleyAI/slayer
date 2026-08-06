@@ -1233,14 +1233,7 @@ def _print_query_warnings(result) -> None:
     something that changes which rows the answer covers (DEV-1745 W5 / D2).
     """
     for w in (getattr(result, "warnings", None) or []):
-        if getattr(w, "kind", None) == "unreachable_filter_dropped":
-            print(
-                f"warning: dropped filter {w.filter_text!r} "
-                f"(at {w.location}): {w.reason}",
-                file=sys.stderr,
-            )
-        else:
-            print(f"warning: {w}", file=sys.stderr)
+        print(f"warning: {w.human_message()}", file=sys.stderr)
 
 
 def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straight-line function reads better than threaded helpers

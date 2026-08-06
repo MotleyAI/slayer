@@ -31,7 +31,8 @@ Invariant: every summary is expressed in the coordinate system of the
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from decimal import Decimal
+from typing import List, Optional, Tuple
 
 from sqlglot import exp
 
@@ -89,6 +90,7 @@ def _prefixes(path: Path) -> List[Path]:
 
 def _expanded_derived_ast(
     *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
+    cache: "Optional[dict]" = None,
 ):
     """The parsed, expanded AST of a derived column's ``Column.sql``.
 
@@ -96,7 +98,35 @@ def _expanded_derived_ast(
     ``__``-path alias with ``is_root=False`` when the column lives on a joined
     model — so the refs inside come out already prefixed by the key's own path
     and an anchor-rooted scan resolves them without further adjustment.
+
+    Memoised through the caller-supplied ``cache``. Both visitors ask for the
+    same key's expansion — ``_derived_sql_paths`` for the crossed set and
+    ``_derived_sql_touches_anchor`` for host-locality — and both run for every
+    filter on every plan, while ``_expand_derived_refs_any_dialect`` itself
+    re-parses per hop of a derived-of-derived chain.
+
+    The cache is passed IN rather than held module-level on purpose. A global
+    keyed by ``id(bundle)`` would be unsound: CPython reuses ids once an object
+    is collected, so a fresh bundle could be handed a dead one's entry. A dict
+    owned by one plan-level call cannot outlive the bundle it was built for.
     """
+    if cache is None:
+        return _expanded_derived_ast_uncached(
+            key=key, anchor_model=anchor_model,
+            anchor_relation=anchor_relation, bundle=bundle,
+        )
+    cache_key = (key.model, key.column_name, key.path, anchor_relation)
+    if cache_key not in cache:
+        cache[cache_key] = _expanded_derived_ast_uncached(
+            key=key, anchor_model=anchor_model,
+            anchor_relation=anchor_relation, bundle=bundle,
+        )
+    return cache[cache_key]
+
+
+def _expanded_derived_ast_uncached(
+    *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
+):
     model = (
         anchor_model if key.model == getattr(anchor_model, "name", None)
         else bundle.get_referenced_model(key.model)
@@ -116,11 +146,12 @@ def _expanded_derived_ast(
 
 def _derived_sql_paths(
     *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
+    cache: "Optional[dict]" = None,
 ) -> List[Path]:
     """Join paths the expansion of a derived column's ``Column.sql`` crosses."""
     parsed = _expanded_derived_ast(
         key=key, anchor_model=anchor_model,
-        anchor_relation=anchor_relation, bundle=bundle,
+        anchor_relation=anchor_relation, bundle=bundle, cache=cache,
     )
     if parsed is None:
         return []
@@ -134,6 +165,7 @@ def _derived_sql_paths(
 
 def _derived_sql_touches_anchor(
     *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
+    cache: "Optional[dict]" = None,
 ) -> bool:
     """Whether a derived column's expansion references the ANCHOR relation.
 
@@ -148,7 +180,7 @@ def _derived_sql_touches_anchor(
     """
     parsed = _expanded_derived_ast(
         key=key, anchor_model=anchor_model,
-        anchor_relation=anchor_relation, bundle=bundle,
+        anchor_relation=anchor_relation, bundle=bundle, cache=cache,
     )
     if parsed is None:
         # Nothing resolvable to inspect — a bare column name on the anchor.
@@ -160,8 +192,100 @@ def _derived_sql_touches_anchor(
     return False
 
 
+# Values a key tree can carry INLINE — plain data, not references, so they
+# cannot cross a join. ``Decimal`` is load-bearing: ``AggregateKey.args`` /
+# ``kwargs`` and ``ScalarCallKey.args`` normalise numeric literals to it, so a
+# parametric aggregate like ``price:percentile(p=0.9)`` puts a Decimal in the
+# tree. Omitting it made the fail-closed visitor reject a legitimate key.
+_INLINE_SCALARS = (str, int, float, bool, Decimal)
+
+# Leaf kinds: they carry references but no child keys.
+_LEAF_KINDS = (LiteralKey, StarKey, SqlExprKey, ColumnKey, ColumnSqlKey)
+
+
+def _child_keys(node, *, descend_aggregates: bool = True) -> List:
+    """The child keys of a composite node, in a STABLE order.
+
+    A variable-length SEQUENCE, not a fixed record — hence a list.
+
+    One dispatch shared by both visitors, so a new key kind is handled — or
+    rejected — identically by each. Fails CLOSED on an unknown kind: a silent
+    empty result would read as "crosses nothing" and route a filter into a
+    scope that cannot evaluate it.
+
+    ``partition_keys`` is a frozenset, whose iteration order varies between
+    runs; sorted here because the discovered paths drive JOIN emission order,
+    and non-deterministic SQL is its own bug.
+
+    ``descend_aggregates=False`` stops at an aggregate: for host-locality, an
+    aggregate is routed by WHERE it is computed, not by its inputs.
+    """
+    if isinstance(node, _LEAF_KINDS) or isinstance(node, _INLINE_SCALARS):
+        return []
+    if isinstance(node, TimeTruncKey):
+        return [node.column]
+    if isinstance(node, AggregateKey):
+        if not descend_aggregates:
+            return []
+        return [
+            node.source,
+            *node.args,
+            *(v for _name, v in node.kwargs),
+            node.column_filter_key,
+        ]
+    if isinstance(node, TransformKey):
+        return [
+            node.input,
+            *sorted(node.partition_keys, key=repr),
+            node.time_key,
+        ]
+    if isinstance(node, ArithmeticKey):
+        return list(node.operands)
+    if isinstance(node, ScalarCallKey):
+        return list(node.args)
+    if isinstance(node, InKey):
+        return [node.column, *node.values]
+    if isinstance(node, BetweenKey):
+        return [node.column, node.low, node.high]
+    raise UnhandledValueKindError(node)
+
+
+def _leaf_paths(
+    node, *, anchor_model, anchor_relation: str, bundle,
+    cache: "Optional[dict]" = None,
+) -> List[Path]:
+    """Join paths a LEAF key is itself anchored at.
+
+    Composites contribute nothing here — their dependencies arrive through
+    ``_child_keys``. Split out of the traversal so the walk stays a two-line
+    "collect, then descend".
+    """
+    if isinstance(node, ColumnSqlKey):
+        # Own anchored path first, then whatever its expansion reaches — the
+        # order the FROM builder consumes. Built as a NEW list rather than
+        # appending to ``_prefixes``' return, so this cannot corrupt that
+        # result if it ever becomes cached.
+        return [
+            *_prefixes(node.path),
+            *_derived_sql_paths(
+                key=node, anchor_model=anchor_model,
+                anchor_relation=anchor_relation, bundle=bundle, cache=cache,
+            ),
+        ]
+    if isinstance(node, ColumnKey):
+        return _prefixes(node.path)
+    if isinstance(node, SqlExprKey):
+        return [
+            pre
+            for p in node.referenced_join_paths
+            for pre in _prefixes(tuple(p))
+        ]
+    return []
+
+
 def compute_key_join_paths(
     *, key, anchor_model, anchor_relation: str, bundle,
+    cache: "Optional[dict]" = None,
 ) -> Tuple[Path, ...]:
     """Every join path ``key``'s dependency tree crosses, anchored at
     ``anchor_relation``.
@@ -181,66 +305,13 @@ def compute_key_join_paths(
     def _walk(node) -> None:
         if node is None:
             return
-        if isinstance(node, (LiteralKey, StarKey)):
-            return
-        if isinstance(node, ColumnKey):
-            for p in _prefixes(node.path):
-                _add(p)
-            return
-        if isinstance(node, ColumnSqlKey):
-            for p in _prefixes(node.path):
-                _add(p)
-            for p in _derived_sql_paths(
-                key=node, anchor_model=anchor_model,
-                anchor_relation=anchor_relation, bundle=bundle,
-            ):
-                _add(p)
-            return
-        if isinstance(node, SqlExprKey):
-            for p in node.referenced_join_paths:
-                for pre in _prefixes(tuple(p)):
-                    _add(pre)
-            return
-        if isinstance(node, TimeTruncKey):
-            _walk(node.column)
-            return
-        if isinstance(node, AggregateKey):
-            _walk(node.source)
-            for a in node.args:
-                _walk(a)
-            for _name, v in node.kwargs:
-                _walk(v)
-            _walk(node.column_filter_key)
-            return
-        if isinstance(node, TransformKey):
-            _walk(node.input)
-            for pk in node.partition_keys:
-                _walk(pk)
-            _walk(node.time_key)
-            return
-        if isinstance(node, ArithmeticKey):
-            for o in node.operands:
-                _walk(o)
-            return
-        if isinstance(node, ScalarCallKey):
-            for a in node.args:
-                _walk(a)
-            return
-        if isinstance(node, InKey):
-            _walk(node.column)
-            for v in node.values:
-                _walk(v)
-            return
-        if isinstance(node, BetweenKey):
-            _walk(node.column)
-            _walk(node.low)
-            _walk(node.high)
-            return
-        # Scalars carried inline by TransformKey args / kwargs are values, not
-        # references, and cannot cross anything.
-        if isinstance(node, (str, int, float, bool)) or node is None:
-            return
-        raise UnhandledValueKindError(node)
+        for path in _leaf_paths(
+            node, anchor_model=anchor_model,
+            anchor_relation=anchor_relation, bundle=bundle, cache=cache,
+        ):
+            _add(path)
+        for child in _child_keys(node):
+            _walk(child)
 
     _walk(key)
     return tuple(seen)
@@ -248,6 +319,7 @@ def compute_key_join_paths(
 
 def key_has_host_local_ref(
     *, key, anchor_model, anchor_relation: str, bundle,
+    cache: "Optional[dict]" = None,
 ) -> bool:
     """Whether ``key`` depends on anything anchored AT the host root.
 
@@ -258,62 +330,28 @@ def key_has_host_local_ref(
     has an empty anchored path but is NOT host-local — inside the target's
     scope its expansion resolves.
     """
-    found = False
 
-    def _walk(node) -> None:
-        nonlocal found
-        if found or node is None:
-            return
-        if isinstance(node, (LiteralKey, StarKey, SqlExprKey)):
-            return
+    def _is_local(node) -> bool:
         if isinstance(node, ColumnKey):
-            if not node.path:
-                found = True
-            return
+            return not node.path
         if isinstance(node, ColumnSqlKey):
-            if node.path:
-                return
-            if _derived_sql_touches_anchor(
+            return not node.path and _derived_sql_touches_anchor(
                 key=node, anchor_model=anchor_model,
-                anchor_relation=anchor_relation, bundle=bundle,
-            ):
-                found = True
-            return
-        if isinstance(node, TimeTruncKey):
-            _walk(node.column)
-            return
-        if isinstance(node, AggregateKey):
-            # An aggregate is routed by its own decision table arm (on-target
-            # vs elsewhere), not by host-locality of its inputs.
-            return
-        if isinstance(node, TransformKey):
-            _walk(node.input)
-            for pk in node.partition_keys:
-                _walk(pk)
-            _walk(node.time_key)
-            return
-        if isinstance(node, ArithmeticKey):
-            for o in node.operands:
-                _walk(o)
-            return
-        if isinstance(node, ScalarCallKey):
-            for a in node.args:
-                _walk(a)
-            return
-        if isinstance(node, InKey):
-            _walk(node.column)
-            return
-        if isinstance(node, BetweenKey):
-            _walk(node.column)
-            _walk(node.low)
-            _walk(node.high)
-            return
-        if isinstance(node, (str, int, float, bool)):
-            return
-        raise UnhandledValueKindError(node)
+                anchor_relation=anchor_relation, bundle=bundle, cache=cache,
+            )
+        return False
 
-    _walk(key)
-    return found
+    def _walk(node) -> bool:
+        if node is None:
+            return False
+        if _is_local(node):
+            return True
+        return any(
+            _walk(child)
+            for child in _child_keys(node, descend_aggregates=False)
+        )
+
+    return _walk(key)
 
 
 def path_is_reachable(*, path: Path, target_path: Path) -> bool:
@@ -341,6 +379,7 @@ def recompute_filter_reachability(planned_query, *, bundle) -> List:
 
     anchor_model = planned_query.render_source_model or bundle.source_model
     anchor_relation = planned_query.source_relation
+    cache: dict = {}
     out: List = []
     for fp in planned_query.filters_by_phase:
         if fp.expression is None:
@@ -352,12 +391,14 @@ def recompute_filter_reachability(planned_query, *, bundle) -> List:
                 anchor_model=anchor_model,
                 anchor_relation=anchor_relation,
                 bundle=bundle,
+                cache=cache,
             ),
             has_host_local_ref=key_has_host_local_ref(
                 key=fp.expression.value_key,
                 anchor_model=anchor_model,
                 anchor_relation=anchor_relation,
                 bundle=bundle,
+                cache=cache,
             ),
         ))
     return out

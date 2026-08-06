@@ -822,7 +822,6 @@ class TestClassifyHostFilter:
             host_filter=hf,
             host_slots=[derived],
             target_path=("customers",),
-            host_model_name="orders",
         )
         assert route == FilterRoute.PROPAGATE_WHERE
 
@@ -843,6 +842,5 @@ class TestClassifyHostFilter:
             host_filter=hf,
             host_slots=[derived],
             target_path=("customers",),
-            host_model_name="orders",
         )
         assert route == FilterRoute.DROP_UNREACHABLE

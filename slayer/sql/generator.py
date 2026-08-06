@@ -6023,9 +6023,6 @@ class SQLGenerator:
         self._register_routed_filter_joins(
             planned_query=planned_query,
             filter_ids=list(plan.where_filter_ids) + list(plan.having_filter_ids),
-            target_relation=target_relation,
-            target_model=target_model,
-            bundle=bundle,
             scope=cte_scope,
             target_path=target_path,
         )
@@ -6202,9 +6199,6 @@ class SQLGenerator:
         *,
         planned_query,
         filter_ids: List[str],
-        target_relation: str,
-        target_model,
-        bundle,
         scope: ScopeFrame,
         target_path: Tuple[str, ...],
     ) -> None:
@@ -8450,12 +8444,15 @@ class SQLGenerator:
         """An ephemeral :class:`ScopeFrame` for a Mode-A entry whose call site
         holds no scope.
 
-        Pure RENDER paths (the aggregate CASE-WHEN wrapper, the WHERE/HAVING
-        assembler) run after the corresponding registration pass has already
-        put the crossed joins into the real scope, so the frame here exists
-        only to give the text one consistent door to come through — its
-        ``join_paths`` are a byproduct nobody reads. Every site that still owns
-        discovery passes its real scope instead.
+        Two kinds of caller. The pure RENDER paths (the aggregate CASE-WHEN
+        wrapper, the WHERE/HAVING assembler) run after the corresponding
+        registration pass has already put the crossed joins into the real
+        scope, so for them the frame exists only to give the text one
+        consistent door to come through. The shifted-CTE residual path
+        (``_shifted_filter_sql``) instead READS ``frame.join_paths`` back and
+        hands it to its caller, which registers those paths on the shifted
+        scope — so the frame is the discovery vehicle there, not a byproduct.
+        Every site that already owns a real scope passes it instead.
         """
         return ScopeFrame(
             scope_id=f"_modea_{source_relation}",
@@ -8514,17 +8511,32 @@ class SQLGenerator:
         ``SUM(customers.spend * regions.weight) FROM customers`` — SQL no
         database accepts. One implementation, entered through the one door, is
         what stops that from recurring (DEV-1745 W2).
+
+        Only values the aggregation's formula actually SUBSTITUTES are treated
+        as SQL. A string kwarg whose ``{name}`` never appears in the template is
+        a marker, not a fragment — ``revenue:sum(window='90d')`` being the
+        standing example — and handing it to a SQL parser is meaningless. It
+        was harmless while the scan swallowed parse errors; now that the door
+        raises, a marker that does not happen to parse would take the query
+        down with it.
         """
-        fragments = [v for _, v in key.kwargs if isinstance(v, str)]
         agg_def = next(
             (a for a in (model.aggregations or []) if a.name == key.agg), None,
         )
-        if agg_def is not None:
-            overridden = {name for name, _ in key.kwargs}
-            fragments.extend(
-                p.sql for p in (agg_def.params or [])
-                if p.name not in overridden and p.sql
-            )
+        if agg_def is None:
+            # A built-in aggregation has no template, so no kwarg of it is a
+            # SQL fragment.
+            return
+        formula = agg_def.formula or ""
+        overridden = {name for name, _ in key.kwargs}
+        fragments = [
+            v for name, v in key.kwargs
+            if isinstance(v, str) and f"{{{name}}}" in formula
+        ]
+        fragments.extend(
+            p.sql for p in (agg_def.params or [])
+            if p.name not in overridden and p.sql
+        )
         for frag in fragments:
             self._enter_mode_a_expression(
                 sql=frag, scope=scope,

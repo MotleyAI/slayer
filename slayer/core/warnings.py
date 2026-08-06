@@ -33,6 +33,16 @@ class SlayerWarning(BaseModel):
 
     kind: str
 
+    def human_message(self) -> str:
+        """One operator-readable line describing this advisory.
+
+        Lives on the payload so MCP, the CLI, and any future surface render a
+        given kind identically, and so a NEW kind cannot silently fall back to
+        a Pydantic repr on one surface and a hand-written string on another.
+        Subclasses override; the base is the honest last resort.
+        """
+        return f"{self.kind}: {self.model_dump(exclude={'kind'})}"
+
 
 class NormalizationWarning(SlayerWarning):
     """Structured payload describing one slack-normalization rewrite.
@@ -51,6 +61,12 @@ class NormalizationWarning(SlayerWarning):
     location: str
     rule_doc_url: Optional[str] = None
 
+    def human_message(self) -> str:
+        return (
+            f"[{self.rule_id}] rewrote {self.original} → {self.normalized} "
+            f"(at {self.location})"
+        )
+
 
 class DroppedFilterWarning(SlayerWarning):
     """A user filter that could not be applied where it was routed.
@@ -64,6 +80,12 @@ class DroppedFilterWarning(SlayerWarning):
     filter_text: str
     location: str
     reason: str
+
+    def human_message(self) -> str:
+        return (
+            f"dropped filter {self.filter_text!r} (at {self.location}): "
+            f"{self.reason}"
+        )
 
 
 # The response carries a DISCRIMINATED union, not the bare base class: Pydantic

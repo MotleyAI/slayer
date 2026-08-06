@@ -26,6 +26,7 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.engine.planned import PlannedQuery
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 
@@ -186,12 +187,19 @@ class TestFrameBoundColumnsStayPlanSide:
         )
 
     def test_plan_carries_frame_bound_columns(self) -> None:
-        planned = plan_query(query=self._windowed_query(), bundle=_bundle())
-        assert hasattr(planned, "frame_bound_columns")
+        """A DECLARED field, checked the same way as outer_where_filter_ids.
+        ``hasattr`` is always true for a field with a default_factory, so it
+        could not fail regardless of planner behaviour."""
+        assert "frame_bound_columns" in PlannedQuery.model_fields
 
     def test_frame_bound_columns_covers_the_time_dimension(self) -> None:
+        """Names the expected column, not just "non-empty" — the query has one
+        time dimension, so a plan carrying some OTHER column would satisfy a
+        truthiness check while getting the frame-bound set wrong."""
         planned = plan_query(query=self._windowed_query(), bundle=_bundle())
-        assert planned.frame_bound_columns, (
-            "the time dimension's raw column must be carried on the plan so "
-            "both strip_frame_bounds call sites read the SAME set"
+        leaves = {getattr(k, "leaf", None) for k in planned.frame_bound_columns}
+        assert "created_at" in leaves, (
+            f"the time dimension's raw column must be carried on the plan so "
+            f"both strip_frame_bounds call sites read the SAME set; got "
+            f"{planned.frame_bound_columns!r}"
         )

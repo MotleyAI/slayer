@@ -60,7 +60,7 @@ presence of a field:
 
 | `kind` | Meaning | Extra fields |
 | -- | -- | -- |
-| `normalization` | The input was rewritten to canonical form | `rule_id`, `original`, `normalized`, `location` |
+| `normalization` | The input was rewritten to canonical form | `rule_id`, `original`, `normalized`, `location`, `rule_doc_url` (nullable) |
 | `unreachable_filter_dropped` | A filter could not be applied inside a cross-model CTE and was dropped from it (it still applies at the host) | `filter_text`, `location`, `reason` |
 
 A dropped filter changes which rows the answer covers, so it is worth surfacing

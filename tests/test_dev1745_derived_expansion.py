@@ -94,8 +94,12 @@ def _resolve(name: str):
 
 
 def _expand(sql: str) -> str:
+    # The SAME instance ``_resolve`` hands back. ``_process_column_node_sync``
+    # compares ``target_model is model`` by IDENTITY to decide ``next_is_root``;
+    # passing a second, equal-but-distinct ``_orders()` would make that test
+    # false the moment the root path resolves through ``resolve_model``.
     out = expand_derived_refs_sync(
-        sql=sql, model=_orders(), alias_path="orders",
+        sql=sql, model=_MODELS["orders"], alias_path="orders",
         resolve_model=_resolve, dialect="postgres", is_root=True,
     )
     assert out is not None, f"expansion returned None for {sql!r}"
@@ -245,18 +249,18 @@ async def test_derived_of_derived_executes_on_duckdb() -> None:
         model=_orders(), dialect="duckdb", validate=False,
         extra_models=[_customers(), _regions()],
     )
-    con = duckdb.connect()
-    con.execute(
-        "CREATE TABLE orders(id INT, customer_id INT, amount DOUBLE, status VARCHAR)"
-    )
-    con.execute("CREATE TABLE customers(id INT, region_id INT)")
-    con.execute(
-        "CREATE TABLE regions(id INT, status VARCHAR, population DOUBLE)"
-    )
-    con.execute("INSERT INTO orders VALUES (1, 1, 10.0, 'ok')")
-    con.execute("INSERT INTO customers VALUES (1, 1)")
-    con.execute("INSERT INTO regions VALUES (1, 'live', 50.0)")
+    with duckdb.connect() as con:
+        con.execute(
+            "CREATE TABLE orders(id INT, customer_id INT, amount DOUBLE, status VARCHAR)"
+        )
+        con.execute("CREATE TABLE customers(id INT, region_id INT)")
+        con.execute(
+            "CREATE TABLE regions(id INT, status VARCHAR, population DOUBLE)"
+        )
+        con.execute("INSERT INTO orders VALUES (1, 1, 10.0, 'ok')")
+        con.execute("INSERT INTO customers VALUES (1, 1)")
+        con.execute("INSERT INTO regions VALUES (1, 'live', 50.0)")
 
-    rows = con.execute(sql).fetchall()
+        rows = con.execute(sql).fetchall()
     # regions.population = 50 -> pop_x2 = 100
     assert rows == [(100.0, 10.0)], f"unexpected rows {rows!r} for SQL:\n{sql}"

@@ -37,7 +37,11 @@ from slayer.core.query import (
     list_valued_variable_names,
     substitute_variables,
 )
-from slayer.core.warnings import AnySlayerWarning, NormalizationWarning
+from slayer.core.warnings import (
+    AnySlayerWarning,
+    DroppedFilterWarning,
+    NormalizationWarning,
+)
 from slayer.core.recommend import (
     CandidateCoverage,
     ItemPath,
@@ -386,7 +390,9 @@ def _stage_location(stages, index: int) -> str:
     return f"stage {name!r}.filters" if name else f"stages[{index}].filters"
 
 
-def _collect_dropped_filter_warnings(*, planned_list, stages) -> List[Any]:
+def _collect_dropped_filter_warnings(
+    *, planned_list, stages,
+) -> List[DroppedFilterWarning]:
     """Dropped-filter payloads for the whole pipeline, one per user filter.
 
     Identity is ``(location, original filter text)`` — stated in the terms the
@@ -397,8 +403,6 @@ def _collect_dropped_filter_warnings(*, planned_list, stages) -> List[Any]:
     reached different conclusions about one filter, which is a planner
     inconsistency; raising beats silently keeping whichever came first.
     """
-    from slayer.core.warnings import DroppedFilterWarning
-
     by_identity: "dict[tuple[str, str], DroppedFilterWarning]" = {}
     for index, planned in enumerate(planned_list):
         location = _stage_location(stages, index)
@@ -427,7 +431,6 @@ def _emit_dropped_filter_warnings(response) -> None:
     Called once, at the outermost boundary, AFTER the response is built.
     """
     from slayer.core.errors import UnreachableFilterDroppedWarning
-    from slayer.core.warnings import DroppedFilterWarning
 
     for w in response.warnings or ():
         if isinstance(w, DroppedFilterWarning):
@@ -446,12 +449,13 @@ class SlayerResponse(BaseModel):
     columns: List[str] = PydanticField(default_factory=list)
     sql: Optional[str] = None
     attributes: ResponseAttributes = PydanticField(default_factory=ResponseAttributes)
-    # DEV-1450 stage 6 — slack-normalization warnings.
-    # Structured payload for each slack rewrite the normalization layer
-    # performed on the input (function-style aggs, misplaced measures,
-    # AST-resolvable dotted refs in raw SQL). Empty for queries that
-    # arrived in canonical form. Surfaced alongside the result so
-    # REST / MCP / CLI consumers can echo the rewrites back to authors.
+    # Advisories about the query itself, discriminated on ``kind``:
+    # ``normalization`` for a slack rewrite the normalization layer performed
+    # on the input (function-style aggs, misplaced measures, AST-resolvable
+    # dotted refs in raw SQL), and ``unreachable_filter_dropped`` for a user
+    # filter dropped from a cross-model CTE. Empty for a clean query. Surfaced
+    # alongside the result so REST / MCP / CLI consumers can echo them back to
+    # authors; switch on ``kind`` rather than on the presence of a field.
     warnings: List[AnySlayerWarning] = PydanticField(default_factory=list)
 
     @model_validator(mode="after")
