@@ -10,6 +10,7 @@ plus a ``try/except`` backstop for everything else.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -18,6 +19,7 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig, SlayerModel, sanitize_model_name
+from slayer.sql import engine_factory
 from slayer.engine.ingestion import (
     IngestionScanReport,
     SkippedTable,
@@ -399,6 +401,53 @@ class TestEngineDisposal:
         with pytest.raises(_Boom, match="the real failure"):
             ingest_datasource_report(datasource=ds)
         assert disposed, "dispose must still be attempted"
+
+    def test_dispose_failure_does_not_fail_a_successful_ingest(
+        self, workspace: Path, monkeypatch
+    ) -> None:
+        """The other half: with no in-flight exception, a raising dispose in
+        the ``finally`` would turn a completed ingest into a failure."""
+        ds = _sqlite_ds(
+            workspace, "CREATE TABLE orders (id INTEGER PRIMARY KEY, x TEXT);"
+        )
+
+        real_get_engine = engine_factory.get_engine
+        disposed: list[bool] = []
+
+        def _wrap(cfg):
+            engine = real_get_engine(cfg)
+
+            def _explode():
+                disposed.append(True)
+                raise RuntimeError("dispose blew up")
+
+            monkeypatch.setattr(engine, "dispose", _explode)
+            return engine
+
+        monkeypatch.setattr(engine_factory, "get_engine", _wrap)
+
+        report = ingest_datasource_report(datasource=ds)
+        assert {m.name for m in report.models} == {"orders"}
+        assert disposed, "dispose must still be attempted"
+
+    def test_dispose_failure_is_logged_at_warning(
+        self, workspace: Path, caplog
+    ) -> None:
+        """Disposal releases the connection that otherwise blocks external
+        access to the same file, so a failure must be visible above DEBUG."""
+        from slayer.engine.ingestion import _dispose_quietly
+
+        class _ExplodingEngine:
+            def dispose(self):
+                raise RuntimeError("dispose blew up")
+
+        with caplog.at_level(logging.WARNING, logger="slayer.engine.ingestion"):
+            _dispose_quietly(_ExplodingEngine())
+
+        assert any(
+            r.levelno >= logging.WARNING and "dispose failed" in r.getMessage()
+            for r in caplog.records
+        )
 
 
 class TestWrapperContract:

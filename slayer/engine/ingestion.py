@@ -993,16 +993,22 @@ def _build_one_model(
 
 
 def _dispose_quietly(sa_engine: sa.Engine) -> None:
-    """Dispose ``sa_engine``, swallowing disposal errors.
+    """Dispose ``sa_engine``, logging rather than raising on failure.
 
-    Called from ``finally`` blocks: a raising ``dispose()`` would replace the
-    in-flight ingestion exception, so the caller would see a teardown error
-    instead of the driver error that actually failed the run.
+    Called from ``finally`` blocks, so raising would replace the in-flight
+    exception (or turn a successful run into a failure) — the caller would see
+    a teardown error instead of the driver error that actually failed.
+
+    Logged at WARNING, not DEBUG: disposal is what releases the connection so
+    an external ``duckdb.connect(file)`` can open the same file, so a failure
+    here is a real resource leak and needs to be operationally visible.
     """
     try:
         sa_engine.dispose()
     except Exception as exc:  # noqa: BLE001 — teardown must not mask the cause
-        logger.debug("engine dispose failed: %s", exc)
+        logger.warning(
+            "engine dispose failed; the connection may remain open: %s", exc
+        )
 
 
 def _collect_fk_columns(
