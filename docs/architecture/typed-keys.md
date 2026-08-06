@@ -147,9 +147,12 @@ SCALAR_FUNCTIONS = frozenset({
     "nullif", "coalesce", "ifnull",
     # math
     "ln", "log10", "log2", "log", "exp", "sqrt", "pow", "power",
-    "abs", "floor", "ceil", "round",
+    "abs", "floor", "ceil", "ceiling", "round", "sign",
     # string hygiene (was DEV-1378's STRING_HYGIENE_OPS)
-    "lower", "upper", "trim", "replace", "substr", "instr", "length", "concat",
+    "lower", "upper", "trim", "ltrim", "rtrim",
+    "replace", "substr", "substring", "instr", "length", "concat",
+    # pattern match — emits the SQL LIKE operator
+    "like",
 })
 ```
 

@@ -57,11 +57,13 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, TimeGranularity
+from slayer.core.formula import SCALAR_PASSTHROUGH
 from slayer.core.errors import (
     RenderContextMissingFacilityError,
     UnknownReferenceError,
 )
 from slayer.core.keys import (
+    SCALAR_FUNCTIONS,
     AggregateKey,
     ArithmeticKey,
     BetweenKey,
@@ -1839,6 +1841,113 @@ class TestScalarArity:
             name=name, args=args, dialect=get_dialect("postgres"),
         )
         assert out.sql(dialect="postgres")
+
+
+class TestNewlyAdmittedScalars:
+    """Five scalars the PARSER already advertised but the BINDER rejected.
+
+    ``SCALAR_PASSTHROUGH`` (parser) and ``SCALAR_FUNCTIONS`` (binder) had
+    drifted: a user writing ``ceiling(amount)`` got it past the parser and then
+    hit ``UnknownFunctionError`` at bind — while the parser's own
+    "Supported scalar functions" error text still advertised the name. These
+    five are admitted because they need no semantic ruling: every Tier-1
+    dialect emits one correct form.
+    """
+
+    NEW = ["ceiling", "sign", "ltrim", "rtrim", "substring"]
+
+    @pytest.mark.parametrize("name", NEW)
+    def test_is_admitted_by_the_binder(self, name) -> None:
+        assert name in SCALAR_FUNCTIONS
+
+    @pytest.mark.parametrize(
+        "predicate,expected_fragment",
+        [
+            ("ceiling(amount) > 25", "CEIL("),
+            ("sign(amount) > 0", "SIGN("),
+            ("ltrim(status) = 'new'", "LTRIM("),
+            ("rtrim(status) = 'new'", "RTRIM("),
+            ("substring(status, 1, 3) = 'new'", "SUBSTRING("),
+        ],
+    )
+    async def test_binds_renders_and_executes(
+        self, e2e, predicate, expected_fragment,
+    ) -> None:
+        """Not just "the binder accepts it" — the SQL has to run."""
+        resp = await e2e.execute(
+            SlayerQuery(
+                source_model="orders",
+                measures=[ModelMeasure(formula="*:count", name="n")],
+                filters=[predicate],
+            ),
+        )
+        assert expected_fragment in (resp.sql or ""), resp.sql
+        assert resp.data, resp.sql
+
+    @pytest.mark.parametrize(
+        "name,argc",
+        [("ceiling", 2), ("ceiling", 3), ("sign", 2),
+         ("ltrim", 2), ("rtrim", 2), ("substring", 1), ("substring", 4)],
+    )
+    def test_wrong_arity_is_still_refused(self, name, argc) -> None:
+        """The arities are pinned tight for concrete reasons, not caution.
+
+        ``ceiling(x, y)`` silently emits ``CEIL(x, y)`` and ``ceiling(x, y, z)``
+        becomes DuckDB's unrelated ``CEIL(x TO z)`` rounding form;
+        ``substring`` with four arguments drops one. The 2-arg trims are
+        excluded because sqlglot emits a literal ``LTRIM(str, chars)`` for some
+        targets while MySQL's ``LTRIM`` takes one argument — SQL the server
+        would reject.
+        """
+        args = [exp.column(f"c{i}") for i in range(argc)]
+        dialect = get_dialect("postgres")
+        with pytest.raises(NotImplementedError):
+            render_scalar_call(name=name, args=args, dialect=dialect)
+
+    @pytest.mark.parametrize("name", NEW)
+    @pytest.mark.parametrize(
+        "dialect",
+        ["sqlite", "postgres", "duckdb", "mysql", "clickhouse",
+         "tsql", "bigquery", "snowflake"],
+    )
+    def test_every_tier1_dialect_emits_and_keeps_every_argument(
+        self, name, dialect,
+    ) -> None:
+        """The reason these five are the "free" set: one correct form each,
+        with no argument silently dropped on any backend."""
+        argc = 2 if name == "substring" else 1
+        args = [exp.column(f"c{i}") for i in range(argc)]
+        out = render_scalar_call(
+            name=name, args=args, dialect=get_dialect(dialect),
+        ).sql(dialect=dialect)
+        for i in range(argc):
+            assert f"c{i}" in out, f"{name} dropped c{i} on {dialect}: {out}"
+
+
+class TestParserAndBinderScalarSetsAgree:
+    """A tripwire on the remaining parser/binder divergence.
+
+    ``SCALAR_PASSTHROUGH`` still admits four names the binder does not. Each
+    needs a decision this PR deliberately does not make: ``greatest`` / ``least``
+    fall back to SQLite's ``MAX(a, b)`` / ``MIN(a, b)``, which return NULL when
+    an argument is NULL where Postgres ignores NULLs; ``trunc`` has four target
+    forms including T-SQL ``ROUND(x, 0, 1)`` and a lowercase ClickHouse
+    spelling; and ``mod`` is operator-shaped, so it does not even build through
+    the shared scalar policy today.
+
+    Pinned as an exact set so neither side can drift again unnoticed — and so
+    admitting one of the four is a deliberate edit here, not a silent one.
+    """
+
+    def test_parser_only_names_are_exactly_the_deferred_four(self) -> None:
+        assert SCALAR_PASSTHROUGH - SCALAR_FUNCTIONS == {
+            "greatest", "least", "mod", "trunc",
+        }
+
+    def test_like_is_the_only_binder_only_name(self) -> None:
+        """``like`` is an operator, not a pass-through function — the parser
+        handles it through its own internal ``__like__`` form."""
+        assert SCALAR_FUNCTIONS - SCALAR_PASSTHROUGH == {"like"}
 
 
 class TestArityIsRejectedAtBindTime:
