@@ -416,7 +416,6 @@ class TestWarningTypeHierarchy:
         assert kinds == {"normalization", "unreachable_filter_dropped"}, kinds
 
 
-@pytest.mark.asyncio
 class TestLowerLayersStaySilent:
     """The emission is at the BOUNDARY. Planning and rendering must not warn on
     their own — otherwise 'exactly once' holds only by luck of deduplication."""
@@ -432,7 +431,7 @@ class TestLowerLayersStaySilent:
         """
         return [w for w in caught if "warehouses.code" in str(w.message)]
 
-    async def test_planning_emits_no_python_warning(self) -> None:
+    def test_planning_emits_no_python_warning(self) -> None:
         from slayer.engine.source_bundle import ResolvedSourceBundle
         from slayer.engine.stage_planner import plan_query
 
@@ -448,7 +447,7 @@ class TestLowerLayersStaySilent:
             "at the engine boundary"
         )
 
-    async def test_rendering_emits_no_python_warning(self) -> None:
+    def test_rendering_emits_no_python_warning(self) -> None:
         from slayer.engine.source_bundle import ResolvedSourceBundle
         from slayer.engine.stage_planner import plan_query
         from slayer.sql.generator import SQLGenerator

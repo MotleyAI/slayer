@@ -1967,8 +1967,6 @@ def _format_json(
     would break ``json.loads`` on exactly the queries a caller most needs to
     inspect (DEV-1745 W5).
     """
-    import json
-
     if not warnings:
         return json.dumps(data, default=str)
     return json.dumps({"data": data, "warnings": warnings}, default=str)

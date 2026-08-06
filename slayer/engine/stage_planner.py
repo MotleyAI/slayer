@@ -88,6 +88,7 @@ from slayer.engine.filter_reachability import (
 from slayer.engine.planned import (
     BoundExpr as PlannedBoundExpr,
     BoundFilterId,
+    CrossModelAggregatePlan,
     FilterPhase,
     FilterReachability,
     OrderEntry,
@@ -1557,7 +1558,10 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
 
 
 def _plan_outer_where_filters(
-    *, filters_by_phase: list, cross_model_plans: list, slots: list,
+    *,
+    filters_by_phase: List[FilterPhase],
+    cross_model_plans: List[CrossModelAggregatePlan],
+    slots: List[ValueSlot],
 ) -> List[BoundFilterId]:
     """AGGREGATE-phase filters that must be applied on the OUTER combined
     SELECT instead of as HAVING inside a ``_cm_*`` CTE (DEV-1503).

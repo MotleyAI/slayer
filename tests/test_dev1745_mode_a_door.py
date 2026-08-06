@@ -31,6 +31,8 @@ missing joins rather than an error.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 from sqlglot import exp
 
@@ -121,8 +123,6 @@ class TestDoorSurface:
 
     def test_no_include_dotted_derived_flag_anywhere(self) -> None:
         """The flag is deleted, not threaded through the new door."""
-        import inspect
-
         for name in ("enter_predicate", "enter_expression"):
             fn = getattr(ScopeFrame, name, None)
             if fn is None:
