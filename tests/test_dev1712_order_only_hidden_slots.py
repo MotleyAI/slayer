@@ -47,10 +47,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.errors import (
-    DistinctDimensionValuesError,
-    UnresolvableOrderColumnError,
-)
+from slayer.core.errors import DistinctDimensionValuesError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -436,19 +433,41 @@ class TestJoinedRowColumnRejected:
         # DESC takes each group's MAXIMUM (D10).
         assert re.search(r"(?i)\bMAX\s*\(", sql), sql
 
-    async def test_ungrouped_order_by_derived_crossing_column_rejected(self, engine) -> None:
+    async def test_ungrouped_order_by_derived_crossing_column_resolves(
+        self, engine,
+    ) -> None:
         """A hidden order-only LOCAL DERIVED column whose ``Column.sql`` crosses
-        a join (``cust_region`` = ``customers.region``) is not projected, so its
-        join is never pulled into the base FROM. Ordering on it must be rejected
-        rather than emit an unbound ``ORDER BY`` (CodeRabbit / T3)."""
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            distinct_dimension_values=False,
-            order=[OrderItem(column=ColumnRef(name="cust_region"), direction="desc")],
+        a join (``cust_region`` = ``customers.region``) used to be rejected: it
+        is not projected, so its join was never pulled into the base FROM and
+        the sort term would have been unbound.
+
+        DEV-1747 D9 pulls it. Law 1 applies to a sort key exactly as it does to
+        a filter ref, so the join is bound and the term emits the same split
+        reference the BARE joined sort key emits — the two spellings name one
+        column, which is the consistency DEV-1735 asked for. Pinned positively
+        against the bare form rather than against a literal, so the two cannot
+        drift apart again."""
+        def _q(column: ColumnRef) -> SlayerQuery:
+            return SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                distinct_dimension_values=False,
+                order=[OrderItem(column=column, direction="desc")],
+            )
+
+        derived_sql = await _sql(engine, _q(ColumnRef(name="cust_region")))
+        bare_sql = await _sql(engine, _q(ColumnRef(name="customers.region")))
+
+        assert ("customers", "region") in _outer_order_by_columns(derived_sql), (
+            derived_sql
         )
-        with pytest.raises(UnresolvableOrderColumnError):
-            await _sql(engine, query)
+        assert (
+            _outer_order_by_columns(derived_sql)
+            == _outer_order_by_columns(bare_sql)
+        ), f"derived:\n{derived_sql}\nbare:\n{bare_sql}"
+        # Law 1 bound the join, and the sort key is still not projected.
+        assert re.search(r"(?i)\bJOIN\b", derived_sql), derived_sql
+        assert _outer_select_columns(derived_sql) == ["orders.status"], derived_sql
 
     async def test_joined_order_ref_colliding_local_leaf_stays_joined(
         self, tmp_path,

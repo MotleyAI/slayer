@@ -2821,6 +2821,7 @@ class SQLGenerator:
             base_render_order=base_render_order, slots_by_id=slots_by_id,
             source_relation=source_relation, source_model=source_model,
             bundle=bundle, scope=host_scope,
+            order_slot_ids=[e.slot_id for e in planned_query.order],
         )
         # WHERE-phase filters referencing joined columns (direct, derived, or
         # Mode-A ``__`` paths) register their joins into the scope too (position
@@ -8697,6 +8698,7 @@ class SQLGenerator:
     def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and registering the joins they cross.
         self, *, base_render_order, slots_by_id, source_relation: str,
         source_model, bundle, scope: ScopeFrame,
+        order_slot_ids: Optional[List[str]] = None,
     ) -> Dict[str, exp.Expression]:
         """Pre-expand derived (``ColumnSqlKey``) ROW dimensions and derived TIME
         dimensions for the base SELECT: inline sibling/joined derived refs
@@ -8704,6 +8706,16 @@ class SQLGenerator:
         ``scope.join_paths`` (Law 1 — the join-discovery side effect), and return
         the expanded-expr-by-slot-id map the render branch reads from. Extracted
         from ``_build_base_select_for_planned``.
+
+        ``order_slot_ids`` extends the pass to ORDER-BY-only targets, which are
+        deliberately NOT in ``base_render_order`` — materialising one there
+        would project it and add it to GROUP BY, changing the grain. A hidden
+        derived sort key still crosses whatever its ``Column.sql`` crosses, and
+        Law 1 does not care that ORDER BY is the only thing referencing it: the
+        join has to be in the base FROM or the sort term is unbound. Only ROW
+        slots reach here, so a GROUPED query contributes nothing — the planner
+        has already rewritten its sort key to an aggregate wrap, which is
+        isolated rather than pulled (DEV-1735 / D9).
         """
         from slayer.core.keys import ColumnSqlKey, Phase, TimeTruncKey
 
@@ -8712,7 +8724,11 @@ class SQLGenerator:
                 scope.join_paths.add(path)
 
         derived_expr_by_sid: Dict[str, exp.Expression] = {}
-        for sid in base_render_order:
+        seen_sids: Set[str] = set()
+        for sid in [*base_render_order, *(order_slot_ids or ())]:
+            if sid in seen_sids:
+                continue
+            seen_sids.add(sid)
             slot = slots_by_id.get(sid)
             if slot is None or slot.phase != Phase.ROW:
                 continue
@@ -10565,43 +10581,24 @@ class SQLGenerator:
                 source_relation=source_relation, bundle=bundle,
             )
 
-        # A LOCAL DERIVED column (``ColumnSqlKey``, path empty): resolve its
-        # ``Column.sql`` through a throwaway host scope. That both anchors the
-        # expansion AND surfaces whether the SQL crosses a join. A hidden
-        # order-only derived column is NOT projected, so its join was never
-        # pulled into the base FROM — ordering on it would reference an unbound
-        # table. Reject that (project it), rather than emit invalid SQL; a
-        # non-crossing derived column (e.g. a bare mixed-case identifier)
-        # orders on its expression.
+        # A LOCAL DERIVED column (``ColumnSqlKey``, path empty). Emitted
+        # through the planned-dim helper, so its expansion is quoted
+        # identically to a projected dimension (DEV-1645 mixed-case-safe) —
+        # and, when the ``Column.sql`` reaches through a join, comes out as the
+        # same ``customers__regions.name`` reference the bare joined sort key
+        # emits. That equality is the point of D9: the two spellings name one
+        # column and must sort the same way.
+        #
+        # This used to build a throwaway ``ScopeFrame`` here purely to DETECT
+        # the crossing at render time, and raised when it found one, because
+        # the join had not been pulled into the base FROM. It is pulled now —
+        # ``_expand_derived_row_dims`` walks ORDER BY targets, so Law 1 applies
+        # to a sort key exactly as it does to a projected dimension.
         if (
             source_model is not None
-            and bundle is not None
             and isinstance(row_key, ColumnSqlKey)
             and not row_key.path
         ):
-            # Detect join crossing via a throwaway scope (register-only); the
-            # resolved expr is discarded — its expansion lacks the DEV-1645
-            # mixed-case quoting the planned-dim helper applies.
-            allocator = self._new_allocator()
-            scope = ScopeFrame(
-                scope_id=allocator.next_scope_id(source_relation),
-                root_model=source_model,
-                root_relation=source_relation,
-                bundle=bundle,
-                dialect=self._dialect,
-                allocator=allocator,
-            )
-            scope.resolve(row_key)
-            if scope.join_paths:
-                # The derived column IS local (``orders.cust_region``); it
-                # merely depends on an unpulled join. Report its own qualified
-                # name, not a fabricated ``customers.cust_region``.
-                raise UnresolvableOrderColumnError(
-                    column=row_key.column_name, qualifier=source_relation,
-                )
-            # Non-crossing local derived column — emit through the planned-dim
-            # helper so the expansion is quoted identically to a projected
-            # dimension (mixed-case-safe).
             return self._joined_or_local_dim_expr(
                 path=(), leaf=row_key.column_name,
                 source_model=source_model,
