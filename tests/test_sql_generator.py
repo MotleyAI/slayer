@@ -866,7 +866,12 @@ class TestFields:
         # AST-based generation renders single-unit intervals via sqlglot's
         # per-dialect transpiler — Postgres caps the unit name.
         assert "INTERVAL '90 DAY'" in norm
-        assert '_src._w_dim_0 = _base."orders.status"' in norm
+        # The inner grain comparison is NULL-SAFE: a group whose dimension is
+        # NULL must receive its real windowed value, not NULL. The time-range
+        # bounds above stay plain inequalities — they are a range, not grain.
+        assert (
+            '_src._w_dim_0 IS NOT DISTINCT FROM _base."orders.status"' in norm
+        ), norm
 
     async def test_windowed_sum_preserves_other_time_dim_grain(
         self, generator: SQLGenerator, orders_model: SlayerModel,

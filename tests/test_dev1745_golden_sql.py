@@ -464,9 +464,15 @@ class TestRegenerationGate:
 
 def test_error_entries_record_the_full_message(baseline) -> None:
     """Deferred item 11 — a bare exception TYPE lets any new failure in the
-    same case pass. Every error entry must carry its message."""
+    same case pass. Every error entry must carry its message.
+
+    The baseline currently records NO exceptions: the five ``_cm_`` fragment-join
+    entries were fixed by the one-Mode-A-door work, and the last three (BigQuery
+    dotted-alias corruption in the grain join-back) by DEV-1746 B2. So this now
+    guards the FORMAT rather than the existence of error entries — it is vacuous
+    while the baseline is clean, and constrains the next entry that appears.
+    """
     errors = {k: v for k, v in baseline.items() if isinstance(v, dict)}
-    assert errors, "expected at least one baseline entry to record an exception"
     for key, value in sorted(errors.items()):
         assert value.get("error"), f"{key} has no exception type"
         assert value.get("message", "").strip(), (

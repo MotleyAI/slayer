@@ -56,6 +56,10 @@ from slayer.sql.naming import (
     result_key_from_alias,
 )
 from slayer.sql.render.aggregates import window_agg_class
+from slayer.sql.render.joins import (
+    build_grain_joinback_condition,
+    grain_alias_column,
+)
 from slayer.sql.render.value_expr import (
     render_arithmetic,
     render_scalar_call,
@@ -4015,8 +4019,8 @@ class SQLGenerator:
             base_alias = _alias_of(sid)
             expr = src_scope.resolve(dslot.key)
             src_cols.append(expr.as_(f"_w_dim_{idx}"))
-            join_eqs.append(exp.EQ(
-                this=_src_col(f"_w_dim_{idx}"), expression=_base_col(base_alias),
+            join_eqs.append(self._dialect.build_null_safe_eq(
+                _src_col(f"_w_dim_{idx}"), _base_col(base_alias),
             ))
             grain_aliases.append(base_alias)
 
@@ -4038,8 +4042,8 @@ class SQLGenerator:
                 col_expr=raw, granularity=TimeGranularity(tslot.key.granularity),
             )
             src_cols.append(trunc.as_(f"_w_td_{idx}"))
-            join_eqs.append(exp.EQ(
-                this=_src_col(f"_w_td_{idx}"), expression=_base_col(base_alias),
+            join_eqs.append(self._dialect.build_null_safe_eq(
+                _src_col(f"_w_td_{idx}"), _base_col(base_alias),
             ))
             grain_aliases.append(base_alias)
 
@@ -4904,56 +4908,47 @@ class SQLGenerator:
                     )
             combined_aliases_by_slot_id[plan.aggregate_slot_id] = list(full_aliases)
 
+        # Grain join-backs (P-I). Both plan kinds join back identically — on the
+        # shared grain, null-safely, so a NULL dimension value or a nullable
+        # truncated time bucket keeps its aggregate instead of dropping it. An
+        # EMPTY grain (a scalar aggregate) has nothing to join on and becomes a
+        # CROSS JOIN; the builder signals that by returning ``None``.
         from_clause_str = "FROM _base"
         joined_cte_names: set = set()
-        for plan in planned_query.cross_model_aggregate_plans:
-            cte_name = cm_cte_name_for_plan[plan.aggregate_slot_id]
+        joinback_specs = [
+            (
+                cm_cte_name_for_plan[plan.aggregate_slot_id],
+                joinback_pairs_for_plan.get(plan.aggregate_slot_id, []),
+            )
+            for plan in planned_query.cross_model_aggregate_plans
+        ] + [
+            (
+                wm_cte_name_for_plan[plan.aggregate_slot_id],
+                wm_joinback_pairs_for_plan.get(plan.aggregate_slot_id, []),
+            )
+            for plan in planned_query.windowed_aggregate_plans
+        ]
+        for cte_name, joinback_pairs in joinback_specs:
             if cte_name in joined_cte_names:
                 continue
             joined_cte_names.add(cte_name)
-            joinback_pairs = joinback_pairs_for_plan.get(
-                plan.aggregate_slot_id, [],
-            )
-            if joinback_pairs:
-                # DEV-1708 / Codex F2: the grain join-back uses a dialect-aware
-                # NULL-SAFE equality so NULL dimension values and nullable
-                # truncated time grains join back instead of dropping their
-                # aggregate (a plain ``=`` yields NULL for NULL = NULL).
-                join_parts = [
-                    self._null_safe_join_pair_sql(
-                        left_sql=f'_base.{self._quote_ident(host)}',
-                        right_sql=f'{cte_name}.{self._quote_ident(cte_col)}',
+            on_condition = build_grain_joinback_condition(
+                pairs=[
+                    (
+                        grain_alias_column(alias=host, table="_base"),
+                        grain_alias_column(alias=cte_col, table=cte_name),
                     )
                     for host, cte_col in joinback_pairs
-                ]
-                from_clause_str += (
-                    f"\nLEFT JOIN {cte_name} ON " + _SQL_AND_JOINER.join(join_parts)
-                )
-            else:
-                from_clause_str += f"\nCROSS JOIN {cte_name}"
-
-        # DEV-1714 Stage 10 — LEFT JOIN each ``_wm_`` CTE back to ``_base`` on
-        # the shared grain (null-safe, so NULL-dim / nullable-grain groups keep
-        # a row; the windowed value for a NULL-dim group is NULL — the plain
-        # ``=`` inside the CTE never matches NULL, a documented consequence).
-        for plan in planned_query.windowed_aggregate_plans:
-            cte_name = wm_cte_name_for_plan[plan.aggregate_slot_id]
-            joinback_pairs = wm_joinback_pairs_for_plan.get(
-                plan.aggregate_slot_id, [],
+                ],
+                dialect=self._dialect,
             )
-            if joinback_pairs:
-                join_parts = [
-                    self._null_safe_join_pair_sql(
-                        left_sql=f'_base.{self._quote_ident(host)}',
-                        right_sql=f'{cte_name}.{self._quote_ident(cte_col)}',
-                    )
-                    for host, cte_col in joinback_pairs
-                ]
-                from_clause_str += (
-                    f"\nLEFT JOIN {cte_name} ON " + _SQL_AND_JOINER.join(join_parts)
-                )
-            else:
+            if on_condition is None:
                 from_clause_str += f"\nCROSS JOIN {cte_name}"
+            else:
+                from_clause_str += (
+                    f"\nLEFT JOIN {cte_name} ON "
+                    + on_condition.sql(dialect=self.dialect)
+                )
 
         combined_select_sql = (
             f"SELECT {', '.join(combined_parts)}\n{from_clause_str}"
@@ -7793,40 +7788,29 @@ class SQLGenerator:
                 f'{shifted_cte_name}.{self._quote_ident(input_alias)} AS {self._quote_ident(full_slot_alias)}',
             )
 
-        # JOIN conditions: time equality + every partition equality, all
-        # dialect-aware NULL-SAFE (DEV-1711 / Codex F2). The sjoin is a grain
-        # join-back — a NULL dimension value (e.g. a LEFT-joined ``stores.name``
-        # with no matching store) or a NULL time bucket must match its own group
-        # instead of silently dropping to a NULL shifted value under plain ``=``.
-        #
-        # The predicate is built from AST nodes DIRECTLY — not via
-        # ``_null_safe_join_pair_sql``'s string round-trip — because a dotted
-        # public alias (``orders.created_at``) re-parses on BigQuery/T-SQL as a
-        # multi-part reference and the DEV-1713 alias mangling then corrupts it
-        # (``base.`orders.created_at``` → ``base___orders`.`created_at```). The
-        # alias as a single ``quoted=True`` identifier matches the SELECT parts'
-        # ``_quote_ident`` output byte-for-byte on every dialect and survives the
-        # post-generation mangling intact.
-        def _grain_eq(a: str) -> str:
-            left = exp.Column(
-                this=exp.to_identifier(a, quoted=True),
-                table=exp.to_identifier(prev_cte),
-            )
-            right = exp.Column(
-                this=exp.to_identifier(a, quoted=True),
-                table=exp.to_identifier(shifted_cte_name),
-            )
-            return self._dialect.build_null_safe_eq(left, right).sql(dialect=self.dialect)
-
-        join_conds = [_grain_eq(time_alias)]
-        for _, pk_alias, _ in partition_specs:
-            join_conds.append(_grain_eq(pk_alias))
-
+        # JOIN conditions: time equality + every partition equality. The sjoin is
+        # a grain join-back like any other, so it goes through the shared
+        # null-safe builder — a NULL dimension value (e.g. a LEFT-joined
+        # ``stores.name`` with no matching store) or a NULL time bucket must
+        # match its own group instead of dropping to a NULL shifted value.
+        grain_alias_names = [time_alias] + [
+            pk_alias for _, pk_alias, _ in partition_specs
+        ]
+        sjoin_on = build_grain_joinback_condition(
+            pairs=[
+                (
+                    grain_alias_column(alias=a, table=prev_cte),
+                    grain_alias_column(alias=a, table=shifted_cte_name),
+                )
+                for a in grain_alias_names
+            ],
+            dialect=self._dialect,
+        )
         sjoin_sql = (
             "SELECT " + ", ".join(sjoin_select_parts)
             + f"\nFROM {prev_cte}"
             + f"\nLEFT JOIN {shifted_cte_name}"
-            + "\n    ON " + _SQL_AND_JOINER.join(join_conds)
+            + "\n    ON " + sjoin_on.sql(dialect=self.dialect)
         )
         ctes.append((sjoin_cte_name, sjoin_sql))
 
@@ -8756,10 +8740,10 @@ class SQLGenerator:
                 if p not in out:
                     out.append(p)
 
-        def _derived_paths(*, model, relation, column_name) -> None:
+        def _derived_paths(*, model, relation, column_name, is_root: bool) -> None:
             _scan(self._parse(self._expand_derived_column_sql(
                 source_model=model, source_relation=relation,
-                column_name=column_name, bundle=bundle,
+                column_name=column_name, bundle=bundle, is_root=is_root,
             )))
 
         def _walk(k) -> None:
@@ -8773,10 +8757,18 @@ class SQLGenerator:
                     else source_model
                 )
                 if model is not None:
+                    # ``is_root=False`` for a JOINED derived column: a further
+                    # -joined ref inside its ``sql`` must resolve to the full
+                    # path (``customers_v2`` reaching ``regions`` →
+                    # ``customers_v2__regions``). Rooting it here instead left
+                    # the ref bare, so the scan found no path and the hop was
+                    # never joined — the filter then referenced a table that
+                    # is not in the FROM.
                     _derived_paths(
                         model=model,
                         relation="__".join(k.path) if k.path else source_relation,
                         column_name=k.column_name,
+                        is_root=not k.path,
                     )
             elif isinstance(k, ArithmeticKey):
                 for o in k.operands:
@@ -9400,11 +9392,17 @@ class SQLGenerator:
                         f"resolved source bundle.",
                     )
                 path_alias = "__".join(key.path)
+                # ``is_root=False`` — the column lives on a JOINED model, so a
+                # further-joined ref inside its ``sql`` resolves to the full
+                # path alias rather than the bare child relation. Must match
+                # ``_value_key_join_paths``, which registers the joins by
+                # scanning this same expansion.
                 expanded_sql = self._expand_derived_column_sql(
                     source_model=joined_model,
                     source_relation=path_alias,
                     column_name=key.column_name,
                     bundle=bundle,
+                    is_root=False,
                 )
                 col = next(
                     (c for c in joined_model.columns if c.name == key.column_name),
@@ -10048,12 +10046,9 @@ class SQLGenerator:
                 self._ordered(order_col, ascending=ascending),
             )
 
-        if planned_query.limit is not None:
-            select = select.limit(planned_query.limit)
-        if planned_query.offset is not None:
-            select = select.offset(planned_query.offset)
-
-        return select
+        return self._dialect.apply_pagination(
+            select, limit=planned_query.limit, offset=planned_query.offset,
+        )
 
 
 # ===========================================================================
