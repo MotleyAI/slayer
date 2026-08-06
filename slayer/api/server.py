@@ -104,6 +104,10 @@ class IngestRequest(BaseModel):
     include_tables: list[str] | None = None
     exclude_tables: list[str] | None = None
     schema_name: str | None = None
+    # DEV-1759: ingest recognised ELT/migration housekeeping tables visible
+    # rather than hidden. Governs models this call CREATES — an existing hidden
+    # model is unhidden via edit_model, not by re-ingesting with this set.
+    surface_internals: bool = False
 
 
 class ValidateModelsRequest(BaseModel):
@@ -650,6 +654,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 include_tables=request.include_tables,
                 exclude_tables=request.exclude_tables,
                 schema=request.schema_name,
+                surface_internals=request.surface_internals,
             )
         except SQLAlchemyError as exc:
             # OperationalError / DatabaseError both derive from SQLAlchemyError

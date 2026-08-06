@@ -143,6 +143,13 @@ class IdempotentIngestResult(BaseModel):
     # circular import with ``engine.ingestion``; runtime entries are
     # ``IngestableObject``.
     objects: list[Any] = Field(default_factory=list)
+    # DEV-1759: recognised ELT/migration bookkeeping modelled ``hidden``.
+    # Unlike ``IngestionScanReport.hidden_internals`` (what the scan
+    # CONSTRUCTED), this is EFFECTIVE post-merge state — the additive merge
+    # preserves a persisted ``hidden``, so the scan's verdict is not
+    # necessarily what the user ends up with. Typed ``Any`` to avoid a circular
+    # import; runtime entries are ``HiddenInternal``.
+    hidden_internals: list[Any] = Field(default_factory=list)
 
 
 class AppliedEntry(BaseModel):
