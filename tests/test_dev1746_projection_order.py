@@ -329,14 +329,10 @@ class TestB7DeclarationOrderProjection:
         # inside a nested subquery.
         base_aliases = _alias_suffixes(outer_select_aliases(base_body))
         assert base_aliases == ["created_at", "ltv"], (
-            f"the combined SELECT should carry exactly the created_at grain and "
-            f"one column for the shared slot: {base_aliases}\n{base_body}"
-        )
-        assert base_aliases.count("ltv") == 1, (
-            f"the combined SELECT carries {base_aliases.count('ltv')} columns "
-            f"for the shared slot; a leftover would be appended here and then "
-            f"trimmed by the outer wrap, invisible from the outermost SELECT.\n"
-            f"{base_body}"
+            f"the combined SELECT must carry the grain and exactly ONE column "
+            f"for the shared slot: {base_aliases}. A leftover would be appended "
+            f"here and then trimmed by the outer wrap, invisible from the "
+            f"outermost SELECT.\n{base_body}"
         )
 
         emitted = _alias_suffixes(outer_select_aliases(sql))
