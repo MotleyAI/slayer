@@ -573,13 +573,29 @@ class SqlDialect(BaseModel):
         return out
 
     def _rekey_row(
-        self, row: dict[str, Any], mapping: dict[str, str],
+        self,
+        row: dict[str, Any],
+        mapping: dict[str, str],
+        *,
+        fallback: Callable[[str], str] | None = None,
     ) -> dict[str, Any]:
         """Apply ``mapping`` to one row's keys, refusing to let two keys
-        collapse onto one (which would silently drop a column's values)."""
+        collapse onto one (which would silently drop a column's values).
+
+        ``fallback`` decodes keys absent from ``mapping`` — BigQuery and T-SQL
+        pass their ``___`` -> ``.`` bijection. It must be applied HERE rather
+        than in a separate dict comprehension upstream: pre-decoding into a
+        dict would let two keys collapse before this check ever ran, which is
+        precisely the silent-column-loss this class exists to prevent.
+        """
         out: dict[str, Any] = {}
         for key, value in row.items():
-            decoded = mapping.get(key, key)
+            if key in mapping:
+                decoded = mapping[key]
+            elif fallback is not None:
+                decoded = fallback(key)
+            else:
+                decoded = key
             if decoded in out:
                 raise IdentifierCollisionError(
                     first=key, second=decoded, emitted=decoded,

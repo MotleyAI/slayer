@@ -122,7 +122,11 @@ GOLDEN_SQLITE_REPRO_ORDER = (
 # ---------------------------------------------------------------------------
 
 
-def _chain_models(*, case_colliding_columns: bool = False) -> list[SlayerModel]:
+def _chain_models(
+    *,
+    case_colliding_columns: bool = False,
+    decoy_root_column: str | None = None,
+) -> list[SlayerModel]:
     consumer_columns = [
         Column(name="id", sql="id", type=DataType.INT, primary_key=True),
         Column(name="name", sql="name", type=DataType.TEXT),
@@ -141,6 +145,12 @@ def _chain_models(*, case_colliding_columns: bool = False) -> list[SlayerModel]:
                 Column(name="status", sql="status", type=DataType.TEXT),
                 Column(name="totalAmount", sql="total_amount", type=DataType.DOUBLE),
                 Column(name="subscription_id", sql="subscription_id", type=DataType.INT),
+                *([
+                    # A root column named exactly what a deep join path flattens
+                    # to. Column names permit ``__`` (the query-backed carve-out),
+                    # so this is reachable, not contrived.
+                    Column(name=decoy_root_column, sql="decoy", type=DataType.TEXT),
+                ] if decoy_root_column else []),
             ],
             joins=[ModelJoin(
                 target_model="SandboxSubscription", join_pairs=[["subscription_id", "id"]],
@@ -340,8 +350,10 @@ class TestPremise:
         engine, model = chain
         enriched = await engine._enrich(query=_repro_query(), model=model)
         aliases = public_projection_aliases(enriched)
-        assert LONG_NAME in aliases and LONG_EMAIL in aliases
-        assert _nbytes(LONG_NAME) == 73 and _nbytes(LONG_EMAIL) == 74
+        assert LONG_NAME in aliases
+        assert LONG_EMAIL in aliases
+        assert _nbytes(LONG_NAME) == 73
+        assert _nbytes(LONG_EMAIL) == 74
 
     def test_the_two_aliases_share_a_63_byte_prefix(self) -> None:
         assert LONG_NAME.encode()[:63] == LONG_EMAIL.encode()[:63]
@@ -377,7 +389,8 @@ class TestProjectionAliases:
         outer_names = {n for n, _ in _projection_aliases(selects[0])}
         inner_names = {n for n, _ in _projection_aliases(selects[1])}
         fitted = get_dialect("postgres").fit_alias(LONG_EMAIL)
-        assert fitted in outer_names and fitted in inner_names
+        assert fitted in outer_names
+        assert fitted in inner_names
         _assert_within_limit(sql, 63)
         _assert_no_namespace_collision(sql)
         _assert_order_by_refs_resolve(sql)
@@ -554,10 +567,17 @@ class TestAllProjectionAliases:
         hidden = [a for a in all_projection_aliases(enriched) if a not in public]
         assert any("totalAmount_avg" in a for a in hidden), hidden
 
-    async def test_is_deterministic(self, chain) -> None:
+    async def test_is_stable_across_calls(self, chain) -> None:
+        """Order must not depend on set iteration — the rewrite map is derived
+        from this list."""
         engine, model = chain
         enriched = await engine._enrich(query=_repro_query(), model=model)
-        assert all_projection_aliases(enriched) == all_projection_aliases(enriched)
+        first = all_projection_aliases(enriched)
+        assert first == [
+            LONG_NAME, LONG_EMAIL, "SandboxInvoiceV2.status",
+            "SandboxInvoiceV2.totalAmount_sum", "SandboxInvoiceV2._count",
+        ]
+        assert all_projection_aliases(enriched) == first
 
 
 # ===========================================================================
@@ -634,7 +654,9 @@ class TestCteNames:
         """Several code paths re-derive a CTE's name in order to reference it;
         that must not read as a collision."""
         gen = SQLGenerator(dialect="postgres")
-        assert gen._cte_name("_cm_", TWIN_A) == gen._cte_name("_cm_", TWIN_A)
+        first = gen._cte_name("_cm_", TWIN_A)
+        second = gen._cte_name("_cm_", TWIN_A)  # hits the memo, must not raise
+        assert second == first
 
     def test_cte_allocator_resets_per_statement(self) -> None:
         """One generator instance generates many statements; allocation is
@@ -728,7 +750,8 @@ class TestVirtualModelShorts:
         for proj in select.expressions:
             assert isinstance(proj, exp.Alias), f"{proj.sql()} is not an aliased projection"
             ident = proj.args.get("alias")
-            assert isinstance(ident, exp.Identifier) and ident.quoted, (
+            assert isinstance(ident, exp.Identifier), f"{ident} is not an Identifier"
+            assert ident.quoted, (
                 f"short alias {ident} must be dialect-quoted\n{vm.sql}"
             )
 
@@ -764,6 +787,34 @@ class TestVirtualModelShorts:
         )
         with pytest.raises(IdentifierCollisionError):
             await engine._query_as_model(inner_query=query)
+
+    async def test_two_dimensions_landing_on_one_short_raise(self, tmp_path) -> None:
+        """Two DIMENSIONS whose shorts are exactly equal must be caught.
+
+        `SandboxSubscription.SandboxCustomer.SandboxConsumer.name` flattens to
+        `SandboxSubscription__SandboxCustomer__SandboxConsumer__name`, which a
+        root column may also be named literally (column names permit `__`).
+        Both become `Column.name` on the virtual model.
+
+        Enrichment's own guard does NOT cover this: `_occupied_shorts` is
+        populated from dimensions but only checked against MEASURES, so
+        dimension-vs-dimension slips through. It also flattens without length
+        fitting, so two shorts that differ before fitting and collide after it
+        would pass there too. Hence the check at the emission boundary — and it
+        has to key on the owning alias, since comparing the two shorts to each
+        other finds them equal and waves the pair through.
+        """
+        flat = "SandboxSubscription__SandboxCustomer__SandboxConsumer__name"
+        engine, _ = await _build_engine(tmp_path, decoy_root_column=flat)
+        query = SlayerQuery(
+            source_model="SandboxInvoiceV2",
+            dimensions=[ColumnRef(name=f"{DEEP}.name"), ColumnRef(name=flat)],
+            measures=[{"formula": "*:count"}],
+        )
+        with pytest.raises(IdentifierCollisionError) as exc:
+            await engine._query_as_model(inner_query=query)
+        assert "query-backed model column" in str(exc.value)
+        assert flat in str(exc.value)
 
     async def test_nested_dag_two_levels_agree(self, chain) -> None:
         """Two stages: stage 2 references stage 1's virtual-model columns."""

@@ -3314,16 +3314,20 @@ class SlayerQueryEngine:
         def _short_sql(short: str) -> str:
             return exp.Identifier(this=short, quoted=True).sql(dialect=dialect)
 
-        # DEV-1756: the shorts share one output-column namespace. Two that
-        # differ only by case would still collide were they ever emitted bare,
-        # and two that fit to the same string always collide, so validate the
-        # whole allocation before emitting.
+        # DEV-1756: the shorts share one output-column namespace, and each also
+        # becomes a ``Column.name`` on the virtual model. Validate the whole
+        # allocation keyed by the OWNING inner alias, which catches three
+        # things at once: two shorts that fit to the same string, two that
+        # differ only by case, and — the case ``_alias_to_short`` cannot
+        # prevent — two distinct aliases landing on the identical short because
+        # a user-declared cross-model ``name`` bypassed the flattening above
+        # and happened to match another column's canonical flat.
         short_owner: dict[str, str] = {}
-        for _, short, _, _, _, _ in column_map:
-            prior = short_owner.setdefault(short.casefold(), short)
-            if prior != short:
+        for alias, short, _, _, _, _ in column_map:
+            prior_alias = short_owner.setdefault(short.casefold(), alias)
+            if prior_alias != alias:
                 raise IdentifierCollisionError(
-                    first=prior, second=short, emitted=short.casefold(),
+                    first=prior_alias, second=alias, emitted=short,
                     dialect=dialect,
                     limit=get_dialect(dialect).max_identifier_bytes,
                     namespace="query-backed model column",

@@ -105,8 +105,17 @@ class TestFitIdentifierCore:
         name = "Sandbox" * 80  # 560 bytes — over every configured limit
         assert _nbytes(fit_identifier(name, limit=limit)) <= limit
 
-    def test_deterministic_across_calls(self) -> None:
-        assert fit_identifier(LONG_EMAIL, limit=63) == fit_identifier(LONG_EMAIL, limit=63)
+    def test_output_is_pinned_exactly(self) -> None:
+        """Pin the whole result, not `f(x) == f(x)` — which proves nothing
+        about a pure function. Also documents the head/tail split concretely:
+        27 head bytes, the 10-byte marker, 26 tail bytes."""
+        expected = (
+            "SandboxInvoiceV2.SandboxSub"
+            f"_{hashlib.sha256(LONG_EMAIL.encode()).hexdigest()[:HASH_LEN]}_"
+            "omer.SandboxConsumer.email"
+        )
+        assert fit_identifier(LONG_EMAIL, limit=63) == expected
+        assert _nbytes(expected) == 63
 
     def test_marker_is_exactly_sha256_of_the_full_original(self) -> None:
         """Pin the digest's ALGORITHM, POSITION and INPUT — not merely that
@@ -145,7 +154,8 @@ class TestFitIdentifierCore:
         a = fit_identifier(LONG_NAME, limit=63)
         b = fit_identifier(LONG_EMAIL, limit=63)
         assert a != b
-        assert a.endswith("name") and b.endswith("email")
+        assert a.endswith("name")
+        assert b.endswith("email")
 
     def test_distinct_inputs_sharing_63_byte_prefix_produce_distinct_outputs(self) -> None:
         a = fit_identifier(LONG_NAME, limit=63)
@@ -458,9 +468,11 @@ class TestAliasRewriteMap:
         import slayer.sql.dialects._identifier_fit as fitmod
 
         monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
+        pg = get_dialect("postgres")
         with pytest.raises(IdentifierCollisionError) as exc:
-            get_dialect("postgres").alias_rewrite_map([TWIN_A, TWIN_B])
-        assert TWIN_A in str(exc.value) and TWIN_B in str(exc.value)
+            pg.alias_rewrite_map([TWIN_A, TWIN_B])
+        assert TWIN_A in str(exc.value)
+        assert TWIN_B in str(exc.value)
 
     def test_shortened_form_equal_to_an_existing_short_alias_raises(self) -> None:
         """The guard must consider IDENTITY entries too. A short alias whose
@@ -476,9 +488,11 @@ class TestAliasRewriteMap:
         import slayer.sql.dialects._identifier_fit as fitmod
 
         monkeypatch.setattr(fitmod, "_digest", lambda name: "deadbeef")
+        pg = get_dialect("postgres")
         with pytest.raises(IdentifierCollisionError) as exc:
-            get_dialect("postgres").alias_rewrite_map([TWIN_A, TWIN_B])
-        assert "postgres" in str(exc.value) and "63" in str(exc.value)
+            pg.alias_rewrite_map([TWIN_A, TWIN_B])
+        assert "postgres" in str(exc.value)
+        assert "63" in str(exc.value)
 
     def test_is_a_slayer_error_and_value_error(self) -> None:
         from slayer.core.errors import SlayerError
@@ -500,3 +514,22 @@ class TestDecodeCollision:
         rows = [{pg.fit_alias(LONG_EMAIL): 1, LONG_EMAIL: 2}]
         with pytest.raises(IdentifierCollisionError):
             pg.decode_result_keys(rows, aliases=[LONG_EMAIL])
+
+    @pytest.mark.parametrize("dialect", ["bigquery", "tsql"])
+    def test_mangle_fallback_collision_raises(self, dialect: str) -> None:
+        """The dot-mangling dialects decode unmapped keys through
+        ``decode_alias``. That fallback must run INSIDE the duplicate check —
+        pre-decoding into a dict first would let ``orders___status`` and
+        ``orders.status`` collapse onto one key with one value silently
+        dropped, before any collision could be observed."""
+        d = get_dialect(dialect)
+        rows = [{"orders___status": 1, "orders.status": 2}]
+        with pytest.raises(IdentifierCollisionError):
+            d.decode_result_keys(rows, aliases=[])
+
+    @pytest.mark.parametrize("dialect", ["bigquery", "tsql"])
+    def test_mangle_fallback_preserves_every_value(self, dialect: str) -> None:
+        """No key is dropped when nothing collides."""
+        d = get_dialect(dialect)
+        got = d.decode_result_keys([{"a___b": 1, "c___d": 2}], aliases=[])
+        assert got == [{"a.b": 1, "c.d": 2}]

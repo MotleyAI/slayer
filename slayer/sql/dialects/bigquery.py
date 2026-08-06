@@ -187,13 +187,13 @@ class BigqueryDialect(SqlDialect):
         DEV-1756: keys produced by a length-fitted alias are not recoverable
         from the key alone, so the ``emitted -> canonical`` map is consulted
         first; anything outside it falls back to the pure ``___`` -> ``.``
-        bijection, preserving today's behaviour for short aliases.
+        bijection, preserving today's behaviour for short aliases. Both steps
+        happen inside ``_rekey_row`` in ONE pass — pre-decoding into a dict
+        first would let two keys collapse before the duplicate check ran.
         """
-        mapping = self.decode_alias_map(aliases)
         return [
             self._rekey_row(
-                {decode_alias(k) if k not in mapping else k: v for k, v in row.items()},
-                mapping,
+                row, self.decode_alias_map(aliases), fallback=decode_alias,
             )
             for row in rows
         ]
