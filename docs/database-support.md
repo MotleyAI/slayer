@@ -52,8 +52,8 @@ form that keeps both the root model and the column name readable, with an
 8-hex-character SHA-256 of the full original in between:
 
 ```
-orders.customers.regions.districts.neighbourhood_name    (over 63 bytes)
-  ->  orders.customers.region_4f2a91c7_ricts.neighbourhood_name
+orders.customers.regions.districts.neighbourhoods.neighbourhood_name   (68 bytes)
+  ->  orders.customers.regions.di_e6932600_urhoods.neighbourhood_name  (63 bytes)
 ```
 
 Two properties matter for consumers:

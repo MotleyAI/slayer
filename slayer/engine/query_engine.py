@@ -81,6 +81,7 @@ from slayer.sql.dialects._identifier_fit import fit_identifier
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import _runtime_fingerprint
 from slayer.sql.generator import SQLGenerator
+from slayer.sql.reserved_keywords import SLAYER_RESERVED_KEYWORDS
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.storage.base import StorageBackend
 
@@ -3239,9 +3240,23 @@ class SlayerQueryEngine:
             # Strip source model prefix
             stripped = alias.split(".", 1)[-1] if "." in alias else alias
             # Replace remaining dots with __ to encode the original join path
+            return _fit_short(stripped.replace(".", "__"))
+
+        def _fit_short(name: str) -> str:
+            """DEV-1756: bound a virtual-model short to the dialect's budget.
+
+            Every short reaches the SQL as an output-column alias AND becomes a
+            ``Column.name`` downstream, so they all need this — not just the
+            ``_alias_to_short`` flattened ones. A measure/transform/expression
+            ``name``, or a user-declared cross-model rename, is supplied by the
+            caller and can be arbitrarily long; two such names sharing a
+            63-byte prefix are silently truncated onto one column by Postgres,
+            and the ``short_owner`` check below cannot see it because they
+            differ as Python strings. Identity under the limit, so ordinary
+            names are untouched.
+            """
             return fit_identifier(
-                stripped.replace(".", "__"),
-                limit=get_dialect(dialect).max_identifier_bytes,
+                name, limit=get_dialect(dialect).max_identifier_bytes,
             )
 
         # (inner_alias, short_name, data_type, label, description, format)
@@ -3265,14 +3280,14 @@ class SlayerQueryEngine:
                 measure_name=src_name,
                 aggregation=m.aggregation,
             )
-            column_map.append((m.alias, m.name, DataType.DOUBLE, label, desc, fmt))
+            column_map.append((m.alias, _fit_short(m.name), DataType.DOUBLE, label, desc, fmt))
         for t in enriched.transforms:
             column_map.append(
-                (t.alias, t.name, DataType.DOUBLE, t.label, None, NumberFormat(type=NumberFormatType.FLOAT))
+                (t.alias, _fit_short(t.name), DataType.DOUBLE, t.label, None, NumberFormat(type=NumberFormatType.FLOAT))
             )
         for e in enriched.expressions:
             column_map.append(
-                (e.alias, e.name, DataType.DOUBLE, e.label, None, NumberFormat(type=NumberFormatType.FLOAT))
+                (e.alias, _fit_short(e.name), DataType.DOUBLE, e.label, None, NumberFormat(type=NumberFormatType.FLOAT))
             )
         for cm in enriched.cross_model_measures:
             # DEV-1448: when the user supplied an explicit ``name``, cm.name is
@@ -3291,7 +3306,10 @@ class SlayerQueryEngine:
             # leak into the virtual model's column set. Only user-declared
             # renames qualify for the bare-name short.
             if cm.user_declared and cm.name and "." not in cm.name:
-                short = cm.name
+                # DEV-1756: still length-fitted. A rename the backend would
+                # truncate is not the name the user gets either way; fitting at
+                # least makes it deterministic and collision-checked.
+                short = _fit_short(cm.name)
             else:
                 short = _alias_to_short(cm.alias)
             column_map.append((cm.alias, short, DataType.DOUBLE, cm.label, None, cm.format))
@@ -3304,15 +3322,27 @@ class SlayerQueryEngine:
         # would either fail to parse (MySQL) or reference an alias the
         # mangled inner subquery doesn't expose (T-SQL).
         # DEV-1686: the inner ``alias`` is always dialect-quoted; the ``short``
-        # output alias must be too. It was originally quoted only for reserved
-        # words, but a BARE mixed-case short is case-folded by Postgres while
-        # the outer stage references it quoted (DEV-1645 quotes mixed-case
-        # ``Column.sql`` leaves) — so any query-backed model with a mixed-case
-        # join path failed with ``UndefinedColumnError``. Quoting always fixes
-        # that and, per DEV-1756, keeps these names out of the case-folding
-        # namespace entirely.
+        # output alias is quoted under exactly the policy the DOWNSTREAM
+        # reference uses, because the two have to agree.
+        #
+        # A downstream ``Column(sql=short)`` is parsed by the generator, where
+        # ``_quote_mixed_case_identifiers`` (DEV-1645) quotes a leaf iff it
+        # contains an uppercase letter, and ``prequote_reserved_identifiers``
+        # (DEV-1686) quotes reserved words. So:
+        #   * reserved / mixed-case -> quoted BOTH sides. This is the DEV-1756
+        #     fix: emitted bare, a mixed-case short was case-folded by Postgres
+        #     while the outer stage referenced it quoted, making any
+        #     query-backed model with a mixed-case join path or column
+        #     unqueryable (``UndefinedColumnError``, seen on a live server).
+        #   * all-lowercase -> bare BOTH sides, so it folds consistently.
+        # Quoting unconditionally instead breaks the lowercase case on
+        # UPPER-folding backends (Snowflake, Oracle): the wrapper would define a
+        # case-sensitive ``"status"`` while the bare reference resolves as
+        # ``STATUS``.
         def _short_sql(short: str) -> str:
-            return exp.Identifier(this=short, quoted=True).sql(dialect=dialect)
+            if short.lower() in SLAYER_RESERVED_KEYWORDS or any(c.isupper() for c in short):
+                return exp.Identifier(this=short, quoted=True).sql(dialect=dialect)
+            return short
 
         # DEV-1756: the shorts share one output-column namespace, and each also
         # becomes a ``Column.name`` on the virtual model. Validate the whole
@@ -3375,7 +3405,9 @@ class SlayerQueryEngine:
                 agg_shorts.add(_alias_to_short(cm.alias))
         for m in enriched.measures:
             if m.from_cross_model_intercept:
-                agg_shorts.add(m.name)
+                # DEV-1756: same fitting the ``column_map`` entry got, or the
+                # breadcrumb would name a column the virtual model never has.
+                agg_shorts.add(_fit_short(m.name))
 
         # DEV-1449: record the lineage breadcrumb so outer-stage dotted-ref
         # lookup can strip the right ancestor prefix and find the flat

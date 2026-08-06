@@ -618,7 +618,8 @@ class SqlDialect(BaseModel):
         ``aliases`` whose fitted form differs has its dialect-quoted token
         replaced, everywhere it occurs (inner ``AS``, outer wrap projection,
         ORDER BY, CTE column references). Driven by the query's own alias set
-        rather than a length regex, so it cannot reach into a string literal.
+        rather than a length regex, which bounds what it can touch inside a
+        string literal — see :func:`substitute_quoted`.
 
         ``aliases`` defaults to empty, which makes this a no-op — every caller
         that does not supply an alias set keeps today's behaviour exactly.

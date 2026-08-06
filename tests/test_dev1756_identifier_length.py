@@ -739,20 +739,72 @@ class TestVirtualModelShorts:
         names = [c.name for c in vm.columns]
         assert len(names) == len(set(names))
 
-    async def test_short_aliases_are_quoted(self, chain) -> None:
-        """Emitted bare, a mixed-case short is case-folded by Postgres while
-        the outer stage references it quoted -> UndefinedColumnError. Quoting
-        the alias fixes that AND removes the case-fold collision exposure."""
+    async def test_short_alias_quoting_matches_the_downstream_reference(
+        self, chain,
+    ) -> None:
+        """The wrapper's ``AS <short>`` must be quoted exactly when the
+        downstream ``Column(sql=short)`` reference is.
+
+        Emitted bare, a MIXED-CASE short is case-folded by Postgres while the
+        outer stage references it quoted (``_quote_mixed_case_identifiers``)
+        -> ``UndefinedColumnError``. But quoting unconditionally breaks the
+        mirror image on UPPER-folding backends: a case-sensitive ``"status"``
+        would be defined while the bare reference resolves as ``STATUS``. The
+        contract is agreement, not quoting.
+        """
         engine, _ = chain
         vm = await engine._query_as_model(inner_query=_repro_query())
+        gen = SQLGenerator(dialect="postgres")
         select = _wrapper_select(vm.sql)
         assert select.expressions, vm.sql
+        by_short = {c.name: c for c in vm.columns}
         for proj in select.expressions:
             assert isinstance(proj, exp.Alias), f"{proj.sql()} is not an aliased projection"
             ident = proj.args.get("alias")
             assert isinstance(ident, exp.Identifier), f"{ident} is not an Identifier"
-            assert ident.quoted, (
-                f"short alias {ident} must be dialect-quoted\n{vm.sql}"
+            short = ident.this
+            assert short in by_short, f"{short!r} is not a virtual-model column\n{vm.sql}"
+            # How the generator will emit a downstream reference to this column.
+            ref = gen._parse(by_short[short].sql).find(exp.Column)
+            assert ref is not None
+            assert ident.quoted == ref.this.quoted, (
+                f"short {short!r} is emitted {'quoted' if ident.quoted else 'bare'} "
+                f"in the wrapper but referenced "
+                f"{'quoted' if ref.this.quoted else 'bare'} downstream — a "
+                f"case-folding backend resolves those to different columns\n{vm.sql}"
+            )
+
+    async def test_mixed_case_short_is_quoted(self, chain) -> None:
+        """The original DEV-1756 defect: a mixed-case short emitted bare."""
+        engine, _ = chain
+        vm = await engine._query_as_model(inner_query=_repro_query())
+        mixed = [
+            proj for proj in _wrapper_select(vm.sql).expressions
+            if isinstance(proj, exp.Alias)
+            and any(c.isupper() for c in proj.args["alias"].this)
+        ]
+        assert mixed, f"fixture should produce mixed-case shorts\n{vm.sql}"
+        for proj in mixed:
+            assert proj.args["alias"].quoted, (
+                f"mixed-case short {proj.args['alias'].this!r} must be quoted "
+                f"or Postgres folds it out from under the reference\n{vm.sql}"
+            )
+
+    async def test_lowercase_short_stays_bare(self, chain) -> None:
+        """The Snowflake/Oracle mirror image: an all-lowercase short must NOT
+        be quoted, or the case-sensitive definition stops matching the bare
+        reference that those backends fold to upper."""
+        engine, _ = chain
+        vm = await engine._query_as_model(inner_query=_repro_query())
+        lower = [
+            proj for proj in _wrapper_select(vm.sql).expressions
+            if isinstance(proj, exp.Alias)
+            and not any(c.isupper() for c in proj.args["alias"].this)
+        ]
+        assert lower, f"fixture should produce lowercase shorts\n{vm.sql}"
+        for proj in lower:
+            assert not proj.args["alias"].quoted, (
+                f"lowercase short {proj.args['alias'].this!r} must stay bare\n{vm.sql}"
             )
 
     async def test_inner_and_wrapper_agree_on_the_fitted_alias(self, chain) -> None:
@@ -815,6 +867,38 @@ class TestVirtualModelShorts:
             await engine._query_as_model(inner_query=query)
         assert "query-backed model column" in str(exc.value)
         assert flat in str(exc.value)
+
+    async def test_caller_supplied_measure_names_are_fitted(self, chain) -> None:
+        """A measure/transform/expression ``name`` is caller-supplied and
+        bypasses ``_alias_to_short``, so it needs its own fitting.
+
+        These land in ``column_map`` verbatim, which means they reach the SQL as
+        ``AS "<name>"`` AND become ``Column.name``. Two over-limit names sharing
+        a 63-byte prefix are truncated onto one column by Postgres, and the
+        ``short_owner`` check cannot see it — they differ as Python strings.
+        """
+        engine, _ = chain
+        long_a = "z" * 63 + "b"   # 64 bytes
+        long_b = "z" * 63 + "c"   # 64 bytes, identical first 63
+        assert long_a[:63] == long_b[:63]
+        query = SlayerQuery(
+            source_model="SandboxInvoiceV2",
+            dimensions=[ColumnRef(name="status")],
+            measures=[
+                {"formula": "totalAmount:sum", "name": long_a},
+                {"formula": "totalAmount:avg", "name": long_b},
+            ],
+        )
+        vm = await engine._query_as_model(inner_query=query)
+        names = [c.name for c in vm.columns]
+        for name in names:
+            assert _nbytes(name) <= 63, f"{name!r} is {_nbytes(name)} bytes"
+        # The real defect: distinct AFTER the server's 63-byte truncation.
+        truncated = [n.encode()[:63] for n in names]
+        assert len(set(truncated)) == len(truncated), (
+            f"two shorts collapse onto one 63-byte name: {names}"
+        )
+        assert long_a not in vm.sql and long_b not in vm.sql, vm.sql
 
     async def test_nested_dag_two_levels_agree(self, chain) -> None:
         """Two stages: stage 2 references stage 1's virtual-model columns."""

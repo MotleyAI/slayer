@@ -19,8 +19,10 @@ Two primitives live here:
 
 :func:`substitute_quoted`
     Rewrites quoted identifier tokens in emitted SQL. Driven by an exact
-    canonical->emitted map rather than a length regex, so it can never reach
-    into a string literal that happens to contain a long quoted-looking span.
+    canonical->emitted map rather than a length regex, so — unlike a regex over
+    arbitrary quoted spans — the only text it can reach inside a string literal
+    is the exact quoted spelling of one of *this query's own* over-limit
+    aliases. See its docstring for the residual case.
 
 Sibling of :mod:`slayer.sql.dialects._alias_mangle` (the BigQuery/T-SQL dotted
 alias codec) and composes with it: those dialects size against ``encode_alias``
@@ -152,6 +154,14 @@ def substitute_quoted(
     Only *quoted* occurrences move. A bare occurrence of the same text is a
     different identifier — a table alias, say — and is left alone, which is what
     keeps the deferred join-path-alias surface (DEV-1743) out of scope here.
+
+    This is a string pass, not an AST pass, so it is not literal-aware. Being
+    keyed to an exact alias set rather than a length regex bounds the exposure
+    to one contrived case: a string literal containing the exact dialect-quoted
+    spelling of an over-limit alias *of the same query* (``note = '"Root.a.b.
+    <62 more bytes>"'``) would have its contents rewritten. A regex over quoted
+    spans — which the BigQuery/T-SQL dot-manglers already run over this same
+    SQL — has strictly wider exposure, so this pass does not add a risk class.
     """
     if not mapping:
         return sql
