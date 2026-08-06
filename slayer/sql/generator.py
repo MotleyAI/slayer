@@ -4645,20 +4645,40 @@ class SQLGenerator:
             base_has_agg = False
             base_group_by: Dict[str, exp.Expression] = {}
         else:
-            # Filters routed to any CTE (WHERE or HAVING) must NOT
-            # double-apply at the host base — nor pull their joins into
-            # ``_base`` (the predicate runs in the ``_cm_*`` CTE).
-            # ``applied_filter_ids`` is the audit union of where + having
-            # on each plan.
+            # Which host filters ``_base`` must NOT apply.
+            #
+            # Only the ones it CANNOT apply. A ``_cm_`` CTE is joined back with
+            # a LEFT JOIN on the query grain, which propagates a value but not
+            # an EXCLUSION: a host row whose group the CTE filtered away does
+            # not disappear, it arrives with a NULL measure. So a predicate
+            # applied only in the CTE silently turns "exclude these rows" into
+            # "blank out their measure", and the user gets rows they asked not
+            # to see (DEV-1747 B6, second instance).
+            #
+            # ROW-phase (``where_filter_ids``) predicates are therefore applied
+            # in BOTH places. They are host-evaluable by construction — they
+            # were bound against the host — and applying one at the host is
+            # exactly what the same query does when it carries no cross-model
+            # measure at all, so this is also what makes those two agree.
+            # Double-applying is free: the CTE's copy narrows the aggregate,
+            # the host's copy narrows the rows.
+            #
+            # AGGREGATE-phase (``having_filter_ids``) predicates are the real
+            # exclusion. They reference the isolated aggregate, which does not
+            # live in ``_base`` at all, so the host cannot evaluate them —
+            # trying raises ``NotImplementedError`` (stage 7b.12).
             #
             # DEV-1503: outer-WHERE filters (AGGREGATE-phase host filters
-            # referencing a filtered-local isolated aggregate) also go in
-            # here so ``_base`` does not double-apply them as HAVING on
-            # the bare local aggregate expression (which would reference
-            # an aggregate that no longer lives in ``_base``).
+            # referencing a filtered-local isolated aggregate) join them, so
+            # ``_base`` does not double-apply them as HAVING on a bare local
+            # aggregate expression that no longer lives there.
+            #
+            # The union runs across EVERY plan, which is what made this a
+            # cross-plan defect rather than a per-plan one: a forward plan
+            # routing its filter used to make the host skip it for a re-rooted
+            # sibling that needed it.
             routed_ids: Set[str] = set(outer_where_filter_ids)
             for plan in planned_query.cross_model_aggregate_plans:
-                routed_ids.update(plan.where_filter_ids)
                 routed_ids.update(plan.having_filter_ids)
             (
                 base_select,

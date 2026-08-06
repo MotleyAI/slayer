@@ -760,3 +760,128 @@ class TestRerootedAggregateRefFilter:
             with pytest.raises(NotImplementedError) as exc:
                 await engine.execute(_query(FILTER_AGGREGATE_REF))
         assert "not inline HAVING" in str(exc.value), exc.value
+
+
+class TestRowPhaseFiltersAlwaysApplyAtTheHost:
+    """B6, second instance — the same defect on the FORWARD route, found by
+    following Codex's prediction that a per-plan fix leaves a cross-plan hole.
+
+    The generator unions ``where_filter_ids`` over EVERY cross-model plan into
+    one ``routed_ids`` set and skips those at the host base. So one plan's
+    routing decided what the host did about a filter another plan needed —
+    and the ``_cm_`` join-back is a LEFT JOIN, which propagates a value but
+    never an exclusion. A host row whose group the CTE filtered away does not
+    disappear; it arrives with a NULL measure.
+
+    Present identically at the merge base, so this is not a regression from the
+    re-rooting work — it is the same bug class one route over, and the fix is
+    that a ROW-phase predicate is applied in BOTH places. It is host-evaluable
+    by construction, and double-applying costs nothing: the CTE's copy narrows
+    the aggregate, the host's copy narrows the rows.
+    """
+
+    @staticmethod
+    async def _rows(query: SlayerQuery):
+        with tempfile.TemporaryDirectory() as d:
+            db = os.path.join(d, "dev1747.db")
+            seed_dev1747_sqlite(db)
+            engine = await make_sqlite_engine(d, db)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UnreachableFilterDroppedWarning)
+                return (await engine.execute(query)).data
+
+    #: One RE-ROOTED plan (``customers``, because the region dimension sits a
+    #: hop past it) and one FORWARD plan (``regions``, for which that same
+    #: dimension IS the forward path). The filter is reachable from both, so
+    #: the forward plan routes it to WHERE while the re-rooted plan clears —
+    #: and the union used to make the host skip it for both.
+    _MIXED_ROUTES = SlayerQuery(
+        source_model="orders",
+        dimensions=[ColumnRef(name="name", model="customers.regions")],
+        measures=[
+            {"formula": "amount:sum", "name": "rev"},
+            {"formula": "customers.spend:sum", "name": "cs"},
+            {"formula": "customers.regions.population:sum", "name": "pop"},
+        ],
+        filters=[FILTER_REACHABLE],
+    )
+
+    def test_the_fixture_really_mixes_the_two_routes(self) -> None:
+        """Vacuity guard: the whole point is one re-rooted plan beside one
+        forward plan that routes a filter. If both re-rooted, the union would
+        be empty and the row assertion below would pass for the wrong reason."""
+        plans = plan_query(
+            query=self._MIXED_ROUTES, bundle=dev1747_bundle(),
+        ).cross_model_aggregate_plans
+        rerooted = [p for p in plans if p.rerooted_plan is not None]
+        forward_routing = [
+            p for p in plans if p.rerooted_plan is None and p.where_filter_ids
+        ]
+        assert rerooted, f"no plan re-rooted: {[p.target_model for p in plans]}"
+        assert forward_routing, (
+            f"no forward plan routes a filter to its CTE, so there is no "
+            f"cross-plan union to test: "
+            f"{[(p.target_model, p.where_filter_ids) for p in plans]}"
+        )
+
+    async def test_one_plans_routing_does_not_unfilter_the_host(self) -> None:
+        rows = await self._rows(self._MIXED_ROUTES)
+        regions = [r["orders.customers.regions.name"] for r in rows]
+        assert regions == [REGION_A_LOW], (
+            f"the forward plan's routing made the host skip the filter, so "
+            f"regions it excludes came back: {regions}"
+        )
+
+    async def test_a_row_phase_filter_matches_the_no_cross_model_answer(
+        self,
+    ) -> None:
+        """P-G, stated over rows rather than SQL: adding a cross-model measure
+        must not change which rows a filter keeps. That is the invariant the
+        skip broke, and it is what makes "apply it in both places" the right
+        rule rather than a patch — the host behaves as it always would.
+        """
+        plain = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="name", model="customers.regions")],
+            measures=[{"formula": "amount:sum", "name": "rev"}],
+            filters=[FILTER_REACHABLE],
+        )
+        plain_rows = await self._rows(plain)
+        mixed_rows = await self._rows(self._MIXED_ROUTES)
+        assert (
+            [r["orders.customers.regions.name"] for r in plain_rows]
+            == [r["orders.customers.regions.name"] for r in mixed_rows]
+        ), f"plain={plain_rows} mixed={mixed_rows}"
+        assert (
+            [r["orders.rev"] for r in plain_rows]
+            == [r["orders.rev"] for r in mixed_rows]
+        ), "the sibling local measure changed when a cross-model one was added"
+
+    async def test_applying_at_the_host_does_not_fan_out_a_sibling(self) -> None:
+        """The hazard this fix could plausibly introduce, ruled out: the host's
+        copy of a filter on a 1:N path (``order_tags``, where order 1 carries
+        THREE tags) pulls that join into the base FROM, which is exactly how a
+        sibling ``amount:sum`` gets multiplied.
+
+        It does not, and the reason is structural rather than lucky — the host
+        applies host filters on joined paths this way already; the cross-model
+        case now simply agrees with it. Group A must read 24.0, not 46.0
+        (11*3 + 13, the value a three-way fan-out on order 1 would produce).
+        """
+        rows = await self._rows(SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[
+                {"formula": "amount:sum", "name": "rev"},
+                {"formula": "order_tags.id:count", "name": "tags"},
+            ],
+            filters=["order_tags.name == 'rush'"],
+        ))
+        by_status = {r["orders.status"]: r for r in rows}
+        assert sorted(by_status) == ["A"], (
+            f"'rush' tags only orders 1 and 2, both status A: {sorted(by_status)}"
+        )
+        assert by_status["A"]["orders.rev"] == GROUP_A_AMOUNT, (
+            f"the sibling local measure fanned out: "
+            f"{by_status['A']['orders.rev']} != {GROUP_A_AMOUNT}"
+        )
