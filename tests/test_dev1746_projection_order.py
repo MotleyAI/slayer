@@ -39,7 +39,6 @@ recompare churn list (Codex D6).
 from __future__ import annotations
 
 import os
-import re
 import tempfile
 from typing import AsyncIterator, List
 
@@ -325,7 +324,14 @@ class TestB7DeclarationOrderProjection:
         # ``\bbase`` and not ``base``: the latter also matches the host ``_base``
         # CTE, which is a different scope and carries none of these columns.
         base_body = _extract_cte_body(sql, r"\bbase")
-        base_aliases = _alias_suffixes(re.findall(r'AS "([^"]+)"', base_body))
+        # Parsed, not regexed: an ``AS "..."`` scan misses a column projected
+        # without an alias and would also match a CAST's type name or an alias
+        # inside a nested subquery.
+        base_aliases = _alias_suffixes(outer_select_aliases(base_body))
+        assert base_aliases == ["created_at", "ltv"], (
+            f"the combined SELECT should carry exactly the created_at grain and "
+            f"one column for the shared slot: {base_aliases}\n{base_body}"
+        )
         assert base_aliases.count("ltv") == 1, (
             f"the combined SELECT carries {base_aliases.count('ltv')} columns "
             f"for the shared slot; a leftover would be appended here and then "
