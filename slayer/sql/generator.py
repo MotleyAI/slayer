@@ -6702,6 +6702,23 @@ class SQLGenerator:
         """
         return render_arithmetic(op, list(operands))
 
+    # -----------------------------------------------------------------
+    # Superseded by ``resolve_order_term`` (DEV-1742 §5.10 / P-J state 1)
+    # -----------------------------------------------------------------
+    #
+    # ``_build_combined_order_by_sql`` + ``_resolve_combined_order_term`` (the
+    # combined SELECT), ``_apply_order_limit_from_planned`` (the host base and
+    # its outer trim wrap), and ``_planned_order_by_sql`` (the chain outer
+    # wrap) are the four per-site ORDER BY resolutions the one resolver
+    # replaced. All four are PRODUCTION-UNREFERENCED as of this change — the
+    # first pair is a closed island, since its only caller is its own partner.
+    #
+    # Their tests stay green so the two mechanisms can be compared, and
+    # ``tests/test_dev1747_order_resolver.py`` pins the absence with raising
+    # sentinels over every render shape rather than by grepping this file.
+    # Deletion happens in one sweep (PR 6) rather than smeared across the
+    # series.
+
     def _build_combined_order_by_sql(
         self,
         *,
