@@ -1990,6 +1990,16 @@ def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _csv_warning_comments(result: SlayerResponse) -> str:
+    """Warnings as leading `#` comment lines for CSV output.
+
+    Comments precede the header, so every DATA record keeps a uniform column
+    count and the advisory is still visible to whoever reads the output.
+    """
+    lines = [f"# warning: {w.human_message()}" for w in (result.warnings or [])]
+    return "" if not lines else "\n".join(lines) + "\n"
+
+
 def _format_warnings(result: SlayerResponse) -> str:
     """Advisories about the query, appended to the TEXT output formats.
 
@@ -2005,14 +2015,22 @@ def _format_warnings(result: SlayerResponse) -> str:
 def _format_output(result: SlayerResponse, fmt: str) -> str:
     """Format query output in the requested format.
 
-    ``json`` stays ONE parseable JSON value: warnings go INSIDE the payload as
-    a ``warnings`` key rather than being appended as prose, which would make
-    ``json.loads`` fail on exactly the queries that most need reporting. The
-    text formats append a human-readable block instead.
+    Warnings never corrupt a machine-readable format: for ``json`` they go
+    INSIDE the payload under a ``warnings`` key, and for ``csv`` they become
+    leading ``#`` comment lines. Only ``markdown`` gets a prose block.
+
+    Note this covers the warnings only. The ``query`` tool still prepends
+    ``SQL:`` text for ``show_sql`` / ``explain`` and appends an attributes
+    block, which has always made those combinations non-JSON; that predates
+    this change and is not addressed here.
     """
     if fmt == "csv":
-        return _format_csv(data=result.data, columns=result.columns) \
-            + _format_warnings(result)
+        # Leading `#` comment lines, never trailing prose: appending the block
+        # turned each warning into a record with the wrong column count and
+        # broke every CSV reader on exactly the queries worth inspecting.
+        return _csv_warning_comments(result) + _format_csv(
+            data=result.data, columns=result.columns,
+        )
     if fmt == "markdown":
         return result.to_markdown() + _format_warnings(result)
     return _format_json(

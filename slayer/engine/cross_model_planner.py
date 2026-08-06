@@ -78,6 +78,7 @@ from slayer.engine.binding import (
     bind_time_dimension,
     walk_value_keys,
 )
+from slayer.engine.filter_reachability import path_is_reachable
 from slayer.engine.planned import (
     BoundFilterId,
     CrossModelAggregatePlan,
@@ -203,8 +204,11 @@ def classify_host_filter(
     )
 
     crossed = tuple(host_filter.crossed_join_paths)
+    # THE rule lives in one place. Repeating the prefix comparison here would
+    # be a second copy free to drift from it — the exact failure this PR removes.
     unreachable_paths = [
-        p for p in crossed if tuple(p) != tuple(target_path[: len(p)])
+        p for p in crossed
+        if not path_is_reachable(path=p, target_path=target_path)
     ]
 
     if unknown or aggregate_other or unreachable_paths:

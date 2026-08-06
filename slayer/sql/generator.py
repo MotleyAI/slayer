@@ -8295,12 +8295,15 @@ class SQLGenerator:
         """An ephemeral :class:`ScopeFrame` for a Mode-A entry whose call site
         holds no scope.
 
-        Pure RENDER paths (the aggregate CASE-WHEN wrapper, the WHERE/HAVING
-        assembler) run after the corresponding registration pass has already
-        put the crossed joins into the real scope, so the frame here exists
-        only to give the text one consistent door to come through — its
-        ``join_paths`` are a byproduct nobody reads. Every site that still owns
-        discovery passes its real scope instead.
+        Two kinds of caller. The pure RENDER paths (the aggregate CASE-WHEN
+        wrapper, the WHERE/HAVING assembler) run after the corresponding
+        registration pass has already put the crossed joins into the real
+        scope, so for them the frame exists only to give the text one
+        consistent door to come through. The shifted-CTE residual path
+        (``_shifted_filter_sql``) instead READS ``frame.join_paths`` back and
+        hands it to its caller, which registers those paths on the shifted
+        scope — so the frame is the discovery vehicle there, not a byproduct.
+        Every site that already owns a real scope passes it instead.
         """
         return ScopeFrame(
             scope_id=f"_modea_{source_relation}",

@@ -183,8 +183,12 @@ class TestFrameBoundColumnsStayPlanSide:
         )
 
     def test_plan_carries_frame_bound_columns(self) -> None:
-        planned = plan_query(query=self._windowed_query(), bundle=_bundle())
-        assert hasattr(planned, "frame_bound_columns")
+        """A DECLARED field, checked the same way as outer_where_filter_ids.
+        ``hasattr`` is always true for a field with a default_factory, so it
+        could not fail regardless of planner behaviour."""
+        from slayer.engine.planned import PlannedQuery
+
+        assert "frame_bound_columns" in PlannedQuery.model_fields
 
     def test_frame_bound_columns_covers_the_time_dimension(self) -> None:
         planned = plan_query(query=self._windowed_query(), bundle=_bundle())

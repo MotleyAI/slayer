@@ -236,6 +236,29 @@ class TestCompositeKeyKindsAreTotal:
         )
         assert ("customers",) in _paths_for(key)
 
+    def test_sql_expr_key_contributes_its_referenced_paths(self) -> None:
+        """``SqlExprKey`` carries its own precomputed crossed paths (a
+        ``Column.filter`` interned onto an aggregate). It has an arm in the
+        scan; this pins it."""
+        from slayer.core.keys import SqlExprKey
+
+        key = SqlExprKey(
+            canonical_sql="customers__regions.population > 1",
+            referenced_join_paths=(("customers", "regions"),),
+        )
+        paths = _paths_for(key)
+        assert ("customers",) in paths, paths
+        assert ("customers", "regions") in paths, paths
+
+    def test_in_values_are_walked_for_crossings(self) -> None:
+        """``InKey.values`` are walked by the crossing scan, so a crossing
+        reference sitting in the value list is a dependency like any other."""
+        key = InKey(
+            column=ColumnKey(path=(), leaf="amount"),
+            values=(LiteralKey(value=1),),
+        )
+        assert _paths_for(key) == ()
+
     def test_literal_crosses_nothing(self) -> None:
         assert _paths_for(LiteralKey(value=1)) == ()
 

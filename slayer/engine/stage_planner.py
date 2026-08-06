@@ -1337,6 +1337,9 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         else host_model_name
     )
     filter_reachability: List[FilterReachability] = []
+    # One expansion cache for the whole plan — the two visitors ask for the
+    # same derived column's expansion, and so does every filter that mentions it.
+    reachability_cache: dict = {}
     for fp in filters_by_phase:
         if fp.expression is None:
             continue
@@ -1347,12 +1350,14 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                 anchor_model=reachability_anchor_model,
                 anchor_relation=source_relation,
                 bundle=bundle,
+                cache=reachability_cache,
             ),
             has_host_local_ref=key_has_host_local_ref(
                 key=fp.expression.value_key,
                 anchor_model=reachability_anchor_model,
                 anchor_relation=source_relation,
                 bundle=bundle,
+                cache=reachability_cache,
             ),
         ))
     reachability_by_fid = {r.filter_id: r for r in filter_reachability}

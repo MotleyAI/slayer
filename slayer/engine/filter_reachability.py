@@ -32,7 +32,7 @@ Invariant: every summary is expressed in the coordinate system of the
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from sqlglot import exp
 
@@ -90,6 +90,7 @@ def _prefixes(path: Path) -> List[Path]:
 
 def _expanded_derived_ast(
     *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
+    cache: "Optional[dict]" = None,
 ):
     """The parsed, expanded AST of a derived column's ``Column.sql``.
 
@@ -97,7 +98,35 @@ def _expanded_derived_ast(
     ``__``-path alias with ``is_root=False`` when the column lives on a joined
     model — so the refs inside come out already prefixed by the key's own path
     and an anchor-rooted scan resolves them without further adjustment.
+
+    Memoised through the caller-supplied ``cache``. Both visitors ask for the
+    same key's expansion — ``_derived_sql_paths`` for the crossed set and
+    ``_derived_sql_touches_anchor`` for host-locality — and both run for every
+    filter on every plan, while ``_expand_derived_refs_any_dialect`` itself
+    re-parses per hop of a derived-of-derived chain.
+
+    The cache is passed IN rather than held module-level on purpose. A global
+    keyed by ``id(bundle)`` would be unsound: CPython reuses ids once an object
+    is collected, so a fresh bundle could be handed a dead one's entry. A dict
+    owned by one plan-level call cannot outlive the bundle it was built for.
     """
+    if cache is None:
+        return _expanded_derived_ast_uncached(
+            key=key, anchor_model=anchor_model,
+            anchor_relation=anchor_relation, bundle=bundle,
+        )
+    cache_key = (key.model, key.column_name, key.path, anchor_relation)
+    if cache_key not in cache:
+        cache[cache_key] = _expanded_derived_ast_uncached(
+            key=key, anchor_model=anchor_model,
+            anchor_relation=anchor_relation, bundle=bundle,
+        )
+    return cache[cache_key]
+
+
+def _expanded_derived_ast_uncached(
+    *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
+):
     model = (
         anchor_model if key.model == getattr(anchor_model, "name", None)
         else bundle.get_referenced_model(key.model)
@@ -117,11 +146,12 @@ def _expanded_derived_ast(
 
 def _derived_sql_paths(
     *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
+    cache: "Optional[dict]" = None,
 ) -> List[Path]:
     """Join paths the expansion of a derived column's ``Column.sql`` crosses."""
     parsed = _expanded_derived_ast(
         key=key, anchor_model=anchor_model,
-        anchor_relation=anchor_relation, bundle=bundle,
+        anchor_relation=anchor_relation, bundle=bundle, cache=cache,
     )
     if parsed is None:
         return []
@@ -135,6 +165,7 @@ def _derived_sql_paths(
 
 def _derived_sql_touches_anchor(
     *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
+    cache: "Optional[dict]" = None,
 ) -> bool:
     """Whether a derived column's expansion references the ANCHOR relation.
 
@@ -149,7 +180,7 @@ def _derived_sql_touches_anchor(
     """
     parsed = _expanded_derived_ast(
         key=key, anchor_model=anchor_model,
-        anchor_relation=anchor_relation, bundle=bundle,
+        anchor_relation=anchor_relation, bundle=bundle, cache=cache,
     )
     if parsed is None:
         # Nothing resolvable to inspect — a bare column name on the anchor.
@@ -219,7 +250,10 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
     raise UnhandledValueKindError(node)
 
 
-def _leaf_paths(node, *, anchor_model, anchor_relation: str, bundle) -> List[Path]:
+def _leaf_paths(
+    node, *, anchor_model, anchor_relation: str, bundle,
+    cache: "Optional[dict]" = None,
+) -> List[Path]:
     """Join paths a LEAF key is itself anchored at.
 
     Composites contribute nothing here — their dependencies arrive through
@@ -235,7 +269,7 @@ def _leaf_paths(node, *, anchor_model, anchor_relation: str, bundle) -> List[Pat
             *_prefixes(node.path),
             *_derived_sql_paths(
                 key=node, anchor_model=anchor_model,
-                anchor_relation=anchor_relation, bundle=bundle,
+                anchor_relation=anchor_relation, bundle=bundle, cache=cache,
             ),
         ]
     if isinstance(node, ColumnKey):
@@ -251,6 +285,7 @@ def _leaf_paths(node, *, anchor_model, anchor_relation: str, bundle) -> List[Pat
 
 def compute_key_join_paths(
     *, key, anchor_model, anchor_relation: str, bundle,
+    cache: "Optional[dict]" = None,
 ) -> Tuple[Path, ...]:
     """Every join path ``key``'s dependency tree crosses, anchored at
     ``anchor_relation``.
@@ -272,7 +307,7 @@ def compute_key_join_paths(
             return
         for path in _leaf_paths(
             node, anchor_model=anchor_model,
-            anchor_relation=anchor_relation, bundle=bundle,
+            anchor_relation=anchor_relation, bundle=bundle, cache=cache,
         ):
             _add(path)
         for child in _child_keys(node):
@@ -284,6 +319,7 @@ def compute_key_join_paths(
 
 def key_has_host_local_ref(
     *, key, anchor_model, anchor_relation: str, bundle,
+    cache: "Optional[dict]" = None,
 ) -> bool:
     """Whether ``key`` depends on anything anchored AT the host root.
 
@@ -301,7 +337,7 @@ def key_has_host_local_ref(
         if isinstance(node, ColumnSqlKey):
             return not node.path and _derived_sql_touches_anchor(
                 key=node, anchor_model=anchor_model,
-                anchor_relation=anchor_relation, bundle=bundle,
+                anchor_relation=anchor_relation, bundle=bundle, cache=cache,
             )
         return False
 
@@ -343,6 +379,7 @@ def recompute_filter_reachability(planned_query, *, bundle) -> List:
 
     anchor_model = planned_query.render_source_model or bundle.source_model
     anchor_relation = planned_query.source_relation
+    cache: dict = {}
     out: List = []
     for fp in planned_query.filters_by_phase:
         if fp.expression is None:
@@ -354,12 +391,14 @@ def recompute_filter_reachability(planned_query, *, bundle) -> List:
                 anchor_model=anchor_model,
                 anchor_relation=anchor_relation,
                 bundle=bundle,
+                cache=cache,
             ),
             has_host_local_ref=key_has_host_local_ref(
                 key=fp.expression.value_key,
                 anchor_model=anchor_model,
                 anchor_relation=anchor_relation,
                 bundle=bundle,
+                cache=cache,
             ),
         ))
     return out
