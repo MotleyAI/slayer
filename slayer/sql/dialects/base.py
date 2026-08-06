@@ -259,6 +259,36 @@ class SqlDialect(BaseModel):
             kwargs["nulls_first"] = False
         return exp.Ordered(**kwargs)
 
+    def native_nulls_first(self, *, descending: bool) -> bool:
+        """Where NULLs sort in this dialect's OWN ordering for ``descending``.
+
+        Setting ``nulls_first`` to this value is what makes sqlglot emit a bare
+        ``ORDER BY``: no NULLS clause, no ``CASE WHEN … IS NULL`` emulation.
+        That is wanted for orderings that are internal machinery rather than a
+        user-visible sort — a window frame's ``OVER (ORDER BY …)``, where an
+        emulation term would change which rows the frame covers.
+
+        Read from the same dialect class that GENERATES the clause, for the
+        same reason :func:`_sqlglot_backslash_escapes` reads the tokenizer: a
+        hand-kept table would silently disagree with the emitter, and the
+        symptom is a wrong sort rather than an error.
+        """
+        ordering = getattr(
+            _SqlglotDialect.get_or_raise(self.sqlglot_name),
+            "NULL_ORDERING", None,
+        )
+        if ordering == "nulls_are_last":
+            return False
+        if ordering == "nulls_are_small":
+            return not descending
+        if ordering == "nulls_are_large":
+            return descending
+        raise RuntimeError(
+            f"Cannot derive the native null ordering for sqlglot dialect "
+            f"{self.sqlglot_name!r}: NULL_ORDERING is {ordering!r}. A sqlglot "
+            f"upgrade may have changed this API.",
+        )
+
     @staticmethod
     def _expanded_null_safe_eq(
         left: exp.Expression, right: exp.Expression,

@@ -2154,10 +2154,22 @@ class TestRankFamilyTransforms:
         sql = await _generate(generator, query, orders_model)
         # PARTITION BY column order is semantically irrelevant; the typed
         # planner emits the keys in sorted order (customer_id before status).
-        assert (
+        #
+        # Compared against the re-emitted Window node rather than the raw text:
+        # the transform chain is assembled as AST (DEV-1747 D8), so an OVER
+        # clause this long is line-broken by sqlglot's pretty printer, and
+        # collapsing whitespace still leaves the spaces it puts inside the
+        # parens. The claim here is the window's SHAPE, not its line breaks.
+        window = next(
+            w
+            for w in sqlglot.parse_one(sql, read="postgres").find_all(
+                sqlglot.exp.Window,
+            )
+            if isinstance(w.this, sqlglot.exp.Rank)
+        )
+        assert window.sql(dialect="postgres") == (
             'RANK() OVER (PARTITION BY "orders.customer_id", "orders.status" '
             'ORDER BY "orders.revenue_sum" DESC)'
-            in _norm(sql)
         )
 
     async def test_percent_rank_default(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
