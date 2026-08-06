@@ -475,7 +475,11 @@ class TestSharedGrainJoinBackBuilder:
         # Re-parsing must give back exactly one column with the same name.
         reparsed = sqlglot.parse_one(f"SELECT {rendered}", dialect="postgres")
         cols = list(reparsed.find_all(exp.Column))
-        assert len(cols) == 1 and cols[0].name == weird, (
+        assert len(cols) == 1, (
+            f"identifier did not survive a round trip as ONE column: "
+            f"{rendered!r} -> {[c.name for c in cols]}"
+        )
+        assert cols[0].name == weird, (
             f"identifier did not survive a round trip: {rendered!r} -> "
             f"{[c.name for c in cols]}"
         )
@@ -512,7 +516,8 @@ class TestSharedGrainJoinBackBuilder:
         )
         assert cond is not None
         rendered = cond.sql(dialect="postgres")
-        assert "CAST(" in rendered and "IS NOT DISTINCT FROM" in rendered, rendered
+        assert "CAST(" in rendered, rendered
+        assert "IS NOT DISTINCT FROM" in rendered, rendered
 
 
 # =========================================================================== #
@@ -541,8 +546,11 @@ class TestDialectEmission:
         ``a = b OR (a IS NULL AND b IS NULL)`` must appear."""
         sql = await _gen(_cm_shared_grain_query(), dialect="tsql")
         on = _norm(joinback_on_predicate_for(sql, prefix="_cm_", dialect="tsql"))
-        assert " OR " in on and "IS NULL" in on, (
-            f"tsql join-back is missing the expanded null-safe form:\n{on}"
+        assert " OR " in on, (
+            f"tsql join-back is missing the expanded null-safe disjunction:\n{on}"
+        )
+        assert "IS NULL" in on, (
+            f"tsql join-back is missing the expanded null-safe NULL tests:\n{on}"
         )
 
     async def test_mysql_null_safe_operator_is_emitted(self) -> None:

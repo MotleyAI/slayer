@@ -293,9 +293,8 @@ class TestClassificationAgreesWithThePlan:
             if sid in wm_ids:
                 assert kind is IsolationKind.WINDOWED, (sid, kind)
             elif sid in cm_ids:
-                assert kind.needs_own_cte and kind is not IsolationKind.WINDOWED, (
-                    sid, kind,
-                )
+                assert kind.needs_own_cte, (sid, kind)
+                assert kind is not IsolationKind.WINDOWED, (sid, kind)
             else:
                 assert kind is IsolationKind.NONE, (
                     f"slot {sid} classified {kind} but the planner built no CTE "

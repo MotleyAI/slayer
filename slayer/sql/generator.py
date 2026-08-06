@@ -4102,7 +4102,12 @@ class SQLGenerator:
             return al[0] if al else sid
 
         src_cols: List[exp.Expression] = []
-        join_eqs: List[exp.Expression] = []
+        # Grain operand pairs for the inner ``_base``↔``_src`` correlation. They
+        # go through the same builder as the outer join-back (P-I) rather than
+        # calling ``build_null_safe_eq`` per pair here, so both sites share one
+        # answer to "how is a grain compared" — including whatever a dialect
+        # later needs that a bare per-pair equality could not express.
+        grain_pairs: List[Tuple[exp.Expression, exp.Expression]] = []
         grain_aliases: List[str] = []
 
         # Query dimensions → ``_w_dim_<n>`` (Law-1 resolve registers crossed
@@ -4112,9 +4117,9 @@ class SQLGenerator:
             base_alias = _alias_of(sid)
             expr = src_scope.resolve(dslot.key)
             src_cols.append(expr.as_(f"_w_dim_{idx}"))
-            join_eqs.append(self._dialect.build_null_safe_eq(
-                _src_col(f"_w_dim_{idx}"), _base_col(base_alias),
-            ))
+            grain_pairs.append(
+                (_src_col(f"_w_dim_{idx}"), _base_col(base_alias)),
+            )
             grain_aliases.append(base_alias)
 
         # Non-window time dimensions → ``_w_td_<n>`` (date-trunc'd), equality-
@@ -4135,9 +4140,9 @@ class SQLGenerator:
                 col_expr=raw, granularity=TimeGranularity(tslot.key.granularity),
             )
             src_cols.append(trunc.as_(f"_w_td_{idx}"))
-            join_eqs.append(self._dialect.build_null_safe_eq(
-                _src_col(f"_w_td_{idx}"), _base_col(base_alias),
-            ))
+            grain_pairs.append(
+                (_src_col(f"_w_td_{idx}"), _base_col(base_alias)),
+            )
             grain_aliases.append(base_alias)
 
         # The window time dimension's RAW column → ``_w_time`` (the range axis).
@@ -4216,8 +4221,15 @@ class SQLGenerator:
             sign=-1,
         )
         src_w_time = _src_col("_w_time")
+        # An empty grain yields ``None`` here — the windowed measure is scalar
+        # over the whole host, so the ON carries only the range bounds. That is
+        # NOT the builder's CROSS-JOIN case: the range predicates still
+        # correlate the two sides, so this stays a LEFT JOIN either way.
+        grain_condition = build_grain_joinback_condition(
+            pairs=grain_pairs, dialect=self._dialect,
+        )
         on_range = exp.and_(
-            *join_eqs,
+            *([grain_condition] if grain_condition is not None else []),
             exp.GTE(this=src_w_time, expression=lower_bound),
             exp.LT(this=src_w_time.copy(), expression=bucket_end.copy()),
         )

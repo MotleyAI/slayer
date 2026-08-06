@@ -158,20 +158,23 @@ class TestWithChainAssembler:
         """A cycle cannot be emitted as a WITH chain at all. Failing loudly
         beats emitting a plausible-looking order that references forward."""
         entries = [self._entry("a", ["b"]), self._entry("b", ["a"])]
+        final = self._sel("a")
         with pytest.raises(ValueError, match="(?i)cycle"):
-            assemble_with_chain(entries=entries, final=self._sel("a"))
+            assemble_with_chain(entries=entries, final=final)
 
     def test_an_unknown_dependency_raises(self) -> None:
         """Declaring a dependency on a CTE that was never supplied is a wiring
         bug; silently ignoring it would emit SQL referencing a missing table."""
         entries = [self._entry("a", ["nope"])]
+        final = self._sel("a")
         with pytest.raises(ValueError, match="(?i)unknown|missing|nope"):
-            assemble_with_chain(entries=entries, final=self._sel("a"))
+            assemble_with_chain(entries=entries, final=final)
 
     def test_duplicate_names_raise(self) -> None:
         entries = [self._entry("dup", []), self._entry("dup", [])]
+        final = self._sel("dup")
         with pytest.raises(ValueError, match="(?i)duplicate|dup"):
-            assemble_with_chain(entries=entries, final=self._sel("dup"))
+            assemble_with_chain(entries=entries, final=final)
 
     def test_a_final_select_that_already_has_ctes_is_rejected(self) -> None:
         """The assembler owns the WITH clause. Silently discarding one the
@@ -179,8 +182,9 @@ class TestWithChainAssembler:
         for the transform chains, which build a statement that already has CTEs
         before wrapping it, and which adopt this assembler next."""
         final = self._sel("seed").with_("seed", as_=self._sel())
+        entries = [self._entry("a", [])]
         with pytest.raises(ValueError, match="(?i)already carries"):
-            assemble_with_chain(entries=[self._entry("a", [])], final=final)
+            assemble_with_chain(entries=entries, final=final)
 
     def test_no_entries_yields_the_final_select_unwrapped(self) -> None:
         """No CTEs means no WITH clause — not an empty one, which is invalid."""
@@ -219,8 +223,9 @@ class TestWithChainAssembler:
         the thing that introduces it."""
         entries = [self._entry("dup", []), self._entry("DUP", [])]
         out = assemble_with_chain(entries=entries, final=self._sel("dup"))
+        rendered = out.sql(dialect="snowflake")
         with pytest.raises(ValueError):
-            assert_unique_cte_names(out.sql(dialect="snowflake"), dialect="snowflake")
+            assert_unique_cte_names(rendered, dialect="snowflake")
 
 
 # =========================================================================== #
@@ -260,8 +265,11 @@ class TestAssembledChainForRealQueries:
         sql = await _gen(_two_cross_model_measures_query(), dialect="postgres")
         names = [n for n in cte_names_in_order(sql) if n.startswith("_cm_")]
         assert len(names) == 2, f"expected two _cm_ CTEs, got {names}"
-        assert "sum" in names[0] and "avg" in names[1], (
-            f"_cm_ CTEs are not in measure-declaration order: {names}"
+        assert "sum" in names[0], (
+            f"the first _cm_ CTE is not the sum measure: {names}"
+        )
+        assert "avg" in names[1], (
+            f"the second _cm_ CTE is not the avg measure: {names}"
         )
 
     @pytest.mark.parametrize("dialect", DIALECTS)
