@@ -153,20 +153,36 @@ class TestEmptyBaseGrainPlanNode:
             "the empty-base node was set for a query that HAS host row slots"
         )
 
-    def test_node_presence_implies_every_join_back_is_empty(self) -> None:
+    def test_node_presence_implies_the_projection_is_isolated_only(self) -> None:
         """Codex D7: the grain semantics the node would have carried as a field,
-        asserted as the invariant it actually is. An empty grain is precisely
-        why the combined SELECT CROSS JOINs instead of joining on a predicate.
+        asserted as the invariant it actually is.
+
+        The node is present exactly when every projected value is an isolated
+        aggregate — which is what leaves ``_base`` with no grain columns, and so
+        why the combined SELECT CROSS JOINs rather than joining on a predicate.
+
+        Deliberately NOT asserted against ``CrossModelAggregatePlan.shared_grain_slots``:
+        that list can name a HIDDEN row slot a filter created (``status`` in the
+        filtered shape), which never becomes a projected grain column. The
+        emitted CROSS JOIN is asserted directly in
+        ``TestEmittedSqlIsUnchanged.test_combined_select_cross_joins_the_scalar_cte``,
+        which is the operative guarantee.
         """
         for factory in (_unfiltered_query, _filtered_query):
             planned = plan_query(query=factory(), bundle=_bundle())
             assert planned.empty_base_plan is not None
-            for plan in planned.cross_model_aggregate_plans:
-                assert not plan.join_back_pairs, (
-                    f"empty-base plan present but cross-model plan "
-                    f"{plan.aggregate_slot_id} declares join-back pairs "
-                    f"{plan.join_back_pairs} — the base has no grain to join on."
-                )
+            isolated = {
+                p.aggregate_slot_id for p in planned.cross_model_aggregate_plans
+            } | {
+                p.aggregate_slot_id for p in planned.windowed_aggregate_plans
+            }
+            assert planned.projection, "expected a non-empty projection"
+            assert all(sid in isolated for sid in planned.projection), (
+                f"empty-base plan present but the projection {planned.projection} "
+                f"contains a slot that is not an isolated aggregate "
+                f"(isolated: {sorted(isolated)}) — such a slot would have to be "
+                f"materialised in _base, which then is not a placeholder spine."
+            )
 
     def test_generator_consumes_the_node_rather_than_re_deriving(self) -> None:
         """P-D: clearing the plan field must change the emitted SQL. If it does

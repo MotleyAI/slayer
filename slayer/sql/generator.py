@@ -934,6 +934,32 @@ class SQLGenerator:
         """
         return sqlglot.parse_one(sql, dialect=self.dialect)
 
+    @staticmethod
+    def _carry_aliases_in_plan_order(
+        aliases_by_slot_id: Dict[str, List[str]],
+    ) -> List[str]:
+        """Aliases an inner stage carries forward, in PLAN order (B8).
+
+        These lists used to be ``sorted(...)`` — one site still carried the
+        comment "matches legacy ``_generate_with_computed:1607``", i.e. it was
+        byte-parity ballast rather than a requirement. Alphabetical order is
+        unrelated to anything the query means, and it made a step CTE project
+        its columns in a different order from the base it selects them from.
+
+        ``aliases_by_slot_id`` is populated as slots are rendered, so its
+        insertion order IS the plan's render order; iterating it directly is
+        what "plan order" means here. Duplicates are dropped (two slots can
+        share an alias) while preserving first appearance.
+        """
+        out: List[str] = []
+        seen: Set[str] = set()
+        for aliases in aliases_by_slot_id.values():
+            for alias in aliases:
+                if alias not in seen:
+                    seen.add(alias)
+                    out.append(alias)
+        return out
+
     def _null_safe_join_pair_sql(self, *, left_sql: str, right_sql: str) -> str:
         """Render one dialect-aware null-safe equality (DEV-1708 / Codex F2) for
         a grain join-back ``ON`` clause. ``left_sql`` / ``right_sql`` are the
@@ -1576,6 +1602,7 @@ class SQLGenerator:
         ``generate_from_planned``) is a self-contained statement and gets its
         own allocator, with the parent's restored afterwards.
         """
+        self._assert_projection_is_public(planned_query)
         prev_allocator = getattr(self, "_gen_allocator", None)
         self._gen_allocator = self._new_allocator()
         try:
@@ -1584,6 +1611,38 @@ class SQLGenerator:
             )
         finally:
             self._gen_allocator = prev_allocator
+
+    @staticmethod
+    def _assert_projection_is_public(planned_query) -> None:
+        """The renderer-side belt for the public-projection invariant (§5.2).
+
+        ``PlannedQuery`` validates this at construction, but pydantic's
+        ``model_copy(update=...)`` skips validators — and rerooting a plan uses
+        exactly that. So the ONE place every render path passes through checks
+        it again. It RAISES rather than skipping the offending slot: silently
+        dropping a column the plan asked for is how a wrong answer reaches a
+        user, whereas a raise names the slot.
+
+        This is the only such check left; the defensive ``if slot.hidden:
+        continue`` guards the renderers used to carry are redundant now that
+        the projection is authoritative.
+        """
+        slots = {
+            slot.id: slot
+            for slot in (
+                list(planned_query.row_slots)
+                + list(planned_query.aggregate_slots)
+                + list(planned_query.combined_expression_slots)
+            )
+        }
+        for sid in planned_query.projection:
+            slot = slots.get(sid)
+            if slot is not None and slot.hidden:
+                raise ValueError(
+                    f"hidden slot {sid!r} reached the public projection; the "
+                    f"plan's projection must contain only public slots "
+                    f"(a model_copy that skips validation is the usual cause)",
+                )
 
     def _generate_from_planned_impl(  # NOSONAR(S3776) — top-level dispatch over cross-model / transform-chain / plain branches plus the conditional outer-trim wrap. Each branch is a coherent compilation strategy; extracting would scatter the shared planned_query / slots_by_id / aliases_by_slot_id state across helpers without simplifying anything.
         self,
@@ -1854,8 +1913,8 @@ class SQLGenerator:
                 step_num += 1
                 step_name = cte_allocator.allocate_cte(f"step{step_num}")
                 prev_cte = ctes[-1][0]
-                carry_aliases_sorted = sorted(
-                    a for aliases in aliases_by_slot_id.values() for a in aliases
+                carry_aliases_sorted = self._carry_aliases_in_plan_order(
+                    aliases_by_slot_id,
                 )
                 step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
                 for layer in ready_window:
@@ -1954,8 +2013,8 @@ class SQLGenerator:
             step_num += 1
             step_name = cte_allocator.allocate_cte(f"step{step_num}")
             prev_cte = ctes[-1][0]
-            carry_aliases_sorted = sorted(
-                a for aliases in aliases_by_slot_id.values() for a in aliases
+            carry_aliases_sorted = self._carry_aliases_in_plan_order(
+                aliases_by_slot_id,
             )
             step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
             for cslot in unmaterialised:
@@ -1991,11 +2050,10 @@ class SQLGenerator:
             ctes.append((step_name, step_sql))
 
         # Inner SELECT inside _outer wrap: ALL carried aliases sorted
-        # (matches legacy _generate_with_computed:1607).
+        # in PLAN order (B8 — this list used to be sorted alphabetically to
+        # match the legacy renderer byte-for-byte).
         final_cte = ctes[-1][0]
-        inner_sorted = sorted(
-            a for aliases in aliases_by_slot_id.values() for a in aliases
-        )
+        inner_sorted = self._carry_aliases_in_plan_order(aliases_by_slot_id)
         inner_sql = (
             "SELECT\n    "
             + _SQL_COL_SEP.join(self._quote_ident(a) for a in inner_sorted)
@@ -4434,27 +4492,22 @@ class SQLGenerator:
         # here (every projected slot is a cross-model aggregate that
         # owns its own ``FROM <host>`` inside the ``_cm_*`` CTE), so
         # dropping the host FROM is safe.
-        empty_base = not base_render_order
-        if empty_base:
-            # Routed filter ids — filters applied inside per-plan ``_cm_*``
-            # CTEs (where/having) or at the outer combined WHERE wrapper.
-            # Host-local ROW filters NOT in this set fall through to the
-            # placeholder via ``DROP_HOST_LOCAL`` routing (forward cross-
-            # model classifier) or simply by being unrouted; they must
-            # apply HERE or the query silently aggregates across host
-            # rows the user filtered out (Codex round 4 / CodeRabbit).
-            routed_ids: Set[str] = set(outer_where_filter_ids)
-            for plan in planned_query.cross_model_aggregate_plans:
-                routed_ids.update(plan.where_filter_ids)
-                routed_ids.update(plan.having_filter_ids)
-            from slayer.core.keys import Phase as _Phase
-            has_host_local_filter = any(
-                fp.phase == _Phase.ROW
-                and fp.id not in routed_ids
-                and (fp.expression is not None or fp.text is not None)
+        # DEV-1746 (§5.12): the shape, and which filters stay host-local, are
+        # decided at plan time and consumed here (P-D). The generator used to
+        # re-derive both from its own render order and a re-walk of
+        # ``filters_by_phase``.
+        empty_base_plan = planned_query.empty_base_plan
+        if empty_base_plan is not None:
+            # Apply exactly the filters the plan marked host-local; every
+            # other filter is applied somewhere else (a ``_cm_*`` CTE or the
+            # outer WHERE) and must be skipped here.
+            host_filter_ids = set(empty_base_plan.host_filter_ids)
+            placeholder_skip_ids = {
+                fp.id
                 for fp in planned_query.filters_by_phase
-            )
-            if has_host_local_filter:
+                if fp.id not in host_filter_ids
+            }
+            if host_filter_ids:
                 # Build the placeholder over the host with WHERE + LIMIT 1.
                 # LIMIT 1 collapses the host rowset to a single row so the
                 # combined CROSS JOIN to the scalar ``_cm_*`` does not
@@ -4482,7 +4535,7 @@ class SQLGenerator:
                 self._resolve_where_filter_joins_via_scope(
                     planned_query=planned_query,
                     scope=placeholder_scope,
-                    skip_filter_ids=routed_ids,
+                    skip_filter_ids=placeholder_skip_ids,
                 )
                 placeholder_from, placeholder_joins = self._build_from_and_joins(
                     source_model=source_model,
@@ -4505,7 +4558,7 @@ class SQLGenerator:
                     source_relation=source_relation,
                     source_model=source_model,
                     bundle=bundle,
-                    skip_filter_ids=routed_ids,
+                    skip_filter_ids=placeholder_skip_ids,
                 )
                 if base_where is not None:
                     base_select = base_select.where(base_where)
@@ -5273,8 +5326,8 @@ class SQLGenerator:
             step_num += 1
             step_name = cte_allocator.allocate_cte(f"step{step_num}")
             prev_cte = ctes[-1][0]
-            carry_aliases_sorted = sorted(
-                a for aliases in aliases_by_slot_id.values() for a in aliases
+            carry_aliases_sorted = self._carry_aliases_in_plan_order(
+                aliases_by_slot_id,
             )
             step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
             for layer in ready:
@@ -5327,8 +5380,8 @@ class SQLGenerator:
             step_num += 1
             step_name = cte_allocator.allocate_cte(f"step{step_num}")
             prev_cte = ctes[-1][0]
-            carry_aliases_sorted = sorted(
-                a for aliases in aliases_by_slot_id.values() for a in aliases
+            carry_aliases_sorted = self._carry_aliases_in_plan_order(
+                aliases_by_slot_id,
             )
             step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
             for cslot in unmaterialised:
@@ -5359,9 +5412,7 @@ class SQLGenerator:
             ctes.append((step_name, step_sql))
 
         final_cte = ctes[-1][0]
-        inner_sorted = sorted(
-            a for aliases in aliases_by_slot_id.values() for a in aliases
-        )
+        inner_sorted = self._carry_aliases_in_plan_order(aliases_by_slot_id)
         inner_sql = (
             "SELECT\n    "
             + _SQL_COL_SEP.join(self._quote_ident(a) for a in inner_sorted)
@@ -5636,7 +5687,26 @@ class SQLGenerator:
         cte_allocator = self._gen_allocator or self._new_allocator()
         self._reserve_model_column_names(cte_allocator, target_model)
         is_first_or_last = agg_slot.key.agg in ("first", "last")
-        grain_extra_projections: List[Tuple[str, exp.Expression]] = []
+        # The CTE's own scope, and the scope of the ranked subquery it may
+        # select FROM. Both are created here, before the grain loop, because a
+        # crossing grain is materialised in the RANKED scope for the CTE scope
+        # to consume — Law 2's producer/consumer pair.
+        cte_scope = ScopeFrame(
+            scope_id=cte_allocator.next_scope_id(target_relation),
+            root_model=target_model,
+            root_relation=target_relation,
+            bundle=bundle,
+            dialect=self._dialect,
+            allocator=cte_allocator,
+        )
+        ranked_scope = ScopeFrame(
+            scope_id=cte_allocator.next_scope_id(target_relation),
+            root_model=target_model,
+            root_relation=target_relation,
+            bundle=bundle,
+            dialect=self._dialect,
+            allocator=cte_allocator,
+        )
         for sid in plan.shared_grain_slots:
             if sid not in base_projection_ids:
                 continue
@@ -5753,9 +5823,13 @@ class SQLGenerator:
                 )
             )
             if grain_crosses:
-                val_alias = cte_allocator.allocate_val()
-                grain_extra_projections.append((val_alias, col_expr.copy()))
-                alias_ref = exp.column(val_alias)
+                # Law 2 through the SCOPE (§5.1): the ranked subquery projects
+                # the crossing expression and the CTE consumes the alias. The
+                # scope owns the dedup table, so a value materialised once for
+                # the grain is not materialised again for the aggregate.
+                alias_ref = ranked_scope.materialize_for(
+                    col_expr.copy(), consumer=cte_scope,
+                )
                 cte_select_columns.append(alias_ref.copy().as_(host_alias))
                 cte_group_by.append(alias_ref.copy())
                 cte_partition_exprs.append(col_expr.copy())
@@ -5807,14 +5881,6 @@ class SQLGenerator:
         # shares the generation-wide allocator (``cte_allocator``, hoisted above
         # the grain loop) so ``_val_<n>`` materialisation names (Law 2) are
         # unique across the host base, the grain projections, and every CTE.
-        cte_scope = ScopeFrame(
-            scope_id=cte_allocator.next_scope_id(target_relation),
-            root_model=target_model,
-            root_relation=target_relation,
-            bundle=bundle,
-            dialect=self._dialect,
-            allocator=cte_allocator,
-        )
         # DEV-1701: merge the shared-grain derived-TIME-dim crossed joins
         # collected in the loop above.
         for _p in shared_grain_join_paths:
@@ -6018,9 +6084,9 @@ class SQLGenerator:
             # collected in the grain loop, so a first/last aggregate grouped by a
             # crossing derived grain materialises that grain INSIDE the subquery
             # too (the outer SELECT / GROUP BY reference the alias).
-            extra_projections: List[Tuple[str, exp.Expression]] = list(
-                grain_extra_projections,
-            )
+            extra_projections: List[Tuple[str, exp.Expression]] = [
+                (m.alias, m.expr) for m in ranked_scope.materializations
+            ]
             if synth.sql:
                 # DEV-1709: materialise the RESOLVED value (qualified +
                 # ``Column.type`` inner CAST for non-bare expressions) and
@@ -6037,8 +6103,17 @@ class SQLGenerator:
                     sql_expr=value_expr, source_relation=target_relation,
                     source_model=target_model, bundle=bundle,
                 ):
-                    val_alias = cte_allocator.allocate_val()
-                    extra_projections.append((val_alias, value_expr))
+                    # Law 2 through the SCOPE, same as the crossing grain above.
+                    # Because both go through ONE dedup table, grouping a
+                    # first/last aggregate by the very expression it aggregates
+                    # now projects that expression once instead of twice — the
+                    # two sites used to keep separate alias maps.
+                    val_alias = ranked_scope.materialize_for(
+                        value_expr, consumer=cte_scope,
+                    ).name
+                    extra_projections = [
+                        (m.alias, m.expr) for m in ranked_scope.materializations
+                    ]
                     outer_synth = synth.model_copy(update={"sql": val_alias})
                     # A HAVING on this same aggregate must reference the alias,
                     # not the raw crossing ref (out of scope in the outer SELECT).
@@ -7864,8 +7939,8 @@ class SQLGenerator:
         # then add the shifted measure under EACH of the slot's public
         # aliases (DEV-1450 C13).
         prev_cte = ctes[-2][0]  # the CTE just before the shifted CTE
-        carry_aliases_sorted = sorted(
-            a for aliases in aliases_by_slot_id.values() for a in aliases
+        carry_aliases_sorted = self._carry_aliases_in_plan_order(
+            aliases_by_slot_id,
         )
         sjoin_select_parts = [
             f'{prev_cte}.{self._quote_ident(a)}' for a in carry_aliases_sorted
@@ -8047,8 +8122,8 @@ class SQLGenerator:
 
         # Build the reset CTE.
         prev_cte = ctes[-1][0]
-        carry_aliases_sorted = sorted(
-            a for aliases in aliases_by_slot_id.values() for a in aliases
+        carry_aliases_sorted = self._carry_aliases_in_plan_order(
+            aliases_by_slot_id,
         )
         carry_select = ",\n  ".join(self._quote_ident(a) for a in carry_aliases_sorted)
         partition_clause = (

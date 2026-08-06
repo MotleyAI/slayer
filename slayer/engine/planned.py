@@ -23,7 +23,7 @@ yet. Stage 7b's engine cutover routes through them.
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -61,6 +61,7 @@ __all__ = [
     "BoundExpr",
     "BoundFilterId",
     "CrossModelAggregatePlan",
+    "EmptyBaseGrainPlan",
     "FilterPhase",
     "JoinRequirement",
     "OrderEntry",
@@ -417,6 +418,32 @@ class FilterReachability(BaseModel):
     has_host_local_ref: bool = False
 
 
+class EmptyBaseGrainPlan(BaseModel):
+    """The host base has no columns of its own (DEV-1503, §5.12).
+
+    Set when every projected value is an isolated aggregate — no host row
+    slots, no host-local aggregates — so ``_base`` has nothing to project and
+    becomes a one-row spine for the combined ``CROSS JOIN`` to hang off. Its
+    PRESENCE is the discriminator; there is no ``grain_slot_ids`` field because
+    in this shape the grain is empty by definition, which is precisely why the
+    join-back degenerates to a CROSS JOIN.
+
+    ``host_filter_ids`` are the ROW-phase filters that stay host-local (not
+    routed into a ``_cm_*`` CTE or the outer WHERE). When any exist the spine is
+    emitted as ``SELECT 1 AS _placeholder FROM <host> WHERE ... LIMIT 1``;
+    otherwise as a bare ``SELECT 1 AS _placeholder`` with no FROM at all.
+
+    The ``LIMIT 1`` is load-bearing rather than an optimisation: the filtered
+    form keeps the host FROM so the WHERE can gate the result, but a host FROM
+    yields N rows and CROSS JOINing N rows to a one-row scalar aggregate would
+    repeat the answer N times. ``LIMIT 1`` collapses the spine to a single row
+    while an empty match still yields zero rows overall. The unfiltered form
+    drops the FROM entirely for the same reason.
+    """
+
+    host_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+
+
 class PlannedQuery(BaseModel):
     """The fully typed plan for one query stage (P7).
 
@@ -497,6 +524,60 @@ class PlannedQuery(BaseModel):
     # parent: the paths only mean anything relative to the root they were
     # anchored at. Read via ``filter_reachability_for``.
     filter_reachability: List[FilterReachability] = Field(default_factory=list)
+    # DEV-1746 (§5.12) — set when the host base has no columns of its own and
+    # is emitted as a one-row placeholder spine. Decided at plan time; the
+    # generator consumes it and never re-derives the shape.
+    empty_base_plan: Optional[EmptyBaseGrainPlan] = None
+
+    @model_validator(mode="after")
+    def _projection_is_public_and_well_formed(self) -> "PlannedQuery":
+        """``projection`` is the ONE authoritative public column list (§5.2).
+
+        Every renderer consumes it verbatim, which is what makes hidden-slot
+        trimming the absence of a step rather than a step. Two ways that could
+        break, both checked here rather than discovered as wrong SQL:
+
+        * a HIDDEN slot appearing in it — hidden slots carry no public name, so
+          the renderer would have nothing to alias the column as;
+        * a slot appearing MORE times than it has declared names. A slot may
+          legitimately repeat: C13 lets one key be selected under several user
+          names, and the plan lists it once per name, each occurrence consuming
+          the next alias. One occurrence too many means a column emitted twice
+          under the same name.
+        """
+        by_id = {
+            slot.id: slot
+            for slot in (
+                list(self.row_slots)
+                + list(self.aggregate_slots)
+                + list(self.combined_expression_slots)
+            )
+        }
+        counts: Dict[SlotId, int] = {}
+        for sid in self.projection:
+            counts[sid] = counts.get(sid, 0) + 1
+        for sid, count in counts.items():
+            slot = by_id.get(sid)
+            if slot is None:
+                # Slot tables can legitimately be partial in nested plans; the
+                # renderer resolves what it needs. Only slots we can SEE are
+                # checked, so this validator never rejects a plan for a reason
+                # it cannot substantiate.
+                continue
+            if slot.hidden:
+                raise ValueError(
+                    f"hidden slot {sid!r} appears in the public projection; "
+                    f"hidden slots carry no public name and must be absent",
+                )
+            declared = len(slot.public_aliases) or (1 if slot.public_name else 0)
+            if declared and count > declared:
+                raise ValueError(
+                    f"slot {sid!r} appears {count} times in the public "
+                    f"projection but declares only {declared} public name(s) "
+                    f"{list(slot.public_aliases) or [slot.public_name]!r} — "
+                    f"the extra occurrence would emit a duplicate column",
+                )
+        return self
 
 
 # ``CrossModelAggregatePlan.rerooted_plan`` is a forward reference to

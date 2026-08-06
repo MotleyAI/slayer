@@ -312,15 +312,43 @@ class TestProjectionInvariant:
         with pytest.raises(ValueError, match="(?i)hidden"):
             PlannedQuery(**fields)
 
-    def test_a_duplicated_slot_in_the_projection_is_rejected(self) -> None:
-        """A duplicate would emit the same column twice and corrupt the
-        positional contract callers read ``columns`` by."""
+    def test_a_slot_may_repeat_once_per_declared_public_name(self) -> None:
+        """C13: one key selected under two names IS listed twice, and each
+        occurrence consumes the next alias. Pinned so the duplicate check below
+        cannot be tightened into rejecting a legitimate plan."""
+        query = SlayerQuery(
+            source_model="orders_x",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            )],
+            measures=[
+                ModelMeasure(formula="amount:sum(window='90d')", name="wa"),
+                ModelMeasure(formula="amount:sum(window='90d')", name="wb"),
+            ],
+        )
+        planned = plan_query(query=query, bundle=_chain_bundle())
+        repeated = [
+            sid for sid in set(planned.projection)
+            if planned.projection.count(sid) > 1
+        ]
+        assert repeated, (
+            f"expected one slot listed twice for the two names: "
+            f"{planned.projection}"
+        )
+        slot = {s.id: s for s in _all_slots(planned)}[repeated[0]]
+        assert len(slot.public_aliases) == planned.projection.count(repeated[0])
+
+    def test_more_occurrences_than_declared_names_is_rejected(self) -> None:
+        """One occurrence too many would emit the same column twice under the
+        same name — the duplication that the per-occurrence alias cursor in the
+        combined projection exists to prevent."""
         planned = plan_query(
             query=_cm_declared_first_query(), bundle=_chain_bundle(),
         )
         fields = dict(planned.__dict__)
         fields["projection"] = list(planned.projection) + [planned.projection[0]]
-        with pytest.raises(ValueError, match="(?i)duplicate"):
+        with pytest.raises(ValueError, match="(?i)duplicate|public name"):
             PlannedQuery(**fields)
 
     def test_renderer_belt_catches_a_model_copy_that_skips_validation(

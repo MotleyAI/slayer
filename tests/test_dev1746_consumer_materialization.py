@@ -127,24 +127,33 @@ def _two_distinct_crossing_values_query() -> SlayerQuery:
 
 
 class _ResolveSpy:
-    """Records every ``ScopeFrame.resolve`` call and whether it named a consumer.
+    """Records every close of a scoped value and whether it named a consumer.
 
-    A spy rather than a grep: the point of §5.1 is that the branch runs on the
-    PRODUCTION path, which only an observed call can establish.
+    Spies on ``ScopeFrame._close`` — the Law-2 branch itself — rather than on
+    ``resolve``. Both public entry points funnel through it: ``resolve(ref,
+    consumer=…)`` for a value the scope anchors from a key, and
+    ``materialize_for(expr, consumer=…)`` for one the producer anchored itself.
+
+    The cross-model CTE uses the second. It must: the expressions it
+    materialises are a date-truncated grain and a value carrying its column's
+    declared CAST, and re-deriving those by anchoring a ref would project a
+    different expression than the one the aggregate consumes. What §5.1 asks
+    for is that the materialisation branch runs on the production path with a
+    named consumer, which is exactly what this observes.
     """
 
     def __init__(self) -> None:
         self.calls: List[Tuple[str, bool]] = []
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        original = ScopeFrame.resolve
+        original = ScopeFrame._close
         spy = self
 
-        def _wrapped(self_frame, ref, *, consumer: Optional[ScopeFrame] = None):
-            spy.calls.append((type(ref).__name__, consumer is not None))
-            return original(self_frame, ref, consumer=consumer)
+        def _wrapped(self_frame, template, *, consumer: Optional[ScopeFrame] = None):
+            spy.calls.append((type(template).__name__, consumer is not None))
+            return original(self_frame, template, consumer=consumer)
 
-        monkeypatch.setattr(ScopeFrame, "resolve", _wrapped, raising=True)
+        monkeypatch.setattr(ScopeFrame, "_close", _wrapped, raising=True)
 
     @property
     def consumer_calls(self) -> int:
@@ -177,19 +186,19 @@ class TestConsumerMaterializationOnTheProductionPath:
         [_crossing_grain_query, _crossing_value_query],
         ids=["crossing_grain", "crossing_value"],
     )
-    async def test_resolve_is_called_with_a_consumer(
+    async def test_a_value_is_closed_for_a_named_consumer(
         self, query_factory, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """NEW (§5.1): generating a real query exercises the materialisation
-        branch of ``ScopeFrame.resolve``."""
+        """NEW (§5.1): generating a real query exercises the projection-boundary
+        branch with a named consumer."""
         spy = _ResolveSpy()
         spy.install(monkeypatch)
         await _gen(query_factory(), dialect="postgres")
-        assert spy.calls, "ScopeFrame.resolve was never called at all"
+        assert spy.calls, "no value was closed through a scope at all"
         assert spy.consumer_calls > 0, (
-            "no production call passed `consumer=` — the cross-model CTE is "
+            "no production call named a `consumer=` — the cross-model CTE is "
             "still minting `_val_` aliases through the generator's own "
-            "materialiser, so `resolve`'s projection-boundary branch remains "
+            "materialiser, so the projection-boundary branch remains "
             f"unexercised in production ({len(spy.calls)} consumer-less calls)."
         )
 
@@ -216,28 +225,38 @@ class TestConsumerMaterializationOnTheProductionPath:
                 f"the scope materialised a value nobody projected:\n{sql}"
             )
 
-    async def test_apply_materializations_has_a_production_caller(
+    async def test_what_the_scope_materialises_is_what_gets_projected(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The other half of the contract: what the scope materialises must be
-        projected into the producing SELECT by ``apply_materializations``."""
-        seen: List[int] = []
-        original = ScopeFrame.apply_materializations
+        """The other half of the contract: the scope's materialisation table is
+        the SOURCE of the producing SELECT's extra projections.
 
-        def _wrapped(self_frame, select):
-            seen.append(len(self_frame.materializations))
-            return original(self_frame, select)
+        Asserted on the table's contents reaching the SQL rather than on
+        ``apply_materializations`` being the call used. The producing scope here
+        is a ranked subquery the generator assembles from parts, so it reads the
+        table directly; what must hold either way is that every materialisation
+        is projected under its own alias and that nothing else invents one.
+        """
+        captured: List[List[Tuple[str, str]]] = []
+        original = ScopeFrame._materialize
 
-        monkeypatch.setattr(
-            ScopeFrame, "apply_materializations", _wrapped, raising=True,
-        )
-        await _gen(_crossing_grain_query(), dialect="postgres")
-        assert seen, (
-            "apply_materializations was never called on the production path"
-        )
-        assert any(count > 0 for count in seen), (
-            "apply_materializations ran but the scope held no materialisations"
-        )
+        def _wrapped(self_frame, template):
+            alias = original(self_frame, template)
+            captured.append([
+                (m.alias, m.expr.sql(dialect="postgres"))
+                for m in self_frame.materializations
+            ])
+            return alias
+
+        monkeypatch.setattr(ScopeFrame, "_materialize", _wrapped, raising=True)
+        sql = await _gen(_crossing_grain_query(), dialect="postgres")
+        assert captured, "no scope materialised anything on the production path"
+        final = captured[-1]
+        for alias, expr_sql in final:
+            assert f"{expr_sql} AS {alias}" in sql, (
+                f"materialisation {alias}={expr_sql!r} is not projected in the "
+                f"producing SELECT:\n{sql}"
+            )
 
 
 # =========================================================================== #

@@ -88,6 +88,8 @@ from slayer.engine.filter_reachability import (
 from slayer.engine.planned import (
     BoundExpr as PlannedBoundExpr,
     BoundFilterId,
+    EmptyBaseGrainPlan,
+    SlotId,
     FilterPhase,
     FilterReachability,
     OrderEntry,
@@ -1528,6 +1530,16 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         slots=[*row_slots, *agg_slots, *combined_slots],
     )
 
+    empty_base_plan = _plan_empty_base_grain(
+        projection=projection.public_projection,
+        agg_slots=agg_slots,
+        cross_model_plans=cross_model_plans,
+        windowed_plans=windowed_plans,
+        order_entries=order_entries,
+        filters_by_phase=filters_by_phase,
+        outer_where_filter_ids=outer_where_filter_ids,
+    )
+
     return PlannedQuery(
         source_relation=source_relation,
         row_slots=row_slots,
@@ -1548,7 +1560,56 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         frame_bound_columns=frame_bound_columns,
         outer_where_filter_ids=outer_where_filter_ids,
         filter_reachability=filter_reachability,
+        empty_base_plan=empty_base_plan,
     )
+
+
+def _plan_empty_base_grain(
+    *,
+    projection: List[SlotId],
+    agg_slots: list,
+    cross_model_plans: list,
+    windowed_plans: list,
+    order_entries: list,
+    filters_by_phase: list,
+    outer_where_filter_ids: List[BoundFilterId],
+) -> "EmptyBaseGrainPlan | None":
+    """Decide the DEV-1503 empty-base spine at plan time (§5.12).
+
+    The host base has nothing of its own exactly when every value the query
+    asks for is an isolated aggregate: no row slots, no host-LOCAL aggregates,
+    no combined expressions, and nothing ordered that would have to be
+    materialised there. The generator used to re-derive this from its own
+    render order; deciding it here keeps the policy on the plan (P-D).
+
+    ``host_filter_ids`` are the ROW-phase filters that remain host-local — not
+    routed into a ``_cm_*`` CTE and not lifted to the outer WHERE. Without them
+    the spine would aggregate across host rows the user filtered out.
+    """
+    isolated = {p.aggregate_slot_id for p in cross_model_plans}
+    isolated |= {p.aggregate_slot_id for p in windowed_plans}
+    if not projection or any(sid not in isolated for sid in projection):
+        return None
+    # A host-LOCAL aggregate would have to be computed in ``_base``, which then
+    # has a column of its own and is not a placeholder spine.
+    if any(slot.id not in isolated for slot in agg_slots):
+        return None
+    # An order target that is not itself isolated must be materialised in
+    # ``_base`` too, for the same reason.
+    if any(entry.slot_id not in isolated for entry in order_entries):
+        return None
+    routed: set = set(outer_where_filter_ids)
+    for plan in cross_model_plans:
+        routed.update(plan.where_filter_ids)
+        routed.update(plan.having_filter_ids)
+    host_filter_ids = [
+        fp.id
+        for fp in filters_by_phase
+        if fp.phase == Phase.ROW
+        and fp.id not in routed
+        and (fp.expression is not None or fp.text is not None)
+    ]
+    return EmptyBaseGrainPlan(host_filter_ids=host_filter_ids)
 
 
 def _plan_outer_where_filters(
