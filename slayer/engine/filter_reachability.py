@@ -31,6 +31,7 @@ Invariant: every summary is expressed in the coordinate system of the
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import List, Tuple
 
 from sqlglot import exp
@@ -160,6 +161,62 @@ def _derived_sql_touches_anchor(
     return False
 
 
+# Values a key tree can carry INLINE — plain data, not references, so they
+# cannot cross a join. ``Decimal`` is load-bearing: ``AggregateKey.args`` /
+# ``kwargs`` and ``ScalarCallKey.args`` normalise numeric literals to it, so a
+# parametric aggregate like ``price:percentile(p=0.9)`` puts a Decimal in the
+# tree. Omitting it made the fail-closed visitor reject a legitimate key.
+_INLINE_SCALARS = (str, int, float, bool, Decimal)
+
+# Leaf kinds: they carry references but no child keys.
+_LEAF_KINDS = (LiteralKey, StarKey, SqlExprKey, ColumnKey, ColumnSqlKey)
+
+
+def _child_keys(node, *, descend_aggregates: bool = True) -> Tuple:
+    """The child keys of a composite node, in a STABLE order.
+
+    One dispatch shared by both visitors, so a new key kind is handled — or
+    rejected — identically by each. Fails CLOSED on an unknown kind: a silent
+    empty result would read as "crosses nothing" and route a filter into a
+    scope that cannot evaluate it.
+
+    ``partition_keys`` is a frozenset, whose iteration order varies between
+    runs; sorted here because the discovered paths drive JOIN emission order,
+    and non-deterministic SQL is its own bug.
+
+    ``descend_aggregates=False`` stops at an aggregate: for host-locality, an
+    aggregate is routed by WHERE it is computed, not by its inputs.
+    """
+    if isinstance(node, _LEAF_KINDS) or isinstance(node, _INLINE_SCALARS):
+        return ()
+    if isinstance(node, TimeTruncKey):
+        return (node.column,)
+    if isinstance(node, AggregateKey):
+        if not descend_aggregates:
+            return ()
+        return (
+            node.source,
+            *node.args,
+            *(v for _name, v in node.kwargs),
+            node.column_filter_key,
+        )
+    if isinstance(node, TransformKey):
+        return (
+            node.input,
+            *sorted(node.partition_keys, key=repr),
+            node.time_key,
+        )
+    if isinstance(node, ArithmeticKey):
+        return tuple(node.operands)
+    if isinstance(node, ScalarCallKey):
+        return tuple(node.args)
+    if isinstance(node, InKey):
+        return (node.column, *node.values)
+    if isinstance(node, BetweenKey):
+        return (node.column, node.low, node.high)
+    raise UnhandledValueKindError(node)
+
+
 def compute_key_join_paths(
     *, key, anchor_model, anchor_relation: str, bundle,
 ) -> Tuple[Path, ...]:
@@ -181,66 +238,21 @@ def compute_key_join_paths(
     def _walk(node) -> None:
         if node is None:
             return
-        if isinstance(node, (LiteralKey, StarKey)):
-            return
-        if isinstance(node, ColumnKey):
+        if isinstance(node, (ColumnKey, ColumnSqlKey)):
             for p in _prefixes(node.path):
                 _add(p)
-            return
         if isinstance(node, ColumnSqlKey):
-            for p in _prefixes(node.path):
-                _add(p)
             for p in _derived_sql_paths(
                 key=node, anchor_model=anchor_model,
                 anchor_relation=anchor_relation, bundle=bundle,
             ):
                 _add(p)
-            return
-        if isinstance(node, SqlExprKey):
+        elif isinstance(node, SqlExprKey):
             for p in node.referenced_join_paths:
                 for pre in _prefixes(tuple(p)):
                     _add(pre)
-            return
-        if isinstance(node, TimeTruncKey):
-            _walk(node.column)
-            return
-        if isinstance(node, AggregateKey):
-            _walk(node.source)
-            for a in node.args:
-                _walk(a)
-            for _name, v in node.kwargs:
-                _walk(v)
-            _walk(node.column_filter_key)
-            return
-        if isinstance(node, TransformKey):
-            _walk(node.input)
-            for pk in node.partition_keys:
-                _walk(pk)
-            _walk(node.time_key)
-            return
-        if isinstance(node, ArithmeticKey):
-            for o in node.operands:
-                _walk(o)
-            return
-        if isinstance(node, ScalarCallKey):
-            for a in node.args:
-                _walk(a)
-            return
-        if isinstance(node, InKey):
-            _walk(node.column)
-            for v in node.values:
-                _walk(v)
-            return
-        if isinstance(node, BetweenKey):
-            _walk(node.column)
-            _walk(node.low)
-            _walk(node.high)
-            return
-        # Scalars carried inline by TransformKey args / kwargs are values, not
-        # references, and cannot cross anything.
-        if isinstance(node, (str, int, float, bool)) or node is None:
-            return
-        raise UnhandledValueKindError(node)
+        for child in _child_keys(node):
+            _walk(child)
 
     _walk(key)
     return tuple(seen)
@@ -258,62 +270,28 @@ def key_has_host_local_ref(
     has an empty anchored path but is NOT host-local — inside the target's
     scope its expansion resolves.
     """
-    found = False
 
-    def _walk(node) -> None:
-        nonlocal found
-        if found or node is None:
-            return
-        if isinstance(node, (LiteralKey, StarKey, SqlExprKey)):
-            return
+    def _is_local(node) -> bool:
         if isinstance(node, ColumnKey):
-            if not node.path:
-                found = True
-            return
+            return not node.path
         if isinstance(node, ColumnSqlKey):
-            if node.path:
-                return
-            if _derived_sql_touches_anchor(
+            return not node.path and _derived_sql_touches_anchor(
                 key=node, anchor_model=anchor_model,
                 anchor_relation=anchor_relation, bundle=bundle,
-            ):
-                found = True
-            return
-        if isinstance(node, TimeTruncKey):
-            _walk(node.column)
-            return
-        if isinstance(node, AggregateKey):
-            # An aggregate is routed by its own decision table arm (on-target
-            # vs elsewhere), not by host-locality of its inputs.
-            return
-        if isinstance(node, TransformKey):
-            _walk(node.input)
-            for pk in node.partition_keys:
-                _walk(pk)
-            _walk(node.time_key)
-            return
-        if isinstance(node, ArithmeticKey):
-            for o in node.operands:
-                _walk(o)
-            return
-        if isinstance(node, ScalarCallKey):
-            for a in node.args:
-                _walk(a)
-            return
-        if isinstance(node, InKey):
-            _walk(node.column)
-            return
-        if isinstance(node, BetweenKey):
-            _walk(node.column)
-            _walk(node.low)
-            _walk(node.high)
-            return
-        if isinstance(node, (str, int, float, bool)):
-            return
-        raise UnhandledValueKindError(node)
+            )
+        return False
 
-    _walk(key)
-    return found
+    def _walk(node) -> bool:
+        if node is None:
+            return False
+        if _is_local(node):
+            return True
+        return any(
+            _walk(child)
+            for child in _child_keys(node, descend_aggregates=False)
+        )
+
+    return _walk(key)
 
 
 def path_is_reachable(*, path: Path, target_path: Path) -> bool:

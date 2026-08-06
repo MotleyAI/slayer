@@ -111,7 +111,9 @@ def _orders_local_agg() -> SlayerModel:
     )
 
 
-async def _sql(query: SlayerQuery, *, model: SlayerModel, dialect="postgres") -> str:
+async def _sql(
+    query: SlayerQuery, *, model: SlayerModel, dialect: str = "postgres",
+) -> str:
     return await _engine_generate(
         query=query, model=model, dialect=dialect, validate=False,
         extra_models=[_customers(), _regions()],
@@ -119,6 +121,71 @@ async def _sql(query: SlayerQuery, *, model: SlayerModel, dialect="postgres") ->
 
 
 # ---------------------------------------------------------------------------
+
+
+class TestOnlySubstitutedKwargsAreSql:
+    """A string kwarg is a SQL fragment only when the aggregation's template
+    substitutes it. Anything else is a marker, and handing a marker to a SQL
+    parser is meaningless — harmless while the scan swallowed parse errors,
+    query-fatal now that the door raises."""
+
+    @staticmethod
+    def _entered_fragments(*, kwargs, agg="sum") -> list:
+        from slayer.core.keys import AggregateKey, ColumnKey
+        from slayer.sql.generator import SQLGenerator
+
+        gen = SQLGenerator(dialect="postgres")
+        seen: list = []
+        gen._enter_mode_a_expression = (  # type: ignore[method-assign]
+            lambda **kw: seen.append(kw["sql"])
+        )
+        gen._register_fragment_kwarg_joins(
+            key=AggregateKey(
+                source=ColumnKey(path=(), leaf="spend"), agg=agg,
+                kwargs=kwargs,
+            ),
+            scope=object(),
+            model=_customers(),
+        )
+        return seen
+
+    def test_reserved_marker_kwarg_is_not_parsed_as_sql(self) -> None:
+        """``window='90d'`` is the standing example — a marker on a BUILT-IN
+        aggregation, which has no template to substitute it into."""
+        assert self._entered_fragments(kwargs=(("window", "90d"),)) == []
+
+    def test_marker_that_is_not_parseable_sql_is_still_skipped(self) -> None:
+        """The failure this guards: a marker whose text sqlglot rejects. It
+        must never reach the door, which raises."""
+        assert self._entered_fragments(kwargs=(("fmt", "%Y-%m"),)) == []
+
+    def test_a_substituted_kwarg_is_still_scanned(self) -> None:
+        """The counter-case, so the filter is not blanket suppression:
+        ``wscaled_sum``'s template does substitute ``{w}``."""
+        entered = self._entered_fragments(
+            kwargs=(("w", "regions.weight"),), agg="wscaled_sum",
+        )
+        assert entered == ["regions.weight"], entered
+
+
+def _cm_body(sql: str) -> str:
+    """The body of the `_cm_` CTE.
+
+    Assertions about which alias the fragment rendered belong to THIS scope:
+    a whole-SQL check can be satisfied — or defeated — by a perfectly valid
+    alias in the host base or the combined SELECT.
+    """
+    start = sql.index("_cm_")
+    open_paren = sql.index("(", start)
+    depth = 0
+    for i in range(open_paren, len(sql)):
+        if sql[i] == "(":
+            depth += 1
+        elif sql[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return sql[open_paren + 1:i]
+    raise AssertionError(f"unbalanced _cm_ CTE in:\n{sql}")
 
 
 @pytest.mark.asyncio
@@ -137,11 +204,15 @@ class TestCrossModelFragmentJoins:
             ),
             model=_orders(),
         )
-        # the fragment renders regions.weight ...
-        assert "regions.weight" in sql, sql
-        # ... so regions MUST be joined in the same scope
-        assert "JOIN regions" in sql, (
-            f"fragment's crossed join missing from the CTE FROM:\n{sql}"
+        body = _cm_body(sql)
+        # the fragment renders regions.weight, anchored at the CTE's own root ...
+        assert "regions.weight" in body, body
+        assert "customers__regions.weight" not in body, (
+            f"fragment was anchored at the HOST path, not the CTE root:\n{body}"
+        )
+        # ... so regions MUST be joined in that same scope
+        assert "JOIN regions" in body, (
+            f"fragment's crossed join missing from the CTE FROM:\n{body}"
         )
 
     async def test_cm_cte_with_sibling_local_measure(self) -> None:
@@ -156,9 +227,13 @@ class TestCrossModelFragmentJoins:
             ),
             model=_orders(),
         )
-        assert "regions.weight" in sql, sql
-        assert "JOIN regions" in sql, (
-            f"fragment's crossed join missing from the CTE FROM:\n{sql}"
+        body = _cm_body(sql)
+        assert "regions.weight" in body, body
+        assert "customers__regions.weight" not in body, (
+            f"fragment was anchored at the HOST path, not the CTE root:\n{body}"
+        )
+        assert "JOIN regions" in body, (
+            f"fragment's crossed join missing from the CTE FROM:\n{body}"
         )
 
 
@@ -207,16 +282,16 @@ async def test_cross_model_fragment_executes_on_duckdb() -> None:
         ),
         model=_orders(), dialect="duckdb",
     )
-    con = duckdb.connect()
-    con.execute(
-        "CREATE TABLE orders(id INT, customer_id INT, amount DOUBLE, status VARCHAR)"
-    )
-    con.execute("CREATE TABLE customers(id INT, region_id INT, spend DOUBLE)")
-    con.execute("CREATE TABLE regions(id INT, weight DOUBLE)")
-    con.execute("INSERT INTO orders VALUES (1, 1, 10.0, 'ok')")
-    con.execute("INSERT INTO customers VALUES (1, 1, 7.0)")
-    con.execute("INSERT INTO regions VALUES (1, 3.0)")
+    with duckdb.connect() as con:
+        con.execute(
+            "CREATE TABLE orders(id INT, customer_id INT, amount DOUBLE, status VARCHAR)"
+        )
+        con.execute("CREATE TABLE customers(id INT, region_id INT, spend DOUBLE)")
+        con.execute("CREATE TABLE regions(id INT, weight DOUBLE)")
+        con.execute("INSERT INTO orders VALUES (1, 1, 10.0, 'ok')")
+        con.execute("INSERT INTO customers VALUES (1, 1, 7.0)")
+        con.execute("INSERT INTO regions VALUES (1, 3.0)")
 
-    rows = con.execute(sql).fetchall()
+        rows = con.execute(sql).fetchall()
     # SUM(customers.spend * regions.weight) = 7 * 3 = 21
     assert rows == [("ok", 21.0)], f"unexpected rows {rows!r} for SQL:\n{sql}"

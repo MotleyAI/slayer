@@ -133,7 +133,14 @@ def _orders() -> SlayerModel:
                    filter="customers.tier = 'eu'", type=DataType.DOUBLE),
             # raw ref that inlines to a constant (dual-scan contract)
             Column(name="flag_const", sql="1", type=DataType.INT),
-            # quoted dotted identifier
+            # Quoted dotted identifier. Mode-A is raw SQL for the TARGET
+            # dialect, and this spelling is Postgres-flavoured: BigQuery quotes
+            # identifiers with backticks and reads "..." as a STRING, so there
+            # it parses as the literal expression 'customers'.'spend' — no
+            # column reference, therefore no join to discover. The BigQuery
+            # baseline entry records exactly that, which is what the dialect
+            # does with this input rather than a defect to fix here. Mode-A
+            # portability across quoting styles is noted on DEV-1746.
             Column(name="quoted_cross", sql='"customers"."spend"',
                    type=DataType.DOUBLE),
             # derived-of-derived, two hops (currently BROKEN — see module doc)

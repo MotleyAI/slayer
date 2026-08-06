@@ -597,7 +597,8 @@ def _apply_malformed_date_range(
             original=f"time_dimensions[{i}].date_range={list(date_range)!r}",
             normalized="(ignored — no date filter emitted)",
             location=f"time_dimensions[{i}].date_range",
-            rule_doc_url="docs/agent_input_slack.md#malformed-date-range",
+            # No rule_doc_url: docs/agent_input_slack.md does not exist, and a
+            # link to a missing page is worse than no link.
         )
         emitted.append(payload)
         _warnings_module.warn(

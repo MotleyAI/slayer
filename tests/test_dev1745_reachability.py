@@ -251,10 +251,11 @@ class TestCompositeKeyKindsAreTotal:
         class _Bogus:
             pass
 
+        bogus, model, bundle = _Bogus(), _orders(), _bundle()
         with pytest.raises(UnhandledValueKindError) as excinfo:
             compute_key_join_paths(
-                key=_Bogus(), anchor_model=_orders(),
-                anchor_relation="orders", bundle=_bundle(),
+                key=bogus, anchor_model=model,
+                anchor_relation="orders", bundle=bundle,
             )
         assert "_Bogus" in str(excinfo.value), (
             "the error must identify the unhandled key type"
@@ -391,6 +392,60 @@ class TestStructuralRouting:
             ColumnKey(path=(), leaf="amount"), target_path=("customers",),
         )
         assert route == FilterRoute.DROP_HOST_LOCAL
+
+
+class TestInlineScalarsAreNotReferences:
+    """A key tree carries plain VALUES as well as references. The fail-closed
+    visitor must recognise them as data, not reject them as an unknown kind."""
+
+    def test_decimal_aggregate_kwarg_is_scalar(self) -> None:
+        """``price:percentile(p=0.9)`` normalises 0.9 to a Decimal and puts it
+        in AggregateKey.kwargs. Rejecting it took down planning for every
+        filter over a parametric aggregate."""
+        from decimal import Decimal
+
+        key = AggregateKey(
+            source=ColumnKey(path=("customers",), leaf="balance"),
+            agg="percentile",
+            kwargs=(("p", Decimal("0.9")),),
+        )
+        assert ("customers",) in _paths_for(key)
+
+    def test_decimal_scalar_call_arg_is_scalar(self) -> None:
+        from decimal import Decimal
+
+        from slayer.core.keys import ScalarCallKey
+
+        key = ScalarCallKey(
+            name="round",
+            args=(ColumnKey(path=("customers",), leaf="balance"), Decimal("2")),
+        )
+        assert ("customers",) in _paths_for(key)
+
+    def test_string_and_bool_args_are_scalars(self) -> None:
+        key = AggregateKey(
+            source=ColumnKey(path=("customers",), leaf="balance"),
+            agg="sum",
+            kwargs=(("window", "90d"), ("flag", True)),
+        )
+        assert ("customers",) in _paths_for(key)
+
+    def test_parametric_aggregate_filter_plans(self) -> None:
+        """End-to-end: the shape that crashed. A filter over a parametric
+        aggregate must plan, not raise."""
+        from slayer.core.query import SlayerQuery
+        from slayer.engine.stage_planner import plan_query
+
+        planned = plan_query(
+            query=SlayerQuery(
+                source_model="orders",
+                dimensions=[{"formula": "amount", "name": "amount"}],
+                measures=[{"formula": "amount:percentile(p=0.9)", "name": "p90"}],
+                filters=["amount:percentile(p=0.9) > 100"],
+            ),
+            bundle=_bundle(),
+        )
+        assert planned.filters_by_phase
 
 
 class TestCoordinateSystemInvariant:

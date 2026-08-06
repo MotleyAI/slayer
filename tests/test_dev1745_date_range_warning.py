@@ -122,7 +122,8 @@ class TestNoBehaviorChange:
 
     async def test_well_formed_still_filters(self) -> None:
         sql = await self._sql(["2024-01-01", "2024-12-31"])
-        assert "2024-01-01" in sql and "2024-12-31" in sql
+        assert "2024-01-01" in sql
+        assert "2024-12-31" in sql
 
     async def test_absent_matches_empty_emission(self) -> None:
         assert await self._sql(None) == await self._sql([])

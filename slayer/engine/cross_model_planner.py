@@ -133,6 +133,37 @@ class HostFilterRouting(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _classify_referenced_slots(
+    *,
+    referenced_slot_ids: List[SlotId],
+    host_slots: List[ValueSlot],
+    target_path: Tuple[str, ...],
+) -> Tuple[List[SlotId], List[SlotId], List[SlotId]]:
+    """Split a filter's referenced slots into
+    ``(unknown, aggregate_on_target, aggregate_other)``.
+
+    Only AGGREGATE slots are sorted here — row-level reachability comes from
+    the structural summary, not from slot keys. An aggregate is routed by WHERE
+    it is computed: one whose source path IS the target can be propagated as a
+    HAVING inside that CTE, one computed anywhere else cannot be evaluated
+    there at all.
+    """
+    by_id = {s.id: s for s in host_slots}
+    unknown: List[SlotId] = []
+    on_target: List[SlotId] = []
+    other: List[SlotId] = []
+    for sid in referenced_slot_ids:
+        slot = by_id.get(sid)
+        if slot is None:
+            # Unknown slot id — be conservative, treat as unreachable.
+            unknown.append(sid)
+        elif isinstance(slot.key, AggregateKey):
+            agg_path = getattr(slot.key.source, "path", ())
+            bucket = on_target if agg_path == target_path else other
+            bucket.append(sid)
+    return unknown, on_target, other
+
+
 def classify_host_filter(
     *,
     host_filter: HostFilterRouting,
@@ -165,24 +196,11 @@ def classify_host_filter(
     if host_filter.phase == Phase.POST:
         return FilterRoute.STAY_AT_HOST_POST
 
-    by_id = {s.id: s for s in host_slots}
-
-    unknown: List[SlotId] = []
-    aggregate_on_target: List[SlotId] = []
-    aggregate_other: List[SlotId] = []
-
-    for sid in host_filter.referenced_slot_ids:
-        s = by_id.get(sid)
-        if s is None:
-            # Unknown slot id — be conservative, treat as unreachable.
-            unknown.append(sid)
-            continue
-        if isinstance(s.key, AggregateKey):
-            agg_path = getattr(s.key.source, "path", ())
-            if agg_path == target_path:
-                aggregate_on_target.append(sid)
-            else:
-                aggregate_other.append(sid)
+    unknown, aggregate_on_target, aggregate_other = _classify_referenced_slots(
+        referenced_slot_ids=host_filter.referenced_slot_ids,
+        host_slots=host_slots,
+        target_path=target_path,
+    )
 
     crossed = tuple(host_filter.crossed_join_paths)
     unreachable_paths = [
