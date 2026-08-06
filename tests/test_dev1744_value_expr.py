@@ -53,9 +53,10 @@ from decimal import Decimal
 from typing import AsyncIterator, Optional
 
 import pytest
+import sqlglot
 from sqlglot import exp
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType
+from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, TimeGranularity
 from slayer.core.errors import (
     RenderContextMissingFacilityError,
     UnknownReferenceError,
@@ -82,12 +83,17 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
+from slayer.sql.generator import SQLGenerator
 from slayer.sql.naming import AliasAllocator
-from slayer.sql.render.aggregates import resolve_agg_entry, window_agg_class
+from slayer.sql.render.aggregates import (
+    AGG_REGISTRY,
+    resolve_agg_entry,
+    window_agg_class,
+)
 from slayer.sql.render.value_expr import (
     AliasFacilities,
     contains_aggregate,
@@ -95,7 +101,10 @@ from slayer.sql.render.value_expr import (
     FilterFacilities,
     RenderContext,
     _literal,
+    render_arithmetic,
+    render_scalar_call,
     render_value_key,
+    rewrite_log_alias,
 )
 from slayer.sql.scope import ScopeFrame
 from slayer.storage.yaml_storage import YAMLStorage
@@ -165,7 +174,6 @@ def _scope(
 
 def _filter_ctx(dialect: str = "postgres", **kw):
     """A RenderContext carrying the FILTER facility group (R1's call family)."""
-
     scope = _scope(dialect=dialect)
     return RenderContext(
         scope=scope,
@@ -176,7 +184,6 @@ def _filter_ctx(dialect: str = "postgres", **kw):
 
 def _composite_ctx(dialect: str = "postgres", **kw):
     """A RenderContext carrying the COMPOSITE facility group (R5's family)."""
-
     scope = _scope(dialect=dialect)
     return RenderContext(
         scope=scope,
@@ -199,7 +206,6 @@ class TestB10UnknownModelRaises:
     naming a model absent from the bundle silently expands the ROOT model's
     derived SQL instead. That turns a wiring bug into a wrong answer — the
     query runs and returns numbers computed from the wrong model."""
-
     def test_unknown_model_in_columnsqlkey_raises(self) -> None:
 
         scope = _scope()
@@ -210,7 +216,6 @@ class TestB10UnknownModelRaises:
     def test_error_names_the_missing_model(self) -> None:
         """The message must be actionable: which model was asked for, what the
         scope root is, and what the bundle actually knows."""
-
         scope = _scope()
         key = ColumnSqlKey(model="not_in_bundle", column_name="net")
         with pytest.raises(UnknownReferenceError) as excinfo:
@@ -253,7 +258,6 @@ class TestRenderContextApi:
         """Pydantic v2 + a ``ScopeFrame`` / dialect strategy / sqlglot nodes
         needs ``arbitrary_types_allowed``; constructing with the real objects
         (not stubs) is what proves the config is right."""
-
         scope = _scope()
         ctx = RenderContext(scope=scope, dialect=scope.dialect)
         assert ctx.scope is scope
@@ -265,7 +269,6 @@ class TestRenderContextApi:
     def test_consumer_defaults_to_none_and_is_accepted(self) -> None:
         """The P-B seam exists in PR 1 even though its production callers
         arrive in PR 3."""
-
         producer, consumer = _scope(), _scope()
         ctx = RenderContext(
             scope=producer, consumer=consumer, dialect=producer.dialect,
@@ -289,7 +292,6 @@ class TestRenderContextApi:
 
         Parametrised over all three column-like kinds because a renderer that
         special-cases one of them would otherwise slip through."""
-
         producer, consumer = _scope(), _scope()
         ctx = RenderContext(
             scope=producer, consumer=consumer, dialect=producer.dialect,
@@ -304,7 +306,6 @@ class TestRenderContextApi:
         """The other half of the P-B contract: what the renderer records must
         actually be projectable via ``apply_materializations``, so the consumer's
         bare alias resolves to a real column of the producing SELECT."""
-
         producer, consumer = _scope(), _scope()
         ctx = RenderContext(
             scope=producer, consumer=consumer, dialect=producer.dialect,
@@ -322,7 +323,6 @@ class TestRenderContextApi:
         """Two renders of the same key across the same boundary share ONE
         ``_val_<n>`` — the dedup key is the producing scope + anchored AST +
         dialect, and the renderer must not defeat it by re-anchoring."""
-
         producer, consumer = _scope(), _scope()
         ctx = RenderContext(
             scope=producer, consumer=consumer, dialect=producer.dialect,
@@ -336,7 +336,6 @@ class TestRenderContextApi:
         """P-A: join discovery is a side effect of rendering, never a separate
         pass. Rendering a joined leaf must register the crossed path on the
         scope without the caller asking."""
-
         scope = _scope()
         ctx = RenderContext(scope=scope, dialect=scope.dialect)
         render_value_key(
@@ -350,7 +349,6 @@ class TestRenderContextApi:
         """A key kind that needs a facility the context lacks must RAISE, not
         silently degrade. Silent degradation is how the five copies drifted in
         the first place."""
-
         scope = _scope()
         bare = RenderContext(scope=scope, dialect=scope.dialect)
         # A POST-phase transform can only be rendered against already-
@@ -388,7 +386,6 @@ class TestRenderContextApi:
         ``AggregateKey`` needs the composite facilities (rn-suffix maps,
         resolved agg kwargs, composite alias map) to render faithfully.
         """
-
         scope = _scope()
         bare = RenderContext(scope=scope, dialect=scope.dialect)
         key = AggregateKey(source=ColumnKey(leaf="amount"), agg="first")
@@ -404,7 +401,6 @@ class TestRenderContextApi:
         ``source`` alone drops the filter and covers rows it must exclude —
         a wrong number rather than an error, so the no-builder path refuses it.
         """
-
         key = AggregateKey(
             source=ColumnKey(leaf="amount"),
             agg="sum",
@@ -417,7 +413,6 @@ class TestRenderContextApi:
     def test_parametric_aggregate_without_a_builder_fails_closed(self) -> None:
         """Same rule for args/kwargs, which need the generator's parameter
         resolution."""
-
         key = AggregateKey(
             source=ColumnKey(leaf="amount"),
             agg="sum",
@@ -454,7 +449,6 @@ class TestRenderContextApi:
         WITH its facility must render here — otherwise "fails closed" would be
         indistinguishable from "not implemented".
         """
-
         scope = _scope()
         agg = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
         key = TransformKey(op="time_shift", input=agg)
@@ -479,7 +473,6 @@ class TestRendersEveryKeyKind:
     """The union is closed (11 members). One renderer means every member is
     handled in one place — an unhandled kind must raise, never fall through to
     a bare ``None`` or a stringified repr."""
-
     def test_local_column_key(self) -> None:
 
         out = render_value_key(ColumnKey(leaf="amount"), _filter_ctx())
@@ -503,7 +496,6 @@ class TestRendersEveryKeyKind:
     def test_column_sql_key_expands_the_derived_expression(self) -> None:
         """Exact SQL, not a substring check: ``net`` is ``amount - 1``, and the
         expansion must be anchored at the scope root."""
-
         out = render_value_key(
             ColumnSqlKey(model="orders", column_name="net"), _filter_ctx(),
         )
@@ -512,7 +504,6 @@ class TestRendersEveryKeyKind:
     def test_time_trunc_key(self) -> None:
         """Exact per-dialect SQL — a substring check would accept a truncation
         at the wrong granularity or over the wrong column."""
-
         key = TimeTruncKey(
             column=ColumnKey(leaf="created_at"), granularity="month",
         )
@@ -529,7 +520,6 @@ class TestRendersEveryKeyKind:
         the backend rejects, which is the same one-construct-two-renderings
         defect this module exists to remove.
         """
-
         key = TimeTruncKey(
             column=ColumnKey(leaf="created_at"), granularity="month",
         )
@@ -545,7 +535,6 @@ class TestRendersEveryKeyKind:
         A hardcoded unit table would have no entry for it and would emit
         ``DATE_TRUNC('WEEK_SUNDAY', col)``, which no dialect accepts.
         """
-
         key = TimeTruncKey(
             column=ColumnKey(leaf="created_at"), granularity="week_sunday",
         )
@@ -649,7 +638,6 @@ class TestRendersEveryKeyKind:
         ``amount > -10`` would silently become ``amount > 10`` — a wrong
         result, not a failure.
         """
-
         out = render_value_key(
             ArithmeticKey(op="-", operands=(LiteralKey(value=Decimal(10)),)),
             _filter_ctx(),
@@ -737,7 +725,6 @@ class TestRendersEveryKeyKind:
     )
     def test_arithmetic_precedence_is_parenthesised(self, key, expected) -> None:
         """Operator precedence has to be materialised as ``Paren`` nodes."""
-
         ctx = _filter_ctx()
         assert _sql(render_value_key(key, ctx)) == expected
 
@@ -756,7 +743,6 @@ class TestRendersEveryKeyKind:
 
     def test_supported_literal_types_still_render(self) -> None:
         """The fail-closed branch must not swallow the supported cases."""
-
         assert _literal(None).sql() == "NULL"
         assert _literal(True).sql() == "TRUE"
         assert _literal(Decimal("1.5")).sql() == "1.5"
@@ -771,7 +757,6 @@ class TestRendersEveryKeyKind:
         accepting a tuple of types would let an incidental TypeError from
         somewhere else inside the renderer satisfy this test.
         """
-
         ctx = _filter_ctx()
         with pytest.raises(NotImplementedError) as excinfo:
             render_value_key(object(), ctx)  # type: ignore[arg-type]
@@ -825,7 +810,6 @@ class TestB5ScalarCallPolicy:
     def test_ifnull_never_reaches_postgres_unmapped(self) -> None:
         """The headline B5 bug, stated as the invariant rather than as an exact
         string: Postgres has no ``IFNULL``, so emitting it is broken SQL."""
-
         key = ScalarCallKey(
             name="ifnull",
             args=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(0))),
@@ -843,7 +827,6 @@ class TestB5ScalarCallPolicy:
         ``_rewrite_log_aliases``. Applying transpile WITHOUT that rewrite would
         regress ``log10`` — so the unified renderer must apply both.
         """
-
         key = ScalarCallKey(name="log10", args=(ColumnKey(leaf="amount"),))
         out = _sql(render_value_key(key, _filter_ctx("postgres")), "postgres")
         assert out.upper().startswith("LOG10("), out
@@ -852,7 +835,6 @@ class TestB5ScalarCallPolicy:
         """Parity guard: two-arg ROUND on Postgres needs the numeric cast, and
         it is the ONE scalar call R1 already routed through the typed path.
         Unifying must not lose it."""
-
         key = ScalarCallKey(
             name="round",
             args=(ColumnKey(leaf="amount"), LiteralKey(value=Decimal(0))),
@@ -865,7 +847,6 @@ class TestB5ScalarCallPolicy:
         """``like(value, pattern)`` is the one allowlist member that is an
         OPERATOR, not a function call. Both legacy paths special-case it; the
         unified renderer keeps that."""
-
         key = ScalarCallKey(
             name="like",
             args=(ColumnKey(leaf="label"), LiteralKey(value="x%")),
@@ -877,7 +858,6 @@ class TestB5ScalarCallPolicy:
     def test_nested_scalar_calls_use_one_policy_throughout(self) -> None:
         """The policy applies at every depth — a nested call must not fall back
         to the passthrough branch."""
-
         key = ScalarCallKey(
             name="ifnull",
             args=(
@@ -904,8 +884,6 @@ class TestLogAliasPolicyIsShared:
 
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "tsql", "bigquery"])
     def test_generator_delegates_to_the_shared_policy(self, dialect) -> None:
-        from slayer.sql.generator import SQLGenerator
-        from slayer.sql.render.value_expr import rewrite_log_alias
 
         gen = SQLGenerator(dialect=dialect)
         node = exp.Log(
@@ -918,16 +896,12 @@ class TestLogAliasPolicyIsShared:
     def test_generator_parse_path_still_emits_native_log10(self) -> None:
         """Behavioural companion: the delegation must not lose the rewrite that
         the generator applies over parsed trees."""
-        from slayer.sql.generator import SQLGenerator
-
         gen = SQLGenerator(dialect="postgres")
         out = gen._parse("log10(x)").sql(dialect="postgres")
         assert out.upper().startswith("LOG10("), out
 
     def test_non_log_nodes_pass_through_untouched(self) -> None:
-        from slayer.sql.render.value_expr import rewrite_log_alias
 
-        from slayer.sql.dialects import get_dialect
 
         node = exp.column("x")
         assert rewrite_log_alias(node, dialect=get_dialect("postgres")) is node
@@ -940,7 +914,6 @@ class TestPGSameConstructSameSql:
     rendering POLICY must not branch on them. Any divergence here is the class
     of bug the five copies produced.
     """
-
     _KEYS = [
         ("column", ColumnKey(leaf="amount")),
         ("joined_column", ColumnKey(path=("customers",), leaf="balance")),
@@ -1033,7 +1006,6 @@ class TestAggregationRegistry:
         implementation that only ported the easy ``_AGG_FUNCTION_MAP`` entries
         would still pass ``test_every_builtin_resolves`` if the enum happened
         to be small."""
-
         for name in names:
             assert resolve_agg_entry(name).name == name, mechanism
 
@@ -1053,7 +1025,6 @@ class TestAggregationRegistry:
         """Only ``sum`` and ``avg`` are windowable today — that is precisely
         what ``stage_planner`` gates on, and the registry must agree with it
         rather than restating it."""
-
         assert resolve_agg_entry("sum").windowable is True
         assert resolve_agg_entry("avg").windowable is True
         for name in ("count", "min", "max", "median", "percentile", "first"):
@@ -1072,8 +1043,6 @@ class TestAggregationRegistry:
         subtler half: ``is_builtin_agg`` would accept it and route it AWAY from
         that path, so the typo would render as if it were a real aggregation.
         """
-        from slayer.sql.render.aggregates import AGG_REGISTRY
-
         assert set(AGG_REGISTRY) == set(BUILTIN_AGGREGATIONS)
 
     def test_non_windowable_aggregation_fails_closed(self) -> None:
@@ -1084,7 +1053,6 @@ class TestAggregationRegistry:
 
         Approved divergence: it raises instead.
         """
-
         for name in ("median", "count", "min", "max", "percentile"):
             with pytest.raises(ValueError):
                 window_agg_class(name)
@@ -1265,7 +1233,6 @@ class TestOuterWrapperAndShiftedCteFamilies:
     * R1's shifted-CTE WHERE call site (the generator) — reached only by a
       ``time_shift`` transform, never by a plain host filter.
     """
-
     async def _engine(self, tmp_path_factory, *, dialect: str = "sqlite") -> SlayerQueryEngine:
         d = str(tmp_path_factory.mktemp("routes"))
         db_path = os.path.join(d, "routes.db")
@@ -1405,9 +1372,6 @@ class TestOuterWrapperAndShiftedCteFamilies:
         With ``status = 'new'`` only, January's total is 100 and February's
         shifted-by-one-month value must be that same 100.
         """
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.query import TimeDimension
-
         engine = await self._engine(tmp_path_factory)
         resp = await engine.execute(
             SlayerQuery(
@@ -1621,7 +1585,6 @@ class TestOperatorCompositionEdges:
     """Three edges a Codex pass surfaced, all the same family as the rest:
     output that still parses and still returns rows, but means something else.
     """
-
     def test_comparison_nested_in_arithmetic_keeps_its_parens(self) -> None:
         """``(a > b) + 1`` must not flatten to ``a > b + 1``.
 
@@ -1706,7 +1669,6 @@ class TestOperatorCompositionEdges:
 class TestContainsAggregate:
     """``contains_aggregate`` decides GROUP BY / HAVING placement, so it must
     answer "is there an aggregate in this tree", not "when does this evaluate"."""
-
     def test_bare_aggregate(self) -> None:
         assert contains_aggregate(
             AggregateKey(source=ColumnKey(leaf="amount"), agg="sum"),
@@ -1752,7 +1714,6 @@ class TestEqualPrecedenceRightChildren:
     the expression regrouped to ``(a * b) % c``. With a=2 b=3 c=2 that is 0
     instead of 2 — a different number from SQL that parses cleanly.
     """
-
     def _key(self, outer_op, inner_op):
         return ArithmeticKey(
             op=outer_op,
@@ -1817,7 +1778,6 @@ class TestContainsAggregateTransformDependencies:
     """``partition_keys`` and ``time_key`` are expression dependencies of a
     transform just as ``input`` is — an aggregate in either one still lands in
     the emitted SQL."""
-
     def test_aggregate_in_partition_keys(self) -> None:
         agg = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
         key = TransformKey(
@@ -1861,13 +1821,11 @@ class TestScalarArity:
          ("nullif", 1), ("replace", 2), ("substr", 1), ("like", 3)],
     )
     def test_wrong_arity_is_refused(self, name, argc) -> None:
-        from slayer.sql.render.value_expr import render_scalar_call
 
         args = [exp.column(f"c{i}") for i in range(argc)]
+        dialect = get_dialect("postgres")
         with pytest.raises(NotImplementedError):
-            render_scalar_call(
-                name=name, args=args, dialect=get_dialect("postgres"),
-            )
+            render_scalar_call(name=name, args=args, dialect=dialect)
 
     @pytest.mark.parametrize(
         "name,argc",
@@ -1876,8 +1834,6 @@ class TestScalarArity:
     )
     def test_accepted_arities_still_render(self, name, argc) -> None:
         """The variadic and optional-argument forms must keep working."""
-        from slayer.sql.render.value_expr import render_scalar_call
-
         args = [exp.column(f"c{i}") for i in range(argc)]
         out = render_scalar_call(
             name=name, args=args, dialect=get_dialect("postgres"),
@@ -1889,31 +1845,26 @@ class TestArityIsRejectedAtBindTime:
     """The renderer check is the backstop; the binder is where a user's typo
     should surface, with a message naming the function and the counts."""
 
+    @staticmethod
+    def _query(predicate: str) -> SlayerQuery:
+        return SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="*:count", name="n")],
+            filters=[predicate],
+        )
+
     async def test_round_with_three_args_is_rejected(self, e2e) -> None:
+        query = self._query("round(amount, 2, 99) > 1")
         with pytest.raises(ValueError, match="round"):
-            await e2e.execute(
-                SlayerQuery(
-                    source_model="orders",
-                    dimensions=[ColumnRef(name="status")],
-                    measures=[ModelMeasure(formula="*:count", name="n")],
-                    filters=["round(amount, 2, 99) > 1"],
-                ),
-                dry_run=True,
-            )
+            await e2e.execute(query, dry_run=True)
 
     async def test_length_with_two_args_is_rejected(self, e2e) -> None:
         """Previously emitted ``LENGTH(a, b)`` — invalid SQL the backend
         rejected with its own, less useful error."""
+        query = self._query("length(status, status) > 1")
         with pytest.raises(ValueError, match="length"):
-            await e2e.execute(
-                SlayerQuery(
-                    source_model="orders",
-                    dimensions=[ColumnRef(name="status")],
-                    measures=[ModelMeasure(formula="*:count", name="n")],
-                    filters=["length(status, status) > 1"],
-                ),
-                dry_run=True,
-            )
+            await e2e.execute(query, dry_run=True)
 
     async def test_correct_arity_still_binds(self, e2e) -> None:
         resp = await e2e.execute(
@@ -1936,7 +1887,6 @@ class TestNullInInList:
     rows rather than "everything except a". Neither announces itself — the
     query runs and hands back a plausible-looking empty result.
     """
-
     def test_renderer_refuses_null_in_the_list(self) -> None:
         key = InKey(
             column=ColumnKey(leaf="label"),
@@ -1965,32 +1915,27 @@ class TestNullInInList:
             "orders.label IN ('a', 'b')"
         )
 
+    @staticmethod
+    def _query(predicate: str) -> SlayerQuery:
+        return SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="*:count", name="n")],
+            filters=[predicate],
+        )
+
     async def test_bind_time_rejects_null_in_list(self, e2e) -> None:
         """The user-facing half: caught at bind, with a message pointing at
         ``is null`` rather than at three-valued logic in the abstract."""
+        query = self._query("status in ('new', None)")
         with pytest.raises(ValueError, match="NULL is not allowed"):
-            await e2e.execute(
-                SlayerQuery(
-                    source_model="orders",
-                    dimensions=[ColumnRef(name="status")],
-                    measures=[ModelMeasure(formula="*:count", name="n")],
-                    filters=["status in ('new', None)"],
-                ),
-                dry_run=True,
-            )
+            await e2e.execute(query, dry_run=True)
 
     async def test_bind_time_rejects_null_in_negated_list(self, e2e) -> None:
         """The dangerous one: this previously returned zero rows in silence."""
+        query = self._query("status not in ('new', None)")
         with pytest.raises(ValueError, match="NULL is not allowed"):
-            await e2e.execute(
-                SlayerQuery(
-                    source_model="orders",
-                    dimensions=[ColumnRef(name="status")],
-                    measures=[ModelMeasure(formula="*:count", name="n")],
-                    filters=["status not in ('new', None)"],
-                ),
-                dry_run=True,
-            )
+            await e2e.execute(query, dry_run=True)
 
     async def test_null_free_in_list_still_executes(self, e2e) -> None:
         resp = await e2e.execute(
@@ -2011,7 +1956,6 @@ class TestUnaryOperandGrouping:
     the operand straight into ``exp.Neg`` / ``exp.Not`` without grouping it.
     Both results parse cleanly and mean something else.
     """
-
     def test_negated_sum_keeps_its_parens(self) -> None:
         """``-(a + b)`` must not flatten to ``-a + b``, which is ``(-a) + b``."""
         key = ArithmeticKey(
@@ -2067,3 +2011,425 @@ class TestUnaryOperandGrouping:
     def test_negated_column_needs_no_parens(self) -> None:
         key = ArithmeticKey(op="-", operands=(ColumnKey(leaf="amount"),))
         assert _sql(render_value_key(key, _filter_ctx())) == "-orders.amount"
+
+
+class TestComparisonsAreNonAssociative:
+    """The equal-precedence rule was right-child-only, and ``is`` skipped it.
+
+    Arithmetic is left-associative, so an equal-precedence LEFT child regroups
+    harmlessly. The comparison family is not: SQL binds ``IS`` tighter than
+    ``=``, and Postgres rejects a chain of relational operators outright. Both
+    shapes are reachable — the Mode-B parser reads ``(a == b) == c`` as a
+    NESTED comparison, not a chained one, so the binder does build them.
+    """
+    def _cmp(self, op, left, right):
+        return ArithmeticKey(op=op, operands=(left, right))
+
+    def _inner(self, op="="):
+        return self._cmp(
+            op, ColumnKey(leaf="amount"), LiteralKey(value=Decimal(5)),
+        )
+
+    def test_comparison_over_comparison_keeps_left_parens(self) -> None:
+        """``(a = 5) = TRUE`` must not flatten to ``a = 5 = TRUE``."""
+        key = self._cmp("=", self._inner(), LiteralKey(value=True))
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out == "(orders.amount = 5) = TRUE", out
+
+    def test_mixed_relational_operators_keep_left_parens(self) -> None:
+        """``(a < 5) = TRUE`` emitted bare is ``a < 5 = TRUE`` — a
+        non-associative chain Postgres refuses to parse at all."""
+        key = self._cmp("=", self._inner("<"), LiteralKey(value=True))
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out == "(orders.amount < 5) = TRUE", out
+
+    def test_is_null_over_a_comparison_keeps_its_parens(self) -> None:
+        """The wrong-value case: ``a = 5 IS NULL`` is read as
+        ``a = (5 IS NULL)``, i.e. ``a = FALSE`` — a different predicate that
+        still returns rows."""
+        key = self._cmp("is", self._inner(), LiteralKey(value=None))
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out == "(orders.amount = 5) IS NULL", out
+
+    def test_is_not_null_over_a_comparison_keeps_its_parens(self) -> None:
+        key = self._cmp("is not", self._inner(), LiteralKey(value=None))
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out == "NOT (orders.amount = 5) IS NULL", out
+
+    def test_plain_is_null_over_a_column_gains_no_parens(self) -> None:
+        """Don't over-wrap: a column is self-delimiting."""
+        key = self._cmp("is", ColumnKey(leaf="amount"), LiteralKey(value=None))
+        assert _sql(render_value_key(key, _filter_ctx())) == "orders.amount IS NULL"
+
+    def test_arithmetic_left_child_still_flattens(self) -> None:
+        """The non-associativity rule is scoped to the comparison level —
+        ``(a - 1) - 2`` is the tree a left-fold builds, and re-parenthesising
+        every arithmetic left child would churn emission for no gain."""
+        inner = self._cmp(
+            "-", ColumnKey(leaf="amount"), LiteralKey(value=Decimal(1)),
+        )
+        key = self._cmp("-", inner, LiteralKey(value=Decimal(2)))
+        out = _sql(render_value_key(key, _filter_ctx()))
+        assert out == "orders.amount - 1 - 2", out
+
+
+class TestStarSourceIsCountOnly:
+    """``*`` is only defined as ``COUNT``'s argument.
+
+    The builder-free aggregate path gated on the dispatch MECHANISM, which
+    passes for every simple aggregation, so a ``StarKey`` source went straight
+    into whichever node the registry named — building ``SUM(*)`` and
+    ``COUNT(DISTINCT *)``, which no backend accepts. Refused here rather than
+    at execution time.
+    """
+
+    @pytest.mark.parametrize("agg", ["sum", "avg", "min", "max", "count_distinct"])
+    def test_non_count_star_is_refused(self, agg) -> None:
+        key = AggregateKey(source=StarKey(), agg=agg)
+        ctx = _composite_ctx()
+        with pytest.raises(NotImplementedError, match="bare star"):
+            render_value_key(key, ctx)
+
+    def test_count_star_still_renders(self) -> None:
+        key = AggregateKey(source=StarKey(), agg="count")
+        assert _sql(render_value_key(key, _composite_ctx())) == "COUNT(*)"
+
+
+def _grouping_shape(node: exp.Expression):
+    """``node`` reduced to WHICH OPERAND BELONGS TO WHICH OPERATOR, and nothing
+    else, as nested tuples of ``(operator, operands...)``.
+
+    Comparing whole sqlglot nodes does not work here, because a parsed tree and
+    a hand-built one differ in ways that have nothing to do with grouping:
+    ``Div`` carries parser-set ``typed`` / ``safe`` flags, nodes pick up
+    ``_type`` annotations, and each dialect injects its own numeric cast
+    (Postgres renders ``a / b`` as ``CAST(a AS DOUBLE PRECISION) / b``).
+
+    ``Paren`` and ``Cast`` collapse to their operand: the first carries no
+    meaning once a tree exists — it is how meaning is PRESERVED across the
+    string — and the second is a typing decision. Leaves reduce to their own
+    SQL, which is identical on both sides.
+    """
+    if isinstance(node, (exp.Paren, exp.Cast)):
+        return _grouping_shape(node.this)
+    operands = [
+        node.args.get("this"), node.args.get("expression"),
+        *(node.args.get("expressions") or []),
+    ]
+    operands = [o for o in operands if isinstance(o, exp.Expression)]
+    if not operands:
+        return node.sql()
+    return (type(node).__name__, tuple(_grouping_shape(o) for o in operands))
+
+
+def _reparses_to_the_same_tree(node: exp.Expression, dialect: str) -> bool:
+    """Whether the database will read back the tree we built."""
+    reparsed = sqlglot.parse_one(node.sql(dialect=dialect), dialect=dialect)
+    return _grouping_shape(reparsed) == _grouping_shape(node)
+
+
+class TestEveryOperatorPairSurvivesTheRoundTrip:
+    """The meta-test for the whole regrouping family.
+
+    Every individual grouping bug in this PR has the same shape: we build one
+    tree and the database reads a different one. Asserting emitted STRINGS
+    catches them one at a time, and only once someone has thought of the shape.
+
+    This asserts the property directly — render, re-parse, and compare the
+    trees modulo parens — over every ordered pair of operators in the
+    precedence table, in both operand positions. Note that re-parse STABILITY
+    alone would not do: ``a + b * c`` re-parses to a stable string while
+    meaning something other than the ``(a + b) * c`` we built.
+    """
+
+    # Grouped by result type. Feeding a boolean to an arithmetic operator is
+    # not a shape the binder builds, and the dialects wrap such an operand in
+    # their own numeric CAST — noise that says nothing about grouping.
+    ARITH = ["+", "-", "*", "/", "%"]
+    CMP = ["=", "!=", "<", "<=", ">", ">="]
+    BOOL = ["and", "or"]
+    DIALECTS = ["postgres", "sqlite", "mysql"]
+
+    @staticmethod
+    def _leaf(name: str) -> exp.Expression:
+        return exp.column(name, table="t")
+
+    def _binary(self, op: str, left, right):
+        return render_arithmetic(op, [left, right])
+
+    def _nested(self, inner: str):
+        return self._binary(inner, self._leaf("b"), self._leaf("c"))
+
+    def _check(self, built, dialect, label) -> None:
+        assert _reparses_to_the_same_tree(built, dialect), (
+            f"{label} regrouped: {built.sql(dialect=dialect)}"
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("outer", ARITH)
+    @pytest.mark.parametrize("inner", ARITH)
+    @pytest.mark.parametrize("position", ["left", "right"])
+    def test_arithmetic_nested_in_arithmetic(
+        self, outer, inner, position, dialect,
+    ) -> None:
+        nested = self._nested(inner)
+        operands = (
+            [nested, self._leaf("d")] if position == "left"
+            else [self._leaf("a"), nested]
+        )
+        self._check(
+            self._binary(outer, *operands), dialect,
+            f"{outer} over {inner} ({position})",
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("outer", CMP)
+    @pytest.mark.parametrize("inner", ARITH)
+    @pytest.mark.parametrize("position", ["left", "right"])
+    def test_arithmetic_nested_in_a_comparison(
+        self, outer, inner, position, dialect,
+    ) -> None:
+        nested = self._nested(inner)
+        operands = (
+            [nested, self._leaf("d")] if position == "left"
+            else [self._leaf("a"), nested]
+        )
+        self._check(
+            self._binary(outer, *operands), dialect,
+            f"{outer} over {inner} ({position})",
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("outer", CMP)
+    @pytest.mark.parametrize("inner", CMP + BOOL)
+    @pytest.mark.parametrize("position", ["left", "right"])
+    def test_predicate_nested_in_a_comparison(
+        self, outer, inner, position, dialect,
+    ) -> None:
+        """A comparison over BOOLEAN operands — ``(a = b) = (c = d)``,
+        ``(a AND b) = c``. Type-coherent (SQL comparisons take booleans) and
+        reachable: Python's grammar reads ``(a == b) == c`` as a NESTED
+        comparison, not a chained one, so the Mode-B binder does build it.
+        This arm sits exactly on the comparison/connector precedence boundary,
+        which is where ``IS`` and the non-associativity rule both live.
+        """
+        nested = self._nested(inner)
+        other = self._binary("<", self._leaf("d"), self._leaf("e"))
+        operands = [nested, other] if position == "left" else [other, nested]
+        self._check(
+            self._binary(outer, *operands), dialect,
+            f"{outer} over {inner} ({position})",
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("outer", BOOL)
+    @pytest.mark.parametrize("inner", CMP + BOOL)
+    @pytest.mark.parametrize("position", ["left", "right"])
+    def test_predicate_nested_in_a_connector(
+        self, outer, inner, position, dialect,
+    ) -> None:
+        nested = self._nested(inner)
+        other = self._binary("<", self._leaf("d"), self._leaf("e"))
+        operands = [nested, other] if position == "left" else [other, nested]
+        self._check(
+            self._binary(outer, *operands), dialect,
+            f"{outer} over {inner} ({position})",
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("inner", CMP + BOOL)
+    def test_not_over_every_predicate(self, inner, dialect) -> None:
+        self._check(
+            render_arithmetic("not", [self._nested(inner)]), dialect,
+            f"not over {inner}",
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("inner", ARITH)
+    def test_negation_over_every_arithmetic_operator(self, inner, dialect) -> None:
+        self._check(
+            render_arithmetic("-", [self._nested(inner)]), dialect,
+            f"- over {inner}",
+        )
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    @pytest.mark.parametrize("op", ["is", "is not"])
+    @pytest.mark.parametrize("inner", ARITH + CMP)
+    def test_is_over_every_value_expression(self, op, inner, dialect) -> None:
+        self._check(
+            render_arithmetic(op, [self._nested(inner), exp.Null()]), dialect,
+            f"{op} over {inner}",
+        )
+
+
+class TestGeneratorComposersShareTheGroupingPolicy:
+    """The three LIVE generator composers had the same grouping holes.
+
+    ``value_expr`` is not yet on the generator's arithmetic path (that reroute
+    is the scope-assembly PR), so finding these there did not fix them here.
+    Each composer built ``exp.Not`` / ``exp.Neg`` / ``exp.Is`` around a bare
+    operand and hand-folded ``and``/``or``, producing SQL that parses cleanly
+    and returns a different row set:
+
+    * ``not (a AND b)``      -> ``NOT a AND b``   = ``(NOT a) AND b``
+    * ``-(a + b)``           -> ``-a + b``        = ``(-a) + b``
+    * ``(a = 5) IS NULL``    -> ``a = 5 IS NULL`` = ``a = (5 IS NULL)``
+    * ``a AND (b OR c)``     -> ``a AND b OR c``  = ``(a AND b) OR c``
+
+    All four now route through the shared policy in ``value_expr``, so the
+    construct groups the same way wherever it is composed (P-G).
+    """
+
+    @staticmethod
+    def _a():
+        return exp.column("a", table="t")
+
+    def _gt(self):
+        return exp.GT(this=self._a(), expression=exp.Literal.number("1"))
+
+    def _lt(self):
+        return exp.LT(this=self._a(), expression=exp.Literal.number("9"))
+
+    def _eq(self):
+        return exp.EQ(this=self._a(), expression=exp.Literal.number("5"))
+
+    def _add(self):
+        return exp.Add(this=self._a(), expression=exp.column("b", table="t"))
+
+    def _composers(self):
+        """The three live composers, as uniform ``(op, operands) -> node``."""
+        gen = SQLGenerator.__new__(SQLGenerator)
+        return {
+            "build_arithmetic_for_filter": (
+                lambda op, ops: SQLGenerator._build_arithmetic_for_filter(
+                    op=op, operands=ops,
+                )
+            ),
+            "compose_arithmetic_op": (
+                lambda op, ops: SQLGenerator._compose_arithmetic_op(
+                    op=op, operands=ops,
+                )
+            ),
+            "build_arith_or_cmp_ast": (
+                lambda op, ops: gen._build_arith_or_cmp_ast(op=op, operands=ops)
+            ),
+        }
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    def test_not_of_a_conjunction_keeps_its_parens(self, composer) -> None:
+        compose = self._composers()[composer]
+        conj = exp.And(this=self._gt(), expression=self._lt())
+        assert compose("not", [conj]).sql() == "NOT (t.a > 1 AND t.a < 9)"
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    def test_is_null_over_a_comparison_keeps_its_parens(self, composer) -> None:
+        compose = self._composers()[composer]
+        out = compose("is", [self._eq(), exp.Null()]).sql()
+        assert out == "(t.a = 5) IS NULL", out
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    def test_is_not_null_over_a_comparison_keeps_its_parens(self, composer) -> None:
+        compose = self._composers()[composer]
+        out = compose("is not", [self._eq(), exp.Null()]).sql()
+        assert out == "NOT (t.a = 5) IS NULL", out
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    def test_disjunction_inside_a_conjunction_keeps_its_parens(
+        self, composer,
+    ) -> None:
+        compose = self._composers()[composer]
+        disj = exp.Or(this=self._gt(), expression=self._lt())
+        out = compose("and", [self._lt(), disj]).sql()
+        assert out == "t.a < 9 AND (t.a > 1 OR t.a < 9)", out
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    def test_negated_sum_keeps_its_parens(self, composer) -> None:
+        compose = self._composers()[composer]
+        assert compose("-", [self._add()]).sql() == "-(t.a + t.b)"
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    @pytest.mark.parametrize(
+        "op,inner_cls,expected",
+        [
+            # ``a - (b + c)``: dropping the parens regroups to ``(a - b) + c``.
+            ("-", exp.Add, "t.a - (t.b + t.c)"),
+            # ``a + (b - c)``: the generator treated ``+`` as associative and
+            # emitted ``a + b - c``. Over floats and fixed-precision decimals
+            # that is a different number, not just a different tree.
+            ("+", exp.Sub, "t.a + (t.b - t.c)"),
+            ("*", exp.Div, "t.a * (t.b / t.c)"),
+            ("/", exp.Mul, "t.a / (t.b * t.c)"),
+        ],
+    )
+    def test_equal_precedence_right_operand_keeps_its_parens(
+        self, composer, op, inner_cls, expected,
+    ) -> None:
+        compose = self._composers()[composer]
+        inner = inner_cls(
+            this=exp.column("b", table="t"), expression=exp.column("c", table="t"),
+        )
+        out = compose(op, [self._a(), inner]).sql()
+        assert out == expected, out
+
+    def test_lower_precedence_left_operand_keeps_its_parens(self) -> None:
+        """``_build_arith_or_cmp_ast`` applied NO precedence pass at all, so
+        ``(a + b) * c`` emitted ``a + b * c`` — ``b * c`` binds first."""
+        compose = self._composers()["build_arith_or_cmp_ast"]
+        out = compose("*", [self._add(), exp.column("c", table="t")]).sql()
+        assert out == "(t.a + t.b) * t.c", out
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    def test_comparison_nested_in_arithmetic_keeps_its_parens(
+        self, composer,
+    ) -> None:
+        """The generator's precedence table knew only ``+ - * /``, so a
+        comparison operand fell through ungrouped: ``(a > b) + 1`` emitted
+        ``a > b + 1``, read back as ``a > (b + 1)``."""
+        compose = self._composers()[composer]
+        gt = exp.GT(this=self._a(), expression=exp.column("b", table="t"))
+        out = compose("+", [gt, exp.Literal.number("1")]).sql()
+        assert out == "(t.a > t.b) + 1", out
+
+    @pytest.mark.parametrize(
+        "composer",
+        ["build_arithmetic_for_filter", "compose_arithmetic_op",
+         "build_arith_or_cmp_ast"],
+    )
+    def test_plain_shapes_gain_no_parens(self, composer) -> None:
+        """Don't over-wrap — the fix must not churn the emission of the
+        shapes that were already right."""
+        compose = self._composers()[composer]
+        assert compose("is", [self._a(), exp.Null()]).sql() == "t.a IS NULL"
+        assert compose("not", [self._gt()]).sql() == "NOT t.a > 1"
+        assert (
+            compose("and", [self._gt(), self._lt()]).sql()
+            == "t.a > 1 AND t.a < 9"
+        )

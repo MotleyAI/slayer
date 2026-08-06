@@ -74,23 +74,38 @@ SCALAR_FUNCTION_ARITY: dict[str, tuple[int, Optional[int]]] = {
     "like": (2, 2),
 }
 
+# Not a second allowlist: the table above must cover ``SCALAR_FUNCTIONS``
+# exactly. Checked BOTH ways at import — a missing entry would let a wrong-arity
+# call through to sqlglot's inconsistent handling, and an entry for a name that
+# is not allowlisted would be dead weight that reads as though it were.
+_arity_missing = SCALAR_FUNCTIONS - set(SCALAR_FUNCTION_ARITY)
+_arity_unknown = set(SCALAR_FUNCTION_ARITY) - SCALAR_FUNCTIONS
+if _arity_missing or _arity_unknown:  # pragma: no cover — import-time invariant
+    raise RuntimeError(
+        f"SCALAR_FUNCTION_ARITY disagrees with SCALAR_FUNCTIONS: "
+        f"missing={sorted(_arity_missing)}, unknown={sorted(_arity_unknown)}",
+    )
 
-def check_scalar_arity(name: str, argc: int) -> Optional[str]:
+
+def check_scalar_arity(*, name: str, argc: int) -> Optional[str]:
     """Return an error message when ``name`` cannot take ``argc`` arguments."""
     bounds = SCALAR_FUNCTION_ARITY.get(name)
     if bounds is None:
         return None
     low, high = bounds
-    if argc < low or (high is not None and argc > high):
-        expected = (
-            f"{low}" if low == high
-            else (f"{low} or more" if high is None else f"{low} to {high}")
-        )
-        return (
-            f"Scalar function {name!r} takes {expected} argument"
-            f"{'' if low == high == 1 else 's'}; got {argc}."
-        )
-    return None
+    if low <= argc and (high is None or argc <= high):
+        return None
+    if low == high:
+        expected = f"{low}"
+    elif high is None:
+        expected = f"{low} or more"
+    else:
+        expected = f"{low} to {high}"
+    plural = "" if low == high == 1 else "s"
+    return (
+        f"Scalar function {name!r} takes {expected} argument{plural}; "
+        f"got {argc}."
+    )
 
 
 # ---------------------------------------------------------------------------

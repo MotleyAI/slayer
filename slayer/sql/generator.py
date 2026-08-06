@@ -56,7 +56,11 @@ from slayer.sql.naming import (
     result_key_from_alias,
 )
 from slayer.sql.render.aggregates import window_agg_class
-from slayer.sql.render.value_expr import render_scalar_call, rewrite_log_alias
+from slayer.sql.render.value_expr import (
+    render_arithmetic,
+    render_scalar_call,
+    rewrite_log_alias,
+)
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.scope import ScopeFrame
 from slayer.sql.scope_check import maybe_validate_scopes
@@ -6442,54 +6446,12 @@ class SQLGenerator:
     ) -> exp.Expression:
         """Build a sqlglot expression for a binary or unary op.
 
-        Mirrors the small subset of operators the bound-filter renderer
-        emits: comparisons (``==``, ``!=``, ``<``, ``<=``, ``>``,
-        ``>=``, ``is``, ``is not``), boolean (``and``, ``or``, ``not``),
-        arithmetic (``+``, ``-``, ``*``, ``/``).
+        Delegates to the one composer in ``slayer.sql.render.value_expr``.
+        The hand-rolled version here applied NO precedence pass at all, so
+        ``(a + b) * c`` emitted ``a + b * c`` and ``(a > b) + 1`` emitted
+        ``a > b + 1`` — both parse, both mean something else.
         """
-        if op == "not":
-            return exp.Not(this=operands[0])
-        # ``and`` / ``or`` (Codex round 2): the binder produces n-ary
-        # boolean ``ArithmeticKey`` for ``a AND b AND c`` (three operands);
-        # the prior implementation took only ``operands[0]`` / ``[1]`` and
-        # silently dropped the third predicate from cross-model HAVING/
-        # WHERE, broadening results. Fold over every operand the same
-        # way ``_compose_arithmetic_op`` and ``_build_arithmetic_for_filter``
-        # already do.
-        if op in ("and", "or"):
-            node_cls = exp.And if op == "and" else exp.Or
-            acc = operands[0]
-            for o in operands[1:]:
-                acc = node_cls(this=acc, expression=o)
-            return acc
-        left, right = operands[0], operands[1]
-        # ``IS`` / ``IS NOT`` (Codex review): the typed pipeline's filter
-        # normalizer lowers SQL ``IS NULL`` / ``IS NOT NULL`` to Python
-        # ``is None`` / ``is not None``. Render against a ``Null`` literal
-        # as the standard SQL forms.
-        if op == "is":
-            return exp.Is(this=left, expression=right)
-        if op == "is not":
-            return exp.Not(this=exp.Is(this=left, expression=right))
-        op_map = {
-            "==": exp.EQ,
-            "!=": exp.NEQ,
-            "<": exp.LT,
-            "<=": exp.LTE,
-            ">": exp.GT,
-            ">=": exp.GTE,
-            "+": exp.Add,
-            "-": exp.Sub,
-            "*": exp.Mul,
-            "/": exp.Div,
-        }
-        cls = op_map.get(op)
-        if cls is None:
-            raise NotImplementedError(
-                f"DEV-1450 stage 7b.12: arithmetic operator {op!r} not "
-                f"supported in cross-model filter rendering.",
-            )
-        return cls(this=left, expression=right)
+        return render_arithmetic(op, list(operands))
 
     def _build_combined_order_by_sql(
         self,
@@ -7206,26 +7168,6 @@ class SQLGenerator:
         )
 
     @staticmethod
-    def _paren_if_lower_prec(
-        child: exp.Expression, *, parent_prec: int, is_right: bool, op: str,
-    ) -> exp.Expression:
-        """Wrap ``child`` in parens when its arithmetic precedence is lower
-        than the parent op's (or equal, for the RIGHT operand of the
-        non-associative ``-`` / ``/``). Leaves / functions / casts / already-
-        parenthesised nodes are returned untouched.
-        """
-        child_prec = {
-            exp.Add: 1, exp.Sub: 1, exp.Mul: 2, exp.Div: 2,
-        }.get(type(child))
-        if child_prec is None:
-            return child
-        if child_prec < parent_prec:
-            return exp.Paren(this=child)
-        if child_prec == parent_prec and is_right and op in ("-", "/"):
-            return exp.Paren(this=child)
-        return child
-
-    @staticmethod
     def _compose_arithmetic_op(
         *, op: str, operands: List[exp.Expression],
     ) -> exp.Expression:
@@ -7233,59 +7175,14 @@ class SQLGenerator:
         already-rendered operands.
 
         Accepts the operator aliases ``=``/``==``, ``<>``/``!=`` so the
-        rendered SQL surfaces the canonical SQL spellings for POST
-        filters. Unary ``-`` and N-ary ``and``/``or`` left-fold to the
-        sqlglot binary nodes.
+        rendered SQL surfaces the canonical SQL spellings for POST filters.
+
+        Delegates to the one composer in ``slayer.sql.render.value_expr``.
+        The hand-rolled version's precedence table knew only ``+ - * /``, so
+        a comparison nested in arithmetic — ``(a > b) + 1`` — emitted
+        ``a > b + 1``, which reads as ``a > (b + 1)``.
         """
-        if len(operands) == 1:
-            if op == "not":
-                return exp.Not(this=operands[0])
-            if op == "-":
-                return exp.Neg(this=operands[0])
-        if len(operands) == 2:
-            lhs, rhs = operands
-            # ``IS`` / ``IS NOT`` (Codex review): see ``_build_arith_or_cmp_ast``.
-            if op == "is":
-                return exp.Is(this=lhs, expression=rhs)
-            if op == "is not":
-                return exp.Not(this=exp.Is(this=lhs, expression=rhs))
-            binary = {
-                "+": exp.Add, "-": exp.Sub, "*": exp.Mul, "/": exp.Div,
-                "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE,
-                "==": exp.EQ, "=": exp.EQ,
-                "!=": exp.NEQ, "<>": exp.NEQ,
-            }
-            if op in binary:
-                # sqlglot does NOT add precedence parens for a nested AST, so
-                # ``Div(Sub(a, b), c)`` would render as ``a - b / c`` (wrong:
-                # ``b / c`` binds first). Parenthesise a lower-precedence
-                # operand — and an equal-precedence RIGHT operand under the
-                # non-associative ``-`` / ``/`` — so ``change_pct`` and friends
-                # emit ``(a - b) / c``.
-                arith_prec = {"+": 1, "-": 1, "*": 2, "/": 2}
-                parent_prec = arith_prec.get(op)
-                if parent_prec is not None:
-                    lhs = SQLGenerator._paren_if_lower_prec(
-                        lhs, parent_prec=parent_prec, is_right=False, op=op,
-                    )
-                    rhs = SQLGenerator._paren_if_lower_prec(
-                        rhs, parent_prec=parent_prec, is_right=True, op=op,
-                    )
-                return binary[op](this=lhs, expression=rhs)
-            if op == "and":
-                return exp.And(this=lhs, expression=rhs)
-            if op == "or":
-                return exp.Or(this=lhs, expression=rhs)
-        if len(operands) >= 2 and op in ("and", "or"):
-            node_cls = exp.And if op == "and" else exp.Or
-            acc = operands[0]
-            for rhs in operands[1:]:
-                acc = node_cls(this=acc, expression=rhs)
-            return acc
-        raise NotImplementedError(
-            f"DEV-1450 stage 7b.10: arithmetic op {op!r} arity "
-            f"{len(operands)} not supported in POST-filter rendering.",
-        )
+        return render_arithmetic(op, list(operands))
 
     def _emit_planned_outer_wrap(
         self,
@@ -9882,13 +9779,23 @@ class SQLGenerator:
         return exp.Paren(this=node) if isinstance(node, exp.Binary) else node
 
     @staticmethod
-    def _build_arithmetic_for_filter(  # NOSONAR(S3776) — sequential per-operator dispatch (==/!= → EQ/NEQ, comparison, arithmetic) with DEV-1539 precedence paren-wrapping; each branch is the per-op emission contract.
+    def _build_arithmetic_for_filter(
         *, op: str, operands: list,
     ) -> exp.Expression:
+        """Compose a WHERE / HAVING operator.
+
+        Every operator but the comparisons delegates to the one composer in
+        ``slayer.sql.render.value_expr``; the hand-rolled versions here emitted
+        ``a + (b - c)`` as ``a + b - c``, a different number.
+
+        Comparisons keep :meth:`_paren_if_binary` (DEV-1539): it parenthesises
+        EVERY multi-term operand, so ``(a + b) > 7`` stays explicit by
+        inspection rather than by precedence rules. That is strictly more
+        grouping than the shared policy derives, never less, so it is a
+        readability choice rather than a second correctness policy.
+        """
         # DSL ``==``/``!=`` map to sqlglot EQ/NEQ; sqlglot then emits the
-        # dialect-correct SQL operator (postgres ``=``/``!=``). DEV-1539: a
-        # multi-term comparison operand is parenthesised so its precedence is
-        # explicit (``(a + b) > 7`` / ``x = (a OR b)``).
+        # dialect-correct SQL operator (postgres ``=``/``!=``).
         _cmp = {
             "==": exp.EQ, "=": exp.EQ, "!=": exp.NEQ, "<>": exp.NEQ,
             "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE,
@@ -9899,71 +9806,7 @@ class SQLGenerator:
                 this=SQLGenerator._paren_if_binary(operands[0]),
                 expression=SQLGenerator._paren_if_binary(operands[1]),
             )
-        if op == "+":
-            # Unary plus is a no-op; legacy never emits it explicitly.
-            if len(operands) == 1:
-                return operands[0]
-            return exp.Add(this=operands[0], expression=operands[1])
-        if op == "-":
-            # Unary minus: the binder represents ``-x`` / ``-10`` as
-            # ``ArithmeticKey(op="-", operands=(x,))`` — handle the
-            # single-operand form so a filter like ``amount > -10``
-            # doesn't crash with IndexError.
-            if len(operands) == 1:
-                return exp.Neg(this=operands[0])
-            return exp.Sub(
-                this=SQLGenerator._paren_if_lower_prec(
-                    operands[0], parent_prec=1, is_right=False, op="-",
-                ),
-                expression=SQLGenerator._paren_if_lower_prec(
-                    operands[1], parent_prec=1, is_right=True, op="-",
-                ),
-            )
-        if op == "*":
-            return exp.Mul(
-                this=SQLGenerator._paren_if_lower_prec(
-                    operands[0], parent_prec=2, is_right=False, op="*",
-                ),
-                expression=SQLGenerator._paren_if_lower_prec(
-                    operands[1], parent_prec=2, is_right=True, op="*",
-                ),
-            )
-        if op == "/":
-            return exp.Div(
-                this=SQLGenerator._paren_if_lower_prec(
-                    operands[0], parent_prec=2, is_right=False, op="/",
-                ),
-                expression=SQLGenerator._paren_if_lower_prec(
-                    operands[1], parent_prec=2, is_right=True, op="/",
-                ),
-            )
-        if op == "and":
-            result = operands[0]
-            for o in operands[1:]:
-                result = exp.And(this=result, expression=o)
-            return result
-        if op == "or":
-            result = operands[0]
-            for o in operands[1:]:
-                result = exp.Or(this=result, expression=o)
-            return result
-        if op == "not":
-            return exp.Not(this=operands[0])
-        # ``IS`` / ``IS NOT`` (Codex round 2): the filter normalizer lowers
-        # SQL ``IS NULL`` / ``IS NOT NULL`` to Python ``is None`` / ``is
-        # not None``. Render against the rhs (a ``Null`` literal) as the
-        # standard SQL forms. Without these branches a local-stage filter
-        # ``deleted_at IS NULL`` parses and binds but raises here at SQL
-        # generation. Mirrors the patches in ``_build_arith_or_cmp_ast``
-        # and ``_compose_arithmetic_op``.
-        if op == "is":
-            return exp.Is(this=operands[0], expression=operands[1])
-        if op == "is not":
-            return exp.Not(this=exp.Is(this=operands[0], expression=operands[1]))
-        raise NotImplementedError(
-            f"DEV-1450 stage 7b.8: ArithmeticKey op {op!r} not "
-            f"supported in filter rendering."
-        )
+        return render_arithmetic(op, list(operands))
 
     def _build_outer_trim_wrap_sql(
         self,

@@ -13,10 +13,18 @@ consumer-scope materialisation), and a missing facility raises
 Migration status
 ----------------
 The API here is complete and directly tested, but the generator's own render
-paths do NOT yet route through :func:`render_value_key`. Only the ScalarCall
-POLICY is shared today: all six paths call :func:`render_scalar_call`, so that
-construct genuinely renders once. Everything else still runs the generator's
-own per-path branches.
+paths do NOT yet route through :func:`render_value_key`. Two constructs DO
+render once already, each promoted early because the generator's copies were
+demonstrably emitting wrong SQL, not merely duplicated SQL:
+
+* ScalarCall — all six paths call :func:`render_scalar_call`.
+* Arithmetic / comparison / boolean composition — the generator's three
+  composers call :func:`render_arithmetic`. The one exception is comparison
+  operands in ``_build_arithmetic_for_filter``, which keep a wrapper that
+  parenthesises EVERY multi-term operand: strictly more grouping than this
+  module derives, never less.
+
+Everything else still runs the generator's own per-path branches.
 
 Deferred to the scope-assembly PR, together with the cross-scope migration,
 because the two are the same piece of work. Finishing it needs:
@@ -205,16 +213,27 @@ _PRECEDENCE: Dict[Any, int] = {
     exp.Neg: 7,
 }
 
+_IS = "is"
+_IS_NOT = "is not"
+
 # Operators taking exactly two operands. Left-folding a comparison would turn
 # ``a < b < c`` into ``(a < b) < c`` — a boolean compared to a number — and
 # reading only the first two would silently DROP the rest.
 _STRICTLY_BINARY = frozenset({
-    "=", "==", "!=", "<>", "<", "<=", ">", ">=", "is", "is not",
+    "=", "==", "!=", "<>", "<", "<=", ">", ">=", _IS, _IS_NOT,
 })
+
+# The comparison family's shared level. Unlike arithmetic, comparisons are
+# NON-ASSOCIATIVE in SQL, so an equal-precedence child needs parens on EITHER
+# side — a left child included. Without that, ``(a = b) is null`` emits
+# ``a = b IS NULL``, which every dialect reads as ``a = (b IS NULL)`` because
+# ``IS`` binds tighter than ``=``; and ``(a < b) = c`` emits ``a < b = c``,
+# which Postgres rejects outright as a non-associative chain.
+_COMPARISON_PREC = 4
 
 
 def _paren_if_lower_prec(
-    child: exp.Expression, *, parent_prec: int, is_right: bool, op: str,
+    child: exp.Expression, *, parent_prec: int, is_right: bool,
 ) -> exp.Expression:
     """Parenthesise ``child`` when dropping its parens would change meaning.
 
@@ -226,28 +245,113 @@ def _paren_if_lower_prec(
     and ``(a + b) + c`` genuinely different. Preserving the tree the binder
     built costs a pair of parentheses; regrouping costs accuracy.
 
+    At :data:`_COMPARISON_PREC` an equal-precedence LEFT child is parenthesised
+    too, because that family is non-associative.
+
     A node with no precedence entry — a column, a literal, a function call —
     is already self-delimiting.
     """
+    if isinstance(child, exp.Mod):
+        # ``%`` is parenthesised unconditionally, because precedence alone is
+        # not enough to survive our own pipeline. SQL puts ``%`` on the
+        # ``*`` / ``/`` tier, and so does the Mode-B parser — but SQLGLOT's
+        # parser puts it on the ``+`` / ``-`` tier, so it reads back
+        # ``a + b % c`` as ``(a + b) % c``. Generated SQL IS re-parsed by
+        # sqlglot downstream (reserved-word pre-quoting, the log-alias
+        # transform), so an unparenthesised ``%`` would be silently regrouped
+        # in flight rather than by any database.
+        return exp.Paren(this=child)
     child_prec = _PRECEDENCE.get(type(child))
     if child_prec is None:
         return child
     if child_prec < parent_prec:
         return exp.Paren(this=child)
-    if child_prec == parent_prec and is_right:
+    if child_prec == parent_prec and (is_right or parent_prec == _COMPARISON_PREC):
         return exp.Paren(this=child)
     return child
 
 
-def _render_arithmetic(
+def group_unary_operand(operand: exp.Expression, *, op: str) -> exp.Expression:
+    """Parenthesise a unary operator's operand when precedence requires it.
+
+    Public because the generator's three arithmetic composers built ``exp.Not``
+    / ``exp.Neg`` around a bare operand: ``-(a + b)`` emitted ``-a + b`` and
+    ``not (a and b)`` emitted ``NOT a AND b``. Both parse cleanly and mean
+    something else, so the policy is shared rather than re-derived (P-G).
+    """
+    if op not in ("not", "-"):
+        raise NotImplementedError(
+            f"group_unary_operand only covers 'not' and '-', got {op!r}.",
+        )
+    parent = exp.Not if op == "not" else exp.Neg
+    return _paren_if_lower_prec(
+        operand, parent_prec=_PRECEDENCE[parent], is_right=False,
+    )
+
+
+def group_is_operands(
+    *, lhs: exp.Expression, rhs: exp.Expression,
+) -> Tuple[exp.Expression, exp.Expression]:
+    """Parenthesise an ``IS`` / ``IS NOT`` operand when precedence requires it.
+
+    ``IS`` binds tighter than ``=``, so an ungrouped ``(a = 5) is null`` emits
+    ``a = 5 IS NULL`` and every dialect reads it as ``a = (5 IS NULL)`` — a
+    different predicate that still returns rows. Shared with the generator's
+    composers for the same reason as :func:`group_unary_operand`.
+    """
+    is_prec = _PRECEDENCE[exp.Is]
+    return (
+        _paren_if_lower_prec(lhs, parent_prec=is_prec, is_right=False),
+        _paren_if_lower_prec(rhs, parent_prec=is_prec, is_right=True),
+    )
+
+
+def _render_unary(*, op: str, operand: exp.Expression) -> exp.Expression:
+    """The single-operand forms.
+
+    The binder represents ``-x`` as a SINGLE-operand ``ArithmeticKey``, so a
+    fold that just returns the operand would turn ``amount > -10`` into
+    ``amount > 10``. The operand needs the same precedence treatment as a
+    binary one: without it ``-(a + b)`` emits ``-a + b`` and ``not (a and b)``
+    emits ``NOT a AND b``.
+    """
+    if op in ("not", "-"):
+        grouped = group_unary_operand(operand, op=op)
+        return exp.Not(this=grouped) if op == "not" else exp.Neg(this=grouped)
+    if op == "+":
+        # Unary plus is a no-op; SQL never needs it spelled out.
+        return operand
+    raise NotImplementedError(f"Unsupported unary operator {op!r}.")
+
+
+def _fold_binary(
+    *, node_cls: Any, operands: List[exp.Expression],
+) -> exp.Expression:
+    """Left-fold ``operands``, grouping each side by precedence as it goes."""
+    parent_prec = _PRECEDENCE.get(node_cls)
+    result = operands[0]
+    for operand in operands[1:]:
+        lhs, rhs = result, operand
+        if parent_prec is not None:
+            lhs = _paren_if_lower_prec(
+                lhs, parent_prec=parent_prec, is_right=False,
+            )
+            rhs = _paren_if_lower_prec(
+                rhs, parent_prec=parent_prec, is_right=True,
+            )
+        result = node_cls(this=lhs, expression=rhs)
+    return result
+
+
+def render_arithmetic(
     op: str, operands: List[exp.Expression],
 ) -> exp.Expression:
     """Compose an arithmetic / comparison / boolean operator.
 
-    Mirrors the generator's composer, including the unary forms: the binder
-    represents ``-x`` as a SINGLE-operand ``ArithmeticKey``, so a fold that
-    just returns ``operands[0]`` would turn ``amount > -10`` into
-    ``amount > 10``.
+    The single composer: the generator's three call sites delegate here, so
+    one ``ArithmeticKey`` groups the same way wherever it is rendered (P-G).
+    Their hand-rolled versions each knew a different subset of the precedence
+    table and emitted predicates that parse cleanly and mean something else.
     """
     if not operands:
         raise NotImplementedError(f"Operator {op!r} needs at least one operand.")
@@ -257,37 +361,13 @@ def _render_arithmetic(
         return operands[0]
 
     if len(operands) == 1:
-        # Unary operands need the same precedence treatment as binary ones.
-        # Without it ``-(a + b)`` emits ``-a + b`` and ``not (a and b)`` emits
-        # ``NOT a AND b`` — both parse cleanly and both mean something else.
-        if op == "not":
-            return exp.Not(
-                this=_paren_if_lower_prec(
-                    operands[0],
-                    parent_prec=_PRECEDENCE[exp.Not],
-                    is_right=False,
-                    op=op,
-                ),
-            )
-        if op == "-":
-            return exp.Neg(
-                this=_paren_if_lower_prec(
-                    operands[0],
-                    parent_prec=_PRECEDENCE[exp.Neg],
-                    is_right=False,
-                    op=op,
-                ),
-            )
-        if op == "+":
-            return operands[0]
-        raise NotImplementedError(
-            f"Unsupported unary operator {op!r}.",
-        )
+        return _render_unary(op=op, operand=operands[0])
 
     if op == "and":
         return exp.and_(*operands)
     if op == "or":
         return exp.or_(*operands)
+
     if op in _STRICTLY_BINARY and len(operands) != 2:
         # Refuse rather than fold. Left-folding a chained comparison compares a
         # BOOLEAN against the next operand, and reading only the first two
@@ -297,28 +377,15 @@ def _render_arithmetic(
             f"Operator {op!r} takes exactly two operands, got {len(operands)}.",
         )
 
-    if op == "is":
-        return exp.Is(this=operands[0], expression=operands[1])
-    if op == "is not":
-        return exp.Not(this=exp.Is(this=operands[0], expression=operands[1]))
+    if op in (_IS, _IS_NOT):
+        lhs, rhs = group_is_operands(lhs=operands[0], rhs=operands[1])
+        node = exp.Is(this=lhs, expression=rhs)
+        return exp.Not(this=node) if op == _IS_NOT else node
 
     node_cls = _BINARY_OPS.get(op)
     if node_cls is None:
         raise NotImplementedError(f"Unsupported arithmetic operator {op!r}.")
-
-    parent_prec = _PRECEDENCE.get(node_cls)
-    result = operands[0]
-    for operand in operands[1:]:
-        lhs, rhs = result, operand
-        if parent_prec is not None:
-            lhs = _paren_if_lower_prec(
-                lhs, parent_prec=parent_prec, is_right=False, op=op,
-            )
-            rhs = _paren_if_lower_prec(
-                rhs, parent_prec=parent_prec, is_right=True, op=op,
-            )
-        result = node_cls(this=lhs, expression=rhs)
-    return result
+    return _fold_binary(node_cls=node_cls, operands=operands)
 
 
 def render_scalar_call(
@@ -333,7 +400,7 @@ def render_scalar_call(
     a native single-arg ``LOG10``. Transpiling alone fixes ifnull and breaks
     log10. ``like`` is the allowlist's only operator rather than function.
     """
-    arity_error = check_scalar_arity(name, len(args))
+    arity_error = check_scalar_arity(name=name, argc=len(args))
     if arity_error is not None:
         # Checked before building, because sqlglot is inconsistent: a 3-arg
         # ROUND silently DROPS the third, a 2-arg LENGTH emits SQL the backend
@@ -430,6 +497,15 @@ def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> exp.Expression:
                     f"generator's join-graph routing"
                 ),
             )
+        if key.agg != "count":
+            # ``COUNT`` is the only aggregation a bare star is defined for.
+            # Without this the dispatch gate happily builds ``SUM(*)`` or
+            # ``COUNT(DISTINCT *)`` — SQL no backend accepts, discovered at
+            # execution time rather than here.
+            raise NotImplementedError(
+                f"Aggregation {key.agg!r} cannot take ``*`` as its source; "
+                f"only 'count' is defined over a bare star.",
+            )
         inner: exp.Expression = exp.Star()
     else:
         inner = ctx.scope.resolve(key.source, consumer=ctx.consumer)
@@ -484,7 +560,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         )
 
     if isinstance(key, ArithmeticKey):
-        return _render_arithmetic(
+        return render_arithmetic(
             key.op.lower(), [render_value_key(o, ctx) for o in key.operands],
         )
 

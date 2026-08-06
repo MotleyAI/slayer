@@ -1303,7 +1303,9 @@ def _bind_scalar(
     # handling is inconsistent — a wrong-arity round silently drops the
     # extra argument, length emits SQL the database rejects — so a
     # mistyped filter deserves a clear error here instead.
-    arity_error = check_scalar_arity(parsed.name, len(parsed.args))
+    arity_error = check_scalar_arity(
+        name=parsed.name, argc=len(parsed.args),
+    )
     if arity_error is not None:
         if parsed.name == "like":
             raise ValueError(
