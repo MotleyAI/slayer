@@ -12,6 +12,7 @@ from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     DataType,
     JoinType,
+    ObjectKind,
     _coerce_legacy_datatype,
 )
 from slayer.core.format import NumberFormat
@@ -115,6 +116,21 @@ def _validate_model_name(name: str, context: str) -> str:
     _NO_DOT.check(name=name, context=label)
     _NO_COLON.check(name=name, context=label)
     return name
+
+
+_DUNDER_RUN_RE = re.compile(r"_{2,}")
+
+
+def sanitize_model_name(name: str) -> str:
+    """Collapse runs of 2+ underscores so ``name`` passes ``_NO_DUNDER``.
+
+    Regex, not ``replace("__", "_")``: ``str.replace`` is non-overlapping, so
+    ``"a___b"`` would become ``"a__b"`` and still fail validation.
+
+    Only ``__`` is handled — a dotted name would leave ``sql_table`` ambiguous
+    with schema qualification, so the caller skips those instead.
+    """
+    return _DUNDER_RUN_RE.sub("_", name)
 
 
 def _validate_column_name(name: str, context: str) -> str:
@@ -460,9 +476,16 @@ class ModelJoin(BaseModel):
 
 
 class SlayerModel(BaseModel):
-    version: int = 7
+    version: int = 8
     name: str
     sql_table: str | None = None
+    # What kind of database object ``sql_table`` names. ``None``
+    # means unknown — correct for pre-v8 persisted models, hand-authored
+    # models, and ``sql`` / query-backed models, which have no live object to
+    # classify. Only auto-ingestion sets it. Views carry no primary key, so
+    # this is what explains *why* a model has none and that re-ingesting will
+    # never produce one.
+    source_kind: Optional[ObjectKind] = None
     sql: str | None = None
     source_queries: Annotated[
         list | None, BeforeValidator(_coerce_source_queries)

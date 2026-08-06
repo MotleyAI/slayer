@@ -22,7 +22,12 @@ from slayer.core.models import (
 )
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.core.recommend import render_recommendation_markdown
-from slayer.engine.ingestion import _friendly_db_error
+from slayer.engine.ingestion import (
+    _empty_ingest_message as _shared_empty_ingest_message,
+    _friendly_db_error,
+    _get_schemas,
+    list_ingestable_objects,
+)
 from slayer.engine.profiling import handle_edit_refresh
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.memories.help_seed import seed_help_memories
@@ -82,32 +87,28 @@ def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
         return False, _friendly_db_error(e)
 
 
-def _get_schemas(ds: DatasourceConfig) -> list[str]:
-    """List available schemas for a datasource."""
-    try:
-        from slayer.sql import engine_factory
-        engine = engine_factory.get_engine(ds.resolve_env_vars())
-        inspector = sa.inspect(engine)
-        schemas = inspector.get_schema_names()
-        return schemas
-    except Exception:
-        return []
-
-
 def _fetch_tables(
     ds: DatasourceConfig, schema_name: str | None = None,
 ) -> tuple[list[str] | None, str | None]:
-    """Inspect a datasource's table names.
+    """Inspect a datasource's table AND view names.
 
-    Returns ``(tables, None)`` on success or ``(None, friendly_error_message)``
+    Returns ``(objects, None)`` on success or ``(None, friendly_error_message)``
     on failure. ``schema_name=None`` uses the dialect's default schema.
+
+    Views are always included here, independent of the ingest-side
+    ``--no-views`` flag. This helper backs ``describe_datasource`` and the
+    empty-ingest probe, and a views-only schema previously reported "No tables
+    found — try another schema", misdirecting the agent away from a schema
+    that was in fact full of objects.
     """
     try:
         from slayer.sql import engine_factory
         sa_engine = engine_factory.get_engine(ds.resolve_env_vars())
         inspector = sa.inspect(sa_engine)
-        tables = inspector.get_table_names(schema=schema_name)
-        return sorted(tables), None
+        objects = list_ingestable_objects(
+            inspector=inspector, schema=schema_name, include_views=True
+        )
+        return sorted(o.name for o in objects), None
     except Exception as e:
         if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
             return None, _friendly_db_error(e)
@@ -115,15 +116,14 @@ def _fetch_tables(
 
 
 def _empty_ingest_message(*, schema_name: str, ds: DatasourceConfig) -> str:
-    schema_label = f" in schema '{schema_name}'" if schema_name else ""
-    lines = [f"No tables found{schema_label}."]
-    schemas = _get_schemas(ds)
-    if schemas:
-        lines.append(f"Available schemas: {', '.join(schemas)}")
-        lines.append(
+    """Agent-facing wrapper over the shared engine renderer."""
+    return _shared_empty_ingest_message(
+        schema_name=schema_name,
+        ds=ds,
+        retry_hint=(
             "Try: ingest_datasource_models with schema_name set to one of these."
-        )
-    return "\n".join(lines)
+        ),
+    )
 
 
 def _render_new_models_section(new_models: list[Any]) -> list[str]:
