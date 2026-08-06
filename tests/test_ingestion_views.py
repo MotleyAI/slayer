@@ -276,7 +276,7 @@ class TestDriftSeesViews:
         entries = await validate_datasource(datasource=ds, models=[model])
         assert any(isinstance(e, WholeModelDelete) for e in entries)
 
-    async def test_drift_sees_views_unconditionally(self, workspace: Path) -> None:
+    def test_drift_sees_views_unconditionally(self, workspace: Path) -> None:
         """D4. The drift side takes no include_views flag; there is
         no code path by which --no-views can re-arm the deletion bug."""
         import inspect as _inspect

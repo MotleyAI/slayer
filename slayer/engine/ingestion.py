@@ -800,7 +800,7 @@ class SkippedTable(BaseModel):
 
     table_name: str
     reason: str
-    kind: str | None = None
+    kind: ObjectKind | None = None
 
 
 class IngestionScanReport(BaseModel):
