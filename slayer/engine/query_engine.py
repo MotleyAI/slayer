@@ -73,7 +73,8 @@ from slayer.memories.resolver import (
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql import engine_factory
-from slayer.sql.engine_factory import _runtime_fingerprint
+from slayer.sql.engine_factory import EngineCacheKey
+from slayer.sql.engine_factory import _cache_key as _engine_cache_key
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.reserved_keywords import SLAYER_RESERVED_KEYWORDS
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
@@ -82,15 +83,17 @@ from slayer.storage.base import StorageBackend
 logger = logging.getLogger(__name__)
 
 
-def _sql_client_cache_key(datasource: DatasourceConfig) -> tuple[str, str]:
+def _sql_client_cache_key(datasource: DatasourceConfig) -> EngineCacheKey:
     """Cache key for ``SlayerQueryEngine._sql_clients``.
 
-    Mirrors ``engine_factory``'s cache key so two datasources differing
-    in (e.g.) Snowflake ``warehouse`` get distinct ``SlayerSQLClient``
-    instances (and therefore distinct factory-cached engines with the
-    correct per-connection ``USE`` listener).
+    Delegates to ``engine_factory``'s key builder rather than re-deriving it:
+    each client memoizes the engine it got from the factory, so if the two keys
+    disagreed a caller could be handed a client whose engine was built for
+    different credentials. Sharing one implementation makes that impossible.
     """
-    return (datasource.get_connection_string(), _runtime_fingerprint(datasource))
+    return _engine_cache_key(
+        datasource, datasource.get_connection_string(),
+    )
 
 
 class _ResolvedItem(BaseModel):
@@ -495,7 +498,7 @@ class _Prepared(BaseModel):
     sql: str
     attributes: "ResponseAttributes"
     expected_columns: list[str]
-    ds_key: tuple[str, str]
+    ds_key: EngineCacheKey
     ds_fingerprint: str
 
 
@@ -549,7 +552,7 @@ class SlayerQueryEngine:
         # ``engine_factory``'s cache so Snowflake datasources sharing a
         # connection_name but differing in warehouse/role/database/schema
         # get distinct clients (DEV-1551).
-        self._sql_clients: dict[tuple[str, str], SlayerSQLClient] = {}
+        self._sql_clients: dict[EngineCacheKey, SlayerSQLClient] = {}
         # DEV-1578: immutable, engine-global forced-filter policy. When set,
         # every generated SQL is rewritten to scope each physical table to the
         # configured tenant before execution / dry-run / explain / profiling.
@@ -563,7 +566,7 @@ class SlayerQueryEngine:
         # datasource, for the correlated-subquery join-rule gate. ``None`` (or
         # a missing entry) fails closed. Populated by
         # ``_preflight_clickhouse_correlated`` before the policy rewrite.
-        self._ch_version_cache: dict[tuple[str, str], tuple[int, int] | None] = {}
+        self._ch_version_cache: dict[EngineCacheKey, tuple[int, int] | None] = {}
         # DEV-1587: per-engine, in-memory, opt-in query result cache. The
         # cache is local to this engine instance so two engines with
         # different RLS / connection settings keep separate caches.
@@ -1357,7 +1360,7 @@ class SlayerQueryEngine:
         return await self._run_and_build(prepared=prepared, client=client)
 
     def _get_client(
-        self, datasource: DatasourceConfig, ds_key: tuple[str, str]
+        self, datasource: DatasourceConfig, ds_key: EngineCacheKey
     ) -> SlayerSQLClient:
         """Reuse (or open) the SQL client + connection pool for a datasource.
 
@@ -1604,21 +1607,21 @@ class SlayerQueryEngine:
 
     async def _refresh_scan_all(
         self, snapshot: "dict[str, _CacheEntry]", result: RefreshResult,
-    ) -> "tuple[dict[tuple[tuple[str, str], str, str], Any], set]":
+    ) -> "tuple[dict[tuple[EngineCacheKey, str, str], Any], set]":
         """Collate applicable ``(ds_key, table)`` scan targets across all
         entries and run ONE batched scan per pair. Scan failures are recorded
         as continue-on-error ``RefreshError(phase="refresh_key_scan")`` and the
         table is marked failed so its dependent entries are left unchanged."""
-        targets: dict[tuple[tuple[str, str], str], set] = {}
-        dialects: dict[tuple[str, str], str] = {}
-        clients: dict[tuple[str, str], SlayerSQLClient] = {}
+        targets: dict[tuple[EngineCacheKey, str], set] = {}
+        dialects: dict[EngineCacheKey, str] = {}
+        clients: dict[EngineCacheKey, SlayerSQLClient] = {}
         for entry in snapshot.values():
             ds_key = tuple(entry.ds_key)
             dialects[ds_key] = entry.dialect
             for table, expr in entry.applicable:
                 targets.setdefault((ds_key, table), set()).add(expr)
 
-        fresh: dict[tuple[tuple[str, str], str, str], Any] = {}
+        fresh: dict[tuple[EngineCacheKey, str, str], Any] = {}
         failed: set = set()
         for (ds_key, table), exprs in targets.items():
             expr_list = sorted(exprs)
@@ -1639,9 +1642,9 @@ class SlayerQueryEngine:
 
     async def _client_for_refresh(
         self,
-        ds_key: tuple[str, str],
+        ds_key: EngineCacheKey,
         snapshot: "dict[str, _CacheEntry]",
-        clients: dict[tuple[str, str], SlayerSQLClient],
+        clients: dict[EngineCacheKey, SlayerSQLClient],
     ) -> SlayerSQLClient:
         """Get the cached client for ``ds_key``, reopening it from an entry's
         recorded resolved datasource name if it isn't cached."""
@@ -1671,7 +1674,7 @@ class SlayerQueryEngine:
         *,
         key: str,
         entry: _CacheEntry,
-        fresh_values: "dict[tuple[tuple[str, str], str, str], Any]",
+        fresh_values: "dict[tuple[EngineCacheKey, str, str], Any]",
         failed_tables: set,
         result: RefreshResult,
     ) -> None:

@@ -12,6 +12,7 @@ fields use class-level defaults (``sqlglot_name: str = "postgres"``).
 
 from __future__ import annotations
 
+import hashlib
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 from collections.abc import Callable
@@ -165,6 +166,17 @@ def _sqlglot_backslash_escapes(sqlglot_name: str) -> bool:
             f"sqlglot upgrade may have changed this internal API (DEV-1727)."
         )
     return "\\" in escapes
+
+
+def _digest(secret: str | None) -> str:
+    """Short, stable, non-reversible id for secret material used in cache keys.
+
+    Truncated to 16 hex chars: collision risk is negligible for the number of
+    live credentials in a process, and short keys stay readable in logs.
+    """
+    if not secret:
+        return ""
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16]
 
 
 class SqlDialect(BaseModel):
@@ -592,6 +604,31 @@ class SqlDialect(BaseModel):
         ``snowflake.connector.connect(connection_name=...)``.
         """
         return None
+
+    # ------------------------------------------------------------------
+    # Credential identity (engine-cache safety)
+    # ------------------------------------------------------------------
+
+    def credential_fingerprint(self, datasource: "DatasourceConfig") -> str:
+        """Opaque identity of the credentials this datasource authenticates with.
+
+        Engines are cached per ``(connection_string, runtime_fingerprint,
+        credential_fingerprint)``. Any dialect whose secret does **not** appear
+        in the connection string MUST override this, or two callers holding
+        different credentials for the same URL will silently share one engine —
+        the first caller's identity then serves everyone for the life of the
+        process.
+
+        The default covers the common case safely: username/password dialects
+        embed their credentials in the URL, so the connection string already
+        distinguishes them and ``""`` adds nothing. ``credentials_json`` is
+        hashed here rather than left out, so a dialect that carries it
+        out-of-band is keyed correctly even before it overrides this.
+
+        Return a digest or a stable subject id — **never** raw secret material,
+        since cache keys reach logs and error messages.
+        """
+        return _digest(datasource.credentials_json)
 
     def apply_session_overrides(
         self,

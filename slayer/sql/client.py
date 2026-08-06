@@ -528,12 +528,49 @@ class SlayerSQLClient:
         self._sync_engine = engine_factory.get_engine(self.datasource)
         return self._sync_engine
 
+    def _discard_engine_on_auth_failure(self, exc: BaseException) -> None:
+        """Drop the cached engine when the failure was a credential rejection.
+
+        The credentials an engine authenticates with are fixed at construction
+        (BigQuery bakes a client object into the engine), so a revoked OAuth
+        grant or rotated key poisons that engine permanently — every later call
+        through the cache reproduces the same failure. Evicting means the next
+        call rebuilds from whatever credentials the datasource now carries,
+        which is exactly what a caller that just refreshed its grant expects.
+
+        Best-effort and non-fatal: the original error is what the caller needs
+        to see, so a failure to clean up must not displace it.
+        """
+        if not _is_auth_failure(exc):
+            return
+        from slayer.sql import engine_factory  # noqa: PLC0415
+        self._sync_engine = None
+        try:
+            engine_factory.invalidate_engine(self.datasource)
+        except Exception:
+            logger.warning(
+                "Failed to invalidate engine for datasource %r after an "
+                "authentication failure.", self.datasource.name, exc_info=True,
+            )
+
     async def execute(
         self,
         sql: str,
         timeout_seconds: int = 120,
     ) -> list[dict[str, Any]]:
         """Execute SQL asynchronously."""
+        try:
+            return await self._execute(sql=sql, timeout_seconds=timeout_seconds)
+        except Exception as exc:
+            self._discard_engine_on_auth_failure(exc)
+            raise
+
+    async def _execute(
+        self,
+        *,
+        sql: str,
+        timeout_seconds: int,
+    ) -> list[dict[str, Any]]:
         async_engine = self._get_async_engine()
         db_type = self.datasource.type
         if async_engine is not None:
@@ -645,6 +682,66 @@ def _is_transient_db_error(exc: BaseException) -> bool:
         return True
     msg = str(getattr(exc, "orig", exc)).lower()
     return any(sig in msg for sig in _TRANSIENT_DB_ERROR_SIGNALS)
+
+
+# Credential rejection, as opposed to a transient blip. Distinct from
+# _TRANSIENT_DB_ERROR_SIGNALS on purpose: retrying these is pointless (the
+# credentials are baked into the engine, so every attempt fails identically),
+# and the right response is to throw the engine away rather than sleep.
+#
+# Deliberately narrow. Postgres' table-level "permission denied for table"
+# is NOT here — the credentials worked fine, the grant didn't, and evicting
+# a healthy engine over it is pure pool churn.
+_AUTH_ERROR_SIGNALS = (
+    "invalid_grant",                      # OAuth refresh token revoked / expired
+    "invalid_client",
+    "unauthorized_client",
+    "token has been expired or revoked",
+    "could not refresh access token",
+    "reauthentication is needed",
+    "authentication failed",
+    "password authentication failed",     # libpq
+    "invalid credentials",
+    "invalid username or password",
+)
+
+# Matched by class name so this stays dependency-free — google-auth and
+# google-api-core ship only with the optional 'bigquery' extra.
+_AUTH_ERROR_TYPE_NAMES = frozenset({
+    "RefreshError",             # google.auth.exceptions
+    "DefaultCredentialsError",  # google.auth.exceptions
+    "Unauthorized",             # google.api_core.exceptions — HTTP 401
+})
+
+
+def _is_auth_failure(exc: BaseException) -> bool:
+    """Return True when the server rejected the *credentials* themselves.
+
+    Walks the cause/context chain (plus SQLAlchemy's ``orig``) because the
+    signal is almost always a driver exception wrapped one or two layers deep
+    by the time it surfaces.
+    """
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if type(current).__name__ in _AUTH_ERROR_TYPE_NAMES:
+            return True
+        text = str(current).lower()
+        if any(signal in text for signal in _AUTH_ERROR_SIGNALS):
+            return True
+        pending.extend(
+            nested for nested in (
+                getattr(current, "orig", None),
+                current.__cause__,
+                current.__context__,
+            )
+            if isinstance(nested, BaseException)
+        )
+    return False
 
 
 async def _retry_with_backoff(

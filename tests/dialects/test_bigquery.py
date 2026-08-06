@@ -12,6 +12,7 @@ generator dispatch) live in ``tests/test_sql_generator.py``.
 
 from __future__ import annotations
 
+import json
 import re
 import tempfile
 from unittest.mock import patch
@@ -24,6 +25,7 @@ from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.enriched import EnrichedQuery
 from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import _sql_client_cache_key
 from slayer.sql.dialects import (
     BigqueryDialect,
     PostgresDialect,
@@ -473,7 +475,7 @@ async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
         )
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
-        engine._sql_clients[(ds.get_connection_string(), "")] = _FakeBigQueryClient(
+        engine._sql_clients[_sql_client_cache_key(ds)] = _FakeBigQueryClient(
             rows=[{"orders.status": "paid"}]
         )
         with patch.object(
@@ -539,7 +541,7 @@ async def _build_bigquery_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, t
     )
     await storage.save_model(model)
     engine = SlayerQueryEngine(storage=storage)
-    engine._sql_clients[(ds.get_connection_string(), "")] = _FakeBigQueryClient(rows)
+    engine._sql_clients[_sql_client_cache_key(ds)] = _FakeBigQueryClient(rows)
     return engine, tmp, ds
 
 
@@ -664,3 +666,189 @@ def test_build_engine_with_non_object_credentials_json_raises(payload: str) -> N
     dialect = BigqueryDialect()
     with pytest.raises(ValueError, match="credentials_json must be a JSON object"):
         dialect.build_engine(ds, connection_string="bigquery://my-project")
+
+
+# ---------------------------------------------------------------------------
+# build_engine — per-end-user OAuth grant
+#
+# ``sqlalchemy-bigquery`` routes every credentials kwarg it has to
+# ``service_account.Credentials``, so OAuth user grants have to go through
+# its ``user_supplied_client`` escape hatch instead. These tests pin that
+# wiring and the mutual exclusion with the service-account path.
+# ---------------------------------------------------------------------------
+
+
+def _oauth_info(**overrides) -> dict:
+    info = {
+        "type": "authorized_user",
+        "client_id": "cid.apps.googleusercontent.com",
+        "client_secret": "csecret",
+        "refresh_token": "rtok-alice",
+        "token": "access-token-1",
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+    info.update(overrides)
+    return info
+
+
+def _oauth_ds(name: str = "bq", **overrides) -> DatasourceConfig:
+    return DatasourceConfig(
+        name=name,
+        type="bigquery",
+        oauth_credentials_json=json.dumps(_oauth_info(**overrides)),
+    )
+
+
+def test_build_engine_oauth_uses_user_supplied_client() -> None:
+    """OAuth path must set the ``user_supplied_client`` URL flag AND pass the
+    client via ``connect_args``. Without the flag, ``sqlalchemy-bigquery``
+    builds an ADC client first (and raises where no ADC exists)."""
+    dialect = BigqueryDialect()
+    captured: dict = {}
+
+    def fake_create_engine(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return object()
+
+    fake_client = object()
+    with (
+        patch("slayer.sql.dialects.bigquery.sa.create_engine", side_effect=fake_create_engine),
+        patch("google.cloud.bigquery.Client", return_value=fake_client) as mk_client,
+        patch("google.oauth2.credentials.Credentials.from_authorized_user_info") as mk_creds,
+    ):
+        engine = dialect.build_engine(
+            _oauth_ds(), connection_string="bigquery://my-project/my_dataset",
+        )
+
+    assert engine is not None
+    assert captured["url"].query["user_supplied_client"] == "true"
+    assert captured["kwargs"]["connect_args"] == {"client": fake_client}
+    assert captured["kwargs"]["pool_pre_ping"] is True
+    # No ``credentials_info`` — that kwarg would send us back through
+    # ``service_account.Credentials`` and defeat the whole path.
+    assert "credentials_info" not in captured["kwargs"]
+    assert mk_client.call_args.kwargs["project"] == "my-project"
+    assert mk_client.call_args.kwargs["credentials"] is mk_creds.return_value
+    assert mk_creds.call_args.args[0] == _oauth_info()
+
+
+def test_build_engine_oauth_without_project_raises() -> None:
+    """An OAuth grant carries no project, so omitting it from the connection
+    string is a config error rather than a confusing downstream 404."""
+    dialect = BigqueryDialect()
+    with pytest.raises(ValueError, match="must be given in the connection string"):
+        dialect.build_engine(_oauth_ds(), connection_string="bigquery://")
+
+
+def test_build_engine_oauth_falls_back_to_quota_project() -> None:
+    """A grant carrying ``quota_project_id`` supplies the project when the
+    connection string doesn't."""
+    dialect = BigqueryDialect()
+    with (
+        patch("slayer.sql.dialects.bigquery.sa.create_engine", return_value=object()),
+        patch("google.cloud.bigquery.Client", return_value=object()) as mk_client,
+        patch("google.oauth2.credentials.Credentials.from_authorized_user_info"),
+    ):
+        dialect.build_engine(
+            _oauth_ds(quota_project_id="quota-proj"), connection_string="bigquery://",
+        )
+    assert mk_client.call_args.kwargs["project"] == "quota-proj"
+
+
+def test_build_engine_rejects_both_credential_kinds() -> None:
+    """Setting both is a config error, not a silent precedence win: guessing
+    is how a per-user query quietly runs as the shared service account."""
+    ds = DatasourceConfig(
+        name="bq",
+        type="bigquery",
+        credentials_json=json.dumps({"type": "service_account"}),
+        oauth_credentials_json=json.dumps(_oauth_info()),
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        BigqueryDialect().build_engine(ds, connection_string="bigquery://p/d")
+
+
+def test_build_engine_rejects_oauth_grant_in_credentials_json() -> None:
+    """An authorized-user grant in ``credentials_json`` cannot work — the
+    driver hands it to ``from_service_account_info``. Say so up front."""
+    ds = DatasourceConfig(
+        name="bq", type="bigquery", credentials_json=json.dumps(_oauth_info()),
+    )
+    with pytest.raises(ValueError, match="Put OAuth grants in oauth_credentials_json"):
+        BigqueryDialect().build_engine(ds, connection_string="bigquery://p/d")
+
+
+@pytest.mark.parametrize(
+    argnames="payload,message",
+    argvalues=[
+        ("not json at all", "oauth_credentials_json is not valid JSON"),
+        ("[]", "oauth_credentials_json must be a JSON object"),
+    ],
+)
+def test_build_engine_oauth_malformed_raises(payload: str, message: str) -> None:
+    ds = DatasourceConfig(name="bq", type="bigquery", oauth_credentials_json=payload)
+    with pytest.raises(ValueError, match=message):
+        BigqueryDialect().build_engine(ds, connection_string="bigquery://p/d")
+
+
+# ---------------------------------------------------------------------------
+# credential_fingerprint — cached engines must not cross identities
+# ---------------------------------------------------------------------------
+
+
+def test_credential_fingerprint_empty_without_credentials() -> None:
+    """ADC datasources keep the empty fingerprint, so their cache key shape
+    is unchanged."""
+    ds = DatasourceConfig(name="bq", type="bigquery", database="p")
+    assert BigqueryDialect().credential_fingerprint(ds) == ""
+
+
+def test_credential_fingerprint_differs_between_oauth_users() -> None:
+    """Two end users on the same project must never share a cached engine."""
+    dialect = BigqueryDialect()
+    alice = dialect.credential_fingerprint(_oauth_ds(refresh_token="rtok-alice"))
+    bob = dialect.credential_fingerprint(_oauth_ds(refresh_token="rtok-bob"))
+    assert alice != bob
+    assert alice and bob
+
+
+def test_credential_fingerprint_differs_between_oauth_and_service_account() -> None:
+    dialect = BigqueryDialect()
+    oauth = dialect.credential_fingerprint(_oauth_ds())
+    svc = dialect.credential_fingerprint(DatasourceConfig(
+        name="bq", type="bigquery",
+        credentials_json=json.dumps({"type": "service_account", "project_id": "p"}),
+    ))
+    assert oauth != svc
+
+
+def test_credential_fingerprint_stable_across_token_refresh() -> None:
+    """A refreshed access token is the same user. Keying on it would mint —
+    and leak — a fresh engine on every refresh."""
+    dialect = BigqueryDialect()
+    before = dialect.credential_fingerprint(_oauth_ds(token="access-1", expiry="2026-01-01"))
+    after = dialect.credential_fingerprint(_oauth_ds(token="access-2", expiry="2026-01-02"))
+    assert before == after
+
+
+def test_credential_fingerprint_keeps_token_when_no_refresh_token() -> None:
+    """Without a refresh token the access token IS the whole identity, so it
+    must stay in the digest or two users collide on one engine."""
+    dialect = BigqueryDialect()
+    info = _oauth_info()
+    info.pop("refresh_token")
+    def ds_for(token: str) -> DatasourceConfig:
+        return DatasourceConfig(
+            name="bq", type="bigquery",
+            oauth_credentials_json=json.dumps({**info, "token": token}),
+        )
+    assert dialect.credential_fingerprint(ds_for("tok-alice")) != dialect.credential_fingerprint(ds_for("tok-bob"))
+
+
+def test_credential_fingerprint_leaks_no_secret_material() -> None:
+    """The fingerprint lands in an in-memory cache key and log lines; it must
+    not be reversible to the grant."""
+    fp = BigqueryDialect().credential_fingerprint(_oauth_ds())
+    for secret in ("rtok-alice", "csecret", "access-token-1"):
+        assert secret not in fp
