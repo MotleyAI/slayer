@@ -5025,8 +5025,21 @@ class SQLGenerator:
         # a transform chain the combined SELECT is that chain's base CTE, so it
         # must also carry hidden inputs (transform operands, order-only slots)
         # for the step CTEs to read. The outer wrap trims them back afterwards.
+        #
+        # Only slots the projection never mentions are carried. A slot the plan
+        # DID publish has exactly as many occurrences as it has declared names,
+        # so a leftover would mean the two disagree — and appending it would
+        # emit an extra public column, at the end, under a name the caller did
+        # not ask for. Fail instead: a silent extra column is the harder bug.
         for sid, exprs in proj_exprs.items():
-            combined_select_exprs.extend(exprs[consumed.get(sid, 0):])
+            if sid not in consumed:
+                combined_select_exprs.extend(exprs)
+            elif consumed[sid] < len(exprs):
+                raise ValueError(
+                    f"slot {sid!r} rendered {len(exprs)} column(s) but the "
+                    f"projection consumed only {consumed[sid]}; the plan's "
+                    f"declared names and the rendered columns disagree",
+                )
 
         combined_select = exp.Select().select(*combined_select_exprs)
         combined_select = combined_select.from_("_base")

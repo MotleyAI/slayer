@@ -189,6 +189,16 @@ class TestWithChainAssembler:
         with pytest.raises(ValueError, match="(?i)duplicate|dup"):
             mod.assemble_with_chain(entries=entries, final=self._sel("dup"))
 
+    def test_a_final_select_that_already_has_ctes_is_rejected(self) -> None:
+        """The assembler owns the WITH clause. Silently discarding one the
+        caller had attached would leave its references dangling — a live hazard
+        for the transform chains, which build a statement that already has CTEs
+        before wrapping it, and which adopt this assembler next."""
+        mod = self._mod()
+        final = self._sel("seed").with_("seed", as_=self._sel())
+        with pytest.raises(ValueError, match="(?i)already carries"):
+            mod.assemble_with_chain(entries=[self._entry("a", [])], final=final)
+
     def test_no_entries_yields_the_final_select_unwrapped(self) -> None:
         """No CTEs means no WITH clause — not an empty one, which is invalid."""
         mod = self._mod()

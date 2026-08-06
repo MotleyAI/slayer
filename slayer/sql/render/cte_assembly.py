@@ -56,10 +56,21 @@ def assemble_with_chain(
     Returns ``final`` unchanged when there are no entries — an empty ``WITH`` is
     not valid SQL.
 
+    ``final`` must not already carry a WITH clause. The assembler owns the
+    statement's CTE list, and silently discarding one the caller had attached
+    would leave its references dangling — a live hazard for the transform
+    chains, which build a statement that already has CTEs before wrapping it.
+
     Raises ``ValueError`` on a duplicate name, a dependency naming a CTE that
     was not supplied, or a cycle. All three are wiring bugs whose SQL would be
     invalid or silently wrong, so they fail here rather than at the database.
     """
+    if final.args.get("with_") is not None:
+        raise ValueError(
+            "assemble_with_chain owns the WITH clause, but `final` already "
+            "carries one; merge those CTEs into `entries` (with their "
+            "dependencies declared) rather than attaching them beforehand",
+        )
     if not entries:
         return final
 
