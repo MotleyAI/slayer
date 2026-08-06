@@ -226,14 +226,20 @@ def _leaf_paths(node, *, anchor_model, anchor_relation: str, bundle) -> List[Pat
     ``_child_keys``. Split out of the traversal so the walk stays a two-line
     "collect, then descend".
     """
-    if isinstance(node, (ColumnKey, ColumnSqlKey)):
-        paths = _prefixes(node.path)
-        if isinstance(node, ColumnSqlKey):
-            paths += _derived_sql_paths(
+    if isinstance(node, ColumnSqlKey):
+        # Own anchored path first, then whatever its expansion reaches — the
+        # order the FROM builder consumes. Built as a NEW list rather than
+        # appending to ``_prefixes``' return, so this cannot corrupt that
+        # result if it ever becomes cached.
+        return [
+            *_prefixes(node.path),
+            *_derived_sql_paths(
                 key=node, anchor_model=anchor_model,
                 anchor_relation=anchor_relation, bundle=bundle,
-            )
-        return paths
+            ),
+        ]
+    if isinstance(node, ColumnKey):
+        return _prefixes(node.path)
     if isinstance(node, SqlExprKey):
         return [
             pre
