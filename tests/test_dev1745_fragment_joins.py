@@ -23,6 +23,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.core.keys import AggregateKey, ColumnKey
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -31,6 +32,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import SlayerQuery
+from slayer.sql.generator import SQLGenerator
 
 from tests._engine_helpers import _engine_generate
 
@@ -131,9 +133,6 @@ class TestOnlySubstitutedKwargsAreSql:
 
     @staticmethod
     def _entered_fragments(*, kwargs, agg="sum") -> list:
-        from slayer.core.keys import AggregateKey, ColumnKey
-        from slayer.sql.generator import SQLGenerator
-
         gen = SQLGenerator(dialect="postgres")
         seen: list = []
         gen._enter_mode_a_expression = (  # type: ignore[method-assign]

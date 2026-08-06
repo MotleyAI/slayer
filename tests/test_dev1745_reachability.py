@@ -25,6 +25,8 @@ filter-only derived columns are exactly such keys).
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from slayer.core.enums import DataType
@@ -37,9 +39,12 @@ from slayer.core.keys import (
     InKey,
     LiteralKey,
     Phase,
+    ScalarCallKey,
 )
 from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.engine.stage_planner import plan_query
 
 
 # --------------------------------------------------------------------------- #
@@ -435,10 +440,6 @@ class TestInlineScalarsAreNotReferences:
         assert ("customers",) in _paths_for(key)
 
     def test_decimal_scalar_call_arg_is_scalar(self) -> None:
-        from decimal import Decimal
-
-        from slayer.core.keys import ScalarCallKey
-
         key = ScalarCallKey(
             name="round",
             args=(ColumnKey(path=("customers",), leaf="balance"), Decimal("2")),
@@ -456,9 +457,6 @@ class TestInlineScalarsAreNotReferences:
     def test_parametric_aggregate_filter_plans(self) -> None:
         """End-to-end: the shape that crashed. A filter over a parametric
         aggregate must plan, not raise."""
-        from slayer.core.query import SlayerQuery
-        from slayer.engine.stage_planner import plan_query
-
         planned = plan_query(
             query=SlayerQuery(
                 source_model="orders",
