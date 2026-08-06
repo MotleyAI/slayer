@@ -106,6 +106,15 @@ def seed_dev1747_sqlite(db_path: str) -> None:
             (101, 2, "gold", 250.0),
             (102, 3, "silver", 75.0),
             (103, 4, "silver", 50.0),
+            # Region Alpha's SECOND customer, with NO orders and the other
+            # tier. It exists so a target-side filter can change a cross-model
+            # aggregate WITHIN a group that survives the filter, rather than
+            # only removing whole groups: ``customers.tier == 'gold'`` takes
+            # Alpha's spend from 1040 to 1000 while Alpha stays in the result.
+            # Without it, a re-rooted CTE that failed to apply its copy of the
+            # filter would still produce the right number for every surviving
+            # group, because the join-back picks the group the host kept.
+            (104, 1, "silver", 40.0),
         ],
     )
     con.executemany(
@@ -502,3 +511,11 @@ def response_column_values(rows: List[dict], key: str) -> List[Optional[object]]
         assert key in row, f"row {i} has no key {key!r}; keys are {sorted(row)}"
         out.append(row[key])
     return out
+
+
+#: Region Alpha's cross-model spend. The UNFILTERED total spans both of its
+#: customers; the gold-only total is customer 100 alone. The gap is what makes
+#: "did the re-rooted CTE apply its copy of the filter?" observable inside a
+#: group the filter does not remove.
+ALPHA_SPEND_ALL = 1000.0 + 40.0
+ALPHA_SPEND_GOLD = 1000.0

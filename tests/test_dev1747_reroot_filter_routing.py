@@ -39,6 +39,12 @@ from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.stage_planner import plan_query
 from tests._dev1747_fixtures import (
+    ALPHA_SPEND_ALL,
+    ALPHA_SPEND_GOLD,
+    GROUP_A_AMOUNT,
+    REGION_A_HIGH,
+    REGION_A_LOW,
+    REGION_B_ONLY,
     dev1747_bundle,
     make_sqlite_engine,
     seed_dev1747_sqlite,
@@ -56,6 +62,16 @@ FILTER_HOST_LOCAL = "status == 'A'"
 #: Off the target's graph entirely (``orders -> order_tags``) — unreachable
 #: from a CTE rooted at ``customers``.
 FILTER_UNREACHABLE = "order_tags.name == 'rush'"
+#: Reachable from BOTH scopes and, unlike the others, it changes the aggregate
+#: INSIDE a group that survives it: region Alpha keeps its gold customer and
+#: loses its silver one, so ``cs`` drops from 1040 to 1000 while the Alpha row
+#: stays. That is what distinguishes "the re-rooted CTE applied its own copy"
+#: from "the host filtered and the join-back happened to pick the right group".
+FILTER_TARGET_ATTRIBUTE = "customers.tier == 'gold'"
+#: An AGGREGATE-phase predicate over the isolated aggregate itself. The host
+#: base cannot evaluate it — the aggregate does not live in ``_base`` — so
+#: unlike a ROW-phase filter it must STAY routed to the CTE.
+FILTER_AGGREGATE_REF = "customers.spend:sum > 500"
 
 #: A HOST-ROOTED shape (``cte_root_model == "orders"``): ordering by a derived
 #: column whose ``Column.sql`` crosses. The DEV-1503/DEV-1709 helpers live only
@@ -524,3 +540,223 @@ class TestFilteredLocalDispatchAccounting:
         assert cma.cte_root_model == "orders", (
             f"the wrap's CTE is rooted at {cma.cte_root_model!r}, not the host"
         )
+
+
+# ---------------------------------------------------------------------------
+# Group 5 — the ROWS, not the plan (the regression the plan fields hid)
+# ---------------------------------------------------------------------------
+class TestRerootedFilterStillNarrowsTheHost:
+    """The first attempt at B6 stopped blanking the routing lists wholesale.
+    That was right about ``applied_filter_ids`` — an AUDIT, "some scope
+    evaluates this" — and wrong about ``where_filter_ids`` /
+    ``having_filter_ids``, which are an INSTRUCTION: the forward CTE took this
+    filter over, so the host base must not apply it.
+
+    A re-rooted plan has no forward CTE (the sub-plan replaces it and carries
+    its own re-anchored filters), and the predicate is host-evaluable by
+    construction, since it was bound against the host. So the instruction told
+    the host base to skip a filter nothing else applied THERE, and rows the
+    user excluded came back with a NULL measure attached.
+
+    Every plan-level assertion in this module passed throughout: the plan was
+    self-consistent, and the wrongness existed only in the rows. These tests
+    execute.
+    """
+
+    @staticmethod
+    async def _rows_and_warnings(*filters: str):
+        """Rows plus every warning the execute emitted.
+
+        Warnings are CAPTURED rather than suppressed: a planner that
+        misclassified a reachable predicate as unreachable would drop it from
+        the CTE, warn about it, and — because the host still applies it — often
+        return correct-looking rows anyway. The warning is the only signal.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            db = os.path.join(d, "dev1747.db")
+            seed_dev1747_sqlite(db)
+            engine = await make_sqlite_engine(d, db)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                response = await engine.execute(_query(*filters))
+        dropped = [
+            w for w in caught
+            if isinstance(w.message, UnreachableFilterDroppedWarning)
+        ]
+        return response.data, dropped
+
+    @classmethod
+    async def _rows(cls, *filters: str):
+        rows, _ = await cls._rows_and_warnings(*filters)
+        return rows
+
+    def test_every_fixture_here_actually_reroots(self) -> None:
+        """Vacuity guard for the whole class. Every assertion below is about
+        what re-rooting does; if the planner quietly stopped re-rooting and
+        compiled an equivalent forward plan, the row assertions would still
+        pass and would be testing nothing."""
+        for label, flt in (
+            ("reachable", FILTER_REACHABLE),
+            ("host-local", FILTER_HOST_LOCAL),
+            ("unreachable", FILTER_UNREACHABLE),
+            ("target-attribute", FILTER_TARGET_ATTRIBUTE),
+            ("aggregate-ref", FILTER_AGGREGATE_REF),
+        ):
+            assert _sole_plan(flt).rerooted_plan is not None, (
+                f"the {label} fixture no longer re-roots, so its row "
+                f"assertions no longer test re-rooting"
+            )
+
+    async def test_a_reachable_filter_narrows_the_host_rows(self) -> None:
+        """``customers.regions.name == 'Alpha'`` keeps ONE region group.
+
+        Without the fix the host base is unfiltered, so all four regions
+        survive and three of them carry a NULL measure — the user's filter
+        silently became "annotate, don't exclude".
+        """
+        rows = await self._rows(FILTER_REACHABLE)
+        regions = [r["orders.customers.regions.name"] for r in rows]
+        assert regions == [REGION_A_LOW], (
+            f"the re-rooted CTE applied the filter but the host base did not, "
+            f"so excluded regions came back: {regions}"
+        )
+
+    async def test_the_excluded_regions_do_not_come_back_as_nulls(self) -> None:
+        """States the failure mode directly rather than by row count: the
+        symptom is specifically a row PRESENT with a NULL measure, which a
+        count assertion alone would not distinguish from a genuinely empty
+        group the user asked to see."""
+        rows = await self._rows(FILTER_REACHABLE)
+        leaked = [
+            r for r in rows
+            if r["orders.customers.regions.name"] in (
+                REGION_A_HIGH, REGION_B_ONLY, None,
+            )
+        ]
+        assert not leaked, (
+            f"regions the filter excludes are present with a NULL measure: "
+            f"{leaked}"
+        )
+
+    async def test_the_surviving_group_keeps_its_own_values(self) -> None:
+        """The other half: narrowing the host must not disturb the row that
+        SHOULD be there. A fix that over-filtered — applying the re-rooted
+        predicate at the host in the TARGET's coordinate system — would empty
+        the result instead, and the two assertions above would both pass."""
+        rows = await self._rows(FILTER_REACHABLE)
+        assert len(rows) == 1, rows
+        assert rows[0]["orders.rev"] == 11.0, (
+            f"the surviving group's own measure changed: {rows[0]}"
+        )
+        assert rows[0]["orders.cs"] == ALPHA_SPEND_ALL, (
+            f"the cross-model measure changed: {rows[0]}"
+        )
+
+    async def test_a_host_local_filter_still_narrows_the_host(self) -> None:
+        """The control for the branch that was ALREADY right: a host-local
+        filter never had routing ids, so it must be unaffected. ``status ==
+        'A'`` keeps the two orders of group A, which span two regions."""
+        rows = await self._rows(FILTER_HOST_LOCAL)
+        regions = sorted(
+            str(r["orders.customers.regions.name"]) for r in rows
+        )
+        assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
+        assert sum(r["orders.rev"] for r in rows) == GROUP_A_AMOUNT, rows
+
+    async def test_an_unreachable_filter_still_narrows_the_host(self) -> None:
+        """The filter the re-rooted CTE CANNOT evaluate must still apply at the
+        host — that is what the dropped-filter warning promises ("it still
+        applies at the host"). If the host skipped it too, the warning would be
+        describing a filter that ran nowhere at all."""
+        rows = await self._rows(FILTER_UNREACHABLE)
+        regions = sorted(
+            str(r["orders.customers.regions.name"]) for r in rows
+        )
+        # order_tags 'rush' tags orders 1 (region Alpha) and 2 (region Zulu).
+        assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
+
+    async def test_the_rerooted_cte_applies_its_own_copy_of_the_filter(
+        self,
+    ) -> None:
+        """The half a filtered-DIMENSION test cannot reach (Codex).
+
+        Grouping by the very column the filter names hides whether the CTE
+        applied anything: the host keeps only Alpha, the join-back picks
+        Alpha's row out of the CTE, and Alpha's aggregate is right either way.
+        A filter on a DIFFERENT target attribute separates them — region Alpha
+        survives, but with only its gold customer counted.
+
+        So this fails BOTH ways: if the host stops applying the filter, extra
+        regions come back; if the CTE stops applying it, Alpha's ``cs`` reads
+        the unfiltered 1040 instead of 1000.
+        """
+        rows = await self._rows(FILTER_TARGET_ATTRIBUTE)
+        by_region = {r["orders.customers.regions.name"]: r for r in rows}
+        assert sorted(by_region) == sorted([REGION_A_LOW, REGION_A_HIGH]), (
+            f"the host base did not narrow to the gold-tier rows: "
+            f"{sorted(by_region)}"
+        )
+        assert by_region[REGION_A_LOW]["orders.cs"] == ALPHA_SPEND_GOLD, (
+            f"Alpha's cross-model spend is {by_region[REGION_A_LOW]['orders.cs']}, "
+            f"not {ALPHA_SPEND_GOLD} — the re-rooted CTE aggregated an "
+            f"UNFILTERED target population (unfiltered total is "
+            f"{ALPHA_SPEND_ALL})"
+        )
+
+    async def test_no_warning_when_every_filter_is_reachable(self) -> None:
+        """A reachable predicate misclassified as unreachable still produces
+        right-looking rows, because the host applies it either way. The warning
+        is the only place that mistake surfaces."""
+        for flt in (FILTER_REACHABLE, FILTER_TARGET_ATTRIBUTE, FILTER_HOST_LOCAL):
+            _, dropped = await self._rows_and_warnings(flt)
+            assert not dropped, (
+                f"{flt!r} is evaluable by the re-rooted CTE but was reported "
+                f"dropped: {[str(w.message) for w in dropped]}"
+            )
+
+    async def test_the_unreachable_filter_warns_exactly_once(self) -> None:
+        rows, dropped = await self._rows_and_warnings(FILTER_UNREACHABLE)
+        assert len(dropped) == 1, [str(w.message) for w in dropped]
+        assert "order_tags" in str(dropped[0].message)
+        # And the promise the warning makes — "it still applies at the host" —
+        # holds: only the two 'rush'-tagged orders' regions survive.
+        regions = sorted(str(r["orders.customers.regions.name"]) for r in rows)
+        assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
+
+
+class TestRerootedAggregateRefFilter:
+    """The HAVING half, which the WHERE-phase tests above cannot reach (Codex).
+
+    An AGGREGATE-phase predicate over the isolated aggregate
+    (``customers.spend:sum > 500``) is NOT host-evaluable: the aggregate does
+    not live in ``_base`` at all. So unlike a ROW-phase filter it must STAY
+    routed to the CTE, and clearing ``having_filter_ids`` alongside
+    ``where_filter_ids`` would be over-clearing.
+
+    Deleting only the ``having_filter_ids`` half of the fix leaves every other
+    test in this module green, which is why this class exists.
+    """
+
+    def test_the_aggregate_ref_filter_stays_routed(self) -> None:
+        plan = _sole_plan(FILTER_AGGREGATE_REF)
+        assert plan.rerooted_plan is not None, "the fixture stopped re-rooting"
+        assert plan.applied_filter_ids, "the predicate is applied nowhere"
+
+    async def test_it_raises_rather_than_returning_leaked_rows(self) -> None:
+        """This shape is NOT yet supported end to end (stage 7b.12: a
+        cross-model aggregate ref in a filter routes via the per-plan CTE, not
+        inline HAVING), and it must keep saying so.
+
+        The un-blanking that this fix corrects turned that loud
+        ``NotImplementedError`` into a silent answer — three regions returned,
+        two of them carrying a NULL measure, for a query whose whole point was
+        to keep only the groups above a threshold. A wrong answer is strictly
+        worse than an unsupported one.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            db = os.path.join(d, "dev1747.db")
+            seed_dev1747_sqlite(db)
+            engine = await make_sqlite_engine(d, db)
+            with pytest.raises(NotImplementedError) as exc:
+                await engine.execute(_query(FILTER_AGGREGATE_REF))
+        assert "not inline HAVING" in str(exc.value), exc.value
