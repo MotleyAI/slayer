@@ -283,11 +283,13 @@ class BigqueryDialect(SqlDialect):
 
         The BigQuery project is not part of an OAuth grant the way it is
         part of a service-account key, so it has to come from the
-        connection string's host (``bigquery://<project>/<dataset>``).
-        """
-        from google.cloud import bigquery  # noqa: PLC0415  (optional 'bigquery' extra)
-        from google.oauth2.credentials import Credentials  # noqa: PLC0415
+        connection string's host (``bigquery://<project>/<dataset>``), or
+        from the grant's ``quota_project_id`` when it carries one.
 
+        Config is validated before the ``google.*`` imports so a
+        misconfigured datasource reports *that* rather than a missing
+        optional dependency — those ship only with the 'bigquery' extra.
+        """
         info = _parse_credentials_object(
             raw=datasource.oauth_credentials_json,
             field="oauth_credentials_json",
@@ -297,10 +299,14 @@ class BigqueryDialect(SqlDialect):
         project = url.host or info.get("quota_project_id")
         if not project:
             raise ValueError(
-                f"Datasource '{datasource.name}': OAuth credentials carry no "
-                f"project, so the BigQuery project must be given in the "
-                f"connection string as 'bigquery://<project>/<dataset>'."
+                f"Datasource '{datasource.name}': no BigQuery project resolved. "
+                f"An OAuth grant carries none of its own, so it must be given in "
+                f"the connection string as 'bigquery://<project>/<dataset>', or "
+                f"as 'quota_project_id' inside oauth_credentials_json."
             )
+        from google.cloud import bigquery  # noqa: PLC0415  (optional 'bigquery' extra)
+        from google.oauth2.credentials import Credentials  # noqa: PLC0415
+
         try:
             credentials = Credentials.from_authorized_user_info(info)
         except ValueError as exc:

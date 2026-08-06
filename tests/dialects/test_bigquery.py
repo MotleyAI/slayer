@@ -679,7 +679,7 @@ def test_build_engine_with_non_object_credentials_json_raises(payload: str) -> N
 
 
 def _oauth_info(**overrides) -> dict:
-    info = {
+    info = {  # NOSONAR(S2068) — test fixture; placeholder grant, not real credentials
         "type": "authorized_user",
         "client_id": "cid.apps.googleusercontent.com",
         "client_secret": "csecret",
@@ -737,8 +737,9 @@ def test_build_engine_oauth_without_project_raises() -> None:
     """An OAuth grant carries no project, so omitting it from the connection
     string is a config error rather than a confusing downstream 404."""
     dialect = BigqueryDialect()
+    ds = _oauth_ds()
     with pytest.raises(ValueError, match="must be given in the connection string"):
-        dialect.build_engine(_oauth_ds(), connection_string="bigquery://")
+        dialect.build_engine(ds, connection_string="bigquery://")
 
 
 def test_build_engine_oauth_falls_back_to_quota_project() -> None:
@@ -765,8 +766,9 @@ def test_build_engine_rejects_both_credential_kinds() -> None:
         credentials_json=json.dumps({"type": "service_account"}),
         oauth_credentials_json=json.dumps(_oauth_info()),
     )
+    dialect = BigqueryDialect()
     with pytest.raises(ValueError, match="mutually exclusive"):
-        BigqueryDialect().build_engine(ds, connection_string="bigquery://p/d")
+        dialect.build_engine(ds, connection_string="bigquery://p/d")
 
 
 def test_build_engine_rejects_oauth_grant_in_credentials_json() -> None:
@@ -775,8 +777,9 @@ def test_build_engine_rejects_oauth_grant_in_credentials_json() -> None:
     ds = DatasourceConfig(
         name="bq", type="bigquery", credentials_json=json.dumps(_oauth_info()),
     )
+    dialect = BigqueryDialect()
     with pytest.raises(ValueError, match="Put OAuth grants in oauth_credentials_json"):
-        BigqueryDialect().build_engine(ds, connection_string="bigquery://p/d")
+        dialect.build_engine(ds, connection_string="bigquery://p/d")
 
 
 @pytest.mark.parametrize(
@@ -788,8 +791,9 @@ def test_build_engine_rejects_oauth_grant_in_credentials_json() -> None:
 )
 def test_build_engine_oauth_malformed_raises(payload: str, message: str) -> None:
     ds = DatasourceConfig(name="bq", type="bigquery", oauth_credentials_json=payload)
+    dialect = BigqueryDialect()
     with pytest.raises(ValueError, match=message):
-        BigqueryDialect().build_engine(ds, connection_string="bigquery://p/d")
+        dialect.build_engine(ds, connection_string="bigquery://p/d")
 
 
 # ---------------------------------------------------------------------------
@@ -852,3 +856,34 @@ def test_credential_fingerprint_leaks_no_secret_material() -> None:
     fp = BigqueryDialect().credential_fingerprint(_oauth_ds())
     for secret in ("rtok-alice", "csecret", "access-token-1"):
         assert secret not in fp
+
+
+def test_credential_fingerprint_tolerates_malformed_oauth_json() -> None:
+    """The fingerprint runs on every cache-key lookup, so a stored grant that
+    won't parse has to yield a digest rather than raise — otherwise a bad
+    datasource breaks engine lookup instead of reaching ``build_engine``'s
+    clear error."""
+    ds = DatasourceConfig(
+        name="bq", type="bigquery", oauth_credentials_json="not json at all",
+    )
+    assert BigqueryDialect().credential_fingerprint(ds)
+
+
+def test_credential_fingerprint_distinguishes_malformed_payloads() -> None:
+    """Two unparseable grants are still two different identities."""
+    dialect = BigqueryDialect()
+
+    def ds_for(payload: str) -> DatasourceConfig:
+        return DatasourceConfig(name="bq", type="bigquery", oauth_credentials_json=payload)
+
+    assert dialect.credential_fingerprint(ds_for("garbage-alice")) != dialect.credential_fingerprint(ds_for("garbage-bob"))
+
+
+def test_build_engine_oauth_validates_before_importing_optional_driver() -> None:
+    """Config errors must surface as themselves even where the optional
+    'bigquery' extra is absent, so validation precedes the google.* imports."""
+    ds = DatasourceConfig(name="bq", type="bigquery", oauth_credentials_json="not json")
+    dialect = BigqueryDialect()
+    with patch.dict("sys.modules", {"google.cloud": None, "google.oauth2.credentials": None}):
+        with pytest.raises(ValueError, match="is not valid JSON"):
+            dialect.build_engine(ds, connection_string="bigquery://p/d")

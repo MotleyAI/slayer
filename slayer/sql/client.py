@@ -528,8 +528,9 @@ class SlayerSQLClient:
         self._sync_engine = engine_factory.get_engine(self.datasource)
         return self._sync_engine
 
-    def _discard_engine_on_auth_failure(self, exc: BaseException) -> None:
-        """Drop the cached engine when the failure was a credential rejection.
+    def _discard_sync_engine_on_auth_failure(self, exc: BaseException) -> bool:
+        """Drop the sync engine when the failure was a credential rejection.
+        Returns whether ``exc`` was one.
 
         The credentials an engine authenticates with are fixed at construction
         (BigQuery bakes a client object into the engine), so a revoked OAuth
@@ -542,7 +543,7 @@ class SlayerSQLClient:
         to see, so a failure to clean up must not displace it.
         """
         if not _is_auth_failure(exc):
-            return
+            return False
         from slayer.sql import engine_factory  # noqa: PLC0415
         self._sync_engine = None
         try:
@@ -552,6 +553,18 @@ class SlayerSQLClient:
                 "Failed to invalidate engine for datasource %r after an "
                 "authentication failure.", self.datasource.name, exc_info=True,
             )
+        return True
+
+    async def _discard_engines_on_auth_failure(self, exc: BaseException) -> None:
+        """Async-path cleanup: the sync engine, plus this client's async one.
+
+        Native-async dialects hold a second pool that ``invalidate_engine``
+        knows nothing about, and disposing it needs a loop — hence the split
+        from the sync variant, which ``execute_sync`` uses.
+        """
+        if not self._discard_sync_engine_on_auth_failure(exc):
+            return
+        await self.aclose()
 
     async def execute(
         self,
@@ -562,7 +575,7 @@ class SlayerSQLClient:
         try:
             return await self._execute(sql=sql, timeout_seconds=timeout_seconds)
         except Exception as exc:
-            self._discard_engine_on_auth_failure(exc)
+            await self._discard_engines_on_auth_failure(exc)
             raise
 
     async def _execute(
@@ -602,6 +615,13 @@ class SlayerSQLClient:
         Returns {column_name: type_category} where type_category is
         "number", "string", "time", or "boolean".
         """
+        try:
+            return await self._get_column_types(sql=sql)
+        except Exception as exc:
+            await self._discard_engines_on_auth_failure(exc)
+            raise
+
+    async def _get_column_types(self, *, sql: str) -> dict[str, str]:
         async_engine = self._get_async_engine()
         if async_engine is not None:
             return await _get_column_types_async(
@@ -626,14 +646,23 @@ class SlayerSQLClient:
         sql: str,
         timeout_seconds: int = 120,
     ) -> list[dict[str, Any]]:
-        """Execute SQL synchronously (for CLI, notebooks, tests)."""
-        return _execute_with_retry_sync(
-            sql=sql,
-            connection_string=self.datasource.get_connection_string(),
-            db_type=self.datasource.type,
-            timeout_seconds=timeout_seconds,
-            engine=self._get_sync_engine_for_client(),
-        )
+        """Execute SQL synchronously (for CLI, notebooks, tests).
+
+        Only the sync engine is discarded on a credential rejection: this
+        method has no loop to dispose an async pool on, and the paths that do
+        (``execute`` / ``get_column_types``) handle it.
+        """
+        try:
+            return _execute_with_retry_sync(
+                sql=sql,
+                connection_string=self.datasource.get_connection_string(),
+                db_type=self.datasource.type,
+                timeout_seconds=timeout_seconds,
+                engine=self._get_sync_engine_for_client(),
+            )
+        except Exception as exc:
+            self._discard_sync_engine_on_auth_failure(exc)
+            raise
 
 
 # ---------------------------------------------------------------------------

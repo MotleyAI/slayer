@@ -2,7 +2,7 @@
 
 import logging
 import sqlite3
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import sqlalchemy.exc
@@ -526,6 +526,67 @@ class TestClientDiscardsEngineOnAuthFailure:
         ):
             with pytest.raises(Exception, match="no such table"):
                 await client.execute("SELECT 1")
+        invalidate.assert_not_called()
+        assert client._sync_engine is engine
+
+    async def test_async_engine_is_disposed_too(self) -> None:
+        """Native-async dialects hold a second pool that ``invalidate_engine``
+        knows nothing about; it has to go as well."""
+        client = self._client()
+        async_engine = AsyncMock()
+        client._async_engine = async_engine
+        with (
+            patch.object(sql_client.SlayerSQLClient, "_execute", side_effect=Exception("invalid_grant")),
+            patch("slayer.sql.engine_factory.invalidate_engine"),
+        ):
+            with pytest.raises(Exception, match="invalid_grant"):
+                await client.execute("SELECT 1")
+        async_engine.dispose.assert_awaited_once()
+        assert client._async_engine is None
+
+    async def test_get_column_types_also_discards(self) -> None:
+        """It runs its own SQL against the same cached engine, so it needs the
+        same cleanup ``execute`` gets."""
+        client = self._client()
+        client._sync_engine = object()
+        with (
+            patch.object(
+                sql_client.SlayerSQLClient, "_get_column_types",
+                side_effect=Exception("invalid_grant"),
+            ),
+            patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
+        ):
+            with pytest.raises(Exception, match="invalid_grant"):
+                await client.get_column_types("SELECT 1")
+        invalidate.assert_called_once_with(client.datasource)
+        assert client._sync_engine is None
+
+    def test_execute_sync_also_discards(self) -> None:
+        """The sync path shares the factory-cached engine. It cannot dispose an
+        async pool (no loop to do it on), so it only drops the sync one."""
+        client = self._client()
+        client._sync_engine = object()
+        with (
+            patch("slayer.sql.client._execute_with_retry_sync", side_effect=Exception("invalid_grant")),
+            patch.object(sql_client.SlayerSQLClient, "_get_sync_engine_for_client", return_value=None),
+            patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
+        ):
+            with pytest.raises(Exception, match="invalid_grant"):
+                client.execute_sync("SELECT 1")
+        invalidate.assert_called_once_with(client.datasource)
+        assert client._sync_engine is None
+
+    def test_execute_sync_keeps_engine_on_non_auth_failure(self) -> None:
+        client = self._client()
+        engine = object()
+        client._sync_engine = engine
+        with (
+            patch("slayer.sql.client._execute_with_retry_sync", side_effect=Exception("no such table")),
+            patch.object(sql_client.SlayerSQLClient, "_get_sync_engine_for_client", return_value=None),
+            patch("slayer.sql.engine_factory.invalidate_engine") as invalidate,
+        ):
+            with pytest.raises(Exception, match="no such table"):
+                client.execute_sync("SELECT 1")
         invalidate.assert_not_called()
         assert client._sync_engine is engine
 

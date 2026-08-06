@@ -171,7 +171,7 @@ Statement-level timeout is enforced via
 
 Three ways to authenticate, in the order SLayer prefers them:
 
-1. **`oauth_credentials_json`** — an OAuth *authorized user* grant, the shape `google.oauth2.credentials.Credentials.from_authorized_user_info` accepts (`token`, `refresh_token`, `client_id`, `client_secret`, `token_uri`). Queries run as that end user, against that user's own BigQuery permissions. The grant carries no project, so the connection string must name one: `bigquery://<project>/<dataset>`.
+1. **`oauth_credentials_json`** — an OAuth *authorized user* grant, the shape `google.oauth2.credentials.Credentials.from_authorized_user_info` accepts (`token`, `refresh_token`, `client_id`, `client_secret`, `token_uri`). Queries run as that end user, against that user's own BigQuery permissions. An OAuth grant carries no project of its own, so one must come from the connection string — `bigquery://<project>/<dataset>` — or from a `quota_project_id` in the grant, which SLayer falls back to when the connection string omits it.
 2. **`credentials_json`** — a service-account key file's contents. One shared identity for every caller.
 3. **Neither** — Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, or the attached compute identity).
 

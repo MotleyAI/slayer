@@ -15,6 +15,8 @@ strategy class carries the runtime hooks; this module covers:
   bare ``sa.create_engine``.
 """
 
+import json
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -139,7 +141,14 @@ class TestSessionOverridesListener:
         assert apply_mock.call_count >= 1
         # Listener calls ``apply_session_overrides(dbapi_connection=..., datasource=...)``
         # by name; the datasource is the kwarg, not a positional arg.
-        assert apply_mock.call_args.kwargs["datasource"] is ds
+        #
+        # It receives the snapshot ``get_engine`` took, not the caller's object.
+        # That is deliberate: warehouse / role / database / schema_name are all
+        # in this engine's cache-key fingerprint, so the USE statements have to
+        # keep matching the values it was admitted under.
+        applied = apply_mock.call_args.kwargs["datasource"]
+        assert applied is not ds
+        assert applied == ds
 
 
 class TestCacheKeying:
@@ -327,6 +336,61 @@ class TestCacheBounding:
             assert isinstance(engine_factory.get_engine(second), sa.Engine)
         engine_factory.reset_cache()
 
+    def test_lowering_the_limit_trims_on_the_next_hit(self, monkeypatch) -> None:
+        """A cache that only trims on insert stays oversized until the next
+        miss. Re-applying the cap on hits makes the new bound take effect on
+        the next call."""
+        engine_factory.reset_cache()
+        sources = [self._lite(i) for i in range(4)]
+        for ds in sources:
+            engine_factory.get_engine(ds)
+        assert len(engine_factory._engine_cache) == 4
+
+        monkeypatch.setenv(engine_factory.MAX_CACHED_ENGINES_ENV, "2")
+        # A pure hit — no miss to piggyback the trim on.
+        hot = sources[-1]
+        assert engine_factory.get_engine(hot) is not None
+        assert len(engine_factory._engine_cache) == 2
+        # The entry just touched is the most-recently-used, so it survives.
+        assert engine_factory._cache_key(
+            datasource=hot, connection_string=hot.get_connection_string(),
+        ) in engine_factory._engine_cache
+        engine_factory.reset_cache()
+
+    def test_hit_trim_disposes_outside_the_lock(self, monkeypatch) -> None:
+        """Trimmed engines are disposed after ``_cache_lock`` is released —
+        ``dispose()`` closes sockets and must not run under the lock."""
+        engine_factory.reset_cache()
+        cold, hot = self._lite(0), self._lite(1)
+        engine_factory.get_engine(cold)
+        engine_factory.get_engine(hot)
+
+        monkeypatch.setenv(engine_factory.MAX_CACHED_ENGINES_ENV, "1")
+        held: list[bool] = []
+
+        def record_lock_state(*, engine, reason):
+            held.append(engine_factory._cache_lock.locked())
+
+        with patch.object(engine_factory, "_dispose_quietly", side_effect=record_lock_state):
+            engine_factory.get_engine(hot)
+        assert held == [False], "disposal ran while holding the cache lock"
+        engine_factory.reset_cache()
+
+    def test_zero_limit_bypasses_reuse_on_a_hit(self, monkeypatch) -> None:
+        """With caching off, a previously-cached key must not be served from
+        the cache — the entry is dropped and a fresh engine built, rather than
+        handing back one we are about to dispose."""
+        engine_factory.reset_cache()
+        ds = self._lite(0)
+        first = engine_factory.get_engine(ds)
+        assert len(engine_factory._engine_cache) == 1
+
+        monkeypatch.setenv(engine_factory.MAX_CACHED_ENGINES_ENV, "0")
+        second = engine_factory.get_engine(ds)
+        assert second is not first, "a zero cap must not reuse the cached engine"
+        assert len(engine_factory._engine_cache) == 0
+        engine_factory.reset_cache()
+
     @pytest.mark.parametrize(argnames="raw", argvalues=["nonsense", "-1", ""])
     def test_bad_limit_env_falls_back_to_default(self, monkeypatch, raw: str) -> None:
         monkeypatch.setenv(engine_factory.MAX_CACHED_ENGINES_ENV, raw)
@@ -384,3 +448,201 @@ class TestResetCacheDisposal:
         with patch.object(engine, "dispose") as disposed:
             engine_factory.reset_cache(dispose=True)
         disposed.assert_called_once()
+
+
+class TestCacheConcurrency:
+    """Engines are reached from worker threads as well as the event loop, so
+    the cache's read/bump/insert sequences need one lock around them."""
+
+    @staticmethod
+    def _lite(n: int) -> DatasourceConfig:
+        return DatasourceConfig(name=f"lite{n}", type="sqlite", database=f"/tmp/slayer-conc-{n}.db")
+
+    @staticmethod
+    def _join_all(threads: list[threading.Thread], *, timeout: float = 10.0) -> None:
+        """Join every worker and fail if any is still running.
+
+        Without this, ``join(timeout=...)`` silently returns on a deadlocked
+        worker and the test passes — which is the one failure mode adding a
+        lock introduces. Workers are daemons so a genuine deadlock trips this
+        assertion instead of hanging the whole pytest process.
+        """
+        for thread in threads:
+            thread.join(timeout=timeout)
+        stuck = [t.name for t in threads if t.is_alive()]
+        assert not stuck, f"workers still running after {timeout}s (deadlock?): {stuck}"
+
+    def test_concurrent_misses_yield_one_shared_engine(self) -> None:
+        """Two threads missing on the same key must converge on one pool, and
+        the losing engine must be disposed rather than orphaned."""
+        engine_factory.reset_cache()
+        ds = self._lite(0)
+        built: list[sa.Engine] = []
+        gate = threading.Barrier(2)
+        real_build = engine_factory._build_engine
+
+        def slow_build(**kwargs):
+            gate.wait(timeout=5)      # force both threads past the first lookup
+            engine = real_build(**kwargs)
+            built.append(engine)
+            return engine
+
+        results: list[sa.Engine] = []
+        with (
+            patch.object(engine_factory, "_build_engine", side_effect=slow_build),
+            patch.object(engine_factory, "_dispose_quietly") as dispose,
+        ):
+            threads = [
+                threading.Thread(
+                    target=lambda: results.append(engine_factory.get_engine(ds)),
+                    daemon=True,
+                )
+                for _ in range(2)
+            ]
+            for t in threads:
+                t.start()
+            self._join_all(threads)
+
+            assert len(built) == 2, "both threads should have raced past the lookup"
+            assert results[0] is results[1], "callers must converge on one engine"
+            assert len(engine_factory._engine_cache) == 1
+            # The build the cache didn't keep. Leaving it undisposed is the
+            # pool leak the double-check exists to prevent, so assert on the
+            # engine identity — not on the log-facing reason string.
+            loser = next(engine for engine in built if engine is not results[0])
+            dispose.assert_called_once()
+            assert dispose.call_args.kwargs["engine"] is loser
+
+        engine_factory.reset_cache()
+
+    def test_invalidate_racing_a_lookup_does_not_raise(self) -> None:
+        """Pre-lock, an invalidate landing between ``get`` and ``move_to_end``
+        raised KeyError."""
+        engine_factory.reset_cache()
+        sources = [self._lite(i) for i in range(4)]
+        for ds in sources:
+            engine_factory.get_engine(ds)
+
+        errors: list[BaseException] = []
+        stop = threading.Event()
+
+        def hammer(fn):
+            try:
+                while not stop.is_set():
+                    for ds in sources:
+                        fn(ds)
+            except BaseException as exc:  # noqa: BLE001 — the point is to catch anything
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=hammer, args=(engine_factory.get_engine,), daemon=True),
+            threading.Thread(target=hammer, args=(engine_factory.invalidate_engine,), daemon=True),
+        ]
+        for t in threads:
+            t.start()
+        stop.wait(timeout=1.0)
+        stop.set()
+        self._join_all(threads)
+
+        assert not errors, f"concurrent access raised: {errors[:3]}"
+        engine_factory.reset_cache()
+
+
+class TestConfigSnapshot:
+    """``get_engine`` snapshots the config before deriving anything from it.
+    A ``DatasourceConfig`` is mutable, and engine construction sits between the
+    cache key and the dialect's second read of the credentials."""
+
+    @staticmethod
+    def _oauth_ds(refresh_token: str) -> DatasourceConfig:
+        return DatasourceConfig(
+            name="bq", type="bigquery", connection_string="bigquery://proj/dset",
+            oauth_credentials_json=json.dumps({
+                "type": "authorized_user",  # NOSONAR(S2068) — placeholder grant
+                "refresh_token": refresh_token,
+                "client_id": "cid",
+                "client_secret": "csecret",
+            }),
+        )
+
+    def test_rotation_mid_build_cannot_desync_key_from_engine(self) -> None:
+        """A grant refresh landing while the engine is under construction must
+        not leave that engine cached under a fingerprint describing the *other*
+        set of credentials — the confusion the credential leg exists to stop."""
+        engine_factory.reset_cache()
+        ds = self._oauth_ds("before")
+        key_for_before = engine_factory._cache_key(
+            datasource=ds, connection_string="bigquery://proj/dset",
+        )
+        seen: dict = {}
+
+        def rotate_then_build(*, datasource, connection_string):
+            # Stands in for a concurrent token refresh mutating the caller's
+            # config while we are inside _build_engine.
+            ds.oauth_credentials_json = json.dumps({"refresh_token": "after"})
+            seen["oauth"] = datasource.oauth_credentials_json
+            return MagicMock(spec=sa.Engine)
+
+        with patch.object(engine_factory, "_build_engine", side_effect=rotate_then_build):
+            engine_factory.get_engine(ds)
+
+        assert list(engine_factory._engine_cache) == [key_for_before]
+        # The decisive assertion: the build saw the credentials that key
+        # describes. Without the snapshot it would have seen "after" while the
+        # entry sat under the "before" key.
+        assert json.loads(seen["oauth"])["refresh_token"] == "before"
+        engine_factory.reset_cache()
+
+    def test_caller_mutation_does_not_leak_into_the_cached_engine(self) -> None:
+        """Mutating the config after the call is self-correcting: the next
+        lookup keys off the new credentials, misses, and rebuilds."""
+        engine_factory.reset_cache()
+        ds = self._oauth_ds("before")
+        with patch.object(
+            engine_factory, "_build_engine",
+            side_effect=lambda **_: MagicMock(spec=sa.Engine),
+        ):
+            first = engine_factory.get_engine(ds)
+            ds.oauth_credentials_json = json.dumps({"refresh_token": "after"})
+            second = engine_factory.get_engine(ds)
+        assert first is not second, "rotated credentials must not reuse the old engine"
+        assert len(engine_factory._engine_cache) == 2
+        engine_factory.reset_cache()
+
+    def test_snapshot_is_detached_from_the_callers_object(self) -> None:
+        """Sanity-check the copy depth: every field is scalar, so a shallow
+        model_copy already detaches. If a mutable field is ever added, this is
+        where the assumption breaks."""
+        ds = self._oauth_ds("before")
+        snapshot = ds.model_copy()
+        ds.oauth_credentials_json = "mutated"
+        ds.warehouse = "mutated"
+        assert snapshot.oauth_credentials_json != "mutated"
+        assert snapshot.warehouse != "mutated"
+
+    def test_session_overrides_listener_is_insulated_from_later_mutation(self) -> None:
+        """The listener fires on every checkout for the life of the engine. It
+        must keep applying the fields this engine was cached under, not whatever
+        the caller's config says later — those fields *are* its cache key."""
+        pytest.importorskip("snowflake.connector")
+        pytest.importorskip("snowflake.sqlalchemy")
+        engine_factory.reset_cache()
+        ds = DatasourceConfig(
+            name="sf", type="snowflake", connection_name="default", warehouse="WH_AT_BUILD",
+        )
+        real_engine = sa.create_engine("sqlite:///:memory:")
+        with (
+            patch(
+                "slayer.sql.dialects.snowflake.SnowflakeDialect.build_engine",
+                return_value=real_engine,
+            ),
+            patch(
+                "slayer.sql.dialects.snowflake.SnowflakeDialect.apply_session_overrides",
+            ) as apply_mock,
+        ):
+            engine = engine_factory.get_engine(ds)
+            ds.warehouse = "WH_MUTATED_AFTER"
+            with engine.connect() as _:
+                pass  # NOSONAR(S108) — opening + closing fires the checkout listener
+        assert apply_mock.call_args.kwargs["datasource"].warehouse == "WH_AT_BUILD"
+        engine_factory.reset_cache()

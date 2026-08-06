@@ -92,7 +92,7 @@ def _sql_client_cache_key(datasource: DatasourceConfig) -> EngineCacheKey:
     different credentials. Sharing one implementation makes that impossible.
     """
     return _engine_cache_key(
-        datasource, datasource.get_connection_string(),
+        datasource=datasource, connection_string=datasource.get_connection_string(),
     )
 
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from collections import OrderedDict
 
 import sqlalchemy as sa
@@ -52,6 +53,18 @@ EngineCacheKey = tuple[str, str, str]
 # otherwise accumulate one engine — and one connection pool — per user who ever
 # ran a query, for the life of the process.
 _engine_cache: "OrderedDict[EngineCacheKey, sa.Engine]" = OrderedDict()
+
+# Guards every read, recency bump, insert, eviction and reset of the cache
+# above. Engines are reached from worker threads (``_run_sync_in_thread`` in
+# slayer.sql.client) as well as from the event loop, so the lookup/move_to_end
+# pair is not safe unsynchronised: an ``invalidate_engine`` landing between the
+# two raises KeyError, and two threads missing at once build two pools for one
+# key and silently orphan the loser.
+#
+# Never held across engine construction or ``dispose()`` — both do real I/O,
+# and serialising unrelated datasources behind them would cost more than the
+# race it prevents.
+_cache_lock = threading.Lock()
 
 #: Cap on simultaneously cached engines. Sized for "every datasource, times a
 #: working set of active users" rather than for a whole user base; a miss costs
@@ -102,12 +115,19 @@ def _dispose_quietly(*, engine: sa.Engine, reason: str) -> None:
         logger.warning("Failed to dispose engine (%s).", reason, exc_info=True)
 
 
-def _evict_to_limit() -> None:
-    """Drop least-recently-used engines until the cache fits its cap."""
+def _take_evictions_over_limit() -> list[sa.Engine]:
+    """Pop least-recently-used entries until the cache fits its cap.
+
+    Returns the evicted engines rather than disposing them, because callers
+    run this holding ``_cache_lock`` and ``dispose()`` closes sockets. Dispose
+    the result after releasing the lock.
+    """
     limit = _max_cached_engines()
+    evicted: list[sa.Engine] = []
     while len(_engine_cache) > limit:
-        _, evicted = _engine_cache.popitem(last=False)
-        _dispose_quietly(engine=evicted, reason="evicted from engine cache")
+        _, engine = _engine_cache.popitem(last=False)
+        evicted.append(engine)
+    return evicted
 
 
 def _cache_key(datasource: DatasourceConfig, connection_string: str) -> EngineCacheKey:
@@ -116,6 +136,12 @@ def _cache_key(datasource: DatasourceConfig, connection_string: str) -> EngineCa
     Kept in one place because ``query_engine._sql_client_cache_key`` must agree
     with it; a divergence between the two caches means a caller can get a client
     whose engine was built for different credentials.
+
+    ``datasource`` is read, not retained. Only ``get_engine`` snapshots it
+    first, because only there does a slow engine build sit between the key and
+    the credentials it claims to describe. Callers that compute a key and use
+    it immediately are safe: a config mutated underneath them yields a key that
+    simply misses and rebuilds.
     """
     return (
         connection_string,
@@ -232,18 +258,59 @@ def get_engine(datasource: DatasourceConfig) -> sa.Engine:
     that two datasources differing in (e.g.) warehouse get different
     cached engines — otherwise the connect listener would silently
     apply the wrong USE statements.
+
+    The cap is re-applied on hits as well as inserts, so lowering
+    ``SLAYER_MAX_CACHED_ENGINES`` — or setting it to ``0`` to turn caching off
+    — takes effect on the next call instead of waiting for a miss.
     """
-    connection_string = datasource.get_connection_string()
-    cache_key = _cache_key(datasource, connection_string)
-    cached = _engine_cache.get(cache_key)
-    if cached is not None:
-        _engine_cache.move_to_end(cache_key)
+    # Snapshot first: DatasourceConfig is mutable, and the key is computed long
+    # before _build_engine re-reads the credentials — engine construction sits
+    # between them. A rotation landing in that window would cache an engine
+    # under a fingerprint that doesn't describe what it authenticates as, which
+    # is the exact confusion the credential leg of the key exists to prevent.
+    # Shallow copy suffices: every field is a scalar, so this is already
+    # detached from later writes to the caller's object.
+    snapshot = datasource.model_copy()
+    connection_string = snapshot.get_connection_string()
+    cache_key = _cache_key(datasource=snapshot, connection_string=connection_string)
+    with _cache_lock:
+        cached = _engine_cache.get(cache_key)
+        if cached is None:
+            trimmed, reuse = [], False
+        else:
+            _engine_cache.move_to_end(cache_key)
+            # Re-apply the cap on the hit path too. A cache that only trims on
+            # insert stays oversized until the next miss, and a cap of 0 would
+            # keep serving entries admitted before it was set.
+            trimmed = _take_evictions_over_limit()
+            # A cap of 0 trims the entry we just touched, which is what "no
+            # caching" has to mean: fall through and build instead of handing
+            # back an engine we are about to dispose.
+            reuse = cache_key in _engine_cache
+    for stale in trimmed:
+        _dispose_quietly(engine=stale, reason="cache limit lowered")
+    if reuse:
         return cached
+    # Built outside the lock — construction does real work (BigQuery mints an
+    # API client), and every other datasource would queue behind it.
     engine = _build_engine(
-        datasource=datasource, connection_string=connection_string,
+        datasource=snapshot, connection_string=connection_string,
     )
-    _engine_cache[cache_key] = engine
-    _evict_to_limit()
+    with _cache_lock:
+        winner = _engine_cache.get(cache_key)
+        if winner is not None:
+            # Another caller built the same engine while we were constructing.
+            # Converge on theirs so one key never backs two live pools.
+            _engine_cache.move_to_end(cache_key)
+            loser, engine = engine, winner
+        else:
+            loser = None
+            _engine_cache[cache_key] = engine
+        evicted = _take_evictions_over_limit()
+    if loser is not None:
+        _dispose_quietly(engine=loser, reason="lost a concurrent build race")
+    for stale in evicted:
+        _dispose_quietly(engine=stale, reason="evicted from engine cache")
     return engine
 
 
@@ -262,7 +329,9 @@ def invalidate_engine(datasource: DatasourceConfig) -> bool:
     the datasource now carries.
     """
     connection_string = datasource.get_connection_string()
-    evicted = _engine_cache.pop(_cache_key(datasource, connection_string), None)
+    cache_key = _cache_key(datasource=datasource, connection_string=connection_string)
+    with _cache_lock:
+        evicted = _engine_cache.pop(cache_key, None)
     if evicted is None:
         return False
     _dispose_quietly(engine=evicted, reason=f"credentials rejected for '{datasource.name}'")
@@ -277,7 +346,9 @@ def reset_cache(*, dispose: bool = False) -> None:
     process down want ``dispose=True`` so server-side connections close
     promptly instead of waiting on garbage collection.
     """
+    with _cache_lock:
+        dropped = list(_engine_cache.items())
+        _engine_cache.clear()
     if dispose:
-        for key, engine in list(_engine_cache.items()):
+        for key, engine in dropped:
             _dispose_quietly(engine=engine, reason=f"cache reset ({key[0]})")
-    _engine_cache.clear()
