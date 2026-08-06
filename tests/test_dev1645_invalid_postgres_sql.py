@@ -218,15 +218,18 @@ class TestFlavorAOrderByUnprojected:
             query=query, model=accts, extra_models=[clusters],
         ))
         # The typed pipeline sorts on the cross-model CTE's own canonical
-        # output column rather than the user's rename. Both name the same
-        # value (the outer SELECT projects that column AS "accts.sc"), and the
-        # CTE is CROSS JOINed into the combined SELECT, so Postgres resolves
-        # the reference against the FROM inputs. What this test guards is the
-        # WHOLE-QUOTED composite form at the combined-CTE ORDER BY site — a
-        # split ``_cm_x.accts.clusters.score_sum`` would be a nonexistent
-        # column — not which of the two equivalent names is chosen.
-        assert 'ORDER BY "accts.clusters.score_sum" DESC' in sql, sql
+        # output column, QUALIFIED by the CTE that emits it. It used to be the
+        # bare name, which resolved only by falling through to an input column
+        # of the FROM — legal on Postgres, not everywhere, and ambiguous the
+        # moment two scopes project the same name. What this test guards is
+        # the WHOLE-QUOTED composite form at the combined-CTE ORDER BY site —
+        # a split ``_cm_x.accts.clusters.score_sum`` names a column that does
+        # not exist.
+        assert (
+            'ORDER BY _cm_accts__clusters__score_sum."accts.clusters.score_sum" DESC'
+        ) in sql, sql
         assert "ORDER BY accts." not in sql, sql
+        assert '"accts.clusters.score_sum"' in sql, sql
 
     async def test_orderby_unprojected_joined_column_resolves_host_rooted(
         self,

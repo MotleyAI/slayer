@@ -61,6 +61,11 @@ from slayer.sql.render.joins import (
     build_grain_joinback_condition,
     grain_alias_column,
 )
+from slayer.sql.render.order_terms import (
+    HOST_BASE_SCOPES,
+    OrderEnv,
+    resolve_order_term,
+)
 from slayer.sql.render.value_expr import (
     render_arithmetic,
     render_scalar_call,
@@ -1863,7 +1868,7 @@ class SQLGenerator:
                     slots_by_id=slots_by_id,
                     bundle=bundle,
                 )
-            base_select = self._apply_order_limit_from_planned(
+            base_select = self._apply_planned_order_limit(
                 select=base_select,
                 planned_query=planned_query,
                 source_relation=source_relation,
@@ -5279,48 +5284,60 @@ class SQLGenerator:
             entries=cte_entries, final=combined_select,
         )
 
-        # ORDER BY / LIMIT / OFFSET: emitted at the combined SELECT
-        # level. ORDER BY columns must be qualified — ``_base`` columns
-        # use ``_base."..."``, cross-model columns use the bare alias
-        # (only present on one side).
-        # DEV-1712 / DEV-1495 bug 2: hidden (order-only) cross-model aggregates
-        # are trimmed from the projection above, so their ORDER BY term must be
-        # CTE-qualified (``_cm_*."<agg_col_alias>"``) rather than the bare
-        # combined-SELECT alias.
-        hidden_cte_order_refs: Dict[str, exp.Expression] = {}
+        # ORDER BY / LIMIT / OFFSET: emitted at the combined SELECT level,
+        # through the one resolver (§5.10). Each scope names its own value and
+        # nothing else does — the superseded chain ran a five-way precedence
+        # over four alias maps and put a projected cross-model aggregate under
+        # its CTE COLUMN name while the SELECT projected it under the user's
+        # alias, which resolves only by falling through to an input column of
+        # the FROM (Postgres permits that; other engines do not, and it picks
+        # the wrong column the moment two scopes project the same name).
+        order_env = OrderEnv(dialect=self._dialect)
+        # An isolated aggregate is CTE-qualified whether or not it is ALSO
+        # projected: hidden it has no combined-SELECT alias to name, projected
+        # its alias is the user's, not the CTE column's. One form, both cases.
         for plan in planned_query.cross_model_aggregate_plans:
-            # Only CMAs actually trimmed from the projection (hidden + no
-            # transform chain) need the CTE-qualified ORDER BY reference.
-            if not (plan.hidden and not planned_query.transform_layers):
-                continue
-            _agg_col = agg_col_alias_for_plan[plan.aggregate_slot_id]
-            _cte = cm_cte_name_for_plan[plan.aggregate_slot_id]
-            hidden_cte_order_refs[plan.aggregate_slot_id] = (
-                grain_alias_column(alias=_agg_col, table=_cte)
+            order_env.cross_model_cte[plan.aggregate_slot_id] = grain_alias_column(
+                alias=agg_col_alias_for_plan[plan.aggregate_slot_id],
+                table=cm_cte_name_for_plan[plan.aggregate_slot_id],
             )
-        # DEV-1733: same treatment for a hidden (order-only) WINDOWED aggregate
-        # trimmed from the combined projection above — reference its ``_wm_``
-        # CTE column rather than a bare alias the SELECT no longer emits.
         for plan in planned_query.windowed_aggregate_plans:
-            if not (plan.hidden and not planned_query.transform_layers):
-                continue
-            hidden_cte_order_refs[plan.aggregate_slot_id] = grain_alias_column(
+            order_env.windowed_cte[plan.aggregate_slot_id] = grain_alias_column(
                 alias=wm_agg_col_for_plan[plan.aggregate_slot_id],
                 table=wm_cte_name_for_plan[plan.aggregate_slot_id],
             )
-        order_terms = self._build_combined_order_by_sql(
-            planned_query=planned_query,
-            slots_by_id=slots_by_id,
-            cma_slot_ids=cma_slot_ids,
-            cm_alias_for_plan=canonical_alias_for_plan,
-            # DEV-1714: windowed slots are referenced bare in the combined ORDER
-            # BY — they surface as a projected combined-SELECT column (from their
-            # ``_wm_`` CTE), so a ``_base.`` qualifier would dangle.
-            bare_order_slot_ids=set(order_only_local_ids) | windowed_slot_ids,
-            outer_composite_aliases=outer_composite_order_alias_by_sid,
-            outer_composite_expressions=outer_composite_order_expressions,
-            hidden_cte_order_refs=hidden_cte_order_refs,
-        )
+        # A PROJECTED outer composite orders on its combined-SELECT alias; an
+        # order-only one has no alias and renders INLINE, so no synthetic
+        # column leaks into the public projection.
+        for _sid, _alias in outer_composite_order_alias_by_sid.items():
+            order_env.outer_composite[_sid] = exp.column(_alias, quoted=True)
+        for _sid, _expr in outer_composite_order_expressions.items():
+            order_env.outer_composite.setdefault(_sid, _expr)
+        # Local slots live in ``_base``. One trimmed from the combined
+        # projection (order-only) is named BARE — a ``_base.`` qualifier would
+        # dangle under an outer projection-trim wrapper, which exposes only the
+        # public aliases — and the bare name still resolves unambiguously
+        # against ``_base`` in the combined FROM. A projected one keeps the
+        # qualifier.
+        _local_bare_ids = set(order_only_local_ids)
+        for entry in planned_query.order:
+            if entry.scope not in HOST_BASE_SCOPES:
+                continue
+            slot = slots_by_id.get(entry.slot_id)
+            if slot is None:
+                continue
+            _full_alias = self._full_alias_for_slot(
+                slot=slot, source_relation=source_relation, alias_index={},
+            )
+            getattr(order_env, entry.scope.value)[entry.slot_id] = (
+                exp.column(_full_alias, quoted=True)
+                if entry.slot_id in _local_bare_ids
+                else grain_alias_column(alias=_full_alias, table="_base")
+            )
+        order_terms = [
+            resolve_order_term(entry=entry, env=order_env)
+            for entry in planned_query.order
+        ]
         if order_terms:
             combined_statement.set("order", exp.Order(expressions=order_terms))
 
@@ -7468,16 +7485,12 @@ class SQLGenerator:
         T-SQL override also transposes pagination to ``TOP`` /
         ``FETCH NEXT n ROWS ONLY``.
         """
-        order_sql = self._planned_order_by_sql(
+        order_terms = self._planned_order_terms(
             planned_query=planned_query,
             slots_by_id=slots_by_id,
             available_alias_by_slot_id=available_alias_by_slot_id,
         )
-        order_expr = (
-            self._parse(f"SELECT 1 ORDER BY {order_sql}").args.get("order")
-            if order_sql
-            else None
-        )
+        order_expr = exp.Order(expressions=order_terms) if order_terms else None
         limit_expr = (
             exp.Limit(expression=exp.Literal.number(planned_query.limit))
             if planned_query.limit is not None
@@ -7496,6 +7509,37 @@ class SQLGenerator:
             offset_arg=offset_expr,
             parse=self._parse,
         )
+
+    def _planned_order_terms(
+        self,
+        *,
+        planned_query,
+        slots_by_id: Dict[str, Any],
+        available_alias_by_slot_id: Dict[str, str],
+    ) -> List[exp.Ordered]:
+        """ORDER BY terms for a plan whose sort keys resolve to CTE-chain
+        aliases (§5.10).
+
+        Every value the chain materialised is one column of the wrapped
+        subquery by the time the outer wrap is emitted, so the producing scope
+        no longer distinguishes anything here — hence
+        :meth:`OrderEnv.uniform`. Built as AST rather than rendered to text and
+        re-parsed: SLayer's aliases are dotted, and a re-parse re-reads
+        ``"orders.cs"`` as a multi-part reference on a dialect that mangles
+        dots at emission.
+        """
+        env = OrderEnv.uniform(
+            {
+                sid: exp.column(alias, quoted=True)
+                for sid, alias in available_alias_by_slot_id.items()
+                if sid in slots_by_id
+            },
+            dialect=self._dialect,
+        )
+        return [
+            resolve_order_term(entry=entry, env=env)
+            for entry in planned_query.order
+        ]
 
     def _planned_order_by_sql(
         self,
@@ -10167,9 +10211,9 @@ class SQLGenerator:
         # Outer ORDER BY references each order entry's materialised alias
         # — the first alias per slot is canonical (C13-duplicate aliases
         # of a single slot share the same column value). Reuse
-        # ``_apply_order_limit_from_planned`` to apply ORDER BY / LIMIT /
+        # ``_apply_planned_order_limit`` to apply ORDER BY / LIMIT /
         # OFFSET so the dialect-aware sqlglot emission path is shared.
-        return self._apply_order_limit_from_planned(
+        return self._apply_planned_order_limit(
             select=outer_select,
             planned_query=planned_query,
             source_relation=source_relation,
@@ -10355,6 +10399,221 @@ class SQLGenerator:
 
         return self._dialect.apply_pagination(
             select, limit=planned_query.limit, offset=planned_query.offset,
+        )
+
+    # -----------------------------------------------------------------
+    # §5.10 — the host-base render path's ORDER BY, through the one
+    # resolver. Supersedes ``_apply_order_limit_from_planned`` above.
+    # -----------------------------------------------------------------
+
+    def _apply_planned_order_limit(
+        self,
+        *,
+        select: exp.Select,
+        planned_query,
+        source_relation: str,
+        slots_by_id: dict,
+        source_model=None,
+        bundle=None,
+        aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
+    ) -> exp.Select:
+        """ORDER BY / LIMIT / OFFSET for a base SELECT with no CTE chain.
+
+        The per-entry resolution is :func:`resolve_order_term`; this method
+        only builds the environment it reads. An entry whose slot the base
+        never materialised raises there rather than being skipped — the
+        superseded method ``continue``d past it and returned unsorted rows.
+        """
+        env = self._host_base_order_env(
+            planned_query=planned_query,
+            source_relation=source_relation,
+            slots_by_id=slots_by_id,
+            source_model=source_model,
+            bundle=bundle,
+            aliases_by_slot_id=aliases_by_slot_id,
+        )
+        for order_entry in planned_query.order:
+            select = select.order_by(
+                resolve_order_term(entry=order_entry, env=env),
+            )
+        return self._dialect.apply_pagination(
+            select, limit=planned_query.limit, offset=planned_query.offset,
+        )
+
+    def _host_base_order_env(
+        self,
+        *,
+        planned_query,
+        source_relation: str,
+        slots_by_id: dict,
+        source_model,
+        bundle,
+        aliases_by_slot_id: Optional[Dict[str, List[str]]],
+    ) -> OrderEnv:
+        """Name every order slot the base SELECT produces, under the scope the
+        PLANNER assigned it (P-D).
+
+        Both host-base scopes reference a column of the same SELECT, so the
+        reference form is the same; what differs is only whether the alias
+        survives an outer projection trim, which is the planner's
+        ``HOST_BASE`` / ``HOST_BASE_HIDDEN`` distinction and not something
+        re-derived here.
+        """
+        env = OrderEnv(dialect=self._dialect)
+        for order_entry in planned_query.order:
+            slot = slots_by_id.get(order_entry.slot_id)
+            if slot is None:
+                # Deliberately not an early raise: leaving the slot absent is
+                # what makes the resolver report it, so every path reports it
+                # the same way.
+                continue
+            getattr(env, order_entry.scope.value)[order_entry.slot_id] = (
+                self._host_base_order_ref(
+                    slot=slot,
+                    source_relation=source_relation,
+                    source_model=source_model,
+                    bundle=bundle,
+                    aliases_by_slot_id=aliases_by_slot_id,
+                )
+            )
+        return env
+
+    def _host_base_order_ref(  # NOSONAR(S3776) — per-key-kind resolution of ONE hidden slot to a base-SELECT reference (materialised alias vs split row emission vs local derived expansion). Each branch is a distinct contract with its own invariant; splitting them scatters the chain that makes their order meaningful.
+        self,
+        *,
+        slot,
+        source_relation: str,
+        source_model,
+        bundle,
+        aliases_by_slot_id: Optional[Dict[str, List[str]]],
+    ) -> exp.Expression:
+        """How one slot's value is NAMED in the base SELECT.
+
+        A public slot is its projected alias. A hidden slot is one of three
+        shapes: an aggregate materialised for ordering only (its materialised
+        alias), a bare ROW column in an ungrouped query (split
+        ``<relation>.<column>`` emission, Law 2), or a local derived column
+        (its expansion, provided it crosses no join — a hidden derived column
+        never had its join pulled into the base FROM).
+        """
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            ColumnKey,
+            ColumnSqlKey,
+            ScalarCallKey,
+            TimeTruncKey,
+            TransformKey,
+        )
+
+        # DEV-1733: the EXACT set of hidden key kinds that resolve to a
+        # materialised alias. Deliberately enumerated rather than "any hidden
+        # slot that happens to carry an alias" — a hidden ROW slot with an
+        # alias must still hit the split-emission / invariant branches below,
+        # never be ordered on as a bare column that is not in the GROUP BY.
+        _MATERIALISED_ORDER_KINDS = (
+            AggregateKey, ArithmeticKey, ScalarCallKey, TransformKey,
+        )
+
+        if not slot.hidden:
+            # DEV-1713: resolve to the SAME full alias the projection emits —
+            # a joined ROW dimension projects under the DOTTED result key
+            # (``orders.customers.regions.name``), so the ORDER BY must match
+            # it, not the flat ``declared_name`` (``customers__regions__name``),
+            # which would name a column the SELECT never projects.
+            return exp.Column(
+                this=exp.to_identifier(
+                    self._full_alias_for_slot(
+                        slot=slot, source_relation=source_relation,
+                        alias_index={},
+                    ),
+                    quoted=True,
+                ),
+            )
+
+        # DEV-1501: hidden AGGREGATE slots are materialised in the base SELECT.
+        # Resolve to the materialised full alias — identical shape to the
+        # public-alias branch above; the inner subquery exposes it as a column
+        # the outer wrap can reference by quoted identifier.
+        aliases = (
+            aliases_by_slot_id.get(slot.id, [])
+            if aliases_by_slot_id is not None
+            else []
+        )
+        if aliases and isinstance(slot.key, _MATERIALISED_ORDER_KINDS):
+            return exp.Column(this=exp.to_identifier(aliases[0], quoted=True))
+
+        # DEV-1712 (Law 2, split emission): a hidden ROW column ordered in an
+        # UNGROUPED query. Plan-time order validation guarantees the only
+        # hidden ROW slot that reaches here is a bare column in a query with no
+        # GROUP BY — grouped row columns are rejected or wrapped up front, and
+        # aggregates took the branch above. Emit a SPLIT
+        # ``<relation>.<column>`` reference (mixed-case-aware) against the base
+        # FROM scope, identical to how the column would render if it were a
+        # projected dimension.
+        #
+        # DEV-1703 Phase 1: a JOINED column is emitted the same way, under its
+        # ``__`` path alias (``customers__regions.name``). The row IS the grain
+        # in an ungrouped query, so the bare reference is legal; Law 1 pulls
+        # the crossed join into the base FROM.
+        key = slot.key
+        row_key = key.column if isinstance(key, TimeTruncKey) else key
+        if source_model is not None and isinstance(row_key, ColumnKey):
+            return self._joined_or_local_dim_expr(
+                path=row_key.path, leaf=row_key.leaf,
+                source_model=source_model,
+                source_relation=source_relation, bundle=bundle,
+            )
+
+        # A LOCAL DERIVED column (``ColumnSqlKey``, path empty): resolve its
+        # ``Column.sql`` through a throwaway host scope. That both anchors the
+        # expansion AND surfaces whether the SQL crosses a join. A hidden
+        # order-only derived column is NOT projected, so its join was never
+        # pulled into the base FROM — ordering on it would reference an unbound
+        # table. Reject that (project it), rather than emit invalid SQL; a
+        # non-crossing derived column (e.g. a bare mixed-case identifier)
+        # orders on its expression.
+        if (
+            source_model is not None
+            and bundle is not None
+            and isinstance(row_key, ColumnSqlKey)
+            and not row_key.path
+        ):
+            # Detect join crossing via a throwaway scope (register-only); the
+            # resolved expr is discarded — its expansion lacks the DEV-1645
+            # mixed-case quoting the planned-dim helper applies.
+            allocator = self._new_allocator()
+            scope = ScopeFrame(
+                scope_id=allocator.next_scope_id(source_relation),
+                root_model=source_model,
+                root_relation=source_relation,
+                bundle=bundle,
+                dialect=self._dialect,
+                allocator=allocator,
+            )
+            scope.resolve(row_key)
+            if scope.join_paths:
+                # The derived column IS local (``orders.cust_region``); it
+                # merely depends on an unpulled join. Report its own qualified
+                # name, not a fabricated ``customers.cust_region``.
+                raise UnresolvableOrderColumnError(
+                    column=row_key.column_name, qualifier=source_relation,
+                )
+            # Non-crossing local derived column — emit through the planned-dim
+            # helper so the expansion is quoted identically to a projected
+            # dimension (mixed-case-safe).
+            return self._joined_or_local_dim_expr(
+                path=(), leaf=row_key.column_name,
+                source_model=source_model,
+                source_relation=source_relation, bundle=bundle,
+            )
+
+        # Defensive: any other hidden shape should have been rejected at plan
+        # time (transform / composite / joined / grouped-row).
+        raise NotImplementedError(
+            f"ORDER BY references a hidden slot (id={slot.id!r}, key="
+            f"{type(slot.key).__name__}) that was not resolved at plan "
+            f"time — this is an internal invariant violation."
         )
 
 

@@ -89,10 +89,11 @@ class TsqlDialect(SqlDialect):
         default for the direction (FIRST on ASC, LAST on DESC).
 
         Left unset, sqlglot emits ``CASE WHEN <alias> IS NULL THEN 1 ELSE 0
-        END, <alias>`` to emulate NULLS ordering; the bracketed alias INSIDE
-        the CASE WHEN mis-resolves against the FROM scope (``Invalid column
-        name``). Pinning the native default suppresses the wrapper without
-        changing the ordering.
+        END, <alias>`` to emulate the nulls-last ordering every other dialect
+        gets; the bracketed alias INSIDE the CASE WHEN mis-resolves against the
+        FROM scope (``Invalid column name``). So T-SQL trades null-ordering
+        parity for a statement that runs — the one place SLayer's null ordering
+        is dialect-specific, and only because the portable form is unavailable.
 
         An EXPLICIT ``first`` / ``last`` policy is honoured as asked — the pin
         exists to avoid the emulation, not to override a stated intent.

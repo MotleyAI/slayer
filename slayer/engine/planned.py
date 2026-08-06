@@ -417,9 +417,12 @@ class OrderEntry(BaseModel):
     direction: str  # "asc" or "desc"
     scope: OrderScope
     phase: Phase
-    #: Null-ordering policy. ``"default"`` defers to the dialect's native
-    #: ordering for the direction; the dialect strategy owns the spelling
-    #: (P-H), so no render site emits a NULLS clause of its own.
+    #: Null-ordering policy. ``"default"`` is NULLs last, which is what SLayer
+    #: means by unstated on every dialect — a semantic layer whose NULLs sort
+    #: first on SQLite and last on Postgres answers the same question two ways.
+    #: The dialect strategy owns the SPELLING (P-H) — an explicit clause, an
+    #: emulation, or T-SQL's native pin where the emulation does not run — so
+    #: no render site emits a NULLS clause of its own.
     nulls: Literal["default", "first", "last"] = "default"
 
     @field_validator("direction")

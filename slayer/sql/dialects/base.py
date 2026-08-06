@@ -235,11 +235,22 @@ class SqlDialect(BaseModel):
         The single place any render site turns a resolved column plus a
         direction into an ``exp.Ordered`` (P-H). It previously lived on the
         generator as ``_ordered``, which meant the combined and transform-chain
-        paths — which built their own ``exp.Ordered`` — silently skipped the
-        T-SQL pin below.
+        paths — which built their own ``exp.Ordered`` — silently skipped it.
 
-        ``nulls="default"`` defers to the dialect's own ordering and emits no
-        NULLS clause; ``"first"`` / ``"last"`` are explicit.
+        ``nulls="default"`` leaves ``nulls_first`` unset, which sqlglot renders
+        as **nulls last on every dialect** — an explicit ``NULLS LAST`` where
+        the native default differs and the syntax exists, a ``CASE WHEN <col>
+        IS NULL …`` emulation where it does not (MySQL / SQLite). That
+        uniformity is the point: a semantic layer whose NULLs sort first on
+        SQLite and last on Postgres answers the same question two ways.
+
+        T-SQL is the one exception and overrides this, because its emulation
+        does not merely look different — the bracketed alias inside the CASE
+        re-resolves against the FROM scope and the statement fails.
+
+        ``"first"`` / ``"last"`` are an explicit intent and are honoured as
+        asked, emulation included — that is the only way to express them on a
+        dialect with no NULLS syntax.
         """
         kwargs: dict = {"this": order_col, "desc": descending}
         if nulls == "first":
