@@ -172,8 +172,10 @@ _INLINE_SCALARS = (str, int, float, bool, Decimal)
 _LEAF_KINDS = (LiteralKey, StarKey, SqlExprKey, ColumnKey, ColumnSqlKey)
 
 
-def _child_keys(node, *, descend_aggregates: bool = True) -> Tuple:
+def _child_keys(node, *, descend_aggregates: bool = True) -> List:
     """The child keys of a composite node, in a STABLE order.
+
+    A variable-length SEQUENCE, not a fixed record — hence a list.
 
     One dispatch shared by both visitors, so a new key kind is handled — or
     rejected — identically by each. Fails CLOSED on an unknown kind: a silent
@@ -188,33 +190,57 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> Tuple:
     aggregate is routed by WHERE it is computed, not by its inputs.
     """
     if isinstance(node, _LEAF_KINDS) or isinstance(node, _INLINE_SCALARS):
-        return ()
+        return []
     if isinstance(node, TimeTruncKey):
-        return (node.column,)
+        return [node.column]
     if isinstance(node, AggregateKey):
         if not descend_aggregates:
-            return ()
-        return (
+            return []
+        return [
             node.source,
             *node.args,
             *(v for _name, v in node.kwargs),
             node.column_filter_key,
-        )
+        ]
     if isinstance(node, TransformKey):
-        return (
+        return [
             node.input,
             *sorted(node.partition_keys, key=repr),
             node.time_key,
-        )
+        ]
     if isinstance(node, ArithmeticKey):
-        return tuple(node.operands)
+        return list(node.operands)
     if isinstance(node, ScalarCallKey):
-        return tuple(node.args)
+        return list(node.args)
     if isinstance(node, InKey):
-        return (node.column, *node.values)
+        return [node.column, *node.values]
     if isinstance(node, BetweenKey):
-        return (node.column, node.low, node.high)
+        return [node.column, node.low, node.high]
     raise UnhandledValueKindError(node)
+
+
+def _leaf_paths(node, *, anchor_model, anchor_relation: str, bundle) -> List[Path]:
+    """Join paths a LEAF key is itself anchored at.
+
+    Composites contribute nothing here — their dependencies arrive through
+    ``_child_keys``. Split out of the traversal so the walk stays a two-line
+    "collect, then descend".
+    """
+    if isinstance(node, (ColumnKey, ColumnSqlKey)):
+        paths = _prefixes(node.path)
+        if isinstance(node, ColumnSqlKey):
+            paths += _derived_sql_paths(
+                key=node, anchor_model=anchor_model,
+                anchor_relation=anchor_relation, bundle=bundle,
+            )
+        return paths
+    if isinstance(node, SqlExprKey):
+        return [
+            pre
+            for p in node.referenced_join_paths
+            for pre in _prefixes(tuple(p))
+        ]
+    return []
 
 
 def compute_key_join_paths(
@@ -238,19 +264,11 @@ def compute_key_join_paths(
     def _walk(node) -> None:
         if node is None:
             return
-        if isinstance(node, (ColumnKey, ColumnSqlKey)):
-            for p in _prefixes(node.path):
-                _add(p)
-        if isinstance(node, ColumnSqlKey):
-            for p in _derived_sql_paths(
-                key=node, anchor_model=anchor_model,
-                anchor_relation=anchor_relation, bundle=bundle,
-            ):
-                _add(p)
-        elif isinstance(node, SqlExprKey):
-            for p in node.referenced_join_paths:
-                for pre in _prefixes(tuple(p)):
-                    _add(pre)
+        for path in _leaf_paths(
+            node, anchor_model=anchor_model,
+            anchor_relation=anchor_relation, bundle=bundle,
+        ):
+            _add(path)
         for child in _child_keys(node):
             _walk(child)
 

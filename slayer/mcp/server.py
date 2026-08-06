@@ -1957,7 +1957,6 @@ def _format_table(data: list[dict[str, Any]], columns: list[str], max_rows: int 
 
 def _format_json(
     data: list[dict[str, Any]],
-    columns: list[str],
     warnings: list[dict[str, Any]] | None = None,
 ) -> str:
     """Format data as JSON.
@@ -2018,7 +2017,6 @@ def _format_output(result: SlayerResponse, fmt: str) -> str:
         return result.to_markdown() + _format_warnings(result)
     return _format_json(
         data=result.data,
-        columns=result.columns,
         warnings=[w.model_dump(mode="json") for w in (result.warnings or [])],
     )
 
