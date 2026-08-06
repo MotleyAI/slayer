@@ -105,7 +105,23 @@ class TestRoutingSurvivesReroot:
             "the re-rooted CTE applies this filter, so the plan must SAY so — "
             "today the routing lists are cleared wholesale"
         )
-        assert plan.where_filter_ids or plan.having_filter_ids
+        # ...and the SUB-PLAN is where it is applied. ``where_filter_ids`` is
+        # not an audit, it is an instruction to the host base to SKIP the
+        # filter because the FORWARD CTE took it over. A re-rooted plan has no
+        # forward CTE, and the predicate is host-evaluable by construction, so
+        # the host must keep applying it — otherwise rows the user excluded
+        # come back carrying a NULL measure.
+        assert not plan.where_filter_ids and not plan.having_filter_ids, (
+            "a re-rooted plan told the host base to skip a filter that only "
+            "the CTE applies"
+        )
+        # The audit has to be backed by something: the sub-plan must actually
+        # carry the filter it claims is applied, or "applied" is a label on
+        # nothing.
+        assert plan.rerooted_plan.filters_by_phase, (
+            f"the audit claims {sorted(plan.applied_filter_ids)} applied, but "
+            f"the re-rooted sub-plan carries no filters at all"
+        )
 
     def test_host_local_filter_is_neither_propagated_nor_warned(self) -> None:
         """``DROP_HOST_LOCAL``: the host base applies it and the join-back

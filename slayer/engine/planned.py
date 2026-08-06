@@ -185,8 +185,15 @@ class CrossModelAggregatePlan(BaseModel):
       table row: cross-model agg-ref on the same target).
     - ``target_model_filters`` — the target model's own
       ``SlayerModel.filters`` (always-applied WHERE).
-    ``applied_filter_ids`` is the audit union of where + having for
-    backward compatibility with the spec's external surface.
+
+    ``applied_filter_ids`` is the AUDIT: which host filters some scope
+    evaluates. On the forward path that is exactly ``where ∪ having``. On a
+    RE-ROOTED plan the two diverge on purpose — ``rerooted_plan`` carries the
+    filters itself, and there is no forward CTE to route to, so where/having
+    are empty while the audit still records them. The distinction matters
+    because where/having are also an instruction to the host base to SKIP the
+    filter; a re-rooted CTE duplicates a host-evaluable predicate rather than
+    relocating it, so the host must keep applying it (DEV-1747 B6).
 
     ``hidden=True`` is used for order-only / filter-only refs whose
     aggregate value is materialised but not surfaced in the public

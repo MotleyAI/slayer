@@ -1605,14 +1605,25 @@ def _maybe_reroot_cross_model_plan(  # NOSONAR(S3776) — one re-rooting decisio
     if sub_agg_sid is None:
         return plan
 
-    # DEV-1747 B6/D6 — the routing is NOT cleared. It was decided once, in the
-    # coordinate system of the CTE that now exists, and the sub-plan applies
-    # exactly the filters it records as applied. Blanking it here is what made
-    # a reachable filter, a host-local one, and a genuinely unreachable one all
-    # report ``where=[] having=[] applied=[] dropped=[]`` — indistinguishable,
-    # and in the unreachable case a silent narrowing of the user's result.
+    # DEV-1747 B6/D6 — the AUDIT survives the reroot; the ROUTING does not,
+    # because they are different statements and the reroot changes only one.
+    #
+    # ``applied_filter_ids`` records what SOME scope evaluates, which is what
+    # makes a genuinely unreachable filter distinguishable from a reachable one
+    # instead of every case reporting ``applied=[] dropped=[]``. Those ids ride
+    # into ``sub_prebound`` above, so the sub-plan really does apply them.
+    #
+    # ``where_filter_ids`` / ``having_filter_ids`` say something narrower: this
+    # filter MOVED to the forward CTE, so the host base must not apply it. A
+    # re-rooted plan has no forward CTE — the sub-plan replaces it and carries
+    # its own filters — and the predicate is host-evaluable by construction
+    # (it was bound against the host). Leaving the ids there tells the host base
+    # to skip a filter nothing else applies at the host, so rows the user
+    # excluded come back with a NULL measure attached.
     return plan.model_copy(update={
         "rerooted_plan": sub_plan,
         "rerooted_grain_pairs": grain_pairs,
         "rerooted_agg_slot_id": sub_agg_sid,
+        "where_filter_ids": [],
+        "having_filter_ids": [],
     })
