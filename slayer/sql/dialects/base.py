@@ -13,7 +13,7 @@ fields use class-level defaults (``sqlglot_name: str = "postgres"``).
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 from collections.abc import Callable
 
 from pydantic import BaseModel, ConfigDict
@@ -211,8 +211,10 @@ class SqlDialect(BaseModel):
 
         Base (Postgres-family) uses sqlglot's ``NullSafeEQ`` → ``IS NOT DISTINCT
         FROM``, which sqlglot also transpiles correctly for DuckDB / Snowflake /
-        BigQuery / Trino / Databricks / ClickHouse. MySQL overrides to ``<=>``;
-        SQLite to bare ``IS``; dialects with no native form (T-SQL / Oracle /
+        BigQuery / Trino / Databricks / ClickHouse — and for MySQL, where it
+        emits ``<=>``. MySQL therefore needs no override here (an earlier
+        version of this docstring claimed one existed). ``SqliteDialect``
+        overrides to bare ``IS``; dialects with no native form (T-SQL / Oracle /
         Redshift) to the expanded ``a = b OR (a IS NULL AND b IS NULL)``.
         """
         return exp.NullSafeEQ(this=left, expression=right)
@@ -450,6 +452,33 @@ class SqlDialect(BaseModel):
         SQLite / DuckDB round ``DOUBLE`` natively, so they keep the identity.
         """
         return tree
+
+    def apply_pagination(
+        self,
+        select: exp.Select,
+        *,
+        limit: Optional[int],
+        offset: Optional[int],
+    ) -> exp.Select:
+        """Apply LIMIT/OFFSET to a completed ``SELECT`` (P-H).
+
+        The single place pagination is expressed. Every render path routes
+        here, so a dialect that spells pagination differently is handled once
+        rather than per path — the cross-model combined statement used to append
+        raw ``LIMIT``/``OFFSET`` text and emitted literal ``LIMIT`` on SQL
+        Server, while the same query carrying a transform layer went through the
+        outer wrap and came out correct.
+
+        Setting the bounds on the ``Select`` is what makes transposition work:
+        sqlglot rewrites them per dialect only when generating the wrapping
+        SELECT, never from a free-standing ``Limit`` node.
+        """
+        out = select
+        if limit is not None:
+            out = out.limit(limit)
+        if offset is not None:
+            out = out.offset(offset)
+        return out
 
     def emit_outer_wrap(
         self,

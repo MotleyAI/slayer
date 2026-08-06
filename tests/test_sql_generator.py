@@ -866,7 +866,12 @@ class TestFields:
         # AST-based generation renders single-unit intervals via sqlglot's
         # per-dialect transpiler — Postgres caps the unit name.
         assert "INTERVAL '90 DAY'" in norm
-        assert '_src._w_dim_0 = _base."orders.status"' in norm
+        # The inner grain comparison is NULL-SAFE: a group whose dimension is
+        # NULL must receive its real windowed value, not NULL. The time-range
+        # bounds above stay plain inequalities — they are a range, not grain.
+        assert (
+            '_src._w_dim_0 IS NOT DISTINCT FROM _base."orders.status"' in norm
+        ), norm
 
     async def test_windowed_sum_preserves_other_time_dim_grain(
         self, generator: SQLGenerator, orders_model: SlayerModel,
@@ -9811,7 +9816,7 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "Loss_Payment" not in base_body
         assert "Loss_Reserve" not in base_body
         # ORDER BY must use the bare combined alias, NOT _base."<alias>".
-        order_match = _re.search(r"ORDER BY[^\n]+", sql)
+        order_match = _re.search(r"ORDER BY\s+[^\n]+", sql)
         assert order_match, f"Expected ORDER BY in:\n{sql}"
         order_clause = order_match.group(0)
         assert "total_loss" in order_clause, (

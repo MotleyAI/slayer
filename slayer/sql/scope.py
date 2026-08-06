@@ -247,6 +247,23 @@ class ScopeFrame(BaseModel):
         ):
             self.join_paths.add(path)
 
+    def materialize_for(
+        self, template: exp.Expression, *, consumer: "ScopeFrame",
+    ) -> exp.Expression:
+        """Law 2 for an expression the caller has ALREADY anchored.
+
+        :meth:`resolve` anchors a ref and then closes it; this is the second
+        half on its own, for a producer that built its template itself — a
+        date-truncated grain, a value carrying its column's declared CAST. Those
+        cannot be re-derived by anchoring a ref without changing the expression
+        that gets projected, so they arrive here as AST.
+
+        Same table, same dedup key, same aliases as :meth:`resolve`: there is
+        one materialisation mechanism per scope, which is the point.
+        """
+        self._register_join_paths(template)
+        return self._close(template, consumer=consumer)
+
     def _close(
         self, template: exp.Expression, *, consumer: "ScopeFrame | None",
     ) -> exp.Expression:

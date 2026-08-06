@@ -152,10 +152,16 @@ Query results are returned as a `SlayerResponse`:
 | Field | Type | Description |
 |-------|------|-------------|
 | `data` | list[dict] | Rows as dictionaries |
-| `columns` | list[str] | Column names in `model_name.column_name` format (e.g., `"orders._count"`, `"orders.customers.regions.name"` for multi-hop) |
+| `columns` | list[str] | Column names in `model_name.column_name` format (e.g., `"orders._count"`, `"orders.customers.regions.name"` for multi-hop), **in the order you declared them** |
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
+
+`columns` — and the key order of each row in `data` — follows the order you
+declared fields in the query: dimensions, then time dimensions, then measures,
+each in the order given. This holds regardless of how a measure is computed, so
+a measure on a joined model appears where you declared it rather than after the
+local ones. Fields used only for ordering are computed but not returned.
 
 ```json
 {

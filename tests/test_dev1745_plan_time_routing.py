@@ -30,7 +30,7 @@ from slayer.engine.planned import PlannedQuery
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
 
-from tests._engine_helpers import _engine_generate
+from tests._engine_helpers import _norm, _engine_generate
 
 
 # --------------------------------------------------------------------------- #
@@ -135,11 +135,14 @@ class TestGeneratorConsumesThePlanVerbatim:
     # The predicate applied to the JOINED-BACK ``_cm_`` column on the outer,
     # non-aggregating SELECT — the shape this routing exists to produce, and
     # one nothing else in the query emits.
+    # Whitespace-normalised: the combined statement is emitted by sqlglot's
+    # printer, which breaks after ``WHERE``. The claim is about the predicate
+    # landing on the outer SELECT against the joined-back column, not layout.
     OUTER_WHERE = 'WHERE _cm_orders__eu_amount_sum."orders.eu" > 100'
 
     async def test_outer_where_is_emitted_for_the_isolated_shape(self) -> None:
         sql = await self._sql(_outer_where_query())
-        assert self.OUTER_WHERE in sql, sql
+        assert self.OUTER_WHERE in _norm(sql), sql
 
     async def test_clearing_the_plan_field_removes_the_outer_where(self) -> None:
         """P-D: the plan is authoritative. A generator that re-walks the
@@ -162,7 +165,7 @@ class TestGeneratorConsumesThePlanVerbatim:
         cleared = planned.model_copy(update={"outer_where_filter_ids": []})
         gen = SQLGenerator(dialect="postgres")
         sql = gen.generate_from_planned(planned_query=cleared, bundle=_bundle())
-        assert self.OUTER_WHERE not in sql, (
+        assert self.OUTER_WHERE not in _norm(sql), (
             "the generator re-derived the outer-WHERE routing instead of "
             f"consuming the plan:\n{sql}"
         )

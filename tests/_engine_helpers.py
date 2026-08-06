@@ -156,11 +156,12 @@ def _extract_src_body(sql: str) -> str:
     keyword or its formatting would surface as a confusing assertion against the
     wrong text rather than a clear failure here.
     """
-    end = sql.index("\n) AS _src")
-    open_token = "LEFT JOIN (\n"
-    open_at = sql.rfind(open_token, 0, end)
-    assert open_at != -1, f"No {open_token!r} opening the _src subquery in:\n{sql}"
-    return sql[open_at + len(open_token):end]
+    close = re.search(r"\n[ \t]*\) AS _src", sql)
+    assert close is not None, f"No `) AS _src` closing the _src subquery in:\n{sql}"
+    end = close.start()
+    opens = list(re.finditer(r"LEFT JOIN \(\n", sql[:end]))
+    assert opens, f"No `LEFT JOIN (` opening the _src subquery in:\n{sql}"
+    return sql[opens[-1].end():end]
 
 
 def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:

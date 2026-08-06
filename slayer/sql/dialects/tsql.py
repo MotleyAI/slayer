@@ -243,6 +243,37 @@ class TsqlDialect(SqlDialect):
     # DEV-1571 Bug 1: emit_outer_wrap hoists inner top-level CTEs
     # ------------------------------------------------------------------
 
+    def apply_pagination(
+        self,
+        select: exp.Select,
+        *,
+        limit: "int | None",
+        offset: "int | None",
+    ) -> exp.Select:
+        """T-SQL pagination, with the ``OFFSET`` ordering requirement made
+        explicit.
+
+        SQL Server rejects ``OFFSET`` without an ``ORDER BY``. When the query is
+        genuinely unordered we supply ``ORDER BY (SELECT NULL)`` — the
+        conventional no-op ordering, which adds no semantics because there were
+        none to preserve, and only makes the statement legal.
+
+        sqlglot happens to inject the same thing today, but that is its
+        behaviour and not our contract: doing it here means the rule survives a
+        sqlglot upgrade, and it puts the ordering in the AST where a caller (and
+        our tests) can see it rather than only in the generated string. A user's
+        own ORDER BY is never replaced.
+
+        ``TOP`` versus ``FETCH`` needs no special handling — sqlglot picks
+        ``TOP`` for a bare limit and ``OFFSET … FETCH`` once an offset is
+        present, which is the correct T-SQL in both cases.
+        """
+        if offset is not None and select.args.get("order") is None:
+            select = select.order_by(
+                exp.Subquery(this=exp.Select().select(exp.Null())),
+            )
+        return super().apply_pagination(select, limit=limit, offset=offset)
+
     def emit_outer_wrap(
         self,
         *,
