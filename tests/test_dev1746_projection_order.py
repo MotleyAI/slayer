@@ -45,6 +45,7 @@ from typing import AsyncIterator, List
 import pytest
 
 from slayer.core.enums import TimeGranularity
+from slayer.core.keys import TransformKey
 from slayer.core.models import ModelMeasure
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.planned import PlannedQuery, ValueSlot
@@ -316,6 +317,16 @@ class TestB7DeclarationOrderProjection:
         )
         assert planned.transform_layers, (
             "precondition: this query must carry a transform chain"
+        )
+
+        # The transform slot is IN the projection but is rendered by a later
+        # step CTE, not by the combined SELECT. That is why the combined
+        # projection loop skips a slot with no rendered columns instead of
+        # treating it as a dropped column: making that case raise — the
+        # symmetric-looking guard — would reject every transform query.
+        assert running_sid in planned.projection, planned.projection
+        assert isinstance(slots[running_sid].key, TransformKey), (
+            f"expected a transform slot, got {type(slots[running_sid].key).__name__}"
         )
 
         sql = await _gen(query, dialect="postgres")

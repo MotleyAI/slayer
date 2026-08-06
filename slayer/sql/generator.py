@@ -5033,11 +5033,21 @@ class SQLGenerator:
         for sid in planned_query.projection:
             exprs = proj_exprs.get(sid)
             if not exprs:
+                # Not rendered by THIS scope at all. A transform slot is in the
+                # plan's projection but is computed by a later step CTE and
+                # projected there, so its absence here is correct — unlike a
+                # slot that renders some columns but fewer than the projection
+                # asks for, which is caught below.
                 continue
             idx = consumed.get(sid, 0)
-            if idx < len(exprs):
-                combined_select_exprs.append(exprs[idx])
-                consumed[sid] = idx + 1
+            if idx >= len(exprs):
+                raise ValueError(
+                    f"slot {sid!r} appears {idx + 1} times in the public "
+                    f"projection but rendered only {len(exprs)} column(s); the "
+                    f"occurrence would be dropped from the result",
+                )
+            combined_select_exprs.append(exprs[idx])
+            consumed[sid] = idx + 1
         # Columns the plan does not publish but the statement still needs: with
         # a transform chain the combined SELECT is that chain's base CTE, so it
         # must also carry hidden inputs (transform operands, order-only slots)
@@ -5047,7 +5057,9 @@ class SQLGenerator:
         # DID publish has exactly as many occurrences as it has declared names,
         # so a leftover would mean the two disagree — and appending it would
         # emit an extra public column, at the end, under a name the caller did
-        # not ask for. Fail instead: a silent extra column is the harder bug.
+        # not ask for. Fail instead. Both directions of that disagreement fail:
+        # too FEW rendered columns is caught in the loop above, where the
+        # occurrence would otherwise be dropped from the result.
         for sid, exprs in proj_exprs.items():
             if sid not in consumed:
                 combined_select_exprs.extend(exprs)
