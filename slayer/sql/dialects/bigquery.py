@@ -191,10 +191,9 @@ class BigqueryDialect(SqlDialect):
         happen inside ``_rekey_row`` in ONE pass — pre-decoding into a dict
         first would let two keys collapse before the duplicate check ran.
         """
+        mapping = self.decode_alias_map(aliases)
         return [
-            self._rekey_row(
-                row, self.decode_alias_map(aliases), fallback=decode_alias,
-            )
+            self._rekey_row(row, mapping, fallback=decode_alias)
             for row in rows
         ]
 
