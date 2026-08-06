@@ -141,6 +141,13 @@ class TestWithChainAssembler:
         assert names == ["first", "second", "third"], names
 
     def test_ordering_is_deterministic_across_repeated_assembly(self) -> None:
+        """The same entries must assemble the same way every time.
+
+        Asserted against the expected order rather than only against a second
+        run: comparing two runs to each other proves they agree but not that
+        they agree on the RIGHT thing, and a set-based implementation could
+        still be stable within one process while varying across them.
+        """
         mod = self._mod()
 
         def build() -> list[str]:
@@ -152,7 +159,13 @@ class TestWithChainAssembler:
             out = mod.assemble_with_chain(entries=entries, final=self._sel("base"))
             return [cte.alias_or_name for cte in out.args["with_"].expressions]
 
-        assert build() == build(), "assembly order is not deterministic"
+        # ``wm`` depends on ``base``, so ``base`` is pulled ahead of it; ``cm``
+        # depends on nothing and keeps its declared position between them.
+        expected = ["base", "wm", "cm"]
+        first_run = build()
+        second_run = build()
+        assert first_run == expected, first_run
+        assert second_run == expected, second_run
 
     def test_a_dependency_cycle_raises(self) -> None:
         """A cycle cannot be emitted as a WITH chain at all. Failing loudly
