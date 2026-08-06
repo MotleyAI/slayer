@@ -2,9 +2,13 @@
 
 import json
 import logging
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from typing import Any
 
 import sqlalchemy as sa
+
+from slayer import __version__
 
 from slayer.core.errors import (
     AmbiguousModelError,
@@ -54,6 +58,76 @@ logger = logging.getLogger(__name__)
 
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 _UNSET = object()  # Sentinel to distinguish "not provided" from "explicitly set to None"
+
+# DEV-1757: every branch of the import failure below offers the same remedy.
+# The direct constrained install leads because it works whatever SLayer
+# release the caller is on; "upgrade SLayer" is the secondary hint, since
+# telling someone already on the latest release to reinstall it is precisely
+# the misdirection the old "Reinstall SLayer" message caused.
+_MCP_REMEDY = (
+    "Install a supported version: pip install 'mcp>=1.0,<2' "
+    "(or upgrade SLayer, which pins mcp<2: pip install -U motley-slayer)."
+)
+
+
+def _mcp_major(version_str: str) -> int | None:
+    """Best-effort major-version parse; ``None`` when unparseable."""
+    try:
+        return int(version_str.split(".", 1)[0].strip())
+    except ValueError:
+        return None
+
+
+def _import_fastmcp():
+    """Return the mcp 1.x ``FastMCP`` class, or raise an actionable ImportError.
+
+    DEV-1757: mcp 2.x renamed ``mcp.server.fastmcp`` to
+    ``mcp.server.mcpserver``, so an unbounded pin resolved a major SLayer
+    cannot import. Absent package and wrong major need different remedies,
+    and the old message ("Reinstall SLayer") was wrong for both.
+    """
+    try:
+        from mcp.server.fastmcp import FastMCP
+    except ImportError as exc:
+        try:
+            installed = _pkg_version("mcp")
+        except PackageNotFoundError:
+            raise ImportError(f"MCP package not found. {_MCP_REMEDY}") from exc
+        major = _mcp_major(installed)
+        if major is not None and major >= 2:
+            detail = (
+                f"mcp {installed} is installed, but SLayer targets the mcp 1.x "
+                f"FastMCP API: mcp 2.x dropped 'mcp.server.fastmcp' (renamed to "
+                f"mcp.server.mcpserver.MCPServer)."
+            )
+        else:
+            # A genuine 1.x whose import failed for some other reason — a
+            # broken transitive dep, say. Blaming the 2.x rename here would
+            # just be a fresh misdiagnosis, so report what actually happened.
+            detail = (
+                f"mcp {installed} is installed, but 'mcp.server.fastmcp' could "
+                f"not be imported: {exc}"
+            )
+        raise ImportError(f"{detail} {_MCP_REMEDY}") from exc
+    return FastMCP
+
+
+def _set_server_version(mcp) -> None:
+    """Stamp SLayer's version onto the lowlevel MCP server.
+
+    DEV-1757: FastMCP 1.x exposes no ``version`` kwarg and never forwards one
+    to the lowlevel ``Server``, which then reports the *mcp SDK's* own version
+    as ``serverInfo.version``. Both degradation paths are tolerated so a future
+    SDK change cannot abort server construction over a cosmetic field.
+    """
+    lowlevel = getattr(mcp, "_mcp_server", None)
+    if lowlevel is None:
+        logger.debug("MCP server exposes no _mcp_server; leaving serverInfo.version")
+        return
+    try:
+        lowlevel.version = __version__
+    except AttributeError:
+        logger.debug("MCP serverInfo.version is read-only; leaving it", exc_info=True)
 
 
 def _ambiguous_with_mcp_hint(exc: AmbiguousModelError) -> str:
@@ -287,10 +361,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         run_sync(
             ingest_all_datasources_idempotent(storage=storage, stream=sys.stderr)
         )
-    try:
-        from mcp.server.fastmcp import FastMCP
-    except ImportError:
-        raise ImportError("MCP package not found. Reinstall SLayer: pip install motley-slayer")
+    FastMCP = _import_fastmcp()
 
     mcp = FastMCP(
         "SLayer",
@@ -303,6 +374,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             "To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."
         ),
     )
+    _set_server_version(mcp)
     engine = SlayerQueryEngine(storage=storage)
     # DEV-1656: expose the closure engine so callers (bird-interact-agents on
     # the cloud Ray runner, where one actor process is reused across many
