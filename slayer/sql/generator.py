@@ -43,13 +43,23 @@ from slayer.engine.source_bundle import (
 )
 from slayer.sql.dialects import SqlDialect, get_dialect
 from slayer.sql.naming import (
+    FILTERED_ALIAS,
+    OUTER_WRAP_ALIAS,
     AliasAllocator,
+    canonical_aggregate_alias,
+    cte_name_from_alias,
     dialect_folds_case,
     flat_name,
     maybe_quote_ident,
     quote_mixed_case_identifiers,
     result_key,
     result_key_from_alias,
+)
+from slayer.sql.render.aggregates import window_agg_class
+from slayer.sql.render.value_expr import (
+    render_arithmetic,
+    render_scalar_call,
+    rewrite_log_alias,
 )
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.scope import ScopeFrame
@@ -545,6 +555,28 @@ def _cte_name_from_alias(prefix: str, alias: str) -> str:
     sanitized = flat_name(alias)
     sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", sanitized)
     return prefix + sanitized
+
+
+def _cm_plan_identity(*, source_relation: str, plan, agg_slot) -> tuple:
+    """The dedup identity for a cross-model CTE.
+
+    Structural, never the sanitised name string: the canonical alias omits the
+    aggregate's column filter, and the name is doubly lossy, so either would
+    merge plans that must render separately.
+
+    The reroot shape is part of the identity because the two render paths
+    produce DIFFERENT join-back pairs and a different aggregate column alias —
+    forward uses the canonical alias, rerooted uses the sub-plan's. Sharing a
+    CTE across them would join at the wrong grain or read the wrong column.
+    The planner interns each key to one slot and emits one plan per slot, so
+    two plans cannot collide here today; keeping the shape in the identity
+    means a future planner change cannot make that silently wrong.
+    """
+    return (
+        source_relation,
+        agg_slot.key,
+        plan.rerooted_plan is not None,
+    )
 
 
 def _effective_src_filters(*, planned_query, plan) -> list:
@@ -1058,29 +1090,14 @@ class SQLGenerator:
     # ------------------------------------------------------------------
 
     def _rewrite_log_aliases(self, node: exp.Expression) -> exp.Expression:
-        """DEV-1337: rewrite ``Log(this=Literal(10|2), expression=X)`` back to
-        ``Anonymous(this='log10'|'log2', expressions=[X])`` for dialects with
-        native single-arg aliases. Walked over every parsed AST so the
-        rewrite survives sqlglot's re-parse passes (which would otherwise
-        turn ``LOG10(x)`` back into a generic ``Log`` node and re-emit as
-        ``LOG(10, x)``). No-op on non-``Log`` nodes and on ``Log`` nodes
-        with a non-literal or non-{10,2} base.
+        """Thin delegator to the shared log-alias policy in
+        ``slayer.sql.render.value_expr``.
+
+        Kept as a method so the existing ``tree.transform(...)`` call sites,
+        which walk every parsed AST so the rewrite survives sqlglot's re-parse
+        passes, stay unchanged.
         """
-        if not isinstance(node, exp.Log):
-            return node
-        base = node.args.get("this")
-        arg = node.args.get("expression")
-        if arg is None or not isinstance(base, exp.Literal) or base.is_string:
-            return node
-        try:
-            base_val = float(base.this)
-        except (TypeError, ValueError):
-            return node
-        if base_val == 10 and self._dialect.should_use_native_log(10):
-            return exp.Anonymous(this="log10", expressions=[arg.copy()])
-        if base_val == 2 and self._dialect.should_use_native_log(2):
-            return exp.Anonymous(this="log2", expressions=[arg.copy()])
-        return node
+        return rewrite_log_alias(node, dialect=self._dialect)
 
     def _resolve_sql(
         self,
@@ -1913,7 +1930,7 @@ class SQLGenerator:
                 unmaterialised.append(cslot)
         if unmaterialised:
             step_num += 1
-            step_name = f"step{step_num}"
+            step_name = cte_allocator.allocate_cte(f"step{step_num}")
             prev_cte = ctes[-1][0]
             carry_aliases_sorted = sorted(
                 a for aliases in aliases_by_slot_id.values() for a in aliases
@@ -1979,7 +1996,7 @@ class SQLGenerator:
         )
         if post_filter_conditions:
             chain_sql = (
-                f"SELECT *\nFROM (\n{chain_sql}\n) AS _filtered"
+                f"SELECT *\nFROM (\n{chain_sql}\n) AS {FILTERED_ALIAS}"
                 f"\nWHERE {_SQL_AND_JOINER.join(post_filter_conditions)}"
             )
 
@@ -3930,10 +3947,8 @@ class SQLGenerator:
                     args.append(exp.Literal.number(str(a)))
                 else:
                     args.append(exp.Literal.string(str(a)))
-            if key.name == "like":
-                return exp.Like(this=args[0], expression=args[1]), any_agg
-            return self._finalize_scalar_call(
-                exp.func(key.name.upper(), *args)
+            return render_scalar_call(
+                name=key.name, args=args, dialect=self._dialect,
             ), any_agg
         if isinstance(key, LiteralKey):
             v = key.value
@@ -4124,7 +4139,12 @@ class SQLGenerator:
             exp.LT(this=src_w_time.copy(), expression=bucket_end.copy()),
         )
 
-        agg_cls = exp.Sum if plan.agg == "sum" else exp.Avg
+        # Registry lookup, not a silent catch-all: the previous
+        # ``exp.Sum if agg == "sum" else exp.Avg`` rendered ANY other
+        # aggregation as AVG. Unreachable through the planner, which gates
+        # windowed measures to sum/avg — which is exactly why it would have
+        # stayed wrong. Now it raises.
+        agg_cls = window_agg_class(plan.agg)
         agg_expr = _wrap_cast_for_type(
             agg_cls(this=_src_col("_w_value")), agg_slot.type,
         )
@@ -4583,7 +4603,16 @@ class SQLGenerator:
         #     SELECT — matches the result-key contract while keeping
         #     legacy parity for the unaliased shape.
         cm_ctes: List[Tuple[str, str]] = []
-        seen_cm: set = set()
+        # Dedup identity is the STRUCTURAL key (the typed AggregateKey plus the
+        # source relation), never the sanitised CTE-name string. The canonical
+        # alias omits the aggregate's column filter, so a filtered and an
+        # unfiltered aggregate over one column share an alias while needing two
+        # CTEs; and the name is doubly lossy (path flattening, then
+        # non-identifier sanitisation), so unrelated aggregates can collide on
+        # it. Keying on the name silently merged both cases.
+        cm_cte_name_by_identity: Dict[Any, str] = {}
+        cm_cte_name_for_plan: Dict[str, str] = {}
+        cm_allocator = self._gen_allocator or self._new_allocator()
         canonical_alias_for_plan: Dict[str, str] = {}
         # join-back pairs are ``(host_base_alias, cte_column_alias)`` — the two
         # sides need not match (re-rooted CTEs alias dims under the target's
@@ -4592,6 +4621,8 @@ class SQLGenerator:
         # alias for the re-rooted path).
         joinback_pairs_for_plan: Dict[str, List[Tuple[str, str]]] = {}
         agg_col_alias_for_plan: Dict[str, str] = {}
+        joinback_pairs_for_identity: Dict[Any, List[Tuple[str, str]]] = {}
+        agg_col_alias_for_identity: Dict[Any, str] = {}
         for plan in planned_query.cross_model_aggregate_plans:
             agg_slot = slots_by_id.get(plan.aggregate_slot_id)
             if agg_slot is None or not isinstance(agg_slot.key, AggregateKey):
@@ -4604,10 +4635,28 @@ class SQLGenerator:
                 key=agg_slot.key,
             )
             canonical_alias_for_plan[plan.aggregate_slot_id] = canonical_alias
-            cte_name = _cte_name_from_alias("_cm_", canonical_alias)
-            if cte_name in seen_cm:
+            identity = _cm_plan_identity(
+                source_relation=source_relation, plan=plan, agg_slot=agg_slot,
+            )
+            existing = cm_cte_name_by_identity.get(identity)
+            if existing is not None:
+                # Same aggregate under another public name: share the one CTE,
+                # but still record THIS slot's maps. The old code skipped the
+                # whole iteration, leaving the join-back and column-alias maps
+                # unwritten for the skipped slot id.
+                cm_cte_name_for_plan[plan.aggregate_slot_id] = existing
+                joinback_pairs_for_plan[plan.aggregate_slot_id] = (
+                    joinback_pairs_for_identity[identity]
+                )
+                agg_col_alias_for_plan[plan.aggregate_slot_id] = (
+                    agg_col_alias_for_identity[identity]
+                )
                 continue
-            seen_cm.add(cte_name)
+            cte_name = cte_name_from_alias(
+                "_cm_", canonical_alias, allocator=cm_allocator,
+            )
+            cm_cte_name_by_identity[identity] = cte_name
+            cm_cte_name_for_plan[plan.aggregate_slot_id] = cte_name
 
             if plan.rerooted_plan is not None:
                 # C1: nested re-rooted PlannedQuery rooted at the target,
@@ -4636,6 +4685,8 @@ class SQLGenerator:
             cm_ctes.append((cte_name, cte_sql))
             joinback_pairs_for_plan[plan.aggregate_slot_id] = joinback_pairs
             agg_col_alias_for_plan[plan.aggregate_slot_id] = agg_col_alias
+            joinback_pairs_for_identity[identity] = joinback_pairs
+            agg_col_alias_for_identity[identity] = agg_col_alias
 
         # DEV-1714 Stage 10 — per-plan ``_wm_`` windowed range-join CTEs. Each
         # is host-rooted (``FROM _base LEFT JOIN _src``), grouped at the query
@@ -4661,8 +4712,8 @@ class SQLGenerator:
             full_agg_alias = self._full_alias_for_slot(
                 slot=agg_slot, source_relation=source_relation, alias_index={},
             )
-            cte_name = wm_allocator.allocate_cte(
-                _cte_name_from_alias("_wm_", full_agg_alias),
+            cte_name = cte_name_from_alias(
+                "_wm_", full_agg_alias, allocator=wm_allocator,
             )
             cte_sql, grain_aliases = self._render_window_measure_cte_from_planned(
                 plan=plan, agg_slot=agg_slot, source_model=source_model,
@@ -4727,8 +4778,7 @@ class SQLGenerator:
         if outer_composite_slot_ids:
             outer_composite_cm_map: Dict[str, Tuple[str, str]] = {}
             for plan in planned_query.cross_model_aggregate_plans:
-                canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
-                cte_name = _cte_name_from_alias("_cm_", canonical_alias)
+                cte_name = cm_cte_name_for_plan[plan.aggregate_slot_id]
                 agg_col_alias = agg_col_alias_for_plan[plan.aggregate_slot_id]
                 outer_composite_cm_map[plan.aggregate_slot_id] = (
                     cte_name, agg_col_alias,
@@ -4819,9 +4869,13 @@ class SQLGenerator:
         # alias matches the CTE column name, no ``AS`` remap fires.
         for plan in planned_query.cross_model_aggregate_plans:
             agg_slot = slots_by_id[plan.aggregate_slot_id]
-            canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
             agg_col_alias = agg_col_alias_for_plan[plan.aggregate_slot_id]
-            cte_name = _cte_name_from_alias("_cm_", canonical_alias)
+            cte_name = cm_cte_name_for_plan[plan.aggregate_slot_id]
+            # Read THIS plan's canonical alias. It feeds
+            # ``_public_aliases_for_cross_model_agg``, which falls back to it
+            # when the slot declares no public alias, so a stale value projects
+            # one measure under another measure's name.
+            canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
             # DEV-1495 bug 2 / DEV-1712: an order-by-only (hidden) cross-model
             # aggregate never surfaces in the combined projection — its CTE is
             # still joined below, and the ORDER BY references it CTE-qualified
@@ -4892,8 +4946,7 @@ class SQLGenerator:
         from_clause_str = "FROM _base"
         joined_cte_names: set = set()
         for plan in planned_query.cross_model_aggregate_plans:
-            canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
-            cte_name = _cte_name_from_alias("_cm_", canonical_alias)
+            cte_name = cm_cte_name_for_plan[plan.aggregate_slot_id]
             if cte_name in joined_cte_names:
                 continue
             joined_cte_names.add(cte_name)
@@ -4963,8 +5016,7 @@ class SQLGenerator:
             # renderer would raise (CodeRabbit thread 2).
             cross_model_agg_slot_to_cm: Dict[str, Tuple[str, str]] = {}
             for plan in planned_query.cross_model_aggregate_plans:
-                canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
-                cte_name = _cte_name_from_alias("_cm_", canonical_alias)
+                cte_name = cm_cte_name_for_plan[plan.aggregate_slot_id]
                 agg_col_alias = agg_col_alias_for_plan[plan.aggregate_slot_id]
                 cross_model_agg_slot_to_cm[plan.aggregate_slot_id] = (
                     cte_name, agg_col_alias,
@@ -5060,9 +5112,8 @@ class SQLGenerator:
             # transform chain) need the CTE-qualified ORDER BY reference.
             if not (plan.hidden and not planned_query.transform_layers):
                 continue
-            _canon = canonical_alias_for_plan[plan.aggregate_slot_id]
             _agg_col = agg_col_alias_for_plan[plan.aggregate_slot_id]
-            _cte = _cte_name_from_alias("_cm_", _canon)
+            _cte = cm_cte_name_for_plan[plan.aggregate_slot_id]
             hidden_cte_order_refs[plan.aggregate_slot_id] = (
                 f'{_cte}.{self._quote_ident(_agg_col)}'
             )
@@ -5103,7 +5154,7 @@ class SQLGenerator:
         # we don't have on the new side. Future slices may re-enable.
         return sql
 
-    def _render_cross_model_transform_chain(
+    def _render_cross_model_transform_chain(  # NOSONAR(S3776) — pre-existing complexity in the window-layer chain; this PR only threaded the CTE-name allocator through it, which re-attributed the function as new code. The chain is rebuilt as sqlglot AST in the scope-assembly PR, where the layering is what gets simplified.
         self,
         *,
         prelude_ctes: List[Tuple[str, str]],
@@ -5138,6 +5189,14 @@ class SQLGenerator:
         ctes: List[Tuple[str, str]] = list(prelude_ctes) + [
             ("base", combined_select_sql),
         ]
+        # P-F: this chain previously minted ``step<n>`` names with a
+        # bare f-string and held no allocator at all, so nothing connected its
+        # names to the ``_cm_*`` CTEs already in ``prelude_ctes`` or to the
+        # literal ``base``. Take the generation-scoped allocator (the SAME
+        # instance that minted the ``_cm_`` names, so its used-set already
+        # covers them) and reserve the inherited literals before allocating.
+        cte_allocator = self._gen_allocator or self._new_allocator()
+        cte_allocator.reserve(*(name for name, _ in ctes))
         aliases_by_slot_id: Dict[str, List[str]] = {
             sid: list(a) for sid, a in combined_aliases_by_slot_id.items()
         }
@@ -5172,7 +5231,7 @@ class SQLGenerator:
                     f"{pending_ops!r}.",
                 )
             step_num += 1
-            step_name = f"step{step_num}"
+            step_name = cte_allocator.allocate_cte(f"step{step_num}")
             prev_cte = ctes[-1][0]
             carry_aliases_sorted = sorted(
                 a for aliases in aliases_by_slot_id.values() for a in aliases
@@ -5226,7 +5285,7 @@ class SQLGenerator:
                 unmaterialised.append(cslot)
         if unmaterialised:
             step_num += 1
-            step_name = f"step{step_num}"
+            step_name = cte_allocator.allocate_cte(f"step{step_num}")
             prev_cte = ctes[-1][0]
             carry_aliases_sorted = sorted(
                 a for aliases in aliases_by_slot_id.values() for a in aliases
@@ -5281,7 +5340,7 @@ class SQLGenerator:
         )
         if post_filter_conditions:
             chain_sql = (
-                f"SELECT *\nFROM (\n{chain_sql}\n) AS _filtered"
+                f"SELECT *\nFROM (\n{chain_sql}\n) AS {FILTERED_ALIAS}"
                 f"\nWHERE {_SQL_AND_JOINER.join(post_filter_conditions)}"
             )
 
@@ -5327,40 +5386,22 @@ class SQLGenerator:
         ``canonical_agg_name`` collapses ``*`` to a leading ``_``
         (``*:count`` → ``_count``) per the result-key contract.
         """
-        from slayer.core.refs import canonical_agg_name
-
-        path = getattr(key.source, "path", ())
-        # Handle ColumnKey (``leaf``), ColumnSqlKey (``column_name`` — derived
-        # column source, almost universal for filtered-local measures whose
-        # ``Column.sql`` differs from ``Column.name``), and StarKey (no
-        # ``leaf`` / ``column_name`` → collapse to ``*``). Mirrors
-        # ``_aggregate_alias`` in ``cross_model_planner.py``.
-        measure_name = (
-            getattr(key.source, "leaf", None)
-            or getattr(key.source, "column_name", None)
-            or "*"
+        # The derivation lives in ``slayer.sql.naming`` (P-F, one naming
+        # authority) — this was one of four drifted copies. The
+        # ``cross_model_cte`` profile prefixes BOTH the source relation and the
+        # join path, and collapses a source with neither ``leaf`` nor
+        # ``column_name`` to the star form.
+        #
+        # The kwarg suffix is included so two parametric aggregates
+        # (``percentile(p=0.5)`` vs ``p=0.95``) get distinct CTE names and
+        # column aliases. The deleted legacy pipeline dropped it and thereby
+        # collided them — a ratified divergence, pinned by
+        # tests/test_dev1744_result_key_contract.py.
+        alias = canonical_aggregate_alias(
+            key, profile="cross_model_cte", source_relation=source_relation,
         )
-        # DEV-1450 stage 7b.13: include kwarg suffix in cross-model
-        # alias so two distinct parametric aggs (``percentile(p=0.5)``
-        # vs ``p=0.95``) produce distinct CTE names and column aliases.
-        # Legacy enrichment at ``query_engine.py:2160`` drops the
-        # signature suffix entirely -- a known legacy bug that
-        # produces ALIAS COLLISION when the same query has multiple
-        # parametric aggs against the same target.column. The new
-        # pipeline preserves slot identity here for correctness;
-        # parity tests for parametric cross-model aggs assert
-        # structural shape rather than bit-identical SQL.
-        canonical = canonical_agg_name(
-            measure_name=measure_name,
-            aggregation_name=key.agg,
-            agg_args=[agg_kwarg_canonical_str(a) for a in key.args] or None,
-            agg_kwargs={
-                k: agg_kwarg_canonical_str(v) for k, v in key.kwargs
-            } or None,
-        )
-        if path:
-            return f"{source_relation}." + ".".join(path) + f".{canonical}"
-        return f"{source_relation}.{canonical}"
+        assert alias is not None  # the cross_model_cte profile never declines
+        return alias
 
     def _public_aliases_for_cross_model_agg(
         self,
@@ -6365,10 +6406,8 @@ class SQLGenerator:
                 )
                 for a in value_key.args
             ]
-            if value_key.name == "like":
-                return exp.Like(this=rendered_args[0], expression=rendered_args[1])
-            return self._finalize_scalar_call(
-                exp.func(value_key.name.upper(), *rendered_args),
+            return render_scalar_call(
+                name=value_key.name, args=rendered_args, dialect=self._dialect,
             )
         if isinstance(value_key, BetweenKey):
             # DEV-1708: a routed ``date_range``-derived BETWEEN over a target
@@ -6435,54 +6474,12 @@ class SQLGenerator:
     ) -> exp.Expression:
         """Build a sqlglot expression for a binary or unary op.
 
-        Mirrors the small subset of operators the bound-filter renderer
-        emits: comparisons (``==``, ``!=``, ``<``, ``<=``, ``>``,
-        ``>=``, ``is``, ``is not``), boolean (``and``, ``or``, ``not``),
-        arithmetic (``+``, ``-``, ``*``, ``/``).
+        Delegates to the one composer in ``slayer.sql.render.value_expr``.
+        The hand-rolled version here applied NO precedence pass at all, so
+        ``(a + b) * c`` emitted ``a + b * c`` and ``(a > b) + 1`` emitted
+        ``a > b + 1`` — both parse, both mean something else.
         """
-        if op == "not":
-            return exp.Not(this=operands[0])
-        # ``and`` / ``or`` (Codex round 2): the binder produces n-ary
-        # boolean ``ArithmeticKey`` for ``a AND b AND c`` (three operands);
-        # the prior implementation took only ``operands[0]`` / ``[1]`` and
-        # silently dropped the third predicate from cross-model HAVING/
-        # WHERE, broadening results. Fold over every operand the same
-        # way ``_compose_arithmetic_op`` and ``_build_arithmetic_for_filter``
-        # already do.
-        if op in ("and", "or"):
-            node_cls = exp.And if op == "and" else exp.Or
-            acc = operands[0]
-            for o in operands[1:]:
-                acc = node_cls(this=acc, expression=o)
-            return acc
-        left, right = operands[0], operands[1]
-        # ``IS`` / ``IS NOT`` (Codex review): the typed pipeline's filter
-        # normalizer lowers SQL ``IS NULL`` / ``IS NOT NULL`` to Python
-        # ``is None`` / ``is not None``. Render against a ``Null`` literal
-        # as the standard SQL forms.
-        if op == "is":
-            return exp.Is(this=left, expression=right)
-        if op == "is not":
-            return exp.Not(this=exp.Is(this=left, expression=right))
-        op_map = {
-            "==": exp.EQ,
-            "!=": exp.NEQ,
-            "<": exp.LT,
-            "<=": exp.LTE,
-            ">": exp.GT,
-            ">=": exp.GTE,
-            "+": exp.Add,
-            "-": exp.Sub,
-            "*": exp.Mul,
-            "/": exp.Div,
-        }
-        cls = op_map.get(op)
-        if cls is None:
-            raise NotImplementedError(
-                f"DEV-1450 stage 7b.12: arithmetic operator {op!r} not "
-                f"supported in cross-model filter rendering.",
-            )
-        return cls(this=left, expression=right)
+        return render_arithmetic(op, list(operands))
 
     def _build_combined_order_by_sql(
         self,
@@ -7172,9 +7169,9 @@ class SQLGenerator:
                 else _render_scalar_literal(a)
                 for a in key.args
             ]
-            if key.name == "like":
-                return exp.Like(this=args[0], expression=args[1])
-            return self._finalize_scalar_call(exp.func(key.name.upper(), *args))
+            return render_scalar_call(
+                name=key.name, args=args, dialect=self._dialect,
+            )
 
         if isinstance(key, BetweenKey):
             return exp.Between(
@@ -7199,26 +7196,6 @@ class SQLGenerator:
         )
 
     @staticmethod
-    def _paren_if_lower_prec(
-        child: exp.Expression, *, parent_prec: int, is_right: bool, op: str,
-    ) -> exp.Expression:
-        """Wrap ``child`` in parens when its arithmetic precedence is lower
-        than the parent op's (or equal, for the RIGHT operand of the
-        non-associative ``-`` / ``/``). Leaves / functions / casts / already-
-        parenthesised nodes are returned untouched.
-        """
-        child_prec = {
-            exp.Add: 1, exp.Sub: 1, exp.Mul: 2, exp.Div: 2,
-        }.get(type(child))
-        if child_prec is None:
-            return child
-        if child_prec < parent_prec:
-            return exp.Paren(this=child)
-        if child_prec == parent_prec and is_right and op in ("-", "/"):
-            return exp.Paren(this=child)
-        return child
-
-    @staticmethod
     def _compose_arithmetic_op(
         *, op: str, operands: List[exp.Expression],
     ) -> exp.Expression:
@@ -7226,59 +7203,14 @@ class SQLGenerator:
         already-rendered operands.
 
         Accepts the operator aliases ``=``/``==``, ``<>``/``!=`` so the
-        rendered SQL surfaces the canonical SQL spellings for POST
-        filters. Unary ``-`` and N-ary ``and``/``or`` left-fold to the
-        sqlglot binary nodes.
+        rendered SQL surfaces the canonical SQL spellings for POST filters.
+
+        Delegates to the one composer in ``slayer.sql.render.value_expr``.
+        The hand-rolled version's precedence table knew only ``+ - * /``, so
+        a comparison nested in arithmetic — ``(a > b) + 1`` — emitted
+        ``a > b + 1``, which reads as ``a > (b + 1)``.
         """
-        if len(operands) == 1:
-            if op == "not":
-                return exp.Not(this=operands[0])
-            if op == "-":
-                return exp.Neg(this=operands[0])
-        if len(operands) == 2:
-            lhs, rhs = operands
-            # ``IS`` / ``IS NOT`` (Codex review): see ``_build_arith_or_cmp_ast``.
-            if op == "is":
-                return exp.Is(this=lhs, expression=rhs)
-            if op == "is not":
-                return exp.Not(this=exp.Is(this=lhs, expression=rhs))
-            binary = {
-                "+": exp.Add, "-": exp.Sub, "*": exp.Mul, "/": exp.Div,
-                "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE,
-                "==": exp.EQ, "=": exp.EQ,
-                "!=": exp.NEQ, "<>": exp.NEQ,
-            }
-            if op in binary:
-                # sqlglot does NOT add precedence parens for a nested AST, so
-                # ``Div(Sub(a, b), c)`` would render as ``a - b / c`` (wrong:
-                # ``b / c`` binds first). Parenthesise a lower-precedence
-                # operand — and an equal-precedence RIGHT operand under the
-                # non-associative ``-`` / ``/`` — so ``change_pct`` and friends
-                # emit ``(a - b) / c``.
-                arith_prec = {"+": 1, "-": 1, "*": 2, "/": 2}
-                parent_prec = arith_prec.get(op)
-                if parent_prec is not None:
-                    lhs = SQLGenerator._paren_if_lower_prec(
-                        lhs, parent_prec=parent_prec, is_right=False, op=op,
-                    )
-                    rhs = SQLGenerator._paren_if_lower_prec(
-                        rhs, parent_prec=parent_prec, is_right=True, op=op,
-                    )
-                return binary[op](this=lhs, expression=rhs)
-            if op == "and":
-                return exp.And(this=lhs, expression=rhs)
-            if op == "or":
-                return exp.Or(this=lhs, expression=rhs)
-        if len(operands) >= 2 and op in ("and", "or"):
-            node_cls = exp.And if op == "and" else exp.Or
-            acc = operands[0]
-            for rhs in operands[1:]:
-                acc = node_cls(this=acc, expression=rhs)
-            return acc
-        raise NotImplementedError(
-            f"DEV-1450 stage 7b.10: arithmetic op {op!r} arity "
-            f"{len(operands)} not supported in POST-filter rendering.",
-        )
+        return render_arithmetic(op, list(operands))
 
     def _emit_planned_outer_wrap(
         self,
@@ -9462,18 +9394,19 @@ class SQLGenerator:
                         first_last_state=first_last_state,
                         aliases_by_slot_id=aliases_by_slot_id,
                     ))
-            if key.name == "like":
-                return exp.Like(this=args[0], expression=args[1])
-            # DEV-1576: a 2-arg ROUND needs the Postgres numeric cast, so it
-            # must be a TYPED node (exp.Round) routed through the target-dialect
-            # rewrite. Only ROUND is retyped: the string-hygiene functions
-            # (substr / concat / lower / ...) must emit literally as written
-            # (DEV-1484), which exp.func would break by transpiling them per
-            # dialect — so they stay as Anonymous passthrough.
-            typed = exp.func(key.name.upper(), *args)
-            if isinstance(typed, exp.Round):
-                return self._finalize_scalar_call(typed)
-            return exp.Anonymous(this=key.name.upper(), expressions=args)
+            # One ScalarCall policy everywhere (B5): typed node, dialect
+            # rewrite, then the log-alias fix-up. This branch used to return an
+            # ``exp.Anonymous`` passthrough for everything but ROUND, so a
+            # filter emitted ``IFNULL(...)`` — which Postgres does not have —
+            # while the same key emitted ``COALESCE(...)`` from a projection.
+            #
+            # The log fix-up is load-bearing: ``exp.func("LOG10", x)``
+            # normalises to a generic ``Log(10, x)`` that re-emits as
+            # ``LOG(10, x)``, wrong for dialects with a native single-arg
+            # ``LOG10``. Transpiling alone fixes ifnull and breaks log10.
+            return render_scalar_call(
+                name=key.name, args=args, dialect=self._dialect,
+            )
         if isinstance(key, BetweenKey):
             col_expr = self._render_value_key_for_filter(
                 key=key.column,
@@ -9649,18 +9582,19 @@ class SQLGenerator:
                         cross_model_agg_slot_to_cm=cross_model_agg_slot_to_cm,
                         aliases_by_slot_id=aliases_by_slot_id,
                     ))
-            if key.name == "like":
-                return exp.Like(this=args[0], expression=args[1])
-            # DEV-1576: a 2-arg ROUND needs the Postgres numeric cast, so it
-            # must be a TYPED node (exp.Round) routed through the target-dialect
-            # rewrite. Only ROUND is retyped: the string-hygiene functions
-            # (substr / concat / lower / ...) must emit literally as written
-            # (DEV-1484), which exp.func would break by transpiling them per
-            # dialect — so they stay as Anonymous passthrough.
-            typed = exp.func(key.name.upper(), *args)
-            if isinstance(typed, exp.Round):
-                return self._finalize_scalar_call(typed)
-            return exp.Anonymous(this=key.name.upper(), expressions=args)
+            # One ScalarCall policy everywhere (B5): typed node, dialect
+            # rewrite, then the log-alias fix-up. This branch used to return an
+            # ``exp.Anonymous`` passthrough for everything but ROUND, so a
+            # filter emitted ``IFNULL(...)`` — which Postgres does not have —
+            # while the same key emitted ``COALESCE(...)`` from a projection.
+            #
+            # The log fix-up is load-bearing: ``exp.func("LOG10", x)``
+            # normalises to a generic ``Log(10, x)`` that re-emits as
+            # ``LOG(10, x)``, wrong for dialects with a native single-arg
+            # ``LOG10``. Transpiling alone fixes ifnull and breaks log10.
+            return render_scalar_call(
+                name=key.name, args=args, dialect=self._dialect,
+            )
         if isinstance(key, BetweenKey):
             col_expr = self._render_filter_for_outer_wrapper(
                 key=key.column,
@@ -9775,13 +9709,23 @@ class SQLGenerator:
         return exp.Paren(this=node) if isinstance(node, exp.Binary) else node
 
     @staticmethod
-    def _build_arithmetic_for_filter(  # NOSONAR(S3776) — sequential per-operator dispatch (==/!= → EQ/NEQ, comparison, arithmetic) with DEV-1539 precedence paren-wrapping; each branch is the per-op emission contract.
+    def _build_arithmetic_for_filter(
         *, op: str, operands: list,
     ) -> exp.Expression:
+        """Compose a WHERE / HAVING operator.
+
+        Every operator but the comparisons delegates to the one composer in
+        ``slayer.sql.render.value_expr``; the hand-rolled versions here emitted
+        ``a + (b - c)`` as ``a + b - c``, a different number.
+
+        Comparisons keep :meth:`_paren_if_binary` (DEV-1539): it parenthesises
+        EVERY multi-term operand, so ``(a + b) > 7`` stays explicit by
+        inspection rather than by precedence rules. That is strictly more
+        grouping than the shared policy derives, never less, so it is a
+        readability choice rather than a second correctness policy.
+        """
         # DSL ``==``/``!=`` map to sqlglot EQ/NEQ; sqlglot then emits the
-        # dialect-correct SQL operator (postgres ``=``/``!=``). DEV-1539: a
-        # multi-term comparison operand is parenthesised so its precedence is
-        # explicit (``(a + b) > 7`` / ``x = (a OR b)``).
+        # dialect-correct SQL operator (postgres ``=``/``!=``).
         _cmp = {
             "==": exp.EQ, "=": exp.EQ, "!=": exp.NEQ, "<>": exp.NEQ,
             "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE,
@@ -9792,71 +9736,7 @@ class SQLGenerator:
                 this=SQLGenerator._paren_if_binary(operands[0]),
                 expression=SQLGenerator._paren_if_binary(operands[1]),
             )
-        if op == "+":
-            # Unary plus is a no-op; legacy never emits it explicitly.
-            if len(operands) == 1:
-                return operands[0]
-            return exp.Add(this=operands[0], expression=operands[1])
-        if op == "-":
-            # Unary minus: the binder represents ``-x`` / ``-10`` as
-            # ``ArithmeticKey(op="-", operands=(x,))`` — handle the
-            # single-operand form so a filter like ``amount > -10``
-            # doesn't crash with IndexError.
-            if len(operands) == 1:
-                return exp.Neg(this=operands[0])
-            return exp.Sub(
-                this=SQLGenerator._paren_if_lower_prec(
-                    operands[0], parent_prec=1, is_right=False, op="-",
-                ),
-                expression=SQLGenerator._paren_if_lower_prec(
-                    operands[1], parent_prec=1, is_right=True, op="-",
-                ),
-            )
-        if op == "*":
-            return exp.Mul(
-                this=SQLGenerator._paren_if_lower_prec(
-                    operands[0], parent_prec=2, is_right=False, op="*",
-                ),
-                expression=SQLGenerator._paren_if_lower_prec(
-                    operands[1], parent_prec=2, is_right=True, op="*",
-                ),
-            )
-        if op == "/":
-            return exp.Div(
-                this=SQLGenerator._paren_if_lower_prec(
-                    operands[0], parent_prec=2, is_right=False, op="/",
-                ),
-                expression=SQLGenerator._paren_if_lower_prec(
-                    operands[1], parent_prec=2, is_right=True, op="/",
-                ),
-            )
-        if op == "and":
-            result = operands[0]
-            for o in operands[1:]:
-                result = exp.And(this=result, expression=o)
-            return result
-        if op == "or":
-            result = operands[0]
-            for o in operands[1:]:
-                result = exp.Or(this=result, expression=o)
-            return result
-        if op == "not":
-            return exp.Not(this=operands[0])
-        # ``IS`` / ``IS NOT`` (Codex round 2): the filter normalizer lowers
-        # SQL ``IS NULL`` / ``IS NOT NULL`` to Python ``is None`` / ``is
-        # not None``. Render against the rhs (a ``Null`` literal) as the
-        # standard SQL forms. Without these branches a local-stage filter
-        # ``deleted_at IS NULL`` parses and binds but raises here at SQL
-        # generation. Mirrors the patches in ``_build_arith_or_cmp_ast``
-        # and ``_compose_arithmetic_op``.
-        if op == "is":
-            return exp.Is(this=operands[0], expression=operands[1])
-        if op == "is not":
-            return exp.Not(this=exp.Is(this=operands[0], expression=operands[1]))
-        raise NotImplementedError(
-            f"DEV-1450 stage 7b.8: ArithmeticKey op {op!r} not "
-            f"supported in filter rendering."
-        )
+        return render_arithmetic(op, list(operands))
 
     def _build_outer_trim_wrap_sql(
         self,
@@ -9906,7 +9786,7 @@ class SQLGenerator:
                 exp.Column(this=exp.to_identifier(alias, quoted=True)),
             )
         outer_select = outer_select.from_(
-            exp.Subquery(this=base_select, alias=exp.to_identifier("_outer")),
+            exp.Subquery(this=base_select, alias=exp.to_identifier(OUTER_WRAP_ALIAS)),
         )
 
         # Outer ORDER BY references each order entry's materialised alias

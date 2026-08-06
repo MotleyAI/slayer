@@ -42,13 +42,80 @@ SCALAR_FUNCTIONS: frozenset[str] = frozenset({
     "nullif", "coalesce", "ifnull",
     # Math
     "ln", "log10", "log2", "log", "exp", "sqrt", "pow", "power",
-    "abs", "floor", "ceil", "round",
+    "abs", "floor", "ceil", "ceiling", "round", "sign",
     # String hygiene (was DEV-1378's STRING_HYGIENE_OPS)
-    "lower", "upper", "trim", "replace", "substr", "instr", "length", "concat",
+    "lower", "upper", "trim", "ltrim", "rtrim",
+    "replace", "substr", "substring", "instr", "length", "concat",
     # Pattern match — ``like(value, pattern)`` emits the SQL ``LIKE`` operator
     # (sqlglot ``exp.Like``); see SQLGenerator scalar-call rendering.
     "like",
 })
+
+
+# Accepted argument counts per allowlisted scalar, as ``(min, max)``; ``max=None``
+# means variadic. Validated at bind time so a malformed call is a clear SLayer
+# error, and again at render time as the fail-closed backstop.
+#
+# Needed because sqlglot is inconsistent about arity: ``exp.func("ROUND", a, b, c)``
+# SILENTLY DROPS the third argument, ``exp.func("LENGTH", a, b)`` emits invalid
+# ``LENGTH(a, b)`` for the database to reject, and ``exp.func("LOWER", a, b)``
+# raises a raw sqlglot ValueError. None of those is a good answer for a user
+# who mistyped a filter.
+SCALAR_FUNCTION_ARITY: dict[str, tuple[int, Optional[int]]] = {
+    "nullif": (2, 2),
+    "coalesce": (1, None),
+    "ifnull": (2, 2),
+    "ln": (1, 1), "log10": (1, 1), "log2": (1, 1), "log": (1, 2),
+    "exp": (1, 1), "sqrt": (1, 1),
+    "pow": (2, 2), "power": (2, 2),
+    "abs": (1, 1), "floor": (1, 1), "ceil": (1, 1), "round": (1, 2),
+    # ``ceiling`` is the T-SQL spelling of ``ceil`` and renders to the same
+    # node. Pinned at 1: a 2-arg call silently emits ``CEIL(x, y)``, and a
+    # 3-arg one becomes DuckDB's unrelated ``CEIL(x TO z)`` rounding form.
+    "ceiling": (1, 1), "sign": (1, 1),
+    "lower": (1, 1), "upper": (1, 1), "trim": (1, 1), "length": (1, 1),
+    # The trims take the string only, matching ``trim``. The 2-arg
+    # strip-these-characters form is deliberately NOT admitted: sqlglot emits
+    # a literal ``LTRIM(str, chars)`` for some targets, and MySQL's ``LTRIM``
+    # accepts one argument — so it would be SQL the server rejects.
+    "ltrim": (1, 1), "rtrim": (1, 1),
+    "replace": (3, 3), "substr": (2, 3), "substring": (2, 3), "instr": (2, 2),
+    "concat": (1, None),
+    "like": (2, 2),
+}
+
+# Not a second allowlist: the table above must cover ``SCALAR_FUNCTIONS``
+# exactly. Checked BOTH ways at import — a missing entry would let a wrong-arity
+# call through to sqlglot's inconsistent handling, and an entry for a name that
+# is not allowlisted would be dead weight that reads as though it were.
+_arity_missing = SCALAR_FUNCTIONS - set(SCALAR_FUNCTION_ARITY)
+_arity_unknown = set(SCALAR_FUNCTION_ARITY) - SCALAR_FUNCTIONS
+if _arity_missing or _arity_unknown:  # pragma: no cover — import-time invariant
+    raise RuntimeError(
+        f"SCALAR_FUNCTION_ARITY disagrees with SCALAR_FUNCTIONS: "
+        f"missing={sorted(_arity_missing)}, unknown={sorted(_arity_unknown)}",
+    )
+
+
+def check_scalar_arity(*, name: str, argc: int) -> Optional[str]:
+    """Return an error message when ``name`` cannot take ``argc`` arguments."""
+    bounds = SCALAR_FUNCTION_ARITY.get(name)
+    if bounds is None:
+        return None
+    low, high = bounds
+    if low <= argc and (high is None or argc <= high):
+        return None
+    if low == high:
+        expected = f"{low}"
+    elif high is None:
+        expected = f"{low} or more"
+    else:
+        expected = f"{low} to {high}"
+    plural = "" if low == high == 1 else "s"
+    return (
+        f"Scalar function {name!r} takes {expected} argument{plural}; "
+        f"got {argc}."
+    )
 
 
 # ---------------------------------------------------------------------------

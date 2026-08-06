@@ -10,8 +10,13 @@ deferred to DEV-1715. This meta-test fails if:
 * the approved guard disappears without its ``APPROVED_GUARDS`` entry also being
   removed (when DEV-1715 lands, delete the guard AND the entry together).
 
-DEV-1485 (Stage 11) gates on this set — plus ``tests/parity_xfails.py`` — being
-empty, so no deferred coverage can rot silently.
+The gate is this set being empty, so no deferred coverage can rot silently.
+
+This docstring used to name a second file as part of the gate — a companion
+xfail-registry module, which was deliberately deleted along with its
+``pytest_collection_modifyitems`` hook (see ``DECISIONS.md``, 2026-08-04). The
+reference sent readers looking for infrastructure that no longer exists, so it
+is gone. Only the prose changed; the guard's behavior is unchanged.
 """
 
 from pathlib import Path

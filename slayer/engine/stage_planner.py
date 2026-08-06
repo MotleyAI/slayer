@@ -58,7 +58,8 @@ from slayer.core.query import (
     SlayerQuery,
     TimeDimension,
 )
-from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
+from slayer.core.refs import canonical_agg_name
+from slayer.sql.naming import canonical_aggregate_alias
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
@@ -2196,48 +2197,27 @@ def _canonical_alias_for_formula(
     alias (``amount_percentile_p=0_5_``), breaking parity.
     """
     if bound is not None and isinstance(bound.value_key, AggregateKey):
-        key = bound.value_key
-        if isinstance(key.source, StarKey):
-            measure_name: Optional[str] = "*"
-            # Cross-model star (``customers.*:count``) carries its join
-            # path so the canonical alias keeps the ``customers.`` prefix
-            # (result key ``orders.customers._count``).
-            path: Tuple[str, ...] = key.source.path
-        else:
-            # ColumnKey exposes ``.leaf``; ColumnSqlKey exposes
-            # ``.column_name``. Both shapes can appear as aggregate
-            # sources (the synth adapter rejects ``ColumnSqlKey`` with
-            # a typed deferral; the planner still needs to derive an
-            # alias before the generator runs). Mirror ``_canonical_name``
-            # at ``planning.py:540-545``.
-            measure_name = (
-                getattr(key.source, "leaf", None)
-                or getattr(key.source, "column_name", None)
-            )
-            path = getattr(key.source, "path", ())
-        if measure_name is not None:
-            prefix = ".".join(path) + "." if path else ""
-            # Local aggregates retain the kwarg suffix to match legacy
-            # ``enrichment.py:349`` (``percentile(p=0.5)`` ->
-            # ``_p_0_5``). Cross-model aggregates ALSO retain it -- the
-            # legacy ``query_engine.py:2160`` drops it, causing CTE alias
-            # collision on two parametric variants, which the 7b.5 fix
-            # corrected at the planner layer. Result-key shape for
-            # cross-model parametric aggs therefore diverges from
-            # legacy in this slice (no parity tests for that combination;
-            # structural correctness over bit-identical legacy output).
-            return prefix + canonical_agg_name(
-                measure_name=measure_name,
-                aggregation_name=key.agg,
-                agg_args=[agg_kwarg_canonical_str(a) for a in key.args] or None,
-                agg_kwargs={
-                    k: agg_kwarg_canonical_str(v) for k, v in key.kwargs
-                } or None,
-            )
-        # Fall through to text-based path -- AggregateKey source is
-        # neither StarKey, ColumnKey, nor ColumnSqlKey (shouldn't be
-        # reachable in practice; the binder restricts sources to
-        # those three shapes).
+        # The derivation lives in ``slayer.sql.naming`` (P-F). The
+        # ``stage_formula`` profile prefixes the join path RELATIVE to the stage
+        # (no source relation) and keeps a cross-model star's own path, so
+        # ``customers.*:count`` aliases as ``customers._count`` and surfaces as
+        # the result key ``orders.customers._count``.
+        #
+        # Both local and cross-model aggregates retain the kwarg suffix
+        # (``percentile(p=0.5)`` -> ``_p_0_5``). For cross-model parametric
+        # aggregates that DIVERGES from the deleted legacy pipeline, which
+        # dropped the suffix and thereby collided two parametric variants onto
+        # one alias — a ratified divergence, pinned by
+        # tests/test_dev1744_result_key_contract.py.
+        alias = canonical_aggregate_alias(
+            bound.value_key, profile="stage_formula",
+        )
+        if alias is not None:
+            return alias
+        # ``None`` means the aggregate's source exposes neither a leaf nor a
+        # column name — not reachable in practice (the binder restricts sources
+        # to ColumnKey / ColumnSqlKey / StarKey) — so fall through to the
+        # text-shape path below.
     text = formula.strip()
     if ":" in text and "(" not in text:
         base, agg = text.rsplit(":", 1)

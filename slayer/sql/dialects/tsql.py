@@ -34,7 +34,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.sql.naming import decode_alias, encode_alias
+from slayer.sql.naming import OUTER_WRAP_ALIAS, decode_alias, encode_alias
 from slayer.sql.dialects.base import SqlDialect, _build_covar_decomposition
 
 
@@ -325,7 +325,7 @@ class TsqlDialect(SqlDialect):
                     col.set("table", None)
         derived = exp.Subquery(
             this=parsed,
-            alias=exp.TableAlias(this=exp.to_identifier("_outer")),
+            alias=exp.TableAlias(this=exp.to_identifier(OUTER_WRAP_ALIAS)),
         )
         outer = exp.Select()
         for a in public:
