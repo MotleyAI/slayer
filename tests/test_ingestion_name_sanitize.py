@@ -413,9 +413,12 @@ class TestEngineDisposal:
 
         real_get_engine = engine_factory.get_engine
         disposed: list[bool] = []
+        real_dispose = None
 
         def _wrap(cfg):
+            nonlocal real_dispose
             engine = real_get_engine(cfg)
+            real_dispose = engine.dispose
 
             def _explode():
                 disposed.append(True)
@@ -426,9 +429,16 @@ class TestEngineDisposal:
 
         monkeypatch.setattr(engine_factory, "get_engine", _wrap)
 
-        report = ingest_datasource_report(datasource=ds)
-        assert {m.name for m in report.models} == {"orders"}
-        assert disposed, "dispose must still be attempted"
+        try:
+            report = ingest_datasource_report(datasource=ds)
+            assert {m.name for m in report.models} == {"orders"}
+            assert disposed, "dispose must still be attempted"
+        finally:
+            # The stub swallowed the real disposal, and engine_factory caches
+            # engines, so without this the pool would hold the SQLite file open
+            # for the rest of the session.
+            if real_dispose is not None:
+                real_dispose()
 
     def test_dispose_failure_is_logged_at_warning(
         self, workspace: Path, caplog
