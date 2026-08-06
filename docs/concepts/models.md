@@ -23,9 +23,10 @@ A query then asks for `revenue:sum` (aggregate the `revenue` column), `aov` (the
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | Yes | Unique model name. In the default YAML storage, names differing only by letter case (`Orders` vs `orders`) are rejected at save time (`IdCollisionError`) — they would collide as filenames on macOS / Windows |
-| `sql_table` | string | One of | A physical database table (e.g. `public.orders`) |
+| `sql_table` | string | One of | A physical database table or view (e.g. `public.orders`) |
 | `sql` | string | these | A SQL subquery to use as the source |
 | `source_queries` | list[SlayerQuery] | three | Saved query stages — makes the model **query-backed** |
+| `source_kind` | string | No | What kind of object `sql_table` names: `table`, `view`, or `materialized_view`. Set by auto-ingestion; `null` means unknown |
 | `data_source` | string | Yes | Datasource name |
 | `columns` | list[Column] | No | Column definitions. For query-backed models this is an engine-managed cache |
 | `measures` | list[ModelMeasure] | No | Named formula library — referenced by bare name in queries |
@@ -38,17 +39,29 @@ A query then asks for `revenue:sum` (aggregate the `revenue` column), `aov` (the
 | `description` | string | No | Helps agents and users understand the model |
 | `hidden` | bool | No | Hide from listings |
 | `meta` | dict | No | Arbitrary JSON metadata for caller bookkeeping |
-| `version` | int | No | Schema version stamp (currently `6`) |
+| `version` | int | No | Schema version stamp (currently `8`) |
 
 ## Source modes
 
 A model has exactly one source — set by one of three mutually exclusive fields:
 
-- **`sql_table`** — a physical database table.
+- **`sql_table`** — a physical database table or view.
 - **`sql`** — an explicit SQL subquery (a `SELECT` statement). Useful when the model's underlying shape requires cleaning or joining beyond what SLayer expresses natively.
 - **`source_queries`** — one or more saved `SlayerQuery` stages. Makes the model **query-backed**: see [Query-backed models](#query-backed-models).
 
 Validators reject empty `source_queries=[]`, multiple sources, or missing names on non-final stages.
+
+`sql_table` may name a **view** as well as a table — auto-ingestion creates
+models for views by default and records which it was in `source_kind`. Views
+expose no primary key and no foreign keys, so a view-backed model has no
+primary-key column and no auto-generated joins; `source_kind` is what tells you
+that re-ingesting will never produce them. A re-ingest refreshes the field, so a
+view later rebuilt as a table (dbt's `+materialized: table`) is picked up.
+
+Model names may not contain `__`, which is reserved for join-path aliases in
+generated SQL, but `sql_table` has no such restriction. Auto-ingestion uses
+this: an object named `reports__patient__drug` becomes a model named
+`reports_patient_drug` whose `sql_table` is still `reports__patient__drug`.
 
 ## Columns
 

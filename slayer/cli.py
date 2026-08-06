@@ -278,6 +278,16 @@ examples:
         default=None,
         help="Comma-separated list of tables to exclude",
     )
+    ingest_parser.add_argument(
+        "--no-views",
+        dest="include_views",
+        action="store_false",
+        default=True,
+        help=(
+            "Skip database views and materialized views (they are ingested "
+            "by default)"
+        ),
+    )
     _add_storage_arg(ingest_parser)
 
     # ── validate-models ───────────────────────────────────────────────
@@ -522,6 +532,16 @@ examples:
         "--exclude",
         default=None,
         help="(with --ingest) Comma-separated list of tables to exclude",
+    )
+    datasources_create_parser.add_argument(
+        "--no-views",
+        dest="include_views",
+        action="store_false",
+        default=True,
+        help=(
+            "(with --ingest) Skip database views and materialized views "
+            "(they are ingested by default)"
+        ),
     )
     datasources_create_parser.add_argument(
         "--years",
@@ -1374,12 +1394,40 @@ def _run_ingest(args):
             schema=args.schema,
             include_tables=_parse_csv_arg(args.include),
             exclude_tables=_parse_csv_arg(args.exclude),
+            include_views=getattr(args, "include_views", True),
         )
     )
+
+    # An ingest that found nothing used to print nothing and exit 0,
+    # which is what convinced the reporter their schema of dbt views was empty.
+    # Gate on ``objects`` rather than ``additions`` so a healthy no-op re-ingest
+    # (objects exist, all already in sync) stays quiet.
+    if not (
+        result.additions
+        or result.to_delete
+        or result.errors
+        or result.skipped
+        or result.objects
+    ):
+        from slayer.engine.ingestion import _empty_ingest_message
+
+        print(
+            _empty_ingest_message(
+                schema_name=args.schema or "",
+                ds=ds,
+                retry_hint=(
+                    "Try re-running with --schema set to one of these."
+                ),
+            )
+        )
+        sys.exit(1)
+
     for addition in result.additions:
         _print_ingest_addition(addition)
     _print_ingest_drift_and_errors(result)
-    if result.errors:
+    # A skip means we declined to ingest a perfectly valid object, so it fails
+    # the command — `--exclude <name>` is the documented way to make it green.
+    if result.errors or result.skipped:
         sys.exit(1)
 
 
@@ -1954,6 +2002,7 @@ def _run_datasources_create(args, storage):
             schema=args.schema,
             include_tables=include,
             exclude_tables=exclude,
+            include_views=getattr(args, "include_views", True),
         )
     except Exception as e:
         print(f"Ingestion failed: {e}")

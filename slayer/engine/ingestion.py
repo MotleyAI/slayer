@@ -17,9 +17,15 @@ import sqlalchemy as sa
 import sqlalchemy.dialects.mssql as _sqla_mssql
 from pydantic import BaseModel, Field
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, ObjectKind
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import (
+    Column,
+    DatasourceConfig,
+    ModelJoin,
+    SlayerModel,
+    sanitize_model_name,
+)
 from slayer.engine.introspect_utils import (  # noqa: F401  (re-exported for back-compat)
     _FLOAT_LIKE_INFO_SCHEMA_TYPES,
     _INFO_SCHEMA_TYPE_MAP,
@@ -307,8 +313,17 @@ def _get_fk_relationships(
     """Get FK relationships for a table, filtered to tables in table_set.
 
     Returns list of (source_column, target_table, target_column).
+
+    FK lookup is guarded: views carry no foreign keys and some dialects raise
+    rather than returning an empty list. This helper feeds ``_build_fk_graph``,
+    which runs before per-object model construction, so an unguarded raise
+    would abort the entire ingest.
     """
-    fks = inspector.get_foreign_keys(table_name, schema=schema)
+    try:
+        fks = inspector.get_foreign_keys(table_name, schema=schema)
+    except Exception as exc:  # noqa: BLE001 — FK metadata is optional
+        logger.debug("get_foreign_keys failed for %r: %s", table_name, exc)
+        return []
     result = []
     for fk in fks:
         referred_table = fk["referred_table"]
@@ -590,6 +605,7 @@ def _columns_to_model(
     data_source: str,
     sql_table: str | None = None,
     joins: list[ModelJoin] | None = None,
+    source_kind: ObjectKind | None = None,
 ) -> SlayerModel:
     """Generate a SlayerModel from introspected ``(column_name, DataType,
     is_pk, is_float, db_type)`` tuples.
@@ -638,6 +654,7 @@ def _columns_to_model(
         data_source=data_source,
         columns=cols,
         joins=joins or [],
+        source_kind=source_kind,
     )
 
 
@@ -727,11 +744,16 @@ def introspect_table_to_model(
     schema: str | None,
     data_source: str,
     model_name: str | None = None,
+    source_kind: ObjectKind | None = None,
 ) -> SlayerModel:
     """Introspect a single table (no FK rollup) and return a SlayerModel.
 
     This is the building block shared between the auto-ingest path and the
     dbt hidden-model import. It never builds joins or traverses the FK graph.
+
+    ``source_kind`` defaults to ``None``: the dbt and OSI converters call this
+    without classifying the live object, and ``None`` correctly means "not
+    known" rather than a guess.
     """
     columns = _introspect_query_columns_via_inspector(
         sa_engine=sa_engine,
@@ -753,7 +775,161 @@ def introspect_table_to_model(
         columns=columns,
         data_source=data_source,
         sql_table=sql_table,
+        source_kind=source_kind,
     )
+
+
+# ---------------------------------------------------------------------------
+# Object discovery
+# ---------------------------------------------------------------------------
+
+
+class IngestableObject(BaseModel):
+    """One database object discovered by :func:`list_ingestable_objects`."""
+
+    name: str
+    kind: ObjectKind
+
+
+class SkippedTable(BaseModel):
+    """A live object that could not be turned into a model.
+
+    Distinct from ``IngestionError`` ("this model failed to persist") — separate
+    cause, separate fix, so reported separately.
+    """
+
+    table_name: str
+    reason: str
+    kind: ObjectKind | None = None
+
+
+class IngestionScanReport(BaseModel):
+    """Full result of one introspection pass over a datasource."""
+
+    models: list[SlayerModel] = Field(default_factory=list)
+    skipped: list[SkippedTable] = Field(default_factory=list)
+    # Every object discovered, whether or not it produced a model. Lets the
+    # caller tell "the schema was empty" apart from "the schema had objects
+    # but they were all skipped / already in sync" — the CLI needs that
+    # distinction to decide between the empty-schema hint and silence.
+    objects: list[IngestableObject] = Field(default_factory=list)
+
+
+def _safe_object_names(
+    *,
+    accessor_name: str,
+    inspector: sa.engine.Inspector,
+    schema: str | None,
+) -> list[str]:
+    """Call an ``Inspector.get_*_names`` accessor, tolerating dialects that
+    lack it.
+
+    ``get_materialized_view_names`` raises ``NotImplementedError`` where
+    unsupported, so it cannot be called bare. Driver errors are tolerated too —
+    broken view discovery must not stop tables ingesting.
+    """
+    accessor = getattr(inspector, accessor_name, None)
+    if accessor is None:
+        return []
+    try:
+        return list(accessor(schema=schema) or [])
+    except NotImplementedError:
+        logger.debug("%s not implemented for this dialect", accessor_name)
+        return []
+    except Exception as exc:  # noqa: BLE001 — discovery is best-effort
+        logger.debug("%s failed: %s", accessor_name, exc)
+        return []
+
+
+def list_ingestable_objects(
+    *,
+    inspector: sa.engine.Inspector,
+    schema: str | None,
+    include_views: bool = True,
+) -> list[IngestableObject]:
+    """Discover every ingestable object in ``schema``, classified by kind.
+
+    Order is deterministic (tables, views, matviews) because
+    :func:`_assign_model_names` resolves collisions first-come. Deduped across
+    accessors — some dialects return views from ``get_table_names()``.
+    """
+    objects: list[IngestableObject] = []
+    seen: set[str] = set()
+
+    def _add(names: list[str], kind: ObjectKind) -> None:
+        for name in names:
+            if name in seen:
+                continue
+            seen.add(name)
+            objects.append(IngestableObject(name=name, kind=kind))
+
+    _add(list(inspector.get_table_names(schema=schema) or []), "table")
+    if include_views:
+        _add(
+            _safe_object_names(
+                accessor_name="get_view_names", inspector=inspector, schema=schema
+            ),
+            "view",
+        )
+        _add(
+            _safe_object_names(
+                accessor_name="get_materialized_view_names",
+                inspector=inspector,
+                schema=schema,
+            ),
+            "materialized_view",
+        )
+    return objects
+
+
+def _assign_model_names(
+    objects: list[IngestableObject],
+) -> tuple[dict[str, str], list[SkippedTable]]:
+    """Map each object name to its model name, returning ``(mapping, skipped)``.
+
+    Model names may not contain ``__`` (the SQL generator splits it back into a
+    join path, so ``a__b`` would silently query ``a -> b``); object names may,
+    so only the model name is sanitized.
+
+    Unsanitized names are reserved first, so a real ``a_b`` beats a sanitized
+    ``a__b``. Collisions skip rather than suffix — suffixes shift with the
+    object set, orphaning models and churning drift.
+
+    Both passes are scan-order independent. The sanitized pass walks its
+    candidates in sorted order, so when two objects collapse to the same name
+    (``a__b`` and ``a___b`` both yield ``a_b``) the winner is fixed by the name
+    itself, not by whichever the inspector happened to list first. Otherwise a
+    dialect changing its listing order would silently repoint the model at a
+    different physical object.
+    """
+    assigned: dict[str, str] = {}
+    taken: set[str] = {o.name for o in objects if "__" not in o.name}
+    skipped: list[SkippedTable] = []
+
+    for obj in objects:
+        if "__" not in obj.name:
+            assigned[obj.name] = obj.name
+
+    for obj in sorted(
+        (o for o in objects if "__" in o.name), key=lambda o: o.name
+    ):
+        candidate = sanitize_model_name(obj.name)
+        if candidate in taken:
+            skipped.append(
+                SkippedTable(
+                    table_name=obj.name,
+                    kind=obj.kind,
+                    reason=(
+                        f"name collision: sanitizing '__' yields "
+                        f"'{candidate}', which is already taken"
+                    ),
+                )
+            )
+            continue
+        taken.add(candidate)
+        assigned[obj.name] = candidate
+
+    return assigned, skipped
 
 
 # ---------------------------------------------------------------------------
@@ -761,110 +937,208 @@ def introspect_table_to_model(
 # ---------------------------------------------------------------------------
 
 
+def _build_one_model(
+    *,
+    sa_engine: sa.Engine,
+    inspector: sa.engine.Inspector,
+    obj: IngestableObject,
+    model_name: str,
+    schema: str | None,
+    data_source: str,
+    fk_graph: dict[str, set[str]],
+    has_cycles: bool,
+    fk_columns_by_table: dict[str, set[str]],
+    table_set: set[str],
+) -> SlayerModel:
+    """Introspect one live object into a model. Raises on failure; the caller
+    isolates per-object."""
+    referenced = (
+        set() if has_cycles else _compute_transitive_closure(fk_graph, obj.name)
+    )
+    sql_table = f"{schema}.{obj.name}" if schema else obj.name
+
+    model_joins = None
+    if referenced:
+        model_joins = _generate_joins(
+            inspector=inspector,
+            source_table=obj.name,
+            referenced_tables=referenced,
+            schema=schema,
+            table_set=table_set,
+        )
+
+    columns = _introspect_query_columns_via_inspector(
+        sa_engine=sa_engine,
+        inspector=inspector,
+        table_name=obj.name,
+        schema=schema,
+        rollup_sql=None,
+        referenced_tables=referenced,
+        fk_columns_by_table=fk_columns_by_table,
+        joins=model_joins,
+    )
+    columns = _sqlite_probe_integer_columns(
+        sa_engine=sa_engine,
+        sql_table=sql_table,
+        columns=columns,
+    )
+    return _columns_to_model(
+        name=model_name,
+        columns=columns,
+        data_source=data_source,
+        sql_table=sql_table,
+        joins=model_joins,
+        source_kind=obj.kind,
+    )
+
+
+def _dispose_quietly(sa_engine: sa.Engine) -> None:
+    """Dispose ``sa_engine``, logging rather than raising on failure.
+
+    Called from ``finally`` blocks, so raising would replace the in-flight
+    exception (or turn a successful run into a failure) — the caller would see
+    a teardown error instead of the driver error that actually failed.
+
+    Logged at WARNING, not DEBUG: disposal is what releases the connection so
+    an external ``duckdb.connect(file)`` can open the same file, so a failure
+    here is a real resource leak and needs to be operationally visible.
+    """
+    try:
+        sa_engine.dispose()
+    except Exception as exc:  # noqa: BLE001 — teardown must not mask the cause
+        logger.warning(
+            "engine dispose failed; the connection may remain open: %s", exc
+        )
+
+
+def _collect_fk_columns(
+    *,
+    inspector: sa.engine.Inspector,
+    table_names: list[str],
+    schema: str | None,
+) -> dict[str, set[str]]:
+    """Map each table to its FK-constrained columns, for rollup exclusion.
+
+    Guarded per table: views have no foreign keys and some dialects raise
+    instead of returning ``[]``. This runs before per-object model
+    construction, so an unguarded raise would abort the whole ingest.
+    """
+    out: dict[str, set[str]] = defaultdict(set)
+    for table_name in table_names:
+        try:
+            fks = inspector.get_foreign_keys(table_name, schema=schema)
+        except Exception as exc:  # noqa: BLE001 — FK metadata is optional
+            logger.debug("get_foreign_keys failed for %r: %s", table_name, exc)
+            continue
+        for fk in fks:
+            for col in fk["constrained_columns"]:
+                out[table_name].add(col)
+    return out
+
+
+def ingest_datasource_report(
+    datasource: DatasourceConfig,
+    include_tables: list[str] | None = None,
+    exclude_tables: list[str] | None = None,
+    schema: str | None = None,
+    include_views: bool = True,
+) -> IngestionScanReport:
+    """Introspect ``datasource``, returning models plus everything skipped.
+
+    Discovers views and matviews (``include_views``), and skips an unmodellable
+    object with a reason rather than aborting the run.
+    """
+    from slayer.sql import engine_factory
+    sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
+    try:
+        inspector = sa.inspect(sa_engine)
+
+        objects = list_ingestable_objects(
+            inspector=inspector, schema=schema, include_views=include_views
+        )
+        if include_tables:
+            objects = [o for o in objects if o.name in include_tables]
+        if exclude_tables:
+            objects = [o for o in objects if o.name not in exclude_tables]
+
+        table_names = [o.name for o in objects]
+        table_set = set(table_names)
+
+        name_by_object, skipped = _assign_model_names(objects)
+
+        # Build FK graph, check for cycles
+        fk_graph = _build_fk_graph(
+            inspector=inspector, table_names=table_names, schema=schema
+        )
+        has_cycles = False
+        try:
+            _check_acyclic(fk_graph)
+        except RollupGraphError as e:
+            logger.warning(f"FK graph has cycles, skipping rollup: {e}")
+            has_cycles = True
+
+        fk_columns_by_table = _collect_fk_columns(
+            inspector=inspector, table_names=table_names, schema=schema
+        )
+
+        models = []
+        for obj in objects:
+            model_name = name_by_object.get(obj.name)
+            if model_name is None:
+                continue  # already recorded in ``skipped`` by _assign_model_names
+            try:
+                models.append(
+                    _build_one_model(
+                        sa_engine=sa_engine,
+                        inspector=inspector,
+                        obj=obj,
+                        model_name=model_name,
+                        schema=schema,
+                        data_source=datasource.name,
+                        fk_graph=fk_graph,
+                        has_cycles=has_cycles,
+                        fk_columns_by_table=fk_columns_by_table,
+                        table_set=table_set,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 — per-object isolation
+                logger.warning(
+                    "Skipping %s %r in datasource %r: %s",
+                    obj.kind, obj.name, datasource.name, exc,
+                )
+                skipped.append(
+                    SkippedTable(table_name=obj.name, kind=obj.kind, reason=str(exc))
+                )
+
+        return IngestionScanReport(
+            models=models, skipped=skipped, objects=objects
+        )
+    finally:
+        # One-shot admin operation, not a hot query path. Disposing releases
+        # the underlying connection so other consumers (notably
+        # ``duckdb.connect(file)`` in notebooks) can open the same file. In a
+        # ``finally`` because discovery, the FK graph, and the FK-column pass
+        # can all raise a driver error — the REST layer explicitly handles
+        # ``SQLAlchemyError`` from here — and an undisposed engine would keep
+        # the connection open, which is the exact problem this prevents.
+        _dispose_quietly(sa_engine)
+
+
 def ingest_datasource(
     datasource: DatasourceConfig,
     include_tables: list[str] | None = None,
     exclude_tables: list[str] | None = None,
     schema: str | None = None,
+    include_views: bool = True,
 ) -> list[SlayerModel]:
-    from slayer.sql import engine_factory
-    sa_engine = engine_factory.get_engine(datasource.resolve_env_vars())
-    inspector = sa.inspect(sa_engine)
-
-    table_names = inspector.get_table_names(schema=schema)
-    if include_tables:
-        table_names = [t for t in table_names if t in include_tables]
-    if exclude_tables:
-        table_names = [t for t in table_names if t not in exclude_tables]
-
-    table_set = set(table_names)
-
-    # Build FK graph, check for cycles
-    fk_graph = _build_fk_graph(inspector=inspector, table_names=table_names, schema=schema)
-    has_cycles = False
-    try:
-        _check_acyclic(fk_graph)
-    except RollupGraphError as e:
-        logger.warning(f"FK graph has cycles, skipping rollup: {e}")
-        has_cycles = True
-
-    # Collect FK columns per table (for excluding from rollup)
-    fk_columns_by_table: dict[str, set[str]] = defaultdict(set)
-    for table_name in table_names:
-        fks = inspector.get_foreign_keys(table_name, schema=schema)
-        for fk in fks:
-            for col in fk["constrained_columns"]:
-                fk_columns_by_table[table_name].add(col)
-
-    models = []
-    for table_name in table_names:
-        referenced = set() if has_cycles else _compute_transitive_closure(fk_graph, table_name)
-        sql_table = f"{schema}.{table_name}" if schema else table_name
-
-        if referenced:
-            # Build explicit joins and introspect columns
-            model_joins = _generate_joins(
-                inspector=inspector,
-                source_table=table_name,
-                referenced_tables=referenced,
-                schema=schema,
-                table_set=table_set,
-            )
-            columns = _introspect_query_columns_via_inspector(
-                sa_engine=sa_engine,
-                inspector=inspector,
-                table_name=table_name,
-                schema=schema,
-                rollup_sql=None,
-                referenced_tables=referenced,
-                fk_columns_by_table=fk_columns_by_table,
-                joins=model_joins,
-            )
-            columns = _sqlite_probe_integer_columns(
-                sa_engine=sa_engine,
-                sql_table=sql_table,
-                columns=columns,
-            )
-            model = _columns_to_model(
-                name=table_name,
-                columns=columns,
-                data_source=datasource.name,
-                sql_table=sql_table,
-                joins=model_joins,
-            )
-        else:
-            # Simple table — introspect directly
-            columns = _introspect_query_columns_via_inspector(
-                sa_engine=sa_engine,
-                inspector=inspector,
-                table_name=table_name,
-                schema=schema,
-                rollup_sql=None,
-                referenced_tables=set(),
-                fk_columns_by_table=fk_columns_by_table,
-            )
-            columns = _sqlite_probe_integer_columns(
-                sa_engine=sa_engine,
-                sql_table=sql_table,
-                columns=columns,
-            )
-            model = _columns_to_model(
-                name=table_name,
-                columns=columns,
-                data_source=datasource.name,
-                sql_table=sql_table,
-            )
-
-        models.append(model)
-
-    # ingest_datasource is a one-shot admin operation, not a hot query
-    # path. Disposing here releases the underlying connection so other
-    # consumers (notably ``duckdb.connect(file)`` in notebooks) can open
-    # the same file. The engine_factory cache will rebuild on the next
-    # call; the cost is one extra ``sa.create_engine`` per ingest, which
-    # is negligible compared to the actual schema-introspection work.
-    sa_engine.dispose()
-    return models
+    """Models only, for callers that don't need the skip report."""
+    return ingest_datasource_report(
+        datasource=datasource,
+        include_tables=include_tables,
+        exclude_tables=exclude_tables,
+        schema=schema,
+        include_views=include_views,
+    ).models
 
 
 # ---------------------------------------------------------------------------
@@ -968,20 +1242,27 @@ def _merge_joins_strict(
     return new_joins, new_join_targets
 
 
+class AdditiveMergeResult(BaseModel):
+    """Outcome of :func:`_additive_merge_existing`."""
+
+    merged: SlayerModel
+    new_columns: list[str] = Field(default_factory=list)
+    new_joins: list[str] = Field(default_factory=list)
+    widened_columns: list[str] = Field(default_factory=list)
+    kind_changed: bool = False
+
+
 def _additive_merge_existing(
     *,
     persisted: SlayerModel,
     fresh: SlayerModel,
     sqlite_widen_enabled: bool = False,
-) -> tuple[SlayerModel, list[str], list[str], list[str]]:
+) -> AdditiveMergeResult:
     """Merge a freshly-ingested ``fresh`` model into ``persisted`` additively.
-
-    Returns ``(merged, new_column_names, new_join_target_names,
-    widened_column_names)``.
 
     * Existing columns are preserved verbatim (description / label / format /
       meta / allowed_aggregations / filter never overwritten).
-    * DEV-1538 carve-out (SQLite only — ``sqlite_widen_enabled=True``): a
+    * SQLite-only carve-out (``sqlite_widen_enabled=True``): a
       fresh column whose type widened from the persisted ``DataType.INT``
       (i.e. fresh type is ``DOUBLE`` or ``TEXT``) replaces ONLY the persisted
       type — and the persisted ``format`` IF the persisted format is the
@@ -993,6 +1274,12 @@ def _additive_merge_existing(
     * Live columns whose names are absent from ``persisted.columns`` are
       appended from ``fresh.columns``.
     * Joins with new ``(target_model, join_pairs)`` signatures are appended.
+    * Carve-out: ``source_kind`` is REFRESHED, not preserved. It
+      describes the live object, not user intent, and the transition it exists
+      to capture — dbt's ``+materialized: table`` turning a view into a table —
+      usually changes no columns at all. A field that never refreshed would
+      confidently lie about precisely the case it was added for. A ``None``
+      from a path that doesn't classify never erases a known value.
     """
     existing_by_name: dict[str, Column] = {c.name: c for c in persisted.columns}
     fresh_by_name: dict[str, Column] = {c.name: c for c in fresh.columns}
@@ -1019,13 +1306,33 @@ def _additive_merge_existing(
 
     new_joins, new_join_targets = _merge_joins_strict(persisted, fresh)
 
-    if not new_column_names and not new_join_targets and not widened_column_names:
-        return persisted, [], [], []
-
-    merged = persisted.model_copy(
-        update={"columns": merged_columns, "joins": new_joins}
+    # A view→table flip typically changes nothing else, so the kind check has
+    # to participate in the short-circuit below — not just in the update dict —
+    # or the refresh would never be reached.
+    kind_changed = (
+        fresh.source_kind is not None
+        and fresh.source_kind != persisted.source_kind
     )
-    return merged, new_column_names, new_join_targets, widened_column_names
+
+    if not (
+        new_column_names
+        or new_join_targets
+        or widened_column_names
+        or kind_changed
+    ):
+        return AdditiveMergeResult(merged=persisted)
+
+    update: dict[str, Any] = {"columns": merged_columns, "joins": new_joins}
+    if kind_changed:
+        update["source_kind"] = fresh.source_kind
+
+    return AdditiveMergeResult(
+        merged=persisted.model_copy(update=update),
+        new_columns=new_column_names,
+        new_joins=new_join_targets,
+        widened_columns=widened_column_names,
+        kind_changed=kind_changed,
+    )
 
 
 async def _process_one_table(
@@ -1050,25 +1357,40 @@ async def _process_one_table(
             created=True,
             new_columns=[c.name for c in fresh.columns],
             new_joins=[j.target_model for j in fresh.joins],
+            source_kind=fresh.source_kind,
         )
     if persisted.sql or persisted.source_queries:
         # User-authored sql / query-backed model with the matching name —
         # leave it alone.
         return None
-    merged, new_cols, new_joins, widened_cols = _additive_merge_existing(
+    outcome = _additive_merge_existing(
         persisted=persisted,
         fresh=fresh,
         sqlite_widen_enabled=(datasource.type or "").lower() == "sqlite",
     )
-    if new_cols or new_joins or widened_cols:
-        await storage.save_model(merged)
+    # ``kind_changed`` must gate the save too: a view→table flip
+    # usually adds no columns and no joins, so without it the refreshed model
+    # would be computed and then thrown away.
+    if (
+        outcome.new_columns
+        or outcome.new_joins
+        or outcome.widened_columns
+        or outcome.kind_changed
+    ):
+        await storage.save_model(outcome.merged)
+    kind_change = None
+    if outcome.kind_changed:
+        before = persisted.source_kind or "unknown"
+        kind_change = f"{before} → {fresh.source_kind}"
     return ModelAddition(
         model_name=table_name,
         data_source=datasource.name,
         created=False,
-        new_columns=new_cols,
-        new_joins=new_joins,
-        widened_columns=widened_cols,
+        new_columns=outcome.new_columns,
+        new_joins=outcome.new_joins,
+        widened_columns=outcome.widened_columns,
+        source_kind=outcome.merged.source_kind,
+        kind_change=kind_change,
     )
 
 
@@ -1112,8 +1434,9 @@ async def ingest_datasource_idempotent(
     include_tables: list[str] | None = None,
     exclude_tables: list[str] | None = None,
     schema: str | None = None,
+    include_views: bool = True,
 ):
-    """Idempotent re-ingestion (DEV-1356).
+    """Idempotent re-ingestion.
 
     Walks the live datasource and, for each in-scope table:
 
@@ -1138,18 +1461,27 @@ async def ingest_datasource_idempotent(
     additions: list[ModelAddition] = []
     errors: list[IngestionError] = []
 
-    # ``ingest_datasource`` is sync (it drives SQLAlchemy ``Inspector``).
+    # ``ingest_datasource_report`` is sync (it drives SQLAlchemy ``Inspector``).
     # Offload to a thread so a slow / large datasource doesn't block the
     # event loop while server-facing requests are in flight.
-    fresh_models = await asyncio.to_thread(
-        ingest_datasource,
+    scan = await asyncio.to_thread(
+        ingest_datasource_report,
         datasource=datasource,
         include_tables=include_tables,
         exclude_tables=exclude_tables,
         schema=schema,
+        include_views=include_views,
     )
+    fresh_models = scan.models
     fresh_by_name = {m.name: m for m in fresh_models}
-    in_scope_table_names: set[str] = set(fresh_by_name.keys())
+    # Keyed on the LIVE OBJECT name, not the model name. ``_scoped_models_for_validation``
+    # compares this against ``_bare_table_name(m.sql_table)``, so using model
+    # names silently dropped from validation scope any model whose name differs
+    # from its table — every ``__``-sanitized model, and already
+    # every dbt/OSI hidden model that passes ``model_name=``.
+    in_scope_table_names: set[str] = {
+        _bare_table_name(m.sql_table) for m in fresh_models if m.sql_table
+    }
 
     for table_name, fresh in fresh_by_name.items():
         try:
@@ -1213,6 +1545,8 @@ async def ingest_datasource_idempotent(
         additions=additions,
         to_delete=list(to_delete),
         errors=errors,
+        skipped=scan.skipped,
+        objects=scan.objects,
     )
 
 
@@ -1254,18 +1588,58 @@ def _friendly_db_error(exc: Exception) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _get_schemas(ds: DatasourceConfig) -> list[str]:
+    """List a datasource's schemas. Best-effort; empty means no hint."""
+    try:
+        from slayer.sql import engine_factory
+        engine = engine_factory.get_engine(ds.resolve_env_vars())
+        inspector = sa.inspect(engine)
+        return inspector.get_schema_names()
+    except Exception:  # noqa: BLE001 — hint-only and never fatal
+        return []
+
+
+def _empty_ingest_message(
+    *,
+    schema_name: str,
+    ds: DatasourceConfig,
+    retry_hint: str | None = None,
+) -> str:
+    """Explain an empty ingest and point at the likely fix.
+
+    Says "tables or views" so a views-only schema doesn't read as empty.
+    ``retry_hint`` comes from the caller, keeping this interface-neutral.
+    """
+    schema_label = f" in schema '{schema_name}'" if schema_name else ""
+    lines = [f"No tables or views found{schema_label}."]
+    schemas = _get_schemas(ds)
+    if schemas:
+        lines.append(f"Available schemas: {', '.join(schemas)}")
+        if retry_hint:
+            lines.append(retry_hint)
+    return "\n".join(lines)
+
+
+_KIND_LABELS = {"view": " [view]", "materialized_view": " [materialized view]"}
+
+
 def _print_ingest_addition(
     addition, *, file: TextIO | None = None
 ) -> None:
     out = file if file is not None else sys.stdout
+    # Label non-table objects so a view-backed model is obvious at
+    # ingest time — views carry no primary key and no FK-derived joins.
+    label = _KIND_LABELS.get(getattr(addition, "source_kind", None) or "", "")
     if addition.created:
         print(
-            f"Created: {addition.model_name} ({len(addition.new_columns)} columns)",
+            f"Created: {addition.model_name} "
+            f"({len(addition.new_columns)} columns){label}",
             file=out,
         )
         return
     widened = getattr(addition, "widened_columns", []) or []
-    if not (addition.new_columns or addition.new_joins or widened):
+    kind_change = getattr(addition, "kind_change", None)
+    if not (addition.new_columns or addition.new_joins or widened or kind_change):
         return
     details = []
     if addition.new_columns:
@@ -1274,6 +1648,8 @@ def _print_ingest_addition(
         details.append(f"+joins: {', '.join(addition.new_joins)}")
     if widened:
         details.append(f"widened: {', '.join(widened)}")
+    if kind_change:
+        details.append(f"source_kind: {kind_change}")
     print(f"Updated: {addition.model_name} ({'; '.join(details)})", file=out)
 
 
@@ -1285,6 +1661,18 @@ def _print_ingest_drift_and_errors(
         print("\nPending drift (run `slayer validate-models` to inspect):", file=out)
         for entry in result.to_delete:
             print(f"  - {entry.tool}: {entry.model_name}", file=out)
+    # Skips are reported separately from errors — "this object can't
+    # be modelled" has a different cause and a different fix from "this model
+    # failed to persist".
+    skipped = getattr(result, "skipped", None) or []
+    if skipped:
+        print(
+            f"\nSkipped ({len(skipped)}) — not modellable; "
+            f"re-run with --exclude to silence:",
+            file=out,
+        )
+        for entry in skipped:
+            print(f"  - {entry.table_name}: {entry.reason}", file=out)
     if result.errors:
         print(f"\nErrors ({len(result.errors)}):", file=out)
         for err in result.errors:
