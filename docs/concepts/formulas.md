@@ -67,6 +67,12 @@ Windowed measures need exactly one resolvable time dimension (a single
 a windowed measure (`{"formula": "revenue:sum(window='90d') > 100"}`) applies
 after aggregation, and the windowed measure must also be selected.
 
+A group whose dimension value is NULL gets its real windowed value, like any
+other group. (Earlier versions returned NULL for such groups: the rolling
+aggregate was matched to its group with a plain equality, and `NULL = NULL` is
+not true. Grouping keys now compare null-safely everywhere, so a NULL region or
+an unmatched outer join no longer silently blanks the measure.)
+
 A windowed measure may also be used purely as an **order** target without being
 selected — `{"order": [{"column": "revenue:sum(window='90d')", "direction": "desc"}]}`
 ranks by the rolling value and keeps it out of the result. That works both for a
