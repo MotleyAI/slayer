@@ -52,7 +52,6 @@ from slayer.core.enums import DataType
 from slayer.core.errors import (
     DistinctDimensionValuesError,
     UnknownReferenceError,
-    UnresolvableOrderColumnError,
 )
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
@@ -1006,15 +1005,24 @@ class TestWindowedStillGuarded:
 # must not swallow the Stage-8 rejections.
 # ===========================================================================
 class TestStillRejected:
-    async def test_joined_row_column_order_still_raises(self, engine) -> None:
+    async def test_joined_row_column_order_resolves_host_rooted(
+        self, engine,
+    ) -> None:
+        """DEV-1747 D2 replaced this rejection with a host-rooted CTE. What
+        Group 8 still guards is that widening the hidden-order branch did not
+        change the GRAIN: the sort key must not join the base or reach the
+        projection."""
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[ModelMeasure(formula="*:count")],
             order=[OrderItem(column="customers.region", direction="desc")],
         )
-        with pytest.raises(UnresolvableOrderColumnError):
-            await _sql(engine, query)
+        sql = await _sql(engine, query)
+        parsed = _outermost_select(sql, dialect="sqlite")
+        assert [e.alias_or_name for e in parsed.expressions] == [
+            "orders.status", "orders._count",
+        ], sql
 
     async def test_ungrouped_row_column_still_splits(self, engine) -> None:
         """The DEV-1712 split-emission path must be untouched."""
@@ -1126,7 +1134,9 @@ class TestStillRejected:
         is not in the GROUP BY.
         """
         from slayer.core.keys import ColumnKey, Phase
-        from slayer.engine.planned import OrderEntry, PlannedQuery, ValueSlot
+        from slayer.engine.planned import (
+            OrderEntry, OrderScope, PlannedQuery, ValueSlot,
+        )
         from slayer.sql.generator import SQLGenerator
 
         slot = ValueSlot(
@@ -1139,7 +1149,11 @@ class TestStillRejected:
         planned = PlannedQuery(
             source_relation="orders",
             row_slots=[slot],
-            order=[OrderEntry(slot_id="s0", direction="asc")],
+            order=[OrderEntry(
+                slot_id="s0", direction="asc",
+                # DEV-1747 §5.10 — classification is required on every entry.
+                scope=OrderScope.HOST_BASE_HIDDEN, phase=Phase.ROW,
+            )],
         )
         # Everything that can throw is built OUTSIDE the raises block, so the
         # only invocation under test is the call itself.

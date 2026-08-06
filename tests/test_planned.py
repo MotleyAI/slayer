@@ -29,6 +29,7 @@ from slayer.engine.planned import (
     FilterPhase,
     JoinRequirement,
     OrderEntry,
+    OrderScope,
     PlannedQuery,
     TransformLayer,
     ValueSlot,
@@ -312,25 +313,47 @@ class TestFilterPhase:
 
 
 class TestOrderEntry:
+    # DEV-1747 §5.10 — ``scope`` and ``phase`` are required with no default, so
+    # a planner path that forgets to classify fails at construction instead of
+    # falling through to the ``_base.``-qualified render branch.
+    _CLASSIFIED = {"scope": OrderScope.HOST_BASE, "phase": Phase.ROW}
+
     def test_asc(self):
-        o = OrderEntry(slot_id="s1", direction="asc")
+        o = OrderEntry(slot_id="s1", direction="asc", **self._CLASSIFIED)
         assert o.direction == "asc"
 
     def test_desc(self):
-        o = OrderEntry(slot_id="s1", direction="desc")
+        o = OrderEntry(slot_id="s1", direction="desc", **self._CLASSIFIED)
         assert o.direction == "desc"
+
+    def test_scope_and_phase_are_required(self):
+        with pytest.raises(ValueError):
+            OrderEntry(slot_id="s1", direction="asc")  # type: ignore[call-arg]
+
+    def test_nulls_defaults_to_the_dialect_default(self):
+        o = OrderEntry(slot_id="s1", direction="asc", **self._CLASSIFIED)
+        assert o.nulls == "default"
 
     def test_invalid_direction_rejected(self):
         with pytest.raises(ValueError):
-            OrderEntry(slot_id="s1", direction="random")  # type: ignore[arg-type]
+            OrderEntry(
+                slot_id="s1", direction="random",  # type: ignore[arg-type]
+                **self._CLASSIFIED,
+            )
 
     def test_uppercase_direction_rejected(self):
         # OrderEntry is planner-produced — strict lowercase is intentional.
         # If user input ever feeds it directly, the caller must lowercase.
         with pytest.raises(ValueError):
-            OrderEntry(slot_id="s1", direction="ASC")  # type: ignore[arg-type]
+            OrderEntry(
+                slot_id="s1", direction="ASC",  # type: ignore[arg-type]
+                **self._CLASSIFIED,
+            )
         with pytest.raises(ValueError):
-            OrderEntry(slot_id="s1", direction="DESC")  # type: ignore[arg-type]
+            OrderEntry(
+                slot_id="s1", direction="DESC",  # type: ignore[arg-type]
+                **self._CLASSIFIED,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +483,9 @@ class TestCompose:
         assert pq.transform_layers == [layer]
 
     def test_order_in_planned(self):
-        oe = OrderEntry(slot_id="s1", direction="desc")
+        oe = OrderEntry(
+            slot_id="s1", direction="desc",
+            scope=OrderScope.HOST_BASE, phase=Phase.AGGREGATE,
+        )
         pq = PlannedQuery(source_relation="orders", order=[oe])
         assert pq.order == [oe]

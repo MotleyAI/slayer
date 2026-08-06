@@ -219,6 +219,35 @@ class SqlDialect(BaseModel):
         """
         return exp.NullSafeEQ(this=left, expression=right)
 
+    # ------------------------------------------------------------------
+    # ORDER BY term construction (DEV-1747 D5 / P-H)
+    # ------------------------------------------------------------------
+
+    def build_ordered(
+        self,
+        order_col: exp.Expression,
+        *,
+        descending: bool,
+        nulls: str = "default",
+    ) -> exp.Ordered:
+        """Build one ``ORDER BY`` term with its null-ordering policy applied.
+
+        The single place any render site turns a resolved column plus a
+        direction into an ``exp.Ordered`` (P-H). It previously lived on the
+        generator as ``_ordered``, which meant the combined and transform-chain
+        paths — which built their own ``exp.Ordered`` — silently skipped the
+        T-SQL pin below.
+
+        ``nulls="default"`` defers to the dialect's own ordering and emits no
+        NULLS clause; ``"first"`` / ``"last"`` are explicit.
+        """
+        kwargs: dict = {"this": order_col, "desc": descending}
+        if nulls == "first":
+            kwargs["nulls_first"] = True
+        elif nulls == "last":
+            kwargs["nulls_first"] = False
+        return exp.Ordered(**kwargs)
+
     @staticmethod
     def _expanded_null_safe_eq(
         left: exp.Expression, right: exp.Expression,

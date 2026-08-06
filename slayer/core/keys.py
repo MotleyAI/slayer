@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from enum import IntEnum
-from typing import Optional, Tuple, Union
+from typing import Literal, Optional, Tuple, TypeVar, Union, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -470,6 +470,20 @@ class AggregateKey(_FrozenKey):
     ``column_filter_key`` is the ``Column.filter`` attached to the
     aggregated column, if any — pulled into the structural key so two
     aggregates with different attached filters do not collide.
+
+    ``grain`` names WHERE the aggregate is evaluated when ``source.path`` is
+    non-empty (DEV-1747 D2). ``"target"`` — the default and the meaning of
+    every user-declared cross-model aggregate — evaluates it in a CTE rooted at
+    the target, one value per target row-group. ``"host"`` evaluates it in a
+    CTE rooted at the HOST with the path's joins pulled in, grouped on the
+    query grain: one value per HOST group. The DEV-1735 order wrap needs the
+    latter, because a target-rooted CTE for a host-grain sort key degenerates
+    to a scalar CROSS JOIN and sorts every group by one constant.
+
+    It participates in identity deliberately: a declared
+    ``customers.regions.name:max`` and the synthetic host-grain wrap over the
+    same column are different values (global vs per-group), so interning them
+    onto one slot would silently give the user the wrong one.
     """
 
     source: _AggregateSource
@@ -477,6 +491,7 @@ class AggregateKey(_FrozenKey):
     args: Tuple[_AggregateArgValue, ...] = ()
     kwargs: Tuple[Tuple[str, _AggregateKwargValue], ...] = ()
     column_filter_key: Optional[SqlExprKey] = None
+    grain: Literal["target", "host"] = "target"
 
     @field_validator("kwargs", mode="before")
     @classmethod
@@ -495,6 +510,7 @@ class AggregateKey(_FrozenKey):
             _typed_args(self.args),
             _typed_kwargs(self.kwargs),
             self.column_filter_key,
+            self.grain,
         ))
 
     def __eq__(self, other: object) -> bool:
@@ -506,7 +522,14 @@ class AggregateKey(_FrozenKey):
             and _typed_args(self.args) == _typed_args(other.args)
             and _typed_kwargs(self.kwargs) == _typed_kwargs(other.kwargs)
             and self.column_filter_key == other.column_filter_key
+            and self.grain == other.grain
         )
+
+
+#: Rerooting is type-preserving — a ``ColumnKey`` in, a ``ColumnKey`` out.
+#: Expressing that keeps call sites precisely typed rather than collapsing
+#: every rerooted key to the union.
+_RerootableT = TypeVar("_RerootableT")
 
 
 def _reroot_path_ref(ref, *, target_path: Tuple[str, ...]):
@@ -538,68 +561,20 @@ def _reroot_path_ref(ref, *, target_path: Tuple[str, ...]):
 def reroot_aggregate_key(
     key: "AggregateKey", *, target_path: Tuple[str, ...],
 ) -> "AggregateKey":
-    """Re-anchor EVERY embedded reference of a cross-model ``AggregateKey``
-    from the host's coordinate system into its target's local scope
+    """Re-anchor a cross-model ``AggregateKey`` into its target's local scope
     (DEV-1707 / DEV-1703 Stage 3).
 
-    When a cross-model aggregate (``customers.revenue:sum``,
-    ``customers.amount:last(customers.signup_at)``) is rendered inside its
-    target-rooted CTE, its ``source``, positional ``args``, keyword ``kwargs``
-    values, and — invariantly — its ``column_filter_key`` must all be
-    expressed relative to the target rather than the query root. This is the
-    single, symmetric replacement for the per-field strip logic that used to
-    live in ``slayer/engine/cross_model_planner.py`` (``_local_agg_formula`` /
-    ``_reroot_col_kwarg``) and ``slayer/sql/generator.py`` (the inline
-    ``_reroot_kwarg`` / ``local_args`` / ``_reroot_having`` blocks) with two
-    divergent semantics.
+    A thin alias for :func:`reroot_value_key`, which applies the same
+    prefix-strip rule over the whole ``ValueKey`` union. Two implementations
+    would be free to drift into two reroot semantics — the drift §5.4 removes.
 
-    ``target_path`` is the join path of the aggregate's source (the hops from
-    the query root to the target model). Semantics — prefix-strip with
-    residual, applied uniformly (see ``_reroot_path_ref``):
-
-    * ``source``, each positional arg, and each kwarg VALUE whose ``path``
-      starts with ``target_path`` drops that prefix (exact match → local);
-    * a ref whose ``path`` does not start with ``target_path`` is left
-      unchanged — the function is TOTAL and never raises; a genuinely
-      mis-pathed ref surfaces at the downstream binder / kwarg-path validator
-      exactly as before;
-    * scalar args / kwargs pass through untouched; kwarg NAMES are preserved
-      (and the ``AggregateKey`` validator keeps them canonically sorted);
-    * ``target_path == ()`` is the identity (the filtered-local case, where
-      the source is already host-local — the empty prefix strips zero hops).
-
-    ``column_filter_key`` is copied UNCHANGED. Its ``canonical_sql`` and
-    ``referenced_join_paths`` are anchored at the OWNING MODEL of the source
-    column (stamped by ``slayer.engine.binding._resolve_column_filter_key``
-    via ``compute_column_filter_join_paths`` with ``anchor_model`` = that
-    owning model). Rerooting only changes how that owner is REACHED from the
-    query root; it never moves the owner, so the filter's owner-relative SQL
-    and paths are invariant under reroot. After rerooting a filtered
-    cross-model aggregate the source reads local (``path == ()``) while
-    ``referenced_join_paths`` stays non-empty — precisely the DEV-1503
-    filtered-local isolation trigger shape.
+    ``column_filter_key`` rides through unchanged: its paths are anchored at
+    the OWNING model of the source column, and rerooting changes only how that
+    owner is reached. After rerooting a filtered cross-model aggregate the
+    source reads local while ``referenced_join_paths`` stays non-empty —
+    exactly the filtered-local isolation trigger shape.
     """
-    target_path = tuple(target_path)
-    if not target_path:
-        return key
-    # Rebuild from the existing key so fields reroot does NOT own (``agg``,
-    # ``column_filter_key``, and any field added to ``AggregateKey`` later)
-    # ride through automatically rather than being silently dropped. Only
-    # ``source`` / ``args`` / ``kwargs`` carry rerootable paths. ``model_copy``
-    # skips the ``_canonicalize_kwargs`` validator, which is a no-op here:
-    # reroot preserves kwarg names and order, so the input's already-canonical
-    # sort is unchanged (pinned by
-    # ``test_kwargs_canonical_sort_preserved_after_reroot``).
-    return key.model_copy(update={
-        "source": _reroot_path_ref(key.source, target_path=target_path),
-        "args": tuple(
-            _reroot_path_ref(a, target_path=target_path) for a in key.args
-        ),
-        "kwargs": tuple(
-            (k, _reroot_path_ref(v, target_path=target_path))
-            for k, v in key.kwargs
-        ),
-    })
+    return reroot_value_key(key, target_path=target_path)
 
 
 class TransformKey(_FrozenKey):
@@ -820,3 +795,132 @@ BetweenKey.model_rebuild()
 InKey.model_rebuild()
 # TimeTruncKey.column is a Union[ColumnKey, ColumnSqlKey] (DEV-1450 #4a).
 TimeTruncKey.model_rebuild()
+
+
+# ---------------------------------------------------------------------------
+# The total reroot visitor
+# ---------------------------------------------------------------------------
+
+
+def _reroot_sql_expr_key(
+    key: SqlExprKey, *, target_path: Tuple[str, ...],
+) -> SqlExprKey:
+    """Re-anchor a STANDALONE Mode-A fragment's referenced join paths.
+
+    Only correct when the fragment is anchored at the QUERY ROOT. A fragment
+    reached as ``AggregateKey.column_filter_key`` is anchored at the owning
+    model instead and must NOT come through here — see the note in
+    :func:`reroot_value_key`.
+    """
+    return key.model_copy(update={
+        "referenced_join_paths": tuple(
+            path[len(target_path):]
+            if tuple(path[: len(target_path)]) == target_path else path
+            for path in key.referenced_join_paths
+        ),
+    })
+
+
+def reroot_value_key(
+    key: _RerootableT, *, target_path: Tuple[str, ...],
+) -> _RerootableT:
+    """Re-anchor every embedded reference in ``key`` from the query root into
+    ``target_path``'s local scope.
+
+    The generalisation of :func:`reroot_aggregate_key` over the whole
+    ``ValueKey`` union (plus the standalone ``SqlExprKey``). Two properties
+    make it safe to reroot a plan structurally instead of via formula text:
+
+    **Total.** Every union member has an explicit case. A kind added to
+    ``ValueKey`` later has none, so it lands in the fail-closed arm rather than
+    riding through unrerooted.
+
+    **Fail-closed.** An unhandled kind raises ``TypeError``. Returning it
+    unchanged would be indistinguishable from "correctly identity", which is
+    how a mis-anchored ref reaches the SQL generator looking well-formed.
+
+    The rule is prefix-strip-with-residual, applied per position: a ``path``
+    starting with ``target_path`` drops that prefix and keeps the residual
+    hops; any other ``path``, and any scalar, is returned unchanged.
+    ``target_path == ()`` is the identity — the empty prefix strips zero hops.
+
+    ``AggregateKey.column_filter_key`` is deliberately copied UNCHANGED.
+    ``binding._resolve_column_filter_key`` walks ``source.path`` first and only
+    then stamps the anchor, so the fragment's paths are expressed relative to
+    the model that OWNS the filtered column. Rerooting changes how that owner
+    is reached from the query root; it never moves the owner, so those paths
+    are invariant. A standalone ``SqlExprKey`` is anchored at the query root
+    and therefore does strip — the asymmetry is per position, not per type.
+    """
+    target_path = tuple(target_path)
+    if not target_path:
+        return key
+
+    def _recurse(value):
+        return reroot_value_key(value, target_path=target_path)
+
+    # Scalars ride through untouched — they appear as ScalarCallKey args and
+    # as AggregateKey kwarg values.
+    if key is None or isinstance(key, (Decimal, str, bool, int, float)):
+        return key
+
+    # --- leaves ---------------------------------------------------------
+    if isinstance(key, (ColumnKey, ColumnSqlKey, StarKey)):
+        # ``_reroot_path_ref`` also accepts bare scalars, so it cannot carry the
+        # type-preserving annotation; the isinstance guard above establishes it.
+        return cast(_RerootableT, _reroot_path_ref(key, target_path=target_path))
+    if isinstance(key, LiteralKey):
+        return key
+    if isinstance(key, TimeTruncKey):
+        # The path lives on the WRAPPED column, which is why walk_value_keys
+        # needs a special case here; the visitor must not inherit that blind
+        # spot.
+        return key.model_copy(update={"column": _recurse(key.column)})
+    if isinstance(key, SqlExprKey):
+        return _reroot_sql_expr_key(key, target_path=target_path)
+
+    # --- composites -----------------------------------------------------
+    if isinstance(key, AggregateKey):
+        return key.model_copy(update={
+            "source": _recurse(key.source),
+            "args": tuple(_recurse(a) for a in key.args),
+            "kwargs": tuple((n, _recurse(v)) for n, v in key.kwargs),
+        })
+    if isinstance(key, TransformKey):
+        # ``args`` / ``kwargs`` are Tuple[Scalar, ...] — type-prohibited from
+        # holding a ValueKey, so there is nothing to traverse there.
+        return key.model_copy(update={
+            "input": _recurse(key.input),
+            "partition_keys": frozenset(
+                _recurse(p) for p in key.partition_keys
+            ),
+            "time_key": (
+                None if key.time_key is None else _recurse(key.time_key)
+            ),
+        })
+    if isinstance(key, ArithmeticKey):
+        return key.model_copy(update={
+            "operands": tuple(_recurse(o) for o in key.operands),
+        })
+    if isinstance(key, ScalarCallKey):
+        return key.model_copy(update={
+            "args": tuple(_recurse(a) for a in key.args),
+        })
+    if isinstance(key, BetweenKey):
+        return key.model_copy(update={
+            "column": _recurse(key.column),
+            "low": _recurse(key.low),
+            "high": _recurse(key.high),
+        })
+    if isinstance(key, InKey):
+        return key.model_copy(update={
+            "column": _recurse(key.column),
+            "values": tuple(_recurse(v) for v in key.values),
+        })
+
+    raise TypeError(
+        f"reroot_value_key has no case for {type(key).__name__!r}. The visitor "
+        f"is total over ValueKey by design: add an explicit case rather than "
+        f"letting an unrerooted key through, which the SQL generator cannot "
+        f"distinguish from a correctly-local one."
+    )

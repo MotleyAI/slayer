@@ -459,6 +459,27 @@ def _wrap_filter(sql_str: str, filter_sql: Optional[str]) -> str:
     return f"(CASE WHEN {filter_sql} THEN {sql_str} END)"
 
 
+def _is_host_grain(key) -> bool:
+    """True for an ``AggregateKey`` marked ``grain="host"`` (DEV-1747 D2).
+
+    The marker separates WHERE a value is READ from WHERE it is GROUPED: the
+    source ``path`` says the value comes through a join, ``grain="host"`` says
+    the aggregate is nonetheless computed per HOST row-group. Such a key
+    renders INLINE over the joined relation inside its own scope, rather than
+    in a target-rooted CTE that would collapse it to one global value.
+    """
+    return getattr(key, "grain", "target") == "host"
+
+
+def _host_grain_join_alias(path) -> str:
+    """The FROM alias a join ``path`` is emitted under.
+
+    Mirrors ``_build_from_and_joins``: the first hop uses the target's bare
+    name, later hops the ``__``-delimited path alias.
+    """
+    return "__".join(path)
+
+
 def _first_bare_column_name(key) -> Optional[str]:
     """Return the leaf name of the first bare column reference inside a
     ROW-phase composite key (DEV-1576 / DEV-1717 error messages).
@@ -971,21 +992,20 @@ class SQLGenerator:
         right = self._parse(right_sql)
         return self._dialect.build_null_safe_eq(left, right).sql(dialect=self.dialect)
 
-    def _ordered(self, order_col: exp.Expression, *, ascending: bool) -> exp.Ordered:
-        """Build an ``exp.Ordered`` node, suppressing sqlglot's NULLS-emulation
-        ``CASE WHEN`` on T-SQL (DEV-1571 Bug 2 / DEV-1716).
+    def _ordered(
+        self, order_col: exp.Expression, *, ascending: bool,
+        nulls: str = "default",
+    ) -> exp.Ordered:
+        """Build an ``exp.Ordered`` node via the dialect strategy.
 
-        On T-SQL, sqlglot emits ``CASE WHEN <alias> IS NULL THEN 1 ELSE 0 END,
-        <alias>`` to emulate NULLS ordering whenever ``nulls_first`` is unset;
-        the bracketed alias INSIDE the CASE WHEN mis-resolves against the FROM
-        scope (``Invalid column name``). Pinning ``nulls_first`` to T-SQL's
-        native default for the direction (FIRST on ASC, LAST on DESC)
-        suppresses the wrapper. No-op on every other dialect.
+        DEV-1747 D5 — the T-SQL ``nulls_first`` pin used to live here, which
+        left the combined and transform-chain paths (which build their own
+        ``exp.Ordered``) without it. It now lives in ``SqlDialect.build_ordered``
+        so every render site gets identical null ordering (P-H).
         """
-        kwargs: dict = {"this": order_col, "desc": not ascending}
-        if self.dialect == "tsql":
-            kwargs["nulls_first"] = ascending
-        return exp.Ordered(**kwargs)
+        return self._dialect.build_ordered(
+            order_col, descending=not ascending, nulls=nulls,
+        )
 
 
 
@@ -2523,6 +2543,7 @@ class SQLGenerator:
 
     def _resolve_agg_inputs_via_scope(  # NOSONAR(S3776) — one cohesive Law-1 discovery pass: three ordered sub-passes (Column.filter → source → kwargs) over the local aggregates via small closures sharing scope/resolved. Extracting them would scatter the ordered-registration contract that keeps the base FROM byte-identical.
         self, *, base_render_order, slots_by_id, scope: ScopeFrame,
+        skip_cross_model_aggs: bool = False,
     ) -> "Dict[Any, Dict[str, ResolvedAggKwarg]]":
         """Resolve every LOCAL aggregate's join-crossing inputs through the host
         ``scope`` (Law 1) — ``scope.resolve`` anchors each ref and registers the
@@ -2573,7 +2594,16 @@ class SQLGenerator:
 
         def _walk(key, fn) -> None:
             if isinstance(key, AggregateKey):
-                if not getattr(key.source, "path", ()):
+                # DEV-1747 D2 — a HOST-GRAIN aggregate reads through a join but
+                # is grouped at the host grain, so it renders INLINE here and
+                # its source join has to register like any other crossing input
+                # (Law 1). When the caller owns it in a ``_cm_*`` CTE
+                # (``skip_cross_model_aggs``) the join belongs to that CTE, not
+                # to this base — registering it here would add an unused, and
+                # for a one-to-many join cardinality-changing, LEFT JOIN.
+                if not getattr(key.source, "path", ()) or (
+                    _is_host_grain(key) and not skip_cross_model_aggs
+                ):
                     fn(key)
             elif isinstance(key, ArithmeticKey):
                 for o in key.operands:
@@ -2603,6 +2633,9 @@ class SQLGenerator:
         def _resolve_source(key) -> None:
             if isinstance(key.source, ColumnSqlKey):
                 scope.resolve(key.source)  # register-only; render re-expands
+            elif getattr(key.source, "path", ()):
+                # DEV-1747 D2 — the host-grain source IS the crossing input.
+                scope.resolve(key.source)  # register-only
 
         def _resolve_kwargs(key) -> None:
             kw: Dict[str, ResolvedAggKwarg] = {}
@@ -2789,6 +2822,7 @@ class SQLGenerator:
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
             scope=host_scope,
+            skip_cross_model_aggs=skip_cross_model_aggs,
         )
         # Merge the scope's registered paths (positions 2-7, in first-seen order)
         # after the dimension paths (position 1) → byte-identical FROM.
@@ -2948,16 +2982,22 @@ class SQLGenerator:
                 agg_path = getattr(key.source, "path", ())
                 if agg_path:
                     if skip_cross_model_aggs:
-                        # Cross-model aggregate; rendered by the per-plan
-                        # ``_cm_*`` CTE. Skip in the host base.
+                        # Owned by a per-plan ``_cm_*`` CTE — target-rooted or
+                        # (DEV-1747 D2) host-rooted. Skip in the host base.
                         continue
-                    raise NotImplementedError(
-                        f"DEV-1450 stage 7b.12: cross-model aggregate "
-                        f"(source.path={agg_path!r}) reached the local "
-                        f"base SELECT path. The cross-model orchestrator "
-                        f"should have routed this through `_render_with_"
-                        f"cross_model_plans`."
-                    )
+                    if not _is_host_grain(key):
+                        raise NotImplementedError(
+                            f"DEV-1450 stage 7b.12: cross-model aggregate "
+                            f"(source.path={agg_path!r}) reached the local "
+                            f"base SELECT path. The cross-model orchestrator "
+                            f"should have routed this through `_render_with_"
+                            f"cross_model_plans`."
+                        )
+                    # DEV-1747 D2 — a HOST-GRAIN aggregate inside its own CTE:
+                    # the crossed join is already in this scope's FROM, so the
+                    # aggregate renders inline over the joined relation and
+                    # GROUPs at the query grain. This is the base-pull the
+                    # recursion guard exists to reach.
                 # DEV-1450 stage 7b.12: ``column_filter_key`` is now
                 # propagated into the synthetic EnrichedMeasure's
                 # ``filter_sql`` field so ``_build_agg`` wraps the
@@ -9040,6 +9080,20 @@ class SQLGenerator:
                     ),
                 )
 
+    def _walk_join_path_model(self, *, source_model, path, bundle):
+        """The terminal model of a join ``path`` walked from ``source_model``,
+        or ``None`` if any hop is missing. Non-raising: callers use it to
+        re-anchor a reference that the planner has already validated."""
+        current = source_model
+        for hop in path:
+            if not any(j.target_model == hop for j in current.joins):
+                return None
+            nxt = bundle.get_referenced_model(hop)
+            if nxt is None:
+                return None
+            current = nxt
+        return current
+
     def _build_agg_render_spec_from_planned(  # NOSONAR(S3776) — sequential isinstance dispatch over StarKey / ColumnKey / ColumnSqlKey with helper extractions for aggregation-def lookup, kwarg path validation, and explicit-time-arg resolution. Further splitting would scatter the per-source-kind contract.
         self,
         *,
@@ -9094,6 +9148,18 @@ class SQLGenerator:
                 type=slot_type,
             )
         if isinstance(source, (ColumnKey, ColumnSqlKey)):
+            # DEV-1747 D2 — a HOST-GRAIN aggregate reads its source THROUGH a
+            # join, so the column lives on the terminal model and qualifies to
+            # that join's FROM alias. Re-anchor before the lookup below; the
+            # join itself is already in this scope's FROM, registered by the
+            # aggregate-input scope pass.
+            if source.path and _is_host_grain(key) and bundle is not None:
+                terminal = self._walk_join_path_model(
+                    source_model=source_model, path=source.path, bundle=bundle,
+                )
+                if terminal is not None:
+                    source_model = terminal
+                    source_relation = _host_grain_join_alias(source.path)
             # ColumnKey is a bare / trivial column (``sql`` None or a bare
             # identifier remap); ColumnSqlKey is a derived column (``Column.sql``
             # set to a non-trivial expression — ``amount * 2``). Both resolve

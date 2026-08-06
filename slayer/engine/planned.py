@@ -23,7 +23,8 @@ yet. Stage 7b's engine cutover routes through them.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from enum import Enum
+from typing import Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -65,6 +66,7 @@ __all__ = [
     "FilterPhase",
     "JoinRequirement",
     "OrderEntry",
+    "OrderScope",
     "PlannedQuery",
     "SlotId",
     "TransformLayer",
@@ -376,11 +378,49 @@ class FilterPhase(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class OrderScope(str, Enum):
+    """WHERE the ordered value lives — the one thing a renderer needs to know
+    to build a sort term (DEV-1747 §5.10).
+
+    Every render site used to re-derive this, and they disagreed: one
+    dispatched on the slot KIND, one ran a five-way precedence chain over
+    alias maps, and one knew about neither. Naming the producing scope in the
+    plan is what lets a single resolver replace all of them (P-D).
+    """
+
+    #: Materialised in ``_base`` and projected publicly.
+    HOST_BASE = "host_base"
+    #: Materialised in ``_base`` but trimmed from the public projection —
+    #: an order-only aggregate or an unprojected host dimension.
+    HOST_BASE_HIDDEN = "host_base_hidden"
+    #: Lives in a cross-model / host-rooted isolated (``_cm_``) CTE.
+    CROSS_MODEL_CTE = "cross_model_cte"
+    #: Lives in a windowed (``_wm_``) CTE.
+    WINDOWED_CTE = "windowed_cte"
+    #: Produced by a step of the transform chain.
+    TRANSFORM_STEP = "transform_step"
+    #: A composite whose operands span scopes, so it can only be evaluated in
+    #: the outer combined SELECT — never inside ``_base``.
+    OUTER_COMPOSITE = "outer_composite"
+
+
 class OrderEntry(BaseModel):
-    """One entry in the ORDER BY of a planned query."""
+    """One entry in the ORDER BY of a planned query.
+
+    ``scope`` and ``phase`` are REQUIRED and have no default: a planner path
+    that forgets to classify must fail at construction rather than fall through
+    to the ``_base.``-qualified branch, which is how an order term silently
+    attached to the wrong scope.
+    """
 
     slot_id: SlotId
     direction: str  # "asc" or "desc"
+    scope: OrderScope
+    phase: Phase
+    #: Null-ordering policy. ``"default"`` defers to the dialect's native
+    #: ordering for the direction; the dialect strategy owns the spelling
+    #: (P-H), so no render site emits a NULLS clause of its own.
+    nulls: Literal["default", "first", "last"] = "default"
 
     @field_validator("direction")
     @classmethod

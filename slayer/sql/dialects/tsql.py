@@ -78,6 +78,33 @@ class TsqlDialect(SqlDialect):
         portable expanded ``a = b OR (a IS NULL AND b IS NULL)``."""
         return self._expanded_null_safe_eq(left, right)
 
+    def build_ordered(
+        self,
+        order_col: exp.Expression,
+        *,
+        descending: bool,
+        nulls: str = "default",
+    ) -> exp.Ordered:
+        """DEV-1571 Bug 2 / DEV-1716 — pin ``nulls_first`` to T-SQL's native
+        default for the direction (FIRST on ASC, LAST on DESC).
+
+        Left unset, sqlglot emits ``CASE WHEN <alias> IS NULL THEN 1 ELSE 0
+        END, <alias>`` to emulate NULLS ordering; the bracketed alias INSIDE
+        the CASE WHEN mis-resolves against the FROM scope (``Invalid column
+        name``). Pinning the native default suppresses the wrapper without
+        changing the ordering.
+
+        An EXPLICIT ``first`` / ``last`` policy is honoured as asked — the pin
+        exists to avoid the emulation, not to override a stated intent.
+        """
+        if nulls == "default":
+            return exp.Ordered(
+                this=order_col, desc=descending, nulls_first=not descending,
+            )
+        return super().build_ordered(
+            order_col, descending=descending, nulls=nulls,
+        )
+
     def build_approx_count_distinct(
         self,
         col_sql: str,
