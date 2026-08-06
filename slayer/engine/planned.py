@@ -396,6 +396,27 @@ class OrderEntry(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class FilterReachability(BaseModel):
+    """DEV-1745 (W4 / D9) — one filter's structural reachability summary.
+
+    ``crossed_join_paths`` is every join path the filter's dependency tree is
+    anchored at, in THIS plan's coordinate system. ``has_host_local_ref`` marks
+    a dependency anchored at the plan's own root, which cannot be evaluated
+    inside a CTE rooted elsewhere.
+
+    Carried per filter on the owning ``PlannedQuery`` rather than on
+    ``ColumnSqlKey`` (interned, and rerooting copies unknown fields through
+    stale) or ``ValueSlot`` (slot-less filter-only keys are silently skipped,
+    and slots are copied into nested plans).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    filter_id: BoundFilterId
+    crossed_join_paths: Tuple[Tuple[str, ...], ...] = ()
+    has_host_local_ref: bool = False
+
+
 class PlannedQuery(BaseModel):
     """The fully typed plan for one query stage (P7).
 
@@ -454,6 +475,28 @@ class PlannedQuery(BaseModel):
     # equality-joined into ``_src`` (``_build_windowed_plans`` skips them), so
     # stripping a bound on one would leave that axis unconstrained.
     frame_bound_columns: List[ValueKey] = Field(default_factory=list)
+    # DEV-1745 (W3 / P-D) — ids of the AGGREGATE-phase filters that must be
+    # applied as a plain WHERE on the OUTER combined SELECT rather than as
+    # HAVING inside a ``_cm_*`` CTE (DEV-1503).
+    #
+    # A filtered-local ISOLATED aggregate lives in a CTE that LEFT JOINs back
+    # to ``_base``. Applying the comparison as HAVING inside that CTE drops CTE
+    # rows, but the LEFT JOIN then resurfaces the host row with a NULL
+    # aggregate — the wrong semantic. On the outer, non-aggregating SELECT the
+    # same comparison drops the row.
+    #
+    # Decided HERE because it is a routing decision, not an emission detail:
+    # the generator used to re-walk ``filters_by_phase`` at render time to
+    # rediscover it, which is policy chosen during emission. The generator now
+    # reads this field and never re-derives it, so clearing the field removes
+    # the outer WHERE.
+    outer_where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    # DEV-1745 (W4 / D9) — per-filter structural reachability, in THIS plan's
+    # coordinate system. Recomputed for every plan (including the nested
+    # rerooted plan a cross-model CTE compiles), never copied down from a
+    # parent: the paths only mean anything relative to the root they were
+    # anchored at. Read via ``filter_reachability_for``.
+    filter_reachability: List[FilterReachability] = Field(default_factory=list)
 
 
 # ``CrossModelAggregatePlan.rerooted_plan`` is a forward reference to

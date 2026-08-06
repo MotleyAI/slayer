@@ -26,8 +26,9 @@ from typing import List, Optional, Tuple, Union
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
+from sqlglot.errors import ParseError
 
-from slayer.core.errors import UnknownReferenceError
+from slayer.core.errors import ModeASqlParseError, UnknownReferenceError
 from slayer.core.keys import ColumnKey, ColumnSqlKey
 from slayer.core.models import SlayerModel
 from slayer.engine.column_expansion import (
@@ -37,6 +38,7 @@ from slayer.engine.column_expansion import (
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.naming import AliasAllocator
+from slayer.sql.render.parse import parse_expression, parse_predicate
 from slayer.sql.reserved_keywords import (
     install_reserved_keywords,
     prequote_reserved_identifiers,
@@ -44,6 +46,11 @@ from slayer.sql.reserved_keywords import (
 
 # The resolver relies on sqlglot's reserved-word quoting on emit (DEV-1686).
 install_reserved_keywords()
+
+# The two Mode-A grammars. A static property of the surface being read, chosen
+# by the call site — never sniffed from the text (see ``ScopeFrame._enter``).
+_PREDICATE = "predicate"
+_EXPRESSION = "expression"
 
 # A ref that can enter a scope. Stage 2 exercises structural column refs, derived
 # columns, and free Mode-A / predicate text; later stages widen this union.
@@ -108,19 +115,146 @@ class ScopeFrame(BaseModel):
         alias for the consumer.
         """
         template = self._anchor(ref)
+        self._register_join_paths(template)
+        return self._close(template, consumer=consumer)
+
+    # ---- The one Mode-A door (P-A) -----------------------------------------
+    def enter_predicate(
+        self,
+        sql: str,
+        *,
+        consumer: "ScopeFrame | None" = None,
+        location: Optional[str] = None,
+    ) -> exp.Expression:
+        """Enter a Mode-A boolean PREDICATE (``Column.filter``, model
+        ``filters``) into this scope. See :meth:`_enter`."""
+        return self._enter(
+            sql, grammar=_PREDICATE, consumer=consumer, location=location,
+        )
+
+    def enter_expression(
+        self,
+        sql: str,
+        *,
+        consumer: "ScopeFrame | None" = None,
+        location: Optional[str] = None,
+    ) -> exp.Expression:
+        """Enter a Mode-A scalar EXPRESSION (``Column.sql``) into this scope.
+        See :meth:`_enter`."""
+        return self._enter(
+            sql, grammar=_EXPRESSION, consumer=consumer, location=location,
+        )
+
+    def _enter(
+        self,
+        sql: str,
+        *,
+        grammar: str,
+        consumer: "ScopeFrame | None",
+        location: Optional[str],
+    ) -> exp.Expression:
+        """The single implementation behind both Mode-A surfaces.
+
+        One pass, in order:
+
+        1. prequote reserved identifiers (DEV-1686),
+        2. parse the PREQUOTED text and scan it for crossed join paths,
+        3. expand derived refs, parse the EXPANDED text and scan that too,
+        4. union both scans into ``join_paths``,
+        5. Law 2 — materialise for a named ``consumer``, else return the AST.
+
+        Both scans are load-bearing (the DEV-1494 dual-scan contract): a dotted
+        ref whose derived column inlines to a constant vanishes from the
+        expanded AST, so only the pre-expansion scan sees its join; and a bare
+        derived ref only reveals the joins its expansion crosses AFTER
+        expanding. Discovery is a side effect of entering — it cannot be
+        forgotten by a caller.
+
+        There is deliberately NO qualification step. ``expand_derived_refs_sync``
+        already qualifies, against the OWNING model's canonical alias, and
+        deliberately leaves a node alone when its alias path does not resolve —
+        that is an opaque CTE / subquery reference. A blanket pass against
+        ``root_relation`` would fire on exactly those and corrupt them.
+
+        ``grammar`` is fixed by the call site, never by the content: the surface
+        being read determines it (a ``Column.filter`` is always a predicate).
+        Sniffing content or retrying the other grammar would put classification
+        back into render time.
+        """
+        prequoted = prequote_reserved_identifiers(
+            sql, dialect=self.dialect.sqlglot_name,
+        )
+        raw_ast = self._parse_mode_a(
+            prequoted, grammar=grammar, fragment=sql, location=location,
+        )
+        self._register_join_paths(raw_ast)
+
+        expanded = expand_derived_refs_sync(
+            sql=prequoted,
+            model=self.root_model,
+            alias_path=self.root_relation,
+            resolve_model=self.bundle.get_referenced_model,
+            dialect=self.dialect.sqlglot_name,
+            is_root=True,
+        )
+        if expanded is None or expanded == prequoted:
+            final = raw_ast
+        else:
+            final = self._parse_mode_a(
+                expanded, grammar=grammar, fragment=sql, location=location,
+            )
+            self._register_join_paths(final)
+
+        return self._close(final, consumer=consumer)
+
+    def _parse_mode_a(
+        self,
+        text: str,
+        *,
+        grammar: str,
+        fragment: str,
+        location: Optional[str],
+    ) -> exp.Expression:
+        """Parse ``text`` under the surface's grammar, or RAISE (D1).
+
+        Only sqlglot's ``ParseError`` is caught, and only to re-raise it as a
+        typed SLayer error naming the ORIGINAL author text. Nothing falls back
+        to the raw string and nothing degrades to "no join paths" — the two
+        soft failures this replaces both turned a broken fragment into silently
+        wrong SQL.
+        """
+        parse = parse_predicate if grammar == _PREDICATE else parse_expression
+        try:
+            return parse(sql=text, target_dialect=self.dialect, prequote=False)
+        except ParseError as exc:
+            raise ModeASqlParseError(
+                fragment=fragment,
+                location=location or self._default_location(),
+                reason=str(exc).splitlines()[0] if str(exc) else None,
+            ) from exc
+
+    def _default_location(self) -> str:
+        return f"Mode-A SQL in scope rooted at model {self.root_model.name!r}"
+
+    def _register_join_paths(self, parsed: exp.Expression) -> None:
+        """Law 1's side effect: every join path ``parsed`` crosses is recorded
+        on this scope, so ``_build_from_and_joins`` emits the JOINs it needs."""
         for path in collect_root_scope_joined_paths(
-            parsed=template,
+            parsed=parsed,
             source_model=self.root_model,
             source_relation=self.root_relation,
             bundle=self.bundle,
         ):
             self.join_paths.add(path)
 
+    def _close(
+        self, template: exp.Expression, *, consumer: "ScopeFrame | None",
+    ) -> exp.Expression:
+        """Law 2: materialise for a named consumer, else hand back a copy so a
+        caller attaching this into its tree can never corrupt a value the scope
+        (or another caller) also holds (D-L / M1)."""
         if consumer is not None and not self.may_inline(self.join_paths.as_list()):
-            alias = self._materialize(template)
-            return exp.column(alias)
-        # Return a copy so a caller attaching this into its tree can never
-        # corrupt a value the scope (or another caller) also holds (D-L / M1).
+            return exp.column(self._materialize(template))
         return template.copy()
 
     def resolve_predicate_sql(self, ref: Ref) -> Optional[str]:

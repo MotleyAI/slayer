@@ -81,9 +81,16 @@ from slayer.engine.cross_model_planner import (
 )
 from slayer.engine.measure_expansion import expand_model_measures
 from slayer.engine.response_meta import _infer_aggregated_format
+from slayer.engine.filter_reachability import (
+    compute_key_join_paths,
+    key_has_host_local_ref,
+)
 from slayer.engine.planned import (
     BoundExpr as PlannedBoundExpr,
+    BoundFilterId,
+    CrossModelAggregatePlan,
     FilterPhase,
+    FilterReachability,
     OrderEntry,
     PlannedQuery,
     SrcFilterRewrite,
@@ -1320,10 +1327,47 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     # BoundFilter (date_range + user filters). Model.filters (text-only)
     # are always row-phase host-local WHERE and never need to be routed
     # to a cross-model CTE — they're skipped here.
+    # DEV-1745 (W4 / D9) — the per-filter structural reachability summary, in
+    # THIS plan's coordinate system. Computed once here and carried on the plan;
+    # ``classify_host_filter`` routes from it rather than re-deriving anything
+    # from model names at classification time.
+    reachability_anchor_model = render_source_model or bundle.source_model
+    source_relation = (
+        query.source_model
+        if isinstance(query.source_model, str)
+        else host_model_name
+    )
+    filter_reachability: List[FilterReachability] = []
+    # One expansion cache for the whole plan — the two visitors ask for the
+    # same derived column's expansion, and so does every filter that mentions it.
+    reachability_cache: dict = {}
+    for fp in filters_by_phase:
+        if fp.expression is None:
+            continue
+        filter_reachability.append(FilterReachability(
+            filter_id=fp.id,
+            crossed_join_paths=compute_key_join_paths(
+                key=fp.expression.value_key,
+                anchor_model=reachability_anchor_model,
+                anchor_relation=source_relation,
+                bundle=bundle,
+                cache=reachability_cache,
+            ),
+            has_host_local_ref=key_has_host_local_ref(
+                key=fp.expression.value_key,
+                anchor_model=reachability_anchor_model,
+                anchor_relation=source_relation,
+                bundle=bundle,
+                cache=reachability_cache,
+            ),
+        ))
+    reachability_by_fid = {r.filter_id: r for r in filter_reachability}
+
     host_filter_routings: List[HostFilterRouting] = []
     for fid, bf, ftext in zip(
         bound_filter_ids, bound_filters, bound_filter_texts,
     ):
+        summary = reachability_by_fid.get(fid)
         host_filter_routings.append(HostFilterRouting(
             filter_id=fid,
             phase=bf.phase,
@@ -1331,6 +1375,12 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
                 bf, projection.registry,
             )),
             text=ftext,
+            crossed_join_paths=(
+                summary.crossed_join_paths if summary is not None else ()
+            ),
+            has_host_local_ref=(
+                summary.has_host_local_ref if summary is not None else False
+            ),
         ))
 
     cross_model_plans = []
@@ -1449,12 +1499,6 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
     stage_schema = _emit_stage_schema(
         query=query, projection=projection,
     )
-    source_relation = (
-        query.source_model
-        if isinstance(query.source_model, str)
-        else host_model_name
-    )
-
     # Stage 7b.10 — the active TD's slot id (``active_td_slot_id``) is resolved
     # right after projection above so the windowed-plan builder can use it.
 
@@ -1480,6 +1524,16 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
             wp.where_filter_ids = src_where_ids
             wp.src_filter_rewrites = src_rewrites
 
+    # DEV-1745 (W3 / P-D) — decide the outer-WHERE routing HERE, where the
+    # cross-model plans (and so ``cte_root_model``) are already known. The
+    # generator used to rediscover this by re-walking the filters at render
+    # time; it now consumes the field.
+    outer_where_filter_ids = _plan_outer_where_filters(
+        filters_by_phase=filters_by_phase,
+        cross_model_plans=cross_model_plans,
+        slots=[*row_slots, *agg_slots, *combined_slots],
+    )
+
     return PlannedQuery(
         source_relation=source_relation,
         row_slots=row_slots,
@@ -1498,7 +1552,49 @@ def plan_query(  # NOSONAR(S3776) — planner entry-point dispatcher. The DEV-15
         render_source_model=render_source_model,
         distinct_dimension_values=query.distinct_dimension_values,
         frame_bound_columns=frame_bound_columns,
+        outer_where_filter_ids=outer_where_filter_ids,
+        filter_reachability=filter_reachability,
     )
+
+
+def _plan_outer_where_filters(
+    *,
+    filters_by_phase: List[FilterPhase],
+    cross_model_plans: List[CrossModelAggregatePlan],
+    slots: List[ValueSlot],
+) -> List[BoundFilterId]:
+    """AGGREGATE-phase filters that must be applied on the OUTER combined
+    SELECT instead of as HAVING inside a ``_cm_*`` CTE (DEV-1503).
+
+    A filter qualifies when its value-key tree references an aggregate that was
+    isolated into a CTE with its own root (``cte_root_model is not None``).
+    That CTE LEFT JOINs back to ``_base``, so a HAVING inside it drops CTE rows
+    and the join then resurfaces the host row carrying a NULL aggregate. The
+    same predicate on the outer, non-aggregating SELECT drops the row.
+
+    Returned in ``filters_by_phase`` order so the emitted WHERE conjunct order
+    is stable.
+    """
+    isolated_agg_slot_ids = {
+        p.aggregate_slot_id
+        for p in cross_model_plans
+        if p.cte_root_model is not None
+    }
+    if not isolated_agg_slot_ids:
+        return []
+    slot_by_key = {s.key: s for s in slots}
+    routed: List[BoundFilterId] = []
+    for fp in filters_by_phase:
+        if fp.phase != Phase.AGGREGATE or fp.expression is None:
+            continue
+        for k in walk_value_keys(fp.expression.value_key):
+            if not isinstance(k, AggregateKey):
+                continue
+            slot = slot_by_key.get(k)
+            if slot is not None and slot.id in isolated_agg_slot_ids:
+                routed.append(fp.id)
+                break
+    return routed
 
 
 def _frame_bound_columns(*, row_slots: list) -> List[ValueKey]:

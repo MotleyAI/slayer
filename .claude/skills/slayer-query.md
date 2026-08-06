@@ -88,7 +88,10 @@ Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes unde
 engine = SlayerQueryEngine(storage=storage)
 
 # Async (most callers — REST/MCP):
-result = await engine.execute(query=query)  # SlayerResponse with .data, .columns, .row_count, .sql, .attributes
+result = await engine.execute(query=query)  # SlayerResponse with .data, .columns, .row_count, .sql, .attributes, .warnings
+# .warnings holds advisories, each tagged with .kind — "normalization" for an input
+# rewrite, "unreachable_filter_dropped" for a filter dropped from a cross-model CTE
+# (it still applies at the host). Empty for a clean query.
 
 # With runtime variables (highest precedence — wins over query.variables / model defaults):
 result = await engine.execute(query=query, variables={"region": "US"})

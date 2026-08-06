@@ -78,6 +78,7 @@ from slayer.engine.binding import (
     bind_time_dimension,
     walk_value_keys,
 )
+from slayer.engine.filter_reachability import path_is_reachable
 from slayer.engine.planned import (
     BoundFilterId,
     CrossModelAggregatePlan,
@@ -119,11 +120,49 @@ class HostFilterRouting(BaseModel):
     phase: Phase
     referenced_slot_ids: List[SlotId] = Field(default_factory=list)
     text: Optional[str] = None
+    # DEV-1745 (W4 / D9) — the filter's structural reachability summary, in the
+    # host plan's coordinate system. ``crossed_join_paths`` is every join path
+    # its dependency tree is anchored at; ``has_host_local_ref`` marks a
+    # dependency anchored at the host root, which no CTE rooted elsewhere can
+    # evaluate. Computed at plan time by ``filter_reachability``.
+    crossed_join_paths: Tuple[Tuple[str, ...], ...] = ()
+    has_host_local_ref: bool = False
 
 
 # ---------------------------------------------------------------------------
 # Classifier
 # ---------------------------------------------------------------------------
+
+
+def _classify_referenced_slots(
+    *,
+    referenced_slot_ids: List[SlotId],
+    host_slots: List[ValueSlot],
+    target_path: Tuple[str, ...],
+) -> Tuple[List[SlotId], List[SlotId], List[SlotId]]:
+    """Split a filter's referenced slots into
+    ``(unknown, aggregate_on_target, aggregate_other)``.
+
+    Only AGGREGATE slots are sorted here — row-level reachability comes from
+    the structural summary, not from slot keys. An aggregate is routed by WHERE
+    it is computed: one whose source path IS the target can be propagated as a
+    HAVING inside that CTE, one computed anywhere else cannot be evaluated
+    there at all.
+    """
+    by_id = {s.id: s for s in host_slots}
+    unknown: List[SlotId] = []
+    on_target: List[SlotId] = []
+    other: List[SlotId] = []
+    for sid in referenced_slot_ids:
+        slot = by_id.get(sid)
+        if slot is None:
+            # Unknown slot id — be conservative, treat as unreachable.
+            unknown.append(sid)
+        elif isinstance(slot.key, AggregateKey):
+            agg_path = getattr(slot.key.source, "path", ())
+            bucket = on_target if agg_path == target_path else other
+            bucket.append(sid)
+    return unknown, on_target, other
 
 
 def classify_host_filter(
@@ -138,82 +177,52 @@ def classify_host_filter(
     See the module docstring for the decision table. The classifier is
     pure: same inputs → same output, no side effects.
 
-    ``host_model_name`` is used to route ``ColumnSqlKey`` refs (derived
-    columns): the key carries its host model name but not a path, so we
-    compare it against the host model name and the path to decide
-    reachable / local / unreachable. When ``host_model_name`` is None,
-    ColumnSqlKey refs default to local — conservative for callers that
-    don't have the host model in scope.
+    Row-level reachability is decided EXCLUSIVELY from the filter's structural
+    summary (``crossed_join_paths`` / ``has_host_local_ref``, computed at plan
+    time by :mod:`slayer.engine.filter_reachability`) under one rule for every
+    key kind: a dependency is reachable iff its anchored path is a PREFIX of
+    ``target_path``. It is an ALL-DEPENDENCIES predicate — one unreachable
+    dependency drops the filter, however many others are reachable.
+
+    This replaces a flat model-NAME membership test for derived columns, which
+    counted a SIBLING branch as reachable whenever it happened to share a model
+    name with the target path, and counted a host-model derived column whose
+    ``Column.sql`` crossed INTO the target as host-local.
+
+    Aggregates keep their own arm: an aggregate is routed by WHERE it is
+    computed (on the target vs elsewhere), not by the reachability of its
+    inputs. ``host_model_name`` is accepted for signature compatibility and is
+    no longer consulted — the structural summary carries what it approximated.
     """
     if host_filter.phase == Phase.POST:
         return FilterRoute.STAY_AT_HOST_POST
-    if not host_filter.referenced_slot_ids:
-        # No referenced slots — nothing to route into the CTE.
-        return FilterRoute.STAY_AT_HOST_POST
 
-    by_id = {s.id: s for s in host_slots}
+    unknown, aggregate_on_target, aggregate_other = _classify_referenced_slots(
+        referenced_slot_ids=host_filter.referenced_slot_ids,
+        host_slots=host_slots,
+        target_path=target_path,
+    )
 
-    local_row: List[SlotId] = []
-    reachable_path: List[SlotId] = []
-    unreachable: List[SlotId] = []
-    aggregate_on_target: List[SlotId] = []
-    aggregate_other: List[SlotId] = []
+    crossed = tuple(host_filter.crossed_join_paths)
+    # THE rule lives in one place. Repeating the prefix comparison here would
+    # be a second copy free to drift from it — the exact failure this PR removes.
+    unreachable_paths = [
+        p for p in crossed
+        if not path_is_reachable(path=p, target_path=target_path)
+    ]
 
-    for sid in host_filter.referenced_slot_ids:
-        s = by_id.get(sid)
-        if s is None:
-            # Unknown slot id — be conservative, treat as unreachable.
-            unreachable.append(sid)
-            continue
-        if isinstance(s.key, AggregateKey):
-            agg_source = s.key.source
-            agg_path = getattr(agg_source, "path", ())
-            if agg_path == target_path:
-                aggregate_on_target.append(sid)
-            else:
-                aggregate_other.append(sid)
-        elif isinstance(s.key, ColumnKey):
-            if not s.key.path:
-                local_row.append(sid)
-            elif s.key.path == target_path[: len(s.key.path)]:
-                reachable_path.append(sid)
-            else:
-                unreachable.append(sid)
-        elif isinstance(s.key, ColumnSqlKey):
-            # Derived column. Route by its host model: on host → local;
-            # on any model in target_path → reachable; otherwise →
-            # unreachable.
-            cm = s.key.model
-            if host_model_name is not None and cm == host_model_name:
-                local_row.append(sid)
-            elif cm in target_path:
-                reachable_path.append(sid)
-            elif host_model_name is None:
-                # No host name to compare against — conservative default.
-                local_row.append(sid)
-            else:
-                unreachable.append(sid)
-        else:
-            # Transform / Arithmetic / ScalarCall: phase already decided.
-            # POST was checked above; ROW/AGGREGATE land here from
-            # arithmetic / scalar calls. Treat as local for routing.
-            local_row.append(sid)
-
-    if unreachable or aggregate_other:
-        # Any unreachable ref → drop + warn (covers pure-unreachable AND
-        # mixed-with-reachable cases per decision table rows 6/7).
+    if unknown or aggregate_other or unreachable_paths:
         return FilterRoute.DROP_UNREACHABLE
-    if local_row and not (aggregate_on_target or reachable_path):
+    if host_filter.has_host_local_ref:
+        # Mixed host-local + reachable. The local refs cannot be evaluated in
+        # a CTE rooted elsewhere, so the whole filter stays at the host.
         return FilterRoute.DROP_HOST_LOCAL
-    if local_row:
-        # Mixed local + (target-path / target-agg). The local refs can't
-        # be evaluated in the CTE, so the filter stays at host.
+    if not crossed and not aggregate_on_target:
+        # Nothing crosses and no aggregate to propagate — purely host-local.
         return FilterRoute.DROP_HOST_LOCAL
     if aggregate_on_target:
         return FilterRoute.PROPAGATE_HAVING
-    if reachable_path:
-        return FilterRoute.PROPAGATE_WHERE
-    return FilterRoute.STAY_AT_HOST_POST
+    return FilterRoute.PROPAGATE_WHERE
 
 
 # ---------------------------------------------------------------------------
@@ -550,10 +559,15 @@ def _route_host_filters(
         elif route is FilterRoute.DROP_UNREACHABLE:
             dropped.append(UnreachableFilterDroppedWarning(
                 filter_text=hf.text or hf.filter_id,
+                # Deliberately target-INDEPENDENT (D8). The same user filter is
+                # classified once per cross-model plan, and the boundary dedups
+                # those to one warning while asserting the reasons AGREE. A
+                # reason naming this plan's target would make two plans
+                # disagree about one filter and trip that assertion.
                 reason=(
-                    f"filter {hf.filter_id!r} references slot(s) outside "
-                    f"the join path to {terminal_model.name!r}; "
-                    f"unreachable filters are dropped."
+                    f"filter {hf.filter_id!r} depends on join path(s) that are "
+                    f"not reachable from the cross-model aggregate's CTE root; "
+                    f"it still applies at the host, and is dropped from the CTE."
                 ),
             ))
     return applied, where_ids, having_ids, dropped

@@ -2512,11 +2512,13 @@ class SQLGenerator:
             cfk = key.column_filter_key
             if cfk is None or not cfk.canonical_sql:
                 return
-            for p in self._filter_join_paths(
-                sql=cfk.canonical_sql, source_relation=scope.root_relation,
-                source_model=scope.root_model, bundle=scope.bundle,
-            ):
-                scope.join_paths.add(p)
+            # Entering registers the crossed joins on ``scope`` as a side
+            # effect (Law 1 / P-A); the AST itself is re-rendered later by the
+            # aggregate CASE-WHEN wrapper, so it is discarded here.
+            self._enter_mode_a_predicate(
+                sql=cfk.canonical_sql, scope=scope,
+                location=f"Column.filter on model {scope.root_model.name!r}",
+            )
 
         def _resolve_source(key) -> None:
             if isinstance(key.source, ColumnSqlKey):
@@ -2537,27 +2539,11 @@ class SQLGenerator:
             # aggregation template as qualified SQL text, so their crossed
             # joins must register exactly like ``Column.filter`` predicates
             # do (the widened Law-3 trigger isolates on them, and the CTE
-            # sub-render lands here). Scanned with the same
-            # ``_filter_join_paths`` pipeline; unparseable fragments
-            # contribute nothing.
-            fragments = [v for _, v in key.kwargs if isinstance(v, str)]
-            agg_def = next(
-                (a for a in (scope.root_model.aggregations or [])
-                 if a.name == key.agg),
-                None,
+            # sub-render lands here). Shared with the ``_cm_*`` CTE path so the
+            # two cannot drift apart again (DEV-1745 W2).
+            self._register_fragment_kwarg_joins(
+                key=key, scope=scope, model=scope.root_model,
             )
-            if agg_def is not None:
-                overridden = {name for name, _ in key.kwargs}
-                fragments.extend(
-                    p.sql for p in (agg_def.params or [])
-                    if p.name not in overridden and p.sql
-                )
-            for frag in fragments:
-                for p in self._filter_join_paths(
-                    sql=frag, source_relation=scope.root_relation,
-                    source_model=scope.root_model, bundle=scope.bundle,
-                ):
-                    scope.join_paths.add(p)
 
         def _resolve_first_last_time_arg(key) -> None:
             # DEV-1710 Stage 6 — a first/last explicit ranking-time arg
@@ -4222,38 +4208,20 @@ class SQLGenerator:
             p.aggregate_slot_id for p in planned_query.windowed_aggregate_plans
         }
 
-        # DEV-1503 — outer combined-SELECT WHERE wrapper. Identify
-        # AGGREGATE-phase host filters whose value-key references any
-        # FILTERED-LOCAL ISOLATED aggregate (a plan with
-        # ``cte_root_model is not None``). The filtered aggregate lives in
-        # its ``_cm_*`` CTE that LEFT JOINs back to ``_base``; applying
-        # the comparison as HAVING in the CTE would drop CTE rows where
-        # the aggregate fails the test, but the LEFT JOIN would then
-        # surface the host row with a NULL aggregate (wrong semantic).
-        # Routing to the outer combined SELECT (non-aggregating) as
-        # plain WHERE on the joined-back column drops the row instead.
-        isolated_agg_slot_ids = {
-            p.aggregate_slot_id
-            for p in planned_query.cross_model_aggregate_plans
-            if p.cte_root_model is not None
-        }
+        # DEV-1503 / DEV-1745 (P-D) — the outer combined-SELECT WHERE wrapper is
+        # routed by the PLANNER (``_plan_outer_where_filters``), which knows
+        # which aggregates were isolated into a CTE with its own root. The
+        # generator consumes that decision verbatim: re-walking
+        # ``filters_by_phase`` here to rediscover it would be routing policy
+        # chosen during emission, and the two could disagree.
         slot_by_key = {s.key: s for s in slots_by_id.values()}
-        outer_where_filter_ids: Set[str] = set()
-        outer_where_filters: List = []
-        if isolated_agg_slot_ids:
-            for fp in planned_query.filters_by_phase:
-                if fp.phase != Phase.AGGREGATE or fp.expression is None:
-                    continue
-                refs_isolated = False
-                for k in walk_value_keys(fp.expression.value_key):
-                    if isinstance(k, AggregateKey):
-                        slot = slot_by_key.get(k)
-                        if slot is not None and slot.id in isolated_agg_slot_ids:
-                            refs_isolated = True
-                            break
-                if refs_isolated:
-                    outer_where_filter_ids.add(fp.id)
-                    outer_where_filters.append(fp)
+        outer_where_filter_ids: Set[str] = set(
+            planned_query.outer_where_filter_ids,
+        )
+        outer_where_filters: List = [
+            fp for fp in planned_query.filters_by_phase
+            if fp.id in outer_where_filter_ids
+        ]
         # DEV-1503 (Codex round 2 #1) — composite projection slots whose
         # value-key tree walks an ISOLATED cross-model aggregate must NOT
         # render in ``_base``. Inline rendering pulls the filter-target
@@ -4728,19 +4696,12 @@ class SQLGenerator:
                 (a, a) for a in grain_aliases
             ]
 
-        # Codex MED fold-in: surface dropped-filter warnings from each
-        # plan via Python ``warnings`` so callers using
-        # ``warnings.catch_warnings()`` see what was dropped. The
-        # generator is the boundary that "renders" the plan; warnings
-        # are inert until something is actually compiled.
-        import warnings as _warnings_mod
-        for plan in planned_query.cross_model_aggregate_plans:
-            for w in plan.dropped_filter_warnings:
-                _warnings_mod.warn(
-                    str(w),
-                    UserWarning,
-                    stacklevel=2,
-                )
+        # DEV-1745 (W5): dropped-filter warnings are NOT emitted here. This
+        # emission fired once per cross-model plan — so nested subplans
+        # double-fired for one user filter — and never fired at all on a path
+        # that did not reach this render step. It is now collected across every
+        # plan at the ENGINE boundary, deduped per user filter, and emitted
+        # exactly once per execute. The plans still carry the payloads.
 
         # Build the combined SELECT: SELECT _base.<all_local>,
         # _cm_*.<canonical> [AS "<user_alias>"] FROM _base [LEFT JOIN |
@@ -5864,14 +5825,29 @@ class SQLGenerator:
         def _register_filter_join_paths(sql_text: Optional[str]) -> None:
             if not sql_text:
                 return
-            for p in self._filter_join_paths(
-                sql=sql_text, source_relation=target_relation,
-                source_model=target_model, bundle=bundle,
-            ):
-                cte_scope.join_paths.add(p)
+            self._enter_mode_a_predicate(
+                sql=sql_text, scope=cte_scope,
+                location=(
+                    f"Column.filter on cross-model target "
+                    f"{target_model_name!r}"
+                ),
+            )
 
         if local_agg_key.column_filter_key is not None:
             _register_filter_join_paths(local_agg_key.column_filter_key.canonical_sql)
+
+        # DEV-1745 (W2): the aggregation's template FRAGMENTS — string kwargs
+        # plus the non-overridden ``AggregationParam.sql`` defaults — substitute
+        # verbatim into the CTE's aggregate expression, so the joins they cross
+        # belong in this CTE's FROM. The host path has always registered them;
+        # this path never did, which is why a default like ``w='regions.weight'``
+        # emitted ``SUM(customers.spend * regions.weight) FROM customers`` with
+        # no join to regions. Routing the fragments through the door makes the
+        # registration a side effect of resolving them, so the two paths cannot
+        # drift apart again.
+        self._register_fragment_kwarg_joins(
+            key=local_agg_key, scope=cte_scope, model=target_model,
+        )
 
         where_parts: List[exp.Expression] = []
         for filter_text in plan.target_model_filters:
@@ -5880,27 +5856,18 @@ class SQLGenerator:
             # derived column on a joined model) is inline-expanded; base-only
             # filters keep the AST bare-ref qualification. The crossed join is
             # pulled into this CTE's FROM via ``cte_scope.join_paths``.
-            _register_filter_join_paths(filter_text)
-            qualified = self._render_mode_a_predicate(
-                sql=filter_text,
-                source_model=target_model,
-                source_relation=target_relation,
-                bundle=bundle,
-                qualify_fallback=lambda s: self._qualify_column_filter_sql(
-                    canonical_sql=s,
-                    source_relation=target_relation,
-                    source_model=target_model,
-                ),
-            )
-            if not qualified:
+            # An empty entry contributes no predicate. Skipped rather than
+            # entered: the door raises on text it cannot parse, and "" is not a
+            # predicate — the path this replaced skipped it too.
+            if not filter_text:
                 continue
-            try:
-                where_parts.append(self._parse_predicate(qualified))
-            except Exception:
-                raise ValueError(
-                    f"Target model filter on {target_model_name!r} could "
-                    f"not be parsed: {filter_text!r}",
-                )
+            where_parts.append(self._enter_mode_a_predicate(
+                sql=filter_text, scope=cte_scope,
+                location=(
+                    f"SlayerModel.filters on cross-model target "
+                    f"{target_model_name!r}"
+                ),
+            ))
         # DEV-1708 / Codex F4: pre-pass — walk the FULL ValueKey tree of every
         # routed WHERE and HAVING filter (nested arithmetic / boolean / IN
         # operands, aggregate leaves' source + args + kwargs + column_filter,
@@ -5911,9 +5878,6 @@ class SQLGenerator:
         self._register_routed_filter_joins(
             planned_query=planned_query,
             filter_ids=list(plan.where_filter_ids) + list(plan.having_filter_ids),
-            target_relation=target_relation,
-            target_model=target_model,
-            bundle=bundle,
             scope=cte_scope,
             target_path=target_path,
         )
@@ -6082,9 +6046,6 @@ class SQLGenerator:
         *,
         planned_query,
         filter_ids: List[str],
-        target_relation: str,
-        target_model,
-        bundle,
         scope: ScopeFrame,
         target_path: Tuple[str, ...],
     ) -> None:
@@ -6126,10 +6087,7 @@ class SQLGenerator:
                 )
                 scope.resolve(local)
             elif isinstance(vk, AggregateKey):
-                self._register_agg_key_joins(
-                    agg_key=vk, scope=scope, target_relation=target_relation,
-                    target_model=target_model, bundle=bundle,
-                )
+                self._register_agg_key_joins(agg_key=vk, scope=scope)
             elif isinstance(vk, ArithmeticKey):
                 for op in vk.operands:
                     _walk(op)
@@ -6148,13 +6106,22 @@ class SQLGenerator:
                 _walk(fp.expression.value_key)
 
     def _register_agg_key_joins(
-        self, *, agg_key, scope: ScopeFrame, target_relation: str,
-        target_model, bundle,
+        self, *, agg_key, scope: ScopeFrame,
     ) -> None:
         """Register the joins an aggregate leaf crosses (source + positional
         args + column-ref kwargs + ``column_filter``) into ``scope.join_paths``
         — the ``AggregateKey`` arm of ``_register_routed_filter_joins``'s tree
-        walk, extracted so the walker stays a thin dispatcher (DEV-1708)."""
+        walk, extracted so the walker stays a thin dispatcher (DEV-1708).
+
+        Takes ONLY the scope. It used to also receive ``target_relation`` /
+        ``target_model`` / ``bundle`` and scan the column filter against those
+        while registering the result on ``scope`` — two sources of truth for one
+        fact. They agree at the single call site (the CTE scope is built with
+        ``root_model=target_model, root_relation=target_relation``), but nothing
+        enforced that, so a future caller could have passed a scope rooted
+        elsewhere and had its refs resolved in the wrong namespace. Now the
+        scope is the only namespace, and the question cannot arise.
+        """
         from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         cross_model_path = getattr(agg_key.source, "path", ())
@@ -6169,11 +6136,10 @@ class SQLGenerator:
                 scope.resolve(v)
         cfk = local_agg.column_filter_key
         if cfk is not None and cfk.canonical_sql:
-            for p in self._filter_join_paths(
-                sql=cfk.canonical_sql, source_relation=target_relation,
-                source_model=target_model, bundle=bundle,
-            ):
-                scope.join_paths.add(p)
+            self._enter_mode_a_predicate(
+                sql=cfk.canonical_sql, scope=scope,
+                location=f"Column.filter on model {scope.root_model.name!r}",
+            )
 
     def _collect_routed_filters(
         self,
@@ -7411,18 +7377,19 @@ class SQLGenerator:
             )
             return rendered.sql(dialect=self.dialect), paths
         if fp.text is not None:
-            qualified = self._render_model_filter_sql(
-                sql=fp.text,
-                columns=fp.text_columns,
+            # One entry does both jobs: the returned AST is what the shifted
+            # CTE renders, and the paths it crossed were registered on the
+            # frame while entering (P-A — discovery cannot be forgotten).
+            frame = self._mode_a_scope(
                 source_model=source_model,
                 source_relation=source_relation,
                 bundle=bundle,
             )
-            paths = self._filter_join_paths(
-                sql=qualified, source_relation=source_relation,
-                source_model=source_model, bundle=bundle,
+            rendered = frame.enter_predicate(
+                fp.text,
+                location=f"SlayerModel.filters on model {source_model.name!r}",
             )
-            return qualified, paths
+            return rendered.sql(dialect=self.dialect), frame.join_paths.as_list()
         return None
 
     def _emit_time_shift_ctes_for_planned(  # NOSONAR(S3776) — single conceptual unit for one time_shift slot: partition/time resolution through the shifted ScopeFrame + shifted-CTE body assembly + collision-safe CTE naming (cte_allocator) + sjoin grain join-back, all sharing tightly-coupled per-slot state (time_alias / input_alias / partition_specs / shifted_cte_name / carry aliases). Splitting forces that cross-cutting state through many-argument helpers without simplifying anything — same shape as the sibling _render_cross_model_cte's suppression.
@@ -7645,13 +7612,15 @@ class SQLGenerator:
             for _kname, _kval in inner_key.kwargs:
                 if isinstance(_kval, (ColumnKey, ColumnSqlKey)):
                     shifted_scope.resolve(_kval)
-            if inner_key.column_filter_key is not None:
-                for _p in self._filter_join_paths(
+            if (
+                inner_key.column_filter_key is not None
+                and inner_key.column_filter_key.canonical_sql
+            ):
+                self._enter_mode_a_predicate(
                     sql=inner_key.column_filter_key.canonical_sql,
-                    source_relation=source_relation,
-                    source_model=source_model, bundle=bundle,
-                ):
-                    shifted_scope.join_paths.add(_p)
+                    scope=shifted_scope,
+                    location=f"Column.filter on model {source_model.name!r}",
+                )
 
         # Build the shifted time-column expression. Calendar offset is
         # ``-periods`` units in the SHIFT granularity (periods=-1 -> +1 unit).
@@ -8319,6 +8288,115 @@ class SQLGenerator:
             _scan(rendered)
         return ordered
 
+    # ---- The one Mode-A door, generator side (P-A) -------------------------
+    def _mode_a_scope(
+        self, *, source_model, source_relation: str, bundle,
+    ) -> ScopeFrame:
+        """An ephemeral :class:`ScopeFrame` for a Mode-A entry whose call site
+        holds no scope.
+
+        Two kinds of caller. The pure RENDER paths (the aggregate CASE-WHEN
+        wrapper, the WHERE/HAVING assembler) run after the corresponding
+        registration pass has already put the crossed joins into the real
+        scope, so for them the frame exists only to give the text one
+        consistent door to come through. The shifted-CTE residual path
+        (``_shifted_filter_sql``) instead READS ``frame.join_paths`` back and
+        hands it to its caller, which registers those paths on the shifted
+        scope — so the frame is the discovery vehicle there, not a byproduct.
+        Every site that already owns a real scope passes it instead.
+        """
+        return ScopeFrame(
+            scope_id=f"_modea_{source_relation}",
+            root_model=source_model,
+            root_relation=source_relation,
+            bundle=bundle,
+            dialect=self._dialect,
+            allocator=self._new_allocator(),
+        )
+
+    def _enter_mode_a_predicate(
+        self,
+        *,
+        sql: str,
+        scope: Optional[ScopeFrame] = None,
+        source_model=None,
+        source_relation: Optional[str] = None,
+        bundle=None,
+        location: Optional[str] = None,
+    ) -> exp.Expression:
+        """Enter a Mode-A PREDICATE through the door and hand back its AST.
+
+        The grammar is fixed by the caller's surface (``Column.filter`` and
+        ``SlayerModel.filters`` are predicates), never sniffed from the text.
+        """
+        frame = scope or self._mode_a_scope(
+            source_model=source_model,
+            source_relation=source_relation,
+            bundle=bundle,
+        )
+        return frame.enter_predicate(sql, location=location)
+
+    def _enter_mode_a_expression(
+        self,
+        *,
+        sql: str,
+        scope: ScopeFrame,
+        location: Optional[str] = None,
+    ) -> exp.Expression:
+        """Enter a Mode-A scalar EXPRESSION (a ``Column.sql`` / aggregation
+        template fragment) through the door."""
+        return scope.enter_expression(sql, location=location)
+
+    def _register_fragment_kwarg_joins(
+        self, *, key, scope: ScopeFrame, model,
+    ) -> None:
+        """Register the joins an aggregation's template FRAGMENTS cross.
+
+        The sources are the aggregate's string kwargs plus the non-overridden
+        ``AggregationParam.sql`` defaults of the aggregation named by
+        ``key.agg`` on ``model``. Both substitute verbatim into the rendered
+        aggregate expression, so whatever they reach has to be in the FROM.
+
+        Shared by the host base SELECT and the ``_cm_*`` cross-model CTE. The
+        host path always did this; the CTE path did not, and emitted
+        ``SUM(customers.spend * regions.weight) FROM customers`` — SQL no
+        database accepts. One implementation, entered through the one door, is
+        what stops that from recurring (DEV-1745 W2).
+
+        Only values the aggregation's formula actually SUBSTITUTES are treated
+        as SQL. A string kwarg whose ``{name}`` never appears in the template is
+        a marker, not a fragment — ``revenue:sum(window='90d')`` being the
+        standing example — and handing it to a SQL parser is meaningless. It
+        was harmless while the scan swallowed parse errors; now that the door
+        raises, a marker that does not happen to parse would take the query
+        down with it.
+        """
+        agg_def = next(
+            (a for a in (model.aggregations or []) if a.name == key.agg), None,
+        )
+        if agg_def is None:
+            # A built-in aggregation has no template, so no kwarg of it is a
+            # SQL fragment.
+            return
+        formula = agg_def.formula or ""
+        overridden = {name for name, _ in key.kwargs}
+        fragments = [
+            v for name, v in key.kwargs
+            if isinstance(v, str) and f"{{{name}}}" in formula
+        ]
+        fragments.extend(
+            p.sql for p in (agg_def.params or [])
+            if p.name not in overridden and p.sql
+        )
+        for frag in fragments:
+            self._enter_mode_a_expression(
+                sql=frag, scope=scope,
+                location=(
+                    f"aggregation {key.agg!r} template fragment on model "
+                    f"{model.name!r}"
+                ),
+            )
+
     def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and registering the joins they cross.
         self, *, base_render_order, slots_by_id, source_relation: str,
         source_model, bundle, scope: ScopeFrame,
@@ -8411,23 +8489,23 @@ class SQLGenerator:
         resolve; otherwise qualifies bare refs. DEV-1494; see
         ``_render_mode_a_predicate``.
         """
+        if not canonical_sql:
+            return None
         if bundle is None:
+            # No bundle means no join graph to expand or scan against — the
+            # AST bare-ref qualification is all that is available.
             return self._qualify_column_filter_sql(
                 canonical_sql=canonical_sql,
                 source_relation=source_relation,
                 source_model=source_model,
             )
-        return self._render_mode_a_predicate(
+        return self._enter_mode_a_predicate(
             sql=canonical_sql,
             source_model=source_model,
             source_relation=source_relation,
             bundle=bundle,
-            qualify_fallback=lambda s: self._qualify_column_filter_sql(
-                canonical_sql=s,
-                source_relation=source_relation,
-                source_model=source_model,
-            ),
-        )
+            location=f"Column.filter on model {source_model.name!r}",
+        ).sql(dialect=self.dialect)
 
     def _build_from_clause_from_planned(
         self,
@@ -8645,11 +8723,13 @@ class SQLGenerator:
                 # to a constant) AND the inline-expanded text (a bare/dotted
                 # DERIVED ref like ``is_eu`` surfaces the join its expansion
                 # crosses). See ``_filter_join_paths``.
-                for p in self._filter_join_paths(
-                    sql=fp.text, source_relation=scope.root_relation,
-                    source_model=scope.root_model, bundle=scope.bundle,
-                ):
-                    scope.join_paths.add(p)
+                self._enter_mode_a_predicate(
+                    sql=fp.text, scope=scope,
+                    location=(
+                        f"SlayerModel.filters on model "
+                        f"{scope.root_model.name!r}"
+                    ),
+                )
 
     def _value_key_join_paths(  # NOSONAR(S3776) — one cohesive recursive ValueKey-tree walk; complexity is the per-key-type dispatch.
         self, *, key, source_model, source_relation: str, bundle,
@@ -9073,13 +9153,15 @@ class SQLGenerator:
                 # DEV-1450 #4b: a reference to a non-trivial derived column
                 # is inline-expanded (and pulls its crossed joins into the
                 # FROM via _resolve_where_filter_joins_via_scope).
-                target_parts.append(self._render_model_filter_sql(
+                target_parts.append(self._enter_mode_a_predicate(
                     sql=fp.text,
-                    columns=fp.text_columns,
                     source_model=source_model,
                     source_relation=source_relation,
                     bundle=bundle,
-                ))
+                    location=(
+                        f"SlayerModel.filters on model {source_model.name!r}"
+                    ),
+                ).sql(dialect=self.dialect))
             else:
                 raise ValueError(
                     f"FilterPhase id={fp.id!r} has neither expression "
