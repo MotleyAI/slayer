@@ -22,7 +22,7 @@ import tomllib
 from importlib.metadata import PackageNotFoundError
 
 import pytest
-from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
 import slayer
@@ -52,15 +52,14 @@ def _mcp_constraint() -> str:
 
 
 def _mcp_specifier() -> SpecifierSet:
-    constraint = _mcp_constraint()
-    try:
-        return SpecifierSet(constraint)
-    except InvalidSpecifier:  # pragma: no cover — only on a bad edit
-        pytest.fail(
-            f"The `mcp` constraint {constraint!r} is not PEP 440. Express it in "
-            f"PEP 440 form (e.g. '>=1.0,<2') so this guard can evaluate it; a "
-            f"Poetry caret is unparseable here and would silently skip the check."
-        )
+    """The declared constraint as a PEP 440 specifier set.
+
+    Raises ``InvalidSpecifier`` if the constraint is not PEP 440 — a Poetry
+    caret (``^1.0``) is semantically fine but unparseable here. Express the
+    constraint in PEP 440 form (e.g. ``>=1.0,<2``) so this guard can evaluate
+    it rather than silently skipping.
+    """
+    return SpecifierSet(_mcp_constraint())
 
 
 class TestMcpDependencyPin:

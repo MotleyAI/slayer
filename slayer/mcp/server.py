@@ -361,7 +361,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         run_sync(
             ingest_all_datasources_idempotent(storage=storage, stream=sys.stderr)
         )
-    FastMCP = _import_fastmcp()
+    FastMCP = _import_fastmcp()  # NOSONAR(S117) — holds a class object; CapWords matches the class it aliases
 
     mcp = FastMCP(
         "SLayer",
