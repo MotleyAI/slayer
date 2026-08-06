@@ -5852,6 +5852,11 @@ class SQLGenerator:
             # derived column on a joined model) is inline-expanded; base-only
             # filters keep the AST bare-ref qualification. The crossed join is
             # pulled into this CTE's FROM via ``cte_scope.join_paths``.
+            # An empty entry contributes no predicate. Skipped rather than
+            # entered: the door raises on text it cannot parse, and "" is not a
+            # predicate — the path this replaced skipped it too.
+            if not filter_text:
+                continue
             where_parts.append(self._enter_mode_a_predicate(
                 sql=filter_text, scope=cte_scope,
                 location=(
@@ -6084,10 +6089,7 @@ class SQLGenerator:
                 )
                 scope.resolve(local)
             elif isinstance(vk, AggregateKey):
-                self._register_agg_key_joins(
-                    agg_key=vk, scope=scope, target_relation=target_relation,
-                    target_model=target_model, bundle=bundle,
-                )
+                self._register_agg_key_joins(agg_key=vk, scope=scope)
             elif isinstance(vk, ArithmeticKey):
                 for op in vk.operands:
                     _walk(op)
@@ -6106,13 +6108,22 @@ class SQLGenerator:
                 _walk(fp.expression.value_key)
 
     def _register_agg_key_joins(
-        self, *, agg_key, scope: ScopeFrame, target_relation: str,
-        target_model, bundle,
+        self, *, agg_key, scope: ScopeFrame,
     ) -> None:
         """Register the joins an aggregate leaf crosses (source + positional
         args + column-ref kwargs + ``column_filter``) into ``scope.join_paths``
         — the ``AggregateKey`` arm of ``_register_routed_filter_joins``'s tree
-        walk, extracted so the walker stays a thin dispatcher (DEV-1708)."""
+        walk, extracted so the walker stays a thin dispatcher (DEV-1708).
+
+        Takes ONLY the scope. It used to also receive ``target_relation`` /
+        ``target_model`` / ``bundle`` and scan the column filter against those
+        while registering the result on ``scope`` — two sources of truth for one
+        fact. They agree at the single call site (the CTE scope is built with
+        ``root_model=target_model, root_relation=target_relation``), but nothing
+        enforced that, so a future caller could have passed a scope rooted
+        elsewhere and had its refs resolved in the wrong namespace. Now the
+        scope is the only namespace, and the question cannot arise.
+        """
         from slayer.core.keys import ColumnKey, ColumnSqlKey
 
         cross_model_path = getattr(agg_key.source, "path", ())
@@ -6129,7 +6140,7 @@ class SQLGenerator:
         if cfk is not None and cfk.canonical_sql:
             self._enter_mode_a_predicate(
                 sql=cfk.canonical_sql, scope=scope,
-                location=f"Column.filter on model {target_model.name!r}",
+                location=f"Column.filter on model {scope.root_model.name!r}",
             )
 
     def _collect_routed_filters(
