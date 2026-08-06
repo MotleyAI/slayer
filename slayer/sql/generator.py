@@ -948,16 +948,26 @@ class SQLGenerator:
 
         ``aliases_by_slot_id`` is populated as slots are rendered, so its
         insertion order IS the plan's render order; iterating it directly is
-        what "plan order" means here. Duplicates are dropped (two slots can
-        share an alias) while preserving first appearance.
+        what "plan order" means here.
+
+        A duplicate alias RAISES. Two slots sharing a rendered alias is an
+        allocator invariant violation: the old ``sorted(...)`` emitted the
+        column twice, which leaves the downstream ``SELECT "x" FROM step1``
+        ambiguous, and silently collapsing it instead would change the stage's
+        arity while hiding the violation that caused it.
         """
         out: List[str] = []
-        seen: Set[str] = set()
-        for aliases in aliases_by_slot_id.values():
+        owner_of: Dict[str, str] = {}
+        for sid, aliases in aliases_by_slot_id.items():
             for alias in aliases:
-                if alias not in seen:
-                    seen.add(alias)
-                    out.append(alias)
+                if alias in owner_of:
+                    raise ValueError(
+                        f"slots {owner_of[alias]!r} and {sid!r} both render the "
+                        f"alias {alias!r}; an inner stage cannot carry the same "
+                        f"output name twice",
+                    )
+                owner_of[alias] = sid
+                out.append(alias)
         return out
 
     def _null_safe_join_pair_sql(self, *, left_sql: str, right_sql: str) -> str:

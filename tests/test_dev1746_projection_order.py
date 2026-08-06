@@ -246,6 +246,37 @@ class TestB7DeclarationOrderProjection:
             "status", "cm_first", "local_second",
         ], f"row keys: {list(resp.data[0].keys())}"
 
+    async def test_a_slot_that_is_both_projected_and_a_transform_operand(
+        self,
+    ) -> None:
+        """A slot can be publicly projected AND consumed as a transform input.
+
+        ``amount:sum`` is selected as ``total`` and is also what ``cumsum``
+        operates on — one key, so one slot, reached by both. The combined SELECT
+        carries hidden transform inputs as well as public columns, so this is the
+        shape where the two could disagree about how many columns the slot
+        renders. It must emit the slot ONCE for its one declared name, and must
+        not trip the leftover-column guard.
+        """
+        query = SlayerQuery(
+            source_model="orders_x",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            )],
+            measures=[
+                ModelMeasure(formula="amount:sum", name="total"),
+                ModelMeasure(formula="cumsum(amount:sum)", name="running"),
+            ],
+        )
+        sql = await _gen(query, dialect="postgres")
+        emitted = _alias_suffixes(outer_select_aliases(sql))
+        assert emitted == ["created_at", "total", "running"], (
+            f"expected each declared name once, in declaration order: "
+            f"{emitted}\n\n{sql}"
+        )
+        assert emitted.count("total") == 1, emitted
+
     async def test_hidden_slots_are_absent_from_the_projection(self) -> None:
         """Unified trimming: an order-only aggregate never reaches the public
         projection because it is not in ``projection`` at all."""
