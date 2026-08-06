@@ -294,9 +294,8 @@ class TestDedupParity:
         """Different values must never collapse onto one alias — that would
         silently aggregate the wrong column."""
         sql = await _gen(_two_distinct_crossing_values_query(), dialect="postgres")
-        assert "_val_0" in sql and "_val_1" in sql, (
-            f"expected two distinct materialisations:\n{sql}"
-        )
+        assert "_val_0" in sql, f"first materialisation missing:\n{sql}"
+        assert "_val_1" in sql, f"second materialisation missing:\n{sql}"
 
     async def test_one_expression_is_materialised_once_per_scope(self) -> None:
         """NEWLY SURFACED DIVERGENCE — grouping a first/last cross-model

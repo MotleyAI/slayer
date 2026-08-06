@@ -1930,10 +1930,10 @@ class SQLGenerator:
                 step_num += 1
                 step_name = cte_allocator.allocate_cte(f"step{step_num}")
                 prev_cte = ctes[-1][0]
-                carry_aliases_sorted = self._carry_aliases_in_plan_order(
+                carry_aliases = self._carry_aliases_in_plan_order(
                     aliases_by_slot_id,
                 )
-                step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
+                step_parts = [self._quote_ident(a) for a in carry_aliases]
                 for layer in ready_window:
                     for slot_id in layer.slot_ids:
                         slot = slots_by_id[slot_id]
@@ -2030,10 +2030,10 @@ class SQLGenerator:
             step_num += 1
             step_name = cte_allocator.allocate_cte(f"step{step_num}")
             prev_cte = ctes[-1][0]
-            carry_aliases_sorted = self._carry_aliases_in_plan_order(
+            carry_aliases = self._carry_aliases_in_plan_order(
                 aliases_by_slot_id,
             )
-            step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
+            step_parts = [self._quote_ident(a) for a in carry_aliases]
             for cslot in unmaterialised:
                 alias = (
                     cslot.public_aliases[0]
@@ -2070,10 +2070,10 @@ class SQLGenerator:
         # in PLAN order (B8 — this list used to be sorted alphabetically to
         # match the legacy renderer byte-for-byte).
         final_cte = ctes[-1][0]
-        inner_sorted = self._carry_aliases_in_plan_order(aliases_by_slot_id)
+        inner_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
         inner_sql = (
             "SELECT\n    "
-            + _SQL_COL_SEP.join(self._quote_ident(a) for a in inner_sorted)
+            + _SQL_COL_SEP.join(self._quote_ident(a) for a in inner_aliases)
             + f"\nFROM {final_cte}"
         )
 
@@ -4059,7 +4059,7 @@ class SQLGenerator:
         slots_by_id: Dict[str, Any],
         aliases_by_slot_id: Dict[str, List[str]],
         full_agg_alias: str,
-    ) -> Tuple[str, List[str]]:
+    ) -> Tuple[exp.Select, List[str]]:
         """Render one ``_wm_`` duration-windowed-measure CTE (DEV-1714 Stage 10).
 
         The CTE is host-rooted: ``FROM _base LEFT JOIN (<_src>) AS _src`` where
@@ -4667,7 +4667,7 @@ class SQLGenerator:
         #     canonical alias plus an ``AS`` remap at the combined
         #     SELECT — matches the result-key contract while keeping
         #     legacy parity for the unaliased shape.
-        cm_ctes: List[Tuple[str, str]] = []
+        cm_ctes: List[Tuple[str, exp.Expression]] = []
         # Dedup identity is the STRUCTURAL key (the typed AggregateKey plus the
         # source relation), never the sanitised CTE-name string. The canonical
         # alias omits the aggregate's column filter, so a filtered and an
@@ -4761,7 +4761,7 @@ class SQLGenerator:
         # is host-rooted (``FROM _base LEFT JOIN _src``), grouped at the query
         # grain, and joined back to ``_base`` on that grain (host alias == cte
         # column alias, since the CTE projects the grain under the same alias).
-        wm_ctes: List[Tuple[str, str]] = []
+        wm_ctes: List[Tuple[str, exp.Expression]] = []
         wm_cte_name_for_plan: Dict[str, str] = {}
         wm_agg_col_for_plan: Dict[str, str] = {}
         wm_joinback_pairs_for_plan: Dict[str, List[Tuple[str, str]]] = {}
@@ -5368,10 +5368,10 @@ class SQLGenerator:
             step_num += 1
             step_name = cte_allocator.allocate_cte(f"step{step_num}")
             prev_cte = ctes[-1][0]
-            carry_aliases_sorted = self._carry_aliases_in_plan_order(
+            carry_aliases = self._carry_aliases_in_plan_order(
                 aliases_by_slot_id,
             )
-            step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
+            step_parts = [self._quote_ident(a) for a in carry_aliases]
             for layer in ready:
                 for slot_id in layer.slot_ids:
                     slot = slots_by_id[slot_id]
@@ -5422,10 +5422,10 @@ class SQLGenerator:
             step_num += 1
             step_name = cte_allocator.allocate_cte(f"step{step_num}")
             prev_cte = ctes[-1][0]
-            carry_aliases_sorted = self._carry_aliases_in_plan_order(
+            carry_aliases = self._carry_aliases_in_plan_order(
                 aliases_by_slot_id,
             )
-            step_parts = [self._quote_ident(a) for a in carry_aliases_sorted]
+            step_parts = [self._quote_ident(a) for a in carry_aliases]
             for cslot in unmaterialised:
                 alias = (
                     cslot.public_aliases[0]
@@ -5454,10 +5454,10 @@ class SQLGenerator:
             ctes.append((step_name, step_sql))
 
         final_cte = ctes[-1][0]
-        inner_sorted = self._carry_aliases_in_plan_order(aliases_by_slot_id)
+        inner_aliases = self._carry_aliases_in_plan_order(aliases_by_slot_id)
         inner_sql = (
             "SELECT\n    "
-            + _SQL_COL_SEP.join(self._quote_ident(a) for a in inner_sorted)
+            + _SQL_COL_SEP.join(self._quote_ident(a) for a in inner_aliases)
             + f"\nFROM {final_cte}"
         )
         cte_clause = (
@@ -5657,9 +5657,13 @@ class SQLGenerator:
         planned_query,
         slots_by_id: Dict[str, Any],
         base_projection_ids: Set[str],
-    ) -> Tuple[str, List[str]]:
-        """Render one ``_cm_<...>`` CTE body and return its SQL +
+    ) -> Tuple[exp.Select, List[str]]:
+        """Render one ``_cm_<...>`` CTE body and return it as AST, plus the
         shared-grain alias list (for the outer ``LEFT JOIN ON`` clause).
+
+        AST rather than SQL text: the caller assembles the WITH chain
+        structurally, and rendering here only to re-parse there would re-read a
+        dotted public alias as a multi-part reference on BigQuery.
 
         The CTE is rooted at the terminal target model (legacy
         rerooted shape). Shared-grain slots whose key path is a prefix
@@ -6731,10 +6735,16 @@ class SQLGenerator:
         cross-model alias map has no entry (the order slot can't be
         rendered).
         """
-        descending = entry.direction != "asc"
+        ascending = entry.direction == "asc"
 
         def _ordered(col: exp.Expression) -> exp.Ordered:
-            return exp.Ordered(this=col, desc=descending)
+            # Through ``self._ordered``, NOT a bare ``exp.Ordered``: on T-SQL an
+            # unset ``nulls_first`` makes sqlglot emit a ``CASE WHEN <alias> IS
+            # NULL ...`` NULLS-emulation wrapper, and the bracketed alias inside
+            # it mis-resolves against the FROM scope (``Invalid column name``).
+            # The old text-built ORDER BY never constructed an ``Ordered`` node,
+            # so building one here newly exposed this path.
+            return self._ordered(col, ascending=ascending)
 
         # DEV-1712 / DEV-1733: a HIDDEN (order-only) aggregate that lives in its
         # own CTE — cross-model (``_cm_``) or windowed (``_wm_``) — is trimmed
@@ -7975,11 +7985,11 @@ class SQLGenerator:
         # then add the shifted measure under EACH of the slot's public
         # aliases (DEV-1450 C13).
         prev_cte = ctes[-2][0]  # the CTE just before the shifted CTE
-        carry_aliases_sorted = self._carry_aliases_in_plan_order(
+        carry_aliases = self._carry_aliases_in_plan_order(
             aliases_by_slot_id,
         )
         sjoin_select_parts = [
-            f'{prev_cte}.{self._quote_ident(a)}' for a in carry_aliases_sorted
+            f'{prev_cte}.{self._quote_ident(a)}' for a in carry_aliases
         ]
         slot_full_aliases: List[str] = []
         for slot_alias in slot_aliases:
@@ -8158,10 +8168,10 @@ class SQLGenerator:
 
         # Build the reset CTE.
         prev_cte = ctes[-1][0]
-        carry_aliases_sorted = self._carry_aliases_in_plan_order(
+        carry_aliases = self._carry_aliases_in_plan_order(
             aliases_by_slot_id,
         )
-        carry_select = ",\n  ".join(self._quote_ident(a) for a in carry_aliases_sorted)
+        carry_select = ",\n  ".join(self._quote_ident(a) for a in carry_aliases)
         partition_clause = (
             _SQL_PARTITION_BY + ", ".join(self._quote_ident(a) for a in partition_aliases)
             if partition_aliases

@@ -47,6 +47,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 
 from tests._dev1746_fixtures import (
+    dev1746_models,
     make_sqlite_engine,
     outer_clause_sql,
     outer_statement,
@@ -125,8 +126,6 @@ SHAPES = {
 
 
 async def _gen_sql(query: SlayerQuery, *, dialect: str) -> str:
-    from tests._dev1746_fixtures import dev1746_models
-
     models = dev1746_models()
     return await _engine_generate(
         query=query, model=models[0], dialect=dialect, extra_models=models[1:],
@@ -291,8 +290,14 @@ class TestApplyPaginationHook:
             f"on a free-standing Limit."
         )
         rendered = out.sql(dialect=dialect)
-        assert "10" in rendered and "5" in rendered, (
-            f"[{dialect}] pagination bounds missing from {rendered!r}"
+        # Structural, not substring: ``"10" in rendered`` matches any digits
+        # anywhere — a column name, the other bound's digits, or a stray
+        # literal — so it would pass even if one bound were dropped.
+        assert out.args.get("limit") is not None, (
+            f"[{dialect}] no LIMIT bound on the Select: {rendered!r}"
+        )
+        assert out.args.get("offset") is not None, (
+            f"[{dialect}] no OFFSET bound on the Select: {rendered!r}"
         )
 
     def test_tsql_hook_injects_ordering_for_a_bare_offset(self) -> None:

@@ -352,6 +352,41 @@ class TestB7DeclarationOrderProjection:
             f"{emitted}\n\n{sql}"
         )
 
+    @pytest.mark.parametrize("direction", ["asc", "desc"])
+    async def test_combined_order_by_suppresses_the_tsql_nulls_emulation(
+        self, direction: str,
+    ) -> None:
+        """The combined ORDER BY must go through the generator's ``_ordered``.
+
+        On T-SQL an unset ``nulls_first`` makes sqlglot emulate NULLS ordering
+        with ``ORDER BY CASE WHEN <alias> IS NULL THEN 1 ELSE 0 END, <alias>``,
+        and the bracketed alias inside that CASE mis-resolves against the FROM
+        scope — SQL Server rejects it with ``Invalid column name``. The
+        generator has ``_ordered`` precisely to pin ``nulls_first`` and suppress
+        the wrapper.
+
+        This became reachable only when the combined ORDER BY moved from text to
+        AST: the string form never built an ``Ordered`` node, so there was
+        nothing for sqlglot to emulate around. Both directions are covered
+        because the wrapper appears on ASC only — every other ordering test in
+        this PR used ``desc`` and would not have caught it.
+        """
+        query = SlayerQuery(
+            source_model="orders_x",
+            dimensions=[ColumnRef(name="customers_v2.status")],
+            measures=[ModelMeasure(
+                formula="customers_v2.lifetime_value:sum", name="ltv",
+            )],
+            order=[OrderItem(
+                column="customers_v2.lifetime_value:sum", direction=direction,
+            )],
+        )
+        sql = await _gen(query, dialect="tsql")
+        assert "CASE WHEN" not in sql.upper(), (
+            f"[{direction}] the T-SQL NULLS-emulation wrapper is back; its "
+            f"bracketed alias does not resolve at the ORDER BY scope:\n{sql}"
+        )
+
     async def test_hidden_slots_are_absent_from_the_projection(self) -> None:
         """Unified trimming: an order-only aggregate never reaches the public
         projection because it is not in ``projection`` at all."""
@@ -488,11 +523,10 @@ class TestProjectionInvariant:
                 for s in planned.aggregate_slots
             ]
         corrupted = planned.model_copy(update=update)
+        bundle = _chain_bundle()
         gen = SQLGenerator(dialect="postgres")
         with pytest.raises((AssertionError, ValueError)) as excinfo:
-            gen.generate_from_planned(
-                planned_query=corrupted, bundle=_chain_bundle(),
-            )
+            gen.generate_from_planned(planned_query=corrupted, bundle=bundle)
         message = str(excinfo.value).lower()
         assert "hidden" in message, (
             "the belt fired, but not for the hidden slot — the message does not "
@@ -954,9 +988,15 @@ class TestB11JoinOrdering:
 
         def _wrapped(self_frame, parsed):
             result = original(self_frame, parsed)
-            registered.extend(
-                "__".join(p) for p in self_frame.join_paths.as_list()
-            )
+            # Only the HOST scope. The generator also builds throwaway frames
+            # (agg-kwarg resolution, explicit time columns, Mode-A entry) whose
+            # join_paths are documented as intentionally discarded — a path
+            # registered there need not appear in the base FROM, so recording
+            # them would make this property false for a correct generator.
+            if self_frame.root_relation == "orders_x":
+                registered.extend(
+                    "__".join(p) for p in self_frame.join_paths.as_list()
+                )
             return result
 
         monkeypatch.setattr(
