@@ -42,9 +42,10 @@ SCALAR_FUNCTIONS: frozenset[str] = frozenset({
     "nullif", "coalesce", "ifnull",
     # Math
     "ln", "log10", "log2", "log", "exp", "sqrt", "pow", "power",
-    "abs", "floor", "ceil", "round",
+    "abs", "floor", "ceil", "ceiling", "round", "sign",
     # String hygiene (was DEV-1378's STRING_HYGIENE_OPS)
-    "lower", "upper", "trim", "replace", "substr", "instr", "length", "concat",
+    "lower", "upper", "trim", "ltrim", "rtrim",
+    "replace", "substr", "substring", "instr", "length", "concat",
     # Pattern match — ``like(value, pattern)`` emits the SQL ``LIKE`` operator
     # (sqlglot ``exp.Like``); see SQLGenerator scalar-call rendering.
     "like",
@@ -68,8 +69,17 @@ SCALAR_FUNCTION_ARITY: dict[str, tuple[int, Optional[int]]] = {
     "exp": (1, 1), "sqrt": (1, 1),
     "pow": (2, 2), "power": (2, 2),
     "abs": (1, 1), "floor": (1, 1), "ceil": (1, 1), "round": (1, 2),
+    # ``ceiling`` is the T-SQL spelling of ``ceil`` and renders to the same
+    # node. Pinned at 1: a 2-arg call silently emits ``CEIL(x, y)``, and a
+    # 3-arg one becomes DuckDB's unrelated ``CEIL(x TO z)`` rounding form.
+    "ceiling": (1, 1), "sign": (1, 1),
     "lower": (1, 1), "upper": (1, 1), "trim": (1, 1), "length": (1, 1),
-    "replace": (3, 3), "substr": (2, 3), "instr": (2, 2),
+    # The trims take the string only, matching ``trim``. The 2-arg
+    # strip-these-characters form is deliberately NOT admitted: sqlglot emits
+    # a literal ``LTRIM(str, chars)`` for some targets, and MySQL's ``LTRIM``
+    # accepts one argument — so it would be SQL the server rejects.
+    "ltrim": (1, 1), "rtrim": (1, 1),
+    "replace": (3, 3), "substr": (2, 3), "substring": (2, 3), "instr": (2, 2),
     "concat": (1, None),
     "like": (2, 2),
 }
