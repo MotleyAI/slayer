@@ -11,6 +11,7 @@ import asyncio
 import logging
 import sys
 from collections import defaultdict, deque
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TextIO
 
 import sqlalchemy as sa
@@ -808,23 +809,30 @@ class SkippedTable(BaseModel):
     kind: ObjectKind | None = None
 
 
-class HiddenInternal(BaseModel):
-    """A live object recognised as ELT/migration bookkeeping and modelled
-    ``hidden`` (DEV-1759).
+class InternalTable(BaseModel):
+    """A live object recognised as ELT/migration bookkeeping (DEV-1759).
 
     Distinct from ``SkippedTable``: the model exists, is queryable by name and
-    is a valid join target — it is only absent from the listing surfaces.
+    is a valid join target — when ``hidden`` it is merely absent from the
+    listing surfaces.
 
     Both names are carried because they can differ: ingestion sanitizes ``__``
     runs out of model names, so the live ``_dlt_loads__x`` becomes the model
     ``_dlt_loads_x``. A user reading the report needs ``table_name`` to find the
-    table and ``model_name`` to un-hide it.
+    table and ``model_name`` to un-hide it. Carrying both here is also what lets
+    downstream consumers avoid re-deriving the live name from ``sql_table``,
+    which is lossy — ``_bare_table_name`` splits on the FIRST dot, so a dotted
+    ``--schema`` (``project.dataset``) would leave ``dataset._dlt_loads`` and
+    silently stop matching.
+
+    ``hidden`` is False only when ``surface_internals`` surfaced it.
     """
 
     table_name: str
     model_name: str
     tool: str
     kind: ObjectKind | None = None
+    hidden: bool = True
 
 
 class IngestionScanReport(BaseModel):
@@ -832,16 +840,32 @@ class IngestionScanReport(BaseModel):
 
     models: list[SlayerModel] = Field(default_factory=list)
     skipped: list[SkippedTable] = Field(default_factory=list)
-    # What THIS SCAN constructed hidden. Correct as effective state only for
-    # callers that persist ``models`` directly (``datasources create
-    # --ingest``), because the scan never reads storage. The idempotent path
-    # re-derives its own list post-merge — see ``ingest_datasource_idempotent``.
-    hidden_internals: list[HiddenInternal] = Field(default_factory=list)
+    # EVERY recognised internal that produced a model, whether or not this run
+    # hid it — populated regardless of ``surface_internals`` so the idempotent
+    # path can filter it against effective storage state without reconstructing
+    # the live object name from a derived string.
+    internal_tables: list[InternalTable] = Field(default_factory=list)
     # Every object discovered, whether or not it produced a model. Lets the
     # caller tell "the schema was empty" apart from "the schema had objects
     # but they were all skipped / already in sync" — the CLI needs that
     # distinction to decide between the empty-schema hint and silence.
+    # NOTE: ``hidden_internals`` is defined as a property below the field
+    # block — a derived view, so the hidden subset can never drift from
+    # ``internal_tables``.
     objects: list[IngestableObject] = Field(default_factory=list)
+
+    @property
+    def hidden_internals(self) -> list[InternalTable]:
+        """The subset this scan actually hid — what the renderer prints.
+
+        Derived rather than stored so it cannot drift from
+        ``internal_tables``. For callers that persist ``models`` directly
+        (``datasources create --ingest``) this IS effective state, because the
+        scan never reads storage. The idempotent path instead filters
+        ``internal_tables`` against persisted state — see
+        ``_effective_hidden_internals``.
+        """
+        return [t for t in self.internal_tables if t.hidden]
 
 
 def _safe_object_names(
@@ -1130,13 +1154,16 @@ def ingest_datasource_report(
         )
 
         models = []
-        hidden_internals: list[HiddenInternal] = []
+        internal_tables: list[InternalTable] = []
         for obj in objects:
             model_name = name_by_object.get(obj.name)
             if model_name is None:
                 continue  # already recorded in ``skipped`` by _assign_model_names
             # Classified on the LIVE name, never the sanitized model name.
-            tool = None if surface_internals else internal_table_rule(obj.name)
+            # Evaluated regardless of ``surface_internals`` so the entry is
+            # still recorded (with ``hidden=False``) — the idempotent path
+            # needs the classification even on a run that surfaced them.
+            tool = internal_table_rule(obj.name)
             try:
                 models.append(
                     _build_one_model(
@@ -1150,7 +1177,7 @@ def ingest_datasource_report(
                         has_cycles=has_cycles,
                         fk_columns_by_table=fk_columns_by_table,
                         table_set=table_set,
-                        internal_tool=tool,
+                        internal_tool=None if surface_internals else tool,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 — per-object isolation
@@ -1163,15 +1190,16 @@ def ingest_datasource_report(
                 )
                 continue
             # Recorded only AFTER construction succeeds, so an object can never
-            # appear in both ``skipped`` and ``hidden_internals`` — two
+            # appear in both ``skipped`` and ``internal_tables`` — two
             # contradictory verdicts on the same table.
             if tool is not None:
-                hidden_internals.append(
-                    HiddenInternal(
+                internal_tables.append(
+                    InternalTable(
                         table_name=obj.name,
                         model_name=model_name,
                         tool=tool,
                         kind=obj.kind,
+                        hidden=not surface_internals,
                     )
                 )
 
@@ -1179,7 +1207,7 @@ def ingest_datasource_report(
             models=models,
             skipped=skipped,
             objects=objects,
-            hidden_internals=hidden_internals,
+            internal_tables=internal_tables,
         )
     finally:
         # One-shot admin operation, not a hot query path. Disposing releases
@@ -1497,42 +1525,12 @@ async def _scoped_models_for_validation(
     return scoped
 
 
-def _internal_candidates(scan: IngestionScanReport) -> list[HiddenInternal]:
-    """Every successfully-built model whose live object is recognised
-    bookkeeping, regardless of whether THIS run hid it.
-
-    Deliberately re-derived from ``scan.models`` rather than reused from
-    ``scan.hidden_internals``: under ``surface_internals`` the latter is empty
-    by construction, but a model created hidden by an EARLIER run is still
-    hidden, and the run that passed the flag is exactly when the user needs to
-    be told that. Walking the built models also excludes skipped objects for
-    free.
-    """
-    candidates: list[HiddenInternal] = []
-    for model in scan.models:
-        if not model.sql_table:
-            continue
-        table_name = _bare_table_name(model.sql_table)
-        tool = internal_table_rule(table_name)
-        if tool is None:
-            continue
-        candidates.append(
-            HiddenInternal(
-                table_name=table_name,
-                model_name=model.name,
-                tool=tool,
-                kind=model.source_kind,
-            )
-        )
-    return candidates
-
-
 async def _effective_hidden_internals(
     *,
-    candidates: list[HiddenInternal],
+    candidates: list[InternalTable],
     datasource: DatasourceConfig,
     storage: StorageBackend,
-) -> list[HiddenInternal]:
+) -> list[InternalTable]:
     """Narrow scan-time classifications down to models that are ACTUALLY
     hidden once the additive merge has run (DEV-1759).
 
@@ -1547,11 +1545,18 @@ async def _effective_hidden_internals(
       hidden by an earlier run and is still hidden — silence on precisely the
       run where the user asked to see these.
 
+    Takes ``scan.internal_tables`` (every recognised internal, whatever this run
+    did with it), NOT ``scan.hidden_internals`` — the latter is empty under
+    ``surface_internals`` by construction, which is exactly the second case
+    above. Consuming the scan's own entries also means the live object name is
+    carried through verbatim rather than reconstructed from ``sql_table``, which
+    would be lossy for a dotted ``--schema``.
+
     Looked up by ``model_name``, not ``table_name``: they differ for any
     ``__``-sanitized object, and keying on the table name would silently drop
     those from the report.
     """
-    effective: list[HiddenInternal] = []
+    effective: list[InternalTable] = []
     for entry in candidates:
         try:
             persisted = await storage.get_model(
@@ -1685,7 +1690,7 @@ async def ingest_datasource_idempotent(
 
     # Effective state, not the scan's verdict — see ``_effective_hidden_internals``.
     hidden_internals = await _effective_hidden_internals(
-        candidates=_internal_candidates(scan),
+        candidates=scan.internal_tables,
         datasource=datasource,
         storage=storage,
     )
@@ -1803,6 +1808,43 @@ def _print_ingest_addition(
     print(f"Updated: {addition.model_name} ({'; '.join(details)})", file=out)
 
 
+def _print_report_section(
+    *,
+    entries: list,
+    header: str,
+    line: Callable[[Any], str],
+    out: TextIO,
+    footer: str | None = None,
+) -> None:
+    """Print one ``header`` + indented-bullet section, or nothing when empty.
+
+    Extracted because the report grew to four structurally identical sections;
+    inlining them all put ``_print_ingest_drift_and_errors`` over Sonar's
+    cognitive-complexity threshold (S3776) for no readability gain.
+    """
+    if not entries:
+        return
+    print(header, file=out)
+    for entry in entries:
+        print(f"  - {line(entry)}", file=out)
+    if footer is not None:
+        print(footer, file=out)
+
+
+def _hidden_internal_line(entry) -> str:
+    """``<table>: <tool>``, disambiguating the model name when it differs.
+
+    The section's own advice is ``edit_model(hidden=false)``, which takes the
+    MODEL name — so for a ``__``-sanitized table (live ``_dlt_loads__x`` →
+    model ``_dlt_loads_x``) printing the table name alone names something the
+    user cannot act on.
+    """
+    target = entry.table_name
+    if entry.model_name != entry.table_name:
+        target = f"{entry.table_name} (model: {entry.model_name})"
+    return f"{target}: {entry.tool}"
+
+
 def _print_ingest_drift_and_errors(
     result, *, file: TextIO | None = None
 ) -> None:
@@ -1816,47 +1858,51 @@ def _print_ingest_drift_and_errors(
     trying to report.
     """
     out = file if file is not None else sys.stdout
-    to_delete = getattr(result, "to_delete", None) or []
-    if to_delete:
-        print("\nPending drift (run `slayer validate-models` to inspect):", file=out)
-        for entry in to_delete:
-            print(f"  - {entry.tool}: {entry.model_name}", file=out)
+    _print_report_section(
+        entries=getattr(result, "to_delete", None) or [],
+        header="\nPending drift (run `slayer validate-models` to inspect):",
+        line=lambda e: f"{e.tool}: {e.model_name}",
+        out=out,
+    )
     # Skips are reported separately from errors — "this object can't
     # be modelled" has a different cause and a different fix from "this model
     # failed to persist".
     skipped = getattr(result, "skipped", None) or []
-    if skipped:
-        print(
+    _print_report_section(
+        entries=skipped,
+        header=(
             f"\nSkipped ({len(skipped)}) — not modellable; "
-            f"re-run with --exclude to silence:",
-            file=out,
-        )
-        for entry in skipped:
-            print(f"  - {entry.table_name}: {entry.reason}", file=out)
+            f"re-run with --exclude to silence:"
+        ),
+        line=lambda e: f"{e.table_name}: {e.reason}",
+        out=out,
+    )
     # Hidden internals are reported separately again, and never affect the exit
     # code: unlike a skip, nothing was declined and there is nothing to fix.
     hidden_internals = getattr(result, "hidden_internals", None) or []
-    if hidden_internals:
-        print(
+    _print_report_section(
+        entries=hidden_internals,
+        header=(
             f"\nHidden ({len(hidden_internals)}) — recognised ELT/migration "
             f"internals (excluded from models_summary; still queryable by "
-            f"name):",
-            file=out,
-        )
-        for entry in hidden_internals:
-            print(f"  - {entry.table_name}: {entry.tool}", file=out)
+            f"name):"
+        ),
+        line=_hidden_internal_line,
         # Naming only the flag would be a half-truth: it governs models this
         # run CREATES, so it cannot surface one an earlier run already hid.
-        print(
+        footer=(
             "  --surface-internals ingests NEW internals visible; use "
-            "edit_model(hidden=false) to unhide an existing one.",
-            file=out,
-        )
+            "edit_model(hidden=false) to unhide an existing one."
+        ),
+        out=out,
+    )
     errors = getattr(result, "errors", None) or []
-    if errors:
-        print(f"\nErrors ({len(errors)}):", file=out)
-        for err in errors:
-            print(f"  - {err.model_name}: {err.error}", file=out)
+    _print_report_section(
+        entries=errors,
+        header=f"\nErrors ({len(errors)}):",
+        line=lambda e: f"{e.model_name}: {e.error}",
+        out=out,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

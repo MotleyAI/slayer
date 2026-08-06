@@ -132,13 +132,16 @@ Use `--exclude <name>` to accept a skip permanently.
 ELT and migration tooling writes bookkeeping tables into the same schema as
 your data. These are modelled with `hidden: true` and listed under `Hidden`:
 
-```
+```text
 Hidden (3) — recognised ELT/migration internals (excluded from models_summary; still queryable by name):
   - _dlt_loads: dlt
   - _dlt_pipeline_state: dlt
   - _dlt_version: dlt
   --surface-internals ingests NEW internals visible; use edit_model(hidden=false) to unhide an existing one.
 ```
+
+A `__`-sanitized table also shows the model name it was given, since that is
+what `edit_model` takes: `- _dlt_loads__x (model: _dlt_loads_x): dlt`.
 
 Hidden, not skipped. The model still exists, is still queryable by name, and is
 still a valid join target — it is only absent from `models list`, MCP

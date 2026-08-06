@@ -35,7 +35,7 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.enums import DataType
 from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import (
-    HiddenInternal,
+    InternalTable,
     SkippedTable,
     _print_ingest_drift_and_errors,
     ingest_datasource,
@@ -355,7 +355,69 @@ class TestSkipAndHideAreDisjoint:
 # ---------------------------------------------------------------------------
 
 
+class TestLiveNameSurvivesToTheReport:
+    """The scan carries the live object name through to the report rather than
+    letting a consumer reconstruct it from ``sql_table``.
+
+    ``_bare_table_name`` splits on the FIRST dot, so reconstructing from
+    ``sql_table`` loses the match whenever the schema itself is dotted —
+    ``project.dataset._dlt_loads`` reduces to ``dataset._dlt_loads``, which no
+    rule matches. The model would still be hidden but would silently drop out
+    of the report.
+    """
+
+    def test_dotted_schema_still_classifies(self, workspace: Path) -> None:
+        _, ds = _ds(workspace, _MIXED)
+        report = ingest_datasource_report(datasource=ds)
+        # Simulate the dotted-schema shape the BigQuery-style `--schema
+        # project.dataset` produces, then re-check what a consumer sees.
+        entry = next(
+            t for t in report.internal_tables if t.table_name == "_dlt_loads"
+        )
+        assert entry.tool == "dlt"
+
+        from slayer.engine.ingestion import _bare_table_name
+        from slayer.engine.internal_tables import internal_table_rule
+
+        # The reconstruction that used to back the idempotent report loses it.
+        assert internal_table_rule(
+            _bare_table_name("project.dataset._dlt_loads")
+        ) is None
+        # The carried live name does not.
+        assert internal_table_rule(entry.table_name) == "dlt"
+
+    async def test_dotted_schema_model_is_still_reported(
+        self, workspace: Path
+    ) -> None:
+        """End-to-end guard: a hidden internal must reach the idempotent
+        report even when its persisted ``sql_table`` is multi-part."""
+        _, ds = _ds(workspace, _MIXED)
+        storage = await _storage_with(workspace, ds)
+        await ingest_datasource_idempotent(datasource=ds, storage=storage)
+
+        loaded = await storage.get_model("_dlt_loads", data_source="ds")
+        assert loaded is not None
+        await storage.save_model(
+            loaded.model_copy(update={"sql_table": "project.dataset._dlt_loads"})
+        )
+
+        result = await ingest_datasource_idempotent(datasource=ds, storage=storage)
+        assert "_dlt_loads" in {h.table_name for h in result.hidden_internals}
+
+
 class TestSurfaceInternals:
+    def test_flag_records_the_classification_anyway(
+        self, workspace: Path
+    ) -> None:
+        """`internal_tables` is populated regardless of the flag — the
+        idempotent path needs the classification on a surfaced run too, to
+        report a model an EARLIER run created hidden."""
+        _, ds = _ds(workspace, _MIXED)
+        report = ingest_datasource_report(datasource=ds, surface_internals=True)
+
+        assert {t.table_name for t in report.internal_tables} == _INTERNAL_NAMES
+        assert all(t.hidden is False for t in report.internal_tables)
+
     def test_flag_ingests_internals_visible(self, workspace: Path) -> None:
         _, ds = _ds(workspace, _MIXED)
         by_name = {
@@ -672,11 +734,11 @@ def _result_with_hidden(**overrides) -> IdempotentIngestResult:
         errors=[],
         skipped=[],
         hidden_internals=[
-            HiddenInternal(
+            InternalTable(
                 table_name="_dlt_loads", model_name="_dlt_loads",
                 tool="dlt", kind="table",
             ),
-            HiddenInternal(
+            InternalTable(
                 table_name="alembic_version", model_name="alembic_version",
                 tool="alembic", kind="table",
             ),
@@ -697,6 +759,30 @@ class TestRenderer:
         assert "Hidden (2)" in out
         assert "  - _dlt_loads: dlt" in out
         assert "  - alembic_version: alembic" in out
+
+    def test_line_names_the_model_when_it_differs(self, capsys) -> None:
+        """The section's own advice is `edit_model(hidden=false)`, which takes
+        the MODEL name. For a `__`-sanitized table the live name alone points
+        at something the user cannot act on."""
+        _print_ingest_drift_and_errors(
+            _result_with_hidden(
+                hidden_internals=[
+                    InternalTable(
+                        table_name="_dlt_loads__x", model_name="_dlt_loads_x",
+                        tool="dlt", kind="table",
+                    )
+                ]
+            )
+        )
+        out = capsys.readouterr().out
+        assert "  - _dlt_loads__x (model: _dlt_loads_x): dlt" in out
+
+    def test_line_stays_bare_when_names_match(self, capsys) -> None:
+        """The common case must not grow a redundant parenthetical."""
+        _print_ingest_drift_and_errors(_result_with_hidden())
+        out = capsys.readouterr().out
+        assert "  - _dlt_loads: dlt" in out
+        assert "(model:" not in out
 
     def test_section_explains_both_escape_hatches(self, capsys) -> None:
         """`--surface-internals` alone is a half-truth on a re-ingest: it only
@@ -820,8 +906,11 @@ class TestCliExitCodes:
                 ]
             ),
         )
+        # `args` built outside the block so only one call inside it can raise
+        # (Sonar S5778).
+        args = _args(workspace)
         with pytest.raises(SystemExit) as exc:
-            _run_ingest(_args(workspace))
+            _run_ingest(args)
         assert exc.value.code == 1
 
 
@@ -1203,7 +1292,8 @@ class TestJoinsIntoHiddenModels:
         await ingest_datasource_idempotent(datasource=ds, storage=storage)
 
         hidden = await storage.get_model("_dlt_loads", data_source="ds")
-        assert hidden is not None and hidden.hidden is True
+        assert hidden is not None
+        assert hidden.hidden is True
 
         engine = SlayerQueryEngine(storage=storage)
         resp = await engine.execute(
