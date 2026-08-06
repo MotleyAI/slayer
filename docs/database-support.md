@@ -35,6 +35,67 @@ Unit tests for SQL generation; no live-instance verification.
 Redshift, Trino/Presto (Athena uses the Presto dialect), Databricks/Spark,
 Oracle.
 
+## Identifier length limits
+
+SLayer's result-column aliases are model-qualified join paths
+(`orders.customers.regions.name`), so on a deep join chain they can grow past
+what the database allows for an identifier. Postgres is the tightest of the
+Tier-1 set at **63 bytes**, and — unlike every other engine here — it
+**truncates silently**, emitting only a `NOTICE`. Two aliases sharing a 63-byte
+prefix therefore become the same output column: the query either fails with
+`AmbiguousColumnError` or, with no sibling to collide with, quietly returns the
+column under a name nothing looks up.
+
+Each dialect declares a budget as `SqlDialect.max_identifier_bytes`. Anything
+longer is shortened at emission to `<head>_<hash>_<tail>` — a deterministic
+form that keeps both the root model and the column name readable, with an
+8-hex-character SHA-256 of the full original in between:
+
+```
+orders.customers.regions.districts.neighbourhood_name    (over 63 bytes)
+  ->  orders.customers.region_4f2a91c7_ricts.neighbourhood_name
+```
+
+Two properties matter for consumers:
+
+- **Result keys never change.** The shortening is reversed on the way back, so
+  `response.data` and `response.columns` always carry the canonical dotted
+  alias regardless of which backend ran the query. Only `response.sql` (and
+  `dry_run` / `EXPLAIN` output) shows the shortened form, because that is the
+  SQL that actually executed.
+- **Nothing is shortened unless it must be.** An alias that already fits is
+  emitted byte-for-byte as before, so SQL stays readable on every engine and
+  under-limit output is unchanged.
+
+| Dialect | Budget (bytes) | Over-limit behaviour |
+|---|---|---|
+| Postgres | 63 | **silent truncation** |
+| MySQL | 64 | error |
+| Redshift | 127 | error |
+| Oracle, SQL Server | 128 | error |
+| Snowflake | 255 | error |
+| DuckDB | 256 | error |
+| BigQuery | 300 | error |
+| SQLite, ClickHouse, Trino/Presto, Databricks/Spark | unbounded | — |
+
+The budget is one conservative number per dialect rather than a full model of
+each engine's per-identifier-class rules. It is counted in **bytes**, which is
+conservative for engines that count characters (MySQL, SQL Server). MySQL's
+64-character *identifier* limit is used rather than its more generous 256-char
+*column alias* limit, and Oracle assumes 12.2+ (128 bytes; the pre-12.2 limit
+of 30 is not modelled). A dialect added without setting the field inherits the
+tightest value, since over-shortening is safe and under-shortening is not.
+
+Two SLayer-generated identifiers colliding after shortening raises
+`IdentifierCollisionError` rather than emitting ambiguous SQL. With a 32-bit
+digest over the full original this is astronomically unlikely; the check exists
+because a duplicate output name on a silently-truncating backend is exactly the
+failure this machinery prevents.
+
+Join-path *table* aliases (`customers__regions`) are not yet length-bounded —
+they are internal and shorter, but a sufficiently deep chain of long model
+names can still collide. Tracked separately.
+
 ## Aggregation support
 
 Most aggregations (`sum`, `avg`, `min`, `max`, `count`, `count_distinct`,

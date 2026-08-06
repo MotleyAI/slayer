@@ -20,7 +20,11 @@ import sqlalchemy as sa
 from sqlglot import exp
 
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
-from slayer.core.errors import AmbiguousModelError, ForcedFilterError
+from slayer.core.errors import (
+    AmbiguousModelError,
+    ForcedFilterError,
+    IdentifierCollisionError,
+)
 from slayer.core.policy import JoinFilterRuleset, SessionPolicy
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import (
@@ -61,6 +65,7 @@ from slayer.engine.enriched import (
     CrossModelMeasure,
     EnrichedMeasure,
     EnrichedQuery,
+    all_projection_aliases,
     public_projection_aliases,
 )
 from slayer.engine.enrichment import enrich_query
@@ -72,10 +77,10 @@ from slayer.memories.resolver import (
 )
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
+from slayer.sql.dialects._identifier_fit import fit_identifier
 from slayer.sql import engine_factory
 from slayer.sql.engine_factory import _runtime_fingerprint
 from slayer.sql.generator import SQLGenerator
-from slayer.sql.reserved_keywords import SLAYER_RESERVED_KEYWORDS
 from slayer.sql.session_policy import ScopedTable, apply_session_policy
 from slayer.storage.base import StorageBackend
 
@@ -1383,10 +1388,18 @@ class SlayerQueryEngine:
             )
             raise
         timing.record("execute", _t)
-        # Dialect-driven read-side decode: BigQuery reverses its alias
-        # mangling here so the response keys match SLayer's universal
-        # dotted shape. Default hook is identity for every other dialect.
-        rows = get_dialect(prepared.dialect).decode_result_keys(rows)
+        # Dialect-driven read-side decode: the base hook reverses DEV-1756
+        # identifier-length fitting, and BigQuery/T-SQL additionally reverse
+        # their alias mangling, so response keys always match SLayer's
+        # universal dotted shape whatever the backend did to them.
+        #
+        # The UNFILTERED alias set is passed, not ``expected_columns``: a row
+        # can legitimately carry a hidden ORDER-BY hoist, and the map has to be
+        # able to decode it. Recomputed from the pure fitting rather than
+        # threaded through generation.
+        rows = get_dialect(prepared.dialect).decode_result_keys(
+            rows, aliases=all_projection_aliases(prepared.enriched),
+        )
         columns = prepared.expected_columns if not rows else []  # [] auto-derives
         return SlayerResponse(
             data=rows,
@@ -3216,11 +3229,20 @@ class SlayerQueryEngine:
 
             'orders.customers.regions.name' → 'customers__regions__name'
             'orders.count'                  → 'count'
+
+            DEV-1756: the flattened name is then fitted to the dialect's
+            identifier budget. One more join hop than the example above crosses
+            Postgres' 63 bytes, and these names are emitted as output-column
+            aliases AND reused as the virtual model's ``Column.name``, so an
+            over-limit pair would collapse into one column.
             """
             # Strip source model prefix
             stripped = alias.split(".", 1)[-1] if "." in alias else alias
             # Replace remaining dots with __ to encode the original join path
-            return stripped.replace(".", "__")
+            return fit_identifier(
+                stripped.replace(".", "__"),
+                limit=get_dialect(dialect).max_identifier_bytes,
+            )
 
         # (inner_alias, short_name, data_type, label, description, format)
         column_map = []
@@ -3282,14 +3304,30 @@ class SlayerQueryEngine:
         # would either fail to parse (MySQL) or reference an alias the
         # mangled inner subquery doesn't expose (T-SQL).
         # DEV-1686: the inner ``alias`` is always dialect-quoted; the ``short``
-        # output alias must also be quoted when it is a reserved word (a
-        # user-declared cross-model rename like ``order``, or an
-        # ``_alias_to_short`` that yields one), else ``AS order`` is bare and
-        # the wrapped SQL fails to parse/execute.
+        # output alias must be too. It was originally quoted only for reserved
+        # words, but a BARE mixed-case short is case-folded by Postgres while
+        # the outer stage references it quoted (DEV-1645 quotes mixed-case
+        # ``Column.sql`` leaves) — so any query-backed model with a mixed-case
+        # join path failed with ``UndefinedColumnError``. Quoting always fixes
+        # that and, per DEV-1756, keeps these names out of the case-folding
+        # namespace entirely.
         def _short_sql(short: str) -> str:
-            if short.lower() in SLAYER_RESERVED_KEYWORDS:
-                return exp.Identifier(this=short, quoted=True).sql(dialect=dialect)
-            return short
+            return exp.Identifier(this=short, quoted=True).sql(dialect=dialect)
+
+        # DEV-1756: the shorts share one output-column namespace. Two that
+        # differ only by case would still collide were they ever emitted bare,
+        # and two that fit to the same string always collide, so validate the
+        # whole allocation before emitting.
+        short_owner: dict[str, str] = {}
+        for _, short, _, _, _, _ in column_map:
+            prior = short_owner.setdefault(short.casefold(), short)
+            if prior != short:
+                raise IdentifierCollisionError(
+                    first=prior, second=short, emitted=short.casefold(),
+                    dialect=dialect,
+                    limit=get_dialect(dialect).max_identifier_bytes,
+                    namespace="query-backed model column",
+                )
 
         rename_parts = [
             f'{exp.Identifier(this=alias, quoted=True).sql(dialect=dialect)} AS {_short_sql(short)}'
@@ -3299,7 +3337,14 @@ class SlayerQueryEngine:
         # DEV-1571 Bug 2: apply the dialect's emitted-SQL rewrite (e.g.
         # T-SQL bracket-mangling) so the rename clause's inner-alias
         # references match what the inner subquery actually projects.
-        wrapped_sql = get_dialect(dialect).rewrite_emitted_sql(wrapped_sql)
+        # DEV-1756: same alias set the inner SQL was generated with, so the
+        # wrapper's references land on the same fitted names. Safe to run over
+        # the combined string: ``generate()`` already replaced every canonical
+        # token inside ``inner_sql``, so this pass can only reach the wrapper's
+        # own references.
+        wrapped_sql = get_dialect(dialect).rewrite_emitted_sql(
+            wrapped_sql, aliases=all_projection_aliases(enriched),
+        )
 
         # One Column per result column — each is potentially both a dimension
         # (group-by) or measure (with colon-aggregation) at query time.

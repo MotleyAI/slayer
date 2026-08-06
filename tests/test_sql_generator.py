@@ -7011,9 +7011,9 @@ class TestBigQueryAliasMangling:
             call_order.append("trim")
             return real_trim(self, sql=sql, enriched=enriched)
 
-        def rewrite_spy(self, sql):
+        def rewrite_spy(self, sql, **kwargs):
             call_order.append("rewrite")
-            return real_rewrite(self, sql)
+            return real_rewrite(self, sql, **kwargs)
 
         with patch.object(SQLGenerator, "_apply_outer_projection_trim", trim_spy), \
                 patch.object(BigqueryDialect, "rewrite_emitted_sql", rewrite_spy):

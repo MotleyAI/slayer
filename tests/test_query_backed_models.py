@@ -1418,15 +1418,17 @@ class TestMultiStageMeasureRename:
                 f"expected 'rev_sum' in cached columns, got: {col_names}"
             )
             sql = loaded.backing_query_sql or ""
-            # Inner-stage wrap renames `"orders.rev" AS rev`; loose match on
-            # the alias keyword + name (newline-tolerant).
+            # Inner-stage wrap renames `"orders.rev" AS "rev"`; loose match on
+            # the alias keyword + name (newline-tolerant). DEV-1756: the short
+            # is now ALWAYS dialect-quoted, so an unquoted mixed-case short is
+            # no longer case-folded out from under the outer stage's reference.
             import re
-            assert re.search(r"\bAS\s+rev\b", sql), (
-                f"expected inner-stage 'AS rev' rename in SQL:\n{sql}"
+            assert re.search(r'\bAS\s+"rev"', sql), (
+                f"expected inner-stage 'AS \"rev\"' rename in SQL:\n{sql}"
             )
             # The canonical name must not leak into the wrapped subquery's
             # exposed alias.
-            assert not re.search(r"\bAS\s+amount_sum\b", sql), (
+            assert not re.search(r'\bAS\s+"?amount_sum"?', sql), (
                 f"canonical 'amount_sum' must not be the surfaced inner alias:\n{sql}"
             )
         finally:
@@ -1491,7 +1493,8 @@ class TestMultiStageMeasureRename:
                 f"'name', got: {col_names}"
             )
             import re
-            assert re.search(r"\bAS\s+rev\b", virtual.sql), (
+            # DEV-1756: shorts are always dialect-quoted now.
+            assert re.search(r'\bAS\s+"rev"', virtual.sql), (
                 f"wrapped SQL must rename to user alias 'rev':\n{virtual.sql}"
             )
         finally:

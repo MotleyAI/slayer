@@ -151,6 +151,44 @@ class IdCollisionError(SlayerError, ValueError):
         )
 
 
+class IdentifierCollisionError(SlayerError, ValueError):
+    """Raised when two distinct SLayer-generated names collapse onto one
+    identifier after the dialect's length fitting (DEV-1756).
+
+    Fitting appends a 32-bit digest of the full original, so this is
+    astronomically unlikely — but a duplicate output name on a backend that
+    silently truncates is exactly the class of bug this machinery exists to
+    prevent, so it is raised loudly rather than left to corrupt a result set.
+    Also covers the case where an already-short name happens to equal another
+    name's fitted form, which hash width alone cannot prevent.
+
+    Multi-inherits ``ValueError`` to match the other SLayer validation errors.
+    """
+
+    def __init__(
+        self,
+        *,
+        first: str,
+        second: str,
+        emitted: str,
+        dialect: str,
+        limit: int | None,
+        namespace: str = "identifier",
+    ) -> None:
+        self.first = first
+        self.second = second
+        self.emitted = emitted
+        self.dialect = dialect
+        self.limit = limit
+        self.namespace = namespace
+        super().__init__(
+            f"{namespace} collision on dialect '{dialect}' "
+            f"(max_identifier_bytes={limit}): {first!r} and {second!r} both "
+            f"emit as {emitted!r}. Rename one of the underlying models or "
+            f"columns to break the tie."
+        )
+
+
 class ForcedFilterError(SlayerError):
     """Raised when the session policy's ruleset cannot be safely applied to a query.
 

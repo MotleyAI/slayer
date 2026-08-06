@@ -34,6 +34,8 @@ class RedshiftDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = False
+    # DEV-1756: 127-byte identifier limit.
+    max_identifier_bytes: int | None = 127
 
     def build_approx_count_distinct(
         self,
@@ -52,6 +54,8 @@ class TrinoDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    # DEV-1756: Trino imposes no practical identifier-length limit.
+    max_identifier_bytes: int | None = None
 
     def build_approx_count_distinct(
         self,
@@ -71,6 +75,8 @@ class PrestoDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    # DEV-1756: Presto/Athena impose no practical identifier-length limit.
+    max_identifier_bytes: int | None = None
 
     def build_approx_count_distinct(
         self,
@@ -89,6 +95,8 @@ class DatabricksDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    # DEV-1756: Databricks imposes no practical identifier-length limit.
+    max_identifier_bytes: int | None = None
 
     def build_approx_count_distinct(
         self,
@@ -107,6 +115,8 @@ class SparkDialect(SqlDialect):
     explain_postfix: str = ""
     log10_native: bool = True
     log2_native: bool = True
+    # DEV-1756: Spark imposes no practical identifier-length limit.
+    max_identifier_bytes: int | None = None
 
     def build_approx_count_distinct(
         self,
@@ -127,6 +137,8 @@ class OracleDialect(SqlDialect):
     # the canonical 2-arg LOG(base, x) form.
     log10_native: bool = False
     log2_native: bool = False
+    # DEV-1756: 128 bytes on 12.2+; pre-12.2 was 30 and is not modelled.
+    max_identifier_bytes: int | None = 128
 
     def build_approx_count_distinct(
         self,

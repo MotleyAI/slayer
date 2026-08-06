@@ -438,7 +438,7 @@ async def test_generator_dispatches_through_rewrite_emitted_sql_hook() -> None:
         type(gen._dialect),
         "rewrite_emitted_sql",
         autospec=True,
-        side_effect=lambda self, sql: sql,
+        side_effect=lambda self, sql, **kw: sql,
     ) as spy:
         gen.generate(enriched=enriched)
     assert spy.called, (
@@ -480,7 +480,7 @@ async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
             PostgresDialect,
             "decode_result_keys",
             autospec=True,
-            side_effect=lambda self, rows: rows,
+            side_effect=lambda self, rows, **kw: rows,
         ) as spy:
             await engine.execute(SlayerQuery(
                 source_model="orders",
